@@ -1,0 +1,13 @@
+services:
+  tele-friend-bot:
+    build: .
+    container_name: tele-friend-bot
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./bot_session.session:/app/bot_session.session
+      - ./chat_history.json:/app/chat_history.json
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Singapore
