@@ -1,0 +1,10 @@
+[project]
+name = "tele-friend-bot"
+version = "0.1.0"
+description = "This is a simple telegram chatbot that will sit in a group chat and act like another friend."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "google-adk>=1.2.1",
+    "telethon>=1.34.0",
+]
