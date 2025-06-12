@@ -3,7 +3,7 @@ import logging
 from telethon import TelegramClient, events
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from google.genai import types
+
 from agent.agent import root_agent
 
 from bot.config.settings import API_ID, API_HASH, BOT_TOKEN
@@ -59,6 +59,10 @@ async def main():
     @client.on(events.NewMessage(pattern='/urgent'))
     async def urgent_handler(event):
         await command_handler.handle_urgent(event, message_handler=message_handler)
+    
+    @client.on(events.NewMessage(pattern='/sleep'))
+    async def sleep_handler(event):
+        await command_handler.handle_sleep(event)
     
     @client.on(events.NewMessage())
     async def incoming_message_handler(event):
