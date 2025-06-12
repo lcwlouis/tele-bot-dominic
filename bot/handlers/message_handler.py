@@ -2,10 +2,11 @@ import random
 import asyncio
 import logging
 from datetime import datetime
+import uuid
 from bot.config.settings import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY
 from google.adk.runners import Runner
 from google.genai import types
-from agent.agent import root_agent
+
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +15,8 @@ class MessageHandler:
         self.chat_history_manager = chat_history_manager
         self.bot_state = bot_state
         self.command_handler = command_handler
-        # self.runner: Runner = runner
-        self.session_service = session_service
-
-        runner = Runner(
-            agent=root_agent,
-            app_name="dom",
-            session_service=self.session_service,
-        )
-        
         self.runner = runner
+        self.session_service = session_service
 
     async def handle_message(self, event):
         """Handle incoming messages."""
@@ -39,6 +32,10 @@ class MessageHandler:
             # Skip if this is a response to /history command
             if message_text.startswith("📜 Recent messages in this chat:"):
                 logger.info("Skipping history command response")
+                return
+            # Skip if message starts with /ignore
+            if message_text.startswith("/ignore"):
+                logger.info("Skipping message with /ignore prefix")
                 return
         elif hasattr(event.message, 'media') and event.message.media:
             message_text = f"[{event.message.media.__class__.__name__}]"
@@ -61,7 +58,7 @@ class MessageHandler:
         logger.info(f"Should process message: {should_process}")
         
         if not should_process:
-            if self.bot_state.is_offline:
+            if self.bot_state.is_offline and not self.bot_state.is_sleeping:
                 logger.info(f"Bot is offline until: {self.bot_state.offline_until}")
                 # We append to the bot state the message that is queued in the same format as the chat history
                 self.bot_state.message_queue.append({
@@ -72,6 +69,8 @@ class MessageHandler:
                     'timestamp': datetime.now().strftime("%d-%m-%Y %H:%M:%S")
                 })
                 logger.info(f"Message added to queue. Queue size: {len(self.bot_state.message_queue)}")
+            elif self.bot_state.is_sleeping:
+                logger.info(f"Bot is sleeping until: {self.bot_state.sleep_until}, ignoring message")
             return
         
         # Add message to buffer
@@ -130,7 +129,7 @@ class MessageHandler:
             logger.info("Creating message object for agent...")
             
             # Include recent chat history in the context
-            recent_history = self.chat_history_manager.get_recent_history(chat_id)
+            recent_history = self.chat_history_manager.get_recent_history(chat_id, limit=20)
             context = "\n".join([f"[{msg['timestamp']}] {msg['user']} (@{msg['username']}): {msg['message']}" for msg in recent_history])
             
             # Add buffered messages to context
@@ -210,6 +209,9 @@ class MessageHandler:
         if not self.bot_state.message_queue:
             logger.info("No messages in queue, nothing to process")
             return
+        if self.bot_state.is_sleeping:
+            logger.info("Bot is sleeping, skipping processing of queued messages")
+            return
         # Create or get session for this chat
         session_id = f"chat_{chat_id}"
         logger.info(f"Creating/getting session: {session_id}")
@@ -219,7 +221,7 @@ class MessageHandler:
             session_id=session_id,
         )
         # Create message object from the history since all new messages were appended there
-        recent_history = self.chat_history_manager.get_recent_history(chat_id)
+        recent_history = self.chat_history_manager.get_recent_history(chat_id, limit=20)
         # Get messages that are not in the queue
         regular_messages = [msg for msg in recent_history if msg not in self.bot_state.message_queue]
         # Format regular messages
