@@ -2,7 +2,7 @@ import random
 import asyncio
 from datetime import datetime, timedelta
 import logging
-from bot.config.settings import MIN_OFFLINE_TIME, MAX_OFFLINE_TIME, OFFLINE_CHANCE, MAX_ONLINE_TIME, MIN_ONLINE_TIME
+from bot.config.settings import MIN_OFFLINE_TIME, MAX_OFFLINE_TIME, MAX_ONLINE_TIME, MIN_ONLINE_TIME
 
 logger = logging.getLogger(__name__)
 
