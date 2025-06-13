@@ -2,11 +2,11 @@ import asyncio
 import logging
 from telethon import TelegramClient, events
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions import DatabaseSessionService
 
 from agent.agent import root_agent
 
-from bot.config.settings import API_ID, API_HASH, BOT_TOKEN
+from bot.config.settings import API_ID, API_HASH, BOT_TOKEN, DB_URL
 from bot.utils.chat_history import ChatHistoryManager
 from bot.utils.bot_state import BotState
 from bot.handlers.commands import CommandHandler
@@ -14,7 +14,7 @@ from bot.handlers.message_handler import MessageHandler
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
@@ -31,7 +31,7 @@ async def main():
     
     # Initialize components
     bot_state = BotState()
-    session_service = InMemorySessionService()
+    session_service = DatabaseSessionService(db_url=DB_URL)
     runner = Runner(
         agent=root_agent,
         app_name="dom",

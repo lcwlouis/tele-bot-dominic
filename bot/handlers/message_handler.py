@@ -5,13 +5,14 @@ from datetime import datetime
 import uuid
 from bot.config.settings import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY
 from google.adk.runners import Runner
+from google.adk.sessions import DatabaseSessionService
 from google.genai import types
 
 
 logger = logging.getLogger(__name__)
 
 class MessageHandler:
-    def __init__(self, chat_history_manager, bot_state, command_handler, runner: Runner, session_service):
+    def __init__(self, chat_history_manager, bot_state, command_handler, runner: Runner, session_service: DatabaseSessionService):
         self.chat_history_manager = chat_history_manager
         self.bot_state = bot_state
         self.command_handler = command_handler
@@ -115,12 +116,22 @@ class MessageHandler:
         try:
             # Create or get session for this chat
             session_id = f"chat_{chat_id}"
-            logger.info(f"Creating/getting session: {session_id}")
-            await self.session_service.create_session(
-                app_name="dom",
-                user_id=chat_id,
-                session_id=session_id,
-            )
+            try:
+                logger.info(f"Getting session: {session_id}")
+                session = await self.session_service.list_sessions(
+                    app_name="dom",
+                    user_id=chat_id,
+                )
+                session = session.sessions[0]
+                logger.info(f"Session found: {session}")
+            except Exception as e:
+                logger.error(f"Error getting session: {e}")
+                logger.info(f"Creating/getting session: {session_id}")
+                session = await self.session_service.create_session(
+                    app_name="dom",
+                    user_id=chat_id,
+                    session_id=session_id,
+                )
             
             # Get buffered messages
             buffered_messages = self.bot_state.get_buffer(chat_id)

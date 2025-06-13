@@ -1,6 +1,7 @@
 import os
 import json
 from dotenv import load_dotenv
+from sqlalchemy.engine.url import URL
 
 # Load environment variables
 load_dotenv()
@@ -11,8 +12,18 @@ API_HASH = os.getenv("TELEGRAM_API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_GROUP_IDS = json.loads(os.getenv("ALLOWED_GROUP_IDS", "[]"))
 
+# Database Configuration
+DB_URL = URL.create(
+    drivername="postgresql",
+    username=os.getenv("POSTGRES_USER"),
+    password=os.getenv("POSTGRES_PASSWORD"),
+    host=os.getenv("POSTGRES_HOST"),
+    port=os.getenv("POSTGRES_PORT"),
+    database=os.getenv("POSTGRES_DATABASE")
+)
+
 # Bot Behavior Configuration
-OFFLINE_CHANCE = float(os.getenv("OFFLINE_CHANCE", "0.8"))  # 10% chance to go offline
+# OFFLINE_CHANCE = float(os.getenv("OFFLINE_CHANCE", "0.8"))  # 10% chance to go offline
 MIN_OFFLINE_TIME = 180  # 3 minutes in seconds
 MAX_OFFLINE_TIME = 3600  # 1 hour in seconds
 MIN_ONLINE_TIME = 100  # 100 seconds minimum online time
