@@ -7,10 +7,10 @@ from google.adk.sessions import DatabaseSessionService
 from agent.agent import root_agent
 
 from bot.config.settings import API_ID, API_HASH, BOT_TOKEN, DB_URL
-from bot.utils.chat_history import ChatHistoryManager
 from bot.utils.bot_state import BotState
 from bot.handlers.commands import CommandHandler
 from bot.handlers.message_handler import MessageHandler
+from bot.services.database_service import DatabaseService
 
 # Configure logging
 logging.basicConfig(
@@ -22,8 +22,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-chat_history_manager = ChatHistoryManager()
 
 async def main():
     if not all([API_ID, API_HASH, BOT_TOKEN]):
@@ -37,11 +35,19 @@ async def main():
         app_name="dom",
         session_service=session_service,
     )
-    command_handler = CommandHandler(chat_history_manager, bot_state)
-    message_handler = MessageHandler(chat_history_manager, bot_state, command_handler, runner, session_service)
+    command_handler = CommandHandler(bot_state, session_service)
+    message_handler = MessageHandler(bot_state, command_handler, runner, session_service)
+    
+    # Initialize database service and start state checker
+    db_service = DatabaseService()
+    db_service.message_handler = message_handler  # Add message handler to database service
+    state_checker_task = asyncio.create_task(db_service.start_state_checker())
     
     # Create the client
     client = TelegramClient('bot_session', API_ID, API_HASH)
+    
+    # Add client to message handler
+    message_handler.client = client
     
     # Register event handlers
     @client.on(events.NewMessage(pattern='/start'))
@@ -64,7 +70,20 @@ async def main():
     async def sleep_handler(event):
         await command_handler.handle_sleep(event)
     
-    @client.on(events.NewMessage())
+    list_to_patterns_to_exclude = [
+        '/start',
+        '/history',
+        '/clear',
+        '/urgent',
+        '/sleep',
+        '/urgent',
+        '/',
+    ]
+    
+    async def filter(event):
+        return event.message.text not in list_to_patterns_to_exclude
+    
+    @client.on(events.NewMessage(func=filter))
     async def incoming_message_handler(event):
         await message_handler.handle_message(event)
     
@@ -73,14 +92,21 @@ async def main():
     await client.start(bot_token=BOT_TOKEN)
     logger.info("Bot is running...")
     
-    # Keep the bot running
-    await client.run_until_disconnected()
+    try:
+        # Keep the bot running
+        await client.run_until_disconnected()
+    finally:
+        # Clean up
+        state_checker_task.cancel()
+        try:
+            await state_checker_task
+        except asyncio.CancelledError:
+            pass
+        db_service.close()
+        logger.info("Bot and state checker stopped")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
-        logger.info("Saving chat history before exit...")
-        chat_history_manager.save_history()
-        logger.info("Chat history saved successfully.")

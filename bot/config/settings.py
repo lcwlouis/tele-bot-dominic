@@ -29,7 +29,7 @@ MAX_OFFLINE_TIME = 3600  # 1 hour in seconds
 MIN_ONLINE_TIME = 100  # 100 seconds minimum online time
 MAX_ONLINE_TIME = 900  # 10 minutes maximum online time
 MIN_RESPONSE_DELAY = 3  # 3 seconds
-MAX_RESPONSE_DELAY = 12  # 12 seconds
+MAX_RESPONSE_DELAY = 8  # 12 seconds
 MAX_HISTORY_LENGTH = 100  # Maximum number of messages to keep in history
 HISTORY_FILE = "chat_history.json"  # File to store chat histories 
 
