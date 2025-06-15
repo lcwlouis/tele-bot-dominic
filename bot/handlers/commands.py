@@ -1,16 +1,16 @@
 import logging
-from datetime import datetime
-from bot.config.settings import ALLOWED_GROUP_IDS, MAX_HISTORY_LENGTH
+from bot.config.settings import ALLOWED_GROUP_IDS
 from .message_handler import MessageHandler
-
+from bot.utils.bot_state import BotState
+from google.adk.sessions import DatabaseSessionService
 
 
 logger = logging.getLogger(__name__)
 
 class CommandHandler:
-    def __init__(self, chat_history_manager, bot_state):
-        self.chat_history_manager = chat_history_manager
+    def __init__(self, bot_state: BotState, session_service: DatabaseSessionService):
         self.bot_state = bot_state
+        self.session_service = session_service
 
     async def is_allowed_chat(self, chat_id: int) -> bool:
         """Check if the chat is in the whitelist."""
@@ -32,28 +32,60 @@ class CommandHandler:
             await event.respond("Sorry, I'm not allowed to participate in this chat.")
             return
         
-        history = self.chat_history_manager.get_recent_history(chat_id, MAX_HISTORY_LENGTH)
-        
-        if not history:
-            await event.respond("No recent messages in the chat history.")
-            return
-        
-        # Format the history with timestamps
-        history_text = "📜 Recent messages in this chat:\n\n"
-        for msg in history:
-            formatted_time = msg['timestamp']
-            user_mention = f"@{msg['username']}" if msg.get('username') else msg['user']
-            history_text += f"[{formatted_time}] {user_mention}: {msg['message']}\n"
-        
-        # Add to chat history
-        self.chat_history_manager.add_message(
-            chat_id=chat_id,
-            user="Dom",
-            username="domthebuilderbot",
-            message=history_text
-        )
-        
-        await event.respond(history_text)
+        try:
+            # Get session for this chat
+            session_id = f"chat_{chat_id}"
+            try:
+                sessions = await self.session_service.list_sessions(
+                    app_name="dom",
+                    user_id=chat_id,
+                )
+                if not sessions.sessions:
+                    await event.respond("No chat history found.")
+                    return
+                session = sessions.sessions[0]
+            except Exception as e:
+                logger.error(f"Error getting session: {e}")
+                await event.respond("No chat history found.")
+                return
+
+            # Get session details
+            session_object = await self.session_service.get_session(
+                app_name="dom",
+                user_id=chat_id,
+                session_id=session.id,
+            )
+
+            if not session_object.events:
+                await event.respond("No chat history found.")
+                return
+
+            # Format the history
+            history_text = "📜 Recent messages in this chat:\n\n"
+            for session_event in session_object.events[-20:]:  # Show last 20 messages
+                if session_event.author == "user":
+                    # Extract just the text portion from the content
+                    content_text = session_event.content.parts[0].text if hasattr(session_event.content, 'parts') else session_event.content
+                    history_text += f"User: {content_text}\n"
+                elif session_event.author == "dom":
+                    # Extract just the text portion from the content
+                    # Handle multiple parts if they exist
+                    if hasattr(session_event.content, 'parts'):
+                        content_texts = []
+                        for part in session_event.content.parts:
+                            if hasattr(part, 'text'):
+                                content_texts.append(part.text)
+                        content_text = "\n".join(content_texts)
+                    else:
+                        content_text = session_event.content
+                    
+                    print(f"content_text: {content_text}")
+                    history_text += f"Dom: {content_text.replace("%next_message%", "\n").replace("%no_response%", "")}\n"
+
+            await event.respond(history_text)
+        except Exception as e:
+            logger.error(f"Error getting chat history: {e}")
+            await event.respond("Sorry, I encountered an error while retrieving the chat history.")
 
     async def handle_clear(self, event):
         """Handle the /clear command to clear chat history."""
@@ -62,11 +94,43 @@ class CommandHandler:
             await event.respond("Sorry, I'm not allowed to participate in this chat.")
             return
         
-        if self.chat_history_manager.clear_history(chat_id):
+        try:
+            # Get session for this chat
+            session_id = f"chat_{chat_id}"
+            try:
+                sessions = await self.session_service.list_sessions(
+                    app_name="dom",
+                    user_id=chat_id,
+                )
+                if not sessions.sessions:
+                    await event.respond("No chat history to clear.")
+                    return
+                # session = sessions.sessions[0]
+                if len(sessions.sessions) > 0:
+                    session_oldest = sessions.sessions[-1]
+                    # Delete the oldest session
+                    await self.session_service.delete_session(
+                        app_name="dom",
+                        user_id=chat_id,
+                        session_id=session_oldest.id,
+                    )
+                else:
+                    await event.respond("No chat history to clear.")
+            except Exception as e:
+                logger.error(f"Error getting session: {e}")
+                await event.respond("No chat history to clear.")
+                return
+
+            # Create a new session to clear history
+            await self.session_service.create_session(
+                app_name="dom",
+                user_id=chat_id,
+                session_id=session_id,
+            )
             await event.respond("Chat history has been cleared.")
-            logger.info(f"Chat history cleared for chat ID: {chat_id}")
-        else:
-            await event.respond("No chat history to clear.")
+        except Exception as e:
+            logger.error(f"Error clearing chat history: {e}")
+            await event.respond("Sorry, I encountered an error while clearing the chat history.")
 
     async def handle_urgent(self, event, message_handler: MessageHandler):
         """Handle the /urgent command to force the bot back online."""
@@ -75,9 +139,9 @@ class CommandHandler:
             await event.respond("Sorry, I'm not allowed to participate in this chat.")
             return
         
-        if self.bot_state.is_offline:
+        if self.bot_state.is_offline(chat_id):
             # Force bot back online
-            queued_messages = self.bot_state.force_online()
+            queued_messages = await self.bot_state.force_online(chat_id)
             
             if queued_messages:
                 await event.respond("I'm back online! What's up? Let's catch up on the messages I missed")
@@ -105,7 +169,7 @@ class CommandHandler:
 
         try:
             duration = self.bot_state.parse_sleep_duration(parts[1])
-            self.bot_state.set_sleep(duration)
+            self.bot_state.set_sleep(chat_id, duration)
             
             # Format the duration for display
             if duration < 60:

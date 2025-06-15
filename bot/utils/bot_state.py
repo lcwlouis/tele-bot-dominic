@@ -3,122 +3,84 @@ import asyncio
 from datetime import datetime, timedelta
 import logging
 from bot.config.settings import MIN_OFFLINE_TIME, MAX_OFFLINE_TIME, MAX_ONLINE_TIME, MIN_ONLINE_TIME
+from bot.services.database_service import DatabaseService
 
 logger = logging.getLogger(__name__)
 
 class BotState:
     def __init__(self):
-        self.is_offline = False
-        self.offline_until = None
-        self.message_queue = []
-        self.message_buffer = {}  # chat_id -> list of messages
-        self.last_response_time = None
-        self.processing_delay_until = {}  # chat_id -> datetime
-        self.is_sleeping = False  # New state for sleep mode
-        self.sleep_until = None  # When to wake up from sleep
-        # Initialize the first online period
-        current_time = datetime.now()
-        online_time = int(random.triangular(MIN_ONLINE_TIME, MAX_ONLINE_TIME, MAX_ONLINE_TIME - (MAX_ONLINE_TIME - MIN_ONLINE_TIME) * 0.2))
-        self.online_until = current_time + timedelta(seconds=online_time)
-        logger.info(f"Bot initialized and will be online until: {self.online_until}")
+        self.db = DatabaseService()
 
-    def add_to_buffer(self, chat_id: str, message: dict):
-        """Add a message to the buffer for a specific chat."""
-        if chat_id not in self.message_buffer:
-            self.message_buffer[chat_id] = []
-        self.message_buffer[chat_id].append(message)
-        logger.info(f"Message added to buffer for chat {chat_id}. Buffer size: {len(self.message_buffer[chat_id])}")
-
-    def get_buffer(self, chat_id: str) -> list:
-        """Get and clear the message buffer for a specific chat."""
-        messages = self.message_buffer.get(chat_id, [])
-        self.message_buffer[chat_id] = []
-        return messages
-
-    def has_buffered_messages(self, chat_id: str) -> bool:
-        """Check if there are any buffered messages for a chat."""
-        return len(self.message_buffer.get(chat_id, [])) > 0
+    def is_online(self, chat_id: str) -> bool:
+        """Check if the bot is online for a specific chat."""
+        return self.db.is_chat_online(str(chat_id))
+    
+    def is_sleeping(self, chat_id: str) -> bool:
+        """Check if the bot is sleeping for a specific chat."""
+        return self.db.is_chat_sleeping(str(chat_id))
+    
+    def is_offline(self, chat_id: str) -> bool:
+        """Check if the bot is offline for a specific chat."""
+        return self.db.is_chat_offline(str(chat_id))
 
     def set_processing_delay(self, chat_id: str, delay_seconds: int):
         """Set a processing delay for a specific chat."""
-        self.processing_delay_until[chat_id] = datetime.now() + timedelta(seconds=delay_seconds)
-        logger.info(f"Set processing delay for chat {chat_id} until {self.processing_delay_until[chat_id]}")
+        delay_until = datetime.now() + timedelta(seconds=delay_seconds)
+        self.db.set_processing_delay(str(chat_id), delay_until)
+        logger.info(f"Set processing delay for chat {chat_id} until {delay_until}")
+        return delay_until
 
     def is_in_processing_delay(self, chat_id: str) -> bool:
         """Check if a chat is currently in processing delay."""
-        if chat_id not in self.processing_delay_until:
+        delay_until = self.db.get_processing_delay(str(chat_id))
+        if not delay_until:
             return False
-        return datetime.now() < self.processing_delay_until[chat_id]
+        return datetime.now() < delay_until
 
     def clear_processing_delay(self, chat_id: str):
         """Clear the processing delay for a specific chat."""
-        if chat_id in self.processing_delay_until:
-            del self.processing_delay_until[chat_id]
-            logger.info(f"Cleared processing delay for chat {chat_id}")
+        self.db.clear_processing_delay(str(chat_id))
+        logger.info(f"Cleared processing delay for chat {chat_id}")
 
-    async def should_process_message(self, chat_id: int) -> bool:
-        """Determine if the bot should process messages in this chat."""
-        current_time = datetime.now()
-        
-        # If bot is sleeping, only wake up if sleep time is over
-        if self.is_sleeping:
-            if current_time >= self.sleep_until:
-                self.is_sleeping = False
-                self.is_offline = False
-                # Set the next online period
-                online_time = int(random.triangular(MIN_ONLINE_TIME, MAX_ONLINE_TIME, MAX_ONLINE_TIME - (MAX_ONLINE_TIME - MIN_ONLINE_TIME) * 0.2))
-                self.online_until = current_time + timedelta(seconds=online_time)
-                logger.info(f"Bot woke up from sleep and is now online until: {self.online_until}")
-                return True
-            return False
-        
-        # If bot is offline, check if it's time to come back online
-        if self.is_offline:
-            logger.info(f"Current time: {current_time}, Offline until: {self.offline_until}")
-            if current_time >= self.offline_until:
-                self.is_offline = False
-                # Set the next online period
-                online_time = int(random.triangular(MIN_ONLINE_TIME, MAX_ONLINE_TIME, MAX_ONLINE_TIME - (MAX_ONLINE_TIME - MIN_ONLINE_TIME) * 0.2))
-                self.online_until = current_time + timedelta(seconds=online_time)
-                logger.info(f"Bot is now online until: {self.online_until}")
-                return True
-            return False
-        
-        # If bot is online, check if it's time to go offline
-        if self.online_until and current_time >= self.online_until:
-            offline_time = random.randint(MIN_OFFLINE_TIME, MAX_OFFLINE_TIME)
-            logger.info(f"Going offline for {offline_time} seconds.")
-            self.is_offline = True
-            self.offline_until = current_time + timedelta(seconds=offline_time)
-            logger.info(f"Bot will be offline until: {self.offline_until}")
-            # Start the offline timer task
-            asyncio.create_task(self.process_offline_timer(chat_id, offline_time))
-            return False
-        
-        return True
+    async def add_to_queued_messages(self, chat_id: str, message: str):
+        """Add a message to the queued messages for a specific chat."""
+        self.db.add_to_message_queue(str(chat_id), str(message))
+        logger.info(f"Message added to queued messages for chat {chat_id}")
 
-    async def process_offline_timer(self, chat_id: int, offline_time: int):
-        """Process the latest message after the offline timer expires."""
-        await asyncio.sleep(offline_time)
-        logger.info(f"Offline timer expired for chat ID {chat_id}. Processing queued messages...")
-        # Only process if we're still offline and this is the most recent timer
-        logger.info(f"Current offline state: {self.is_offline}, Time diff: {(self.offline_until - datetime.now()).total_seconds()}")
-        if self.is_offline and (self.offline_until - datetime.now()).total_seconds() < 5:
-            return True
-        return False
+    async def get_queued_messages(self, chat_id: str) -> str:
+        """Get the queued messages for a specific chat."""
+        return self.db.get_message_queue(str(chat_id))
 
-    def force_online(self):
-        """Force the bot back online."""
-        self.is_offline = False
-        self.is_sleeping = False  # Also wake up from sleep
-        self.offline_until = None
-        self.sleep_until = None
-        # Set a new online period when forcing online
+    async def clear_queued_messages(self, chat_id: str):
+        """Clear the queued messages for a specific chat."""
+        self.db.clear_message_queue(str(chat_id))
+        logger.info(f"Cleared queued messages for chat {chat_id}")
+
+    def set_sleep(self, chat_id: str, duration_seconds: int):
+        """Set the bot to sleep mode for the specified duration for a specific chat."""
+        sleep_until = datetime.now() + timedelta(seconds=duration_seconds)
+        self.db.set_chat_state(
+            str(chat_id),
+            is_sleeping=True,
+            sleep_until=sleep_until,
+            is_offline=True  # Also set offline to prevent message processing
+        )
+        logger.info(f"Bot is now sleeping for chat {chat_id} until: {sleep_until}")
+
+    async def force_online(self, chat_id: str):
+        """Force the bot back online for a specific chat."""
         current_time = datetime.now()
         online_time = int(random.triangular(MIN_ONLINE_TIME, MAX_ONLINE_TIME, MAX_ONLINE_TIME - (MAX_ONLINE_TIME - MIN_ONLINE_TIME) * 0.2))
-        self.online_until = current_time + timedelta(seconds=online_time)
-        logger.info(f"Bot forced online until: {self.online_until}")
-        return self.message_queue.copy()
+        self.db.set_chat_state(
+            str(chat_id),
+            is_sleeping=False,
+            sleep_until=None,
+            is_offline=False,
+            offline_until=None,
+            online_until=current_time + timedelta(seconds=online_time)
+        )
+        logger.info(f"Bot forced online for chat {chat_id}")
+        return await self.get_queued_messages(chat_id)
 
     def parse_sleep_duration(self, duration_str: str) -> int:
         """Parse sleep duration string into seconds.
@@ -144,9 +106,6 @@ class BotState:
         except (ValueError, IndexError) as e:
             raise ValueError(f"Invalid duration format. Use format: <number><unit> (e.g., 30s, 5m, 2h, 1d)")
 
-    def set_sleep(self, duration_seconds: int):
-        """Set the bot to sleep mode for the specified duration."""
-        self.is_sleeping = True
-        self.is_offline = True  # Also set offline to prevent message processing
-        self.sleep_until = datetime.now() + timedelta(seconds=duration_seconds)
-        logger.info(f"Bot is now sleeping until: {self.sleep_until}") 
+    def close(self):
+        """Close the database connection."""
+        self.db.close() 
