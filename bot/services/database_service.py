@@ -131,6 +131,14 @@ class DatabaseService:
             current_time = datetime.now()
             session.refresh(chat_state)
 
+            # Handle sleep state transition
+            if chat_state.is_sleeping and chat_state.sleep_until and current_time >= chat_state.sleep_until:
+                logger.info(f"Chat {chat_id} sleep period ended, transitioning to online")
+                chat_state.is_sleeping = False
+                chat_state.sleep_until = None
+                session.commit()
+                return False
+
             # Handle offline state transition
             if chat_state.is_offline and chat_state.offline_until and current_time >= chat_state.offline_until:
                 logger.info(f"Chat {chat_id} offline period ended, transitioning to online")
