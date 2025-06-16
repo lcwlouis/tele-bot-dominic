@@ -126,6 +126,10 @@ class CommandHandler:
                 app_name="dom",
                 user_id=chat_id,
                 session_id=session_id,
+                state={
+                    "individualisation_prompts": [],
+                    "summary": "",
+                }
             )
             await event.respond("Chat history has been cleared.")
         except Exception as e:
