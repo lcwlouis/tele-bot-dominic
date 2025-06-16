@@ -70,6 +70,10 @@ async def main():
     async def sleep_handler(event):
         await command_handler.handle_sleep(event)
     
+    @client.on(events.NewMessage(pattern='/status'))
+    async def status_handler(event):
+        await command_handler.handle_status(event)
+    
     list_to_patterns_to_exclude = [
         '/start',
         '/history',

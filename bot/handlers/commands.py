@@ -183,4 +183,29 @@ class CommandHandler:
             
             await event.respond(f"I'm going to sleep for {display_duration}. Use /urgent to wake me up if needed.")
         except ValueError as e:
-            await event.respond(str(e)) 
+            await event.respond(str(e))
+
+    async def handle_status(self, event):
+        """Handle the /status command to check if the bot is offline and show last seen time."""
+        chat_id = event.chat_id
+        if not await self.is_allowed_chat(chat_id):
+            await event.respond("Sorry, I'm not allowed to participate in this chat.")
+            return
+        
+        status_message = self.bot_state.get_status(str(chat_id))
+        await event.respond(status_message)
+
+    def _format_time_delta(self, time_diff):
+        """Format a timedelta into a human-readable string."""
+        total_seconds = int(time_diff.total_seconds())
+        if total_seconds < 60:
+            return f"{total_seconds} seconds"
+        elif total_seconds < 3600:
+            minutes = total_seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''}"
+        elif total_seconds < 86400:
+            hours = total_seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''}"
+        else:
+            days = total_seconds // 86400
+            return f"{days} day{'s' if days != 1 else ''}" 

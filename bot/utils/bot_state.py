@@ -1,8 +1,7 @@
 import random
-import asyncio
 from datetime import datetime, timedelta
 import logging
-from bot.config.settings import MIN_OFFLINE_TIME, MAX_OFFLINE_TIME, MAX_ONLINE_TIME, MIN_ONLINE_TIME
+from bot.config.settings import MAX_ONLINE_TIME, MIN_ONLINE_TIME
 from bot.services.database_service import DatabaseService
 
 logger = logging.getLogger(__name__)
@@ -108,4 +107,39 @@ class BotState:
 
     def close(self):
         """Close the database connection."""
-        self.db.close() 
+        self.db.close()
+
+    def is_chat_online(self, chat_id: str) -> bool:
+        """Check if a chat is online and handle state transitions."""
+        logger.info(f"Checking if chat {chat_id} is online")
+        return not self.is_offline(chat_id) and not self.is_sleeping(chat_id)
+
+    def get_status(self, chat_id: str) -> str:
+        """Get the status of a chat."""
+        if self.is_chat_online(chat_id):
+            return "I'm online and ready to chat!"
+        elif self.is_sleeping(chat_id):
+            return "I'm currently sleeping. I'll be back soon!"
+        elif self.is_offline(chat_id):
+            return "I'm currently offline. I'll be back soon!"
+        else:
+            return "I'm currently offline. I'll be back soon!"
+
+    def _format_time_delta(self, time_diff):
+        """Format a timedelta into a human-readable string."""
+        total_seconds = int(time_diff.total_seconds())
+        if total_seconds < 60:
+            return f"{total_seconds} seconds"
+        elif total_seconds < 3600:
+            minutes = total_seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''}"
+        elif total_seconds < 86400:
+            hours = total_seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''}"
+        else:
+            days = total_seconds // 86400
+            return f"{days} day{'s' if days != 1 else ''}"
+
+    async def start_state_checker(self):
+        # Implementation of start_state_checker method
+        pass 
