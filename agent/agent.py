@@ -40,11 +40,10 @@ def after_model_addTeleInfo_callback(callback_context: CallbackContext, llm_resp
     print(f"llm_response: {llm_response}")
     llm_response.content.parts[0].text = f"[{datetime.now().strftime('%d-%m-%Y %I:%M %p')}] Dom (@domthebuilderbot): {llm_response.content.parts[0].text}"
     return None
-    
 
 root_agent = Agent(
-    # model="gemini-2.0-flash",
-    model="gemini-2.0-flash-lite",
+    model="gemini-2.0-flash",
+    # model="gemini-2.0-flash-lite",
     # model="gemini-2.5-flash-preview-04-17",
     # model="gemini-2.5-flash-preview-05-20"
     name="dom",
