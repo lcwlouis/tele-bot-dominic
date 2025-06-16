@@ -120,6 +120,7 @@ class MessageHandler:
                 # Get response from agent using runner
                 logger.info("Getting response from agent...")
                 response_content = None
+                event_response = None
                 
                 # Clear queued messages
                 await self.bot_state.clear_queued_messages(chat_id)
@@ -133,6 +134,7 @@ class MessageHandler:
                     logger.info(f"Event response received: {event_response}")
                     if event_response.is_final_response():
                         logger.debug(f"Event response received: {event_response.content}")
+                        event_response = event_response
                         response_content = event_response.content
                         break
                 
@@ -159,6 +161,39 @@ class MessageHandler:
                             await asyncio.sleep(random.triangular(1, 3, 2))
                     # Clear the processing delay
                     self.bot_state.clear_processing_delay(chat_id)
+                    input_tokens = event_response.usage_metadata.prompt_token_count
+                    print(f"Current Input Tokens used: {input_tokens}")
+                    # If prompt tokens more than 2500 we will send the current history to an agent to summarise and generate the individualisation prompts
+                    # and delete the current session and create a new one replacing it with default state that includes the individualisation prompts
+                    # and short summary of the history
+                    if input_tokens > 4000:
+                        # Get the history
+                        history = await self.session_service.get_session(
+                            app_name="dom",
+                            user_id=chat_id,
+                            session_id=session_id,
+                        )
+                        # To implement: Send the history to an agent to summarise and generate the individualisation prompts
+                        
+                        # Delete the current session
+                        await self.session_service.delete_session(
+                            app_name="dom",
+                            user_id=chat_id,
+                            session_id=session_id,
+                        )
+                        
+                        default_state = {
+                            "individualisation_prompts": [],
+                            "summary": "",
+                        }
+                        
+                        # Create a new session with the default state
+                        await self.session_service.create_session(
+                            app_name="dom",
+                            user_id=chat_id,
+                            session_id=session_id,
+                            state=default_state,
+                        )
                 else:
                     raise Exception("No response received from agent")
                     
