@@ -3,12 +3,14 @@ import asyncio
 import logging
 from datetime import datetime
 import uuid
-from bot.config.settings import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY
+from bot.config.settings import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY, SUMMARISING_AGENT_TOKEN_THRESHOLD
 from google.adk.runners import Runner
 from google.adk.sessions import DatabaseSessionService
 from google.genai import types
 from google.adk.events import Event
 from bot.utils.bot_state import BotState
+from summarising_agent.agent import summarising_agent
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,10 @@ class MessageHandler:
                     app_name="dom",
                     user_id=chat_id,
                     session_id=session_id,
+                    state={
+                        "individualisation_prompts": [],
+                        "summary": "",
+                    }
                 )
 
             # As long as chat is not sleeping, we add the message to the queued messages
@@ -162,38 +168,10 @@ class MessageHandler:
                     # Clear the processing delay
                     self.bot_state.clear_processing_delay(chat_id)
                     input_tokens = event_response.usage_metadata.prompt_token_count
-                    print(f"Current Input Tokens used: {input_tokens}")
-                    # If prompt tokens more than 2500 we will send the current history to an agent to summarise and generate the individualisation prompts
-                    # and delete the current session and create a new one replacing it with default state that includes the individualisation prompts
-                    # and short summary of the history
-                    if input_tokens > 4000:
-                        # Get the history
-                        history = await self.session_service.get_session(
-                            app_name="dom",
-                            user_id=chat_id,
-                            session_id=session_id,
-                        )
-                        # To implement: Send the history to an agent to summarise and generate the individualisation prompts
-                        
-                        # Delete the current session
-                        await self.session_service.delete_session(
-                            app_name="dom",
-                            user_id=chat_id,
-                            session_id=session_id,
-                        )
-                        
-                        default_state = {
-                            "individualisation_prompts": [],
-                            "summary": "",
-                        }
-                        
-                        # Create a new session with the default state
-                        await self.session_service.create_session(
-                            app_name="dom",
-                            user_id=chat_id,
-                            session_id=session_id,
-                            state=default_state,
-                        )
+                    logger.info(f"Current Input Tokens used: {input_tokens}")
+                    # If input tokens more than the threshold, we will summarise the session
+                    if input_tokens > SUMMARISING_AGENT_TOKEN_THRESHOLD:
+                        await self._handle_session_summary(chat_id, session_id)
                 else:
                     raise Exception("No response received from agent")
                     
@@ -230,9 +208,13 @@ class MessageHandler:
             event = chat_id_or_event
             chat_id = str(event.chat_id)
             
-        if not await self.command_handler.is_allowed_chat(int(chat_id)):
-            await event.respond("Sorry, I'm not allowed to participate in this chat.")
-            logger.info(f"Chat {chat_id} is not allowed, skipping message processing")
+        try:
+            if not await self.command_handler.is_allowed_chat(int(chat_id)):
+                await event.respond("Sorry, I'm not allowed to participate in this chat.")
+                logger.info(f"Chat {chat_id} is not allowed, skipping message processing")
+                return
+        except Exception as e:
+            logger.error(f"Error checking chat access: {e}")
             return
         
         # Check if chat is sleeping
@@ -289,6 +271,7 @@ class MessageHandler:
                 logger.info(f"Event response received: {event_response}")
                 if event_response.is_final_response():
                     logger.debug(f"Event response received: {event_response.content}")
+                    event_response = event_response
                     response_content = event_response.content
                     break
             
@@ -313,6 +296,111 @@ class MessageHandler:
                         logger.info(f"Response sent successfully: {msg.strip()}")
                         # Add a small delay between messages to make it feel more natural
                         await asyncio.sleep(random.triangular(1, 3, 2))
+                # Check if we need to summarise the session
+                input_tokens = event_response.usage_metadata.prompt_token_count
+                logger.info(f"Current Input Tokens used: {input_tokens}")
+                if input_tokens > SUMMARISING_AGENT_TOKEN_THRESHOLD:
+                    await self._handle_session_summary(chat_id, session_id)
             else:
                 raise Exception("No response received from agent")
         logger.info("=== After Idling / Urgent Messages Processing Complete ===\n")
+
+    async def _handle_session_summary(self, chat_id: str, session_id: str):
+        """Handle session summarization when token count exceeds threshold.
+        
+        Args:
+            chat_id: The chat ID
+            session_id: The session ID to summarize
+        """
+        # Get the history
+        history = await self.session_service.get_session(
+            app_name="dom",
+            user_id=chat_id,
+            session_id=session_id,
+        )
+        # Build the history string
+        history_string = "📜 Recent messages in this chat:\n\n"
+        for historyEvent in history.events:
+            if historyEvent.author == "user":
+                # Extract just the text portion from the content
+                content_text = historyEvent.content.parts[0].text if hasattr(historyEvent.content, 'parts') else historyEvent.content
+                history_string += f"User(s): {content_text}\n"
+            elif historyEvent.author == "dom":
+                # Handle multiple parts if they exist
+                if hasattr(historyEvent.content, 'parts'):
+                    content_texts = []
+                    for part in historyEvent.content.parts:
+                        if hasattr(part, 'text'):
+                            content_texts.append(part.text)
+                    content_text = "\n".join(content_texts)
+                else:
+                    content_text = historyEvent.content
+                history_string += f"Dom: {content_text.replace('%next_message%', '\n').replace('%no_response%', '')}\n"
+        
+        # Send the history to an agent to summarise and generate the individualisation prompts
+        self_destruct_session_id = f"self_destruct_{chat_id}"
+        summarising_agent_runner = Runner(
+            agent=summarising_agent,
+            app_name="summarising_agent",
+            session_service=self.session_service,
+        )
+        await self.session_service.delete_session(
+            app_name="summarising_agent",
+            user_id=chat_id,
+            session_id=self_destruct_session_id,
+        )
+        session = await self.session_service.create_session(
+            app_name="summarising_agent",
+            user_id=chat_id,
+            session_id=self_destruct_session_id,
+        )
+        async for event_response in summarising_agent_runner.run_async(
+            user_id=chat_id,
+            session_id=self_destruct_session_id,
+            new_message=types.Content(role="user", parts=[types.Part(text=history_string)]),
+        ):
+            if event_response.is_final_response():
+                summary = event_response.content.parts[0].text
+                # This is a json string, we need to parse it according to the pydantic model defined in the agent
+                summary = json.loads(summary)
+                logger.info(f"Summary: {summary['summary']}")
+                logger.info(f"User information: {summary['user_information']}")
+                break
+
+        # Delete the summarising agent session
+        await self.session_service.delete_session(
+            app_name="summarising_agent",
+            user_id=chat_id,
+            session_id=self_destruct_session_id,
+        )
+        
+        # Delete the current session
+        await self.session_service.delete_session(
+            app_name="dom",
+            user_id=chat_id,
+            session_id=session_id,
+        )
+        
+        individualisation_prompts = []
+        # Build user information prompts into a string
+        for user_information in summary['user_information']:
+            user_info = f"Telegram Handle: {user_information['telegram_handle']}\n"
+            user_info += f"Telegram Name: {user_information['telegram_name']}\n"
+            user_info += f"Preferred Name: {user_information['preferred_name']}\n"
+            user_info += f"Habits and Style: {user_information['habits_and_style']}\n"
+            user_info += f"Communication Preferences: {user_information['communication_preferences']}\n"
+            user_info += f"Special Notes: {user_information['special_notes']}\n"
+            individualisation_prompts.append(user_info)
+        
+        default_state = {
+            "individualisation_prompts": individualisation_prompts,
+            "summary": summary['summary'],
+        }
+        
+        # Create a new session with the default state
+        await self.session_service.create_session(
+            app_name="dom",
+            user_id=chat_id,
+            session_id=session_id,
+            state=default_state,
+        )
