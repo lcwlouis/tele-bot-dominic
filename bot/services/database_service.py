@@ -6,7 +6,7 @@ import asyncio
 from sqlalchemy import create_engine, Column, String, DateTime, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from bot.config.settings import DB_URL, MIN_ONLINE_TIME, MAX_ONLINE_TIME
+from bot.config.settings import DB_URL, MIN_ONLINE_TIME, MAX_ONLINE_TIME, DEV_MODE, DEV_CHAT_ID
 
 logger = logging.getLogger(__name__)
 Base = declarative_base()
@@ -118,7 +118,9 @@ class DatabaseService:
 
     def is_chat_offline(self, chat_id: str) -> bool:
         """Check if a chat is offline and handle state transitions."""
-        # logger.info(f"Checking if chat {chat_id} is offline")
+        if DEV_MODE and int(chat_id) != DEV_CHAT_ID:
+            logger.info(f"Skipping offline check for chat {chat_id} in dev mode")
+            return False
         with self.Session() as session:
             chat_state = session.query(ChatState).filter(ChatState.chat_id == chat_id).first()
             if not chat_state:
