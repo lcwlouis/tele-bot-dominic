@@ -12,6 +12,10 @@ API_HASH = os.getenv("TELEGRAM_API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_GROUP_IDS = json.loads(os.getenv("ALLOWED_GROUP_IDS", "[]"))
 
+# Dev Mode Configuration
+DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
+DEV_CHAT_ID = int(os.getenv("DEV_CHAT_ID", "0")) if os.getenv("DEV_CHAT_ID") else None
+
 # Database Configuration
 DB_URL = URL.create(
     drivername="postgresql",

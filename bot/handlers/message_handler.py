@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime
 import uuid
-from bot.config.settings import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY, SUMMARISING_AGENT_TOKEN_THRESHOLD
+from bot.config.settings import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY, SUMMARISING_AGENT_TOKEN_THRESHOLD, DEV_MODE, DEV_CHAT_ID, SARCASTIC_LEVEL, PLAYFUL_LEVEL, HUMOR_LEVEL, FORMALITY_LEVEL, EMPATHY_LEVEL, ENTHUSIASM_LEVEL, SINGLISH_LEVEL, EMOJI_LEVEL
 from google.adk.runners import Runner
 from google.adk.sessions import DatabaseSessionService
 from google.genai import types
@@ -25,6 +25,8 @@ class MessageHandler:
     async def handle_message(self, event):
         """Handle incoming messages."""
         logger.info(f"\n=== New Message Received from {event.chat_id} at {datetime.now().strftime('%d-%m-%Y %I:%M %p')} ===")
+        if DEV_MODE:
+            logger.info(f"DEV MODE ACTIVE - Only chat {DEV_CHAT_ID} is allowed")
         chat_id = str(event.chat_id)
         if not await self.command_handler.is_allowed_chat(int(chat_id)):
             await event.respond("Sorry, I'm not allowed to participate in this chat.")
@@ -83,7 +85,15 @@ class MessageHandler:
                     session_id=session_id,
                     state={
                         "individualisation_prompts": [],
-                        "summary": "",
+                        "summary": "No summary available",
+                        "sarcasm_level": SARCASTIC_LEVEL,
+                        "playfulness_level": PLAYFUL_LEVEL,
+                        "humor_level": HUMOR_LEVEL,
+                        "formality_level": FORMALITY_LEVEL,
+                        "empathy_level": EMPATHY_LEVEL,
+                        "enthusiasm_level": ENTHUSIASM_LEVEL,
+                        "singlish_level": SINGLISH_LEVEL,
+                        "emoji_level": EMOJI_LEVEL,
                     }
                 )
 
@@ -91,7 +101,7 @@ class MessageHandler:
             message_id = event.message.id
             reply_to_id = event.message.reply_to_msg_id if hasattr(event.message, 'reply_to_msg_id') else None
             new_message = f"[{datetime.now().strftime('%d-%m-%Y %I:%M %p')}] {sender.first_name if sender else 'Unknown User'} (@{sender.username if sender else 'Unknown Username'}) [msg_id:{message_id}{f' reply_to:{reply_to_id}' if reply_to_id else ''}]: {message_text}"
-            await self.bot_state.add_to_queued_messages(chat_id, new_message)
+            self.bot_state.add_to_queued_messages(chat_id, new_message)
             
             # Check if chat is offline
             if self.bot_state.is_offline(chat_id):
@@ -114,7 +124,7 @@ class MessageHandler:
                 await asyncio.sleep(delay)
                 
                 # Get queued messages
-                queued_messages = await self.bot_state.get_queued_messages(chat_id)
+                queued_messages = self.bot_state.get_queued_messages(chat_id)
                 print(f"queued_messages: {queued_messages}")
                 
                 # Create message object with context from queued messages
@@ -129,7 +139,7 @@ class MessageHandler:
                 event_response = None
                 
                 # Clear queued messages
-                await self.bot_state.clear_queued_messages(chat_id)
+                self.bot_state.clear_queued_messages(chat_id)
                 
                 # async with event.client.action(event.chat_id, 'typing'):
                 async for event_response in self.runner.run_async(
@@ -186,6 +196,8 @@ class MessageHandler:
         This will call the agent with all the new messages labeled under "New Messages:"
         """
         logger.info("\n=== Handling After Idling Messages ===")
+        if DEV_MODE:
+            logger.info(f"DEV MODE ACTIVE - Only chat {DEV_CHAT_ID} is allowed")
         
         # Handle both event and chat_id inputs
         if isinstance(chat_id_or_event, str):
@@ -228,7 +240,7 @@ class MessageHandler:
             return
 
         # Check if there are any messages in the queue
-        queued_messages = await self.bot_state.get_queued_messages(chat_id)
+        queued_messages = self.bot_state.get_queued_messages(chat_id)
         if not queued_messages:
             logger.info("No messages in queue, nothing to process")
             return
@@ -260,7 +272,7 @@ class MessageHandler:
         response_content = None
         
         # Clear queued messages
-        await self.bot_state.clear_queued_messages(chat_id)
+        self.bot_state.clear_queued_messages(chat_id)
         
         async with event.client.action(event.chat_id, 'typing'):
             async for event_response in self.runner.run_async(
@@ -319,7 +331,41 @@ class MessageHandler:
             session_id=session_id,
         )
         # Build the history string
-        history_string = "📜 Recent messages in this chat:\n\n"
+        # Get the summary
+        summary = history.state["summary"]
+        # Get the individualisation prompts
+        individualisation_prompts = history.state["individualisation_prompts"]
+        # Get the sarcasm level
+        sarcasm_level = history.state["sarcasm_level"]
+        # Get the playfulness level
+        playfulness_level = history.state["playfulness_level"]
+        # Get the humor level
+        humor_level = history.state["humor_level"]
+        # Get the formality level
+        formality_level = history.state["formality_level"]
+        # Get the empathy level
+        empathy_level = history.state["empathy_level"]
+        # Get the enthusiasm level
+        enthusiasm_level = history.state["enthusiasm_level"]
+        # Get the singlish level
+        singlish_level = history.state["singlish_level"]
+        # Get the emoji level
+        emoji_level = history.state["emoji_level"]
+        
+        # Build the history string
+        history_string = "This section is the current state of the agent:\n"
+        history_string += f"Summary: {summary}\n\n"
+        history_string += f"User information: {individualisation_prompts}\n\n"
+        history_string += f"Sarcasm level: {sarcasm_level}\n"
+        history_string += f"Playfulness level: {playfulness_level}\n"
+        history_string += f"Humor level: {humor_level}\n"
+        history_string += f"Formality level: {formality_level}\n"
+        history_string += f"Empathy level: {empathy_level}\n"
+        history_string += f"Enthusiasm level: {enthusiasm_level}\n"
+        history_string += f"Singlish level: {singlish_level}\n"
+        history_string += f"Emoji level: {emoji_level}\n"
+        
+        history_string += "\n\nThis section is the history of the conversation:\n"
         for historyEvent in history.events:
             if historyEvent.author == "user":
                 # Extract just the text portion from the content
@@ -395,6 +441,13 @@ class MessageHandler:
         default_state = {
             "individualisation_prompts": individualisation_prompts,
             "summary": summary['summary'],
+            "sarcasm_level": summary['sarcasm_level'],
+            "playfulness_level": summary['playfulness_level'],
+            "humor_level": summary['humor_level'],
+            "formality_level": summary['formality_level'],
+            "empathy_level": summary['empathy_level'],
+            "enthusiasm_level": summary['enthusiasm_level'],
+            "singlish_level": summary['singlish_level'],
         }
         
         # Create a new session with the default state

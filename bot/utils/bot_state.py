@@ -1,7 +1,7 @@
 import random
 from datetime import datetime, timedelta
 import logging
-from bot.config.settings import MAX_ONLINE_TIME, MIN_ONLINE_TIME
+from bot.config.settings import MAX_ONLINE_TIME, MIN_ONLINE_TIME, DEV_MODE, DEV_CHAT_ID
 from bot.services.database_service import DatabaseService
 
 logger = logging.getLogger(__name__)
@@ -9,17 +9,26 @@ logger = logging.getLogger(__name__)
 class BotState:
     def __init__(self):
         self.db = DatabaseService()
-
+    
     def is_online(self, chat_id: str) -> bool:
         """Check if the bot is online for a specific chat."""
+        # check if chat is allowed
+        if DEV_MODE and int(chat_id) != DEV_CHAT_ID:
+            return False
         return self.db.is_chat_online(str(chat_id))
     
     def is_sleeping(self, chat_id: str) -> bool:
         """Check if the bot is sleeping for a specific chat."""
+        # check if chat is allowed
+        if DEV_MODE and int(chat_id) != DEV_CHAT_ID:
+            return False
         return self.db.is_chat_sleeping(str(chat_id))
     
     def is_offline(self, chat_id: str) -> bool:
         """Check if the bot is offline for a specific chat."""
+        # check if chat is allowed
+        if DEV_MODE and int(chat_id) != DEV_CHAT_ID:
+            return False
         return self.db.is_chat_offline(str(chat_id))
 
     def set_processing_delay(self, chat_id: str, delay_seconds: int):
@@ -41,16 +50,16 @@ class BotState:
         self.db.clear_processing_delay(str(chat_id))
         logger.info(f"Cleared processing delay for chat {chat_id}")
 
-    async def add_to_queued_messages(self, chat_id: str, message: str):
+    def add_to_queued_messages(self, chat_id: str, message: str):
         """Add a message to the queued messages for a specific chat."""
         self.db.add_to_message_queue(str(chat_id), str(message))
         logger.info(f"Message added to queued messages for chat {chat_id}")
 
-    async def get_queued_messages(self, chat_id: str) -> str:
+    def get_queued_messages(self, chat_id: str) -> str:
         """Get the queued messages for a specific chat."""
         return self.db.get_message_queue(str(chat_id))
 
-    async def clear_queued_messages(self, chat_id: str):
+    def clear_queued_messages(self, chat_id: str):
         """Clear the queued messages for a specific chat."""
         self.db.clear_message_queue(str(chat_id))
         logger.info(f"Cleared queued messages for chat {chat_id}")
@@ -66,7 +75,7 @@ class BotState:
         )
         logger.info(f"Bot is now sleeping for chat {chat_id} until: {sleep_until}")
 
-    async def force_online(self, chat_id: str):
+    def force_online(self, chat_id: str):
         """Force the bot back online for a specific chat."""
         current_time = datetime.now()
         online_time = int(random.triangular(MIN_ONLINE_TIME, MAX_ONLINE_TIME, MAX_ONLINE_TIME - (MAX_ONLINE_TIME - MIN_ONLINE_TIME) * 0.2))
@@ -79,7 +88,7 @@ class BotState:
             online_until=current_time + timedelta(seconds=online_time)
         )
         logger.info(f"Bot forced online for chat {chat_id}")
-        return await self.get_queued_messages(chat_id)
+        return self.get_queued_messages(chat_id)
 
     def parse_sleep_duration(self, duration_str: str) -> int:
         """Parse sleep duration string into seconds.

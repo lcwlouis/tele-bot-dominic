@@ -1,5 +1,5 @@
 import logging
-from bot.config.settings import ALLOWED_GROUP_IDS
+from bot.config.settings import ALLOWED_GROUP_IDS, DEV_MODE, DEV_CHAT_ID, SARCASTIC_LEVEL, PLAYFUL_LEVEL, HUMOR_LEVEL, FORMALITY_LEVEL, EMPATHY_LEVEL, ENTHUSIASM_LEVEL, SINGLISH_LEVEL, EMOJI_LEVEL
 from .message_handler import MessageHandler
 from bot.utils.bot_state import BotState
 from google.adk.sessions import DatabaseSessionService
@@ -13,9 +13,13 @@ class CommandHandler:
         self.session_service = session_service
 
     async def is_allowed_chat(self, chat_id: int) -> bool:
-        """Check if the chat is in the whitelist."""
-        logger.info(f"Checking if chat ID {chat_id} is allowed... against {ALLOWED_GROUP_IDS}")
-        return chat_id in ALLOWED_GROUP_IDS
+        """Check if the chat is in the whitelist or dev mode."""
+        if DEV_MODE:
+            logger.info(f"Dev mode enabled. Checking if chat ID {chat_id} matches dev chat ID {DEV_CHAT_ID}")
+            return chat_id == DEV_CHAT_ID
+        else:
+            logger.info(f"Checking if chat ID {chat_id} is allowed... against {ALLOWED_GROUP_IDS}")
+            return chat_id in ALLOWED_GROUP_IDS
 
     async def handle_start(self, event):
         """Handle the /start command."""
@@ -145,7 +149,7 @@ class CommandHandler:
         
         if self.bot_state.is_offline(chat_id):
             # Force bot back online
-            queued_messages = await self.bot_state.force_online(chat_id)
+            queued_messages = self.bot_state.force_online(chat_id)
             
             if queued_messages:
                 await event.respond("I'm back online! What's up? Let's catch up on the messages I missed")

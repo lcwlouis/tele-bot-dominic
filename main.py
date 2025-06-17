@@ -4,9 +4,9 @@ from telethon import TelegramClient, events
 from google.adk.runners import Runner
 from google.adk.sessions import DatabaseSessionService
 
-from agent.agent import root_agent
+from agent.agent import conversation_agent
 
-from bot.config.settings import API_ID, API_HASH, BOT_TOKEN, DB_URL
+from bot.config.settings import API_ID, API_HASH, BOT_TOKEN, DB_URL, DEV_MODE, DEV_CHAT_ID
 from bot.utils.bot_state import BotState
 from bot.handlers.commands import CommandHandler
 from bot.handlers.message_handler import MessageHandler
@@ -31,7 +31,7 @@ async def main():
     bot_state = BotState()
     session_service = DatabaseSessionService(db_url=DB_URL)
     runner = Runner(
-        agent=root_agent,
+        agent=conversation_agent,
         app_name="dom",
         session_service=session_service,
     )
@@ -93,6 +93,9 @@ async def main():
     
     # Start the bot
     logger.info("Starting the bot...")
+    if DEV_MODE:
+        logger.info(f"🚀 DEV MODE ACTIVE - Only chat {DEV_CHAT_ID} will be allowed")
+        logger.info("📝 Online status checks are disabled for dev chat")
     await client.start(bot_token=BOT_TOKEN)
     logger.info("Bot is running...")
     
