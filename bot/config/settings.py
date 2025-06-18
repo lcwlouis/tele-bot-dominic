@@ -28,14 +28,14 @@ DB_URL = URL.create(
 )
 
 # Bot Behavior Configuration
-WAKE_UP_TIME = datetime.time(hour=7, minute=30, second=0)
-SLEEP_TIME = datetime.time(hour=23, minute=59, second=59)
-MIN_OFFLINE_TIME = 300  # 5 minutes in seconds
-MAX_OFFLINE_TIME = 3600  # 1 hour in seconds
-MIN_ONLINE_TIME = 300  # 5 minutes minimum online time
-MAX_ONLINE_TIME = 900  # 15 minutes maximum online time
-MIN_RESPONSE_DELAY = 3  # 3 seconds
-MAX_RESPONSE_DELAY = 12  # 12 seconds
+WAKE_UP_TIME = datetime.time.fromisoformat(os.getenv("WAKE_UP_TIME", "07:30:00"))  # Format: HH:MM:SS
+SLEEP_TIME = datetime.time.fromisoformat(os.getenv("SLEEP_TIME", "23:59:59"))  # Format: HH:MM:SS
+MIN_OFFLINE_TIME = int(os.getenv("MIN_OFFLINE_TIME", 300))  # in seconds
+MAX_OFFLINE_TIME = int(os.getenv("MAX_OFFLINE_TIME", 3600))  # in seconds
+MIN_ONLINE_TIME = int(os.getenv("MIN_ONLINE_TIME", 300))  # in seconds
+MAX_ONLINE_TIME = int(os.getenv("MAX_ONLINE_TIME", 900))  # in seconds
+MIN_RESPONSE_DELAY = int(os.getenv("MIN_RESPONSE_DELAY", 3))  # in seconds
+MAX_RESPONSE_DELAY = int(os.getenv("MAX_RESPONSE_DELAY", 12))  # in seconds
 SUMMARISING_AGENT_TOKEN_THRESHOLD = int(os.getenv("SUMMARISING_AGENT_TOKEN_THRESHOLD", 4000))
 MAX_OFFLINE_MESSAGES = int(os.getenv("MAX_OFFLINE_MESSAGES", 50))
 
