@@ -4,7 +4,7 @@ from telethon import TelegramClient, events
 from google.adk.runners import Runner
 from google.adk.sessions import DatabaseSessionService
 
-from agent.agent import conversation_agent
+from agentConversation import get_conversation_agent
 
 from bot.config.settings import API_ID, API_HASH, BOT_TOKEN, DB_URL, DEV_MODE, DEV_CHAT_ID
 from bot.utils.bot_state import BotState
@@ -24,11 +24,12 @@ logging.basicConfig(
 
 # Set specific logging levels for different components
 # Agent modules - only log ERROR level to reduce spam
-logging.getLogger('agentConversation').setLevel(logging.ERROR)
+logging.getLogger('agentConversation').setLevel(logging.INFO)
 logging.getLogger('agentSummariser').setLevel(logging.ERROR)
 
 # Google ADK modules - set to WARNING to reduce noise
 logging.getLogger('google.adk').setLevel(logging.WARNING)
+logging.getLogger('google.adk.sessions').setLevel(logging.WARNING)
 
 # Telethon - set to WARNING to reduce connection noise
 logging.getLogger('telethon').setLevel(logging.WARNING)
@@ -44,7 +45,7 @@ async def main():
     bot_state = BotState()
     session_service = DatabaseSessionService(db_url=DB_URL)
     runner = Runner(
-        agent=conversation_agent,
+        agent=get_conversation_agent(),
         app_name="dom",
         session_service=session_service,
     )
@@ -55,6 +56,21 @@ async def main():
     db_service = DatabaseService()
     db_service.message_handler = message_handler  # Add message handler to database service
     state_checker_task = asyncio.create_task(db_service.start_state_checker())
+    
+    # Start periodic cleanup of stale summarization locks
+    async def cleanup_stale_locks():
+        """Periodically clean up stale summarization locks."""
+        while True:
+            try:
+                await asyncio.sleep(300)  # Run every 5 minutes
+                stale_count = bot_state.clear_stale_summarization_locks(timeout_minutes=30)
+                if stale_count > 0:
+                    logger.info(f"Cleaned up {stale_count} stale summarization locks")
+            except Exception as e:
+                logger.error(f"Error in stale lock cleanup: {e}")
+                await asyncio.sleep(60)  # Wait a bit before retrying
+    
+    cleanup_task = asyncio.create_task(cleanup_stale_locks())
     
     # Create the client
     client = TelegramClient('bot_session', API_ID, API_HASH)
@@ -118,8 +134,13 @@ async def main():
     finally:
         # Clean up
         state_checker_task.cancel()
+        cleanup_task.cancel()
         try:
             await state_checker_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await cleanup_task
         except asyncio.CancelledError:
             pass
         db_service.close()

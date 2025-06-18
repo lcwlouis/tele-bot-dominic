@@ -6,7 +6,7 @@ import asyncio
 from sqlalchemy import create_engine, Column, String, DateTime, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from bot.config.settings import DB_URL, MIN_ONLINE_TIME, MAX_ONLINE_TIME, DEV_MODE, DEV_CHAT_ID
+from bot.config.settings import DB_URL, WAKE_UP_TIME, SLEEP_TIME, MIN_OFFLINE_TIME, MAX_OFFLINE_TIME, MIN_ONLINE_TIME, MAX_ONLINE_TIME, DEV_MODE, DEV_CHAT_ID
 
 logger = logging.getLogger(__name__)
 Base = declarative_base()
@@ -37,6 +37,13 @@ class MessageQueue(Base):
     messages = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+class SummarizationLock(Base):
+    __tablename__ = 'summarization_locks'
+    
+    chat_id = Column(String, primary_key=True)
+    locked_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.now)
 
 class DatabaseService:
     def __init__(self):
@@ -275,6 +282,95 @@ class DatabaseService:
         except Exception as e:
             session.rollback()
             logger.error(f"Error clearing message queue: {e}")
+            raise
+        finally:
+            session.close()
+
+    def set_summarization_lock(self, chat_id: str) -> bool:
+        """Set a summarization lock for a chat. Returns True if lock was acquired, False if already locked."""
+        session = self.Session()
+        try:
+            # Check if lock already exists
+            existing_lock = session.query(SummarizationLock).filter_by(chat_id=str(chat_id)).first()
+            if existing_lock:
+                logger.info(f"Summarization lock already exists for chat {chat_id}")
+                return False
+            
+            # Create new lock
+            lock = SummarizationLock(chat_id=str(chat_id))
+            session.add(lock)
+            session.commit()
+            logger.info(f"Set summarization lock for chat {chat_id}")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error setting summarization lock: {e}")
+            raise
+        finally:
+            session.close()
+
+    def is_summarization_locked(self, chat_id: str) -> bool:
+        """Check if a chat has a summarization lock."""
+        session = self.Session()
+        try:
+            lock = session.query(SummarizationLock).filter_by(chat_id=str(chat_id)).first()
+            if lock:
+                # Check if the lock is stale (older than 30 minutes)
+                cutoff_time = datetime.now() - timedelta(minutes=30)
+                if lock.locked_at < cutoff_time:
+                    logger.info(f"Found stale summarization lock for chat {chat_id}, clearing it")
+                    session.delete(lock)
+                    session.commit()
+                    return False
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error checking summarization lock: {e}")
+            return False
+        finally:
+            session.close()
+
+    def clear_summarization_lock(self, chat_id: str) -> None:
+        """Clear the summarization lock for a chat."""
+        session = self.Session()
+        try:
+            session.query(SummarizationLock).filter_by(chat_id=str(chat_id)).delete()
+            session.commit()
+            logger.info(f"Cleared summarization lock for chat {chat_id}")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error clearing summarization lock: {e}")
+            raise
+        finally:
+            session.close()
+
+    def clear_stale_summarization_locks(self, timeout_minutes: int = 30) -> int:
+        """Clear stale summarization locks that are older than the specified timeout.
+        
+        Args:
+            timeout_minutes: Number of minutes after which a lock is considered stale. Default is 30 minutes.
+            
+        Returns:
+            Number of stale locks cleared
+        """
+        session = self.Session()
+        try:
+            cutoff_time = datetime.now() - timedelta(minutes=timeout_minutes)
+            stale_locks = session.query(SummarizationLock).filter(
+                SummarizationLock.locked_at < cutoff_time
+            ).all()
+            
+            count = len(stale_locks)
+            for lock in stale_locks:
+                session.delete(lock)
+            
+            session.commit()
+            if count > 0:
+                logger.info(f"Cleared {count} stale summarization locks older than {timeout_minutes} minutes")
+            return count
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error clearing stale summarization locks: {e}")
             raise
         finally:
             session.close()
