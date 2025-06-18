@@ -13,19 +13,25 @@ from datetime import datetime
 import asyncio
 
 from .tools.search import searxng_search
-from bot.services.database_service import increase_online_time
+from bot.services.database_service import increase_online_time, get_online_for_seconds
 from .prompt import personality_prompt, search_prompt
 from bot.config.models import GEMINI_SEARCH_MODEL, GEMINI_CONVERSATION_MODEL, LITELLM_CONVERSATION_MODEL, LITELLM_SEARCH_MODEL
 
 logger = logging.getLogger(__name__)
 
-def update_date_time_callback(callback_context: CallbackContext, llm_request: LlmRequest):
+def update_prompt_variables_callback(callback_context: CallbackContext, llm_request: LlmRequest):
     """Callback function to update date and time in the agent's context."""
     current_time = datetime.now().strftime("%d-%m-%Y %I:%M %p")
+    
+    logger.debug(f"Callback context: {callback_context}")
+    logger.debug(f"Llm request: {llm_request}")
     
     # Set the current time in the prompt
     llm_request.config.system_instruction = llm_request.config.system_instruction.replace(
         "$current_time$", current_time
+    )
+    llm_request.config.system_instruction = llm_request.config.system_instruction.replace(
+        "$online_for_seconds$", str(get_online_for_seconds(chat_id=callback_context.state["chat_id"]))
     )
     return None
 
@@ -59,7 +65,7 @@ conversation_agent = Agent(
     model=GEMINI_CONVERSATION_MODEL,
     name="dom",
     instruction=personality_prompt,
-    before_model_callback=update_date_time_callback,
+    before_model_callback=update_prompt_variables_callback,
     after_model_callback=after_model_addTeleInfo_callback,
     tools=[
         AgentTool(agent=google_search_agent),
@@ -107,7 +113,7 @@ conversation_agent_lite = Agent(
     ),
     name="dom",
     instruction=personality_prompt,
-    before_model_callback=update_date_time_callback,
+    before_model_callback=update_prompt_variables_callback,
     after_model_callback=after_model_addTeleInfo_callback,
     tools=[
         AgentTool(agent=search_agent),

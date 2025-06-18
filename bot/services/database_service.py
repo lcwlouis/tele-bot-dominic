@@ -188,7 +188,7 @@ class DatabaseService:
     def is_chat_online(self, chat_id: str) -> bool:
         """Check if a chat is online and handle state transitions."""
         logger.info(f"Checking if chat {chat_id} is online")
-        return not self.is_chat_offline(chat_id) and not self.is_chat_sleeping(chat_id)
+        return {"status": not self.is_chat_offline(chat_id) and not self.is_chat_sleeping(chat_id), "online_for_seconds": self.get_online_for_seconds(chat_id)}
 
     async def start_state_checker(self):
         """Start a background task to periodically check and update chat states."""
@@ -266,12 +266,12 @@ class DatabaseService:
         finally:
             session.close()
 
-    def get_message_queue(self, chat_id: str) -> str:
+    def get_message_queue(self, chat_id: str) -> dict[str, int | int]:
         """Get all queued messages for a chat."""
         session = self.Session()
         try:
             queue = session.query(MessageQueue).filter_by(chat_id=str(chat_id)).first()
-            return queue.messages if queue else ""
+            return {"messages": queue.messages if queue else "", "number_of_messages": int(queue.number_of_messages) if queue else 0}
         finally:
             session.close()
 
@@ -382,6 +382,20 @@ class DatabaseService:
         """Close the database connection."""
         self.engine.dispose()
         logger.info("Database connection closed") 
+
+def get_online_for_seconds(chat_id: str) -> int:
+    """Get the number of seconds the chat has been online."""
+    session = DatabaseService().Session()
+    try:
+        chat_state = session.query(ChatState).filter(ChatState.chat_id == chat_id).first()
+        if not chat_state:
+            return 0
+        return (chat_state.online_until - datetime.now()).total_seconds()
+    except Exception as e:
+        logger.error(f"Error getting online for seconds: {e}")
+        return 0
+    finally:
+        session.close()
 
 def increase_online_time(chat_id: str, seconds: int = 60) -> dict:
     """Increase the online time for a chat. Default is 60 seconds.
