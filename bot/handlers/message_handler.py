@@ -220,8 +220,8 @@ class MessageHandler:
                 # Create message object with context from queued messages
                 logger.info("Creating message object for agent...")
                 try:
-                    first_message_id = queued_messages.split("msg_id:")[1].split(" ")[0].replace("]:", "")
-                    system_message = f"Woke up to {number_of_queued_messages} notifications. \n\n" if number_of_queued_messages >= MAX_OFFLINE_MESSAGES else ""
+                    first_message_id = queued_messages["messages"].split("msg_id:")[1].split(" ")[0].replace("]:", "")
+                    system_message = f"System forced Dom to wake up due to {queued_messages["number_of_messages"]} notifications. \n\n" if queued_messages["number_of_messages"] >= MAX_OFFLINE_MESSAGES else f"Woke up to {queued_messages["number_of_messages"]} notifications. \n\n"
                     system_message += f"Previous message id: {int(first_message_id)-1}\n"
                     system = types.Content(role="model", parts=[types.Part(text=system_message)])
                     system_event = Event(author="dom", content=system)
@@ -231,11 +231,11 @@ class MessageHandler:
                         user_id=chat_id,
                         session_id=session_id,
                     )
-                    message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages}")])
+                    message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages['messages']}")])
                     logger.debug(f"Message object: {message}")
                 except Exception as e:
                     logger.error(f"Error creating message object: {e}")
-                    message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages}")])
+                    message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages['messages']}")])
                 
                 # Get response from agent using runner with retry logic
                 logger.info("Getting response from agent...")
@@ -376,12 +376,22 @@ class MessageHandler:
         # Create message object with context from queued messages
         logger.info("Creating message object for agent...")
         try:
-            first_message_id = queued_messages.split("msg_id:")[1].split(" ")[0].replace("]:", "")
-            message = types.Content(role="user", parts=[types.Part(text=f"Previous message id: {int(first_message_id)-1}\nUnread messages:\n{queued_messages}")])
+            first_message_id = queued_messages["messages"].split("msg_id:")[1].split(" ")[0].replace("]:", "")
+            system_message = f"Woke up to {queued_messages['number_of_messages']} notifications. \n\n" if queued_messages['number_of_messages'] != 0 else ""
+            system_message += f"Previous message id: {int(first_message_id)-1}\n"
+            system = types.Content(role="model", parts=[types.Part(text=system_message)])
+            system_event = Event(author="dom", content=system)
+            await self.session_service.append_event(session, system_event)
+            session = await self.session_service.get_session(
+                app_name="dom",
+                user_id=chat_id,
+                session_id=session_id,
+            )
+            message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages['messages']}")])
             logger.debug(f"Message object: {message}")
         except Exception as e:
             logger.error(f"Error creating message object: {e}")
-            message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages}")])
+            message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages['messages']}")])
         
         # Get response from agent using runner
         logger.info("Getting response from agent...")
@@ -631,9 +641,9 @@ class MessageHandler:
                 
                 # Check if there are any queued messages after summarization
                 queued_messages = self.bot_state.get_queued_messages(chat_id)
-                if queued_messages.strip():
+                if queued_messages["messages"].strip():
                     # Count messages more accurately by splitting on newlines and filtering empty lines
-                    message_count = len([msg for msg in queued_messages.split('\n') if msg.strip()])
+                    message_count = len([msg for msg in queued_messages["messages"].split('\n') if msg.strip()])
                     logger.info(f"Found {message_count} queued messages after summarization for chat {chat_id}, processing them")
                     # Add a small delay to ensure the new session is fully established
                     await asyncio.sleep(1)
