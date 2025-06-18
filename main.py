@@ -6,7 +6,7 @@ from google.adk.sessions import DatabaseSessionService
 
 from agentConversation import get_conversation_agent
 
-from bot.config.settings import API_ID, API_HASH, BOT_TOKEN, DB_URL, DEV_MODE, DEV_CHAT_ID
+from bot.config.settings import API_ID, API_HASH, BOT_TOKEN, DB_URL, DEV_MODE, DEV_CHAT_ID, LOG_LEVEL
 from bot.utils.bot_state import BotState
 from bot.handlers.commands import CommandHandler
 from bot.handlers.message_handler import MessageHandler
@@ -15,11 +15,11 @@ from bot.utils.postgres_logger import PostgreSQLHandler
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),  # Keep console output for development
-        PostgreSQLHandler(level=logging.INFO)  # Add PostgreSQL logging
+        PostgreSQLHandler(level=LOG_LEVEL)  # Add PostgreSQL logging
     ]
 )
 

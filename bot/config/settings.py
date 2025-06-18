@@ -3,9 +3,20 @@ import json
 import datetime
 from dotenv import load_dotenv
 from sqlalchemy.engine.url import URL
+import logging
 
 # Load environment variables
 load_dotenv()
+
+# Logging Configuration
+if os.getenv("LOG_LEVEL") == "DEBUG":
+    LOG_LEVEL = logging.DEBUG
+elif os.getenv("LOG_LEVEL") == "INFO":
+    LOG_LEVEL = logging.INFO
+elif os.getenv("LOG_LEVEL") == "WARNING":
+    LOG_LEVEL = logging.WARNING
+else:
+    LOG_LEVEL = logging.INFO
 
 # Telegram API Configuration
 API_ID = os.getenv("TELEGRAM_API_ID")
