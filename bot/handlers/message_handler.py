@@ -29,7 +29,8 @@ class MessageHandler:
             logger.info(f"DEV MODE ACTIVE - Only chat {DEV_CHAT_ID} is allowed")
         chat_id = str(event.chat_id)
         if not await self.command_handler.is_allowed_chat(int(chat_id)):
-            await event.respond("Sorry, I'm not allowed to participate in this chat.")
+            if not DEV_MODE:
+                await event.respond("Sorry, I'm not allowed to participate in this chat.")
             logger.info(f"Chat {chat_id} is not allowed, skipping message processing")
             return
 
@@ -67,7 +68,7 @@ class MessageHandler:
             # We just return as sleeping messages will not be stored
             logger.info(f"Bot for chat {chat_id} is sleeping, ignoring message")
             return
-        
+            
         # Get session for this chat
         session_id = f"chat_{chat_id}"
         try:
@@ -84,6 +85,7 @@ class MessageHandler:
                     user_id=chat_id,
                     session_id=session_id,
                     state={
+                        "chat_id": chat_id,
                         "individualisation_prompts": [],
                         "summary": "No summary available",
                         "sarcasm_level": SARCASTIC_LEVEL,
@@ -125,15 +127,19 @@ class MessageHandler:
                 
                 # Get queued messages
                 queued_messages = self.bot_state.get_queued_messages(chat_id)
-                print(f"queued_messages: {queued_messages}")
+                logger.debug(f"queued_messages: {queued_messages}")
                 
                 # Create message object with context from queued messages
                 logger.info("Creating message object for agent...")
-                first_message_id = queued_messages.split("msg_id:")[1].split(" ")[0].replace("]:", "")
-                message = types.Content(role="user", parts=[types.Part(text=f"Your last message id was {first_message_id}.\nUnread messages:\n{queued_messages}")])
-                logger.debug(f"Message object: {message}")
+                try:
+                    first_message_id = queued_messages.split("msg_id:")[1].split(" ")[0].replace("]:", "")
+                    message = types.Content(role="user", parts=[types.Part(text=f"Previous message id: {int(first_message_id)-1}\nUnread messages:\n{queued_messages}")])
+                    logger.debug(f"Message object: {message}")
+                except Exception as e:
+                    logger.error(f"Error creating message object: {e}")
+                    message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages}")])
                 
-                # Get response from agent using runner
+                # Get response from agent using runner with retry logic
                 logger.info("Getting response from agent...")
                 response_content = None
                 event_response = None
@@ -141,49 +147,32 @@ class MessageHandler:
                 # Clear queued messages
                 self.bot_state.clear_queued_messages(chat_id)
                 
-                # async with event.client.action(event.chat_id, 'typing'):
-                async for event_response in self.runner.run_async(
-                    user_id=chat_id,
+                # Use the new retry wrapper for better LiteLLM stability
+                async for event_response in self._run_agent_with_retry(
+                    chat_id=chat_id,
                     session_id=session_id,
-                    new_message=message,
+                    message=message,
+                    max_retries=3 if LITELLM_MODE else 1
                 ):
                     logger.info(f"Event response received: {event_response}")
+                    
+                    # Check if this event has text content (pre-function call response)
+                    if hasattr(event_response.content, 'parts') and event_response.content.parts:
+                        for part in event_response.content.parts:
+                            await self._parse_and_send_agent_response(event, part)
+                    
                     if event_response.is_final_response():
-                        logger.debug(f"Event response received: {event_response.content}")
-                        event_response = event_response
-                        response_content = event_response.content
+                        logger.debug(f"Final event response received: {event_response.content}")
                         break
-                
-                if response_content:
-                    messages = []
-                    for part in response_content.parts:
-                        texts = part.text.split("Dom (@domthebuilderbot):")[-1]
-                        logger.info(f"Response part: {texts}")
-                        # Split response into multiple messages if it contains "%next_message%"
-                        for text in texts.split("%next_message%"):
-                            if "%no_response%" in text:
-                                logger.info("Received '%no_response%' part, skipping this message")
-                                continue
-                            messages.append(text.strip())
-
-                    # Send each message separately
-                    for msg in messages:
-                        logger.info(f"msg: {msg}")
-                        if msg.strip():  # Only send non-empty messages
-                            # Send the response
-                            await event.respond(msg.strip())
-                            logger.info(f"Response sent successfully: {msg.strip()}")
-                            # Add a small delay between messages to make it feel more natural
-                            await asyncio.sleep(random.triangular(1, 3, 2))
-                    # Clear the processing delay
-                    self.bot_state.clear_processing_delay(chat_id)
-                    input_tokens = event_response.usage_metadata.prompt_token_count
-                    logger.info(f"Current Input Tokens used: {input_tokens}")
-                    # If input tokens more than the threshold, we will summarise the session
-                    if input_tokens > SUMMARISING_AGENT_TOKEN_THRESHOLD:
-                        await self._handle_session_summary(chat_id, session_id)
                 else:
                     raise Exception("No response received from agent")
+                # Clear the processing delay
+                self.bot_state.clear_processing_delay(chat_id)
+                input_tokens = event_response.usage_metadata.prompt_token_count
+                logger.info(f"Current Input Tokens used: {input_tokens}")
+                # If input tokens more than the threshold, we will summarise the session
+                if input_tokens > SUMMARISING_AGENT_TOKEN_THRESHOLD:
+                    await self._handle_session_summary(chat_id, session_id)
                     
         except Exception as e:
             logger.error(f"Error getting response from agent: {e}")
@@ -191,7 +180,7 @@ class MessageHandler:
         
         logger.info("=== Message Processing Complete ===\n")
 
-    async def handle_after_idling_messages(self, chat_id_or_event):
+    async def handle_after_idling_messages(self, chat_id_or_event, after_summarization=False):
         """Handle messages that were queued while the bot was offline.
         This will call the agent with all the new messages labeled under "New Messages:"
         """
@@ -222,7 +211,8 @@ class MessageHandler:
             
         try:
             if not await self.command_handler.is_allowed_chat(int(chat_id)):
-                await event.respond("Sorry, I'm not allowed to participate in this chat.")
+                if not DEV_MODE:
+                    await event.respond("Sorry, I'm not allowed to participate in this chat.")
                 logger.info(f"Chat {chat_id} is not allowed, skipping message processing")
                 return
         except Exception as e:
@@ -259,13 +249,30 @@ class MessageHandler:
                 app_name="dom",
                 user_id=chat_id,
                 session_id=session_id,
+                state={
+                    "chat_id": chat_id,
+                    "individualisation_prompts": [],
+                    "summary": "No summary available",
+                    "sarcasm_level": SARCASTIC_LEVEL,
+                    "playfulness_level": PLAYFUL_LEVEL,
+                    "humor_level": HUMOR_LEVEL,
+                    "formality_level": FORMALITY_LEVEL,
+                    "empathy_level": EMPATHY_LEVEL,
+                    "enthusiasm_level": ENTHUSIASM_LEVEL,
+                    "singlish_level": SINGLISH_LEVEL,
+                    "emoji_level": EMOJI_LEVEL,
+                }
             )
 
         # Create message object with context from queued messages
         logger.info("Creating message object for agent...")
-        first_message_id = queued_messages.split("msg_id:")[1].split(" ")[0].replace("]:", "")
-        message = types.Content(role="user", parts=[types.Part(text=f"Your last message id was {first_message_id}.\nUnread messages:\n{queued_messages}")])
-        logger.debug(f"Message object: {message}")
+        try:
+            first_message_id = queued_messages.split("msg_id:")[1].split(" ")[0].replace("]:", "")
+            message = types.Content(role="user", parts=[types.Part(text=f"Previous message id: {int(first_message_id)-1}\nUnread messages:\n{queued_messages}")])
+            logger.debug(f"Message object: {message}")
+        except Exception as e:
+            logger.error(f"Error creating message object: {e}")
+            message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages}")])
         
         # Get response from agent using runner
         logger.info("Getting response from agent...")
@@ -275,47 +282,60 @@ class MessageHandler:
         self.bot_state.clear_queued_messages(chat_id)
         
         async with event.client.action(event.chat_id, 'typing'):
-            async for event_response in self.runner.run_async(
-                user_id=chat_id,
+            async for event_response in self._run_agent_with_retry(
+                chat_id=chat_id,
                 session_id=session_id,
-                new_message=message,
+                message=message,
+                max_retries=3 if LITELLM_MODE else 1
             ):
                 logger.info(f"Event response received: {event_response}")
+                # Check if this event has text content (pre-function call response)
+                if hasattr(event_response.content, 'parts') and event_response.content.parts:
+                    for part in event_response.content.parts:
+                        await self._parse_and_send_agent_response(event, part)
+                
                 if event_response.is_final_response():
-                    logger.debug(f"Event response received: {event_response.content}")
-                    event_response = event_response
-                    response_content = event_response.content
+                    logger.debug(f"Final event response received: {event_response.content}")
                     break
-            
-            if response_content:
-                messages = []
-                for part in response_content.parts:
-                    texts = part.text.split("Dom (@domthebuilderbot):")[-1]
-                    logger.info(f"Response part: {texts}")
-                    # Split response into multiple messages if it contains "%next_message%"
-                    for text in texts.split("%next_message%"):
-                        if "%no_response%" in text:
-                            logger.info("Received '%no_response%' part, skipping this message")
-                            continue
-                        messages.append(text.strip())
-
-                # Send each message separately
-                for msg in messages:
-                    logger.info(f"msg: {msg}")
-                    if msg.strip():  # Only send non-empty messages
-                        # Send the response
-                        await event.respond(msg.strip())
-                        logger.info(f"Response sent successfully: {msg.strip()}")
-                        # Add a small delay between messages to make it feel more natural
-                        await asyncio.sleep(random.triangular(1, 3, 2))
-                # Check if we need to summarise the session
-                input_tokens = event_response.usage_metadata.prompt_token_count
-                logger.info(f"Current Input Tokens used: {input_tokens}")
-                if input_tokens > SUMMARISING_AGENT_TOKEN_THRESHOLD:
-                    await self._handle_session_summary(chat_id, session_id)
             else:
                 raise Exception("No response received from agent")
-        logger.info("=== After Idling / Urgent Messages Processing Complete ===\n")
+            
+            # Check if we need to summarise the session
+            input_tokens = event_response.usage_metadata.prompt_token_count
+            logger.info(f"Current Input Tokens used: {input_tokens}")
+            if input_tokens > SUMMARISING_AGENT_TOKEN_THRESHOLD:
+                await self._handle_session_summary(chat_id, session_id)
+
+        if after_summarization:
+            logger.info("=== After Summarization Messages Processing Complete ===\n")
+        else:
+            logger.info("=== After Idling / Urgent Messages Processing Complete ===\n")
+    
+    async def _parse_and_send_agent_response(self, event, part: Part):
+        """Parse the agent response and return the messages to be sent."""
+        messages = []
+        texts = part.text
+        logger.info(f"Response part: {texts}")
+        if texts == None:
+            logger.info(f"Received None response as function call, skipping this message")
+            return
+        # Split response into multiple messages if it contains "%next_message%"
+        for text in texts.split("%next_message%"):
+            if "%no_response%" in text:
+                logger.info("Received '%no_response%' part, skipping this message")
+                continue
+            messages.append(text.strip())
+        
+        # Send each message separately
+        for msg in messages:
+            logger.info(f"msg: {msg}")
+            if msg.strip():  # Only send non-empty messages
+                # Send the response
+                await event.respond(msg.strip())
+                logger.info(f"Response sent successfully: {msg.strip()}")
+                # Add a small delay between messages to make it feel more natural
+                await asyncio.sleep(random.triangular(1, 4, 3))
+        
 
     async def _handle_session_summary(self, chat_id: str, session_id: str):
         """Handle session summarization when token count exceeds threshold.
@@ -324,136 +344,200 @@ class MessageHandler:
             chat_id: The chat ID
             session_id: The session ID to summarize
         """
-        # Get the history
-        history = await self.session_service.get_session(
-            app_name="dom",
-            user_id=chat_id,
-            session_id=session_id,
-        )
-        # Build the history string
-        # Get the summary
-        summary = history.state["summary"]
-        # Get the individualisation prompts
-        individualisation_prompts = history.state["individualisation_prompts"]
-        # Get the sarcasm level
-        sarcasm_level = history.state["sarcasm_level"]
-        # Get the playfulness level
-        playfulness_level = history.state["playfulness_level"]
-        # Get the humor level
-        humor_level = history.state["humor_level"]
-        # Get the formality level
-        formality_level = history.state["formality_level"]
-        # Get the empathy level
-        empathy_level = history.state["empathy_level"]
-        # Get the enthusiasm level
-        enthusiasm_level = history.state["enthusiasm_level"]
-        # Get the singlish level
-        singlish_level = history.state["singlish_level"]
-        # Get the emoji level
-        emoji_level = history.state["emoji_level"]
+        # Set summarization lock to prevent concurrent processing
+        if not self.bot_state.set_summarization_lock(chat_id):
+            logger.warning(f"Summarization lock already exists for chat {chat_id}, skipping summarization")
+            return
         
-        # Build the history string
-        history_string = "This section is the current state of the agent:\n"
-        history_string += f"Summary: {summary}\n\n"
-        history_string += f"User information: {individualisation_prompts}\n\n"
-        history_string += f"Sarcasm level: {sarcasm_level}\n"
-        history_string += f"Playfulness level: {playfulness_level}\n"
-        history_string += f"Humor level: {humor_level}\n"
-        history_string += f"Formality level: {formality_level}\n"
-        history_string += f"Empathy level: {empathy_level}\n"
-        history_string += f"Enthusiasm level: {enthusiasm_level}\n"
-        history_string += f"Singlish level: {singlish_level}\n"
-        history_string += f"Emoji level: {emoji_level}\n"
-        
-        history_string += "\n\nThis section is the history of the conversation:\n"
-        for historyEvent in history.events:
-            if historyEvent.author == "user":
-                # Extract just the text portion from the content
-                content_text = historyEvent.content.parts[0].text if hasattr(historyEvent.content, 'parts') else historyEvent.content
-                history_string += f"User(s): {content_text}\n"
-            elif historyEvent.author == "dom":
-                # Handle multiple parts if they exist
-                if hasattr(historyEvent.content, 'parts'):
-                    content_texts = []
-                    for part in historyEvent.content.parts:
-                        if hasattr(part, 'text'):
-                            content_texts.append(part.text)
-                    content_text = "\n".join(content_texts)
-                else:
-                    content_text = historyEvent.content
-                history_string += f"Dom: {content_text.replace('%next_message%', '\n').replace('%no_response%', '')}\n"
-        
-        # Send the history to an agent to summarise and generate the individualisation prompts
-        self_destruct_session_id = f"self_destruct_{chat_id}"
-        summarising_agent_runner = Runner(
-            agent=summarising_agent,
-            app_name="summarising_agent",
-            session_service=self.session_service,
-        )
-        await self.session_service.delete_session(
-            app_name="summarising_agent",
-            user_id=chat_id,
-            session_id=self_destruct_session_id,
-        )
-        session = await self.session_service.create_session(
-            app_name="summarising_agent",
-            user_id=chat_id,
-            session_id=self_destruct_session_id,
-        )
-        async for event_response in summarising_agent_runner.run_async(
-            user_id=chat_id,
-            session_id=self_destruct_session_id,
-            new_message=types.Content(role="user", parts=[types.Part(text=history_string)]),
-        ):
-            if event_response.is_final_response():
-                summary = event_response.content.parts[0].text
-                # This is a json string, we need to parse it according to the pydantic model defined in the agent
-                summary = json.loads(summary)
-                logger.info(f"Summary: {summary['summary']}")
-                logger.info(f"User information: {summary['user_information']}")
-                break
+        try:
+            logger.info(f"Starting session summarization for chat {chat_id}")
+            
+            # Get the history
+            history = await self.session_service.get_session(
+                app_name="dom",
+                user_id=chat_id,
+                session_id=session_id,
+            )
+            # Build the history string
+            # Store state in a temporary variable
+            temp_state = history.state
+            # Get the summary
+            summary = temp_state["summary"]
+            # Get the individualisation prompts
+            individualisation_prompts = temp_state["individualisation_prompts"]
+            # Get the sarcasm level
+            sarcasm_level = temp_state["sarcasm_level"]
+            # Get the playfulness level
+            playfulness_level = temp_state["playfulness_level"]
+            # Get the humor level
+            humor_level = temp_state["humor_level"]
+            # Get the formality level
+            formality_level = temp_state["formality_level"]
+            # Get the empathy level
+            empathy_level = temp_state["empathy_level"]
+            # Get the enthusiasm level
+            enthusiasm_level = temp_state["enthusiasm_level"]
+            # Get the singlish level
+            singlish_level = temp_state["singlish_level"]
+            # Get the emoji level
+            emoji_level = temp_state["emoji_level"]
+            
+            # Build the history string
+            history_string = "This section is the current state of the agent:\n"
+            history_string += f"Summary: {summary}\n\n"
+            history_string += f"User information: {individualisation_prompts}\n\n"
+            history_string += f"Sarcasm level: {sarcasm_level}\n"
+            history_string += f"Playfulness level: {playfulness_level}\n"
+            history_string += f"Humor level: {humor_level}\n"
+            history_string += f"Formality level: {formality_level}\n"
+            history_string += f"Empathy level: {empathy_level}\n"
+            history_string += f"Enthusiasm level: {enthusiasm_level}\n"
+            history_string += f"Singlish level: {singlish_level}\n"
+            history_string += f"Emoji level: {emoji_level}\n"
+            
+            history_string += "\n\nThis section is the history of the conversation:\n"
+            for historyEvent in history.events:
+                if historyEvent.author == "user":
+                    # Check if it is a function call
+                    if historyEvent.content.parts[0].function_call:
+                        history_string += f"Function called: {historyEvent.content.parts[0].function_call.name}\n"
+                        history_string += f"Function response: {historyEvent.content.parts[0].function_call.response}\n"
+                        continue
+                    # Extract just the text portion from the content
+                    content_text = historyEvent.content.parts[0].text if hasattr(historyEvent.content, 'parts') else historyEvent.content
+                    history_string += f"User(s): {content_text}\n"
+                elif historyEvent.author == "dom":
+                    # Handle multiple parts if they exist
+                    if hasattr(historyEvent.content, 'parts'):
+                        content_texts = []
+                        for part in historyEvent.content.parts:
+                            if part.function_call != None:
+                                content_texts.append(f"Function called: {part.function_call.name}\n")
+                                content_texts.append(f"Function arguments: {part.function_call.args}\n")
+                                continue
+                            if part.function_response != None:
+                                content_texts.append(f"Function called: {part.function_response.name}\n")
+                                content_texts.append(f"Function response: {part.function_response.response}\n")
+                                continue
+                            if hasattr(part, 'text'):
+                                if part.text == None:
+                                    print(part)
+                                    continue  # Skip this part if text is None
+                                content_texts.append(part.text)
+                        content_text = "\n".join(content_texts)
+                    else:
+                        content_text = historyEvent.content
+                    
+                    # Ensure content_text is not None before calling replace
+                    if content_text is not None:
+                        history_string += f"Dom: {content_text.replace('%next_message%', '\n').replace('%no_response%', '')}\n"
+                    else:
+                        history_string += f"Dom: [No content]\n"
+            
+            # Send the history to an agent to summarise and generate the individualisation prompts
+            self_destruct_session_id = f"self_destruct_{chat_id}"
+            summarising_agent_runner = Runner(
+                agent=get_summarising_agent(),
+                app_name="summarising_agent",
+                session_service=self.session_service,
+            )
+            await self.session_service.delete_session(
+                app_name="summarising_agent",
+                user_id=chat_id,
+                session_id=self_destruct_session_id,
+            )
+            session = await self.session_service.create_session(
+                app_name="summarising_agent",
+                user_id=chat_id,
+                session_id=self_destruct_session_id,
+            )
+            async for event_response in summarising_agent_runner.run_async(
+                user_id=chat_id,
+                session_id=self_destruct_session_id,
+                new_message=types.Content(role="user", parts=[types.Part(text=history_string)]),
+            ):
+                if event_response.is_final_response():
+                    summary = event_response.content.parts[0].text
+                    # This is a json string, we need to parse it according to the pydantic model defined in the agent
+                    summary = json.loads(summary)
+                    logger.info(f"Summary: {summary['summary']}")
+                    logger.info(f"User information: {summary['user_information']}")
+                    logger.info(f"Chat parameters: {summary['chat_parameters']}")
+                    break
 
-        # Delete the summarising agent session
-        await self.session_service.delete_session(
-            app_name="summarising_agent",
-            user_id=chat_id,
-            session_id=self_destruct_session_id,
-        )
-        
-        # Delete the current session
-        await self.session_service.delete_session(
-            app_name="dom",
-            user_id=chat_id,
-            session_id=session_id,
-        )
-        
-        individualisation_prompts = []
-        # Build user information prompts into a string
-        for user_information in summary['user_information']:
-            user_info = f"Telegram Handle: {user_information['telegram_handle']}\n"
-            user_info += f"Telegram Name: {user_information['telegram_name']}\n"
-            user_info += f"Preferred Name: {user_information['preferred_name']}\n"
-            user_info += f"Habits and Style: {user_information['habits_and_style']}\n"
-            user_info += f"Communication Preferences: {user_information['communication_preferences']}\n"
-            user_info += f"Special Notes: {user_information['special_notes']}\n"
-            individualisation_prompts.append(user_info)
-        
-        default_state = {
-            "individualisation_prompts": individualisation_prompts,
-            "summary": summary['summary'],
-            "sarcasm_level": summary['sarcasm_level'],
-            "playfulness_level": summary['playfulness_level'],
-            "humor_level": summary['humor_level'],
-            "formality_level": summary['formality_level'],
-            "empathy_level": summary['empathy_level'],
-            "enthusiasm_level": summary['enthusiasm_level'],
-            "singlish_level": summary['singlish_level'],
-        }
-        
-        # Create a new session with the default state
-        await self.session_service.create_session(
-            app_name="dom",
-            user_id=chat_id,
-            session_id=session_id,
-            state=default_state,
-        )
+            # Delete the summarising agent session
+            await self.session_service.delete_session(
+                app_name="summarising_agent",
+                user_id=chat_id,
+                session_id=self_destruct_session_id,
+            )
+            
+            # Delete the current session
+            await self.session_service.delete_session(
+                app_name="dom",
+                user_id=chat_id,
+                session_id=session_id,
+            )
+            
+            individualisation_prompts = []
+            # Build user information prompts into a string
+            for user_information in summary['user_information']:
+                user_info = f"Telegram Handle: {user_information['telegram_handle']}\n"
+                user_info += f"Telegram Name: {user_information['telegram_name']}\n"
+                user_info += f"Preferred Name: {user_information['preferred_name']}\n"
+                user_info += f"Habits and Style: {user_information['habits_and_style']}\n"
+                user_info += f"Communication Preferences: {user_information['communication_preferences']}\n"
+                user_info += f"Special Notes: {user_information['special_notes']}\n"
+                individualisation_prompts.append(user_info)
+            
+            chat_parameters = summary.get('chat_parameters', {'sarcasm_level': 0.5, 'playfulness_level': 0.5, 'humor_level': 0.5, 'formality_level': 0.5, 'empathy_level': 0.5, 'enthusiasm_level': 0.5, 'singlish_level': 0.5, 'emoji_level': 0.5})
+            
+            # Update history state with the new summary and individualisation prompts
+            temp_state["summary"] = summary['summary']
+            temp_state["individualisation_prompts"] = individualisation_prompts
+            temp_state["sarcasm_level"] = chat_parameters['sarcasm_level']
+            temp_state["playfulness_level"] = chat_parameters['playfulness_level']
+            temp_state["humor_level"] = chat_parameters['humor_level']
+            temp_state["formality_level"] = chat_parameters['formality_level']
+            temp_state["empathy_level"] = chat_parameters['empathy_level']
+            temp_state["enthusiasm_level"] = chat_parameters['enthusiasm_level']
+            temp_state["singlish_level"] = chat_parameters['singlish_level']
+            temp_state["emoji_level"] = chat_parameters['emoji_level']
+            
+            # Create a new session with the updated state
+            await self.session_service.create_session(
+                app_name="dom",
+                user_id=chat_id,
+                session_id=session_id,
+                state=temp_state,
+            )
+            
+            logger.info(f"Session summarization completed for chat {chat_id}")
+            
+        finally:
+            # Clear summarization lock
+            try:
+                self.bot_state.clear_summarization_lock(chat_id)
+                logger.info(f"Session summarization completed for chat {chat_id}")
+                
+                # Check if there are any queued messages after summarization
+                queued_messages = self.bot_state.get_queued_messages(chat_id)
+                if queued_messages.strip():
+                    # Count messages more accurately by splitting on newlines and filtering empty lines
+                    message_count = len([msg for msg in queued_messages.split('\n') if msg.strip()])
+                    logger.info(f"Found {message_count} queued messages after summarization for chat {chat_id}, processing them")
+                    # Add a small delay to ensure the new session is fully established
+                    await asyncio.sleep(1)
+                    # Process the queued messages
+                    await self.handle_after_idling_messages(chat_id, after_summarization=True)
+                else:
+                    logger.info(f"No queued messages found after summarization for chat {chat_id}")
+                    
+            except Exception as e:
+                logger.error(f"Error clearing summarization lock for chat {chat_id}: {e}")
+                # Try to force clear the lock from database directly
+                try:
+                    self.bot_state.db.clear_summarization_lock(chat_id)
+                    logger.info(f"Force cleared summarization lock for chat {chat_id}")
+                except Exception as force_error:
+                    logger.error(f"Failed to force clear summarization lock for chat {chat_id}: {force_error}")
