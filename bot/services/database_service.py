@@ -135,20 +135,20 @@ class DatabaseService:
 
             # Handle sleep state transition
             if chat_state.is_sleeping and chat_state.sleep_until and current_time >= chat_state.sleep_until:
-                logger.info(f"Chat {chat_id} sleep period ended, transitioning to online")
                 chat_state.is_sleeping = False
                 chat_state.sleep_until = None
+                logger.info(f"Chat {chat_id} sleep period ended")
                 session.commit()
                 return False
 
             # Handle offline state transition
             if chat_state.is_offline and chat_state.offline_until and current_time >= chat_state.offline_until:
-                logger.info(f"Chat {chat_id} offline period ended, transitioning to online")
                 chat_state.is_offline = False
                 chat_state.offline_until = None
                 # Set new online period
                 online_time = int(random.triangular(MIN_ONLINE_TIME, MAX_ONLINE_TIME, MAX_ONLINE_TIME - (MAX_ONLINE_TIME - MIN_ONLINE_TIME) * 0.2))
                 chat_state.online_until = current_time + timedelta(seconds=online_time)
+                logger.info(f"Chat {chat_id} offline period ended, transitioning to online till {chat_state.online_until}")
                 session.commit()
                 # Emit event for offline to online transition
                 self.on_offline_to_online(chat_id)
@@ -156,10 +156,17 @@ class DatabaseService:
 
             # Handle online state transition
             if not chat_state.is_offline and chat_state.online_until and current_time >= chat_state.online_until:
-                logger.info(f"Chat {chat_id} online period ended, transitioning to offline")
                 chat_state.is_offline = True
-                offline_time = int(random.triangular(MIN_ONLINE_TIME, MAX_ONLINE_TIME, MAX_ONLINE_TIME - (MAX_ONLINE_TIME - MIN_ONLINE_TIME) * 0.2))
-                chat_state.offline_until = current_time + timedelta(seconds=offline_time)
+                time_to_sleep = datetime.now().time().replace(hour=SLEEP_TIME.hour, minute=SLEEP_TIME.minute, second=SLEEP_TIME.second)
+                time_to_wake_up = datetime.now().time().replace(hour=WAKE_UP_TIME.hour, minute=WAKE_UP_TIME.minute, second=WAKE_UP_TIME.second)
+                if datetime.now().time() > time_to_sleep or datetime.now().time() < time_to_wake_up:
+                    offline_time = int(random.triangular(MIN_OFFLINE_TIME, MAX_OFFLINE_TIME, MAX_OFFLINE_TIME - (MAX_OFFLINE_TIME - MIN_OFFLINE_TIME) * 0.2))
+                    wake_up_time = datetime.now().replace(hour=WAKE_UP_TIME.hour, minute=WAKE_UP_TIME.minute, second=WAKE_UP_TIME.second)
+                    chat_state.offline_until = wake_up_time + timedelta(seconds=offline_time)
+                else:
+                    offline_time = int(random.triangular(MIN_OFFLINE_TIME, MAX_OFFLINE_TIME, MAX_OFFLINE_TIME - (MAX_OFFLINE_TIME - MIN_OFFLINE_TIME) * 0.2))
+                    chat_state.offline_until = current_time + timedelta(seconds=offline_time)
+                logger.info(f"Chat {chat_id} online period ended, transitioning to offline till {chat_state.offline_until}")
                 session.commit()
                 return True
 
@@ -276,3 +283,35 @@ class DatabaseService:
         """Close the database connection."""
         self.engine.dispose()
         logger.info("Database connection closed") 
+
+def increase_online_time(chat_id: str, seconds: int = 60) -> dict:
+    """Increase the online time for a chat. Default is 60 seconds.
+    
+    Args:
+        chat_id: The chat ID
+        seconds: The number of seconds to increase the online time by. Default is 60 seconds.
+    
+    Returns:
+        Dictionary containing the online_until time and the time left in the online period in seconds
+    """
+    session = DatabaseService().Session()
+    try:
+        chat_state = session.query(ChatState).filter_by(chat_id=str(chat_id)).first()
+        current_online_time = (chat_state.online_until - datetime.now()).total_seconds()
+        chat_state.online_until = datetime.now() + timedelta(seconds=(int(current_online_time) + int(seconds)))
+        session.commit()
+        logger.info(f"Increased online time for chat {chat_id} by {seconds} seconds")
+        return {
+            "status": "success",
+            "online_until": chat_state.online_until,
+            "time_left_in_seconds": int(current_online_time) + int(seconds)
+        }
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error increasing online time: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+    finally:
+        session.close()

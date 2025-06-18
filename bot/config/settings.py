@@ -1,5 +1,6 @@
 import os
 import json
+import datetime
 from dotenv import load_dotenv
 from sqlalchemy.engine.url import URL
 
@@ -27,13 +28,15 @@ DB_URL = URL.create(
 )
 
 # Bot Behavior Configuration
+WAKE_UP_TIME = datetime.time(hour=7, minute=30, second=0)
+SLEEP_TIME = datetime.time(hour=23, minute=59, second=59)
 MIN_OFFLINE_TIME = 300  # 5 minutes in seconds
 MAX_OFFLINE_TIME = 3600  # 1 hour in seconds
 MIN_ONLINE_TIME = 300  # 5 minutes minimum online time
 MAX_ONLINE_TIME = 900  # 15 minutes maximum online time
 MIN_RESPONSE_DELAY = 3  # 3 seconds
 MAX_RESPONSE_DELAY = 12  # 12 seconds
-SUMMARISING_AGENT_TOKEN_THRESHOLD = 4000
+SUMMARISING_AGENT_TOKEN_THRESHOLD = int(os.getenv("SUMMARISING_AGENT_TOKEN_THRESHOLD", 4000))
 
 # Personality Parameters (0.0 to 1.0 scale)
 SARCASTIC_LEVEL = float(os.getenv("SARCASTIC_LEVEL", "0.7"))

@@ -68,6 +68,11 @@ class CommandHandler:
             history_text = "📜 Recent messages in this chat:\n\n"
             for session_event in session_object.events[-20:]:  # Show last 20 messages
                 if session_event.author == "user":
+                    # Check if it is a function call
+                    if session_event.content.parts[0].function_call:
+                        history_text += f"Function called: {session_event.content.parts[0].function_call.name}\n"
+                        history_text += f"Function response: {session_event.content.parts[0].function_call.response}\n"
+                        continue
                     # Extract just the text portion from the content
                     content_text = session_event.content.parts[0].text if hasattr(session_event.content, 'parts') else session_event.content
                     history_text += f"User: {content_text}\n"
@@ -77,16 +82,39 @@ class CommandHandler:
                     if hasattr(session_event.content, 'parts'):
                         content_texts = []
                         for part in session_event.content.parts:
+                            if part.function_call != None:
+                                content_texts.append(f"Function called: {part.function_call.name}\n")
+                                content_texts.append(f"Function arguments: {part.function_call.args}\n")
+                                continue
+                            if part.function_response != None:
+                                content_texts.append(f"Function called: {part.function_response.name}\n")
+                                content_texts.append(f"Function response: {part.function_response.response}\n")
+                                continue
                             if hasattr(part, 'text'):
+                                if part.text == None:
+                                    print(part)
                                 content_texts.append(part.text)
                         content_text = "\n".join(content_texts)
                     else:
                         content_text = session_event.content
                     
-                    print(f"content_text: {content_text}")
+                    logger.debug(f"content_text: {content_text}")
                     history_text += f"Dom: {content_text.replace("%next_message%", "\n").replace("%no_response%", "")}\n"
 
-            await event.respond(history_text)
+            # Split message if it's too long for Telegram (4096 character limit)
+            if len(history_text) >= 4096:
+                # Split into chunks of 4000 characters to be safe
+                chunk_size = 4000
+                chunks = [history_text[i:i + chunk_size] for i in range(0, len(history_text), chunk_size)]
+                
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        await event.respond(chunk)
+                    else:
+                        # Add continuation indicator for subsequent chunks
+                        await event.respond(f"...(continued)\n{chunk}")
+            else:
+                await event.respond(history_text)
         except Exception as e:
             logger.error(f"Error getting chat history: {e}")
             await event.respond("Sorry, I encountered an error while retrieving the chat history.")
@@ -131,8 +159,17 @@ class CommandHandler:
                 user_id=chat_id,
                 session_id=session_id,
                 state={
+                    "chat_id": chat_id,
                     "individualisation_prompts": [],
-                    "summary": "",
+                    "summary": "No summary available",
+                    "sarcasm_level": SARCASTIC_LEVEL,
+                    "playfulness_level": PLAYFUL_LEVEL,
+                    "humor_level": HUMOR_LEVEL,
+                    "formality_level": FORMALITY_LEVEL,
+                    "empathy_level": EMPATHY_LEVEL,
+                    "enthusiasm_level": ENTHUSIASM_LEVEL,
+                    "singlish_level": SINGLISH_LEVEL,
+                    "emoji_level": EMOJI_LEVEL,
                 }
             )
             await event.respond("Chat history has been cleared.")

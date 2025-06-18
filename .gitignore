@@ -195,3 +195,4 @@ cython_debug/
 bot_session.session
 chat_history.json
 .DS_Store
+*.tar.gz

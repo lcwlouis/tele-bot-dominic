@@ -7,22 +7,22 @@ from dotenv import load_dotenv
 import logging
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('search.log')
-    ]
-)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         logging.StreamHandler(),
+#         logging.FileHandler('search.log')
+#     ]
+# )
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 import os
 
-async def search(keywords: str, tool_context: ToolContext) -> str:
+async def searxng_search(keywords: str, tool_context: ToolContext) -> str:
     """
-    Searches the web using Searxng and returns the top result. 
+    Searches the web using Searxng. 
     
     Args:
         keywords (str): The search query.
@@ -82,7 +82,7 @@ async def test_search():
     tool_context = MockToolContext()
     
     # Test case 1: Basic search
-    result = await search("What is LightRAG", tool_context)
+    result = await searxng_search("What is LightRAG", tool_context)
     logger.info("Test 1 - Basic search:")
     logger.info(result)
     logger.info("\n")

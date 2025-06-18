@@ -46,3 +46,6 @@ data/
 # System
 .DS_Store
 Thumbs.db
+
+# Ignore images
+*.tar.gz

@@ -18,9 +18,22 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('bot.log')
+        logging.FileHandler(filename='main.log')
     ]
 )
+
+# Set specific logging levels for different components
+# Agent modules - only log ERROR level to reduce spam
+logging.getLogger('agentConversation').setLevel(logging.ERROR)
+logging.getLogger('agentSummariser').setLevel(logging.ERROR)
+
+# Google ADK modules - set to WARNING to reduce noise
+logging.getLogger('google.adk').setLevel(logging.WARNING)
+
+# Telethon - set to WARNING to reduce connection noise
+logging.getLogger('telethon').setLevel(logging.WARNING)
+
+# Keep main application logging at INFO level
 logger = logging.getLogger(__name__)
 
 async def main():
