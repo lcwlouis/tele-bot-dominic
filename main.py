@@ -11,14 +11,15 @@ from bot.utils.bot_state import BotState
 from bot.handlers.commands import CommandHandler
 from bot.handlers.message_handler import MessageHandler
 from bot.services.database_service import DatabaseService
+from bot.utils.postgres_logger import PostgreSQLHandler
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(filename='main.log')
+        logging.StreamHandler(),  # Keep console output for development
+        PostgreSQLHandler(level=logging.INFO)  # Add PostgreSQL logging
     ]
 )
 
