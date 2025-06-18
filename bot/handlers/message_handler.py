@@ -2,14 +2,15 @@ import random
 import asyncio
 import logging
 from datetime import datetime
-import uuid
 from bot.config.settings import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY, SUMMARISING_AGENT_TOKEN_THRESHOLD, DEV_MODE, DEV_CHAT_ID, SARCASTIC_LEVEL, PLAYFUL_LEVEL, HUMOR_LEVEL, FORMALITY_LEVEL, EMPATHY_LEVEL, ENTHUSIASM_LEVEL, SINGLISH_LEVEL, EMOJI_LEVEL
+from bot.config.models import LITELLM_MODE
 from google.adk.runners import Runner
 from google.adk.sessions import DatabaseSessionService
 from google.genai import types
+from google.genai.types import Part
 from google.adk.events import Event
 from bot.utils.bot_state import BotState
-from summarising_agent.agent import summarising_agent
+from agentSummariser import get_summarising_agent
 import json
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,69 @@ class MessageHandler:
         self.runner = runner
         self.session_service = session_service
         self.client = None  # Will be set by main.py
+    
+    async def _handle_litellm_session_issue(self, chat_id: str, session_id: str):
+        """Handle LiteLLM session issues by recreating the session if needed."""
+        if not LITELLM_MODE:
+            return
+            
+        try:
+            # Try to get the current session
+            session = await self.session_service.get_session(
+                app_name="dom",
+                user_id=chat_id,
+                session_id=session_id,
+            )
+            
+            # If session exists but has issues, we might need to clear it
+            if session and hasattr(session, 'events') and len(session.events) > 10:
+                logger.warning(f"Session {session_id} has many events, clearing for LiteLLM stability")
+                # Create a new session with the same state but fresh events
+                await self.session_service.delete_session(
+                    app_name="dom",
+                    user_id=chat_id,
+                    session_id=session_id,
+                )
+                
+                # Recreate session with same state
+                await self.session_service.create_session(
+                    app_name="dom",
+                    user_id=chat_id,
+                    session_id=session_id,
+                    state=session.state
+                )
+                
+        except Exception as e:
+            logger.error(f"Error handling LiteLLM session: {e}")
+    
+    async def _run_agent_with_retry(self, chat_id: str, session_id: str, message, max_retries=3):
+        """Run the agent with retry logic for LiteLLM stability."""
+        for attempt in range(max_retries):
+            try:
+                async for event_response in self.runner.run_async(
+                    user_id=chat_id,
+                    session_id=session_id,
+                    new_message=message,
+                ):
+                    yield event_response
+                    
+                    if event_response.is_final_response():
+                        break
+                return  # Success, exit retry loop
+                
+            except Exception as e:
+                logger.warning(f"Agent call attempt {attempt + 1} failed: {e}")
+                
+                if LITELLM_MODE and "Internal Server Error" in str(e):
+                    # For LiteLLM, try to fix session issues
+                    await self._handle_litellm_session_issue(chat_id, session_id)
+                    
+                if attempt == max_retries - 1:
+                    # Last attempt failed, re-raise the exception
+                    raise e
+                    
+                # Wait before retry
+                await asyncio.sleep(1 * (attempt + 1))
     
     async def handle_message(self, event):
         """Handle incoming messages."""
@@ -105,6 +169,11 @@ class MessageHandler:
             new_message = f"[{datetime.now().strftime('%d-%m-%Y %I:%M %p')}] {sender.first_name if sender else 'Unknown User'} (@{sender.username if sender else 'Unknown Username'}) [msg_id:{message_id}{f' reply_to:{reply_to_id}' if reply_to_id else ''}]: {message_text}"
             self.bot_state.add_to_queued_messages(chat_id, new_message)
             
+            # Check if summarization is currently running for this chat
+            if self.bot_state.is_summarization_locked(chat_id):
+                logger.info(f"Summarization is currently running for chat {chat_id}, ignoring message")
+                return
+            
             # Check if chat is offline
             if self.bot_state.is_offline(chat_id):
                 logger.info(f"Chat {chat_id} is offline, skipping message processing")
@@ -183,8 +252,15 @@ class MessageHandler:
     async def handle_after_idling_messages(self, chat_id_or_event, after_summarization=False):
         """Handle messages that were queued while the bot was offline.
         This will call the agent with all the new messages labeled under "New Messages:"
+        
+        Args:
+            chat_id_or_event: Either a chat_id string or an event object
+            after_summarization: Whether this is being called after session summarization
         """
-        logger.info("\n=== Handling After Idling Messages ===")
+        if after_summarization:
+            logger.info("\n=== Handling After Summarization Messages ===")
+        else:
+            logger.info("\n=== Handling After Idling Messages ===")
         if DEV_MODE:
             logger.info(f"DEV MODE ACTIVE - Only chat {DEV_CHAT_ID} is allowed")
         
@@ -222,6 +298,11 @@ class MessageHandler:
         # Check if chat is sleeping
         if self.bot_state.is_sleeping(chat_id):
             logger.info(f"Bot for chat {chat_id} is sleeping, skipping message processing")
+            return
+        
+        # Check if summarization is currently running for this chat
+        if self.bot_state.is_summarization_locked(chat_id):
+            logger.info(f"Summarization is currently running for chat {chat_id}, ignoring message")
             return
         
         # Check if chat is offline

@@ -152,3 +152,30 @@ class BotState:
     async def start_state_checker(self):
         # Implementation of start_state_checker method
         pass 
+
+    def set_summarization_lock(self, chat_id: str) -> bool:
+        """Set a summarization lock for a chat. Returns True if lock was acquired, False if already locked."""
+        return self.db.set_summarization_lock(str(chat_id))
+
+    def is_summarization_locked(self, chat_id: str) -> bool:
+        """Check if a chat has a summarization lock."""
+        return self.db.is_summarization_locked(str(chat_id))
+
+    def clear_summarization_lock(self, chat_id: str):
+        """Clear the summarization lock for a chat."""
+        self.db.clear_summarization_lock(str(chat_id))
+        logger.info(f"Cleared summarization lock for chat {chat_id}")
+
+    def clear_stale_summarization_locks(self, timeout_minutes: int = 30) -> int:
+        """Clear stale summarization locks that are older than the specified timeout.
+        
+        Args:
+            timeout_minutes: Number of minutes after which a lock is considered stale. Default is 30 minutes.
+            
+        Returns:
+            Number of stale locks cleared
+        """
+        count = self.db.clear_stale_summarization_locks(timeout_minutes)
+        if count > 0:
+            logger.info(f"Cleared {count} stale summarization locks")
+        return count 
