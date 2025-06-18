@@ -50,10 +50,11 @@ class BotState:
         self.db.clear_processing_delay(str(chat_id))
         logger.info(f"Cleared processing delay for chat {chat_id}")
 
-    def add_to_queued_messages(self, chat_id: str, message: str):
+    def add_to_queued_messages(self, chat_id: str, message: str) -> int:
         """Add a message to the queued messages for a specific chat."""
-        self.db.add_to_message_queue(str(chat_id), str(message))
+        number_of_queued_messages = self.db.add_to_message_queue(str(chat_id), str(message))
         logger.info(f"Message added to queued messages for chat {chat_id}")
+        return number_of_queued_messages
 
     def get_queued_messages(self, chat_id: str) -> str:
         """Get the queued messages for a specific chat."""

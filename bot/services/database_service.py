@@ -3,7 +3,7 @@ from typing import Optional
 import logging
 import random
 import asyncio
-from sqlalchemy import create_engine, Column, String, DateTime, Text, Boolean
+from sqlalchemy import create_engine, Column, String, DateTime, Text, Boolean, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from bot.config.settings import DB_URL, WAKE_UP_TIME, SLEEP_TIME, MIN_OFFLINE_TIME, MAX_OFFLINE_TIME, MIN_ONLINE_TIME, MAX_ONLINE_TIME, DEV_MODE, DEV_CHAT_ID
@@ -35,6 +35,7 @@ class MessageQueue(Base):
     
     chat_id = Column(String, primary_key=True)
     messages = Column(Text)
+    number_of_messages = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -244,18 +245,20 @@ class DatabaseService:
         finally:
             session.close()
 
-    def add_to_message_queue(self, chat_id: str, message: str) -> None:
+    def add_to_message_queue(self, chat_id: str, message: str) -> int:
         """Add a message to the queue for a chat."""
         session = self.Session()
         try:
             queue = session.query(MessageQueue).filter_by(chat_id=str(chat_id)).first()
             if queue:
                 queue.messages = (queue.messages or "") + f"{message}\n"
+                queue.number_of_messages += 1
             else:
-                queue = MessageQueue(chat_id=str(chat_id), messages=f"{message}\n")
+                queue = MessageQueue(chat_id=str(chat_id), messages=f"{message}\n", number_of_messages=1)
                 session.add(queue)
             session.commit()
             logger.info(f"Message added to queue for chat {chat_id}")
+            return queue.number_of_messages
         except Exception as e:
             session.rollback()
             logger.error(f"Error adding message to queue: {e}")

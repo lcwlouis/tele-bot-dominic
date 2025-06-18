@@ -37,6 +37,7 @@ MAX_ONLINE_TIME = 900  # 15 minutes maximum online time
 MIN_RESPONSE_DELAY = 3  # 3 seconds
 MAX_RESPONSE_DELAY = 12  # 12 seconds
 SUMMARISING_AGENT_TOKEN_THRESHOLD = int(os.getenv("SUMMARISING_AGENT_TOKEN_THRESHOLD", 4000))
+MAX_OFFLINE_MESSAGES = int(os.getenv("MAX_OFFLINE_MESSAGES", 50))
 
 # Personality Parameters (0.0 to 1.0 scale)
 SARCASTIC_LEVEL = float(os.getenv("SARCASTIC_LEVEL", "0.7"))
