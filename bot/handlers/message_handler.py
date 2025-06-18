@@ -2,7 +2,22 @@ import random
 import asyncio
 import logging
 from datetime import datetime
-from bot.config.settings import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY, SUMMARISING_AGENT_TOKEN_THRESHOLD, DEV_MODE, DEV_CHAT_ID, SARCASTIC_LEVEL, PLAYFUL_LEVEL, HUMOR_LEVEL, FORMALITY_LEVEL, EMPATHY_LEVEL, ENTHUSIASM_LEVEL, SINGLISH_LEVEL, EMOJI_LEVEL
+from bot.config.settings import (
+    MIN_RESPONSE_DELAY, 
+    MAX_RESPONSE_DELAY, 
+    SUMMARISING_AGENT_TOKEN_THRESHOLD, 
+    DEV_MODE, 
+    DEV_CHAT_ID, 
+    SARCASTIC_LEVEL, 
+    PLAYFUL_LEVEL, 
+    HUMOR_LEVEL, 
+    FORMALITY_LEVEL, 
+    EMPATHY_LEVEL, 
+    ENTHUSIASM_LEVEL, 
+    SINGLISH_LEVEL, 
+    EMOJI_LEVEL, 
+    MAX_OFFLINE_MESSAGES
+    )
 from bot.config.models import LITELLM_MODE
 from google.adk.runners import Runner
 from google.adk.sessions import DatabaseSessionService
@@ -167,17 +182,21 @@ class MessageHandler:
             message_id = event.message.id
             reply_to_id = event.message.reply_to_msg_id if hasattr(event.message, 'reply_to_msg_id') else None
             new_message = f"[{datetime.now().strftime('%d-%m-%Y %I:%M %p')}] {sender.first_name if sender else 'Unknown User'} (@{sender.username if sender else 'Unknown Username'}) [msg_id:{message_id}{f' reply_to:{reply_to_id}' if reply_to_id else ''}]: {message_text}"
-            self.bot_state.add_to_queued_messages(chat_id, new_message)
+            number_of_queued_messages = self.bot_state.add_to_queued_messages(chat_id, new_message)
             
             # Check if summarization is currently running for this chat
             if self.bot_state.is_summarization_locked(chat_id):
                 logger.info(f"Summarization is currently running for chat {chat_id}, ignoring message")
                 return
             
-            # Check if chat is offline
-            if self.bot_state.is_offline(chat_id):
+            # Check if chat is offline, if more than MAX_OFFLINE_MESSAGES messages we will process and change the state to online due to many messages
+            if self.bot_state.is_offline(chat_id) and number_of_queued_messages < MAX_OFFLINE_MESSAGES:
                 logger.info(f"Chat {chat_id} is offline, skipping message processing")
                 return
+            
+            if number_of_queued_messages >= MAX_OFFLINE_MESSAGES:
+                logger.info(f"Chat {chat_id} has more than {MAX_OFFLINE_MESSAGES} messages, changing state to online")
+                self.bot_state.force_online(chat_id)
             
             # Check if we're in a processing delay
             if self.bot_state.is_in_processing_delay(chat_id):
@@ -202,7 +221,17 @@ class MessageHandler:
                 logger.info("Creating message object for agent...")
                 try:
                     first_message_id = queued_messages.split("msg_id:")[1].split(" ")[0].replace("]:", "")
-                    message = types.Content(role="user", parts=[types.Part(text=f"Previous message id: {int(first_message_id)-1}\nUnread messages:\n{queued_messages}")])
+                    system_message = f"Woke up to {number_of_queued_messages} notifications. \n\n" if number_of_queued_messages >= MAX_OFFLINE_MESSAGES else ""
+                    system_message += f"Previous message id: {int(first_message_id)-1}\n"
+                    system = types.Content(role="model", parts=[types.Part(text=system_message)])
+                    system_event = Event(author="dom", content=system)
+                    await self.session_service.append_event(session, system_event)
+                    session = await self.session_service.get_session(
+                        app_name="dom",
+                        user_id=chat_id,
+                        session_id=session_id,
+                    )
+                    message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages}")])
                     logger.debug(f"Message object: {message}")
                 except Exception as e:
                     logger.error(f"Error creating message object: {e}")
@@ -210,7 +239,6 @@ class MessageHandler:
                 
                 # Get response from agent using runner with retry logic
                 logger.info("Getting response from agent...")
-                response_content = None
                 event_response = None
                 
                 # Clear queued messages
