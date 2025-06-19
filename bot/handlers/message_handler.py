@@ -220,17 +220,28 @@ class MessageHandler:
                 # Create message object with context from queued messages
                 logger.info("Creating message object for agent...")
                 try:
-                    first_message_id = queued_messages["messages"].split("msg_id:")[1].split(" ")[0].replace("]:", "")
-                    system_message = f"System forced Dom to wake up due to {queued_messages["number_of_messages"]} notifications. \n\n" if queued_messages["number_of_messages"] >= MAX_OFFLINE_MESSAGES else f"Woke up to {queued_messages["number_of_messages"]} notifications. \n\n"
-                    system_message += f"Previous message id: {int(first_message_id)-1}\n"
+                    # Try to get latest message id to reverse engineer previous message id
+                    try:
+                        first_message_id = queued_messages["messages"].split("msg_id:")[1].split(" ")[0].replace("]:", "")
+                    except Exception as e:
+                        logger.info(f"No previous message id found, setting to 0")
+                        first_message_id = "-1"
+                    
+                    # Setting system message to tell Dom what had been happening 
+                    system_message = f"System forced me to wake up due to receiving {queued_messages["number_of_messages"]} total notifications. \n\n" if queued_messages["number_of_messages"] >= MAX_OFFLINE_MESSAGES else f"Received {queued_messages["number_of_messages"]} notifications. \n\n"
+                    system_message += f"Previous message id: {int(first_message_id)-1}\n" if first_message_id != "-1" else ""
                     system = types.Content(role="model", parts=[types.Part(text=system_message)])
                     system_event = Event(author="dom", content=system)
+                    
+                    # Appending system message to session
                     await self.session_service.append_event(session, system_event)
                     session = await self.session_service.get_session(
                         app_name="dom",
                         user_id=chat_id,
                         session_id=session_id,
                     )
+                    
+                    # Creating message object for agent that shows all the unread messages
                     message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages['messages']}")])
                     logger.debug(f"Message object: {message}")
                 except Exception as e:
@@ -263,11 +274,13 @@ class MessageHandler:
                         break
                 else:
                     raise Exception("No response received from agent")
-                # Clear the processing delay
+                
+                # Clear the processing delay once the agent has responded
                 self.bot_state.clear_processing_delay(chat_id)
+                
+                # Check if input tokens more than the threshold, we will summarise the session
                 input_tokens = event_response.usage_metadata.prompt_token_count
                 logger.info(f"Current Input Tokens used: {input_tokens}")
-                # If input tokens more than the threshold, we will summarise the session
                 if input_tokens > SUMMARISING_AGENT_TOKEN_THRESHOLD:
                     await self._handle_session_summary(chat_id, session_id)
                     
@@ -277,12 +290,13 @@ class MessageHandler:
         
         logger.info("=== Message Processing Complete ===\n")
 
-    async def handle_after_idling_messages(self, chat_id_or_event, after_summarization=False):
+    async def handle_after_idling_messages(self, chat_id_or_event, urgent_messages=False, after_summarization=False):
         """Handle messages that were queued while the bot was offline.
         This will call the agent with all the new messages labeled under "New Messages:"
         
         Args:
             chat_id_or_event: Either a chat_id string or an event object
+            urgent_messages: Whether this is being called after urgent messages
             after_summarization: Whether this is being called after session summarization
         """
         if after_summarization:
@@ -295,6 +309,7 @@ class MessageHandler:
         # Handle both event and chat_id inputs
         if isinstance(chat_id_or_event, str):
             chat_id = chat_id_or_event
+            
             # Create a mock event with the chat_id
             class MockEvent:
                 def __init__(self, chat_id, client):
@@ -312,7 +327,8 @@ class MessageHandler:
         else:
             event = chat_id_or_event
             chat_id = str(event.chat_id)
-            
+        
+        # Check if chat is allowed
         try:
             if not await self.command_handler.is_allowed_chat(int(chat_id)):
                 if not DEV_MODE:
@@ -340,7 +356,7 @@ class MessageHandler:
 
         # Check if there are any messages in the queue
         queued_messages = self.bot_state.get_queued_messages(chat_id)
-        if not queued_messages:
+        if queued_messages["number_of_messages"] == 0:
             logger.info("No messages in queue, nothing to process")
             return
         
@@ -376,30 +392,50 @@ class MessageHandler:
         # Create message object with context from queued messages
         logger.info("Creating message object for agent...")
         try:
-            first_message_id = queued_messages["messages"].split("msg_id:")[1].split(" ")[0].replace("]:", "")
-            system_message = f"Woke up to {queued_messages['number_of_messages']} notifications. \n\n" if queued_messages['number_of_messages'] != 0 else ""
-            system_message += f"Previous message id: {int(first_message_id)-1}\n"
+            # Try to get latest message id to reverse engineer previous message id
+            try:
+                first_message_id = queued_messages["messages"].split("msg_id:")[1].split(" ")[0].replace("]:", "")
+            except Exception as e:
+                logger.info(f"No previous message id found, setting to 0")
+                first_message_id = "-1"
+            
+            # Setting system message to tell Dom what had been happening 
+            system_message = ""
+            if urgent_messages:
+                system_message = f"User called me urgently, forcing me to wake up. \n\n"
+            elif after_summarization:
+                system_message = f"Summarisation just finished. \n\n"
+            else:
+                system_message = f"I just came back online. \n\n"
+            
+            # Setting system message to tell Dom what had been happening 
+            system_message += f"Received {queued_messages['number_of_messages']} notifications. \n\n" if queued_messages['number_of_messages'] != 0 else ""
+            system_message += f"Previous message id: {int(first_message_id)-1}\n The following are the unread messages:\n" if first_message_id != "-1" else ""
             system = types.Content(role="model", parts=[types.Part(text=system_message)])
             system_event = Event(author="dom", content=system)
+            
+            # Appending system message to session
             await self.session_service.append_event(session, system_event)
             session = await self.session_service.get_session(
                 app_name="dom",
                 user_id=chat_id,
                 session_id=session_id,
-            )
-            message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages['messages']}")])
+            )   
+            
+            # Creating message object for agent that shows all the unread messages
+            message = types.Content(role="user", parts=[types.Part(text=f"Messages:\n{queued_messages['messages']}")])
             logger.debug(f"Message object: {message}")
         except Exception as e:
             logger.error(f"Error creating message object: {e}")
-            message = types.Content(role="user", parts=[types.Part(text=f"Unread messages:\n{queued_messages['messages']}")])
+            message = types.Content(role="user", parts=[types.Part(text=f"Messages:\n{queued_messages['messages']}")])
         
-        # Get response from agent using runner
+        # Get response from agent using runner with retry logic
         logger.info("Getting response from agent...")
-        response_content = None
         
         # Clear queued messages
         self.bot_state.clear_queued_messages(chat_id)
         
+        # Use the new retry wrapper for better LiteLLM stability
         async with event.client.action(event.chat_id, 'typing'):
             async for event_response in self._run_agent_with_retry(
                 chat_id=chat_id,
@@ -408,6 +444,7 @@ class MessageHandler:
                 max_retries=3 if LITELLM_MODE else 1
             ):
                 logger.info(f"Event response received: {event_response}")
+                
                 # Check if this event has text content (pre-function call response)
                 if hasattr(event_response.content, 'parts') and event_response.content.parts:
                     for part in event_response.content.parts:
