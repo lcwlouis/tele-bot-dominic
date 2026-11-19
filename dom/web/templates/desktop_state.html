@@ -19,9 +19,9 @@
   {% endif %}
   <div class="actions" hx-target="#desktop-state" hx-swap="outerHTML" hx-sync="#desktop-state:replace">
     {% if context.status in ("stopped", "error") %}
-    <button class="primary" hx-post="/desktop/computer/start">{{ "Start computer" if context.local else "Connect to computer" }}</button>
+    <button class="primary" hx-post="/desktop/computer/start">{{ "Start computer" if context["local"] else "Connect to computer" }}</button>
     {% endif %}
-    {% if context.local and context.status in ("ready", "error") and not context.task %}
+    {% if context["local"] and context.status in ("ready", "error") and not context.task %}
     <button class="quiet" hx-post="/desktop/computer/stop">Stop computer</button>
     {% endif %}
   </div>

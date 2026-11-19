@@ -347,7 +347,7 @@ async def test_probe_targets_come_from_config(tmp_path):
     None,
     [{**NETWORK[0], "EnableIPv6": True}],
     [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": "198.51.100.0/24", "Gateway": "198.51.100.1"}]}}],
-    [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": str(BRIDGE), "Gateway": GATEWAY}, {"Subnet": "fd00::/64"}]}}],
+    [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": str(BRIDGE), "Gateway": GATEWAY}, {"Subnet": "2001:db8::/64"}]}}],
 ])
 async def test_start_refused_when_the_network_is_not_the_configured_ipv4_bridge(tmp_path, network):
     docker = FakeDocker(network=network)

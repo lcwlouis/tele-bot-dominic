@@ -13,6 +13,17 @@ import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 
+from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
+
+CONTEXTUAL_ID = re.compile(r"""(?<![\w-])(?:chat_id|user_id|owner_id)["']?\s*[:=]\s*["']?(-?[0-9]{7})(?!\w)""")
+TELEGRAM_LINK = re.compile(
+    r"(?<![\w.-])t\.me/(?:(?:\+|joinchat/)[A-Za-z0-9_-]+|[A-Za-z0-9_]{4,32})(?![\w-])", re.IGNORECASE,
+)
+IPV6 = re.compile(r"(?<![\w:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f]):[0-9a-f:.]+(?![\w:])", re.IGNORECASE)
+PRIVATE_HOST = re.compile(
+    r"(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"(?:ts\.net|local|lan|internal|home\.arpa)(?![\w-]|\.[\w-])", re.IGNORECASE,
+)
 TELEGRAM_ID = re.compile(r"(?<!\w)(?:-100[0-9]{10}|-?[0-9]{8,12})(?!\w)")
 HANDLE = re.compile(r"(?<![\w@])@[A-Za-z0-9_]{5,32}(?!\w)")
 IPV4 = re.compile(r"(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?(?!\w)")
@@ -51,6 +62,14 @@ def is_private_address(value: str, networks: set[str]) -> bool:
     )
 
 
+def is_private_ipv6(value: str) -> bool:
+    try:
+        address = ipaddress.IPv6Address(value.rstrip("."))
+    except ipaddress.AddressValueError:
+        return False
+    return address.is_private or address.is_link_local
+
+
 def categories(
     line: str, path: Path, line_number: int, python_decorators: set[tuple[int, int]], allow: dict[str, set[str]],
 ) -> Iterator[str]:
@@ -66,11 +85,22 @@ def categories(
             yield "email address"
     line = EMAIL.sub(lambda match: " " * len(match.group()), line)
     fixtures = path.parts[0] == "tests" or path == POLICY_PATH
-    if any(
-        not (fixtures and match.group() in allow["test_telegram_ids"])
-        for match in TELEGRAM_ID.finditer(line)
-    ):
+    identifiers = [match.group() for match in TELEGRAM_ID.finditer(line)]
+    identifiers.extend(match[1] for match in CONTEXTUAL_ID.finditer(line))
+    if any(not (fixtures and value in allow["test_telegram_ids"]) for value in identifiers):
         yield "Telegram ID"
+    if TELEGRAM_LINK.search(line):
+        yield "Telegram link"
+    if TELEGRAM_BOT_TOKEN.search(line):
+        yield "Telegram bot token"
+    if API_KEY.search(line):
+        yield "API key"
+    if any(
+        match[1].removesuffix(".").lower() not in allow["bearer_placeholders"]
+        and not (fixtures and match[1] in allow["test_bearer_tokens"])
+        for match in BEARER_TOKEN.finditer(line)
+    ):
+        yield "Bearer token"
     for match in HANDLE.finditer(line):
         handle = match.group().lower()
         if (line_number, match.start()) in python_decorators:
@@ -82,6 +112,10 @@ def categories(
         yield "Telegram handle"
     if any(is_private_address(match.group(), allow["generic_cidrs"]) for match in IPV4.finditer(line)):
         yield "private IPv4"
+    if any(is_private_ipv6(match.group()) for match in IPV6.finditer(line)):
+        yield "private IPv6"
+    if PRIVATE_HOST.search(line):
+        yield "private hostname"
 
 
 def read_tracked(path: Path) -> str | None:

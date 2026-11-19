@@ -109,3 +109,46 @@ def test_finding_in_tracked_filename_redacts_that_name(repository):
     assert result.returncode == 1
     assert "[redacted tracked path]:0: Telegram ID" in result.stdout
     assert path.name not in result.stdout
+
+
+@pytest.mark.parametrize(("line", "category"), [
+    ("sk-" + "A" * 24, "API key"),
+    ("sk-or-v1-" + "Ab_" * 10, "API key"),
+    ("gsk_" + "B" * 24, "API key"),
+    ("hf_" + "C" * 24, "API key"),
+    ("abcd_" + "D" * 20, "API key"),
+    ("Authorization: " + "Bearer " + "token.with-a_test~signature", "Bearer token"),
+    ("123456" + ":" + "E_-" * 12, "Telegram bot token"),
+    ("https://t.me/" + "example_handle", "Telegram link"),
+    ("https://t.me/" + "+fixture_invite", "Telegram link"),
+    ("[fd12:" + ":1]:443", "private IPv6"),
+    ("FC00:" + ":a:0/48", "private IPv6"),
+    ("fe80:" + ":1234%en0", "private IPv6"),
+    ("fixture." + "ts.net", "private hostname"),
+    ("fixture." + "local", "private hostname"),
+    ("fixture." + "lan", "private hostname"),
+    ("fixture." + "internal", "private hostname"),
+    ("fixture." + "home.arpa", "private hostname"),
+    ("chat_id = -" + "1234567", "Telegram ID"),
+    ('"user_id": "' + '1234567"', "Telegram ID"),
+    ("owner_id = " + "1234567", "Telegram ID"),
+])
+def test_detects_additional_personal_data_without_echoing_it(repository, line, category):
+    track(repository, "settings.md", line)
+    result = scan(repository)
+    assert result.returncode == 1
+    assert f"settings.md:1: {category}" in result.stdout
+    assert line not in result.stdout
+
+
+def test_seven_digit_numbers_without_telegram_id_fields_are_allowed(repository):
+    track(repository, "settings.md", "count = 1234567\nchat_id_limit = 1234567\n")
+    assert scan(repository).returncode == 0
+
+
+def test_allowlisted_bearer_fixture_is_limited_to_tests(repository):
+    header = "Bearer " + "fake-key"
+    track(repository, "tests/test_sample.py", f"AUTH = {header!r}")
+    assert scan(repository).returncode == 0
+    track(repository, "config.toml", f"authorization = {header!r}")
+    assert scan(repository).returncode == 1
