@@ -2,6 +2,8 @@ import asyncio
 
 import httpx
 import pytest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.methods import SendMessage
 
 from dom.dispatch import Dispatcher
 from dom.jev import JevUnavailable
@@ -262,3 +264,68 @@ async def test_background_poll_does_not_skip_a_chat_with_an_overdue_debounce(set
     assert len(app.script.requests) == 1
     waits[-1][1].set()
     await drain_dispatch(dispatch)
+
+
+def send_fails(app, *errors):
+    """Make the next sends raise each error in turn (None lets a send through), then keep raising the last."""
+    sends, send = [], app.bot.send_message
+
+    async def failing(*args, **kwargs):
+        error = errors[min(len(sends), len(errors) - 1)]
+        sends.append(error)
+        if error is not None:
+            raise error
+        return await send(*args, **kwargs)
+
+    app.bot.send_message = failing
+    return sends
+
+
+def telegram_error(kind, message):
+    return kind(method=SendMessage(chat_id=GROUP, text="x"), message=message)
+
+
+@pytest.mark.parametrize("error", [
+    telegram_error(TelegramForbiddenError, "Forbidden: bot was kicked from the group chat"),
+    telegram_error(TelegramBadRequest, "Bad Request: chat not found"),
+])
+async def test_unreachable_chat_is_marked_read(setup_dispatch, error, caplog):
+    app, dispatch, _ = await setup_dispatch()
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    sends = send_fails(app, error)
+    await deliver(app)
+    assert len(sends) == 1
+    assert (await app.store.get_unread(GROUP))[0] == 0
+    assert "giving up" in caplog.text
+
+
+async def test_other_bad_requests_are_retried_like_any_failure(setup_dispatch):
+    app, dispatch, _ = await setup_dispatch()
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    send_fails(app, telegram_error(TelegramBadRequest, "Bad Request: message is too long"))
+    await deliver(app)
+    assert (await app.store.get_unread(GROUP))[0] == 1
+
+
+async def test_chat_is_marked_read_after_three_consecutive_failures(setup_dispatch, caplog):
+    app, dispatch, _ = await setup_dispatch()
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    sends = send_fails(app, RuntimeError("network down"))
+    for msg_id in (1, 2):
+        await deliver(app, msg_id)
+        assert (await app.store.get_unread(GROUP))[0] == msg_id
+    await deliver(app, 3)
+    assert (await app.store.get_unread(GROUP))[0] == 0
+    assert len(sends) == 3 and "giving up" in caplog.text
+    await deliver(app, 4)
+    assert (await app.store.get_unread(GROUP))[0] == 1  # the count starts again
+
+
+async def test_a_successful_turn_resets_the_failure_count(setup_dispatch):
+    app, dispatch, _ = await setup_dispatch()
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    oops = RuntimeError("network down")
+    send_fails(app, oops, oops, None, oops, oops)
+    for msg_id in range(1, 6):
+        await deliver(app, msg_id)
+    assert (await app.store.get_unread(GROUP))[0] == 2
