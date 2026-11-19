@@ -15,7 +15,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - run: uv sync --frozen
+      - run: uv sync --locked
       - run: uv run python scripts/check_public.py
       - run: uv run pytest -q
 
@@ -32,5 +32,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
-      - run: uv sync --frozen
-      - run: uv run pytest -q -rs tests/test_plugin_sandbox.py
+      - run: uv sync --locked
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Test plugin sandbox
+        run: |
+          uv run pytest -q -rs tests/test_plugin_sandbox.py --junitxml="$RUNNER_TEMP/sandbox-results.xml"
+          uv run python - "$RUNNER_TEMP/sandbox-results.xml" <<'PYTHON'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse(sys.argv[1]).iter("testcase")
+          nonpassing = ("skipped", "failure", "error")
+          if not any(all(case.find(tag) is None for tag in nonpassing) for case in cases):
+              sys.exit("No plugin sandbox test passed.")
+          PYTHON
