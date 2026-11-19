@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from difflib import unified_diff
 
@@ -16,8 +17,15 @@ _NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 _READ_LIMIT = 4 * (BODY_LIMIT + DESCRIPTION_LIMIT + NAME_LIMIT) + 300
 
 
+def _visible(text: str) -> bool:
+    """No invisible, bidi, tag, private-use, unassigned or control characters (newline and tab aside)."""
+    return all(
+        char in "\n\t" or unicodedata.category(char) not in ("Cc", "Cf", "Co", "Cn", "Cs") for char in text
+    )
+
+
 def _validate_name(name: str) -> None:
-    if not isinstance(name, str) or len(name) > NAME_LIMIT or not _NAME.fullmatch(name):
+    if not isinstance(name, str) or len(name) > NAME_LIMIT or not _NAME.fullmatch(name) or not _visible(name):
         raise ValueError("Skill name must be lowercase words or numbers with hyphens, up to 64 characters.")
 
 
@@ -32,9 +40,10 @@ class Skill:
         if (
             not isinstance(self.description, str) or not self.description.strip()
             or len(self.description) > DESCRIPTION_LIMIT or not self.description.isprintable()
+            or not _visible(self.description)
         ):
             raise ValueError("Skill description must be one line of up to 200 characters.")
-        if not isinstance(self.body, str) or not self.body.strip() or len(self.body) > BODY_LIMIT or "\x00" in self.body:
+        if not isinstance(self.body, str) or not self.body.strip() or len(self.body) > BODY_LIMIT or not _visible(self.body):
             raise ValueError("Skill body must contain 1 to 4,000 characters of text.")
 
     def render(self) -> str:

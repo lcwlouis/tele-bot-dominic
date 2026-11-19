@@ -22,6 +22,28 @@ def test_skill_caps():
             Skill("example", description, body)
 
 
+HIDDEN = {
+    "zero-width": "\u200b", "bidi override": "\u202e", "bidi isolate": "\u2066", "tag": "\U000e0041",
+    "private use": "\ue000", "unassigned": "\u0378", "lone surrogate": "\ud800",
+    "escape": "\x1b", "carriage return": "\r", "null": "\x00", "delete": "\x7f", "c1": "\x85",
+}
+
+
+@pytest.mark.parametrize("hidden", HIDDEN.values(), ids=HIDDEN.keys())
+def test_hidden_characters_are_rejected_everywhere(hidden):
+    with pytest.raises(ValueError):
+        Skill("example", "Description", f"Open the page{hidden} and read it.")
+    with pytest.raises(ValueError):
+        Skill("example", f"Read{hidden} text", "Procedure")
+    with pytest.raises(ValueError):
+        Skill(f"exam{hidden}ple", "Description", "Procedure")
+
+
+def test_visible_text_newlines_and_tabs_are_allowed():
+    body = "Step 1:\n\t- open the page \u00e9 \u2014 \u4f60\u597d \U0001f600\n"
+    assert Skill("example", "Description", body).body == body
+
+
 async def propose(app, body="Use the text view.", description='Read "text" safely'):
     return await app.proposals.create(
         "skill", "Skill: browse", {"name": "browse", "description": description, "body": body}, "desktop",
