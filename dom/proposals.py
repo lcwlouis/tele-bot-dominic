@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
+
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
@@ -20,6 +22,18 @@ REFLECTION_INTERVAL = timedelta(days=7)
 
 class Refused(ValueError):
     """The proposal remains pending because its change could not be applied."""
+
+
+def soul_edit_problem(home: Home, old: str, new: str) -> str | None:
+    """Why replacing `old` by `new` in SOUL.md cannot be proposed or applied now, or None."""
+    if len(old) > MAX_SOUL_EDIT or len(new) > MAX_SOUL_EDIT:
+        return f"a soul edit's old and new text can be at most {MAX_SOUL_EDIT} characters each"
+    edited = home.edited_soul(old, new)
+    if edited is None:
+        return "SOUL.md must contain the old text exactly once"
+    if len(edited) > MAX_SOUL:
+        return f"that edit would make SOUL.md longer than {MAX_SOUL} characters"
+    return None
 
 
 def buttons(proposal_id: int, *, numbered: bool = False) -> list[InlineKeyboardButton]:
@@ -52,6 +66,8 @@ class Proposals:
         if kind == "soul_edit":
             if not (isinstance(body.get("old"), str) and body["old"] and isinstance(body.get("new"), str)):
                 raise ValueError("a soul edit needs old and new text")
+            if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
+                raise ValueError(problem)
         elif kind == "memory_fact":
             text, file = body.get("text"), body.get("file")
             if not isinstance(text, str) or not text.strip() or not isinstance(file, str) or file not in MEMORY_FILES:
@@ -99,6 +115,9 @@ class Proposals:
         old, new, why = (edit.get(key) for key in ("old", "new", "why"))
         if not all(isinstance(value, str) for value in (old, new, why)) or not old or old == new:
             return
+        if problem := soul_edit_problem(self.app.home, old, new):
+            log.info("dropped a reflection soul edit: %s", problem)
+            return
         title = why.strip()[:250] or "Soul edit"
         body = {"old": old, "new": new}
         now = self.app.dispatch.now().astimezone(timezone.utc)
@@ -125,8 +144,9 @@ class Proposals:
 
     def _apply(self, kind: str, body: dict) -> None:
         if kind == "soul_edit":
-            if not self.app.home.replace_soul(body["old"], body["new"]):
-                raise Refused("SOUL.md changed since; proposal can't apply")
+            if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
+                raise Refused(problem)
+            self.app.home.replace_soul(body["old"], body["new"])
             return
         if kind == "memory_fact":
             rel = MEMORY_FILES[body["file"]]
