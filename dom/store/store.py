@@ -234,6 +234,19 @@ class Store:
         """The messages.visibility_scope value for rows recorded in this chat."""
         return VISIBILITY_OWNER_PRIVATE if self._is_owner_chat(chat_id) else f"chat:{chat_id}"
 
+    async def set_owner(self, owner_id: int) -> None:
+        """Make `owner_id` the owner of this running store; their DM is approved from now on."""
+        await self._run(self._set_owner, owner_id)
+
+    def _set_owner(self, owner_id: int) -> None:
+        with self._tx() as conn:
+            self.owner_id = owner_id
+            self._ensure_chat(conn, str(owner_id))
+            conn.execute(
+                "UPDATE chats SET authorization_status = 'approved', updated_at = ? WHERE chat_id = ?",
+                (_now(), str(owner_id)),
+            )
+
     # ---- plumbing ---------------------------------------------------------
 
     async def _run(self, fn: Callable[..., T], *args: Any) -> T:
