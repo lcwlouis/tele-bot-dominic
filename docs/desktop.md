@@ -8,21 +8,23 @@ Choose a subnet that does not overlap your LAN or other Docker networks. The
 default bridge is `dom-desktop` with subnet `172.30.0.0/24`. Configure both under
 `[desktop]` in `config.toml`.
 
-On the Linux Docker host, run the setup with permission to manage Docker and the
-host firewall. Preview with `dom desktop-setup <home>`, then pass `--yes` to
-apply the changes. The command prints each rule it inserts and can be rerun.
+On the Linux Docker host, use Docker's iptables firewall backend. Run the setup
+with permission to manage Docker and the host firewall. Preview with
+`dom desktop-setup <home>`, then pass `--yes` to apply the changes. The command
+prints each rule it inserts and can be rerun.
 
 ```sh
 sudo /path/to/dom desktop-setup /path/to/dom-home --yes
-/path/to/dom desktop-check /path/to/dom-home 192.0.2.1 --lan-port 443
+dom desktop-check <home> <lan-ip> --lan-port N --public-address 1.1.1.1
 ```
 
-Replace the example address and port with a LAN service known to answer from the
-host. `desktop-check` runs the same probe Dom runs at startup, once, against that
-address: the connect must time out, and the control address (`probe_control`,
-default `1.1.1.1:443`) must connect. The probe image (`probe_image`, default
-`alpine:3.22`) and the AIO Sandbox image must already be on the host; neither is
-ever pulled. Use `--public-address` to pick another control address.
+Replace `<home>` with your instance home and `<lan-ip>` and `N` with the IPv4
+address and port of a LAN service known to answer from the host.
+`desktop-check` runs Dom’s startup probe once against that service. The LAN
+connection must time out, and the public control address must connect.
+The `--public-address` flag overrides the IPv4 address in `probe_control` and
+uses port `443`. The probe image (`probe_image`, default `alpine:3.22`) and
+the AIO Sandbox image must already be on the host.
 
 Setup builds a dedicated chain, `DOM-DESKTOP`, that holds every rule. `DOCKER-USER`
 and `INPUT` each get one jump to it for the desktop subnet. The chain returns
@@ -33,6 +35,30 @@ carrier-grade NAT and link-local ranges. Setup checks that the jump is rule 1 of
 both parent chains and moves it back to rule 1 if another tool displaced it, so a
 rerun after Docker restarts is always safe. Rules from an older Dom that sit
 directly in `DOCKER-USER` or `INPUT` are redundant and can be deleted.
+
+## Chromium and startup
+
+Local mode passes the packaged `seccomp-chromium.json` profile to Docker.
+Docker’s default profile blocks namespace operations Chromium needs to start
+its sandbox. The packaged profile permits `unshare`, `setns`, `clone3` and
+the user, PID and network namespace flags on `clone`. It keeps the default
+deny action, and Dom keeps Docker’s `no-new-privileges`, process and memory
+limits. [Profile provenance and rule changes](../dom/desktop/README.md)
+
+Dom disables Jupyter for local containers. `run_python` writes a temporary
+script and runs it with `python3` through the Bash API. Each call runs in a
+fresh interpreter and returns stdout, stderr and the exit code.
+
+Dom waits up to `[desktop] start_timeout_seconds` (default `180`) after the
+container starts for the API to respond and then for Chromium’s tab list to
+be available. A timeout reports `API not healthy` or `browser did not start`.
+
+On a Raspberry Pi running Debian 13 (aarch64) with Docker’s iptables backend
+and `ghcr.io/agent-infra/sandbox:latest`, the 2026-11-19 bring-up measured
+about 22–67 seconds for the API with Jupyter disabled and about 4–5 minutes per
+start with Jupyter enabled. An unconfined diagnostic run reached browser
+readiness in about 59 seconds and measured about 8 seconds for a page load and
+1.7 seconds for a screenshot. These timings vary by host and workload.
 
 ## Reapply at boot
 
@@ -94,7 +120,7 @@ host.
 Run the firewall unit on the Docker host before requesting a desktop task.
 The firewall unit runs in the system manager, while `dom install-service` uses
 the user manager. In local mode Dom checks the rules before each container start.
-The rules use the iptables backend with `-w`. Docker’s native nftables backend is not supported.
+The firewall commands use `iptables -w`.
 
 ## Documents
 
