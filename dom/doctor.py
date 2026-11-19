@@ -249,9 +249,13 @@ def _probe_hint(response: httpx.Response) -> str:
     """The provider's own reason, which names problems like data-policy blocks. Never echoes secrets:
     it is the response body of a request that carried only a fixed synthetic prompt."""
     try:
-        message = str(response.json().get("error", {}).get("message", ""))
-    except ValueError:
-        message = ""
+        payload = response.json()
+    except (ValueError, RecursionError):
+        payload = None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        error = error.get("message")
+    message = error if isinstance(error, str) else ""
     if "ZDR" in message or "data policy" in message:
         return (f"HTTP {response.status_code}: the provider refused it under your account's data policy "
                 "(zero data retention). Pick a model with a ZDR-compliant provider.")

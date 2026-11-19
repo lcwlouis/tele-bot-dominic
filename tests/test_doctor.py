@@ -260,3 +260,20 @@ async def test_model_probe_names_a_data_policy_block():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         check = await _model(http, "media", ModelEndpoint(base_url="https://example.org/v1", model="m", api_key_env="K"), "key")
     assert check.status == "fail" and "zero data retention" in check.detail
+
+
+@pytest.mark.parametrize(("body", "zdr"), [
+    ('{"error": {"message": "ZDR violation"}}', True),
+    ('{"error": "data policy block"}', True),
+    ('{"error": null}', False),
+    ('{"error": []}', False),
+    ('{"error": {"message": null}}', False),
+    ('["service unavailable"]', False),
+    ('null', False),
+    ('"service unavailable"', False),
+    ('service unavailable', False),
+])
+def test_probe_hint_accepts_different_error_bodies(body, zdr):
+    hint = doctor._probe_hint(httpx.Response(403, content=body))
+    assert hint.startswith("HTTP 403:")
+    assert ("zero data retention" in hint) is zdr
