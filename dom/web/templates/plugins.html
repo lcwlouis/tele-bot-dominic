@@ -29,7 +29,11 @@
       {% endfor %}
       {% if review.status == "pending" %}
       <div class="actions" hx-target="#plugins" hx-swap="outerHTML">
+        {% if review.reviewed %}
         <button class="primary" hx-post="{{ route }}/approve">Approve</button>
+        {% else %}
+        <button class="primary" hx-post="{{ route }}/reviewed">I've read this code</button>
+        {% endif %}
         <button class="danger" hx-post="{{ route }}/reject">Reject</button>
       </div>
       {% endif %}

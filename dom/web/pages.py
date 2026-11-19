@@ -366,9 +366,24 @@ async def plugin_review(request: Request, name: str, digest: str):
         raise HTTPException(404) from None
     if review is None:
         raise HTTPException(404)
-    response = panel(request, "plugins", review=review)
-    await app.plugins.mark_reviewed(name, digest)
-    return response
+    return panel(request, "plugins", review=review)
+
+
+@router.post("/plugins/{name}/{digest}/reviewed", response_class=HTMLResponse)
+async def plugin_reviewed(request: Request, name: str, digest: str):
+    """Record that the owner pressed "I've read this code". Opening the page records nothing."""
+    app = owner_app(request)
+    try:
+        review = await app.plugins.review(name, digest)
+        if review is None:
+            raise HTTPException(404)
+        await app.plugins.mark_reviewed(name, digest)
+        review = await app.plugins.review(name, digest)
+    except ValueError:
+        raise HTTPException(404) from None
+    if review is None:
+        raise HTTPException(404)
+    return render("plugins.html", context={"review": review, "message": "Review recorded."})
 
 
 @router.post("/plugins/{name}/{digest}/{decision}", response_class=HTMLResponse)

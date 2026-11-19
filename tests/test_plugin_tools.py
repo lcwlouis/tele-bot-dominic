@@ -36,6 +36,12 @@ def review_path(row):
     return f"/plugins/{row['name']}/{row['hash']}"
 
 
+async def review_code(client, route):
+    """Open the review page, then press "I've read this code"."""
+    assert "I've read this code" in (await client.get(route)).text
+    assert (await client.post(f"{route}/reviewed", headers=POST_HEADERS)).status_code == 200
+
+
 async def test_draft_proposal_and_review_gate(make_app, browser):
     app = make_app()
     app.config = app.config.model_copy(update={
@@ -65,14 +71,25 @@ async def test_draft_proposal_and_review_gate(make_app, browser):
         review = await client.get(route)
         assert review.status_code == 200
         assert "&lt;tag&gt;" in review.text and "<tag>" not in review.text
+        assert "I've read this code" in review.text and f"{route}/approve" not in review.text
         assert (await client.post(f"{route}/approve")).status_code == 403
+    # Opening the page is not reading it: nothing is recorded until the button is pressed.
+    assert not any("Reviewed plugin" in row["text"] for row in await events(app))
+    await press(app, f"prop:yes:{proposal}")
+    assert "Open the dashboard" in app.bot.of("answer")[-1][2]
+    assert (await status(app))["status"] == "pending"
+    async with browser(app) as client:
+        assert (await client.post(f"{route}/reviewed")).status_code == 403
+        recorded = await client.post(f"{route}/reviewed", headers=POST_HEADERS)
+        assert recorded.status_code == 200 and f"{route}/approve" in recorded.text
+        assert (await client.post(f"/plugins/convert/{'0' * 64}/reviewed", headers=POST_HEADERS)).status_code == 404
 
     await press(app, f"prop:yes:{proposal}", FRIEND)
     assert (await status(app))["status"] == "pending"
     await press(app, f"prop:yes:{proposal}")
     assert (await status(app))["approved_hash"] == row["hash"]
     assert app.bot.of("answer")[-1][2] == "Approved"
-    assert any("Viewed plugin" in row["text"] for row in await events(app))
+    assert any("Reviewed plugin" in row["text"] for row in await events(app))
 
 
 async def test_changed_code_needs_fresh_review_and_displays_diff(make_app, browser):
@@ -80,7 +97,7 @@ async def test_changed_code_needs_fresh_review_and_displays_diff(make_app, brows
     old_id = await draft(app)
     old = await status(app)
     async with browser(app) as client:
-        await client.get(review_path(old))
+        await review_code(client, review_path(old))
         assert (await client.post(f"{review_path(old)}/approve", headers=POST_HEADERS)).status_code == 200
         new_id = await draft(app, source="print('<next>')\n")
         new = await status(app)
@@ -92,6 +109,7 @@ async def test_changed_code_needs_fresh_review_and_displays_diff(make_app, brows
         assert (await client.get(review_path(old))).status_code == 404
         diff = (await client.get(review_path(new))).text
         assert "&lt;tag&gt;" in diff and "&lt;next&gt;" in diff and "<del>" in diff and "<ins>" in diff
+        assert (await client.post(f"{review_path(new)}/reviewed", headers=POST_HEADERS)).status_code == 200
     await press(app, f"prop:yes:{new_id}")
     assert (await status(app))["approved_hash"] == new["hash"]
 
@@ -108,7 +126,7 @@ async def test_reject_and_disable_from_owner_dm_keep_files(make_app, browser):
     row = await status(app)
     route = review_path(row)
     async with browser(app) as client:
-        await client.get(route)
+        await review_code(client, route)
         assert (await client.post(f"{route}/approve", headers=POST_HEADERS)).status_code == 200
 
     app.bot.calls.clear()
@@ -135,7 +153,7 @@ async def test_turn_scopes_and_untrusted_results(make_app, browser, monkeypatch,
     await draft(app, manifest=MANIFEST + 'scopes = ["owner_dm", "group"]\n')
     route = review_path(await status(app))
     async with browser(app) as client:
-        await client.get(route)
+        await review_code(client, route)
         assert (await client.post(f"{route}/approve", headers=POST_HEADERS)).status_code == 200
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
     sent = []
@@ -188,7 +206,7 @@ async def test_unavailable_and_private_arguments_never_reach_the_runner(make_app
     await draft(app)
     route = review_path(await status(app))
     async with browser(app) as client:
-        await client.get(route)
+        await review_code(client, route)
         await client.post(f"{route}/approve", headers=POST_HEADERS)
     monkeypatch.setattr(app.plugin_runner, "run", lambda *a, **kw: pytest.fail("started a plugin"))
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: False)
@@ -224,7 +242,7 @@ async def approved_tool(app, browser, monkeypatch):
     await draft(app)
     route = review_path(await status(app))
     async with browser(app) as client:
-        await client.get(route)
+        await review_code(client, route)
         await client.post(f"{route}/approve", headers=POST_HEADERS)
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
     tool, = await offered(app, "owner_dm")
