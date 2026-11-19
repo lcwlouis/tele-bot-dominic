@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from hashlib import sha256
 from tempfile import NamedTemporaryFile
 from threading import Lock
 from importlib import resources
@@ -26,7 +27,7 @@ LIMITS: dict[str, int] = {
 MAX_SOUL = 6000  # characters in SOUL.md after an approved edit
 MAX_SOUL_EDIT = 2000  # characters in the old or the new text of one soul edit
 # Writable through memory_write but not size-bounded (never loaded into chat prompts).
-UNBOUNDED = {"memory/JOURNAL.md"}
+UNBOUNDED = {"memory/JOURNAL.md", "private/JOURNAL.md"}
 _MEMORY_WRITE_LOCK = Lock()
 _JOURNAL_HEADING = re.compile(r"^## \d{4}-\d{2}-\d{2}[ \t]*$", re.MULTILINE)
 
@@ -49,6 +50,10 @@ def limit_for(rel: str) -> int | None:
         if fnmatchcase(rel, pattern):
             return limit
     return None
+
+
+def content_version(content: str) -> str:
+    return sha256(content.encode("utf-8")).hexdigest()
 
 
 class Home:
@@ -124,6 +129,9 @@ class Home:
         else:
             return WriteResult(False, current, f"unknown op {op!r}")
 
+        return self._save_memory_text(rel, current, new, limit)
+
+    def _save_memory_text(self, rel: str, current: str, new: str, limit: int | None) -> WriteResult:
         # Shrinking is always allowed so a file that is already over its limit can be pruned.
         if limit is not None and len(new) > limit and len(new) >= len(current):
             return WriteResult(
@@ -135,10 +143,47 @@ class Home:
         self._write_regular(rel, new)
         return WriteResult(True, new)
 
-    def _write_regular(self, rel: str, content: str) -> None:
+    def save_memory(self, rel: str, text: str, expected: str) -> WriteResult:
+        """Save an owner's full-file edit if it is based on the current text."""
+        with _MEMORY_WRITE_LOCK:
+            if rel == "memory/HABITS.md":
+                return WriteResult(False, "", "HABITS.md is read-only.")
+            limit = MAX_SOUL if rel == "SOUL.md" else limit_for(rel)
+            if limit is None and rel not in UNBOUNDED:
+                return WriteResult(False, "", f"{rel} is not a writable memory file")
+            path = self._regular_path(rel)
+            current = path.read_text() if path.is_file() else ""
+            if content_version(current) != expected:
+                return WriteResult(False, current, "This file changed since you opened it. Discard to reload it.")
+            if rel == "SOUL.md" and len(text) > MAX_SOUL:
+                return WriteResult(False, current, f"over limit: {len(text)} > {MAX_SOUL} characters", over_limit=True)
+            return self._save_memory_text(rel, current, text, limit)
+
+    def list_memory_notes(self) -> tuple[list[str], list[str]]:
+        """List regular per-person and per-chat Markdown notes in the public Home scope."""
+        home = self.scoped(allow_private=False)
+
+        def names(directory: str) -> list[str]:
+            try:
+                folder = home._regular_path(directory)
+                return sorted(f"{directory}/{p.name}" for p in folder.glob("*.md") if not p.is_symlink() and p.is_file())
+            except (OSError, ValueError):
+                return []
+
+        return names("memory/people"), names("memory/chats")
+
+    def read_memory_file(self, rel: str) -> str:
+        path = self._regular_path(rel)
+        return path.read_text() if path.is_file() else ""
+
+    def _regular_path(self, rel: str) -> Path:
         path = self._resolve(rel)
         if path != self.root.resolve().joinpath(*PurePosixPath(rel).parts):
             raise ValueError(f"{rel} is a link; expected a regular file")
+        return path
+
+    def _write_regular(self, rel: str, content: str) -> None:
+        path = self._regular_path(rel)
         path.parent.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as temp:
             pending = Path(temp.name)
@@ -161,22 +206,26 @@ class Home:
         return current[:first] + new + current[first + len(old):]
 
     def replace_soul(self, old: str, new: str) -> None:
-        edited = self.edited_soul(old, new)
-        if edited is None:
-            raise ValueError("SOUL.md must contain the old text exactly once")
-        self.scoped(allow_private=False)._write_regular("SOUL.md", edited)
+        with _MEMORY_WRITE_LOCK:
+            edited = self.edited_soul(old, new)
+            if edited is None:
+                raise ValueError("SOUL.md must contain the old text exactly once")
+            if len(edited) > MAX_SOUL:
+                raise ValueError(f"SOUL.md cannot exceed {MAX_SOUL} characters")
+            self.scoped(allow_private=False)._write_regular("SOUL.md", edited)
 
     def journal_entries(self, *, private: bool = False) -> list[str]:
         return _split_journal(self.read(_journal_path(private)))[1]
 
     def append_journal(self, day: date, body: str, *, private: bool = False) -> None:
-        rel = _journal_path(private)
-        heading = f"## {day.isoformat()}"
-        preamble, entries = _split_journal(self.read(rel))
-        entries = [entry for entry in entries if entry.splitlines()[0].rstrip() != heading]
-        entries.append(f"{heading}\n{body}")
-        text = "\n\n".join(filter(None, [preamble, *entries[-30:]])) + "\n"
-        self._write_regular(rel, text)
+        with _MEMORY_WRITE_LOCK:
+            rel = _journal_path(private)
+            heading = f"## {day.isoformat()}"
+            preamble, entries = _split_journal(self.read(rel))
+            entries = [entry for entry in entries if entry.splitlines()[0].rstrip() != heading]
+            entries.append(f"{heading}\n{body}")
+            text = "\n\n".join(filter(None, [preamble, *entries[-30:]])) + "\n"
+            self._write_regular(rel, text)
 
     def write_habits_line(self, start: time, end: time) -> None:
         home = self.scoped(allow_private=False)

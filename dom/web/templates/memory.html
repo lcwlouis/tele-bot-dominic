@@ -1,0 +1,77 @@
+{% from "diff.html" import diff %}
+{% set file_url = "/memory?" ~ ({"file": context.file}|urlencode_query) %}
+<section class="panel memory-panel" id="memory" hx-target="#memory" hx-swap="outerHTML">
+  <header>
+    <h2>Memory</h2>
+    {% if context.soul_chat %}
+    <a class="quiet button-link" href="{{ file_url }}" hx-get="{{ file_url }}">Edit SOUL.md</a>
+    {% else %}
+    <a class="quiet button-link" href="/memory?talk=true" hx-get="/memory?talk=true">Talk to Dom about his soul</a>
+    {% endif %}
+  </header>
+  <div class="memory">
+    <nav aria-label="Memory files">
+      <ul class="files">
+        {% for heading, files in context.sections if files %}
+        <li><h3>{{ heading }}</h3></li>
+        {% for path, label in files %}
+          {% set href = "/memory?" ~ ({"file": path}|urlencode_query) %}
+          <li><a href="{{ href }}" hx-get="{{ href }}"{% if path == context.file %} aria-current="page"{% endif %}>{{ label }}</a></li>
+        {% endfor %}
+        {% endfor %}
+      </ul>
+    </nav>
+    {% if context.soul_chat %}
+    <div class="editor">
+      <h3>Talk to Dom about his soul</h3>
+      <p class="fog">Ask Dom to suggest one change to SOUL.md. Approve the proposal when you're ready.</p>
+      {% if context.error %}<p class="error" role="alert">{{ context.error }}</p>{% endif %}
+      {% if context.request_text %}
+      <div class="soul-message"><strong>You</strong><p>{{ context.request_text }}</p></div>
+      {% endif %}
+      {% if context.edit %}
+      <div class="proposal">
+        <span class="kind">Soul edit #{{ context.proposal_id }}</span>
+        {{ diff(context.edit) }}
+        <a href="/proposals?kind=soul_edit" class="quiet button-link">Review proposal</a>
+      </div>
+      {% endif %}
+      <form class="editor" hx-post="/memory/soul" hx-disabled-elt="find button">
+        <label for="soul-message">What should Dom change?</label>
+        <textarea id="soul-message" class="soul-input" name="message" maxlength="2000" required></textarea>
+        <div class="actions"><button class="primary">Send to Dom</button></div>
+      </form>
+    </div>
+    {% else %}
+    <form class="editor" hx-post="/memory/save">
+      <h3><label for="memory-text">{{ context.label }}</label></h3>
+      {% if context.error %}<p class="error" role="alert">{{ context.error }}</p>{% endif %}
+      {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
+      {% if context.readonly %}<p class="fog">Dom writes this from message counts.</p>{% endif %}
+      <input type="hidden" name="file" value="{{ context.file }}">
+      <input type="hidden" name="version" value="{{ context.version }}">
+      <textarea id="memory-text" name="content" spellcheck="false"{% if context.readonly %} readonly{% endif %}>
+{{ context.content }}</textarea>
+      {% set used = context.content|length %}
+      <div class="fill"{% if context.limit %} data-limit="{{ context.limit }}"{% endif %}>
+        {% if context.limit %}
+        <svg viewBox="0 0 28 28" width="28" height="28" aria-hidden="true">
+          <circle cx="14" cy="14" r="11" class="fill-track"/>
+          <circle cx="14" cy="14" r="11" class="fill-value{% if used > context.limit %} over{% endif %}"
+            pathLength="1" stroke-dasharray="1" stroke-dashoffset="{{ [0, 1 - used / context.limit]|max }}" transform="rotate(-90 14 14)"/>
+        </svg>
+        <span><span class="num" data-count>{{ "{:,}".format(used) }}</span> of {{ "{:,}".format(context.limit) }} characters</span>
+        {% else %}
+        <span><span class="num" data-count>{{ "{:,}".format(used) }}</span> characters · No character limit</span>
+        {% endif %}
+      </div>
+      {% if not context.readonly %}
+      <div class="actions">
+        <button class="primary">Save changes</button>
+        <a class="quiet button-link" href="{{ file_url }}" hx-get="{{ file_url }}">Discard</a>
+      </div>
+      {% endif %}
+    </form>
+    {% endif %}
+  </div>
+</section>

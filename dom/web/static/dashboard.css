@@ -61,10 +61,10 @@ main > * { min-width: 0; }
 .panel > header { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: var(--s3); margin-bottom: var(--s4); }
 
 /* Dial */
-.now { display: grid; justify-items: center; gap: var(--s3); padding-top: var(--s4); }
+.now { display: grid; align-content: start; justify-items: center; gap: var(--s3); padding-top: var(--s4); }
 .dial { width: min(100%, 340px); aspect-ratio: 1; position: relative; }
 .dial svg { width: 100%; height: 100%; overflow: visible; }
-.dial .centre { position: absolute; inset: 22%; display: grid; place-content: center; text-align: center; gap: var(--s1); }
+.dial .centre { position: absolute; inset: 22%; display: grid; place-content: center; text-align: center; overflow-wrap: anywhere; gap: var(--s1); }
 .dial .centre strong { font-family: var(--display); font-weight: 600; font-size: var(--t-xl); line-height: 1.1; }
 .dial .centre span { color: var(--fog); font-size: var(--t-sm); }
 .legend { display: flex; flex-wrap: wrap; gap: var(--s4); justify-content: center; font-size: var(--t-sm); color: var(--fog); }
@@ -154,11 +154,23 @@ button { font: 700 var(--t-sm)/1 var(--body); border-radius: 6px; padding: 10px 
 .memory { display: grid; gap: var(--s4); }
 .files { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .files h3 { font-size: var(--t-sm); color: var(--fog); font-family: var(--body); font-weight: 700; margin: var(--s3) 0 var(--s1); }
-.files button { width: 100%; text-align: left; background: none; color: var(--ink); font-weight: 400; font-size: var(--t-md); padding: var(--s2) var(--s3); border-radius: 0; border-left: 2px solid transparent; }
-.files button[aria-current] { border-left-color: var(--arc); background: var(--hull); }
-.editor { display: grid; gap: var(--s3); }
+.files a { display: block; width: 100%; text-align: left; text-decoration: none; background: none; color: var(--ink); font-weight: 400; font-size: var(--t-md); padding: var(--s2) var(--s3); border-radius: 0; border-left: 2px solid transparent; }
+.files a[aria-current] { border-left-color: var(--arc); background: var(--hull); }
+.editor { display: grid; align-content: start; gap: var(--s3); min-width: 0; }
 .editor textarea { width: 100%; min-height: 220px; background: var(--hull); color: var(--ink); border: 1px solid var(--seam); padding: var(--s3); font: 0.9rem/1.6 ui-monospace, "SF Mono", Menlo, monospace; resize: vertical; }
 .fill { display: flex; align-items: center; gap: var(--s3); color: var(--fog); font-size: var(--t-sm); }
+
+.fill-track, .fill-value { fill: none; stroke-width: 4; }
+.fill-track { stroke: var(--seam); }
+.fill-value { stroke: var(--arc); }
+.fill-value.over { stroke: var(--signal); }
+.button-link {
+  display: inline-block; width: fit-content; text-decoration: none;
+  border: 1px solid var(--seam); border-radius: 6px; padding: 10px 14px; font: 700 var(--t-sm)/1 var(--body);
+}
+.editor .soul-input { min-height: 112px; font: inherit; }
+.soul-message { border-left: 3px solid var(--seam); padding-left: var(--s3); white-space: pre-wrap; }
+.error { color: var(--signal); }
 
 /* Turn log */
 .log { list-style: none; margin: 0; padding: 0; }
@@ -201,7 +213,9 @@ summary { cursor: pointer; }
   .turns { grid-column: 6 / -1; grid-row: 3; }
   .single > section { grid-column: 1 / -1; grid-row: auto; }
   .memory-panel { grid-column: 1 / -1; }
-  .memory { grid-template-columns: 240px 1fr; }
+  .memory { grid-template-columns: 240px minmax(0, 1fr); }
+  .memory-panel { grid-row: 4; }
+  .single > .memory-panel { grid-row: auto; }
   .chat { grid-template-columns: 28px minmax(0, 1.4fr) minmax(0, 1fr) auto minmax(0, 2fr); }
   .chat .meta { grid-column: 3; grid-row: 1; }
   .chat .unread { grid-column: 4; text-align: right; }
