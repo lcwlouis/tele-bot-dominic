@@ -27,7 +27,7 @@ def test_exact_arguments(monkeypatch, network):
     monkeypatch.setattr(Path, "exists", lambda path: True)
     manifest = Manifest.parse(MANIFEST.replace('version = "1"', f'version = "1"\nnetwork = {str(network).lower()}'))
     command = PluginRunner().arguments(Path("/sample/convert"), manifest, filter_fd=3, network=network)
-    expected = ["/usr/bin/bwrap", "--unshare-all"]
+    expected = ["/usr/bin/bwrap", "--unshare-all", "--unshare-user"]
     if network:
         expected += ["--share-net"]
     expected += [

@@ -167,7 +167,8 @@ class PluginRunner:
                 self.home.is_relative_to(real) or real.is_relative_to(self.home)
             )):
                 raise PluginsUnavailable("A sandbox runtime path overlaps Dom's home.")
-        cmd = [str(self.bwrap), "--unshare-all"]
+        # bwrap 0.12 needs an explicit user namespace for --disable-userns (--unshare-all only tries one).
+        cmd = [str(self.bwrap), "--unshare-all", "--unshare-user"]
         if network:
             cmd.append("--share-net")
         cmd += ["--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin"]
@@ -244,7 +245,8 @@ class PluginRunner:
 
     def _execute_locked(self, snapshot: Plugin, request: bytes, network: bool) -> str:
         # Materialize only the bytes we hashed. Edits to the live plugin cannot change this bind.
-        with TemporaryDirectory(prefix="dom-plugin-") as directory, TemporaryFile() as sandbox_filter:
+        with TemporaryDirectory(prefix="dom-plugin-") as directory, TemporaryFile() as sandbox_filter, \
+                TemporaryFile() as errors:
             folder = Path(directory).resolve()
             for relative, content in snapshot.files.items():
                 target = folder / relative
@@ -257,7 +259,14 @@ class PluginRunner:
             sandbox_filter.seek(0)
             cmd = self.arguments(folder, snapshot.manifest, filter_fd=sandbox_filter.fileno(), network=network)
             process = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
                 env={}, start_new_session=True, pass_fds=(sandbox_filter.fileno(),),
             )
-            return exchange(process, request, snapshot.manifest.timeout_seconds)
+            try:
+                return exchange(process, request, snapshot.manifest.timeout_seconds)
+            except PluginError as error:
+                errors.seek(0)
+                detail = errors.read(500).decode("utf-8", "replace").strip()
+                if detail:  # logged for the operator only; the model sees the plain error
+                    log.warning("plugin %s failed: %s (%s)", snapshot.manifest.name, error, detail)
+                raise
