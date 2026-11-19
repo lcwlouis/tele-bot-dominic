@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -152,6 +153,15 @@ def _is_own_message(app: App, msg: IncomingMessage) -> bool:
     return bool(app.bot_username and (msg.sender_handle or "").lower() == f"@{app.bot_username.lower()}")
 
 
+_DESKTOP_COMMAND = re.compile(r"/desktop(?:@([A-Za-z0-9_]+))?(?:\s|$)", re.IGNORECASE)
+
+
+def _desktop_command(text: str, bot_username: str | None) -> bool:
+    """The exact /desktop token, optionally addressed to this bot, then whitespace or the end."""
+    match = _DESKTOP_COMMAND.match(text)
+    return match is not None and (match[1] is None or match[1].lower() == (bot_username or "").lower())
+
+
 async def _receive_desktop_document(app: App, message: Message, msg: IncomingMessage) -> IncomingMessage:
     document = message.document
     if document is None or msg.media is None:
@@ -252,7 +262,7 @@ async def handle_message(app: App, message: Message) -> None:
             return
         if (
             owner_dm and message.document is not None and app.config.desktop_mode != "off"
-            and msg.text.lower().startswith("/desktop") and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
+            and _desktop_command(msg.text, app.bot_username) and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
         ):
             msg = await _receive_desktop_document(app, message, msg)
         await _record(app, msg, describe_media=decision == "process")

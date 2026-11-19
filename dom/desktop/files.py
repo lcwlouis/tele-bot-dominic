@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import shutil
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
@@ -14,7 +16,12 @@ MAX_FILE_BYTES = 20_000_000
 MAX_RESULT_FILES = 5
 MAX_INBOX_FILES = 5
 MAX_INBOX_BYTES = 50_000_000
-INBOX = "/home/gem/inbox"
+log = logging.getLogger(__name__)
+
+
+def inbox_dir(task_id: int) -> str:
+    """Where one task's documents go in the sandbox: a fresh directory per task."""
+    return f"/home/gem/inbox-{task_id}"
 
 
 def safe_filename(raw: str | None) -> str:
@@ -62,21 +69,65 @@ def stage_inbox(home: Path, name: str | None, content: bytes) -> str:
                 return candidate.name
 
 
-async def upload_inbox(home: Path, client: SandboxClient) -> None:
+def bind_inbox(home: Path, task_id: int) -> None:
+    """Hand every document staged so far to this task. Documents staged later belong to the next one."""
     directory = _inbox(home)
-    if not directory.exists():
+    if not directory.is_dir():
         return
-    for path in sorted(directory.iterdir()):
-        if safe_filename(path.name) != path.name or path.is_symlink() or not path.is_file():
-            continue
-        with path.open("rb") as staged:
-            data = staged.read(MAX_FILE_BYTES + 1)
-        if len(data) > MAX_FILE_BYTES:
-            raise SandboxError(f"{path.name} exceeds 20 MB")
-        result = await client.upload_file(f"{INBOX}/{path.name}", data)
-        if not isinstance(result, dict) or result.get("success") is not True:
-            raise SandboxError("sandbox did not confirm the file upload")
-        path.unlink()
+    pending = [path for path in directory.iterdir() if path.is_file() and not path.is_symlink() and not path.name.startswith(".")]
+    if not pending:
+        return
+    bound = directory / f"task-{task_id}"
+    bound.mkdir(mode=0o700)
+    for path in pending:
+        path.rename(bound / path.name)
+
+
+def discard_bound(home: Path, task_id: int) -> None:
+    try:
+        shutil.rmtree(_inbox(home) / f"task-{task_id}", ignore_errors=True)
+    except ValueError:
+        pass
+
+
+def drop_stale(home: Path, keep: set[int]) -> None:
+    """Remove documents bound to tasks that will never run, e.g. after a crash."""
+    try:
+        directory = _inbox(home)
+        kept = {f"task-{task_id}" for task_id in keep}
+        stale = [path for path in directory.glob("task-*") if path.name not in kept] if directory.is_dir() else []
+    except (OSError, ValueError):
+        return
+    for path in stale:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+async def upload_inbox(home: Path, client: SandboxClient, task_id: int) -> list[str]:
+    """Upload the task's bound documents into its own sandbox directory, then drop the local copies.
+
+    A failed upload drops them too: the task fails and its report says so.
+    """
+    bound = _inbox(home) / f"task-{task_id}"
+    if bound.is_symlink() or not bound.is_dir():
+        return []
+    uploaded = []
+    try:
+        for path in sorted(bound.iterdir()):
+            if safe_filename(path.name) != path.name or path.is_symlink() or not path.is_file():
+                continue
+            with path.open("rb") as staged:
+                data = staged.read(MAX_FILE_BYTES + 1)
+            if len(data) > MAX_FILE_BYTES:
+                raise SandboxError(f"{path.name} exceeds 20 MB")
+            result = await client.upload_file(f"{inbox_dir(task_id)}/{path.name}", data)
+            if not isinstance(result, dict) or result.get("success") is not True:
+                raise SandboxError("sandbox did not confirm the file upload")
+            uploaded.append(path.name)
+    except Exception:
+        raise SandboxError("the attached documents could not be uploaded and were dropped") from None
+    finally:
+        shutil.rmtree(bound, ignore_errors=True)
+    return uploaded
 
 
 async def download_results(client: SandboxClient, paths: list[str]) -> list[SendFile]:

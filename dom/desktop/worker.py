@@ -12,7 +12,7 @@ from dom.actions import SendFile
 from dom.agent import _well_formed
 from dom.desktop import tools
 from dom.desktop.client import SandboxClient, SandboxError, url_host
-from dom.desktop.files import INBOX, download_results, upload_inbox
+from dom.desktop.files import bind_inbox, discard_bound, download_results, drop_stale, inbox_dir, upload_inbox
 from dom.skills import Skill, skill_view, skills_list
 
 if TYPE_CHECKING:
@@ -77,6 +77,10 @@ class DesktopWorker:
             task_id = await self.app.store.enqueue_desktop_task(chat_id, brief.strip())
             if task_id is None:
                 raise ValueError("I'm already on something")
+            try:
+                bind_inbox(self.app.home.root, task_id)
+            except (OSError, ValueError) as exc:
+                log.warning("could not attach the staged documents to desktop task %s (%s)", task_id, type(exc).__name__)
             await self.app.store.record_owner_event(f"Queued desktop task #{task_id}")
             self._launch(task_id, chat_id)
             return task_id
@@ -93,10 +97,12 @@ class DesktopWorker:
             except SandboxError as exc:
                 log.warning("could not stop a stray desktop container (%s)", exc)
         chat_id = self.app.owner_id
+        rows = await self.app.store.desktop_tasks(chat_id, active=True) if chat_id is not None else []
+        drop_stale(self.app.home.root, {row["id"] for row in rows if row["status"] == "queued"})
         if chat_id is None:
             return
         async with self.control:
-            for row in await self.app.store.desktop_tasks(chat_id, active=True):
+            for row in rows:
                 if row["status"] == "queued":
                     self._launch(row["id"], chat_id)
                 else:
@@ -143,6 +149,12 @@ class DesktopWorker:
             log.warning("could not report desktop task %s (%s)", row["id"], type(exc).__name__)
 
     async def _run(self, task_id: int, chat_id: int) -> None:
+        try:
+            await self._run_task(task_id, chat_id)
+        finally:
+            discard_bound(self.app.home.root, task_id)
+
+    async def _run_task(self, task_id: int, chat_id: int) -> None:
         store = self.app.store
         row = await store.update_desktop_task(task_id, chat_id, ("queued",), "running")
         if row is None:
@@ -155,7 +167,7 @@ class DesktopWorker:
                 try:
                     result, files, draft = await self._work(row, progress)
                 finally:
-                    await self._clear_inbox()
+                    await self._clear_inbox(task_id)
         except (TimeoutError, SandboxError, ValueError, ModelCallSkipped) as exc:
             error = "desktop task time limit reached" if isinstance(exc, TimeoutError) else str(exc)
             if isinstance(exc, ModelCallSkipped):
@@ -177,16 +189,19 @@ class DesktopWorker:
             if row["status"] == "done" and draft:
                 await self._publish_skill(draft)
 
-    async def _clear_inbox(self) -> None:
+    async def _clear_inbox(self, task_id: int) -> None:
         """Uploaded files must not outlive the task that was given them."""
         client = getattr(self.sandbox, "client", None)
         if client is None:
             return
         try:
             async with asyncio.timeout(10):
-                await client.bash(f"rm -rf {INBOX}/*")
+                result = await client.bash(f"rm -rf {inbox_dir(task_id)}")
         except Exception as exc:
-            log.warning("could not clear the desktop inbox (%s)", type(exc).__name__)
+            log.warning("could not remove the desktop inbox (%s)", type(exc).__name__)
+        else:
+            if not isinstance(result, dict) or result.get("exit_code") != 0:
+                log.warning("could not remove the desktop inbox (exit code %r)", result.get("exit_code") if isinstance(result, dict) else None)
 
     async def _publish_skill(self, skill: Skill) -> None:
         try:
@@ -205,13 +220,16 @@ class DesktopWorker:
         deadline = clock() + self.work_seconds
         async with asyncio.timeout_at(deadline):
             client = await self.sandbox.ensure_running()
-            await upload_inbox(self.app.home.root, client)
+            attached = await upload_inbox(self.app.home.root, client, task_id)
+        brief = row["brief"]
+        if attached:
+            brief += f"\n\nThe owner attached files in {inbox_dir(task_id)}/: " + ", ".join(attached)
         system_prompt = WORKER_SYSTEM_PROMPT
         if skills := skills_list(self.app.home):
             system_prompt += "\nApproved skill names and descriptions: " + json.dumps(skills, ensure_ascii=False)
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": row["brief"]},
+            {"role": "user", "content": brief},
         ]
         schemas = tools.schemas()
         steps = 0
