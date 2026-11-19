@@ -4,7 +4,7 @@ import pytest
 from aiogram.types import Document
 
 from dom.desktop.client import SandboxError
-from dom.desktop.files import download_results, safe_filename, stage_inbox, upload_inbox
+from dom.desktop.files import bind_inbox, download_results, safe_filename, stage_inbox, upload_inbox
 from dom.desktop.worker import DesktopWorker
 from dom.home import Home
 from dom.telegram.handlers import handle_message
@@ -52,26 +52,87 @@ async def test_staged_files_upload_only_at_task_start(make_app):
     assert stage_inbox(app.home.root, "report.pdf", b"world") == "report-2.pdf"
     directory = app.home.root.resolve().parent / "desktop-inbox"
     assert uploads == []
-    await worker.enqueue(OWNER, "Read the report")
+    task_id = await worker.enqueue(OWNER, "Read the report")
     await wait_task(worker)
     assert uploads == [
-        ("/home/gem/inbox/report-2.pdf", b"world"), ("/home/gem/inbox/report.pdf", b"hello"),
+        (f"/home/gem/inbox-{task_id}/report-2.pdf", b"world"), (f"/home/gem/inbox-{task_id}/report.pdf", b"hello"),
     ]
     assert list(directory.iterdir()) == []
+    assert f"/home/gem/inbox-{task_id}/" in app.client.requests[0][0][1]["content"]
+    assert "report.pdf" in app.client.requests[0][0][1]["content"]
 
 
-async def test_failed_upload_is_kept(make_app):
+async def test_files_are_bound_to_the_next_task_when_it_is_enqueued(make_app):
     app = make_app()
     app.home = Home(app.home.root / 'home')
-    assert stage_inbox(app.home.root, "keep.txt", b"hello") == "keep.txt"
+    worker = await worker_for(app, call("finish", result="Done"), {"content": "invalid"})
+    uploads = []
+
+    async def upload(path, data):
+        uploads.append(path)
+        return {"success": True}
+
+    worker.sandbox.upload_file = upload
+    directory = app.home.root.resolve().parent / "desktop-inbox"
+    stage_inbox(app.home.root, "before.txt", b"1")
+    task_id = await worker.enqueue(OWNER, "Read it")
+    assert [path.name for path in directory.iterdir()] == [f"task-{task_id}"]  # bound before the task ran
+    assert (directory / f"task-{task_id}" / "before.txt").read_bytes() == b"1"
+    stage_inbox(app.home.root, "after.txt", b"2")  # belongs to the next task
+    await wait_task(worker)
+    assert uploads == [f"/home/gem/inbox-{task_id}/before.txt"]
+    assert [path.name for path in directory.iterdir()] == ["after.txt"]
+
+
+async def test_a_refused_enqueue_leaves_staged_files_for_the_next_task(make_app):
+    app = make_app()
+    app.home = Home(app.home.root / 'home')
+    worker = await worker_for(app, {"content": "invalid"})
+    stage_inbox(app.home.root, "keep.txt", b"1")
+    with pytest.raises(ValueError):
+        await worker.enqueue(OWNER, "")
+    assert [path.name for path in (app.home.root.resolve().parent / "desktop-inbox").iterdir()] == ["keep.txt"]
+
+
+async def test_stale_task_directories_are_dropped_on_recover(make_app):
+    app = make_app()
+    app.home = Home(app.home.root / 'home')
+    worker = await worker_for(app)
+    directory = app.home.root.resolve().parent / "desktop-inbox"
+    (directory / "task-99").mkdir(parents=True)
+    (directory / "task-99" / "old.txt").write_text("private")
+    stage_inbox(app.home.root, "pending.txt", b"1")
+    await worker.recover()
+    assert [path.name for path in directory.iterdir()] == ["pending.txt"]
+
+
+async def test_failed_upload_drops_the_files_and_the_report_says_so(make_app):
+    app = make_app()
+    app.home = Home(app.home.root / 'home')
+    assert stage_inbox(app.home.root, "drop.txt", b"hello") == "drop.txt"
+    bind_inbox(app.home.root, 7)
 
     class Client:
         async def upload_file(self, path, data):
             raise SandboxError("upload unavailable")
 
-    with pytest.raises(SandboxError):
-        await upload_inbox(app.home.root, Client())
-    assert (app.home.root.resolve().parent / "desktop-inbox" / "keep.txt").read_bytes() == b"hello"
+    with pytest.raises(SandboxError, match="dropped"):
+        await upload_inbox(app.home.root, Client(), 7)
+    assert list((app.home.root.resolve().parent / "desktop-inbox").iterdir()) == []
+
+    worker = await worker_for(app, call("finish", result="never"), {"content": "invalid"})
+
+    async def upload(path, data):
+        raise SandboxError("upload unavailable")
+
+    worker.sandbox.upload_file = upload
+    stage_inbox(app.home.root, "again.txt", b"hello")
+    task_id = await worker.enqueue(OWNER, "Read it")
+    await wait_task(worker)
+    row = await task_row(app, task_id)
+    assert row["status"] == "failed" and "dropped" in row["error"]
+    assert list((app.home.root.resolve().parent / "desktop-inbox").iterdir()) == []
+    assert "dropped" in str(app.client.requests[-1][0])  # the report model is told
 
 
 async def test_documents_are_sent_to_owner_after_result(make_app, monkeypatch):
@@ -153,7 +214,10 @@ async def test_intake_checks_declared_and_actual_size(make_app, monkeypatch):
     assert not directory.exists()
 
 
-@pytest.mark.parametrize("caption", [None, "", "please read this", "read /desktop"])
+@pytest.mark.parametrize("caption", [
+    None, "", "please read this", "read /desktop", "/desktopx", "/desktop2 go", "/desktops", "/desktop@otherbot go",
+    "/desktop@dombotx", "/desktop:", "/desktop_now", " /desktop",
+])
 async def test_documents_without_a_desktop_caption_are_just_chat(make_app, monkeypatch, caption):
     app = make_app()
     app.home = Home(app.home.root / 'home')
@@ -171,6 +235,26 @@ async def test_documents_without_a_desktop_caption_are_just_chat(make_app, monke
     await handle_message(app, tg(OWNER, OWNER, text=None, caption=caption, document=document))
     assert downloads == []
     assert not (app.home.root.resolve().parent / "desktop-inbox").exists()
+
+
+@pytest.mark.parametrize("caption", ["/desktop", "/desktop read it", "/Desktop\nread it", "/desktop@dombot read", "/desktop@DomBot"])
+async def test_the_exact_desktop_command_stages_the_document(make_app, monkeypatch, caption):
+    app = make_app()
+    app.home = Home(app.home.root / 'home')
+    app.sandbox = Sandbox()
+    app.desktop_worker = DesktopWorker(app, app.sandbox)
+    app.config = app.config.model_copy(update={"desktop_mode": "local"})
+    downloads = []
+
+    async def download(document, *, destination):
+        downloads.append(document.file_id)
+        destination.write(b"data")
+        return destination
+
+    monkeypatch.setattr(app.bot, "download", download, raising=False)
+    document = Document(file_id="file", file_unique_id="unique", file_name="a.pdf", file_size=4)
+    await handle_message(app, tg(OWNER, OWNER, text=None, caption=caption, document=document))
+    assert downloads == ["file"]
 
 
 def test_inbox_caps_files_and_total_bytes(tmp_path, monkeypatch):
@@ -224,5 +308,21 @@ async def test_inbox_is_removed_from_the_sandbox_after_any_task(make_app, finish
     worker.sandbox.client = SimpleNamespace(bash=bash)
     task_id = await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
-    assert commands == ["rm -rf /home/gem/inbox/*"]
+    assert commands == [f"rm -rf /home/gem/inbox-{task_id}"]
     assert (await task_row(app, task_id))["status"] == ("done" if finish else "failed")
+
+
+@pytest.mark.parametrize(("result", "logged"), [
+    ({"exit_code": 0}, False), ({"exit_code": 1}, True), ({}, True), (None, True), ("odd", True),
+])
+async def test_inbox_removal_exit_code_is_verified(make_app, caplog, result, logged):
+    app = make_app()
+    worker = await worker_for(app, call("finish", result="Done"), {"content": "invalid"})
+
+    async def bash(command):
+        return result
+
+    worker.sandbox.client = SimpleNamespace(bash=bash)
+    await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    assert ("could not remove the desktop inbox" in caplog.text) is logged

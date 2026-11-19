@@ -104,6 +104,15 @@ and keep `Before=dom.service` in the `[Unit]` section of
 `dom-desktop-network.service`. The rules use the iptables backend with `-w`; the
 nftables backend is not supported.
 
+## Documents
+
+Send a document to the owner DM with the caption `/desktop` (or `/desktop@<botname>`)
+followed by a space or nothing. Other captions, such as `/desktopx`, are ordinary
+chat. Staged documents are bound to the next desktop task when it is queued and
+uploaded to a fresh `/home/gem/inbox-<task id>/` in the sandbox. If the upload
+fails, those documents are dropped and the task report says so. After the task Dom
+removes that directory and logs a warning if the removal does not exit with 0.
+
 ## Spend
 
 Worker model calls count toward `daily_spend_cap_usd`. When the cap is reached, a
