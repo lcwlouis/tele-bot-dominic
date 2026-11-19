@@ -36,7 +36,7 @@
         <button class="link-danger" hx-post="/chats/{{ chat.id }}/leave"
           hx-confirm="Leave {{ chat.title }}? Friends will see Dom leave.">Leave group</button>
         {% endif %}
-        <form class="inline-form" hx-post="/chats/{{ chat.id }}/preset">
+        <form class="inline-form" method="post" action="/chats/{{ chat.id }}/preset" hx-post="/chats/{{ chat.id }}/preset">
           <select name="preset" aria-label="Preset for {{ chat.title }}">
             <option value=""{% if not chat.preset %} selected{% endif %}>None</option>
             {% for preset in context.presets %}
@@ -52,7 +52,7 @@
   <details class="stickers" {% if context.message and context.message.startswith("Sticker") %}open{% endif %}>
     <summary>Sticker sets</summary>
     {% if context.stickers %}<p>{{ context.stickers|join(", ") }}</p>{% endif %}
-    <form class="inline-form" hx-post="/stickers" hx-target="#chats" hx-swap="outerHTML">
+    <form class="inline-form" method="post" action="/stickers" hx-post="/stickers" hx-target="#chats" hx-swap="outerHTML">
       <label>Set name <input type="text" name="name" required maxlength="64"></label>
       <button class="quiet" name="action" value="add">Add</button>
       <button class="link-danger" name="action" value="remove">Remove</button>

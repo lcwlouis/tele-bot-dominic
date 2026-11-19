@@ -36,14 +36,14 @@
         <a href="/proposals?kind=soul_edit" class="quiet button-link">Review proposal</a>
       </div>
       {% endif %}
-      <form class="editor" hx-post="/memory/soul" hx-disabled-elt="find button">
+      <form class="editor" method="post" action="/memory/soul" hx-post="/memory/soul" hx-disabled-elt="find button">
         <label for="soul-message">What should Dom change?</label>
         <textarea id="soul-message" class="soul-input" name="message" maxlength="2000" required></textarea>
         <div class="actions"><button class="primary">Send to Dom</button></div>
       </form>
     </div>
     {% else %}
-    <form class="editor" hx-post="/memory/save">
+    <form class="editor" method="post" action="/memory/save" hx-post="/memory/save">
       <h3><label for="memory-text">{{ context.label }}</label></h3>
       {% if context.error %}<p class="error" role="alert">{{ context.error }}</p>{% endif %}
       {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
