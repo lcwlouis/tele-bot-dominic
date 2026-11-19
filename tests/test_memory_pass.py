@@ -669,3 +669,44 @@ async def test_deleted_messages_are_not_remembered(make_app):
     await put(app, GROUP, 1, "oops")
     await app.store.record_message_delete(str(GROUP), [1])
     assert await app.store.count_new_for_memory(GROUP) == 0
+
+
+# ---- the turn lock ------------------------------------------------------------------------------
+
+async def test_a_pending_model_call_does_not_hold_the_turn_lock(make_app, tmp_path):
+    app = make_app(contents=(ops(add("MEMORY.md", "Fran likes tea")),))
+    await approve(app, GROUP)
+    await put(app, GROUP, 1, "I like tea")
+    original, asked, release = app.client.complete, asyncio.Event(), asyncio.Event()
+
+    async def slow(messages, tools):
+        asked.set()
+        await release.wait()
+        return await original(messages, tools)
+
+    app.client.complete = slow
+    task = asyncio.create_task(MemoryPass(app).run(GROUP))
+    await asyncio.wait_for(asked.wait(), 1)
+    async with asyncio.timeout(1):
+        async with app.locks[GROUP]:  # a reply turn in the same chat can proceed
+            pass
+    release.set()
+    assert await task is True
+    assert files(tmp_path, "memory/MEMORY.md") == "- Fran likes tea"
+
+
+async def test_a_chat_that_lost_approval_during_the_model_call_is_not_written(make_app, tmp_path):
+    app = make_app(contents=(ops(add("MEMORY.md", "Fran likes tea")),))
+    await approve(app, GROUP)
+    await put(app, GROUP, 1, "I like tea")
+    original = app.client.complete
+
+    async def revoke_then_answer(messages, tools):
+        reply = await original(messages, tools)
+        await app.store.set_chat_auth_status(str(GROUP), "left")
+        return reply
+
+    app.client.complete = revoke_then_answer
+    assert await MemoryPass(app).run(GROUP) is False
+    assert files(tmp_path, "memory/MEMORY.md") is None
+    assert await cursor(app, GROUP) == 0

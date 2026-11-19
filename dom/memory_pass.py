@@ -108,27 +108,27 @@ class MemoryPass:
     async def run(self, chat_id: int) -> bool:
         """Read what is new in the chat and update its notes. False when there was nothing to do (no new
         messages, or the chat is not approved); True when the model was asked. A model failure raises and
-        leaves the cursor, so the same messages are offered again next time."""
-        async with self.app.locks[chat_id]:
-            return await self._run(chat_id)
+        leaves the cursor, so the same messages are offered again next time.
 
-    async def _run(self, chat_id: int) -> bool:
+        The turn lock is held only to read the chat and the notes; it is released during the model call so
+        replies in the chat are not stalled behind it. Approval is checked again before anything is written."""
         app, store = self.app, self.app.store
-        batch = await store.get_memory_batch(chat_id, BATCH_SIZE)
-        messages = [m for m in batch if m.role != "event"]
-        if not messages:
-            return False
-        scope = store.scope_for(chat_id, "private" if chat_id > 0 else "group")
-        home = app.home.scoped(allow_private=scope == "owner_dm")
-        offered = self._offered(scope, chat_id, messages)
-        request = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": "\n\n".join([
-                *self._files(home, offered), store.format_chat_window_xml(str(chat_id), batch), FORMAT_NOTE,
-            ])},
-        ]
+        async with app.locks[chat_id]:
+            batch = await store.get_memory_batch(chat_id, BATCH_SIZE)
+            messages = [m for m in batch if m.role != "event"]
+            if not messages or not await app.dispatch.model_allowed(chat_id):
+                return False
+            scope = store.scope_for(chat_id, "private" if chat_id > 0 else "group")
+            home = app.home.scoped(allow_private=scope == "owner_dm")
+            offered = self._offered(scope, chat_id, messages)
+            request = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "\n\n".join([
+                    *self._files(home, offered), store.format_chat_window_xml(str(chat_id), batch), FORMAT_NOTE,
+                ])},
+            ]
         reply = await self._ask(chat_id, request)
-        if reply is None:
+        if reply is None or not await store.is_chat_approved(chat_id):
             return False
 
         parsed = _parse(reply)
@@ -147,7 +147,7 @@ class MemoryPass:
                 ])},
             ]
             second = await self._ask(chat_id, follow_up)
-            again = _parse(second) if second is not None else None
+            again = _parse(second) if second is not None and await store.is_chat_approved(chat_id) else None
             if again is not None:
                 more, summary_again = again
                 done, _ = self._apply(home, scope, chat_id, offered, more)  # one retry, then stop
