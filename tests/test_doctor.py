@@ -79,11 +79,22 @@ def test_missing_secrets_lists_names_only(home, monkeypatch, capsys):
     assert "TELEGRAM_BOT_TOKEN" in out and "OPENROUTER_API_KEY" in out
 
 
+@pytest.mark.parametrize(("relative", "value"), [
+    ("private/NOTES.md", "x" * 2201),
+    ("memory/people/100.md", "x" * 1001),
+])
+def test_oversized_notes_are_a_warning(home, capsys, relative, value):
+    # Imported notes often start over their limit and Dom trims them; that is not a broken install.
+    path = home / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value)
+    main(["doctor", str(home)])
+    assert "warn memory:" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(("relative", "value", "label"), [
     ("SOUL.md", None, "SOUL.md"),
     ("SOUL.md", "x" * (MAX_SOUL + 1), "SOUL.md"),
-    ("private/NOTES.md", "x" * 2201, "memory"),
-    ("memory/people/100.md", "x" * 1001, "memory"),
     ("state.db", "not a database", "state.db"),
 ])
 def test_invalid_files(home, capsys, relative, value, label):
@@ -236,3 +247,16 @@ def test_online_rejected_token(home, monkeypatch, capsys):
     assert main(["doctor", str(home), "--online"]) == 1
     out = capsys.readouterr().out
     assert "fail Telegram getMe:" in out and BOT_TOKEN not in out
+
+
+async def test_model_probe_names_a_data_policy_block():
+    import httpx
+    from dom.config import ModelEndpoint
+    from dom.doctor import _model
+
+    def handler(request):
+        return httpx.Response(404, json={"error": {"message": "0 endpoints available: ZDR violation (account settings)"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        check = await _model(http, "media", ModelEndpoint(base_url="https://example.org/v1", model="m", api_key_env="K"), "key")
+    assert check.status == "fail" and "zero data retention" in check.detail
