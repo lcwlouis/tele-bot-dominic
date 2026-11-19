@@ -296,7 +296,7 @@ Original list:
 
 1. Look around read-only.
 2. Back up `state.db`, `runtime.env` and the session file.
-3. Stop and remove `dominic-dm-v2`, `dominic-dashboard` and `dominic-dm-pilot`, plus the stale `dominic-v2:*` images. They use the same bot token.
+3. Stop and remove the old pilot bot and dashboard containers and their stale images. They use the same bot token.
 4. Keep the Cloudflare tunnel and its Access policy.
 5. Give the Pi a DHCP reservation and update the ssh config.
 6. Check that swap isn't thrashing the SD card. Consider zram.
