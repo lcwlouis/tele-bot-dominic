@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import habits
+from dom import habits, reflection
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -129,6 +129,7 @@ async def run(home: Path) -> None:
                 search_client=search_client(config, http, usage),
             )
             app.dispatch.jobs.register("habits", habits.due, partial(habits.run, app))
+            app.dispatch.jobs.register("reflection", reflection.due, partial(reflection.run, app))
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
             if config.owner_id is not None:

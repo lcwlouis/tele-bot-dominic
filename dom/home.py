@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 import shutil
+from tempfile import NamedTemporaryFile
 from importlib import resources
 from dataclasses import dataclass
-from datetime import time
+from datetime import date, time
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -22,6 +23,7 @@ LIMITS: dict[str, int] = {
 }
 # Writable through memory_write but not size-bounded (never loaded into chat prompts).
 UNBOUNDED = {"memory/JOURNAL.md"}
+_JOURNAL_HEADING = re.compile(r"^## \d{4}-\d{2}-\d{2}[ \t]*$", re.MULTILINE)
 
 
 
@@ -123,7 +125,26 @@ class Home:
         if path != self.root.resolve().joinpath(*PurePosixPath(rel).parts):
             raise ValueError(f"{rel} is a link; expected a regular file")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as temp:
+            pending = Path(temp.name)
+            try:
+                temp.write(content)
+                temp.close()
+                pending.replace(path)
+            finally:
+                pending.unlink(missing_ok=True)
+
+    def journal_entries(self, *, private: bool = False) -> list[str]:
+        return _split_journal(self.read(_journal_path(private)))[1]
+
+    def append_journal(self, day: date, body: str, *, private: bool = False) -> None:
+        rel = _journal_path(private)
+        heading = f"## {day.isoformat()}"
+        preamble, entries = _split_journal(self.read(rel))
+        entries = [entry for entry in entries if entry.splitlines()[0].rstrip() != heading]
+        entries.append(f"{heading}\n{body}")
+        text = "\n\n".join(filter(None, [preamble, *entries[-30:]])) + "\n"
+        self._write_regular(rel, text)
 
     def write_habits_line(self, start: time, end: time) -> None:
         home = self.scoped(allow_private=False)
@@ -160,6 +181,16 @@ class Home:
 
     def soul(self) -> tuple[dict[str, Any], str]:
         return parse_front_matter(self.read("SOUL.md"))
+
+
+def _journal_path(private: bool) -> str:
+    return "private/JOURNAL.md" if private else "memory/JOURNAL.md"
+
+
+def _split_journal(text: str) -> tuple[str, list[str]]:
+    starts = [match.start() for match in _JOURNAL_HEADING.finditer(text)]
+    bounds = [*starts, len(text)]
+    return text[:bounds[0]].rstrip(), [text[start:end].rstrip() for start, end in zip(starts, bounds[1:])]
 
 
 def _scalar(value: str) -> Any:

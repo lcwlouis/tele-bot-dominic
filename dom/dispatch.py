@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager, nullcontext
 from functools import partial
 from datetime import datetime, timedelta
 from collections.abc import AsyncIterator, Coroutine
+from xml.sax.saxutils import escape
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -23,6 +24,7 @@ from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import build_messages
+from dom.reflection import mood
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, core_tools
 from dom.traits import for_chat
@@ -450,6 +452,8 @@ class Dispatcher:
             f"state: online\nonline minutes left: {minutes:.1f}\n"
             f"messages that arrived while away: {away_count}\n{describe(app, scope)}"
         )
+        if current_mood := mood(app.home, now.date()):
+            note += f"\nmood: {escape(current_mood)}"
         if away_count:
             note += "\nyou just came online"
         if final_bot_turn:

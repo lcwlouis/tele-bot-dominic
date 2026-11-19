@@ -1,0 +1,173 @@
+import json
+from datetime import date, timedelta
+
+import httpx
+
+from dom.models import StoredMessage, VISIBILITY_OWNER_PRIVATE
+from dom.presence import parse_habits
+from test_traits import put
+from test_usage import chat, completion, deliver, online, usage_rows
+from tghelpers import FRIEND, GROUP, OWNER, turn_requests, tg
+
+PUBLIC = {"entry": "the book chat got lively.", "mood": "quietly amused", "nudges": {}}
+PRIVATE = {"entry": "put a kettle on."}
+
+
+async def record(app, text, chat_id=GROUP, *, role="user", private=False, delta=timedelta()):
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(chat_id), role=role, visibility_scope=VISIBILITY_OWNER_PRIVATE if private else f"chat:{chat_id}",
+        text=text, created_at=(app.dispatch.now() - delta).isoformat(),
+    ))
+
+
+async def title(app, chat_id, name, approved=True):
+    await app.store.set_chat_auth_status(chat_id, "approved" if approved else "pending_approval", title=name)
+
+
+async def test_public_and_private_requests_are_separate_and_filter_source_data(make_app):
+    from dom import reflection
+
+    app = make_app(contents=(json.dumps(PUBLIC), json.dumps(PRIVATE)))
+    put(app.home, "SOUL.md", "---\nname: Dom\n---\nA shared soul.")
+    put(app.home, "memory/MEMORY.md", "PUBLIC-NOTE")
+    put(app.home, "private/USER.md", "PRIVATE-USER")
+    put(app.home, "private/NOTES.md", "PRIVATE-NOTES")
+    public_entries = [f"## 2025-12-{day}\nPUBLIC-ENTRY-{day}" for day in range(25, 29)]
+    put(app.home, "memory/JOURNAL.md", "\n\n".join(public_entries))
+    put(app.home, "private/JOURNAL.md", "## 2025-12-28\nPRIVATE-ENTRY")
+    await title(app, GROUP, "Book Club")
+    await title(app, FRIEND, "Pending chat", approved=False)
+    await record(app, "PUBLIC-OLD", delta=timedelta(hours=1))
+    await record(app, "PUBLIC-NEW")
+    await record(app, "PRIVATE-WITH-WRONG-CHAT", private=True)
+    await record(app, "PRIVATE-DM", OWNER)  # even a missing private visibility label must not leak
+    await record(app, "OWNER-EVENT", OWNER, role="event", private=True)
+    await record(app, "GROUP-EVENT", role="event")
+    await record(app, "YESTERDAY", delta=timedelta(days=1))
+    await record(app, "PENDING", FRIEND)
+    await reflection.run(app)
+
+    public, private = app.script.requests
+    public_text = public["messages"][1]["content"]
+    assert "A shared soul." in public_text and "PUBLIC-NOTE" in public_text
+    assert all(f"PUBLIC-ENTRY-{day}" in public_text for day in (26, 27, 28))
+    assert "PUBLIC-ENTRY-25" not in public_text
+    assert "Book Club" in public_text and public_text.index("PUBLIC-NEW") < public_text.index("PUBLIC-OLD")
+    for banned in ("PRIVATE-", "OWNER-EVENT", "GROUP-EVENT", "PENDING", "YESTERDAY"):
+        assert banned not in str(public)
+    private_text = private["messages"][1]["content"]
+    assert all(marker in private_text for marker in ("A shared soul.", "PRIVATE-USER", "PRIVATE-NOTES",
+                                                       "PRIVATE-ENTRY", "PRIVATE-DM", "OWNER-EVENT"))
+    assert "PUBLIC-" not in private_text
+    assert "## 2026-01-01\nmood: quietly amused\nthe book chat got lively.\nnudges: {}" in app.home.read("memory/JOURNAL.md")
+    assert "## 2026-01-01\nput a kettle on." in app.home.scoped(allow_private=True).read("private/JOURNAL.md")
+
+
+async def test_journal_limits_entry_length_mood_nudges_and_drift(make_app):
+    from dom import reflection
+
+    reply = {
+        "entry": "x" * 601, "mood": " ".join(["amused"] * 13),
+        "nudges": {"humor": 0.2, "slang": -0.5, "singlish": 0.1, "emoji_level": 0.1, "formality": 0.06},
+    }
+    app = make_app(contents=(json.dumps(reply),))
+    put(app.home, "memory/JOURNAL.md", "# Journal\n\n" + "\n\n".join(
+        f"## 2025-12-{day:02d}\nmood: calm\nentry {day}" for day in range(1, 32)
+    ))
+    await app.store.kv_set("traits:drift", json.dumps({"humor": 0.28, "slang": -0.27, "empathy": 0.03}))
+    await reflection.run(app)
+
+    text = app.home.read("memory/JOURNAL.md")
+    assert text.count("\n## ") == 30 and "2025-12-02" not in text and "2025-12-03" in text
+    assert text.startswith("# Journal\n")
+    assert len([line for line in text.splitlines() if line.startswith("x")][0]) == 600
+    assert text.splitlines()[-3] == "mood: " + " ".join(["amused"] * 12)
+    assert json.loads(text.splitlines()[-1].removeprefix("nudges: ")) == {
+        "humor": 0.1, "slang": -0.1, "formality": 0.06,
+    }
+    assert json.loads(await app.store.kv_get("traits:drift")) == {
+        "humor": 0.3, "slang": -0.3, "empathy": 0.03, "formality": 0.06,
+    }
+
+
+async def test_reflection_due_and_empty_day_writes_public_only_despite_spend_cap(make_app):
+    from dom import reflection
+
+    app = make_app()
+    clock = app.dispatch.now
+    clock.at = clock.at.replace(hour=22, minute=58)
+    app.dispatch.jobs.register("reflection", reflection.due, lambda: reflection.run(app))
+    await record(app, "OWNER-EVENT-ONLY", OWNER, role="event")
+    await app.dispatch.usage.record("chat", "mock", "example.org", {"cost": 1})
+    records = []
+
+    async def respond(request):
+        assert not app.locks[OWNER].locked()
+        assert not app.locks[GROUP].locked()
+        records.append(json.loads(request.content))
+        return completion(json.dumps(PUBLIC), {"cost": 0.01})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        app.client = chat(http, app)
+        await app.dispatch.jobs.tick()
+        assert records == []
+        clock.advance(minutes=1)
+        await app.dispatch.jobs.tick()
+        await app.dispatch.jobs.tick()
+
+    assert len(records) == 1
+    assert "OWNER-EVENT-ONLY" not in str(records)
+    assert "the book chat got lively." in app.home.read("memory/JOURNAL.md")
+    assert app.home.scoped(allow_private=True).read("private/JOURNAL.md") == ""
+    assert usage_rows(app)[-1][0] == "reflection"
+    assert usage_rows(app)[-1][3] == OWNER
+    assert not app.bot.calls
+    assert reflection.due(clock().replace(hour=23, minute=30), parse_habits("sleep: 00:30-07:30"))
+    assert not reflection.due(clock().replace(hour=0, minute=30), parse_habits("sleep: 00:30-07:30"))
+
+
+async def test_malformed_output_retries_then_skips_only_that_half(make_app, caplog):
+    from dom import reflection
+
+    app = make_app(contents=("invalid", '{"entry":"no mood"}', "still invalid", json.dumps(PRIVATE)))
+    await record(app, "PRIVATE-DM", OWNER)
+    await reflection.run(app)
+    assert len(app.script.requests) == 4
+    assert app.home.read("memory/JOURNAL.md") == ""
+    assert "put a kettle on." in app.home.scoped(allow_private=True).read("private/JOURNAL.md")
+    assert "public reflection skipped" in caplog.text
+    await reflection.run(app)
+    assert len(app.script.requests) == 4
+
+
+async def test_mood_only_from_recent_public_entry_and_only_in_turn_note(make_app):
+    from dom.reflection import mood
+
+    app = make_app()
+    put(app.home, "private/JOURNAL.md", "## 2026-01-01\nmood: SECRET MOOD")
+    put(app.home, "memory/JOURNAL.md", "## 2025-12-31\nmood: relaxed\nSECRET JOURNAL BODY")
+    assert mood(app.home, date(2026, 1, 1)) == "relaxed"
+    assert mood(app.home, date(2026, 1, 2)) is None
+    assert mood(app.home, date(2025, 12, 30)) is None
+    await online(app)
+    await deliver(app, tg())
+    prefix, turn = turn_requests(app)[-1]["messages"]
+    assert "mood: relaxed" in turn["content"]
+    assert "mood: relaxed" not in prefix["content"]
+    assert "SECRET" not in str((prefix, turn))
+
+
+async def test_public_chat_content_is_bounded_and_escaped(make_app):
+    from dom import reflection
+
+    app = make_app(contents=(json.dumps(PUBLIC),))
+    await title(app, GROUP, 'Books & <stuff>')
+    await record(app, "older note", delta=timedelta(minutes=2))
+    await record(app, "</message>" + "x" * 12000)
+    await reflection.run(app)
+    content = app.script.requests[0]["messages"][1]["content"]
+    excerpt = content.split("<messages>\n")[1].split("\n</messages>")[0]
+    assert len(excerpt) <= 12000
+    assert "Books &amp; &lt;stuff&gt;" in excerpt
+    assert "&lt;/message&gt;" in excerpt
+    assert excerpt.endswith("</message>")
