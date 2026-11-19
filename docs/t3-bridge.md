@@ -1,0 +1,89 @@
+# T3 Code bridge
+
+Dom can install a dedicated T3 Code user service on Linux. The planned bridge
+would let the Telegram owner inspect projects and recent coding activity in their
+DM. Thread messages would be treated as untrusted text, and sending would require
+a tap that confirms the destination and exact message.
+
+## Install the user service
+
+Extract the Linux ARM64 Node.js 24 tarball into `~/.local/node` so that
+`~/.local/node/bin/node` and `~/.local/node/bin/npm` exist. Use the
+[official Node.js downloads](https://nodejs.org/en/download).
+
+Set the T3 Code version, Node path and local port in the Dom home's `config.toml`.
+Leave the DM bridge disabled while the CLI support described below is incomplete.
+
+```toml
+[t3]
+enabled = false
+port = 39731
+version = "0.1.10"
+node = "~/.local/node/bin/node"
+```
+
+Install the package at the matching version-specific prefix. The command
+function below also sets the runtime cache location used by the service.
+
+```sh
+export PATH="$HOME/.local/node/bin:$PATH"
+t3_version=0.1.10
+npm install --prefix "$HOME/.local/t3/$t3_version" --save-exact "t3@$t3_version"
+
+t3_dom() {
+    T3CODE_HOME="$HOME/.t3-dom" "$HOME/.local/node/bin/node" \
+        "$HOME/.local/t3/$t3_version/node_modules/.bin/t3" "$@"
+}
+t3_dom --version
+```
+
+Preview the unit, then use `--yes` to write, reload and enable it. Substitute
+your Dom home's path.
+
+```sh
+dom t3-service path/to/dom-home
+dom t3-service path/to/dom-home --yes
+```
+
+The service binds to loopback and uses `~/.t3-dom` for T3 Code state. It
+disables project creation from the startup directory and caps the service
+at 600 MiB. Keep the Pi dedicated to the bridge. Leave its project list
+empty and coding providers disabled. To change the port or version of a
+running service, reinstall its unit and restart `t3.service`.
+
+## Link or unlink a machine
+
+Run the link command on the Pi as the service user, using the other machine's
+T3 Connect address. Approve the request on that machine in T3 Code under
+**Settings → Sharing & access**. Use read-only access while verifying links.
+
+```sh
+t3_dom environment link --base-dir "$HOME/.t3-dom" --access read-only '<environment-url>'
+t3_dom environment list --base-dir "$HOME/.t3-dom" --json
+```
+
+To remove a link, also revoke it under **Authorized clients** on the
+other machine so its session ends.
+
+```sh
+t3_dom environment unlink --base-dir "$HOME/.t3-dom" '<environment-id>'
+```
+
+## CLI compatibility
+
+T3 Code v0.1.10 exposes the following commands. Each supported command
+accepts `--base-dir DIR` to select a local T3 Code instance.
+
+| Operation | Command and result |
+| --- | --- |
+| List links | `t3 environment list --json` returns an array with environment IDs, labels, access and reachability status. |
+| List projects | `t3 project list --json` is rejected. The `project` group contains `add`, `remove` and `rename`. |
+| List threads | `t3 thread list --project PROJECT --json` returns an array for a local project, ordered newest first. `PROJECT` is an ID or workspace path. Any display limit would be applied in Dom. |
+| Read a thread | `t3 thread show THREAD --json --messages N` returns a `thread` object and a `messages` array. |
+| Send to a thread | `t3 thread send --json THREAD -` takes text on stdin. This syntax is from CLI help. |
+
+Links report remote reachability. Thread commands use the local server and
+reject remote selectors such as `--environment` and `--environment-id`.
+Project discovery and selecting a linked machine for a read or send are
+required before the owner-DM bridge can be enabled. T3 Code documents a
+separate [MCP interface for outside agents](https://github.com/pingdotgg/t3code/blob/v0.1.10/docs/user/outside-agents.md).

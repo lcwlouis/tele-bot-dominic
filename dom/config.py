@@ -88,6 +88,19 @@ def _ipv4_target(target: str) -> ipaddress.IPv4Address:
     return address
 
 
+class T3Config(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(False, description="Allow the T3 Code bridge in the owner's DM.")
+    port: int = Field(39731, ge=1, le=65535, description="Loopback port for the T3 Code user service.")
+    version: str = Field(
+        "0.1.10",
+        pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$",
+        description="Exact version of the installed t3 npm package.",
+    )
+    node: str = Field("~/.local/node/bin/node", description="Path to the user-local Node.js executable.")
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -101,6 +114,7 @@ class Config(BaseModel):
     daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap.")
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    t3: T3Config = Field(default_factory=T3Config)
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups when supported by Telegram.")
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_threshold: float = Field(1.2, ge=0, le=3, description="Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call.")
