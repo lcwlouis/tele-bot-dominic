@@ -37,6 +37,7 @@ profile_dir = ""  # defaults to DOM_HOME/../desktop-profile
 network = "dom-desktop"
 subnet = "172.30.0.0/24"
 port = 18080
+task_cost_cap_usd = 0.5  # a desktop task stops once its model calls cost this much; 0 turns it off
 lan_probes = []  # LAN "host:port" targets the sandbox must not reach, e.g. ["192.0.2.1:443"]; required in local mode
 
 [openers]

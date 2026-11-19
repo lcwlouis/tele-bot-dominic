@@ -1,12 +1,13 @@
 import asyncio
 import json
 from contextlib import nullcontext
+from datetime import datetime, timezone
 
 import httpx
 import pytest
 from aiogram.types import CallbackQuery, User
 
-from dom.config import WebConfig
+from dom.config import DesktopConfig, WebConfig
 from dom.desktop.worker import WORKER_SYSTEM_PROMPT, DesktopWorker
 from dom.llm import ChatClient
 from dom.store.store import StoredMessage
@@ -301,3 +302,40 @@ async def test_handoff_without_a_browser_url_still_asks(make_app):
     await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
     assert app.bot.of("send", OWNER)[0][2].startswith("Dom needs you to log in: Sign in")
+
+
+async def test_daily_spend_cap_pauses_a_desktop_task_before_any_worker_call(make_app):
+    app = make_app()
+    await app.dispatch.usage.record("chat", "m", "example.org", {"cost": 1.25})
+    worker = await worker_for(app, call("finish", result="Done"), {"content": "invalid"})
+    task_id = await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    row = await task_row(app, task_id)
+    assert row["status"] == "failed"
+    assert row["error"] == "paused by today's spend cap"
+    assert row["result"] == "Stopped after 0 steps: paused by today's spend cap"
+    assert all(tools == [] for _, tools, _ in app.client.requests)  # no worker call, only the report
+
+
+async def test_task_cost_ceiling_stops_the_task_and_ignores_earlier_tasks(make_app):
+    app = make_app()
+    app.config = app.config.model_copy(update={"desktop": app.config.desktop.model_copy(update={"task_cost_cap_usd": 0.5})})
+    await app.store.record_usage("2020-01-01T00:00:00+00:00", "desktop", "m", "example.org", OWNER, 0, 0, 5.0, 0)
+
+    async def costly():
+        await app.store.record_usage(datetime.now(timezone.utc).isoformat(), "desktop", "m", "example.org", OWNER, 0, 0, 0.6, 0)
+        return call("read_page")
+
+    worker = await worker_for(app, costly, call("finish", result="Too late"), {"content": "invalid"})
+    task_id = await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    row = await task_row(app, task_id)
+    assert row["status"] == "failed"
+    assert row["error"] == "task cost cap of $0.50 reached"
+    assert row["result"] == "Stopped after 1 steps: task cost cap of $0.50 reached"
+
+
+def test_task_cost_cap_default():
+    assert DesktopConfig().task_cost_cap_usd == 0.5
+    with pytest.raises(ValueError):
+        DesktopConfig(task_cost_cap_usd=-1)

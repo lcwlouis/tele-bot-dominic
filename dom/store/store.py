@@ -1241,6 +1241,14 @@ class Store:
         ).fetchone()
         return count, cost
 
+    async def usage_cost(self, kind: str, chat_id: int, since: str) -> float:
+        def total() -> float:
+            return self._conn.execute(
+                "SELECT TOTAL(cost_usd) FROM usage WHERE kind = ? AND chat_id = ? AND at >= ?", (kind, chat_id, since),
+            ).fetchone()[0]
+
+        return await self._run(total)
+
     async def claim_spend_cap_notice(self, day: str) -> bool:
         return await self._run(self._claim_spend_cap_notice, day)
 

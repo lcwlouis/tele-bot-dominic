@@ -51,6 +51,7 @@ class DesktopConfig(BaseModel):
     network: str = "dom-desktop"
     subnet: str = "172.30.0.0/24"
     port: int = Field(default=18080, ge=1, le=65535)
+    task_cost_cap_usd: float = Field(default=0.5, ge=0, allow_inf_nan=False)  # 0 turns the per-task ceiling off
     # LAN "host:port" targets the sandbox must not reach. Dom probes them before it starts the sandbox.
     lan_probes: list[str] = []
 
