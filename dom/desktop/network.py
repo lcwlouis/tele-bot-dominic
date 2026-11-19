@@ -71,6 +71,33 @@ except OSError as exc:
 """
 
 
+# Exit status 7 means a target answered or refused instead of timing out. Only a dropped connection passes.
+LAN_PROBE = """
+import socket
+import sys
+
+for target in sys.argv[1:]:
+    host, _, port = target.rpartition(":")
+    try:
+        socket.create_connection((host, int(port)), timeout=2).close()
+    except TimeoutError:
+        continue
+    except Exception:
+        pass
+    sys.exit(7)
+"""
+LAN_REACHABLE = 7
+
+
+def probe_command(config: Config, script: str, *arguments: str) -> list[str]:
+    """A throwaway container on the desktop network. It never pulls the image."""
+    settings = config.desktop
+    return [
+        "docker", "run", "--rm", "--pull=never", "--network", settings.network,
+        "--entrypoint", "python3", settings.image, "-c", script, *arguments,
+    ]
+
+
 def check(
     config: Config, lan_address: str, lan_port: int = 443, public_address: str = "1.1.1.1", *, run=subprocess.run,
 ) -> None:
@@ -78,8 +105,4 @@ def check(
     public = ipaddress.IPv4Address(public_address)
     if not 1 <= lan_port <= 65535 or not public.is_global:
         raise ValueError("provide a valid LAN port and a public IPv4 address")
-    settings = config.desktop
-    run([
-        "docker", "run", "--rm", "--pull=never", "--network", settings.network,
-        "--entrypoint", "python3", settings.image, "-c", _PROBE, str(lan), str(lan_port), str(public),
-    ], check=True)
+    run(probe_command(config, _PROBE, str(lan), str(lan_port), str(public)), check=True)

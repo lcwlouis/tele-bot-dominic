@@ -38,6 +38,7 @@ Dom executable and instance home.
 Description=Dom desktop network
 Requires=docker.service
 After=docker.service
+Before=dom.service
 PartOf=docker.service
 
 [Service]
@@ -50,6 +51,33 @@ WantedBy=multi-user.target
 ```
 
 Enable it with `sudo systemctl enable --now dom-desktop-network.service`.
+
+## Startup firewall check
+
+Before Dom starts the sandbox for the first time in a process, and again after any
+failed start, it runs a throwaway container on the desktop network. The container
+tries TCP connects to every `[desktop] lan_probes` entry and to the network's
+gateway on the dashboard port. Only a dropped (timed out) connection passes. If
+any target answers or refuses, Dom refuses to start the sandbox, sets the status to
+`error: LAN reachable from the sandbox — run dom desktop-setup` and sends the
+owner one DM.
+
+Set `lan_probes` to `host:port` addresses of LAN services that are up, for
+example `lan_probes = ["192.0.2.1:443"]`. In local mode an empty list also
+refuses to start.
+
+Start the firewall unit before Dom so the rules exist when it starts. Add this to
+the Dom service:
+
+```ini
+[Unit]
+After=dom-desktop-network.service
+Requires=dom-desktop-network.service
+```
+
+and keep `Before=dom.service` in the `[Unit]` section of
+`dom-desktop-network.service`. The rules use the iptables backend with `-w`; the
+nftables backend is not supported.
 
 ## Dashboard handoff
 

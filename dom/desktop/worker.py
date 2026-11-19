@@ -46,6 +46,12 @@ class DesktopWorker:
         self._job: asyncio.Task | None = None
         self.control = asyncio.Lock()
         self._handoff: tuple[int, int, asyncio.Event] | None = None
+        if hasattr(sandbox, "alert"):
+            sandbox.alert = self._alert_owner
+
+    async def _alert_owner(self, text: str) -> None:
+        if self.app.owner_id is not None:
+            await self.app.bot.send_message(self.app.owner_id, text)
 
     def available(self) -> bool:
         return self.sandbox.status() in ("stopped", "starting", "ready")

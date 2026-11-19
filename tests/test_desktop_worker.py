@@ -221,3 +221,12 @@ async def test_desktop_usage_is_counted_for_owner(make_app):
         await wait_task(worker)
     rows = await app.store._run(lambda: app.store._conn.execute("SELECT kind, chat_id FROM usage ORDER BY id").fetchall())
     assert [tuple(row) for row in rows] == [("desktop", OWNER), ("chat", OWNER)]
+
+
+async def test_sandbox_alerts_go_to_the_owner_dm(make_app):
+    app = make_app()
+    sandbox = Sandbox()
+    sandbox.alert = None
+    DesktopWorker(app, sandbox)
+    await sandbox.alert("The LAN is reachable")
+    assert app.bot.of("send", OWNER)[-1][2] == "The LAN is reachable"
