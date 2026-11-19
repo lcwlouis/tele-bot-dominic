@@ -70,8 +70,14 @@ def install(config: T3Config, *, yes: bool) -> int:
         return 0
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    restart = False
     if path.is_symlink() or not path.is_file() or path.read_bytes() != content.encode("utf-8"):
+        restart = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", UNIT], check=False, timeout=60,
+        ).returncode == 0
         service._write_unit(path, content)
     subprocess.run(service.RELOAD, check=True, timeout=60)
     subprocess.run(ENABLE, check=True, timeout=60)
+    if restart:
+        subprocess.run(["systemctl", "--user", "restart", UNIT], check=True, timeout=60)
     return 0

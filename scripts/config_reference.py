@@ -26,9 +26,15 @@ def fields(
     model: type[BaseModel], prefix: str = "", *, exclude: Set[str] = frozenset(),
 ) -> Iterator[tuple[str, str, str | None]]:
     for key, field in model.model_fields.items():
-        if key not in exclude:
-            default = "Required" if field.is_required() else literal(field.get_default(call_default_factory=True))
-            yield prefix + key, default, field.description
+        if key in exclude:
+            continue
+        if field.is_required():
+            default = "Required"
+        elif field.default_factory_takes_validated_data:
+            default = "Derived"
+        else:
+            default = literal(field.get_default(call_default_factory=True))
+        yield prefix + key, default, field.description
 
 
 def table(rows: Iterable[tuple[str, str, str | None]]) -> str:

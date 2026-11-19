@@ -32,9 +32,9 @@ def installation(tmp_path, monkeypatch):
     calls = []
 
     def run(args, *, check, timeout):
-        assert check and timeout == 60
+        assert timeout == 60
         calls.append(args)
-        return subprocess.CompletedProcess(args, 0)
+        return subprocess.CompletedProcess(args, 0 if check else 3)
 
     monkeypatch.setenv("HOME", str(account))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(account / "config"))
@@ -45,7 +45,7 @@ def installation(tmp_path, monkeypatch):
 def test_t3_config_defaults_are_off(tmp_path):
     from dom.config import Config
 
-    assert Config(home=tmp_path).t3.model_dump() == starter_config()["t3"] == {
+    assert Config(home=tmp_path).t3.model_dump() == {**starter_config()["t3"], "base_url": "http://127.0.0.1:39731"} == {
         "enabled": False,
         "port": 39731,
         "base_url": "http://127.0.0.1:39731",
@@ -80,6 +80,7 @@ def test_t3_service_writes_and_enables_only_with_yes(installation):
     assert path.read_text() == service.render_unit(node, entry, 39800)
     assert path.stat().st_mode & 0o777 == 0o644
     assert calls == [
+        ["systemctl", "--user", "is-active", "--quiet", "t3.service"],
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", "--now", "t3.service"],
     ]
@@ -92,3 +93,30 @@ def test_t3_service_rejects_package_with_a_different_version(installation, capsy
     assert main(["t3-service", str(home), "--yes"]) == 1
     assert "t3@1.2.3" in capsys.readouterr().out
     assert not units.exists() and not calls
+
+
+def test_t3_base_url_defaults_to_configured_port(installation):
+    home, *_ = installation
+    assert load_config(home).t3.base_url == "http://127.0.0.1:39800"
+    from dom.config import T3Config
+
+    assert T3Config(port=39800, base_url="http://localhost:39899").base_url == "http://localhost:39899"
+
+
+def test_t3_restarts_running_service_only_when_changed(installation, monkeypatch):
+    home, _, _, units, calls = installation
+
+    def run(args, *, check, timeout):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(service.subprocess, "run", run)
+    units.mkdir(parents=True)
+    (units / "t3.service").write_text("old unit")
+    restart = ["systemctl", "--user", "restart", "t3.service"]
+    assert main(["t3-service", str(home), "--yes"]) == 0
+    assert restart in calls
+    assert calls.index(restart) > calls.index(["systemctl", "--user", "daemon-reload"])
+    calls.clear()
+    assert main(["t3-service", str(home), "--yes"]) == 0
+    assert restart not in calls
