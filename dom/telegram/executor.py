@@ -67,6 +67,7 @@ async def perform(
     stickers: Mapping[str, Sequence[str]] | None = None,
     ephemeral_recipient: int | None = None,
     link_previews: bool = True,
+    record: bool = True,
 ) -> list[int]:
     """Send the bubbles, reaction and sticker; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
@@ -108,18 +109,19 @@ async def perform(
         sent = await bot.send_message(
             chat_id, bubble.text, reply_parameters=reply, message_thread_id=thread_id, **options,
         )
-        await store.record_new_message(
-            StoredMessage(
-                chat_id=str(chat_id),
-                msg_id=sent.message_id,
-                reply_to_msg_id=bubble.reply_to,
-                is_bot=True,
-                role="assistant",
-                visibility_scope=store.visibility_for(chat_id),
-                text=bubble.text,
-                created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
+        if record:
+            await store.record_new_message(
+                StoredMessage(
+                    chat_id=str(chat_id),
+                    msg_id=sent.message_id,
+                    reply_to_msg_id=bubble.reply_to,
+                    is_bot=True,
+                    role="assistant",
+                    visibility_scope=store.visibility_for(chat_id),
+                    text=bubble.text,
+                    created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
+                )
             )
-        )
         sent_ids.append(sent.message_id)
         if on_sent is not None:
             await on_sent(sent.message_id)
