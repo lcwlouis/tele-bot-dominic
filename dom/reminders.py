@@ -58,6 +58,16 @@ def _next_due(due: datetime, repeat: str, now: datetime, tz: ZoneInfo) -> str | 
             return candidate.isoformat()
 
 
+def _carry(styled: str | None, text: str) -> str:
+    """The model's styled text when it still says what the owner asked to remember, else it followed by the stored text."""
+    plain = f"⏰ {text}"
+    if not styled:
+        return plain
+    if " ".join(text.split()).casefold() in " ".join(styled.split()).casefold():
+        return styled
+    return f"{styled}\n{plain}"
+
+
 class Reminders:
     def __init__(self, app: App):
         self.app = app
@@ -160,7 +170,7 @@ class Reminders:
                     reply = await app.client.complete(messages, [], once=True)
             actions = parse_actions(reply.get("content"))
             if actions and not actions.no_response and actions.bubbles:
-                return actions.bubbles[0].text
+                return "\n".join(bubble.text for bubble in actions.bubbles)
         except Exception as error:  # the stored reminder still goes out if the model path fails
             log.warning("critical reminder model unavailable (%s)", type(error).__name__)
         return None
@@ -169,7 +179,7 @@ class Reminders:
         app = self.app
         try:
             styled = await self._in_character(owner, row["text"]) if row["importance"] == "critical" else None
-            text = styled or f"⏰ {row['text']}"
+            text = _carry(styled, row["text"])
             if late:
                 text += " (late)"
             chunks = [text] if len(text.encode("utf-16-le")) <= 8192 else [
