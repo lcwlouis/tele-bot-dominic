@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -21,3 +23,11 @@ class Actions(BaseModel):
     react: str | None = None
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list, max_length=6)
+
+
+@dataclass(frozen=True)
+class SendFile:
+    """A desktop result attachment prepared by the host, outside chat model actions."""
+
+    filename: str
+    data: bytes

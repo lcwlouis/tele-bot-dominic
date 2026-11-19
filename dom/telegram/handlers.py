@@ -19,6 +19,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton
 from dom.claim import try_claim
 from dom.config import Config, load_config
 from dom.dispatch import Dispatcher
+from dom.desktop import files as desktop_files
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 from dom.desktop.worker import DesktopWorker
 from dom.home import Home
@@ -151,6 +152,30 @@ def _is_own_message(app: App, msg: IncomingMessage) -> bool:
     return bool(app.bot_username and (msg.sender_handle or "").lower() == f"@{app.bot_username.lower()}")
 
 
+async def _receive_desktop_document(app: App, message: Message, msg: IncomingMessage) -> IncomingMessage:
+    document = message.document
+    if document is None or msg.media is None:
+        return msg
+    try:
+        if (document.file_size or 0) > desktop_files.MAX_FILE_BYTES:
+            raise ValueError("Desktop documents can be at most 20 MB.")
+        with desktop_files.BoundedFile() as content:
+            downloaded = await app.bot.download(document, destination=content)
+            if downloaded is None:
+                raise OSError("no document returned")
+            name = desktop_files.stage_inbox(app.home.root, document.file_name, content.getvalue())
+    except ValueError as error:
+        await app.bot.send_message(msg.chat_id, str(error))
+        return msg
+    except Exception as error:
+        log.warning("could not stage a desktop document (%s)", type(error).__name__)
+        await app.bot.send_message(msg.chat_id, "Couldn't save the document for the desktop.")
+        return msg
+    received = f"file received: inbox/{name}"
+    await owner.record_event(app, received)
+    return msg.model_copy(update={"media": {**msg.media, "desktop_inbox": name}})
+
+
 async def handle_message(app: App, message: Message) -> None:
     if message.chat.type not in CHAT_TYPES:
         return
@@ -225,6 +250,11 @@ async def handle_message(app: App, message: Message) -> None:
         decision = await gate.decide(app.store, msg, app.owner_id)
         if decision == "drop":
             return
+        if (
+            owner_dm and message.document is not None and app.config.desktop_mode != "off"
+            and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
+        ):
+            msg = await _receive_desktop_document(app, message, msg)
         await _record(app, msg, describe_media=decision == "process")
         if decision == "process":
             app.dispatch.notify(msg)

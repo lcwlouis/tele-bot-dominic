@@ -11,10 +11,10 @@ from random import choice
 from typing import Awaitable, Callable
 
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import EphemeralMessageParameters, ReactionTypeEmoji, ReplyParameters
+from aiogram.types import BufferedInputFile, EphemeralMessageParameters, ReactionTypeEmoji, ReplyParameters
 from pydantic import ValidationError
 
-from dom.actions import Actions
+from dom.actions import Actions, SendFile
 from dom.models import StoredMessage
 from dom.store import Store
 
@@ -141,3 +141,14 @@ async def perform(
         if on_sent is not None:
             await on_sent(sent.message_id)
     return sent_ids
+
+
+async def send_files(bot, store: Store, chat_id: int, files: Sequence[SendFile]) -> None:
+    if chat_id != store.owner_id:
+        return
+    for file in files:
+        try:
+            await bot.send_document(chat_id, BufferedInputFile(file.data, filename=file.filename))
+        except TelegramAPIError:
+            log.warning("could not send a desktop result document")
+            await bot.send_message(chat_id, f"Couldn't send {file.filename}.")
