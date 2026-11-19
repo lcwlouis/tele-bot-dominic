@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from aiogram.types import User
 
@@ -85,3 +87,24 @@ async def test_own_bot_message_is_not_dispatched(bot_chat):
     await bot_line(app, clock, 1, "own message", BOT_USER)
     assert not app.script.requests
     assert not await app.store.get_recent_chat_window(GROUP)
+
+
+async def test_human_question_is_not_swallowed_by_a_bot_message_in_the_same_debounce(bot_chat):
+    app, clock = await bot_chat()
+    await bot_line(app, clock, 1, "hello from a bot")
+    assert len(app.script.requests) == 1
+    clock.advance(seconds=3)
+    gate = asyncio.Event()
+
+    async def sleep(_):
+        await gate.wait()
+
+    app.dispatch.sleep = sleep
+    await handle_message(app, tg(msg_id=2, text="a human question?").model_copy(update={"date": clock()}))
+    clock.advance(seconds=1)
+    message = tg(msg_id=3, text="bot again").model_copy(update={"from_user": OTHER_BOT, "date": clock()})
+    await handle_message(app, message)
+    gate.set()
+    await drain_dispatch(app.dispatch)
+    assert len(app.script.requests) == 2
+    assert "a human question?" in app.script.requests[-1]["messages"][-1]["content"]
