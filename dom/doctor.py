@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import sys
 import time
+import tomllib
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,11 +23,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from dom.backup import ARCHIVE_NAME
-from dom.config import Config, ModelEndpoint, load_config
+from dom.config import Config, DesktopConfig, ModelEndpoint, OpenersConfig, WebConfig, validate_config
 from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
 from dom.home import LIMITS, MAX_SOUL, Home
 from dom.jev import JevClient, JevUnavailable
 from dom.plugins.runner import PluginRunner
+from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.store.store import TARGET_VERSION
 from dom.web.auth import Auth
 
@@ -157,19 +159,44 @@ def _desktop(config: Config) -> Check:
     return Check("ok", "desktop", "Local settings and Docker executable are present.")
 
 
-def _config_checks(config: Config) -> list[Check]:
+def _unknown_config_keys(raw: dict) -> list[str]:
+    tables = [
+        ("", raw, Config.model_fields.keys() - {"home", "desktop_mode"}),
+        ("desktop.", raw.get("desktop", {}), DesktopConfig.model_fields.keys() | {"mode"}),
+        ("openers.", raw.get("openers", {}), OpenersConfig.model_fields.keys()),
+        ("web.", raw.get("web", {}), WebConfig.model_fields.keys()),
+    ]
+    models = raw.get("models", {})
+    if isinstance(models, dict):
+        tables.extend(
+            (f"models.{name}.", table, ModelEndpoint.model_fields.keys()) for name, table in models.items()
+        )
+    return sorted(prefix + key for prefix, table, known in tables if isinstance(table, dict) for key in table.keys() - known)
+
+
+def _has_misplaced_api_key(config: Config) -> bool:
+    names = (config.desktop.api_key_env, *(endpoint.api_key_env for endpoint in config.models.values()))
+    return any(
+        len(name) > 64
+        or any(char.islower() for char in name)
+        or any(pattern.search(name) for pattern in (API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN))
+        for name in names if name
+    )
+
+
+def _secrets(config: Config) -> Check:
     names = {BOT_TOKEN_ENV, *(endpoint.api_key_env for endpoint in config.models.values() if endpoint.api_key_env)}
     try:
         missing = sorted(name for name in names if not (config.secret(name) or "").strip())
     except (OSError, ValueError):
-        secrets = Check("fail", "secrets", "Make .env readable as UTF-8.")
-    else:
-        secrets = (
-            Check("fail", "secrets", "Set in .env or the environment: " + ", ".join(
-                name if ENV_NAME.fullmatch(name) else "<invalid environment variable name>" for name in missing
-            ) + ".")
-            if missing else Check("ok", "secrets", "Required secrets are set.")
-        )
+        return Check("fail", "secrets", "Make .env readable as UTF-8.")
+    if missing:
+        labels = [name if ENV_NAME.fullmatch(name) else "<invalid environment variable name>" for name in missing]
+        return Check("fail", "secrets", "Set in .env or the environment: " + ", ".join(labels) + ".")
+    return Check("ok", "secrets", "Required secrets are set.")
+
+
+def _config_checks(config: Config) -> list[Check]:
     owner = (
         Check("ok", "owner", "Claimed.") if config.owner_id
         else Check("warn", "owner", "Start Dom, then send /claim <code> in the bot DM. Use the code in .claim.")
@@ -193,7 +220,7 @@ def _config_checks(config: Config) -> list[Check]:
             web = Check("ok", "web", "Dashboard authentication settings are valid.")
     else:
         web = Check("ok", "web", "Disabled.")
-    return [secrets, owner, zone, web, _desktop(config)]
+    return [owner, zone, web, _desktop(config)]
 
 
 async def _telegram(http: httpx.AsyncClient, token: str, owner: int | None) -> list[Check]:
@@ -333,9 +360,14 @@ async def _online(config: Config) -> list[Check]:
 
 
 def run(home: Path, *, online: bool = False) -> int:
+    if not home.is_dir():
+        print("fail home: Instance home does not exist or is not a directory.")
+        return 1
+
     home = home.resolve()
     try:
-        config = load_config(home)
+        raw = tomllib.loads((home / "config.toml").read_text())
+        config = validate_config(home, raw)
     except (OSError, ValueError, TypeError, AttributeError):
         config = None
         config_check = Check("fail", "config", "Check that config.toml exists and has valid TOML and field values.")
@@ -345,7 +377,16 @@ def run(home: Path, *, online: bool = False) -> int:
             else Check("fail", "config", "Add the required [models.chat] section to config.toml.")
         )
     checks = [config_check]
+    misplaced_key = config is not None and _has_misplaced_api_key(config)
     if config is not None:
+        unknown = _unknown_config_keys(raw)
+        if unknown:
+            labels = ", ".join(ascii(key)[1:-1] for key in unknown)
+            checks.append(Check("warn", "config", f"Unknown keys in config.toml: {labels}."))
+        checks.append(
+            Check("fail", "secrets", "api_key_env looks like a secret, not a variable name")
+            if misplaced_key else _secrets(config)
+        )
         checks.extend(_config_checks(config))
     notes = Home(home, allow_private=True)
     checks.extend((_soul(notes), _memory(notes), _database(home), _backups(home), _disk(home)))
@@ -359,7 +400,7 @@ def run(home: Path, *, online: bool = False) -> int:
     else:
         checks.append(Check("warn", "bwrap", "Install bubblewrap on Linux to enable plugins."))
         checks.append(Check("warn", "plugin sandbox", "Install bubblewrap before running the isolation self-test."))
-    if online and config is not None:
+    if online and config is not None and not misplaced_key:
         try:
             checks.extend(asyncio.run(_online(config)))
         except (OSError, ValueError):

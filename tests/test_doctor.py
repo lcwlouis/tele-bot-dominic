@@ -48,6 +48,7 @@ def test_offline_healthy_and_never_requests_http(home, monkeypatch, capsys):
     for label in ("config", "secrets", "owner", "timezone", "SOUL.md", "memory", "state.db",
                   "backups", "disk", "web", "desktop", "bwrap", "plugin sandbox"):
         assert f"ok {label}:" in out
+    assert "warn config:" not in out
     assert BOT_TOKEN not in out and MODEL_KEY not in out
 
 
@@ -294,3 +295,58 @@ def test_online_probe_hints_redact_provider_text(home, monkeypatch, capsys, poli
     assert "fail models.chat: HTTP 403:" in out
     assert ("zero data retention" in out) is policy
     assert reason not in out and fake_key not in out and escape not in out
+
+
+@pytest.mark.parametrize(("name", "value"), [
+    ("OPENROUTER_API_KEY", "lowercase_env"),
+    ("OPENROUTER_API_KEY", "X" * 65),
+    ("OPENROUTER_API_KEY", "sk-or-v1-" + "A" * 32),
+    ("OPENROUTER_API_KEY", "gsk_" + "B" * 24),
+    ("OPENROUTER_API_KEY", "hf_" + "C" * 24),
+    ("OPENROUTER_API_KEY", "abcd_" + "D" * 20),
+    ("OPENROUTER_API_KEY", "Bearer " + "A" * 24),
+    ("OPENROUTER_API_KEY", "123456" + ":" + "B" * 30),
+    ("SANDBOX_API_KEY", "X" * 65),
+])
+def test_doctor_rejects_and_redacts_suspect_api_key_env(home, capsys, name, value):
+    change_config(home, f'api_key_env = "{name}"', f"api_key_env = {json.dumps(value)}")
+    assert main(["doctor", str(home)]) == 1
+    out = capsys.readouterr().out
+    assert "api_key_env looks like a secret, not a variable name" in out
+    assert value not in out
+
+
+def test_doctor_does_not_probe_online_with_a_misplaced_secret(home, monkeypatch, capsys):
+    fake_secret = "X" * 65
+    change_config(home, 'api_key_env = "OPENROUTER_API_KEY"', f'api_key_env = "{fake_secret}"')
+    monkeypatch.setattr(doctor.httpx, "AsyncClient", lambda **kwargs: pytest.fail("unexpected HTTP client"))
+    assert main(["doctor", str(home), "--online"]) == 1
+    assert fake_secret not in capsys.readouterr().out
+
+
+def test_doctor_warns_about_unknown_config_keys_in_nested_tables(home, capsys):
+    path = home / "config.toml"
+    path.write_text('time_zone = "unknown-value"\n' + path.read_text() + """
+[models.custom]
+base_url = "https://example.org/v1"
+model = "custom"
+api_key_en = "unknown-value"
+""")
+    change_config(home, "[desktop]\n", '[desktop]\nmod = "unknown-value"\n')
+    change_config(home, "[openers]\n", '[openers]\nmax_per_days = 5\n')
+    change_config(home, "[web]\n", '[web]\nenabeld = true\n')
+    assert main(["doctor", str(home)]) == 0
+    out = capsys.readouterr().out
+    assert "warn config: Unknown keys in config.toml" in out
+    for key in ("time_zone", "desktop.mod", "openers.max_per_days", "web.enabeld", "models.custom.api_key_en"):
+        assert key in out
+    assert "unknown-value" not in out
+
+
+def test_doctor_stops_after_one_line_when_home_is_missing(tmp_path, capsys):
+    missing = tmp_path / "missing"
+    assert main(["doctor", str(missing), "--online"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "fail home: Instance home does not exist or is not a directory.",
+    ]
+    assert not missing.exists()
