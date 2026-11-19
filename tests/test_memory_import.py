@@ -36,7 +36,7 @@ def test_parser_recognizes_bullets_with_or_without_categories():
     assert parse_facts(
         "# Notes\n- [food] Prefers tea (January)\n -   Reads mysteries\n- [empty]\n"
         "This is not a fact\n* Irrelevant list item\n-[bad] Invalid bullet\n- \n"
-    ) == ["Prefers tea (January)", "Reads mysteries"]
+    ).facts == ["Prefers tea (January)", "Reads mysteries"]
 
 
 def test_parser_caps_count_and_fact_length():
@@ -44,9 +44,18 @@ def test_parser_caps_count_and_fact_length():
 
     text = "- " + "x" * 301 + "\n- " + "y" * 300 + "\n"
     text += "\n".join(f"- Fact {i}" for i in range(310))
-    facts = parse_facts(text)
+    parsed = parse_facts(text)
+    facts = parsed.facts
+    assert (parsed.too_long, parsed.duplicates) == (1, 0)
     assert len(facts) == 300 and max(map(len, facts)) == 300
     assert facts[0] == "y" * 300 and facts[-1] == "Fact 298"
+
+
+def test_parser_counts_what_it_skips_for_length_and_duplicates():
+    from dom.memory_import import parse_facts
+
+    parsed = parse_facts("- A\n- a\n-  A \n- B\n- " + "x" * 301 + "\n- Known\n", existing=["known"])
+    assert (parsed.facts, parsed.too_long, parsed.duplicates) == (["A", "B"], 1, 3)
 
 
 async def test_import_prompts_and_reply_creates_private_proposals_with_one_summary(make_app):
@@ -62,7 +71,10 @@ async def test_import_prompts_and_reply_creates_private_proposals_with_one_summa
     put(app.home, "private/NOTES.md", "- Reads mysteries\n")
     export = tg(OWNER, OWNER, "- [food] Prefers  tea\n- Reads mysteries\n- Owns a kettle\n- [home] Owns a kettle\n- Likes book clubs")
     await handlers.handle_message(app, tg(OWNER, OWNER, "/import ChatGPT", msg_id=2, reply_to=export))
-    expected = "Imported 2 facts from chatgpt. Review them in the dashboard or with /proposals."
+    expected = (
+        "Imported 2 facts from chatgpt. Skipped 3 duplicates. Review them in the dashboard or with /proposals. "
+        "USER.md holds about 1,375 characters, so only the most important facts fit; Dom's notes pass keeps it trimmed."
+    )
     assert [call[2] for call in app.bot.of("send")] == [expected]
     assert app.bot.of("send")[0][1] == OWNER
     assert len(await events(app)) == 2
@@ -77,6 +89,15 @@ async def test_import_prompts_and_reply_creates_private_proposals_with_one_summa
 
     await handlers.handle_message(app, tg(OWNER, OWNER, "/import ChatGPT", msg_id=3, reply_to=export))
     assert "Imported 0 facts" in app.bot.of("send", OWNER)[-1][2]
+
+
+async def test_summary_reports_skipped_facts_and_the_user_md_budget(make_app):
+    app = make_app()
+    text = "/import claude\n- Likes tea\n- likes  TEA\n- " + "x" * 301 + "\n- " + "y" * 301 + "\n- Reads"
+    await handlers.handle_message(app, tg(OWNER, OWNER, text))
+    (summary,) = [call[2] for call in app.bot.of("send", OWNER)]
+    assert summary.startswith("Imported 2 facts from claude. Skipped 1 duplicate and 2 over 300 characters. ")
+    assert "about 1,375 characters" in summary and "notes pass keeps it trimmed" in summary
 
 
 async def test_inline_import_and_utf8_document_use_the_same_parser_without_a_model(make_app):
