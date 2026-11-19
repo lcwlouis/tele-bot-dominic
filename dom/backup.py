@@ -71,12 +71,12 @@ def backup(home: Path, *, keep: int = 7, destination: Path | None = None) -> Pat
             except FileExistsError:
                 stamp += timedelta(seconds=1)
 
-    archives = sorted(
+    others = sorted(
         (path for path in destination.iterdir()
-         if _ARCHIVE_NAME.fullmatch(path.name) and not path.is_symlink() and path.is_file()),
+         if path != archive and _ARCHIVE_NAME.fullmatch(path.name) and not path.is_symlink() and path.is_file()),
         reverse=True,
     )
-    for old in archives[keep:]:
+    for old in others[keep - 1:]:
         old.unlink(missing_ok=True)
     return archive
 
