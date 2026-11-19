@@ -21,6 +21,9 @@ class SandboxClient:
     def auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
+    def redact(self, text: str) -> str:
+        return text.replace(self._api_key, "[redacted]") if self._api_key else text
+
     def _check(self, response: httpx.Response, *, envelope: bool = True) -> Any:
         data = None
         if envelope or response.is_error:
@@ -31,9 +34,7 @@ class SandboxClient:
         if isinstance(data, dict):
             message = data.get("message")
             if (response.is_error or data.get("success") is False) and isinstance(message, str):
-                if self._api_key:
-                    message = message.replace(self._api_key, "[redacted]")
-                raise SandboxError(message)
+                raise SandboxError(self.redact(message))
         if not response.is_success:
             raise SandboxError(f"HTTP {response.status_code}")
         if envelope:

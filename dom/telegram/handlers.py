@@ -20,6 +20,7 @@ from dom.claim import try_claim
 from dom.config import Config, load_config
 from dom.dispatch import Dispatcher
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
+from dom.desktop.worker import DesktopWorker
 from dom.home import Home
 from dom.jev import JevClient
 from dom.llm import ChatClient
@@ -56,6 +57,7 @@ class App:
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | None = None
     sandbox: LocalSandbox | RemoteSandbox | None = None
+    desktop_worker: DesktopWorker | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
     proposals: Proposals = field(init=False)
     stickers: Stickers = field(init=False)
@@ -70,6 +72,8 @@ class App:
         self.memory_import = MemoryImport(self)
         presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
+        if self.sandbox is not None:
+            self.desktop_worker = DesktopWorker(self, self.sandbox)
 
     @property
     def owner_id(self) -> int | None:
@@ -163,6 +167,11 @@ async def handle_message(app: App, message: Message) -> None:
         message.from_user is not None and not msg.is_bot and message.sender_chat is None
         and msg.chat_type == "private" and msg.chat_id == msg.sender_id == app.owner_id
     )
+    if command == "/tasks":
+        if owner_dm:
+            await owner.show_tasks(app)
+            await owner.record_event(app, f"{_person(msg.sender_name)} ran /tasks")
+        return
     if command == "/import":
         if owner_dm:
             response, event = await owner.import_memory(app, message, msg.text)
@@ -401,6 +410,23 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
     owner_id = app.owner_id
     if owner_id is None or query.from_user.id != owner_id:
         return
+    if action == "desktop":
+        if (
+            app.desktop_worker is None or query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
+        ):
+            return
+        decision, _, payload = raw_chat_id.partition(":")
+        raw_id, _, raw_steps = payload.partition(":")
+        task_id = _item_id(raw_id)
+        if task_id is not None:
+            if decision == "cancel" and not raw_steps:
+                changed = await app.desktop_worker.cancel(owner_id, task_id)
+                await _toast(app, query, "Cancelled" if changed else "already handled")
+            elif decision == "done" and (steps := _item_id(raw_steps)) is not None:
+                changed = await app.desktop_worker.resume(owner_id, task_id, steps)
+                await _toast(app, query, "Resumed" if changed else "already handled")
+        return
     if action == "prop":
         if not query.from_user.is_bot:
             await _handle_proposal(app, query, raw_chat_id)
@@ -471,7 +497,7 @@ def build_router(app: App) -> Router:
     async def on_edited(message: Message) -> None:
         await handle_edited_message(app, message)
 
-    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:", "leave:", "leaveyes:", "status:", "prop:", "rem:")))
+    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:", "leave:", "leaveyes:", "status:", "prop:", "rem:", "desktop:")))
     async def on_callback(query: CallbackQuery) -> None:
         await handle_callback(app, query)
 

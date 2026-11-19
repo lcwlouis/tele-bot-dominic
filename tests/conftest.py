@@ -36,5 +36,7 @@ async def make_app(tmp_path):
 
     yield make
     for app in apps:
+        if app.desktop_worker is not None:
+            await app.desktop_worker.close()
         await app.dispatch.close()
         app.store.close()

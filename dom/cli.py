@@ -139,6 +139,8 @@ async def run(home: Path) -> None:
                 search_client=search_client(config, http, usage), sandbox=sandbox,
             )
             await app.stickers.refresh()
+            if app.desktop_worker is not None:
+                await app.desktop_worker.recover()
             app.dispatch.jobs.register("habits", habits.due, partial(habits.run, app))
             app.dispatch.jobs.register("reflection", reflection.due, partial(reflection.run, app))
             dispatcher = Dispatcher()
@@ -158,6 +160,8 @@ async def run(home: Path) -> None:
                         tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
                     )
                 finally:
+                    if app.desktop_worker is not None:
+                        await app.desktop_worker.close()
                     await app.dispatch.close()
     finally:
         if sandbox is not None:

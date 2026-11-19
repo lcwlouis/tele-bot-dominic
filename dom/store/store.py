@@ -43,6 +43,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (8, "0007_phase3.sql"),
     (9, "0008_proposals_reminders.sql"),
     (10, "0009_turn_log.sql"),
+    (11, "0010_desktop_tasks.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1068,6 +1069,54 @@ class Store:
                 conn.execute("DELETE FROM online_sessions WHERE ends_at < ?", (cutoff,))
 
         await self._run(prune)
+
+    # ---- desktop tasks -----------------------------------------------------
+
+    async def enqueue_desktop_task(self, chat_id: int, brief: str) -> int | None:
+        def enqueue() -> int | None:
+            if chat_id != self.owner_id:
+                return None
+            row = self._conn.execute(
+                "INSERT INTO desktop_tasks (chat_id, brief, status, created_at) VALUES (?, ?, 'queued', ?) "
+                "ON CONFLICT DO NOTHING RETURNING id", (chat_id, brief, _now()),
+            ).fetchone()
+            return row["id"] if row else None
+
+        return await self._run(enqueue)
+
+    async def desktop_tasks(self, chat_id: int, *, active: bool = False) -> list[dict[str, Any]]:
+        def select() -> list[dict[str, Any]]:
+            if chat_id != self.owner_id:
+                return []
+            condition = "AND status IN ('queued', 'running', 'waiting_owner')" if active else ""
+            return [dict(row) for row in self._conn.execute(
+                f"SELECT * FROM desktop_tasks WHERE chat_id = ? {condition} ORDER BY id DESC LIMIT 10", (chat_id,),
+            )]
+
+        return await self._run(select)
+
+    async def update_desktop_task(
+        self, task_id: int, chat_id: int, expected: tuple[str, ...], status: str, *,
+        steps: int | None = None, result: str | None = None, error: str | None = None,
+        expected_steps: int | None = None,
+    ) -> dict[str, Any] | None:
+        def update() -> dict[str, Any] | None:
+            if chat_id != self.owner_id:
+                return None
+            now = _now()
+            placeholders = ", ".join("?" for _ in expected)
+            row = self._conn.execute(
+                "UPDATE desktop_tasks SET status = ?, steps = coalesce(?, steps), result = ?, error = ?, "
+                "started_at = CASE WHEN ? = 'running' THEN coalesce(started_at, ?) ELSE started_at END, "
+                "finished_at = CASE WHEN ? IN ('done', 'failed', 'cancelled') THEN ? ELSE finished_at END "
+                f"WHERE id = ? AND chat_id = ? AND status IN ({placeholders}) "
+                "AND (? IS NULL OR steps = ?) RETURNING *",
+                (status, steps, result, error, status, now, status, now, task_id, chat_id, *expected,
+                 expected_steps, expected_steps),
+            ).fetchone()
+            return dict(row) if row else None
+
+        return await self._run(update)
 
     # ---- proposals and reminders -----------------------------------------
 
