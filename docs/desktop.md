@@ -79,6 +79,12 @@ and keep `Before=dom.service` in the `[Unit]` section of
 `dom-desktop-network.service`. The rules use the iptables backend with `-w`; the
 nftables backend is not supported.
 
+## Spend
+
+Worker model calls count toward `daily_spend_cap_usd`. When the cap is reached, a
+running task stops with "paused by today's spend cap". `[desktop] task_cost_cap_usd`
+(default `0.5`, `0` turns it off) stops a single task once its calls cost that much.
+
 ## Dashboard handoff
 
 Set `[web].public_url` in `config.toml` to the HTTPS base URL of the

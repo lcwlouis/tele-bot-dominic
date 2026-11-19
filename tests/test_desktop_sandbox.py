@@ -27,9 +27,11 @@ class FakeDocker:
         self.image = image
         self.probe = probe
         self.running = False
+        self.environments = []
 
     async def __call__(self, *args, **kwargs):
         self.calls.append(args)
+        self.environments.append(kwargs.get("env"))
         command = args[1]
         if command == "image":
             code, output = (0 if self.image else 1), b""
@@ -85,11 +87,14 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
             ("docker", "container", "inspect", "--format", "{{.State.Running}}", "dom-desktop"),
             ("docker", "run", "-d", "--name", "dom-desktop", "--pull=never",
              "--network", "dom-desktop", "-p", "127.0.0.1:18080:8080",
-             "--shm-size", "1g", "--memory", "1600m", "--cpus", "3",
-             "-e", "SANDBOX_API_KEY=secret-key", "-e", "DISABLE_CODE_SERVER=true",
+             "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
+             "--security-opt", "no-new-privileges", "--cpus", "3",
+             "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
              "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true",
              "-v", f"{tmp_path}/desktop-profile:/home/gem/.config/browser", config.desktop.image),
         ]
+        assert not any("secret-key" in str(call) for call in docker.calls)
+        assert [env["SANDBOX_API_KEY"] for env in docker.environments if env] == ["secret-key"]
         assert await sandbox.ensure_running() is sandbox.client
         now[0] = 599
         sandbox.touch()
@@ -368,3 +373,44 @@ async def test_current_url_reads_the_first_page_tab(payload, url):
 ])
 def test_url_host_is_only_a_plain_http_host(url, host):
     assert url_host(url) == host
+
+
+async def test_client_caps_json_and_screenshot_sizes_with_streamed_reads():
+    chunks = []
+
+    class Body(httpx.AsyncByteStream):
+        def __init__(self, size):
+            self.size = size
+
+        async def __aiter__(self):
+            for _ in range(self.size // 65536):
+                chunks.append(1)
+                yield b"x" * 65536
+
+    def reply(request):
+        if request.url.path == "/v1/browser/screenshot":
+            return httpx.Response(200, headers={"content-type": "image/png"}, stream=Body(100 * 65536))
+        return httpx.Response(200, headers={"content-type": "application/json"}, stream=Body(100 * 65536))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        client = SandboxClient("https://example.org", None, http)
+        with pytest.raises(SandboxError, match="exceeds"):
+            await client.markdown()
+        assert len(chunks) <= 33  # stopped near 2 MB, not after reading the whole body
+        chunks.clear()
+        with pytest.raises(SandboxError, match="exceeds"):
+            await client.screenshot()
+        assert len(chunks) <= 77
+
+
+async def test_download_json_failure_body_is_an_error_but_other_json_is_data():
+    bodies = iter([
+        {"success": False, "message": "no such file"}, {"success": False}, {"rows": [1]},
+    ])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=next(bodies)))) as http:
+        client = SandboxClient("https://example.org", None, http)
+        with pytest.raises(SandboxError, match="no such file"):
+            await client.download_file("/tmp/missing")
+        with pytest.raises(SandboxError):
+            await client.download_file("/tmp/missing")
+        assert json.loads(await client.download_file("/tmp/data.json")) == {"rows": [1]}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -106,9 +107,12 @@ class LocalSandbox:
             self._users -= 1
             self.touch()
 
-    async def _docker(self, *args: str) -> tuple[int, bytes]:
+    async def _docker(self, *args: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
+        extra = {} if env is None else {"env": {**os.environ, **env}}
         try:
-            process = await self._run("docker", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            process = await self._run(
+                "docker", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **extra,
+            )
             stdout, _ = await process.communicate()
         except OSError:
             raise SandboxError("Docker is unavailable") from None
@@ -202,10 +206,12 @@ class LocalSandbox:
         key = secrets.token_urlsafe(32)
         code, _ = await self._docker(
             "run", "-d", "--name", CONTAINER, "--pull=never", "--network", settings.network,
-            "-p", f"127.0.0.1:{settings.port}:8080", "--shm-size", "1g", "--memory", "1600m", "--cpus", "3",
-            "-e", f"SANDBOX_API_KEY={key}", "-e", "DISABLE_CODE_SERVER=true",
+            "-p", f"127.0.0.1:{settings.port}:8080", "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
+            "--security-opt", "no-new-privileges", "--cpus", "3",
+            "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
             "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true",
             "-v", f"{profile}:/home/gem/.config/browser", settings.image,
+            env={"SANDBOX_API_KEY": key},  # keeps the key out of the process list
         )
         if code:
             raise SandboxError("could not start the desktop container")
