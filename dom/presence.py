@@ -173,10 +173,14 @@ class Presence:
         """Whether `state` would say online, without writing anything (safe outside the turn lock)."""
         return self.peek(await self.store.get_presence(chat_id), habits)[0] == "online"
 
+    def session_minutes(self, habits: Habits) -> float:
+        """Draw how long a new online session lasts, without starting one."""
+        lo, hi = habits.online_minutes
+        return self.rng.triangular(lo, hi, hi - 0.2 * (hi - lo))
+
     async def go_online(self, chat_id, habits: Habits, minutes: float | None = None) -> datetime:
         if minutes is None:
-            lo, hi = habits.online_minutes
-            minutes = self.rng.triangular(lo, hi, hi - 0.2 * (hi - lo))
+            minutes = self.session_minutes(habits)
         self._session_start[chat_id] = self.now()
         return await self._set_online(chat_id, self.now() + timedelta(minutes=minutes))
 
