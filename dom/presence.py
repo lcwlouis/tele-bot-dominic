@@ -134,18 +134,24 @@ class Presence:
             await self.store.set_presence(chat_id, is_sleeping=False, sleep_until=None, is_offline=True)
         return "offline", offline
 
+    def peek(self, row: dict, habits: Habits) -> tuple[State, datetime | None]:
+        """What `state` would report for this presence row, without writing anything. The deadline is
+        None when no future one is stored."""
+        now = self.now()
+        online, sleep, offline = _deadline(row["online_until"]), _deadline(row["sleep_until"]), _deadline(row["offline_until"])
+        online = online if online and online > now else None
+        if online and sleep == online and not row["is_sleeping"]:  # an owner wake
+            return "online", online
+        sleep_end = sleep if row["is_sleeping"] and sleep and sleep > now else self._sleep_end(now, habits)
+        if sleep_end:
+            return "asleep", sleep_end
+        if online:
+            return "online", online
+        return "offline", offline if offline and offline > now else None
+
     async def is_online(self, chat_id, habits: Habits) -> bool:
         """Whether `state` would say online, without writing anything (safe outside the turn lock)."""
-        now = self.now()
-        row = await self.store.get_presence(chat_id)
-        online = _deadline(row["online_until"])
-        if online is None or online <= now:
-            return False
-        sleep = _deadline(row["sleep_until"])
-        if sleep == online and not row["is_sleeping"]:
-            return True
-        sleeping = row["is_sleeping"] and sleep and sleep > now
-        return not sleeping and self._sleep_end(now, habits) is None
+        return self.peek(await self.store.get_presence(chat_id), habits)[0] == "online"
 
     async def go_online(self, chat_id, habits: Habits, minutes: float | None = None) -> datetime:
         if minutes is None:

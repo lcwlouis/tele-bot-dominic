@@ -17,6 +17,7 @@ FINAL = json.dumps({"no_response": False, "react": None, "bubbles": [{"text": "h
 class FakeBot:
     def __init__(self):
         self.calls: list[tuple] = []
+        self.edit_markups: list = []
         self._next_id = 5000
 
     async def send_chat_action(self, chat_id, action, **kw):
@@ -38,6 +39,13 @@ class FakeBot:
 
     async def edit_message_text(self, text, chat_id=None, message_id=None, **kw):
         self.calls.append(("edit", chat_id, message_id, text))
+        self.edit_markups.append(kw.get("reply_markup"))
+
+    async def set_my_commands(self, commands, scope=None, **kw):
+        self.calls.append(("set_commands", commands, scope))
+
+    async def delete_my_commands(self, scope=None, **kw):
+        self.calls.append(("delete_commands", scope))
 
     def of(self, kind, chat_id=None):
         return [c for c in self.calls if c[0] == kind and (chat_id is None or c[1] == chat_id)]

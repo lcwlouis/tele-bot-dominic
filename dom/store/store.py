@@ -451,6 +451,30 @@ class Store:
             chat["is_offline"] = bool(chat["is_offline"])
         return chats
 
+    async def list_approved_chats(self) -> list[dict[str, Any]]:
+        """Read-only (never creates a row): every approved chat with its presence columns, when it last
+        saw a message and, for private chats, the other person's name. The owner's DM always comes first."""
+        return await self._run(self._list_approved_chats)
+
+    def _list_approved_chats(self) -> list[dict[str, Any]]:
+        columns = ", ".join(f"c.{name}" for name in _PRESENCE_COLUMNS)
+        chats = [dict(row) for row in self._conn.execute(
+            f"SELECT c.chat_id, c.title, {columns}, "
+            "COALESCE((SELECT MAX(created_at) FROM messages m WHERE m.chat_id = c.chat_id), c.updated_at) "
+            "AS last_activity, "
+            "(SELECT sender_name FROM messages m WHERE m.chat_id = c.chat_id AND m.is_bot = 0 "
+            "AND m.sender_name != '' ORDER BY m.id DESC LIMIT 1) AS peer_name "
+            "FROM chats c WHERE c.authorization_status = 'approved'"
+        )]
+        chats.sort(key=lambda chat: chat["last_activity"] or "", reverse=True)
+        chats.sort(key=lambda chat: not self._is_owner_chat(chat["chat_id"]))
+        if self.owner_id is not None and not any(self._is_owner_chat(c["chat_id"]) for c in chats):
+            chats.insert(0, {  # approved by definition, but they have not written yet
+                "chat_id": str(self.owner_id), "title": "", "is_sleeping": 0, "sleep_until": None,
+                "is_offline": 0, "offline_until": None, "online_until": None, "last_activity": None, "peer_name": None,
+            })
+        return chats
+
     async def get_presence(self, chat_id: int | str) -> dict[str, Any]:
         return await self._run(self._get_presence, str(chat_id))
 
