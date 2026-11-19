@@ -22,6 +22,7 @@ from dom.desktop.client import SandboxClient, SandboxError
 Status = Literal["off", "stopped", "starting", "ready", "error"]
 log = logging.getLogger(__name__)
 CONTAINER = "dom-desktop"
+SECCOMP_PROFILE = Path(__file__).resolve().with_name("seccomp-chromium.json")
 LAN_REACHABLE = "LAN reachable from the sandbox — run dom desktop-setup"
 REMOTE_UNCONFIRMED = (
     "remote desktop not started: set [desktop] remote_isolation_confirmed = true once the remote host blocks access to your LAN"
@@ -254,7 +255,7 @@ class LocalSandbox:
         code, _ = await self._docker_to_completion(
             "run", "-d", "--name", CONTAINER, "--pull=never", "--network", settings.network,
             "-p", f"127.0.0.1:{settings.port}:8080", "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
-            "--security-opt", "no-new-privileges", "--cpus", "3",
+            "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
             "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
             "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true",
             "-v", f"{profile}:/home/gem/.config/browser", settings.image,

@@ -87,6 +87,11 @@ def categories(
     fixtures = path.parts[0] == "tests" or path == POLICY_PATH
     identifiers = [match.group() for match in TELEGRAM_ID.finditer(line)]
     identifiers.extend(match[1] for match in CONTEXTUAL_ID.finditer(line))
+    # These two JSON values are Linux syscall constants, not identifiers.
+    if path == Path("dom/desktop/seccomp-chromium.json") and line.strip() in {
+        f'"value": {0x0e020000},', f'"value": {0xffffffff},',
+    }:
+        identifiers = []
     if any(not (fixtures and value in allow["test_telegram_ids"]) for value in identifiers):
         yield "Telegram ID"
     if TELEGRAM_LINK.search(line):

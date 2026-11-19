@@ -33,6 +33,8 @@ include = ["dom*"]
 
 [tool.setuptools.package-data]
 dom = [
+    "desktop/seccomp-chromium.json",
+    "desktop/README.md",
     "store/migrations/*.sql",
     "starter_home/*",
     "starter_home/.env.example",  # dotfiles are not matched by *
