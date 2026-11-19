@@ -543,10 +543,10 @@ class Store:
     def _has_recent_bot_duplicate(self, msg: StoredMessage, since: str) -> bool:
         return self._conn.execute(
             "SELECT 1 FROM messages JOIN chats USING (chat_id) "
-            "WHERE messages.id < ? AND sender_user_id = ? AND text = ? AND role = 'user' "
+            "WHERE messages.chat_id = ? AND messages.id < ? AND sender_user_id = ? AND text = ? AND role = 'user' "
             "AND is_bot = 1 AND is_deleted = 0 AND authorization_status = 'approved' "
             "AND julianday(messages.created_at) > julianday(?) AND julianday(messages.created_at) <= julianday(?) LIMIT 1",
-            (msg.id, msg.sender_user_id, msg.text, since, msg.created_at),
+            (msg.chat_id, msg.id, msg.sender_user_id, msg.text, since, msg.created_at),
         ).fetchone() is not None
 
     # ---- messages ---------------------------------------------------------
