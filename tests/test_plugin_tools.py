@@ -1,8 +1,10 @@
+import asyncio
 import json
 from datetime import timedelta
 
 import pytest
 
+from dom.plugins import runner
 from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 from dom.presence import read_habits
 from dom.telegram import handlers
@@ -216,3 +218,62 @@ async def test_network_notice_is_shown_wherever_a_plugin_is_listed(make_app, bro
     app.bot.calls.clear()
     await handlers.handle_message(app, tg(OWNER, OWNER, "/plugins"))
     assert notice not in app.bot.of("send", OWNER)[0][2]
+
+
+async def approved_tool(app, browser, monkeypatch):
+    await draft(app)
+    route = review_path(await status(app))
+    async with browser(app) as client:
+        await client.get(route)
+        await client.post(f"{route}/approve", headers=POST_HEADERS)
+    monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
+    tool, = await offered(app, "owner_dm")
+    return tool
+
+
+async def test_plugin_runs_without_holding_the_registry_lock(make_app, browser, monkeypatch):
+    app = make_app()
+    tool = await approved_tool(app, browser, monkeypatch)
+    held = []
+
+    def run(folder, name, args, manifest, *, approved_hash):
+        held.append(app.plugins.lock.locked())
+        return "done"
+
+    monkeypatch.setattr(app.plugin_runner, "run", run)
+    assert "done" in await tool.handler({}, ctx(app))
+    assert held == [False]
+
+
+async def test_busy_sandbox_answers_immediately_without_blocking_the_registry(make_app, browser, monkeypatch):
+    app = make_app()
+    tool = await approved_tool(app, browser, monkeypatch)
+    assert runner._PROCESS.acquire(blocking=False)
+    try:
+        result = await asyncio.wait_for(tool.handler({}, ctx(app)), 5)
+        assert "plugin busy, try again" in result
+        assert not app.plugins.lock.locked()
+        assert await asyncio.wait_for(app.plugins.listing(), 5)
+    finally:
+        runner._PROCESS.release()
+
+
+@pytest.mark.parametrize("broken", ["entries", "self_test"])
+async def test_offering_plugins_never_raises(make_app, monkeypatch, caplog, broken):
+    app = make_app()
+
+    def boom(*args):
+        raise RuntimeError("scan failed")
+
+    async def aboom(*args):
+        raise RuntimeError("scan failed")
+
+    if broken == "entries":
+        monkeypatch.setattr(app.plugins, "entries", aboom)
+    else:
+        async def entries(scope):
+            return [(object(), object())]
+        monkeypatch.setattr(app.plugins, "entries", entries)
+        monkeypatch.setattr(app.plugin_runner, "self_test", boom)
+    assert await offered(app, "owner_dm") == []
+    assert "scan failed" in caplog.text
