@@ -119,10 +119,32 @@ return "opened 40 files"
 
 def test_no_stray_file_descriptors_reach_the_plugin(tmp_path):
     result = run_plugin(tmp_path, """
-listing = os.open("/proc/self/fd", os.O_RDONLY)
-return json.dumps(sorted(int(name) for name in os.listdir(listing) if int(name) != listing))
+out = {}
+for name in os.listdir("/proc/self/fd"):
+    try:
+        out[name] = os.readlink("/proc/self/fd/" + name)
+    except FileNotFoundError:
+        out[name] = None  # the descriptor os.listdir itself opened, closed again by now
+return json.dumps(out)
 """)
-    assert json.loads(result) == [0, 1, 2]
+    fds = json.loads(result)
+    # Only stdin, stdout and stderr stay open; anything else is the listing's own, already closed.
+    assert {"0", "1", "2"} <= set(fds)
+    assert all(target is None for fd, target in fds.items() if fd not in {"0", "1", "2"})
+    assert fds["0"].startswith("pipe:") and fds["1"].startswith("pipe:")
+
+
+def test_stderr_writes_are_bounded(tmp_path):
+    # stderr is a host temp file kept for diagnostics; RLIMIT_FSIZE (1 MB) bounds it.
+    result = run_plugin(tmp_path, """
+try:
+    for _ in range(3000):
+        os.write(2, b"x" * 1024)
+    return "unbounded"
+except OSError as error:
+    return errno.errorcode[error.errno]
+""")
+    assert result == "EFBIG"
 
 
 def test_plugin_holds_no_capabilities_and_sees_a_private_cgroup_root(tmp_path):
