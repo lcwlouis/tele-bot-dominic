@@ -106,6 +106,7 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | --- | --- | --- |
 | `t3.enabled` | `false` | Allow the T3 Code bridge in the owner's DM. |
 | `t3.port` | `39731` | Loopback port for the T3 Code user service. |
+| `t3.base_url` | `"http://127.0.0.1:39731"` | Loopback HTTP origin for the T3 OAuth and MCP endpoints. |
 | `t3.version` | `"0.1.10"` | Exact version of the installed t3 npm package. |
 | `t3.node` | `"~/.local/node/bin/node"` | Path to the user-local Node.js executable. |
 

@@ -87,3 +87,11 @@ reject remote selectors such as `--environment` and `--environment-id`.
 Project discovery and selecting a linked machine for a read or send are
 required before the owner-DM bridge can be enabled. T3 Code documents a
 separate [MCP interface for outside agents](https://github.com/pingdotgg/t3code/blob/v0.1.10/docs/user/outside-agents.md).
+
+## Sign in
+
+Run `dom t3-connect <home>` to preview sign-in. Add `--yes` to register Dom with
+the local gateway and authorize it using Supervised access. The command
+stores the sign-in in `<home>/t3-token.json` with mode 0600. Sign-in lasts
+30 days. Set `[t3] base_url` to the matching loopback origin if you changed
+the service port.

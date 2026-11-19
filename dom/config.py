@@ -93,6 +93,7 @@ class T3Config(BaseModel):
 
     enabled: bool = Field(False, description="Allow the T3 Code bridge in the owner's DM.")
     port: int = Field(39731, ge=1, le=65535, description="Loopback port for the T3 Code user service.")
+    base_url: str = Field("http://127.0.0.1:39731", description="Loopback HTTP origin for the T3 OAuth and MCP endpoints.")
     version: str = Field(
         "0.1.10",
         pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$",
