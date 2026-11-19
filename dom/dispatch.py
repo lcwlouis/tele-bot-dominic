@@ -22,6 +22,7 @@ from dom.jev import JevClient, JevUnavailable
 from dom.jobs import DailyJobs
 from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
+from dom.openers import Openers
 from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import build_messages
 from dom.reflection import mood
@@ -65,6 +66,8 @@ class Dispatcher:
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
         self.jobs = DailyJobs(app, now)
+        self.openers = Openers(app, presence.rng)
+        self._heartbeat: asyncio.Task | None = None
         self._debounces: dict[int, asyncio.Task] = {}
         self._first_notify: dict[int, datetime] = {}
         self._latest: dict[int, IncomingMessage] = {}
@@ -221,7 +224,12 @@ class Dispatcher:
                 await self._poll_chats()
             except Exception:
                 log.exception("could not check chat presence")
-            await self.jobs.tick()
+            if self._heartbeat is None or self._heartbeat.done():
+                self._heartbeat = self._spawn(self._background_jobs())
+
+    async def _background_jobs(self) -> None:
+        await self.jobs.tick()
+        await self.openers.maybe(self.now())
 
     async def _poll_chats(self) -> list[asyncio.Task]:
         if self.app.owner_id is None:
@@ -262,6 +270,9 @@ class Dispatcher:
 
     async def model_allowed(self, chat_id: int) -> bool:
         return await self._approved(chat_id) and not await self.spend_paused(chat_id)
+
+    async def turn_allowed(self, chat_id: int, scope: Scope) -> bool:
+        return (scope != "owner_dm" or chat_id == self.app.owner_id) and await self.model_allowed(chat_id)
 
     async def override(self, chat_id: int, command: str) -> bool:
         """The owner's /wake or /sleep. False if the chat is unknown or not approved; that lookup never
@@ -443,6 +454,26 @@ class Dispatcher:
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
     ) -> None:
         app = self.app
+        actions = await self._compose_turn(
+            chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
+        )
+        try:
+            await executor.perform(
+                app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
+                thread_id=live.thread_id if live else None,
+            )
+        finally:
+            if newest.is_bot and newest.sender_user_id is not None and actions.bubbles and not actions.no_response:
+                now = self.now()
+                self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}
+                self._bot_replies[(chat_id, newest.sender_user_id)] = now
+
+    async def _compose_turn(
+        self, chat_id: int, scope: Scope, newest: StoredMessage | None, live: IncomingMessage | None,
+        window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
+        *, extra_note: str = "",
+    ) -> Actions:
+        app = self.app
         now = self.now().astimezone(self.presence.tz)
         minutes = max(0, (until - now).total_seconds() / 60)
         title = live.chat_title if live else ""
@@ -456,21 +487,24 @@ class Dispatcher:
             note += f"\nmood: {escape(current_mood)}"
         if away_count:
             note += "\nyou just came online"
+        if extra_note:
+            note += f"\n{extra_note}"
         if final_bot_turn:
             note += f"\n{BOT_EXIT_NOTE}"
         window_size = app.config.window_size
         window = window[-window_size:] if window_size > 0 else []
         participants = [m.sender_user_id for m in window if m.role == "user" and m.sender_user_id is not None]
-        if newest.sender_user_id is not None:
-            participants.append(newest.sender_user_id)
+        sender_id = newest.sender_user_id if newest else None
+        if sender_id is not None:
+            participants.append(sender_id)
         sliders, preset = await for_chat(app.home, app.store, chat_id)
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window), note,
             sliders=sliders, preset=preset,
         )
         ctx = TurnCtx(
-            scope, chat_id, newest.sender_user_id, app.home, app.store, app.owner_id, self.presence, habits,
-            model_allowed=partial(self.model_allowed, chat_id),
+            scope, chat_id, sender_id, app.home, app.store, app.owner_id, self.presence, habits,
+            model_allowed=partial(self.turn_allowed, chat_id, scope),
         )
         try:
             actions = await run_turn(app.client, messages, core_tools(app.search_client), ctx)
@@ -484,13 +518,4 @@ class Dispatcher:
         if final_bot_turn:
             bubbles = actions.bubbles[:1] if not actions.no_response else []
             actions = Actions(bubbles=bubbles or [Bubble(text="I'll leave it there for now.")])
-        try:
-            await executor.perform(
-                app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
-                thread_id=live.thread_id if live else None,
-            )
-        finally:
-            if newest.is_bot and newest.sender_user_id is not None and actions.bubbles and not actions.no_response:
-                now = self.now()
-                self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}
-                self._bot_replies[(chat_id, newest.sender_user_id)] = now
+        return actions

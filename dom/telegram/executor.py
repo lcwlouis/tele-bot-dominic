@@ -42,17 +42,19 @@ async def perform(
     bot,
     store: Store,
     chat_id: int,
-    trigger_msg_id: int,
+    trigger_msg_id: int | None,
     actions: Actions,
     *,
     typing_cps: float = 8.0,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     thread_id: int | None = None,
+    now: Callable[[], datetime] | None = None,
+    on_sent: Callable[[int], Awaitable[None]] | None = None,
 ) -> list[int]:
     """Send the bubbles and reaction; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
         return []
-    if actions.react:
+    if actions.react and trigger_msg_id is not None:
         try:
             await bot.set_message_reaction(chat_id, trigger_msg_id, reaction=[ReactionTypeEmoji(emoji=actions.react)])
         except (TelegramAPIError, ValidationError):  # the model may pick an emoji Telegram does not allow
@@ -77,10 +79,12 @@ async def perform(
                 role="assistant",
                 visibility_scope=store.visibility_for(chat_id),
                 text=bubble.text,
-                created_at=datetime.now(timezone.utc).isoformat(),
+                created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
             )
         )
         sent_ids.append(sent.message_id)
+        if on_sent is not None:
+            await on_sent(sent.message_id)
         if bubble.delete_after is not None:
             task = asyncio.create_task(_delete_later(bot, store, chat_id, sent.message_id, bubble.delete_after, sleep))
             _background.add(task)
