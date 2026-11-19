@@ -301,3 +301,28 @@ async def test_chunks_already_sent_are_not_resent_on_retry(make_app):
     assert len(attempts) == 6 and len(sent) == 5
     assert "".join(sent) == f"⏰ {text}"
     assert await app.dispatch.reminders.active() == []
+
+
+async def test_casual_reminder_survives_a_silent_or_failed_turn_until_dom_answers(make_app):
+    app = make_app(contents=('{"no_response": true}',))
+    await add(app, "casual")
+    await online(app, OWNER)
+    app.dispatch.now.advance(minutes=1)
+    await deliver(app, tg(OWNER, OWNER))  # Dom stays silent
+    assert len(await app.dispatch.reminders.active()) == 1
+
+    async def broken(request):
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(broken)) as http:
+        failing, app.client = app.client, chat(http, app)
+        await deliver(app, tg(OWNER, OWNER, msg_id=2))  # the model is down
+        app.client = failing
+    assert len(await app.dispatch.reminders.active()) == 1
+
+    await deliver(app, tg(OWNER, OWNER, msg_id=3))  # Dom answers
+    requests = turn_requests(app)
+    first, answered = requests[0], requests[-1]
+    assert "reminder: Check the kettle" in first["messages"][-1]["content"]
+    assert "reminder: Check the kettle" in answered["messages"][-1]["content"]
+    assert await app.dispatch.reminders.active() == []

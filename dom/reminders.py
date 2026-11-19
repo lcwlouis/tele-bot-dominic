@@ -138,17 +138,22 @@ class Reminders:
         next_due = _next_due(due, row["repeat"], now, self._tz)
         await self.app.store.finish_reminder(row["id"], now.isoformat(), next_due)
 
-    async def casual_note(self) -> str:
+    async def casual_note(self) -> tuple[str, list[int]]:
+        """The note for the casual reminders that are due, and their ids. They stay due until `consume` is called."""
         now = self._now()
-        lines = []
-        for row in await self.active():
-            if row["importance"] == "casual" and datetime.fromisoformat(row["due_at"]) <= now:
-                async with self._delivery_lock:
-                    if not await self.app.store.reminder_is_active(row["id"]):
-                        continue
+        due = [
+            row for row in await self.active()
+            if row["importance"] == "casual" and datetime.fromisoformat(row["due_at"]) <= now
+        ]
+        return "\n".join(f"reminder: {escape(row['text'])}" for row in due), [row["id"] for row in due]
+
+    async def consume(self, ids: list[int]) -> None:
+        """Mark casual reminders as brought up: finish a one-off, move a repeating one to its next time."""
+        async with self._delivery_lock:
+            now = self._now()
+            for row in await self.active():
+                if row["id"] in ids and row["importance"] == "casual" and datetime.fromisoformat(row["due_at"]) <= now:
                     await self._advance(row, now)
-                lines.append(f"reminder: {escape(row['text'])}")
-        return "\n".join(lines)
 
     async def tick(self, *, startup: bool = False) -> None:
         app = self.app
