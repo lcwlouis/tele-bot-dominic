@@ -99,13 +99,17 @@ def _write_unit(path: Path, content: str) -> None:
             pending.unlink(missing_ok=True)
 
 
-def install(home: Path, *, yes: bool, force: bool) -> int:
-    app, python = _app_and_python()
-    units = render_units(app, python, home.resolve())
+def user_unit_folder() -> Path:
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", ""))
     if not config_home.is_absolute():
         config_home = Path.home() / ".config"
-    folder = config_home / "systemd" / "user"
+    return config_home / "systemd" / "user"
+
+
+def install(home: Path, *, yes: bool, force: bool) -> int:
+    app, python = _app_and_python()
+    units = render_units(app, python, home.resolve())
+    folder = user_unit_folder()
     changes = {}
     conflicts = []
     for name, content in units.items():

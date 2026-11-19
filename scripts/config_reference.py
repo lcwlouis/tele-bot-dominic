@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, ModelEndpoint, OpenersConfig, WebConfig, starter_config
+from dom.config import Config, DesktopConfig, ModelEndpoint, OpenersConfig, T3Config, WebConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -49,7 +49,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "desktop", "openers", "web"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "desktop", "openers", "web", "t3"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table uses the following keys. Use HTTPS for a provider on a different host.",
@@ -72,6 +72,9 @@ def render() -> str:
         table(fields(OpenersConfig, "openers.")),
         "## Web",
         table(fields(WebConfig, "web.")),
+        "## T3 Code",
+        table(fields(T3Config, "t3.")),
+        "See the [T3 Code bridge guide](t3-bridge.md) for service setup and CLI compatibility.",
         "See the [setup guide](setup.md) for examples and [Privacy](privacy.md) for how Dom uses the configured services.",
     ]
     return "\n\n".join(sections) + "\n"

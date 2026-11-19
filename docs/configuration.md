@@ -100,4 +100,15 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | `web.dev_token_env` | `""` | Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings. |
 | `web.public_url` | `""` | HTTPS dashboard base URL for links in desktop handoff messages. |
 
+## T3 Code
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `t3.enabled` | `false` | Allow the T3 Code bridge in the owner's DM. |
+| `t3.port` | `39731` | Loopback port for the T3 Code user service. |
+| `t3.version` | `"0.1.10"` | Exact version of the installed t3 npm package. |
+| `t3.node` | `"~/.local/node/bin/node"` | Path to the user-local Node.js executable. |
+
+See the [T3 Code bridge guide](t3-bridge.md) for service setup and CLI compatibility.
+
 See the [setup guide](setup.md) for examples and [Privacy](privacy.md) for how Dom uses the configured services.

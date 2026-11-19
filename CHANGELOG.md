@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Add a pinned, loopback-only T3 Code systemd user service with a 600 MiB memory limit.
 - Document Raspberry Pi desktop startup timings, the Chromium seccomp profile and the desktop connectivity check.
 - Wait for the local sandbox API and browser within a configurable 180-second startup deadline, with a distinct error for each stage.
 - Disable Jupyter for faster local desktop startup and run Python scripts through the sandbox Bash API.
