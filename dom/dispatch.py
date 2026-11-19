@@ -463,7 +463,7 @@ class Dispatcher:
 
     def _triage_xml(self, chat_id: int, window: list[StoredMessage]) -> str:
         chat = [m for m in window if m.role != "event"]  # events are the owner's commands, not chat content for Jev
-        return self.app.store.format_chat_window_xml(chat_id, chat[-TRIAGE_WINDOW:])
+        return self.app.store.format_chat_window_xml(chat_id, chat[-TRIAGE_WINDOW:], self.presence.tz)
 
     def _ephemeral_recipient(self, scope: Scope, trigger: StoredMessage | None) -> int | None:
         owner = self.app.owner_id
@@ -583,7 +583,7 @@ class Dispatcher:
             participants.append(sender_id)
         sliders, preset = await for_chat(app.home, app.store, chat_id)
         messages = build_messages(
-            app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window), note,
+            app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
             sliders=sliders, preset=preset,
         )
         ctx = TurnCtx(
