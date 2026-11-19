@@ -108,3 +108,14 @@ async def test_human_question_is_not_swallowed_by_a_bot_message_in_the_same_debo
     await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 2
     assert "a human question?" in app.script.requests[-1]["messages"][-1]["content"]
+
+
+async def test_bot_duplicate_check_is_scoped_to_the_chat(bot_chat):
+    app, clock = await bot_chat()
+    other = -2002
+    await app.store.set_chat_auth_status(other, "approved")
+    await app.dispatch.presence.go_online(other, parse_habits(""))
+    await bot_line(app, clock, 1, "repeat")
+    clock.advance(seconds=11)
+    await bot_line(app, clock, 1, "repeat", chat_id=other)
+    assert len(app.script.requests) == 2
