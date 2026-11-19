@@ -26,6 +26,7 @@ from dom.media import MediaDescriber
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
 from dom.proposals import Proposals
+from dom.stickers import Stickers
 from dom.store import Store
 from dom.search import SearchClient
 from dom.traits import load_preset
@@ -55,12 +56,14 @@ class App:
     search_client: SearchClient | None = None
     dispatch: Dispatcher = field(init=False)
     proposals: Proposals = field(init=False)
+    stickers: Stickers = field(init=False)
 
     def __post_init__(self) -> None:
         def now() -> datetime:
             return datetime.now(timezone.utc)
 
         self.proposals = Proposals(self)
+        self.stickers = Stickers(self.home, self.bot)
         presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
 
@@ -173,6 +176,9 @@ async def handle_message(app: App, message: Message) -> None:
         if command == "/chats":
             await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app))
             await _owner_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
+            return
+        if command == "/stickers":
+            await owner.edit_stickers(app, msg.text.split()[1:])
             return
         if command == "/reminders":
             await owner.show_reminders(app)

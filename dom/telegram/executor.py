@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+from random import choice
 from typing import Awaitable, Callable
 
 from aiogram.exceptions import TelegramAPIError
@@ -50,8 +53,9 @@ async def perform(
     thread_id: int | None = None,
     now: Callable[[], datetime] | None = None,
     on_sent: Callable[[int], Awaitable[None]] | None = None,
+    stickers: Mapping[str, Sequence[str]] | None = None,
 ) -> list[int]:
-    """Send the bubbles and reaction; returns the sent message ids. no_response does nothing at all."""
+    """Send the bubbles, reaction and sticker; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
         return []
     if actions.react and trigger_msg_id is not None:
@@ -89,4 +93,23 @@ async def perform(
             task = asyncio.create_task(_delete_later(bot, store, chat_id, sent.message_id, bubble.delete_after, sleep))
             _background.add(task)
             task.add_done_callback(_background.discard)
+    if actions.sticker:
+        choices = (stickers or {}).get(actions.sticker)
+        if not choices:
+            log.warning("unknown sticker emoji %r in chat %s", actions.sticker, chat_id)
+            return sent_ids
+        try:
+            sent = await bot.send_sticker(chat_id, choice(choices), message_thread_id=thread_id)
+        except TelegramAPIError:
+            log.warning("sticker send failed in chat %s", chat_id)
+            return sent_ids
+        await store.record_new_message(StoredMessage(
+            chat_id=str(chat_id), msg_id=sent.message_id, is_bot=True, role="assistant",
+            visibility_scope=store.visibility_for(chat_id), text="[sticker]",
+            media_json=json.dumps({"kind": "sticker", "emoji": actions.sticker}),
+            created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
+        ))
+        sent_ids.append(sent.message_id)
+        if on_sent is not None:
+            await on_sent(sent.message_id)
     return sent_ids
