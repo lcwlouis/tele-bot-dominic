@@ -89,7 +89,7 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
     observed = []
 
     def reply(request):
-        observed.append(sandbox.status())
+        observed.append((request.url.path, sandbox.status()))
         assert request.headers["authorization"] == "Bearer secret-key"
         return httpx.Response(200, json={"success": True, "data": None})
 
@@ -99,7 +99,7 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
         assert sandbox.status() == "stopped"
         assert await sandbox.ensure_running() is sandbox.client
         assert sandbox.status() == "ready"
-        assert observed == ["starting"]
+        assert observed == [("/v1/sandbox", "starting"), ("/v1/browser/tabs", "starting")]
         assert docker.calls == [
             ("docker", "image", "inspect", config.desktop.image),
             ("docker", "network", "inspect", "dom-desktop"),
@@ -166,6 +166,58 @@ def probe_call(config, targets):
             "sh", "-c", PROBE, "probe", "3", settings.probe_control, *targets)
 
 
+
+async def test_local_start_retries_the_api_then_the_browser(tmp_path):
+    docker = FakeDocker()
+    steps = [
+        ("/v1/sandbox", 503, {}),
+        ("/v1/sandbox", 200, {"success": True, "data": None}),
+        ("/v1/browser/tabs", 200, {"success": False, "message": "CDP unavailable"}),
+        ("/v1/browser/tabs", 200, {"success": True, "data": []}),
+    ]
+    remaining = iter(steps)
+
+    def reply(request):
+        path, status, body = next(remaining)
+        assert request.method == "GET" and request.url.path == path
+        assert sandbox.status() == "starting" and sandbox.client is None
+        return httpx.Response(status, json=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        sandbox = LocalSandbox(local_config(tmp_path), run=docker, http=http)
+        assert await sandbox.ensure_running() is sandbox.client
+        assert sandbox.status() == "ready"
+        assert not list(remaining)
+        await sandbox.close()
+
+
+@pytest.mark.parametrize(("paths", "message"), [
+    (["/v1/sandbox"], "API not healthy"),
+    (["/v1/sandbox", "/v1/browser/tabs"], "browser did not start"),
+])
+async def test_local_start_timeout_names_the_stage_and_removes_the_container(tmp_path, paths, message):
+    docker = FakeDocker()
+    observed = []
+
+    async def reply(request):
+        observed.append(request.url.path)
+        if request.url.path == paths[-1]:
+            await asyncio.Future()
+        return httpx.Response(200, json={"success": True, "data": None})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        sandbox = LocalSandbox(local_config(tmp_path, start_timeout_seconds=0.05), run=docker, http=http)
+        try:
+            with pytest.raises(SandboxError, match=message):
+                await asyncio.wait_for(sandbox.ensure_running(), timeout=2)
+            assert observed == paths
+            assert sandbox.status() == "error" and sandbox.client is None
+            assert sandbox.error == message
+            assert stop_and_remove(docker)
+        finally:
+            await sandbox.close()
+
+
 async def test_missing_image_is_an_error(tmp_path):
     docker = FakeDocker(image=False)
     sandbox = LocalSandbox(local_config(tmp_path), run=docker)
@@ -202,6 +254,14 @@ def test_desktop_config_defaults(tmp_path):
     assert config.desktop == DesktopConfig()
     assert config.desktop.port == 18080
     assert config.desktop.idle_minutes == 10
+    assert config.desktop.start_timeout_seconds == 180
+
+
+def test_desktop_start_timeout_loads_from_toml_and_must_be_positive(tmp_path):
+    (tmp_path / "config.toml").write_text('[desktop]\nstart_timeout_seconds = 90\n')
+    assert load_config(tmp_path).desktop.start_timeout_seconds == 90
+    with pytest.raises(ValueError, match="start_timeout_seconds"):
+        DesktopConfig(start_timeout_seconds=0)
 
 
 @pytest.mark.parametrize(("method", "args", "verb", "path", "body", "timeout"), [

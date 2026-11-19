@@ -67,6 +67,7 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | `desktop.image` | `"ghcr.io/agent-infra/sandbox:latest"` | Pre-pulled local sandbox image. |
 | `desktop.url` | `""` | Sandbox API base URL in remote mode. |
 | `desktop.api_key_env` | `"SANDBOX_API_KEY"` | Secret variable for the remote sandbox API key. Local mode generates a key. |
+| `desktop.start_timeout_seconds` | `180` | Seconds for the local sandbox API and browser to become ready. |
 | `desktop.idle_minutes` | `10` | Idle minutes before the local desktop stops. |
 | `desktop.profile_dir` | `""` | Local browser profile outside the instance home. Empty uses the sibling desktop-profile directory. |
 | `desktop.network` | `"dom-desktop"` | Docker bridge name for local isolation. |

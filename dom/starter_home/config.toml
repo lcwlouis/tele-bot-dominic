@@ -32,6 +32,7 @@ mode = "off"
 image = "ghcr.io/agent-infra/sandbox:latest"
 url = ""
 api_key_env = "SANDBOX_API_KEY"
+start_timeout_seconds = 180
 idle_minutes = 10
 profile_dir = ""  # defaults to DOM_HOME/../desktop-profile
 network = "dom-desktop"
