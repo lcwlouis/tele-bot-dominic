@@ -119,6 +119,13 @@ Worker model calls count toward `daily_spend_cap_usd`. When the cap is reached, 
 running task stops with "paused by today's spend cap". `[desktop] task_cost_cap_usd`
 (default `0.5`, `0` turns it off) stops a single task once its calls cost that much.
 
+The model call that writes the report to you is one more call of the task. It is
+skipped, and the plain report is sent instead, when the daily cap or the task
+ceiling has been reached. A provider that reports no cost for a call is priced
+from its tokens at `[desktop] fallback_usd_per_1k_tokens` (default `0.002`) for the
+task ceiling only; the daily cap counts reported cost. Set the price above what
+your model really costs, so the ceiling errs towards stopping.
+
 ## Dashboard handoff
 
 Set `[web].public_url` in `config.toml` to the HTTPS base URL of the

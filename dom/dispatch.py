@@ -304,8 +304,11 @@ class Dispatcher:
             return "model calls are not allowed"
         if await self.usage.over_cap(self.app.config, self.app.bot):
             return "paused by today's spend cap"
-        cap = self.app.config.desktop.task_cost_cap_usd
-        if cap and await self.app.store.usage_cost("desktop", chat_id, started_at) >= cap:
+        settings = self.app.config.desktop
+        cap = settings.task_cost_cap_usd
+        if cap and await self.app.store.usage_cost(
+            "desktop", chat_id, started_at, settings.fallback_usd_per_1k_tokens,
+        ) >= cap:
             return f"task cost cap of ${cap:.2f} reached"
         return None
 
@@ -613,7 +616,12 @@ class Dispatcher:
             try:
                 sliders, _ = await for_chat(app.home, app.store, chat_id)
                 messages = report_messages(app.home, sliders, note)
-                with model_request("chat", chat_id, partial(self.turn_allowed, chat_id, "owner_dm")):
+                # The report is one more call of the task: it counts toward the task's ceiling and the daily
+                # cap, and is skipped (the plain report goes out instead) once either is reached.
+                async def allowed() -> bool:
+                    return await self.desktop_pause(chat_id, row["started_at"] or row["created_at"]) is None
+
+                with model_request("desktop", chat_id, allowed):
                     await check_model_allowed()
                     reply = await app.client.complete(messages, [], once=True)
                 actions = parse_actions(reply.get("content"))

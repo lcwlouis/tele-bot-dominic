@@ -231,14 +231,14 @@ async def test_desktop_usage_is_counted_for_owner(make_app):
     def response(request):
         body = json.loads(request.content)
         reply = call("finish", result="Example") if body.get("tools") else {"content": "invalid"}
-        return httpx.Response(200, json={"choices": [{"message": reply}], "usage": {"cost": 1}})
+        return httpx.Response(200, json={"choices": [{"message": reply}], "usage": {"cost": 0.1}})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as http:
         app.client = ChatClient(app.config.models["chat"], None, http, usage=UsageRecorder(app.store))
         await worker.enqueue(OWNER, "Example")
         await wait_task(worker)
     rows = await app.store._run(lambda: app.store._conn.execute("SELECT kind, chat_id FROM usage ORDER BY id").fetchall())
-    assert [tuple(row) for row in rows] == [("desktop", OWNER), ("chat", OWNER)]
+    assert [tuple(row) for row in rows] == [("desktop", OWNER), ("desktop", OWNER)]  # the report counts toward the task
 
 
 async def test_sandbox_alerts_go_to_the_owner_dm(make_app):
@@ -323,7 +323,9 @@ async def test_daily_spend_cap_pauses_a_desktop_task_before_any_worker_call(make
     assert row["status"] == "failed"
     assert row["error"] == "paused by today's spend cap"
     assert row["result"] == "Stopped after 0 steps: paused by today's spend cap"
-    assert all(tools == [] for _, tools, _ in app.client.requests)  # no worker call, only the report
+    assert app.client.requests == []  # no worker call and no report call
+    assert app.bot.of("send", OWNER)[-1][2] == f"Desktop task #{task_id} failed. Stopped after 0 steps: paused by today's spend cap"
+    assert app.bot.of("send", OWNER)[-1][3]["link_preview_options"].is_disabled is True
 
 
 async def test_task_cost_ceiling_stops_the_task_and_ignores_earlier_tasks(make_app):
@@ -342,6 +344,70 @@ async def test_task_cost_ceiling_stops_the_task_and_ignores_earlier_tasks(make_a
     assert row["status"] == "failed"
     assert row["error"] == "task cost cap of $0.50 reached"
     assert row["result"] == "Stopped after 1 steps: task cost cap of $0.50 reached"
+    assert len(app.client.requests) == 1  # the worker call only: the report is skipped at the ceiling
+    assert "Stopped after 1 steps" in app.bot.of("send", OWNER)[-1][2]
+
+
+async def test_report_runs_below_the_ceiling_and_counts_toward_it(make_app):
+    app = make_app()
+    app.config = app.config.model_copy(update={"daily_spend_cap_usd": 0})
+    worker = await worker_for(app, call("finish", result="Done"), {"content": '{"bubbles":[{"text":"all done"}]}'})
+    seen = []
+    original = app.client.complete
+
+    async def complete(messages, tools, *, once=False):
+        from dom.usage import request_kind
+        seen.append(request_kind("chat"))
+        await app.store.record_usage(datetime.now(timezone.utc).isoformat(), request_kind("chat"), "m", "example.org", OWNER, 0, 0, 0.1, 0)
+        return await original(messages, tools, once=once)
+
+    app.client.complete = complete
+    task_id = await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    assert seen == ["desktop", "desktop"]
+    assert app.bot.of("send", OWNER)[-1][2] == "all done"
+    assert (await task_row(app, task_id))["status"] == "done"
+
+
+async def test_the_report_is_skipped_when_the_task_ceiling_was_reached_by_the_final_call(make_app):
+    app = make_app()
+    app.config = app.config.model_copy(update={"daily_spend_cap_usd": 0})
+
+    async def finishing():
+        await app.store.record_usage(datetime.now(timezone.utc).isoformat(), "desktop", "m", "example.org", OWNER, 0, 0, 0.6, 0)
+        return call("finish", result="Done")
+
+    worker = await worker_for(app, finishing, {"content": '{"bubbles":[{"text":"never"}]}'})
+    task_id = await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    assert (await task_row(app, task_id))["status"] == "done"
+    assert len(app.client.requests) == 1
+    assert app.bot.of("send", OWNER)[-1][2] == f"Desktop task #{task_id} finished. Done"
+
+
+async def test_a_provider_that_omits_cost_is_estimated_from_tokens_for_the_ceiling_only(make_app):
+    app = make_app()
+    app.config = app.config.model_copy(update={"desktop": app.config.desktop.model_copy(update={"fallback_usd_per_1k_tokens": 0.1})})
+    started = "2026-01-01T00:00:00+00:00"
+    now = datetime.now(timezone.utc).isoformat()
+    await app.store.record_usage(now, "desktop", "m", "example.org", OWNER, 1000, 1000, 0, 0)  # no cost reported: 2k tokens = $0.20
+    assert await app.dispatch.desktop_pause(OWNER, started) is None
+    await app.store.record_usage(now, "desktop", "m", "example.org", OWNER, 1000, 2000, 0, 0)  # +3k tokens = $0.50 in all
+    assert await app.dispatch.desktop_pause(OWNER, started) == "task cost cap of $0.50 reached"
+    app.config = app.config.model_copy(update={"desktop": app.config.desktop.model_copy(update={"fallback_usd_per_1k_tokens": 0})})
+    assert await app.dispatch.desktop_pause(OWNER, started) is None
+    # A reported cost is used as it is, however many tokens came with it.
+    app.config = app.config.model_copy(update={"desktop": app.config.desktop.model_copy(update={"fallback_usd_per_1k_tokens": 10})})
+    await app.store.record_usage("2999-01-01T00:00:00+00:00", "desktop", "m", "example.org", OWNER, 100000, 100000, 0.01, 0)
+    assert await app.dispatch.desktop_pause(OWNER, "2998-01-01T00:00:00+00:00") is None
+    # The daily cap still counts reported cost only.
+    assert await app.dispatch.usage.over_cap(app.config, app.bot) is False
+
+
+def test_fallback_price_default_and_validation():
+    assert DesktopConfig().fallback_usd_per_1k_tokens == 0.002
+    with pytest.raises(ValueError):
+        DesktopConfig(fallback_usd_per_1k_tokens=-1)
 
 
 def test_task_cost_cap_default():

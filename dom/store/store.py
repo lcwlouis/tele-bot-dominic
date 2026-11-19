@@ -1241,10 +1241,12 @@ class Store:
         ).fetchone()
         return count, cost
 
-    async def usage_cost(self, kind: str, chat_id: int, since: str) -> float:
+    async def usage_cost(self, kind: str, chat_id: int, since: str, fallback_per_1k: float = 0.0) -> float:
+        """Cost of a kind's calls in a chat since a time. A call with no reported cost is priced from its tokens."""
         def total() -> float:
             return self._conn.execute(
-                "SELECT TOTAL(cost_usd) FROM usage WHERE kind = ? AND chat_id = ? AND at >= ?", (kind, chat_id, since),
+                "SELECT TOTAL(CASE WHEN cost_usd > 0 THEN cost_usd ELSE (input_tokens + output_tokens) * ? / 1000.0 END) "
+                "FROM usage WHERE kind = ? AND chat_id = ? AND at >= ?", (fallback_per_1k, kind, chat_id, since),
             ).fetchone()[0]
 
         return await self._run(total)

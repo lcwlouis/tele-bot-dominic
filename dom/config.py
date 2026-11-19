@@ -58,6 +58,8 @@ class DesktopConfig(BaseModel):
     probe_image: str = "alpine:3.22"  # must already be on the host: probes never pull
     probe_control: str = "1.1.1.1:443"  # a public "ipv4:port" the probe container must reach, or the probe proves nothing
     remote_isolation_confirmed: bool = False  # remote mode: the operator asserts the remote host blocks its LAN
+    # Prices a call whose provider reported no cost, for the per-task ceiling only. Keep it conservative (high).
+    fallback_usd_per_1k_tokens: float = Field(default=0.002, ge=0, allow_inf_nan=False)
 
     @field_validator("lan_probes")
     @classmethod
