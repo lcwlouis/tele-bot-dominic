@@ -1,9 +1,9 @@
 # T3 Code bridge
 
-Dom can install a dedicated T3 Code user service on Linux. The planned bridge
-would let the Telegram owner inspect projects and recent coding activity in their
-DM. Thread messages would be treated as untrusted text, and sending would require
-a tap that confirms the destination and exact message.
+Dom can install a dedicated T3 Code user service on Linux. Through it, the
+Telegram owner can inspect projects and recent coding activity on linked machines
+from their DM. Thread messages are treated as untrusted text. Sending a message
+to a thread requires a tap that confirms the destination and the exact message.
 
 ## Install the user service
 
@@ -12,7 +12,7 @@ Extract the Linux ARM64 Node.js 24 tarball into `~/.local/node` so that
 [official Node.js downloads](https://nodejs.org/en/download).
 
 Set the T3 Code version, Node path and local port in the Dom home's `config.toml`.
-Leave the DM bridge disabled while the CLI support described below is incomplete.
+Set `enabled = true` after `dom t3-connect` has signed in (see below).
 
 ```toml
 [t3]
@@ -55,10 +55,11 @@ running service, reinstall its unit and restart `t3.service`.
 
 Run the link command on the Pi as the service user, using the other machine's
 T3 Connect address. Approve the request on that machine in T3 Code under
-**Settings → Sharing & access**. Use read-only access while verifying links.
+**Settings → Sharing & access**. Use `approval-required` (Supervised) so Dom can
+pass on messages you confirm, or `read-only` if you only want him to read.
 
 ```sh
-t3_dom environment link --base-dir "$HOME/.t3-dom" --access read-only '<environment-url>'
+t3_dom environment link --base-dir "$HOME/.t3-dom" --access approval-required '<environment-url>'
 t3_dom environment list --base-dir "$HOME/.t3-dom" --json
 ```
 
