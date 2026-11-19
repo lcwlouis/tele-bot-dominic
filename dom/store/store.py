@@ -1029,6 +1029,45 @@ class Store:
             (at, before),
         )
 
+    async def create_reminder(
+        self, chat_id: int, text: str, due_at: str, importance: str, repeat: str, at: str, limit: int,
+    ) -> int | None:
+        def insert() -> int | None:
+            row = self._conn.execute(
+                "INSERT INTO reminders (chat_id, text, due_at, importance, repeat, created_at) "
+                "SELECT ?, ?, ?, ?, ?, ? WHERE "
+                "(SELECT COUNT(*) FROM reminders WHERE chat_id = ? AND status = 'active') < ? RETURNING id",
+                (str(chat_id), text, due_at, importance, repeat, at, str(chat_id), limit),
+            ).fetchone()
+            return row["id"] if row else None
+
+        return await self._run(insert)
+
+    async def active_reminders(self, chat_id: int) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT * FROM reminders WHERE chat_id = ? AND status = 'active' ORDER BY due_at, id", (str(chat_id),),
+            )
+        ])
+
+    async def reminder_is_active(self, reminder_id: int) -> bool:
+        return await self._run(lambda: self._conn.execute(
+            "SELECT 1 FROM reminders WHERE id = ? AND status = 'active'", (reminder_id,),
+        ).fetchone() is not None)
+
+    async def cancel_reminder(self, chat_id: int | None, reminder_id: int) -> bool:
+        return await self._run(lambda: self._conn.execute(
+            "UPDATE reminders SET status = 'cancelled' WHERE chat_id = ? AND id = ? AND status = 'active'",
+            (str(chat_id), reminder_id),
+        ).rowcount == 1)
+
+    async def finish_reminder(self, reminder_id: int, fired_at: str, next_due: str | None) -> None:
+        await self._run(self._conn.execute,
+            "UPDATE reminders SET fired_at = ?, status = ?, due_at = COALESCE(?, due_at) "
+            "WHERE id = ? AND status = 'active'",
+            (fired_at, "active" if next_due else "done", next_due, reminder_id),
+        )
+
     async def record_usage(
         self, at: str, kind: str, model: str, host: str, chat_id: int | None,
         input_tokens: int, output_tokens: int, cost_usd: float, fallback: int,

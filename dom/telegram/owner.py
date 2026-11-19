@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -32,6 +33,7 @@ OWNER_COMMANDS = [
     BotCommand(command="chats", description="Every group and DM Dom knows about"),
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
     BotCommand(command="proposals", description="Review pending changes"),
+    BotCommand(command="reminders", description="List and cancel reminders"),
 ]
 
 MAX_MESSAGE = 4096  # Telegram's limit for a message's text
@@ -277,3 +279,22 @@ async def show_proposals(app: App) -> None:
         await app.bot.send_message(app.owner_id, "No pending proposals.")
     for row in rows:
         await app.proposals.send(row)
+
+
+async def show_reminders(app: App) -> None:
+    reminders = await app.dispatch.reminders.active()
+    if not reminders:
+        await app.bot.send_message(app.owner_id, "No active reminders.")
+        return
+    tz = ZoneInfo(app.config.timezone)
+    for start in range(0, len(reminders), 10):
+        lines, buttons = [], []
+        for row in reminders[start:start + 10]:
+            due = datetime.fromisoformat(row["due_at"]).astimezone(tz)
+            repeat = f", {row['repeat']}" if row["repeat"] else ""
+            preview = " ".join(row["text"].split())[:130]
+            lines.append(f"#{row['id']} {due:%Y-%m-%d %H:%M} ({row['importance']}{repeat}) {preview}")
+            buttons.append([InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"rem:cancel:{row['id']}")])
+        await app.bot.send_message(
+            app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )

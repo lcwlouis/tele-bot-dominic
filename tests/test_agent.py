@@ -84,15 +84,18 @@ async def test_tool_call_then_final_actions(env):
 
 
 @pytest.mark.parametrize("scope", ["owner_dm", "friend_dm", "group"])
-async def test_replies_only_get_read_only_tools_and_cannot_write_notes(env, scope):
+async def test_replies_cannot_write_notes(env, scope):
     root, _, _ = env
-    assert {t.name for t in core_tools()} == {"search_history", "extend_online"}
+    assert {t.name for t in core_tools()} == {"search_history", "extend_online", "remind"}
     script = Script(
         reply(tool_calls=[call("memory", {"file": "MEMORY.md", "op": "add", "text": "pwned"})]),
         reply(content=json.dumps(FINAL)),
     )
     await run_turn(make_client(script), [], core_tools(), ctx_for(env, scope=scope, chat_id=OWNER, sender=OWNER))
-    assert {t["function"]["name"] for t in script.requests[0]["tools"]} == {"search_history", "extend_online"}
+    expected = {"search_history", "extend_online"}
+    if scope == "owner_dm":
+        expected.add("remind")
+    assert {t["function"]["name"] for t in script.requests[0]["tools"]} == expected
     assert script.requests[1]["messages"][-1]["content"] == "tool not available here"
     assert not (root / "memory").exists() and not (root / "private").exists()
 
