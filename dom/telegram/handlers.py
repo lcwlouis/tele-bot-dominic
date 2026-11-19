@@ -40,7 +40,8 @@ class App:
     bot: Any
     bot_username: str
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
-    locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))
+    locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))  # one turn at a time per chat
+    ingest_locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))  # decide + record, in order
 
     @property
     def owner_id(self) -> int | None:
@@ -163,10 +164,11 @@ async def handle_message(app: App, message: Message) -> None:
     ):
         await gate.resend_pending(app.bot, app.store, app.owner_id)
         return
-    decision = await gate.decide(app.store, msg, app.owner_id)
-    if decision == "drop":
-        return
-    await _record(app, msg)
+    async with app.ingest_locks[msg.chat_id]:
+        decision = await gate.decide(app.store, msg, app.owner_id)
+        if decision == "drop":
+            return
+        await _record(app, msg)
     if decision == "hold":
         kind = "chat" if msg.chat_type == "private" else "group"
         await gate.request_approval(
@@ -187,8 +189,13 @@ async def handle_message(app: App, message: Message) -> None:
 
 
 async def handle_edited_message(app: App, message: Message) -> None:
-    if message.chat.type in CHAT_TYPES:
-        await app.store.record_message_edit(message.chat.id, message.message_id, message.text or message.caption or "")
+    if message.chat.type not in CHAT_TYPES:
+        return
+    msg = to_incoming(message)
+    async with app.ingest_locks[msg.chat_id]:  # after the original's own decide + record has finished
+        edited = await app.store.record_message_edit(msg.chat_id, msg.msg_id, message.text or message.caption or "")
+        if edited is None and not msg.is_bot and await gate.decide(app.store, msg, app.owner_id) != "drop":
+            await _record(app, msg)  # the original never reached us: keep the edited text as a new message
 
 
 # ---- owner decisions -----------------------------------------------------------------
