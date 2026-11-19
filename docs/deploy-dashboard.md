@@ -33,6 +33,12 @@ access_aud = "<aud>"
 dev_token_env = ""
 ```
 
+Optionally add `access_emails = ["<owner-email>"]` to also require the
+verified assertion's `email` claim to be on that list (compared
+case-insensitively). Without it, Dom accepts anyone the Access policy admits,
+which is right while the policy allows only the owner. Use the list as a
+second lock if the policy is ever widened.
+
 Restart Dom with its existing service or `dom run '<DOM_HOME>'`.
 The listening address is the bridge gateway. Keep TCP port 8080 reachable
 from the dashboard bridge and block it at the LAN interface if the host

@@ -350,3 +350,50 @@ def test_access_may_bind_off_loopback(tmp_path):
     from dom.web.auth import Auth
 
     Auth(Config(home=tmp_path, web={"bind": "192.0.2.1", "access_team": "example-team", "access_aud": "x"}))
+
+
+# --- optional identity check ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("claims,expected", [
+    ({"email": "owner@example.org"}, 200),
+    ({"email": "Owner@Example.ORG"}, 200),
+    ({"email": "other@example.org"}, 403),
+    ({"email": "owner@example.org.evil.example"}, 403),
+    ({"email": ["owner@example.org"]}, 403),
+    ({}, 403),
+])
+async def test_access_emails_restrict_the_verified_identity(tmp_path, access_keys, claims, expected):
+    from dom.web.app import create_app
+    from dom.web.auth import Auth
+
+    (key, jwk), _ = access_keys
+
+    async def jwks(url):
+        return {"keys": [jwk]}
+
+    config = Config(home=tmp_path, web={
+        "access_team": "example-team", "access_aud": "example-audience",
+        "access_emails": [" OWNER@example.org ", "second@example.org"],
+    })
+    web = create_app(SimpleNamespace(owner_id=None), Auth(config, jwks))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        assert (await client.get("/", headers=assertion(key, "first", **claims))).status_code == expected
+
+
+async def test_any_admitted_user_passes_without_access_emails(tmp_path, access_keys):
+    (key, jwk), _ = access_keys
+
+    async def jwks(url):
+        return {"keys": [jwk]}
+
+    async with access_dashboard(tmp_path, jwks) as client:
+        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 200
+        assert (await client.get("/", headers=assertion(key, "first", email="anyone@example.org"))).status_code == 200
+
+
+def test_blank_access_email_refused(tmp_path):
+    from dom.web.auth import Auth
+
+    with pytest.raises(ValueError, match="access_emails"):
+        Auth(Config(home=tmp_path, web={"access_team": "example-team", "access_aud": "x", "access_emails": [""]}))

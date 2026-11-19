@@ -51,6 +51,9 @@ class Auth:
             raise ValueError("Dashboard auth needs a valid access_team and access_aud.")
         self.issuer = f"https://{web.access_team.lower()}.cloudflareaccess.com" if web.access_team else ""
         self.audience = web.access_aud
+        self.emails = frozenset(email.strip().lower() for email in web.access_emails)
+        if "" in self.emails:
+            raise ValueError("Dashboard auth: access_emails must not hold a blank entry.")
         token = config.secret(web.dev_token_env) if web.dev_token_env else None
         self.dev_token = token.encode("utf-8") if token and token.strip() else b""
         if self.dev_token:
@@ -126,10 +129,13 @@ class Auth:
                 return None
             key = await self._key(kid)
             if key is not None:
-                jwt.decode(
+                claims = jwt.decode(
                     assertion, key, algorithms=["RS256"], audience=self.audience, issuer=self.issuer,
                     leeway=CLOCK_LEEWAY, options={"require": ["aud", "exp", "iss"]},
                 )
+                email = claims.get("email")
+                if self.emails and not (isinstance(email, str) and email.lower() in self.emails):
+                    return None
                 return "access"
         except (jwt.PyJWTError, httpx.HTTPError, KeyError, TypeError, ValueError, OverflowError):
             pass
