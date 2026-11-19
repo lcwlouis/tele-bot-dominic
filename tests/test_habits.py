@@ -115,3 +115,42 @@ async def test_daily_habit_job_writes_one_event_and_no_message(make_app, monkeyp
         ("event", "Dom's sleep moved to 23:29–07:00"),
     ]
     assert not app.bot.calls
+
+
+async def record_from(app, sender, at):
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(GROUP), role="user", sender_user_id=sender, visibility_scope=f"chat:{GROUP}",
+        text="content is irrelevant", created_at=at.isoformat(),
+    ))
+
+
+async def test_one_spammer_is_one_bucket_and_needs_a_second_sender(make_app):
+    app = make_app()
+    now = app.dispatch.now()
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    for second in range(200):  # all in one local hour
+        await record_from(app, FRIEND, now.replace(minute=30) - timedelta(hours=3, seconds=second))
+    assert sum(await app.store.hourly_message_counts(now=now)) == 0  # a single sender teaches nothing
+    await record_from(app, 333, now - timedelta(hours=6))
+    assert sum(await app.store.hourly_message_counts(now=now)) == 2  # 200 messages are one bucket
+
+    for hour in range(7, 80):  # many hours from one person each still count once
+        await record_from(app, FRIEND, now - timedelta(hours=hour))
+    assert sum(await app.store.hourly_message_counts(now=now)) == 2 + 73
+
+    counts = await app.store.hourly_message_counts(now=now)
+    assert sum(counts) >= 50 and len(counts) == 24
+
+
+async def test_a_spammer_in_the_sleep_window_does_not_move_it(make_app):
+    from dom import habits
+
+    app = make_app()
+    now = app.dispatch.now()
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    for second in range(200):
+        await record_from(app, FRIEND, now.replace(hour=2, minute=30) - timedelta(seconds=second))
+    for hour in range(60):  # even active in 60 different hours, one sender is not enough
+        await record_from(app, FRIEND, now - timedelta(hours=hour, minutes=1))
+    await habits.run(app)
+    assert app.home.read("memory/HABITS.md") == ""

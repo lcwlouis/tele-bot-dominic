@@ -928,25 +928,34 @@ class Store:
     async def hourly_message_counts(
         self, days: int = 14, tz: tzinfo = timezone.utc, *, now: datetime | None = None,
     ) -> list[int]:
-        """Count approved chats' incoming human messages by local hour, reading timestamps only."""
+        """Count approved chats' active (sender, local date, local hour) buckets by local hour, reading timestamps only.
+
+        A burst of messages is one bucket, and with fewer than two distinct senders every count is zero."""
         end = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         start = end - timedelta(days=days)
         return await self._run(self._hourly_message_counts, start.isoformat(), end.isoformat(), tz)
 
     def _hourly_message_counts(self, start: str, end: str, tz: tzinfo) -> list[int]:
         rows = self._conn.execute(
-            "SELECT m.created_at FROM messages m JOIN chats c ON c.chat_id = m.chat_id "
+            "SELECT m.created_at, COALESCE(m.sender_user_id, m.chat_id) FROM messages m "
+            "JOIN chats c ON c.chat_id = m.chat_id "
             "WHERE c.authorization_status = 'approved' AND m.role = 'user' "
             "AND m.is_bot = 0 AND m.is_deleted = 0 "
             "AND julianday(m.created_at) >= julianday(?) AND julianday(m.created_at) <= julianday(?)",
             (start, end),
         )
-        counts = [0] * 24
-        for (at,) in rows:
+        buckets, senders = set(), set()
+        for at, sender in rows:
             time = datetime.fromisoformat(at)
             if time.tzinfo is None:
                 time = time.replace(tzinfo=timezone.utc)
-            counts[time.astimezone(tz).hour] += 1
+            local = time.astimezone(tz)
+            buckets.add((sender, local.date(), local.hour))
+            senders.add(sender)
+        counts = [0] * 24
+        if len(senders) >= 2:  # one person alone cannot say when everyone sleeps
+            for _, _, hour in buckets:
+                counts[hour] += 1
         return counts
 
     async def kv_get(self, key: str) -> str | None:
