@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from dom.config import load_config, save_owner
+from dom.config import Config, load_config, save_owner
 
 MINIMAL = """\
 [models.chat]
@@ -58,3 +58,31 @@ def test_unknown_desktop_mode_rejected(tmp_path):
     write(tmp_path, MINIMAL + '\n[desktop]\nmode = "cloud"\n')
     with pytest.raises(ValidationError):
         load_config(tmp_path)
+
+
+def test_save_owner_sets_root_key_not_a_nested_one(tmp_path):
+    import tomllib
+    (tmp_path / "config.toml").write_text('timezone = "UTC"\n\n[extra]\nowner_id = 5\n')
+    save_owner(tmp_path, 111)
+    raw = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert raw["owner_id"] == 111
+    assert raw["extra"]["owner_id"] == 5
+    assert load_config(tmp_path).owner_id == 111
+
+
+def test_save_owner_replaces_only_root_line_and_leaves_no_temp_files(tmp_path):
+    (tmp_path / "config.toml").write_text('owner_id = 1\n[extra]\nowner_id = 5\n')
+    save_owner(tmp_path, 7)
+    assert (tmp_path / "config.toml").read_text() == 'owner_id = 7\n[extra]\nowner_id = 5\n'
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["config.toml"]
+
+
+def test_failed_save_keeps_claim_code_and_config(tmp_path):
+    from dom.claim import try_claim, write_claim_code
+    bad = "this is = not [valid toml"
+    (tmp_path / "config.toml").write_text(bad)
+    code = write_claim_code(tmp_path)
+    config = Config(home=tmp_path)
+    assert try_claim(tmp_path, config, 111, "private", code) is False
+    assert (tmp_path / ".claim").exists()
+    assert (tmp_path / "config.toml").read_text() == bad

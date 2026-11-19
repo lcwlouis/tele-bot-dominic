@@ -59,23 +59,33 @@ def load_config(home: Path) -> Config:
     )
 
 
-_OWNER_LINE = re.compile(r"^owner_id\s*=.*$", re.MULTILINE)
-_FIRST_TABLE = re.compile(r"^\[", re.MULTILINE)
+_OWNER_LINE = re.compile(r"^\s*owner_id\s*=.*$", re.MULTILINE)
+_FIRST_TABLE = re.compile(r"^\s*\[", re.MULTILINE)
 
 
 def save_owner(home: Path, owner_id: int) -> None:
-    """Set ``owner_id`` in config.toml, leaving every other line as it was."""
+    """Set the root-level ``owner_id`` in config.toml, leaving every other line as it was.
+
+    The new text is parsed and checked before it replaces the file (atomically), and the file is
+    checked again afterwards, so a claim is never reported for an owner that was not saved.
+    """
     path = home / "config.toml"
     text = path.read_text()
     line = f"owner_id = {owner_id}"
-    if _OWNER_LINE.search(text):
-        text = _OWNER_LINE.sub(line, text, count=1)
+    table = _FIRST_TABLE.search(text)
+    at = table.start() if table else len(text)
+    root, rest = text[:at], text[at:]  # a key inside a [table] is not the root key
+    if _OWNER_LINE.search(root):
+        root = _OWNER_LINE.sub(line, root, count=1)
     else:
-        # top-level keys must come before the first table header
-        match = _FIRST_TABLE.search(text)
-        at = match.start() if match else len(text)
-        prefix = text[:at]
-        if prefix and not prefix.endswith("\n"):
-            prefix += "\n"
-        text = f"{prefix}{line}\n\n{text[at:]}" if match else f"{prefix}{line}\n"
-    path.write_text(text)
+        if root and not root.endswith("\n"):
+            root += "\n"
+        root += f"{line}\n" + ("\n" if rest else "")
+    new_text = root + rest
+    if tomllib.loads(new_text).get("owner_id") != owner_id:
+        raise ValueError("could not set owner_id in config.toml")
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(new_text)
+    os.replace(temp, path)
+    if tomllib.loads(path.read_text()).get("owner_id") != owner_id:
+        raise ValueError("owner_id was not saved to config.toml")
