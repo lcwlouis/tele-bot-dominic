@@ -113,6 +113,12 @@ uploaded to a fresh `/home/gem/inbox-<task id>/` in the sandbox. If the upload
 fails, those documents are dropped and the task report says so. After the task Dom
 removes that directory and logs a warning if the removal does not exit with 0.
 
+## Sandbox responses
+
+Dom asks the sandbox for `Accept-Encoding: identity` and refuses any response
+that carries another `Content-Encoding` before reading its body, so the size
+limits count the bytes on the wire and a compressed bomb cannot inflate past them.
+
 ## Spend
 
 Worker model calls count toward `daily_spend_cap_usd`. When the cap is reached, a

@@ -66,12 +66,18 @@ class SandboxClient:
     async def _fetch(
         self, method: str, path: str, *, limit: int | None, timeout: int = 30, **kwargs,
     ) -> tuple[httpx.Response, bytes]:
-        """Read the body as a stream so a hostile sandbox cannot make Dom buffer more than `limit`."""
+        """Read the body as a stream so a hostile sandbox cannot make Dom buffer more than `limit`.
+
+        Only identity-encoded responses are read, so the limit counts the bytes on the wire: the HTTP client
+        would otherwise inflate a compressed body far past it."""
         try:
             async with self.http.stream(
-                method, f"{self.base_url}/v1/{path}", headers=self.auth_headers(),
+                method, f"{self.base_url}/v1/{path}", headers={**self.auth_headers(), "Accept-Encoding": "identity"},
                 timeout=timeout, follow_redirects=False, **kwargs,
             ) as response:
+                encodings = [value.strip().lower() for value in response.headers.get_list("content-encoding") if value.strip()]
+                if any(value != "identity" for value in encodings):
+                    raise SandboxError("sandbox sent a compressed response")
                 body = bytearray()
                 async for chunk in response.aiter_bytes(chunk_size=65536):
                     if limit is not None and len(body) + len(chunk) > limit:

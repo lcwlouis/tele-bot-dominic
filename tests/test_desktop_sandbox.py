@@ -645,3 +645,53 @@ async def test_download_json_failure_body_is_an_error_but_other_json_is_data():
         with pytest.raises(SandboxError):
             await client.download_file("/tmp/missing")
         assert json.loads(await client.download_file("/tmp/data.json")) == {"rows": [1]}
+
+
+async def test_requests_ask_for_identity_encoding():
+    seen = []
+
+    def reply(request):
+        seen.append(request.headers["accept-encoding"])
+        return httpx.Response(200, headers={"content-encoding": "identity"}, json={"success": True, "data": {"ok": True}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        client = SandboxClient("https://example.org", "key", http)
+        assert await client.health() == {"ok": True}
+        await client.download_file("/tmp/x")
+        await client.screenshot()
+    assert seen == ["identity"] * 3
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "deflate", "br", "zstd", "GZIP", "identity, gzip", "unknown"])
+async def test_compressed_responses_are_rejected_before_the_body_is_read(encoding):
+    read = []
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            read.append(1)
+            yield b"x" * 10
+
+    def reply(request):
+        return httpx.Response(200, headers={"content-encoding": encoding}, stream=Body())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        client = SandboxClient("https://example.org", None, http)
+        for call in (client.health, client.screenshot, lambda: client.download_file("/tmp/x")):
+            with pytest.raises(SandboxError, match="compressed"):
+                await call()
+    assert read == []
+
+
+async def test_size_caps_apply_to_the_raw_bytes_on_the_wire():
+    import gzip
+
+    bomb = gzip.compress(b"0" * 3_000_000)  # a few KB on the wire, 3 MB once decoded
+    assert len(bomb) < 10_000
+
+    def reply(request):
+        # A hostile sandbox ignores identity and compresses anyway. httpx would decode it past the cap.
+        return httpx.Response(200, headers={"content-encoding": "gzip", "content-type": "application/json"}, content=bomb)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        with pytest.raises(SandboxError, match="compressed"):
+            await SandboxClient("https://example.org", None, http).markdown()
