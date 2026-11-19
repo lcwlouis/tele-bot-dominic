@@ -96,8 +96,11 @@ def _journal_body(reply: object, private: bool) -> str | None:
     if not isinstance(reply, dict) or not isinstance(reply.get("entry"), str):
         return None
     entry = " ".join(reply["entry"].split())[:600]
-    if not entry or private:
-        return entry or None
+    if not entry:
+        return None
+    entry = f"entry: {entry}"  # so the text can never be read as a "## date" heading
+    if private:
+        return entry
     if not isinstance(reply.get("mood"), str) or not isinstance(reply.get("nudges"), dict):
         return None
     nudges = json.dumps(_sliders(reply["nudges"], 0.1))

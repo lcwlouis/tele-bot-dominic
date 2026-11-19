@@ -60,8 +60,8 @@ async def test_public_and_private_requests_are_separate_and_filter_source_data(m
     assert all(marker in private_text for marker in ("A shared soul.", "PRIVATE-USER", "PRIVATE-NOTES",
                                                        "PRIVATE-ENTRY", "PRIVATE-DM", "OWNER-EVENT"))
     assert "PUBLIC-" not in private_text
-    assert "## 2026-01-01\nmood: quietly amused\nthe book chat got lively.\nnudges: {}" in app.home.read("memory/JOURNAL.md")
-    assert "## 2026-01-01\nput a kettle on." in app.home.scoped(allow_private=True).read("private/JOURNAL.md")
+    assert "## 2026-01-01\nmood: quietly amused\nentry: the book chat got lively.\nnudges: {}" in app.home.read("memory/JOURNAL.md")
+    assert "## 2026-01-01\nentry: put a kettle on." in app.home.scoped(allow_private=True).read("private/JOURNAL.md")
 
 
 async def test_journal_limits_entry_length_mood_nudges_and_drift(make_app):
@@ -81,7 +81,7 @@ async def test_journal_limits_entry_length_mood_nudges_and_drift(make_app):
     text = app.home.read("memory/JOURNAL.md")
     assert text.count("\n## ") == 30 and "2025-12-02" not in text and "2025-12-03" in text
     assert text.startswith("# Journal\n")
-    assert len([line for line in text.splitlines() if line.startswith("x")][0]) == 600
+    assert len([line for line in text.splitlines() if line.startswith("entry: x")][0]) == 600 + len("entry: ")
     assert text.splitlines()[-3] == "mood:"  # too long to be a feeling, so dropped
     assert json.loads(text.splitlines()[-1].removeprefix("nudges: ")) == {
         "humor": 0.1, "slang": -0.1, "formality": 0.06,
@@ -210,7 +210,7 @@ async def test_early_morning_run_reads_yesterday_and_dates_the_entry_to_the_waki
     public, private = (request["messages"][1]["content"] for request in app.script.requests)
     assert "YESTERDAY-AFTERNOON" in public and "YESTERDAY-EVENING" in private
     assert "## 2026-01-01\nmood: quietly amused" in app.home.read("memory/JOURNAL.md")
-    assert "## 2026-01-01\nput a kettle on." in app.home.scoped(allow_private=True).read("private/JOURNAL.md")
+    assert "## 2026-01-01\nentry: put a kettle on." in app.home.scoped(allow_private=True).read("private/JOURNAL.md")
 
 
 async def test_public_prompt_says_mood_is_only_a_feeling(make_app):
@@ -242,7 +242,7 @@ async def test_content_carrying_moods_are_dropped_for_the_day(make_app, caplog, 
     app = make_app(contents=(json.dumps({**PUBLIC, "mood": text}),))
     await reflection.run(app)
     journal = app.home.read("memory/JOURNAL.md")
-    assert "## 2026-01-01\nmood:\nthe book chat got lively.\nnudges: {}" in journal
+    assert "## 2026-01-01\nmood:\nentry: the book chat got lively.\nnudges: {}" in journal
     assert reflection.mood(app.home, date(2026, 1, 1)) is None
     assert ("dropped" in caplog.text) == bool(text.strip())
     assert text.strip() not in caplog.text or not text.strip()
@@ -267,3 +267,20 @@ async def test_friend_dms_never_reach_the_public_reflection(make_app):
     await reflection.run(app)
     public = app.script.requests[0]["messages"][1]["content"]
     assert "GROUP-TEXT" in public and "FRIEND-DM-TEXT" not in public
+
+
+async def test_an_entry_that_looks_like_a_heading_stays_inside_its_own_entry(make_app):
+    from dom import reflection
+
+    heading = "## 2026-01-01"
+    app = make_app(contents=(json.dumps({**PUBLIC, "entry": heading}), json.dumps({"entry": heading})))
+    await record(app, "PRIVATE-DM", OWNER)
+    put(app.home, "memory/JOURNAL.md", "## 2025-12-31\nmood: calm\nan older entry")  # the old format still reads
+    await reflection.run(app)
+
+    public = app.home.journal_entries()
+    assert len(public) == 2 and public[0].endswith("an older entry")
+    assert public[1] == "## 2026-01-01\nmood: quietly amused\nentry: ## 2026-01-01\nnudges: {}"
+    private = app.home.scoped(allow_private=True).journal_entries(private=True)
+    assert private == ["## 2026-01-01\nentry: ## 2026-01-01"]
+    assert reflection.mood(app.home, date(2026, 1, 1)) == "quietly amused"
