@@ -6,13 +6,6 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
-### Added
-
-- **prompt:** Dom describes himself in his own words
-- **tools:** own_code reads Dom's own source, docs and changelog
-- **release:** changelog script, CHANGELOG.md and tag-based release docs
-- **version:** git archive writes the real version into dom/_version.py
-
 ## [0.7.0] - 2026-11-19
 
 The rebuild: Dom is now a single asyncio service with a privacy-scoped prompt, a
@@ -63,8 +56,8 @@ a Raspberry Pi as a systemd user service.
   Telegram and on the dashboard.
 - Reminders with repeats; critical reminders always send their stored text, even
   when a model fails.
-- Ephemeral replies to the owner inside groups, and stickers chosen from sets the
-  owner adds.
+- Stickers chosen from sets the owner adds, and ephemeral replies to the owner
+  inside groups (behind a setting, off by default).
 - Memory import from other assistants, each fact reviewed before it is kept.
 - A web dashboard for chats, proposals, memory and soul, usage and the turn log,
   protected by Cloudflare Access.
@@ -100,3 +93,14 @@ a Raspberry Pi as a systemd user service.
 - CI runs the tests, the plugin sandbox tests and a personal-data guard that blocks
   IDs, handles and private addresses.
 - The dashboard gets its visual pass.
+
+### Release tooling
+
+- Real version numbers in every deploy: `git archive` stamps the tag into
+  `dom/_version.py`, and releases are tagged `vX.Y.Z` with this changelog.
+- `own_code` lets Dom read his own source, docs and changelog (owner DM only,
+  read-only), and `self_inspect` reports the version and latest release.
+- Dom describes his personality and abilities in his own words, with exact
+  settings only when asked.
+- Fixed: buttons from `/preset` and `/plugins` did nothing, because the router's
+  prefix list left them out.
