@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import re
 from ipaddress import IPv4Network
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from dom.config import Config, DesktopConfig, load_config
 from dom.desktop.client import SandboxClient, SandboxError, url_host
 from dom.desktop.network import PROBE_SCRIPT as PROBE
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
+from dom.desktop.tools import RESULT_LIMIT, invoke, untrusted
 from dom.desktop.worker import DesktopWorker
 from tghelpers import OWNER
 
@@ -109,7 +111,7 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
              "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
              "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
              "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
-             "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true",
+             "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true", "-e", "DISABLE_JUPYTER=true",
              "-v", f"{tmp_path}/desktop-profile:/home/gem/.config/browser", config.desktop.image),
         ]
         assert not any("secret-key" in str(call) for call in docker.calls)
@@ -215,7 +217,6 @@ def test_desktop_config_defaults(tmp_path):
     ("scroll", ("down",), "POST", "browser/page/scroll", {"direction": "down"}, 30),
     ("captcha_detect", (), "GET", "browser/captcha/detect", None, 30),
     ("bash", ("printf hi",), "POST", "bash/exec", {"command": "printf hi"}, 120),
-    ("jupyter", ("print(1)",), "POST", "jupyter/execute", {"code": "print(1)"}, 120),
     ("read_file", ("/tmp/example",), "POST", "file/read", {"file": "/tmp/example"}, 30),
     ("write_file", ("/tmp/example", "hi"), "POST", "file/write", {"file": "/tmp/example", "content": "hi"}, 30),
 ])
@@ -231,6 +232,54 @@ async def test_client_shapes(method, args, verb, path, body, timeout):
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
         assert await getattr(SandboxClient("https://example.org/", "fake", http), method)(*args) == {"ok": True}
 
+
+
+@pytest.mark.parametrize("exit_code", [0, 7, 124])
+async def test_run_python_writes_a_unique_script_and_runs_it_with_a_timeout(exit_code):
+    code = '''print("A quote and a dollar: '$VALUE'")\n'''
+    result = {"stdout": "hello", "stderr": "details", "exit_code": exit_code}
+    paths = []
+    requests = []
+
+    def reply(request):
+        assert request.method == "POST"
+        requests.append(request.url.path)
+        body = json.loads(request.content)
+        if request.url.path == "/v1/file/write":
+            path = body["file"]
+            assert re.fullmatch(r"/tmp/[0-9a-f]{32}\.py", path)
+            assert body == {"file": path, "content": code}
+            paths.append(path)
+            return httpx.Response(200, json={"success": True, "data": None})
+        assert request.url.path == "/v1/bash/exec"
+        path = paths[-1]
+        assert body == {"command": f"trap 'rm -f -- {path}' EXIT; timeout --kill-after=5s 110s python3 {path}"}
+        assert request.extensions["timeout"]["read"] == 120
+        return httpx.Response(200, json={"success": True, "data": {**result, "status": "completed"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        client = SandboxClient("https://example.org", None, http)
+        for _ in range(2):
+            assert await invoke(client, "run_python", {"code": code}) == result
+    assert requests == ["/v1/file/write", "/v1/bash/exec"] * 2
+    assert len(set(paths)) == 2
+
+
+async def test_run_python_uses_the_existing_tool_result_limit():
+    def reply(request):
+        if request.url.path == "/v1/file/write":
+            return httpx.Response(200, json={"success": True, "data": None})
+        assert request.url.path == "/v1/bash/exec"
+        return httpx.Response(200, json={
+            "success": True, "data": {"stdout": "x" * RESULT_LIMIT * 2, "stderr": "", "exit_code": 0},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        result = await invoke(SandboxClient("https://example.org", None, http), "run_python", {"code": "print(1)"})
+    rendered = untrusted(result)
+    assert len(rendered) == RESULT_LIMIT
+    assert '"exit_code": 0' in rendered
+    assert rendered.endswith("</untrusted_tool_result>")
 
 async def test_client_upload_download_and_screenshot():
     def reply(request):

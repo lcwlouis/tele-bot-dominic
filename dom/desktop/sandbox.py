@@ -257,7 +257,7 @@ class LocalSandbox:
             "-p", f"127.0.0.1:{settings.port}:8080", "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
             "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
             "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
-            "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true",
+            "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true", "-e", "DISABLE_JUPYTER=true",
             "-v", f"{profile}:/home/gem/.config/browser", settings.image,
             env={"SANDBOX_API_KEY": key},  # keeps the key out of the process list
         )

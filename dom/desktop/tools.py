@@ -25,7 +25,7 @@ _TOOLS = {
     "press": ("Press a browser key.", {"key": _STRING}),
     "scroll": ("Scroll the current page.", {"direction": {"type": "string", "enum": ["up", "down", "left", "right"]}}),
     "look": ("Describe a screenshot. Use only when the text tools cannot show what you need.", {}),
-    "run_python": ("Execute Python in Jupyter.", {"code": _STRING}),
+    "run_python": ("Run a Python script in the sandbox and return its output and exit code.", {"code": _STRING}),
     "run_shell": ("Run a shell command inside the sandbox.", {"command": _STRING}),
     "read_file": ("Read a text file inside the sandbox.", {"path": _STRING}),
     "write_file": ("Write a text file inside the sandbox.", {"path": _STRING, "content": _STRING}),
@@ -44,7 +44,7 @@ _TOOLS = {
 _METHODS = {
     "browse": "navigate", "read_page": "markdown", "list_elements": "elements",
     "click": "click", "fill": "fill", "press": "press_key", "scroll": "scroll",
-    "run_python": "jupyter", "run_shell": "bash", "read_file": "read_file", "write_file": "write_file",
+    "run_python": "run_python", "run_shell": "bash", "read_file": "read_file", "write_file": "write_file",
 }
 
 
