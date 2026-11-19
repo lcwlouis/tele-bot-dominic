@@ -35,6 +35,7 @@ def src(tmp_path):
     write(root, "memory/people/handle_corrupted_one_corrupted_one.md", "- underscore handle")
     write(root, "admin/PRIVATE_MEMORY.md", "- owner private fact")
     write(root, "admin/tasks.json", "{}")
+    write(root, f"chats/{OWNER}/STATE.json", '{"chat_type": "admin_dm"}')
     write(root, f"chats/{OWNER}/CONTEXT.md", "OWNER-DM-CONTEXT")
     write(root, f"chats/{OWNER}/transcript.jsonl", '{"event_type": "message_created", "text": "dm"}\n')
     write(root, f"chats/{GROUP}/CONTEXT.md", "group running joke")
@@ -179,3 +180,17 @@ def test_cli_import_v2_prints_report(src, home, capsys):
     out = capsys.readouterr().out
     assert "handle_alan.md" in out and "legacy" in out
     assert (home / "state.db").is_file()
+
+
+def test_legacy_owner_differing_from_owner_id_refused_before_writing(src, home):
+    with pytest.raises(ValueError, match="legacy owner"):
+        import_v2(src, home, FRIEND)
+    assert not home.exists()
+
+
+def test_legacy_owner_found_from_private_memory_when_no_state_json(src, home):
+    (src / "chats" / str(OWNER) / "STATE.json").unlink()
+    write(src, "admin/PRIVATE_MEMORY.md", "- see memory/people/uid_111_louis.md\n- owner private fact")
+    with pytest.raises(ValueError, match="legacy owner"):
+        import_v2(src, home, FRIEND)
+    assert not home.exists()
