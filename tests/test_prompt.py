@@ -99,3 +99,26 @@ def test_frame_discourages_reply_to_in_dms():
 def test_frame_does_not_offer_memory_editing():
     assert "memory tool" not in FRAME
     assert "cannot edit them" in FRAME
+
+
+SELF_DESCRIPTION = (
+    "When someone asks about you — your personality, settings or abilities — answer in your own words like a "
+    "person would; give exact numbers or internal names only when asked for them."
+)
+
+
+def test_frame_asks_dom_to_describe_himself_in_his_own_words():
+    assert SELF_DESCRIPTION in FRAME
+
+
+def test_self_description_is_in_message_zero_for_every_chat(home):
+    owner = build(home, scope="owner_dm", chat_id=111, participants=[111])
+    group = build(home, scope="group", chat_id=-5555, participants=[222], note="other turn")
+    assert SELF_DESCRIPTION in owner[0]["content"] and owner[0] == group[0]
+
+
+def test_self_inspect_description_says_the_same():
+    from dom.tools import SELF_INSPECT_TOOL
+
+    assert "answer in your own words like a person would" in SELF_INSPECT_TOOL.description
+    assert "give exact numbers or internal names only when asked for them" in SELF_INSPECT_TOOL.description
