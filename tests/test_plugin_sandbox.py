@@ -2,6 +2,7 @@
 
 import json
 import socket
+import struct
 import sys
 from pathlib import Path
 
@@ -150,3 +151,18 @@ for name, call in {
 return json.dumps(out)
 """)
     assert json.loads(result) == {name: "EPERM" for name in ("ptrace", "unshare", "mount", "setns", "fork")}
+
+
+def test_real_sandbox_passes_its_own_probes(tmp_path):
+    instance = PluginRunner(home=tmp_path)
+    assert instance._probe() == ""
+    assert instance.self_test() and instance.last_failure is None
+
+
+def test_probe_notices_a_filter_that_allows_everything(tmp_path, monkeypatch):
+    from dom.plugins import runner
+
+    allow_all = struct.pack("=HBBI", 0x06, 0, 0, 0x7FFF0000)
+    monkeypatch.setattr(runner, "_seccomp", lambda network, machine=None: allow_all)
+    reason = PluginRunner(home=tmp_path)._probe()
+    assert reason.startswith("offline probe:") and "fork allowed" in reason

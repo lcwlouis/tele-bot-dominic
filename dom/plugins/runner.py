@@ -28,7 +28,63 @@ OPEN_FILES = 32  # RLIMIT_NOFILE; no clone, so no process limit is needed
 _BOOTSTRAP = 'import runpy, sys; sys.path.append("/plugin"); runpy.run_path("/plugin/main.py", run_name="__main__")'
 _PROCESS = Lock()
 _PROBE_LOCK = Lock()
-_PROBES: dict[tuple, bool] = {}
+FAILURE_RETRY_SECONDS = 300  # a failed self-test is retried after this long; success is kept
+_PROBES: dict[tuple, tuple[bool, str, float]] = {}  # ok, failure reason, when checked
+_PROBE_MAIN = """\
+import os, socket
+from _dom import tool, run
+
+
+def denied(action):
+    try:
+        action()
+    except OSError:
+        return True
+    return False
+
+
+@tool
+def probe(path, home, network):
+    problems = []
+    if os.path.exists(path) or os.path.exists(home):
+        problems.append("host path visible")
+    with open("/proc/self/status") as file:
+        status = dict(line.split(":", 1) for line in file.read().splitlines() if ":" in line)
+    for key, wanted in (("Seccomp", "2"), ("NoNewPrivs", "1"), ("CapEff", "0000000000000000")):
+        found = status.get(key, "").strip() or "missing"
+        if found != wanted:
+            problems.append(f"{key} is {found}, not {wanted}")
+    try:
+        pid = os.fork()
+    except PermissionError:
+        pass
+    except OSError as error:
+        problems.append(f"fork failed with errno {error.errno}, not EPERM")
+    else:
+        if pid == 0:
+            os._exit(0)
+        os.waitpid(pid, 0)
+        problems.append("fork allowed")
+    if not denied(lambda: open("/plugin/probe-write", "w")):
+        problems.append("/plugin is writable")
+    if not denied(lambda: socket.socket(socket.AF_UNIX)):
+        problems.append("unix sockets allowed")
+    if network:
+        try:
+            internet = socket.socket(socket.AF_INET)
+        except OSError:
+            problems.append("internet sockets unavailable")
+        else:
+            with internet:
+                if not denied(lambda: internet.bind(("127.0.0.1", 0))):
+                    problems.append("bind allowed")
+    elif not denied(lambda: socket.socket(socket.AF_INET)):
+        problems.append("internet sockets allowed")
+    return "; ".join(problems) or "ok"
+
+
+run()
+"""
 
 
 class PluginError(ValueError):
@@ -189,6 +245,7 @@ class PluginRunner:
     def __init__(self, bwrap: str = "/usr/bin/bwrap", *, home: Path):
         self.bwrap = Path(bwrap)
         self.home = home.resolve()
+        self.last_failure: str | None = None  # why the last self-test failed, for self_inspect
 
     def arguments(self, folder: Path, manifest: Manifest, *, filter_fd: int, network: bool = False) -> list[str]:
         executable = Path(sys.executable).resolve()
@@ -227,18 +284,31 @@ class PluginRunner:
 
     def self_test(self) -> bool:
         if sys.platform != "linux" or not self.bwrap.is_file():
+            self.last_failure = f"Plugins need Linux and bubblewrap at {self.bwrap}."
             return False
         key = (self.bwrap, self.home, sys.executable, sys.base_prefix)
         with _PROBE_LOCK:
-            if key not in _PROBES:
+            cached = _PROBES.get(key)
+            if cached is None or (not cached[0] and monotonic() - cached[2] >= FAILURE_RETRY_SECONDS):
                 try:
-                    _PROBES[key] = self._probe()
+                    reason = self._probe()
                 except (PluginError, OSError, ValueError) as error:
-                    log.warning("Plugin sandbox self-test failed: %s", error)
-                    _PROBES[key] = False
-            return _PROBES[key]
+                    reason = str(error) or type(error).__name__
+                if reason:
+                    log.warning("Plugin sandbox self-test failed: %s", reason)
+                cached = _PROBES[key] = (not reason, reason, monotonic())
+        self.last_failure = cached[1] or None
+        return cached[0]
 
-    def _probe(self) -> bool:
+    def _probe(self) -> str:
+        """Run the isolation probes offline and online. Return why the sandbox is unsafe, or an empty string."""
+        for network in (False, True):
+            result = self._probe_once(network)
+            if result != "ok":
+                return f"{'network' if network else 'offline'} probe: {result}"
+        return ""
+
+    def _probe_once(self, network: bool) -> str:
         with TemporaryDirectory(prefix="dom-plugin-probe-") as directory:
             root = Path(directory)
             sentinel = root / "private"
@@ -247,24 +317,14 @@ class PluginRunner:
             folder.mkdir()
             (folder / "plugin.toml").write_text(
                 'name = "probe"\ndescription = "Isolation probe"\nversion = "1"\n'
+                f"network = {str(network).lower()}\n"
                 '[[tools]]\nname = "probe"\ndescription = "Check isolation"\nparameters = {type = "object"}\n'
             )
-            (folder / "main.py").write_text(
-                "import os, socket\n"
-                "from _dom import tool, run\n"
-                "@tool\n"
-                "def probe(path, home):\n"
-                "    if os.path.exists(path) or os.path.exists(home):\n"
-                "        return 'host path visible'\n"
-                "    try:\n"
-                "        socket.socket().close()\n"
-                "    except OSError:\n"
-                "        return 'isolated'\n"
-                "    return 'socket available'\n"
-                "run()\n"
-            )
-            payload = json.dumps({"tool": "probe", "args": {"path": str(sentinel), "home": str(self.home)}})
-            return self._execute(read_plugin(folder), (payload + "\n").encode(), False) == "isolated"
+            (folder / "main.py").write_text(_PROBE_MAIN)
+            payload = json.dumps({
+                "tool": "probe", "args": {"path": str(sentinel), "home": str(self.home), "network": network},
+            })
+            return self._execute(read_plugin(folder), (payload + "\n").encode(), network)
 
     def run(self, plugin_dir: Path, tool: str, args: dict, manifest: Manifest, *, approved_hash: str) -> str:
         if not self.self_test():

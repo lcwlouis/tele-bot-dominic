@@ -272,6 +272,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
         "approved_plugins": [
             {"name": plugin.manifest.name, "hash": plugin.hash} for plugin in await app.plugins.approved()
         ],
+        "plugin_sandbox_failure": app.plugin_runner.last_failure,
         "desktop": desktop_status(app, "owner_dm"),
         "models": {kind: endpoint.model for kind, endpoint in app.config.models.items()},
         "last_errors": await app.store.recent_turn_errors(),

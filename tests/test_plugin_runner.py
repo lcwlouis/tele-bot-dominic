@@ -121,6 +121,54 @@ def test_failed_self_test_is_cached(monkeypatch, tmp_path):
     assert checks == [1]
 
 
+def test_failed_self_test_is_retried_after_five_minutes_and_success_is_kept(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "is_file", lambda path: True)
+    clock = [1000.0]
+    monkeypatch.setattr(runner, "monotonic", lambda: clock[0])
+    outcomes = iter(["offline probe: fork allowed", ""])
+    probes = []
+
+    def probe(self):
+        probes.append(clock[0])
+        return next(outcomes)
+
+    monkeypatch.setattr(PluginRunner, "_probe", probe)
+    instance = PluginRunner(home=tmp_path)
+    assert not instance.self_test()
+    assert instance.last_failure == "offline probe: fork allowed"
+    clock[0] += 299
+    assert not instance.self_test() and len(probes) == 1
+    clock[0] += 2
+    assert instance.self_test() and len(probes) == 2
+    assert instance.last_failure is None
+    clock[0] += 30 * 24 * 3600
+    assert instance.self_test() and len(probes) == 2
+
+
+def test_unsupported_host_reports_why(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    instance = PluginRunner(home=tmp_path)
+    assert not instance.self_test()
+    assert "Linux" in instance.last_failure and "bubblewrap" in instance.last_failure
+
+
+def test_probe_checks_offline_then_online(monkeypatch, tmp_path):
+    calls = []
+
+    def execute(self, snapshot, request, network):
+        calls.append((snapshot.manifest.network, network, json.loads(request)["args"]["network"]))
+        return "ok"
+
+    monkeypatch.setattr(PluginRunner, "_execute", execute)
+    assert PluginRunner(home=tmp_path)._probe() == ""
+    assert calls == [(False, False, False), (True, True, True)]
+    monkeypatch.setattr(PluginRunner, "_execute", lambda self, s, r, network: "bind allowed" if network else "ok")
+    assert PluginRunner(home=tmp_path)._probe() == "network probe: bind allowed"
+    monkeypatch.setattr(PluginRunner, "_execute", lambda self, s, r, network: "fork allowed")
+    assert PluginRunner(home=tmp_path)._probe() == "offline probe: fork allowed"
+
+
 def test_run_only_passes_requested_arguments_and_revalidates_pin(monkeypatch, tmp_path):
     folder = write_plugin(tmp_path)
     plugin = read_plugin(folder)
