@@ -39,6 +39,7 @@ async def perform(
     *,
     typing_cps: float = 8.0,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    thread_id: int | None = None,
 ) -> list[int]:
     """Send the bubbles and reaction; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
@@ -51,14 +52,14 @@ async def perform(
 
     sent_ids: list[int] = []
     for bubble in actions.bubbles:
-        await bot.send_chat_action(chat_id, "typing")
+        await bot.send_chat_action(chat_id, "typing", message_thread_id=thread_id)
         await sleep(min(len(bubble.text) / typing_cps, MAX_TYPING_SECONDS))
         reply = (
             ReplyParameters(message_id=bubble.reply_to, allow_sending_without_reply=True)
             if bubble.reply_to is not None
             else None
         )
-        sent = await bot.send_message(chat_id, bubble.text, reply_parameters=reply)
+        sent = await bot.send_message(chat_id, bubble.text, reply_parameters=reply, message_thread_id=thread_id)
         await store.record_new_message(
             StoredMessage(
                 chat_id=str(chat_id),

@@ -445,3 +445,31 @@ async def test_anonymous_admin_message_is_not_dropped_as_bot(make_app):
     await handlers.handle_message(app, anonymous_admin())
     assert len(app.script.requests) == 1
     assert [m.sender_user_id for m in await app.store.get_recent_chat_window(GROUP)][0] == GROUP
+
+
+# ---- forum topics ------------------------------------------------------------------
+
+def topic_message(text="@dombot hi", thread=77):
+    return tg(text=text).model_copy(update={"message_thread_id": thread, "is_topic_message": True})
+
+
+def test_convert_carries_topic_thread_id():
+    assert to_incoming(topic_message()).thread_id == 77
+    assert to_incoming(tg()).thread_id is None
+    # a plain reply thread in a non-forum group is not a topic: sending into it would fail
+    assert to_incoming(tg().model_copy(update={"message_thread_id": 5})).thread_id is None
+
+
+async def test_executor_sends_typing_and_bubbles_into_the_topic(store):
+    bot = FakeBot()
+    await executor.perform(bot, store, GROUP, 9, Actions(bubbles=[Bubble(text="hi")]), sleep=no_sleep, thread_id=77)
+    assert bot.of("action")[0][3]["message_thread_id"] == 77
+    assert bot.of("send")[0][3]["message_thread_id"] == 77
+
+
+async def test_turn_replies_in_the_incoming_topic(make_app):
+    app = make_app()
+    await approve(app, GROUP)
+    await handlers.handle_message(app, topic_message())
+    assert app.bot.of("send", GROUP)[0][3]["message_thread_id"] == 77
+    assert app.bot.of("action", GROUP)[0][3]["message_thread_id"] == 77
