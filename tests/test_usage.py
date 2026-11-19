@@ -272,3 +272,21 @@ async def test_failed_response_counts_but_cannot_be_last_reply(make_app):
     status = await render_status(app)
     assert "Today: 1 calls · $0.00" in status.plain
     assert "Last reply: —" in status.plain
+
+
+async def test_usage_recording_failure_never_breaks_a_model_call(make_app):
+    app = make_app()
+
+    async def broken_store(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    app.store.record_usage = broken_store
+
+    def handler(request):
+        if request.url.host == "triage.example.org":
+            return httpx.Response(200, json={"answers": {"q": {"type": "choice", "value": "yes"}}})
+        return completion("hi", USAGE)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        assert await chat(http, app).complete([], []) == {"content": "hi"}
+        assert await jev(http, app).decide("state", {"q": {}}) == {"q": {"type": "choice", "value": "yes"}}
