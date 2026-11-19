@@ -18,6 +18,7 @@ from dom.actions import Actions, Bubble
 from dom.agent import run_turn
 from dom.home import PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
+from dom.jobs import DailyJobs
 from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.presence import Habits, Presence, State, parse_habits
@@ -60,6 +61,7 @@ class Dispatcher:
         self.app, self.presence, self.jev = app, presence, jev
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
+        self.jobs = DailyJobs(app, now)
         self._debounces: dict[int, asyncio.Task] = {}
         self._first_notify: dict[int, datetime] = {}
         self._latest: dict[int, IncomingMessage] = {}
@@ -216,6 +218,7 @@ class Dispatcher:
                 await self._poll_chats()
             except Exception:
                 log.exception("could not check chat presence")
+            await self.jobs.tick()
 
     async def _poll_chats(self) -> list[asyncio.Task]:
         if self.app.owner_id is None:

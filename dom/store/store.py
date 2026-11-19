@@ -40,6 +40,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (5, "0004_dom_core.sql"),
     (6, "0005_memory_cursor.sql"),
     (7, "0006_usage.sql"),
+    (8, "0007_phase3.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -850,6 +851,21 @@ class Store:
         return [_row_to_message(r) for r in reversed(rows)]
 
     format_chat_window_xml = staticmethod(format_chat_window_xml)
+
+    async def kv_get(self, key: str) -> str | None:
+        return await self._run(self._kv_get, key)
+
+    def _kv_get(self, key: str) -> str | None:
+        row = self._conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return row[0] if row is not None else None
+
+    async def kv_set(self, key: str, value: str) -> None:
+        await self._run(
+            self._conn.execute,
+            "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            (key, value, _now()),
+        )
 
     # ---- usage ------------------------------------------------------------
 
