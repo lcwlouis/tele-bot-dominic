@@ -41,6 +41,15 @@ async def cancel_pending_deletions() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _tell_owner_held_back(store: Store, chat_id: int) -> None:
+    """Leave a note in the owner's DM so they are not left wondering why a private reply never arrived."""
+    try:
+        title = (await store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
+        await store.record_owner_event(f"Held back a private reply in {title}: it wasn't eligible")
+    except Exception:
+        log.exception("could not record the held-back private reply")
+
+
 async def perform(
     bot,
     store: Store,
@@ -62,15 +71,21 @@ async def perform(
     if actions.private and chat_id < 0:
         if ephemeral_recipient is None or ephemeral_recipient != store.owner_id:
             log.warning("ignored a private action without an eligible receiver in chat %s", chat_id)
+            await _tell_owner_held_back(store, chat_id)
             return []
         parameters = EphemeralMessageParameters(receiver_user_id=ephemeral_recipient)
         # Keep these bubbles out of the group's history and skip public side effects.
-        return [
-            (await bot.send_message(
-                chat_id, bubble.text, message_thread_id=thread_id, ephemeral_message_parameters=parameters,
-            )).message_id
-            for bubble in actions.bubbles
-        ]
+        sent_ids = []
+        for bubble in actions.bubbles:
+            try:
+                sent = await bot.send_message(
+                    chat_id, bubble.text, message_thread_id=thread_id, ephemeral_message_parameters=parameters,
+                )
+            except TelegramAPIError:
+                log.warning("ephemeral send failed in chat %s", chat_id)
+                break
+            sent_ids.append(sent.message_id)
+        return sent_ids
     if actions.react and trigger_msg_id is not None:
         try:
             await bot.set_message_reaction(chat_id, trigger_msg_id, reaction=[ReactionTypeEmoji(emoji=actions.react)])
