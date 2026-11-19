@@ -141,7 +141,7 @@ async def test_run_bounds_handler_drain_and_cancels_pending_deletions(home, monk
             events.append(("session", seen["task"].done()))
 
         async def get_me(self):
-            return SimpleNamespace(username="dombot")
+            return SimpleNamespace(id=999, username="dombot")
 
     class FakeDispatcher:
         def include_router(self, router):

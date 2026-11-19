@@ -23,7 +23,7 @@ def to_incoming(message: Message) -> IncomingMessage:
     user = message.from_user
     chat = message.chat
     if message.sender_chat is not None:  # sent on behalf of a chat (anonymous admin, channel post)
-        # Telegram still fills from_user with a placeholder bot (GroupAnonymousBot): ignore it.
+        # Telegram still fills from_user with a placeholder bot: ignore it.
         sender = message.sender_chat
         sender_id, sender_name, username, is_bot = sender.id, sender.title or "", None, False
     elif user is not None:

@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from dom.actions import Actions
+from dom.actions import Actions, Bubble
 from dom.agent import run_turn
 from dom.home import PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
 from dom.models import IncomingMessage, Scope, StoredMessage
-from dom.presence import Habits, Presence, parse_habits
+from dom.presence import Habits, Presence, State, parse_habits
 from dom.prompt import build_messages
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, core_tools
@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 log = logging.getLogger("dom.dispatch")
 TICK_SECONDS = 60
 TRIAGE_WINDOW = 15
+BOT_DEPTH_LIMIT = 6
+BOT_REPLY_INTERVAL = timedelta(seconds=10)
+BOT_DEDUP_WINDOW = timedelta(seconds=60)
+BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 
 
 class Dispatcher:
@@ -39,6 +43,8 @@ class Dispatcher:
         self._tasks: set[asyncio.Task] = set()
         self._polls: dict[int, asyncio.Task] = {}
         self._loop: asyncio.Task | None = None
+        self._bot_replies: dict[int, datetime] = {}
+        self._bots_in_flight: set[int] = set()
 
     def notify(self, msg: IncomingMessage) -> None:
         latest = self._latest.get(msg.chat_id)
@@ -148,6 +154,39 @@ class Dispatcher:
         if newest is None:
             return
 
+        bot_id = newest.sender_user_id if newest.is_bot else None
+        bot_depth = None
+        if newest.is_bot:
+            bot_depth = await store.get_bot_depth(chat_id)
+            if bot_depth > BOT_DEPTH_LIMIT or await self._suppress_bot(newest):
+                await store.mark_chat_read(chat_id, newest.msg_id)
+                return
+
+        if bot_id is not None:
+            self._bots_in_flight.add(bot_id)
+        try:
+            await self._respond(chat_id, habits, state, until, count, newest, background, catch_up, bot_depth)
+        finally:
+            if bot_id is not None:
+                self._bots_in_flight.remove(bot_id)
+
+    async def _suppress_bot(self, newest: StoredMessage) -> bool:
+        if newest.sender_user_id is None:
+            return False
+        since = datetime.fromisoformat(newest.created_at) - BOT_DEDUP_WINDOW
+        duplicate = bool(newest.text) and await self.app.store.has_recent_bot_duplicate(newest, since)
+        last_reply = self._bot_replies.get(newest.sender_user_id)
+        return (
+            duplicate or newest.sender_user_id in self._bots_in_flight
+            or (last_reply is not None and self.now() - last_reply < BOT_REPLY_INTERVAL)
+        )
+
+    async def _respond(
+        self, chat_id: int, habits: Habits, state: State, until: datetime | None,
+        count: int, newest: StoredMessage, background: bool, catch_up: bool, bot_depth: int | None,
+    ) -> None:
+        store = self.app.store
+        final_bot_turn = bot_depth == BOT_DEPTH_LIMIT
         latest = self._latest.get(chat_id)
         live = latest if latest is not None and latest.msg_id == newest.msg_id else None
         chat_type = live.chat_type if live else ("group" if chat_id < 0 else "private")
@@ -170,7 +209,7 @@ class Dispatcher:
                 return
             until = await self.presence.go_online(chat_id, habits)
             catch_up = True
-        elif not catch_up and self.jev is not None:
+        elif not catch_up and not final_bot_turn and self.jev is not None:
             try:
                 triage = await triage_online(self.jev, persona_card(self.app.home), self._triage_xml(chat_id, window))
             except JevUnavailable:
@@ -186,7 +225,11 @@ class Dispatcher:
 
         if until is None or not await self._approved(chat_id):
             return
-        await self._run_turn(chat_id, scope, newest, live, window, until, count if catch_up else 0)
+        if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
+            return
+        await self._run_turn(
+            chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn,
+        )
         await store.mark_chat_read(chat_id, newest.msg_id)
 
     def _triage_xml(self, chat_id: int, window: list[StoredMessage]) -> str:
@@ -194,7 +237,7 @@ class Dispatcher:
 
     async def _run_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
-        window: list[StoredMessage], until: datetime, away_count: int,
+        window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool,
     ) -> None:
         app = self.app
         now = self.now().astimezone(self.presence.tz)
@@ -208,6 +251,8 @@ class Dispatcher:
         )
         if away_count:
             note += "\nyou just came online"
+        if final_bot_turn:
+            note += f"\n{BOT_EXIT_NOTE}"
         window_size = app.config.window_size
         window = window[-window_size:] if window_size > 0 else []
         participants = [m.sender_user_id for m in window if m.role == "user" and m.sender_user_id is not None]
@@ -217,8 +262,21 @@ class Dispatcher:
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window), note,
         )
         ctx = TurnCtx(scope, chat_id, newest.sender_user_id, app.home, app.store, app.owner_id, self.presence)
-        actions = await run_turn(app.client, messages, core_tools(), ctx)
-        await executor.perform(
-            app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
-            thread_id=live.thread_id if live else None,
-        )
+        try:
+            actions = await run_turn(app.client, messages, core_tools(), ctx)
+        except Exception:
+            if not final_bot_turn:
+                raise
+            log.exception("model could not compose the bot exit in chat %s", chat_id)
+            actions = Actions(no_response=True)
+        if final_bot_turn:
+            bubbles = actions.bubbles[:1] if not actions.no_response else []
+            actions = Actions(bubbles=bubbles or [Bubble(text="I'll leave it there for now.")])
+        try:
+            await executor.perform(
+                app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
+                thread_id=live.thread_id if live else None,
+            )
+        finally:
+            if newest.is_bot and newest.sender_user_id is not None and actions.bubbles and not actions.no_response:
+                self._bot_replies[newest.sender_user_id] = self.now()

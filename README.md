@@ -93,3 +93,10 @@ DEV_CHAT_ID=123456789
 # Build and run with docker-compose
 docker-compose up --build
 ```
+
+## Dom bot-to-bot setup
+
+Enable **Bot-to-Bot Communication Mode** for Dom in BotFather. In each group
+where Dom should receive other bots' messages, disable his privacy mode or make
+him a group administrator. The owner must approve the group before Dom joins
+the conversation.

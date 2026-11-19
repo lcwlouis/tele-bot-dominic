@@ -8,7 +8,7 @@ from dom.home import Home
 from dom.llm import ChatClient
 from dom.store import Store
 from dom.telegram import handlers
-from tghelpers import OWNER, Clock, FakeBot, FixedRandom, ModelScript, no_sleep
+from tghelpers import BOT_USER, OWNER, Clock, FakeBot, FixedRandom, ModelScript, no_sleep
 
 
 @pytest_asyncio.fixture
@@ -23,7 +23,7 @@ async def make_app(tmp_path):
         store = Store(tmp_path, owner_id=owner_id)
         app = handlers.App(
             config=config, home=Home(tmp_path), store=store, client=client,
-            bot=FakeBot(), bot_username="dombot", sleep=no_sleep,
+            bot=FakeBot(), bot_username="dombot", sleep=no_sleep, bot_id=BOT_USER.id,
         )
         clock = Clock()
         presence = Presence(store, app.dispatch.presence.tz, FixedRandom(), clock)

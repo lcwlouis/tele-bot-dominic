@@ -502,6 +502,38 @@ class Store:
             )
         ]
 
+    async def get_bot_depth(self, chat_id: int | str) -> int:
+        return await self._run(self._get_bot_depth, str(chat_id))
+
+    def _get_bot_depth(self, chat_id: str) -> int:
+        row = self._conn.execute("SELECT bot_depth FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        return row["bot_depth"] if row is not None else 0
+
+    async def advance_bot_depth(self, chat_id: int | str, row_id: int, previous_depth: int) -> bool:
+        return await self._run(self._advance_bot_depth, str(chat_id), row_id, previous_depth)
+
+    def _advance_bot_depth(self, chat_id: str, row_id: int, previous_depth: int) -> bool:
+        # A human may have reset the depth during triage, even if the numeric value was zero.
+        cur = self._conn.execute(
+            "UPDATE chats SET bot_depth = bot_depth + 1 WHERE chat_id = ? "
+            "AND authorization_status = 'approved' AND bot_depth = ? "
+            "AND NOT EXISTS (SELECT 1 FROM messages WHERE chat_id = ? AND id > ? AND role = 'user' AND is_bot = 0)",
+            (chat_id, previous_depth, chat_id, row_id),
+        )
+        return cur.rowcount == 1
+
+    async def has_recent_bot_duplicate(self, msg: StoredMessage, since: datetime) -> bool:
+        return await self._run(self._has_recent_bot_duplicate, msg, since.isoformat())
+
+    def _has_recent_bot_duplicate(self, msg: StoredMessage, since: str) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM messages JOIN chats USING (chat_id) "
+            "WHERE messages.id < ? AND sender_user_id = ? AND text = ? AND role = 'user' "
+            "AND is_bot = 1 AND is_deleted = 0 AND authorization_status = 'approved' "
+            "AND julianday(messages.created_at) > julianday(?) AND julianday(messages.created_at) <= julianday(?) LIMIT 1",
+            (msg.id, msg.sender_user_id, msg.text, since, msg.created_at),
+        ).fetchone() is not None
+
     # ---- messages ---------------------------------------------------------
 
     async def record_new_message(self, msg: StoredMessage) -> int:
@@ -517,6 +549,8 @@ class Store:
                     return existing["id"]
             self._ensure_chat(conn, msg.chat_id, msg.visibility_scope)
             row_id = self._insert_message(conn, msg)
+            if msg.role == "user" and not msg.is_bot:
+                conn.execute("UPDATE chats SET bot_depth = 0 WHERE chat_id = ?", (msg.chat_id,))
         self._append_transcript(
             msg.chat_id,
             "message_created",
