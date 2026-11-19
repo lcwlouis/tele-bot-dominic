@@ -574,10 +574,13 @@ class Dispatcher:
 
     async def desktop_handoff(
         self, task_id: int, steps: int, chat_id: int, reason: str, host: str | None = None,
+        observed: datetime | None = None,
     ) -> None:
         app = self.app
         if chat_id != app.owner_id:
             return
+        # The host is only where the browser was when Dom last looked; the time lets the owner judge how stale that is.
+        observed = (observed or self.now()).astimezone(self.presence.tz)
         base = app.config.web.public_url.rstrip("/")
         url = urlsplit(base)
         buttons = []
@@ -586,7 +589,7 @@ class Dispatcher:
         buttons.append(InlineKeyboardButton(text="Done", callback_data=f"desktop:done:{task_id}:{steps}"))
         await app.bot.send_message(
             chat_id,
-            f"Dom needs you to log in{f' on {host}' if host else ''}: {reason}\nLogins you make here are kept for later tasks."
+            f"Dom needs you to log in (browser was on {host or 'an unknown site'} at {observed:%H:%M}): {reason}\nLogins you make here are kept for later tasks."
             + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
             link_preview_options=LinkPreviewOptions(is_disabled=True),

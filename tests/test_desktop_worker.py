@@ -289,7 +289,7 @@ async def test_handoff_names_the_login_host_and_keeps_secrets_out(make_app):
         while not app.bot.of("send", OWNER):
             await asyncio.sleep(0.001)
     text = app.bot.of("send", OWNER)[0][2]
-    assert text.startswith("Dom needs you to log in on login.example.org: Sign in")
+    assert text.startswith("Dom needs you to log in (browser was on login.example.org at 12:00): Sign in")
     assert "Logins you make here are kept for later tasks." in text
     assert "SECRET" not in text and "8443" not in text
     assert app.bot.of("send", OWNER)[0][3]["link_preview_options"].is_disabled is True
@@ -310,7 +310,7 @@ async def test_handoff_without_a_browser_url_still_asks(make_app):
     worker.sandbox = app.sandbox = Broken()
     await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
-    assert app.bot.of("send", OWNER)[0][2].startswith("Dom needs you to log in: Sign in")
+    assert app.bot.of("send", OWNER)[0][2].startswith("Dom needs you to log in (browser was on an unknown site at 12:00): Sign in")
 
 
 async def test_daily_spend_cap_pauses_a_desktop_task_before_any_worker_call(make_app):
@@ -392,3 +392,12 @@ async def test_a_skipped_model_call_reports_the_spend_cap(make_app):
     await wait_task(worker)
     row = await task_row(app, task_id)
     assert row["status"] == "failed" and row["error"] == "paused by today's spend cap"
+
+
+async def test_handoff_time_is_shown_in_local_time(make_app):
+    from zoneinfo import ZoneInfo
+
+    app = make_app()
+    app.dispatch.presence.tz = ZoneInfo("Asia/Singapore")
+    await app.dispatch.desktop_handoff(1, 2, OWNER, "Sign in", "example.org", datetime(2026, 1, 1, 6, 5, tzinfo=timezone.utc))
+    assert app.bot.of("send", OWNER)[0][2].startswith("Dom needs you to log in (browser was on example.org at 14:05): Sign in")
