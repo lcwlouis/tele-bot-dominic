@@ -15,7 +15,7 @@ from dom.config import Config, load_config
 from dom.home import Home, init_home
 from dom.importer import import_v2
 from dom.jev import JevClient
-from dom.llm import ChatClient
+from dom.llm import ChatClient, FallbackClient
 from dom.media import MediaDescriber
 from dom.store import Store
 from dom.telegram import executor, owner
@@ -32,9 +32,18 @@ def require_secret(config: Config, name: str) -> str:
     return value
 
 
-def model_api_key(config: Config) -> str | None:
-    endpoint = config.models["chat"]
+def model_api_key(config: Config, name: str = "chat") -> str | None:
+    endpoint = config.models[name]
     return require_secret(config, endpoint.api_key_env) if endpoint.api_key_env else None
+
+
+def chat_client(config: Config, http: httpx.AsyncClient) -> FallbackClient:
+    """The chat model, with `[models.chat_fallback]` (if configured) used when it is down."""
+    primary = ChatClient(config.models["chat"], model_api_key(config), http)
+    fallback = None
+    if "chat_fallback" in config.models:
+        fallback = ChatClient(config.models["chat_fallback"], model_api_key(config, "chat_fallback"), http)
+    return FallbackClient(primary, fallback)
 
 
 def cmd_init(home: Path, timezone: str | None = None) -> int:
@@ -85,7 +94,7 @@ async def run(home: Path) -> None:
     try:
         me = await bot.get_me()
         async with httpx.AsyncClient() as http:
-            client = ChatClient(config.models["chat"], model_api_key(config), http)
+            client = chat_client(config, http)
             triage = config.models["triage"]
             triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
             jev = JevClient(http, triage_key, triage.model, triage.base_url) if triage_key else None

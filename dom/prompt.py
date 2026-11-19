@@ -33,8 +33,8 @@ def build_messages(
 ) -> list[dict]:
     """OpenAI chat messages for one turn.
 
-    Message 0 is the stable prefix (identical across turns until memory changes), message 1 holds
-    this chat's notes and its participants' notes, message 2 is the chat window plus the turn note.
+    Message 0 is the stable prefix (identical across turns until memory changes), message 1 (user)
+    holds this chat's notes, its participants' notes, the chat window and the turn note.
     The private/ boundary is enforced by Home: it refuses private reads unless opened for owner_dm.
     """
     home = home.scoped(allow_private=(scope == "owner_dm"))
@@ -53,6 +53,7 @@ def build_messages(
 
     return [
         {"role": "system", "content": "\n\n".join(prefix)},
-        {"role": "system", "content": "\n\n".join(notes)},
-        {"role": "user", "content": f"{window_xml}\n\n{turn_note}"},
+        # One system message only: Qwen-family chat templates reject a second one. The notes vary per
+        # chat, so they belong after the stable prefix anyway.
+        {"role": "user", "content": "\n\n".join([*notes, window_xml, turn_note])},
     ]
