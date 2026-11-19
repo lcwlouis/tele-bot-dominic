@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from time import monotonic
@@ -16,7 +17,13 @@ from starlette.requests import Request
 
 from dom.config import Config
 
-JWKS_TTL = 3600
+log = logging.getLogger("dom.web")
+
+JWKS_TTL = 3600  # a fetched key set is trusted this long without asking again
+JWKS_STALE = 86400  # after a failed refresh, the previous keys stay usable this long
+UNKNOWN_KID_INTERVAL = 60  # an unrecognised kid may trigger a refresh at most this often
+FAILURE_BACKOFF = 30  # after a failed refresh, serve from the cache this long before retrying
+FETCH_TIMEOUT = 5  # total seconds for one refresh
 _TEAM = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE | re.ASCII)
 Identity = Literal["access", "local"]
 
@@ -36,8 +43,11 @@ class Auth:
             raise ValueError("Dashboard auth needs access_team and access_aud, or a populated dev_token_env.")
         self._fetch_jwks = fetch_jwks or self._fetch
         self._keys: dict[str, jwt.PyJWK] = {}
-        self._expires_at = 0.0
-        self._lock = asyncio.Lock()
+        self._expires_at = 0.0  # the key set is fresh until then
+        self._stale_at = 0.0  # the key set is unusable from then on
+        self._last_refresh = float("-inf")
+        self._retry_at = 0.0
+        self._refresh: asyncio.Task[None] | None = None
 
     @staticmethod
     async def _fetch(url: str) -> dict:
@@ -46,21 +56,40 @@ class Auth:
             response.raise_for_status()
             return response.json()
 
-    async def _key(self, kid: str) -> jwt.PyJWK | None:
-        async with self._lock:
-            if monotonic() >= self._expires_at or kid not in self._keys:
+    async def _reload(self) -> None:
+        try:
+            async with asyncio.timeout(FETCH_TIMEOUT):
                 jwks = await self._fetch_jwks(f"{self.issuer}/cdn-cgi/access/certs")
-                keys = {}
-                for entry in jwks["keys"]:
-                    if (
-                        isinstance(entry, dict) and isinstance(entry.get("kid"), str)
-                        and entry.get("kty") == "RSA" and entry.get("use", "sig") == "sig"
-                        and entry.get("alg", "RS256") == "RS256"
-                    ):
-                        keys[entry["kid"]] = jwt.PyJWK(entry, algorithm="RS256")
-                self._keys = keys
-                self._expires_at = monotonic() + JWKS_TTL
-            return self._keys.get(kid)
+            keys = {}
+            for entry in jwks["keys"]:
+                if (
+                    isinstance(entry, dict) and isinstance(entry.get("kid"), str)
+                    and entry.get("kty") == "RSA" and entry.get("use", "sig") == "sig"
+                    and entry.get("alg", "RS256") == "RS256"
+                ):
+                    keys[entry["kid"]] = jwt.PyJWK(entry, algorithm="RS256")
+            if not keys:
+                raise ValueError("the key set holds no usable RS256 key")
+        except Exception as exc:
+            self._retry_at = monotonic() + FAILURE_BACKOFF
+            log.warning("Access key refresh failed (%s: %s).", type(exc).__name__, exc)
+        else:
+            now = monotonic()
+            self._keys, self._expires_at, self._stale_at = keys, now + JWKS_TTL, now + JWKS_STALE
+        finally:
+            self._refresh = None
+
+    async def _key(self, kid: str) -> jwt.PyJWK | None:
+        now = monotonic()
+        fresh = now < self._expires_at
+        if not (fresh and kid in self._keys):
+            due = not fresh or now >= self._last_refresh + UNKNOWN_KID_INTERVAL
+            if due and now >= self._retry_at:
+                if self._refresh is None:
+                    self._last_refresh = now
+                    self._refresh = asyncio.create_task(self._reload())
+                await asyncio.shield(self._refresh)
+        return self._keys.get(kid) if monotonic() < self._stale_at else None
 
     async def authenticate(self, request: Request) -> Identity | None:
         scheme, _, token = request.headers.get("Authorization", "").partition(" ")
