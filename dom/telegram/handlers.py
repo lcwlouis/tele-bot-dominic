@@ -178,7 +178,9 @@ async def handle_message(app: App, message: Message) -> None:
                 if not await app.dispatch.override(target, command):
                     await app.bot.send_message(msg.chat_id, "unknown chat")
                 else:
-                    if len(parts) == 1:
+                    if command == "/wake" and await app.dispatch.spend_paused(target):
+                        await app.bot.send_message(msg.chat_id, await _spend_paused_notice(app, target))
+                    elif len(parts) == 1:
                         await app.bot.send_message(msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
                     await _owner_event(app, await _override_event(app, who, command, target))
             return
@@ -222,9 +224,17 @@ _DECISIONS = {"approve": "approved", "ignore": "ignored"}
 _OVERRIDES = {"wake": "/wake", "sleep": "/sleep"}
 
 
-async def _override_event(app: App, who: str, command: str, chat_id: int) -> str:
+async def _chat_title(app: App, chat_id: int) -> str:
     chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), {"chat_id": str(chat_id), "title": ""})
-    title = owner.display_title(chat, app.owner_id)
+    return owner.display_title(chat, app.owner_id)
+
+
+async def _spend_paused_notice(app: App, chat_id: int) -> str:
+    return f"Dom is up in {await _chat_title(app, chat_id)}, but friends' chats are paused by today's spend cap"
+
+
+async def _override_event(app: App, who: str, command: str, chat_id: int) -> str:
+    title = await _chat_title(app, chat_id)
     return f"{who} woke Dom in {title}" if command == "/wake" else f"{who} sent Dom to sleep in {title}"
 
 
@@ -267,7 +277,10 @@ async def _handle_override(app: App, query: CallbackQuery, action: str, raw_chat
         await _toast(app, query, "unknown chat")
         return
     title = owner.display_title(chat, app.owner_id)
-    await _toast(app, query, f"Dom is up in {title}" if action == "wake" else f"Dom is asleep in {title}")
+    if action == "wake" and await app.dispatch.spend_paused(chat_id):
+        await _toast(app, query, await _spend_paused_notice(app, chat_id))
+    else:
+        await _toast(app, query, f"Dom is up in {title}" if action == "wake" else f"Dom is asleep in {title}")
     await _owner_event(app, await _override_event(app, _person(query.from_user.full_name), _OVERRIDES[action], chat_id))
     await _refresh_status(app, query)
 

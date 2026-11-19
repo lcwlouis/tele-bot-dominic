@@ -341,6 +341,40 @@ async def test_wake_with_a_target_stays_silent(make_app):
     assert await app.dispatch.presence.is_online(FRIEND, app.dispatch._habits())
 
 
+# ---- waking a chat that the spend cap has paused ---------------------------------------------
+
+PAUSED = "Dom is up in {}, but friends' chats are paused by today's spend cap"
+
+
+async def spend_over_the_cap(app):
+    await app.dispatch.usage.record("chat", "mock-chat", "example.org", {"cost": 99})
+
+
+async def test_wake_command_for_a_friend_chat_over_the_cap_still_wakes_but_says_so(make_app):
+    app = make_app()
+    await approve(app, FRIEND, title="Fran")
+    await spend_over_the_cap(app)
+    await say(app, OWNER, OWNER, f"/wake {FRIEND}", 1)
+    assert [c[2] for c in app.bot.of("send", OWNER) if c[2].startswith("Dom is up")] == [PAUSED.format("DM with Fran")]
+    assert await app.dispatch.presence.is_online(FRIEND, app.dispatch._habits())
+
+
+async def test_wake_button_for_a_friend_chat_over_the_cap_still_wakes_but_says_so(two_approved_one_pending):
+    app = two_approved_one_pending
+    await spend_over_the_cap(app)
+    app.bot.calls.clear()
+    await handlers.handle_callback(app, callback(app, OWNER, f"wake:{FRIEND}"))
+    assert app.bot.of("answer") == [("answer", "cb1", PAUSED.format("DM with Fran"))]
+    assert await app.dispatch.presence.is_online(FRIEND, app.dispatch._habits())
+
+
+async def test_waking_the_owners_own_chat_is_never_reported_as_paused(make_app):
+    app = make_app()
+    await spend_over_the_cap(app)
+    await say(app, OWNER, OWNER, "/wake", 1)
+    assert [c[2] for c in app.bot.of("send", OWNER)] == ["Dom is up."]
+
+
 # ---- leaving a group from /status ----------------------------------------------------------
 
 def not_a_member(error):

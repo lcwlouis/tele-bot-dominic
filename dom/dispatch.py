@@ -254,10 +254,12 @@ class Dispatcher:
     async def _approved(self, chat_id: int) -> bool:
         return await gate.decide_chat(self.app.store, chat_id, self.app.owner_id) == "process"
 
+    async def spend_paused(self, chat_id: int) -> bool:
+        """Friends' chats pause once today's spend cap is reached; the owner's own chat never does."""
+        return chat_id != self.app.owner_id and await self.usage.over_cap(self.app.config, self.app.bot)
+
     async def model_allowed(self, chat_id: int) -> bool:
-        if not await self._approved(chat_id):
-            return False
-        return chat_id == self.app.owner_id or not await self.usage.over_cap(self.app.config, self.app.bot)
+        return await self._approved(chat_id) and not await self.spend_paused(chat_id)
 
     async def override(self, chat_id: int, command: str) -> bool:
         """The owner's /wake or /sleep. False if the chat is unknown or not approved; that lookup never
@@ -367,7 +369,8 @@ class Dispatcher:
         await check_model_allowed()
 
         urgency = None
-        if state != "online" and scope == "owner_dm" and not background and self.jev is not None:
+        count_wakes = state == "offline" and count >= habits.wake_after_messages
+        if state != "online" and scope == "owner_dm" and not background and not count_wakes and self.jev is not None:
             try:
                 urgency = await triage_urgency(self.jev, persona_card(self.app.home), self._triage_xml(chat_id, window))
             except JevUnavailable:
@@ -379,7 +382,7 @@ class Dispatcher:
             until = await self.presence.wake(chat_id, habits, minutes=URGENT_WAKE_MINUTES)
             catch_up = True
         elif state == "offline":
-            wake = background or count >= habits.wake_after_messages or (
+            wake = background or count_wakes or (
                 urgency is not None and urgency >= OFFLINE_URGENCY
             )
             if not wake and scope == "group" and self.jev is not None:
