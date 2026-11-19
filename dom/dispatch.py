@@ -42,7 +42,7 @@ BOT_DEDUP_WINDOW = timedelta(seconds=60)
 MAX_TURN_FAILURES = 3  # consecutive failures after which a chat's unread messages are given up on
 _CHAT_GONE = re.compile(r"chat not found|kicked|not a member", re.IGNORECASE)
 MEMORY_PASS_INTERVAL = timedelta(minutes=5)  # per chat
-MEMORY_PASS_MESSAGES = 10  # new messages after a turn that start a pass without waiting for the session to end
+MEMORY_PASS_MARGIN = 5  # start a pass this many messages before unprocessed ones scroll out of the chat window
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 
 
@@ -384,7 +384,8 @@ class Dispatcher:
             chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
         )
         await store.mark_chat_read(chat_id, newest.msg_id)
-        if await store.count_new_for_memory(chat_id) >= MEMORY_PASS_MESSAGES:
+        # Notes only need to catch what is about to leave Dom's view; the session-end pass covers the rest.
+        if await store.count_new_for_memory(chat_id) >= max(1, self.app.config.window_size - MEMORY_PASS_MARGIN):
             self.request_memory_pass(chat_id)
 
     async def _window(self, chat_id: int, newest: StoredMessage) -> list[StoredMessage]:
