@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/alpha"  # [models.triage].base_url in the starter config
 
 
 class JevUnavailable(Exception):
@@ -12,13 +12,14 @@ class JevUnavailable(Exception):
 
 
 class JevClient:
-    def __init__(self, http: httpx.AsyncClient, api_key: str, model: str):
+    def __init__(self, http: httpx.AsyncClient, api_key: str, model: str, base_url: str = DEFAULT_BASE_URL):
         self.http, self.api_key, self.model = http, api_key, model
+        self.url = f"{base_url.rstrip('/')}/decisions"
 
     async def decide(self, state: str, questions: dict) -> dict[str, dict | None]:
         try:
             response = await self.http.post(
-                DECISIONS_URL,
+                self.url,
                 json={"model": self.model, "state": state, "questions": questions},
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=8,

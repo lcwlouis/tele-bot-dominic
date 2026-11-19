@@ -3,6 +3,7 @@ from datetime import timedelta
 
 import httpx
 import pytest
+from aiogram.types import PhotoSize
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.methods import SendMessage
 
@@ -367,3 +368,42 @@ async def test_owner_command_for_a_chat_that_is_not_approved_is_unknown(setup_di
     assert app.bot.of("send", OWNER)[-1][2] == "unknown chat"
     assert (await dispatch.presence.state(FRIEND, parse_habits("")))[0] == "offline"
     assert not app.script.requests
+
+
+async def test_decide_logs_a_failing_gate_instead_of_raising(setup_dispatch, caplog):
+    app, dispatch, _ = await setup_dispatch()
+
+    async def broken(chat_id):
+        raise RuntimeError("database is locked")
+
+    app.store.get_chat_auth_status = broken
+    await dispatch._decide(GROUP)
+    assert "database is locked" in caplog.text
+    await dispatch.tick()  # the background poll path must not leak a task exception either
+    assert all(task.exception() is None for task in list(dispatch._tasks) if task.done())
+
+
+async def test_decide_logs_a_failing_media_wait_instead_of_raising(setup_dispatch, caplog):
+    app, dispatch, _ = await setup_dispatch()
+
+    async def broken(chat_id):
+        raise RuntimeError("media wait broke")
+
+    dispatch._wait_media = broken
+    await dispatch._decide(GROUP)
+    assert "media wait broke" in caplog.text
+
+
+async def test_media_check_failure_does_not_stop_the_message_being_dispatched(setup_dispatch):
+    app, dispatch, _ = await setup_dispatch()
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+
+    async def broken(chat_id, habits):
+        raise RuntimeError("presence lookup failed")
+
+    dispatch.presence.is_online = broken
+    photo = tg(text=None, photo=[PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)])
+    app.media_describer = object()
+    await handle_message(app, photo)
+    await drain_dispatch(dispatch)
+    assert len(app.script.requests) == 1

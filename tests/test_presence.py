@@ -96,7 +96,7 @@ async def test_extend_online_capped(rhythm):
     presence, _, _ = rhythm
     habits = parse_habits("")
     online_until = await presence.go_online(GROUP, habits, minutes=5)
-    assert await presence.extend_online(GROUP, 55) == online_until + timedelta(minutes=30)
+    assert await presence.extend_online(GROUP, habits, 55) == online_until + timedelta(minutes=30)
 
 
 async def test_triangular_uses_injected_rng(rhythm):
@@ -105,3 +105,40 @@ async def test_triangular_uses_injected_rng(rhythm):
     assert await presence.go_online(GROUP, habits) == clock.at + timedelta(minutes=15)
     assert await presence.go_offline(GROUP, habits) == clock.at + timedelta(minutes=52.5)
     assert rng.draws == [(5, 25, 21), (15, 90, 30)]
+
+
+async def test_extending_cannot_pass_two_hours_from_the_start_of_the_session(rhythm):
+    presence, clock, _ = rhythm
+    habits = parse_habits("")
+    await presence.go_online(GROUP, habits, minutes=5)
+    ends = [await presence.extend_online(GROUP, habits, 30) for _ in range(6)]
+    assert [end.strftime("%H:%M") for end in ends] == ["12:35", "13:05", "13:35", "14:00", "14:00", "14:00"]
+    assert (await presence.state(GROUP, habits)) == ("online", clock.at.replace(hour=14))
+
+
+async def test_extending_stops_at_the_sleep_window(rhythm):
+    presence, clock, _ = rhythm
+    habits = parse_habits("")
+    clock.at = clock.at.replace(hour=23, minute=0)
+    await presence.go_online(GROUP, habits, minutes=30)
+    assert (await presence.extend_online(GROUP, habits, 30)).strftime("%H:%M") == "23:59"
+    assert (await presence.extend_online(GROUP, habits, 30)).strftime("%H:%M") == "23:59"
+
+
+async def test_owner_wake_session_may_extend_past_the_sleep_window_but_not_two_hours(rhythm):
+    presence, clock, _ = rhythm
+    habits = parse_habits("")
+    clock.at = clock.at.replace(hour=23, minute=40)
+    await presence.wake(GROUP, habits)
+    ends = [await presence.extend_online(GROUP, habits, 30) for _ in range(5)]
+    assert [end.strftime("%d %H:%M") for end in ends] == ["02 00:40", "02 01:10", "02 01:40", "02 01:40", "02 01:40"]
+    assert (await presence.state(GROUP, habits))[0] == "online"
+
+
+async def test_sleep_lasts_until_wake_time_or_eight_hours(rhythm):
+    presence, clock, _ = rhythm
+    habits = parse_habits("")
+    assert await presence.sleep(GROUP, habits) == clock.at.replace(hour=20)  # next 07:30 is 19.5 h away
+    assert (await presence.state(GROUP, habits)) == ("asleep", clock.at.replace(hour=20))
+    clock.at = clock.at.replace(hour=2)
+    assert await presence.sleep(GROUP, habits) == clock.at.replace(hour=7, minute=30)

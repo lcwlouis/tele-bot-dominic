@@ -82,7 +82,11 @@ class Dispatcher:
 
     async def describe_media(self, msg: IncomingMessage) -> None:
         # Attachments are only described while Dom is online; catch-up covers the rest.
-        if msg.is_bot or not await self.presence.is_online(msg.chat_id, self._habits()):
+        try:
+            if msg.is_bot or not await self.presence.is_online(msg.chat_id, self._habits()):
+                return
+        except Exception:
+            log.exception("could not check presence before describing media in chat %s", msg.chat_id)
             return
         task = self._spawn(self._describe_media(msg))
         self._media_tasks.setdefault(msg.chat_id, set()).add(task)
@@ -192,7 +196,7 @@ class Dispatcher:
         try:
             await self._decide(chat_id, background=True)
         finally:
-            self._polls.pop(chat_id)
+            self._polls.pop(chat_id, None)
 
     async def tick(self) -> None:
         await asyncio.gather(*(await self._poll_chats()))
@@ -224,12 +228,15 @@ class Dispatcher:
             return True
 
     async def _decide(self, chat_id: int, *, background: bool = False) -> None:
-        await self._wait_media(chat_id)
-        async with self.app.locks[chat_id]:
-            # A newer message can restart the timer while we wait for media or the turn lock.
-            if self._debounce_pending(chat_id) or not await self._approved(chat_id):
-                return
-            await self._guarded_dispatch(chat_id, self._habits(), background=background)
+        try:
+            await self._wait_media(chat_id)
+            async with self.app.locks[chat_id]:
+                # A newer message can restart the timer while we wait for media or the turn lock.
+                if self._debounce_pending(chat_id) or not await self._approved(chat_id):
+                    return
+                await self._guarded_dispatch(chat_id, self._habits(), background=background)
+        except Exception:
+            log.exception("could not decide on chat %s", chat_id)
 
     async def _guarded_dispatch(self, chat_id: int, habits: Habits, **kwargs: bool) -> None:
         """Run a dispatch; a chat whose turns keep failing is given up on instead of retried forever."""
@@ -341,7 +348,7 @@ class Dispatcher:
             await self._describe_unread_media(chat_id)
             window = await self._window(chat_id, newest)
         await self._run_turn(
-            chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn,
+            chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
         )
         await store.mark_chat_read(chat_id, newest.msg_id)
 
@@ -355,7 +362,7 @@ class Dispatcher:
 
     async def _run_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
-        window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool,
+        window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
     ) -> None:
         app = self.app
         now = self.now().astimezone(self.presence.tz)
@@ -379,7 +386,9 @@ class Dispatcher:
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window), note,
         )
-        ctx = TurnCtx(scope, chat_id, newest.sender_user_id, app.home, app.store, app.owner_id, self.presence)
+        ctx = TurnCtx(
+            scope, chat_id, newest.sender_user_id, app.home, app.store, app.owner_id, self.presence, habits,
+        )
         try:
             actions = await run_turn(app.client, messages, core_tools(), ctx)
         except Exception:
