@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -61,3 +62,85 @@ async def test_blank_bind_refused_before_opening_a_socket(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="web.bind"):
         async with serving(dom, Auth(config)):
             pytest.fail("blank bind was accepted")
+
+
+# --- uvicorn settings and lifecycle --------------------------------------------------------------
+
+
+@pytest.fixture
+def dashboard(tmp_path, monkeypatch):
+    init_home(tmp_path)
+    path = tmp_path / "config.toml"
+    path.write_text(path.read_text().replace("enabled = false", "enabled = true").replace(
+        'dev_token_env = ""', 'dev_token_env = "DOM_TEST_TOKEN"',
+    ))
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
+    config = load_config(tmp_path)
+    return SimpleNamespace(config=config, owner_id=None), Auth(config)
+
+
+async def test_server_and_date_headers_are_off(dashboard, monkeypatch):
+    dom, auth = dashboard
+    seen = []
+
+    def bind_socket(uv_config):
+        seen.append((uv_config.server_header, uv_config.date_header))
+        return nullcontext(object())
+
+    monkeypatch.setattr(uvicorn.Config, "bind_socket", bind_socket)
+    monkeypatch.setattr(DashboardServer, "serve", AsyncMock())
+    async with serving(dom, auth):
+        pass
+    assert seen == [(False, False)]
+
+
+@pytest.mark.parametrize("failure", [SystemExit(1), OSError("address already in use")])
+async def test_bind_failure_leaves_dom_running(dashboard, monkeypatch, caplog, failure):
+    dom, auth = dashboard
+
+    def bind_socket(uv_config):
+        raise failure
+
+    serve = AsyncMock()
+    monkeypatch.setattr(uvicorn.Config, "bind_socket", bind_socket)
+    monkeypatch.setattr(DashboardServer, "serve", serve)
+    ran = False
+    with caplog.at_level("ERROR", logger="dom.web"):
+        async with serving(dom, auth):
+            ran = True
+    assert ran
+    serve.assert_not_awaited()
+    assert "127.0.0.1:8080" in caplog.text
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("boom"), SystemExit(3)])
+async def test_server_dying_mid_run_is_logged_not_raised(dashboard, monkeypatch, caplog, failure):
+    dom, auth = dashboard
+
+    async def serve(self, sockets=None):
+        raise failure
+
+    monkeypatch.setattr(uvicorn.Config, "bind_socket", lambda uv_config: nullcontext(object()))
+    monkeypatch.setattr(DashboardServer, "serve", serve)
+    with caplog.at_level("ERROR", logger="dom.web"):
+        async with serving(dom, auth):
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert "Dashboard stopped" in caplog.text
+    assert caplog.text.count("Dashboard stopped") == 1
+
+
+async def test_shutdown_survives_a_failing_server(dashboard, monkeypatch):
+    dom, auth = dashboard
+    started = asyncio.Event()
+
+    async def serve(self, sockets=None):
+        started.set()
+        while not self.should_exit:
+            await asyncio.sleep(0)
+        raise RuntimeError("failed while draining")
+
+    monkeypatch.setattr(uvicorn.Config, "bind_socket", lambda uv_config: nullcontext(object()))
+    monkeypatch.setattr(DashboardServer, "serve", serve)
+    async with serving(dom, auth):
+        await started.wait()

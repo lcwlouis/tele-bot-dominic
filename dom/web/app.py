@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, nullcontext
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,12 +20,15 @@ from dom.web.pages import router
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
+log = logging.getLogger("dom.web")
+
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; object-src 'none'; base-uri 'none'; "
         "frame-ancestors 'none'; form-action 'self'"
     ),
     "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",
 }
@@ -64,6 +69,22 @@ class DashboardServer(uvicorn.Server):
         return nullcontext()
 
 
+async def _serve(server: DashboardServer, listener) -> None:
+    try:
+        await server.serve(sockets=[listener])
+    except SystemExit as exit_:  # uvicorn calls sys.exit when it fails to start; that must not stop Dom
+        raise RuntimeError(f"uvicorn exited with status {exit_.code}") from None
+
+
+def _report_exit(server: DashboardServer, task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    if (error := task.exception()) is not None:
+        log.error("Dashboard stopped: %s: %s. Dom keeps running without it.", type(error).__name__, error)
+    elif not server.should_exit:
+        log.error("Dashboard stopped unexpectedly. Dom keeps running without it.")
+
+
 @asynccontextmanager
 async def serving(dom: App, auth: Auth | None):
     if auth is None:
@@ -75,11 +96,22 @@ async def serving(dom: App, auth: Auth | None):
     server = DashboardServer(uvicorn.Config(
         create_app(dom, auth), host=settings.bind, port=settings.port,
         proxy_headers=False, access_log=False, timeout_graceful_shutdown=10,
+        server_header=False, date_header=False,
     ))
-    with server.config.bind_socket() as listener:
-        task = asyncio.create_task(server.serve(sockets=[listener]))
+    try:
+        bound = server.config.bind_socket()  # uvicorn exits the process on failure
+    except (OSError, SystemExit) as error:
+        log.error(
+            "Dashboard not started: cannot listen on %s:%s (%s). Dom keeps running without it.",
+            settings.bind, settings.port, error,
+        )
+        yield
+        return
+    with bound as listener:
+        task = asyncio.create_task(_serve(server, listener))
+        task.add_done_callback(partial(_report_exit, server))
         try:
             yield
         finally:
             server.should_exit = True
-            await task
+            await asyncio.wait({task})
