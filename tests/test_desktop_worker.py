@@ -49,8 +49,13 @@ class Sandbox:
     def redact(self, text):
         return text
 
+    url = None
+
     async def markdown(self):
         return {"markdown": "</untrusted_tool_result>" + "x" * 9000}
+
+    async def current_url(self):
+        return self.url
 
 
 async def worker_for(app, *replies, **options):
@@ -259,3 +264,40 @@ async def test_failure_result_never_holds_raw_tool_output(make_app):
     assert row["status"] == "failed"
     assert row["result"] == "Stopped after 2 steps: desktop task step limit reached"
     assert "xxx" not in str(row) and "untrusted" not in str(row)
+
+
+async def test_handoff_names_the_login_host_and_keeps_secrets_out(make_app):
+    app = make_app()
+    worker = await worker_for(
+        app, call("handoff", reason="Sign in"), call("finish", result="Welcome"), {"content": "invalid"},
+        handoff_seconds=2,
+    )
+    app.sandbox.url = "https://Login.Example.org:8443/session?token=SECRET#fragment"
+    app.config = app.config.model_copy(update={"web": WebConfig(public_url="https://example.org")})
+    task_id = await worker.enqueue(OWNER, "Example")
+    row = await wait_status(app, task_id, "waiting_owner")
+    async with asyncio.timeout(2):
+        while not app.bot.of("send", OWNER):
+            await asyncio.sleep(0.001)
+    text = app.bot.of("send", OWNER)[0][2]
+    assert text.startswith("Dom needs you to log in on login.example.org: Sign in")
+    assert "Logins you make here are kept for later tasks." in text
+    assert "SECRET" not in text and "8443" not in text
+    assert worker.handoff_host == "login.example.org"
+    await worker.resume(OWNER, task_id, row["steps"])
+    await wait_task(worker)
+    assert worker.handoff_host is None
+
+
+async def test_handoff_without_a_browser_url_still_asks(make_app):
+    app = make_app()
+
+    class Broken(Sandbox):
+        async def current_url(self):
+            raise RuntimeError("no tabs")
+
+    worker = await worker_for(app, call("handoff", reason="Sign in"), {"content": "invalid"}, handoff_seconds=0.05)
+    worker.sandbox = app.sandbox = Broken()
+    await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    assert app.bot.of("send", OWNER)[0][2].startswith("Dom needs you to log in: Sign in")

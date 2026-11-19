@@ -561,7 +561,9 @@ class Dispatcher:
                 log.exception("could not notify the owner about a held message")
         return True
 
-    async def desktop_handoff(self, task_id: int, steps: int, chat_id: int, reason: str) -> None:
+    async def desktop_handoff(
+        self, task_id: int, steps: int, chat_id: int, reason: str, host: str | None = None,
+    ) -> None:
         app = self.app
         if chat_id != app.owner_id:
             return
@@ -572,7 +574,9 @@ class Dispatcher:
             buttons.append(InlineKeyboardButton(text="Open Desktop", url=f"{base}/desktop"))
         buttons.append(InlineKeyboardButton(text="Done", callback_data=f"desktop:done:{task_id}:{steps}"))
         await app.bot.send_message(
-            chat_id, f"Dom needs you to log in: {reason}" + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
+            chat_id,
+            f"Dom needs you to log in{f' on {host}' if host else ''}: {reason}\nLogins you make here are kept for later tasks."
+            + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
         )
 

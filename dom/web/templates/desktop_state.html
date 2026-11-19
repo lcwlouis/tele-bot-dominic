@@ -8,7 +8,8 @@
     <p class="fog">{{ context.task.brief }}</p>
     {% if context.task.status == "waiting_owner" %}
     <div class="desktop-handoff">
-      <p>Dom needs you to log in: {{ context.task.error }}</p>
+      <p>Dom needs you to log in{% if context.handoff_host %} on {{ context.handoff_host }}{% endif %}: {{ context.task.error }}</p>
+      <p class="fog">Logins you make here are kept for later tasks.</p>
       <button class="primary" hx-post="/desktop/tasks/{{ context.task.id }}/{{ context.task.steps }}/done"
         hx-target="#desktop-state" hx-swap="outerHTML" hx-sync="#desktop-state:replace">Done</button>
     </div>

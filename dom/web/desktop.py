@@ -30,6 +30,7 @@ async def _context(app, message: str = "") -> dict:
     return {
         "status": status,
         "task": tasks[0] if tasks else None,
+        "handoff_host": app.desktop_worker.handoff_host if app.desktop_worker is not None else None,
         "local": isinstance(sandbox, LocalSandbox),
         "message": message,
         "error": sandbox.error if status == "error" else None,

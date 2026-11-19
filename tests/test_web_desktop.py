@@ -157,6 +157,9 @@ async def test_dashboard_done_resumes_task_with_csrf(make_app, monkeypatch):
         page = await client.get("/desktop", headers=auth)
         assert page.status_code == 200
         assert "Dom needs you to log in: Sign in &lt;here&gt;" in page.text
+        assert "Logins you make here are kept for later tasks." in page.text
+        worker.handoff_host = "login.example.org"
+        assert "Dom needs you to log in on login.example.org: Sign in &lt;here&gt;" in (await client.get("/desktop", headers=auth)).text
         assert "/desktop/vnc/index.html" in page.text
         done = f"/desktop/tasks/{task_id}/{row['steps']}/done"
         assert (await client.post(done, headers=POST_HEADERS)).status_code == 403
