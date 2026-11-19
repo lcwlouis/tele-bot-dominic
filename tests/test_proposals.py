@@ -185,3 +185,16 @@ async def test_soul_edit_that_would_overflow_soul_when_applied_stays_pending(mak
     assert "6000" in app.bot.of("answer")[-1][2]
     assert app.home.read("SOUL.md").endswith("x" * 5990) and "curious" in app.home.read("SOUL.md")
     assert [row["id"] for row in await app.proposals.pending()] == [proposal_id]
+
+
+async def test_reflection_proposal_event_never_carries_the_model_written_reason(make_app):
+    reply = json.dumps({
+        "entry": "A quiet day.", "mood": "calm", "nudges": {},
+        "soul_edit": {"old": "curious", "new": "thoughtful", "why": "A gentler voice"},
+    })
+    app = make_app(contents=(reply,))
+    put(app.home, "SOUL.md", "A curious friend.")
+    await reflection.run(app)
+    (proposal,) = await app.proposals.pending()
+    assert [event["text"] for event in await events(app)] == [f"Dom proposed a soul edit (#{proposal['id']})"]
+    assert "A gentler voice" in app.bot.of("send", OWNER)[0][2]  # the owner still reads the reason in the DM
