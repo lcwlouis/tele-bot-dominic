@@ -216,7 +216,7 @@ async def render_chats(app: App) -> View:
             if leave:
                 buttons.append([InlineKeyboardButton(text=f"🚪 Leave {_short(title)}", callback_data=f"leave:{chat['chat_id']}")])
         if cells_list:
-            md += ["", f"### {label}", "", *_table(["Chat", "Type", "Members"], cells_list)]
+            md += ["", f"**{label}**", "", *_table(["Chat", "Type", "Members"], cells_list)]
             plain += ["", label, *lines]
     if total > shown:
         md += ["", f"…and {total - shown} more"]
