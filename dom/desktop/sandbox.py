@@ -114,6 +114,14 @@ class LocalSandbox:
             raise SandboxError("Docker is unavailable") from None
         return process.returncode, stdout
 
+    async def _discard(self) -> None:
+        """Best effort: nothing else owns the container, so stop and remove it whatever state it is in."""
+        for verb in ("stop", "rm"):
+            try:
+                await self._docker(verb, CONTAINER)
+            except SandboxError:
+                return
+
     async def _remove_container(self, running: bool) -> None:
         if running and (await self._docker("stop", CONTAINER))[0]:
             raise SandboxError("could not stop the desktop container")
@@ -138,6 +146,7 @@ class LocalSandbox:
                 raise SandboxError(self.error) from None
             except asyncio.CancelledError:
                 self._status = "stopped"
+                await asyncio.shield(self._discard())
                 raise
             self._status = "ready"
             self.touch()
@@ -251,6 +260,10 @@ class LocalSandbox:
         if self._idle_task is not None:
             self._idle_task.cancel()
             await asyncio.gather(self._idle_task, return_exceptions=True)
+        if self._status in ("ready", "starting", "error"):
+            await asyncio.shield(self._discard())
+            self.client = None
+            self._status = "stopped"
         if self._owns_http:
             await self._http.aclose()
 

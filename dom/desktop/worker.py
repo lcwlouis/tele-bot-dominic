@@ -86,6 +86,11 @@ class DesktopWorker:
         self._job = asyncio.create_task(self._run(task_id, chat_id), context=Context())
 
     async def recover(self) -> None:
+        if (stop := getattr(self.sandbox, "stop", None)) is not None:
+            try:
+                await stop()  # a container left by a previous process has no owner and no known API key
+            except SandboxError as exc:
+                log.warning("could not stop a stray desktop container (%s)", exc)
         chat_id = self.app.owner_id
         if chat_id is None:
             return

@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -8,6 +9,7 @@ from dom.config import Config, DesktopConfig, load_config
 from dom.desktop.client import SandboxClient, SandboxError
 from dom.desktop.network import LAN_PROBE as PROBE
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
+from dom.desktop.worker import DesktopWorker
 
 
 PROBES = ["192.0.2.1:443", "192.0.2.2:22"]
@@ -279,3 +281,59 @@ async def test_firewall_is_probed_once_per_process_and_again_after_a_failure(tmp
         await sandbox.ensure_running()
         assert len(docker.probes()) == 2
         await sandbox.close()
+
+
+def stop_and_remove(docker):
+    return docker.calls[-2:] == [("docker", "stop", "dom-desktop"), ("docker", "rm", "dom-desktop")]
+
+
+async def test_close_stops_and_removes_the_container(tmp_path):
+    docker = FakeDocker()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"success": True, "data": None}),
+    )) as http:
+        sandbox = LocalSandbox(local_config(tmp_path), run=docker, http=http)
+        await sandbox.ensure_running()
+        await sandbox.close()
+    assert stop_and_remove(docker)
+    assert sandbox.status() == "stopped" and sandbox.client is None
+
+
+async def test_close_is_quiet_when_nothing_was_started(tmp_path):
+    docker = FakeDocker()
+    sandbox = LocalSandbox(local_config(tmp_path), run=docker)
+    await sandbox.close()
+    assert docker.calls == []
+
+
+async def test_cancelled_start_removes_the_container(tmp_path):
+    docker = FakeDocker()
+    waiting = asyncio.Event()
+
+    async def never(request):
+        waiting.set()
+        await asyncio.Future()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(never)) as http:
+        sandbox = LocalSandbox(local_config(tmp_path), run=docker, http=http)
+        start = asyncio.create_task(sandbox.ensure_running())
+        await asyncio.wait_for(waiting.wait(), 2)
+        assert len(docker.started()) == 1
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+        assert stop_and_remove(docker)
+        assert sandbox.status() == "stopped"
+        await sandbox.close()
+
+
+async def test_recover_stops_a_stray_container(make_app, tmp_path):
+    app = make_app()
+    docker = FakeDocker()
+    docker.running = True
+    app.sandbox = LocalSandbox(local_config(tmp_path), run=docker)
+    worker = DesktopWorker(app, app.sandbox)
+    await worker.recover()
+    assert stop_and_remove(docker)
+    assert app.sandbox.status() == "stopped"
+    await app.sandbox.close()
