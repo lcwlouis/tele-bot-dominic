@@ -2,8 +2,8 @@
   "success": true,
   "message": "Operation successful",
   "data": [
-    {"id": "PAGE-1", "title": "Sign in", "url": "https://login.example.org/session?token=SECRET#fragment", "type": "page"},
-    {"id": "WORKER-1", "title": "", "url": "https://cdn.example.org/worker.js", "type": "service_worker"},
-    {"id": "PAGE-2", "title": "Older tab", "url": "https://other.example.org/", "type": "page"}
-  ]
+    {"index": 0, "url": "https://other.example.org/", "title": "Older tab", "is_active": false},
+    {"index": 1, "url": "https://login.example.org/session?token=SECRET#fragment", "title": "Sign in", "is_active": true}
+  ],
+  "hint": null
 }
