@@ -12,7 +12,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-_ARCHIVE_NAME = re.compile(r"dom-[0-9]{8}-[0-9]{6}\.tar\.gz")
+ARCHIVE_NAME = re.compile(r"dom-[0-9]{8}-[0-9]{6}\.tar\.gz")
 
 
 def _home_files(tar: tarfile.TarFile, home: Path, folder: Path, destination: Path, work: Path) -> None:
@@ -20,7 +20,7 @@ def _home_files(tar: tarfile.TarFile, home: Path, folder: Path, destination: Pat
         name = path.name
         if name.startswith("state.db") or name == ".claim" or ".bak" in name or path == work:
             continue
-        if folder == destination and _ARCHIVE_NAME.fullmatch(name):
+        if folder == destination and ARCHIVE_NAME.fullmatch(name):
             continue
         arcname = path.relative_to(home).as_posix()
         try:
@@ -92,7 +92,7 @@ def backup(home: Path, *, keep: int = 7, destination: Path | None = None) -> Pat
 
     others = sorted(
         (path for path in destination.iterdir()
-         if path != archive and _ARCHIVE_NAME.fullmatch(path.name) and not path.is_symlink() and path.is_file()),
+         if path != archive and ARCHIVE_NAME.fullmatch(path.name) and not path.is_symlink() and path.is_file()),
         reverse=True,
     )
     for old in others[keep - 1:]:
