@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
+from typing import AsyncContextManager
 
 from dom.llm import ChatClient
+from dom.usage import ModelCallSkipped
 
 log = logging.getLogger("dom.media")
 # Per-kind download limits in bytes; the Pi that runs Dom has 4 GB of memory.
@@ -47,14 +49,14 @@ class MediaDescriber:
         self._one_at_a_time = asyncio.Semaphore(1)  # one file in memory at once, across all chats
 
     async def describe(
-        self, media: dict, *, authorize: Callable[[], Awaitable[bool]] | None = None,
+        self, media: dict, *, request: AsyncContextManager[None] | None = None,
     ) -> str | None:
         kind = media.get("kind")
         async with self._one_at_a_time:
-            return await self._describe(kind, media, authorize)
+            return await self._describe(kind, media, request or nullcontext())
 
     async def _describe(
-        self, kind: str | None, media: dict, authorize: Callable[[], Awaitable[bool]] | None,
+        self, kind: str | None, media: dict, request: AsyncContextManager[None],
     ) -> str | None:
         try:
             part_type = _PART_TYPES.get(kind)
@@ -78,8 +80,6 @@ class MediaDescriber:
                 return None
             if not data:
                 raise ValueError("empty attachment")
-            if authorize is not None and not await authorize():
-                return None
 
             encoded = base64.b64encode(data).decode("ascii")
             if part_type == "input_audio":
@@ -91,11 +91,14 @@ class MediaDescriber:
                 {"type": "text", "text": PROMPT},
                 {"type": part_type, part_type: part},
             ]}]
-            result = await self.client.complete(messages, [])
+            async with request:
+                result = await self.client.complete(messages, [])
             description = result.get("content")
             if not isinstance(description, str) or not description.strip():
                 raise ValueError("no description returned")
             return description.strip()
+        except ModelCallSkipped:
+            return None
         except Exception as exc:
             log.warning("media description failed for %s (%s)", kind, type(exc).__name__)
             return None

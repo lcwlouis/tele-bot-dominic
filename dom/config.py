@@ -9,7 +9,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelEndpoint(BaseModel):
@@ -29,6 +29,7 @@ class Config(BaseModel):
     models: dict[str, ModelEndpoint] = {}
     desktop_mode: Literal["local", "remote", "off"] = "off"
     window_size: int = 80
+    daily_spend_cap_usd: float = Field(default=1.0, ge=0, allow_inf_nan=False)
 
     def secret(self, name: str) -> str | None:
         """Read a secret from ``home/.env`` first, then the process environment."""
@@ -61,6 +62,7 @@ def load_config(home: Path) -> Config:
         models=models,
         desktop_mode=raw.get("desktop", {}).get("mode", "off"),
         window_size=raw.get("window_size", 80),
+        daily_spend_cap_usd=raw.get("daily_spend_cap_usd", 1.0),
     )
 
 

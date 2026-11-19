@@ -6,9 +6,11 @@ import asyncio
 import logging
 import re
 from collections import deque
+from contextlib import asynccontextmanager, nullcontext
+from functools import partial
 from datetime import datetime, timedelta
-from collections.abc import Coroutine
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from collections.abc import AsyncIterator, Coroutine
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
@@ -23,6 +25,7 @@ from dom.prompt import build_messages
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, core_tools
 from dom.triage import persona_card, triage_offline, triage_online
+from dom.usage import ModelCallSkipped, Usage, check_model_allowed, model_request
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -53,6 +56,7 @@ class Dispatcher:
     ):
         self.app, self.presence, self.jev = app, presence, jev
         self.sleep, self.now = sleep, now
+        self.usage = Usage(app.store, now)
         self._debounces: dict[int, asyncio.Task] = {}
         self._first_notify: dict[int, datetime] = {}
         self._latest: dict[int, IncomingMessage] = {}
@@ -127,18 +131,24 @@ class Dispatcher:
             del self._media_tasks[chat_id]
 
     async def _describe_media(self, msg: IncomingMessage) -> None:
-        async def authorize() -> bool:
-            async with self.app.locks[msg.chat_id]:
-                return await self._approved(msg.chat_id)
+        await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
 
-        await self._describe(msg.chat_id, msg.msg_id, msg.media, authorize)
+    @asynccontextmanager
+    async def _media_request(self, chat_id: int, *, lock_held: bool = False) -> AsyncIterator[None]:
+        # Downloads stay outside the turn lock. The model call itself runs under it.
+        with model_request("media", chat_id, partial(self.model_allowed, chat_id)):
+            async with (nullcontext() if lock_held else self.app.locks[chat_id]):
+                await check_model_allowed()
+                yield
 
-    async def _describe(self, chat_id: int, msg_id: int, media: dict, authorize: Callable[[], Awaitable[bool]]) -> None:
+    async def _describe(
+        self, chat_id: int, msg_id: int, media: dict, request: AsyncContextManager[None],
+    ) -> None:
         describer = self.app.media_describer
         if describer is None or not self._media_budget(chat_id):
             return
         try:
-            description = await describer.describe(media, authorize=authorize)
+            description = await describer.describe(media, request=request)
             await self.app.store.set_media_description(chat_id, msg_id, description)
         except Exception:
             log.exception("could not record media description in chat %s", chat_id)
@@ -158,12 +168,9 @@ class Dispatcher:
         """Describe what arrived while Dom was away. The turn lock is already held, so approval is
         checked directly; the wait is bounded because an arrival-time description may hold the
         describer while it waits for that same lock."""
-        async def authorize() -> bool:
-            return await self._approved(chat_id)
-
         async def describe_all() -> None:
             for msg_id, media in await self.app.store.get_unread_media_to_describe(chat_id, CATCH_UP_MEDIA):
-                await self._describe(chat_id, msg_id, media, authorize)
+                await self._describe(chat_id, msg_id, media, self._media_request(chat_id, lock_held=True))
 
         try:
             await asyncio.wait_for(describe_all(), MEDIA_WAIT_SECONDS)
@@ -244,6 +251,11 @@ class Dispatcher:
     async def _approved(self, chat_id: int) -> bool:
         return await gate.decide_chat(self.app.store, chat_id, self.app.owner_id) == "process"
 
+    async def model_allowed(self, chat_id: int) -> bool:
+        if not await self._approved(chat_id):
+            return False
+        return chat_id == self.app.owner_id or not await self.usage.over_cap(self.app.config, self.app.bot)
+
     async def override(self, chat_id: int, command: str) -> bool:
         """The owner's /wake or /sleep. False if the chat is unknown or not approved; that lookup never
         creates a chat row."""
@@ -274,7 +286,10 @@ class Dispatcher:
     async def _guarded_dispatch(self, chat_id: int, habits: Habits, **kwargs: bool) -> None:
         """Run a dispatch; a chat whose turns keep failing is given up on instead of retried forever."""
         try:
-            await self._dispatch(chat_id, habits, **kwargs)
+            with model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
+                await self._dispatch(chat_id, habits, **kwargs)
+        except ModelCallSkipped:
+            return
         except Exception as exc:
             log.exception("turn failed in chat %s", chat_id)
             gone = isinstance(exc, TelegramForbiddenError) or (
@@ -344,8 +359,7 @@ class Dispatcher:
         chat_type = live.chat_type if live else ("group" if chat_id < 0 else "private")
         scope = store.scope_for(chat_id, chat_type)
         window = await self._window(chat_id, newest)
-        if not await self._approved(chat_id):
-            return
+        await check_model_allowed()
 
         if state == "offline":
             wake = background or count >= habits.wake_after_messages
@@ -373,16 +387,19 @@ class Dispatcher:
                     await store.mark_chat_read(chat_id, newest.msg_id)
                     return
 
-        if until is None or not await self._approved(chat_id):
+        if until is None:
             return
-        if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
-            return
+        await check_model_allowed()
         if catch_up:
             await self._describe_unread_media(chat_id)
             window = await self._window(chat_id, newest)
-        await self._run_turn(
-            chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
-        )
+            await check_model_allowed()
+        if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
+            return
+        with model_request("chat", chat_id, partial(self.model_allowed, chat_id)):
+            await self._run_turn(
+                chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
+            )
         await store.mark_chat_read(chat_id, newest.msg_id)
         # Notes only need to catch what is about to leave Dom's view; the session-end pass covers the rest.
         if await store.count_new_for_memory(chat_id) >= max(1, self.app.config.window_size - MEMORY_PASS_MARGIN):
@@ -428,6 +445,8 @@ class Dispatcher:
         )
         try:
             actions = await run_turn(app.client, messages, core_tools(), ctx)
+        except ModelCallSkipped:
+            raise
         except Exception:
             if not final_bot_turn:
                 raise

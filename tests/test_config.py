@@ -86,3 +86,10 @@ def test_failed_save_keeps_claim_code_and_config(tmp_path):
     assert try_claim(tmp_path, config, 111, "private", code) is False
     assert (tmp_path / ".claim").exists()
     assert (tmp_path / "config.toml").read_text() == bad
+
+
+def test_daily_spend_cap_default_and_override(tmp_path):
+    write(tmp_path, MINIMAL)
+    assert load_config(tmp_path).daily_spend_cap_usd == 1.0
+    write(tmp_path, "daily_spend_cap_usd = 0\n" + MINIMAL)
+    assert load_config(tmp_path).daily_spend_cap_usd == 0

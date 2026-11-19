@@ -39,6 +39,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (4, "0003_chat_auth_and_outbox.sql"),
     (5, "0004_dom_core.sql"),
     (6, "0005_memory_cursor.sql"),
+    (7, "0006_usage.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -849,6 +850,34 @@ class Store:
         return [_row_to_message(r) for r in reversed(rows)]
 
     format_chat_window_xml = staticmethod(format_chat_window_xml)
+
+    # ---- usage ------------------------------------------------------------
+
+    async def record_usage(
+        self, at: str, kind: str, model: str, host: str, chat_id: int | None,
+        input_tokens: int, output_tokens: int, cost_usd: float, fallback: int,
+    ) -> None:
+        await self._run(
+            self._conn.execute,
+            "INSERT INTO usage (at, kind, model, endpoint_host, chat_id, input_tokens, output_tokens, cost_usd, fallback) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (at, kind, model, host, chat_id, input_tokens, output_tokens, cost_usd, fallback),
+        )
+
+    async def usage_totals(self, start: str, end: str) -> tuple[int, float]:
+        return await self._run(self._usage_totals, start, end)
+
+    def _usage_totals(self, start: str, end: str) -> tuple[int, float]:
+        count, cost = self._conn.execute(
+            "SELECT COUNT(*), TOTAL(cost_usd) FROM usage WHERE at >= ? AND at < ?", (start, end),
+        ).fetchone()
+        return count, cost
+
+    async def claim_spend_cap_notice(self, day: str) -> bool:
+        return await self._run(self._claim_spend_cap_notice, day)
+
+    def _claim_spend_cap_notice(self, day: str) -> bool:
+        return self._conn.execute("INSERT OR IGNORE INTO spend_cap_notices VALUES (?)", (day,)).rowcount == 1
 
     # ---- memory pass --------------------------------------------------------
 

@@ -150,6 +150,14 @@ async def render_status(app: App) -> View:
         pending, *(models[name].model if name in models else "n/a" for name in ("chat", "triage"))
     )
 
+    count, spent = await app.dispatch.usage.today(tz)
+    model = getattr(app.client, "last_model", None)
+    fallback_at = getattr(app.client, "last_fallback_at", None)
+    fallback = ""
+    if fallback_at is not None and fallback_at.astimezone(tz).date() == app.dispatch.now().astimezone(tz).date():
+        fallback = f" (fallback at {fallback_at.astimezone(tz):%H:%M})"
+    footer += f"\nToday: {count} calls · ${spent:.2f}\nLast reply: {model or '—'}{fallback}"
+
     table, plain, buttons, used, button_count = [], [], [], len(footer) * 2 + 160, 0  # room for the footer, heading, table head and "more" line
     for chat, (state, until) in zip(chats, states):
         unread, _ = await app.store.get_unread(chat["chat_id"])
