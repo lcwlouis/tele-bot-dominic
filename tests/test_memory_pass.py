@@ -433,10 +433,11 @@ async def test_a_pass_runs_when_the_owner_sends_dom_to_sleep(make_app, tmp_path)
     assert files(tmp_path, "memory/MEMORY.md") == "- fact"
 
 
-async def test_ten_new_messages_trigger_a_pass_after_the_turn(make_app, tmp_path):
+async def test_messages_about_to_leave_the_window_trigger_a_pass(make_app, tmp_path):
+    # window_size 35 - margin 5 = 30 unprocessed messages
     app = make_app(contents=(FINAL, ops(add("MEMORY.md", "fact"))))
     await approve(app, GROUP)
-    for msg_id in range(1, 11):
+    for msg_id in range(1, 31):
         await put(app, GROUP, msg_id, f"message {msg_id}")
     await app.dispatch.presence.wake(GROUP, parse_habits(""))
     await app.dispatch.tick()
@@ -449,7 +450,7 @@ async def test_ten_new_messages_trigger_a_pass_after_the_turn(make_app, tmp_path
 async def test_fewer_messages_do_not_trigger_a_pass(make_app):
     app = make_app(contents=(FINAL,))
     await approve(app, GROUP)
-    for msg_id in range(1, 8):  # 7 + Dom's one reply is still under ten
+    for msg_id in range(1, 8):  # 7 + Dom's one reply is far under the threshold
         await put(app, GROUP, msg_id, f"message {msg_id}")
     await app.dispatch.presence.wake(GROUP, parse_habits(""))
     await app.dispatch.tick()
@@ -457,7 +458,7 @@ async def test_fewer_messages_do_not_trigger_a_pass(make_app):
     assert len(app.script.requests) == 1
 
 
-async def test_events_do_not_count_toward_the_ten(make_app):
+async def test_events_do_not_count_toward_the_threshold(make_app):
     app = make_app(contents=(FINAL,))
     for msg_id in range(1, 4):
         await put(app, OWNER, msg_id, f"message {msg_id}", sender=OWNER)
