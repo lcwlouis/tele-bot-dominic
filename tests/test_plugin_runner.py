@@ -26,7 +26,7 @@ def test_exact_arguments(monkeypatch, network):
     monkeypatch.setattr(sys, "base_prefix", str(prefix))
     monkeypatch.setattr(Path, "exists", lambda path: True)
     manifest = Manifest.parse(MANIFEST.replace('version = "1"', f'version = "1"\nnetwork = {str(network).lower()}'))
-    command = PluginRunner().arguments(Path("/sample/convert"), manifest, filter_fd=3, network=network)
+    command = PluginRunner(home=Path("/srv/dom-home")).arguments(Path("/sample/convert"), manifest, filter_fd=3, network=network)
     expected = ["/usr/bin/bwrap", "--unshare-all", "--unshare-user"]
     if network:
         expected += ["--share-net"]
@@ -103,7 +103,7 @@ def test_unavailable(monkeypatch, tmp_path, platform, exists):
     instance = PluginRunner(home=tmp_path)
     assert instance.self_test() is False
     with pytest.raises(PluginsUnavailable):
-        instance.run(tmp_path / "convert", "length", {}, Manifest.parse(MANIFEST))
+        instance.run(tmp_path / "convert", "length", {}, Manifest.parse(MANIFEST), approved_hash="0" * 64)
 
 
 def test_failed_self_test_is_cached(monkeypatch, tmp_path):
@@ -140,14 +140,18 @@ def test_run_only_passes_requested_arguments_and_revalidates_pin(monkeypatch, tm
         instance.run(folder, "length", {}, plugin.manifest, approved_hash=plugin.hash)
 
 
-def test_network_requires_a_matching_approval(monkeypatch, tmp_path):
+def test_the_approved_hash_and_home_are_required(monkeypatch, tmp_path):
     folder = write_plugin(tmp_path, MANIFEST.replace('version = "1"', 'version = "1"\nnetwork = true'))
     plugin = read_plugin(folder)
     monkeypatch.setattr(PluginRunner, "self_test", lambda self: True)
     monkeypatch.setattr(PluginRunner, "_execute_locked", lambda self, snapshot, request, net: str(net))
     instance = PluginRunner(home=tmp_path)
-    with pytest.raises(PluginError, match="requires approval"):
+    with pytest.raises(TypeError):
         instance.run(folder, "length", {}, plugin.manifest)
+    with pytest.raises(TypeError):
+        PluginRunner()
+    with pytest.raises(PluginError, match="changed"):
+        instance.run(folder, "length", {}, plugin.manifest, approved_hash="0" * 64)
     assert instance.run(folder, "length", {}, plugin.manifest, approved_hash=plugin.hash) == "True"
 
 

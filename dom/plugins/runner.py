@@ -151,9 +151,9 @@ def _seccomp(network: bool, machine: str | None = None) -> bytes:
 
 
 class PluginRunner:
-    def __init__(self, bwrap: str = "/usr/bin/bwrap", *, home: Path | None = None):
+    def __init__(self, bwrap: str = "/usr/bin/bwrap", *, home: Path):
         self.bwrap = Path(bwrap)
-        self.home = home.resolve() if home is not None else None
+        self.home = home.resolve()
 
     def arguments(self, folder: Path, manifest: Manifest, *, filter_fd: int, network: bool = False) -> list[str]:
         executable = Path(sys.executable).resolve()
@@ -172,9 +172,7 @@ class PluginRunner:
             mounts.append(prefix)
         for mount in mounts:
             real = mount.resolve()
-            if real == Path("/") or (self.home is not None and (
-                self.home.is_relative_to(real) or real.is_relative_to(self.home)
-            )):
+            if real == Path("/") or self.home.is_relative_to(real) or real.is_relative_to(self.home):
                 raise PluginsUnavailable("A sandbox runtime path overlaps Dom's home.")
         # bwrap 0.12 needs an explicit user namespace for --disable-userns (--unshare-all only tries one).
         cmd = [str(self.bwrap), "--unshare-all", "--unshare-user"]
@@ -229,12 +227,10 @@ class PluginRunner:
                 "    return 'socket available'\n"
                 "run()\n"
             )
-            payload = json.dumps({"tool": "probe", "args": {"path": str(sentinel), "home": str(self.home or "")}})
+            payload = json.dumps({"tool": "probe", "args": {"path": str(sentinel), "home": str(self.home)}})
             return self._execute(read_plugin(folder), (payload + "\n").encode(), False) == "isolated"
 
-    def run(
-        self, plugin_dir: Path, tool: str, args: dict, manifest: Manifest, *, approved_hash: str | None = None,
-    ) -> str:
+    def run(self, plugin_dir: Path, tool: str, args: dict, manifest: Manifest, *, approved_hash: str) -> str:
         if not self.self_test():
             raise PluginsUnavailable("Plugins are unavailable because the sandbox could not be verified.")
         if not _PROCESS.acquire(blocking=False):
@@ -242,10 +238,8 @@ class PluginRunner:
         try:
             try:
                 snapshot = read_plugin(plugin_dir)
-                if snapshot.manifest != manifest or (approved_hash is not None and snapshot.hash != approved_hash):
+                if snapshot.manifest != manifest or snapshot.hash != approved_hash:
                     raise PluginError("Plugin changed since approval.")
-                if manifest.network and approved_hash is None:
-                    raise PluginError("Network access requires approval of this plugin version.")
                 request = json.dumps({"tool": tool, "args": args}, allow_nan=False) + "\n"
                 return self._execute_locked(snapshot, request.encode("utf-8"), manifest.network)
             except OSError:
