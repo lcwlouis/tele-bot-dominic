@@ -12,6 +12,7 @@ from tghelpers import FINAL, FRIEND, GROUP, OWNER, drain_dispatch
 import dom.dispatch as dispatch_module
 from dom.memory_pass import SYSTEM_PROMPT, MemoryPass
 from dom.models import StoredMessage
+from dom.prompt import build_messages
 from dom.presence import parse_habits
 
 OTHER = -3003
@@ -89,6 +90,57 @@ async def test_request_is_one_system_message_the_current_notes_and_only_the_new_
         assert expected in content
     assert "already handled" not in content and "NOT-A-PARTICIPANT" not in content and "sleep: 23" not in content
     assert "tools" not in request
+
+
+async def test_friend_dm_pass_cannot_write_shared_memory_or_people(make_app, tmp_path):
+    app = make_app(contents=(ops(
+        add("MEMORY.md", "DM-only fact"),
+        add(f"people/{FRIEND}.md", "DM-only fact"),
+        add(f"chats/{GROUP}.md", "DM-only fact"),
+        add(f"chats/{FRIEND}.md", "DM-only fact"),
+    ),))
+    await approve(app, FRIEND)
+    await put(app, FRIEND, 1, "DM-only fact")
+
+    assert await MemoryPass(app).run(FRIEND) is True
+
+    assert files(tmp_path, "memory/MEMORY.md") is None
+    assert files(tmp_path, f"memory/people/{FRIEND}.md") is None
+    assert files(tmp_path, f"memory/chats/{GROUP}.md") is None
+    assert files(tmp_path, f"memory/chats/{FRIEND}.md") == "- DM-only fact"
+
+
+async def test_friend_dm_pass_request_contains_only_its_chat_notes(make_app, tmp_path):
+    app = make_app(contents=(ops(),))
+    await approve(app, FRIEND)
+    files(tmp_path, "memory/MEMORY.md", "Shared fact")
+    files(tmp_path, f"memory/people/{FRIEND}.md", "Person fact")
+    files(tmp_path, f"memory/chats/{FRIEND}.md", "Own DM note")
+    await put(app, FRIEND, 1, "New DM message")
+
+    assert await MemoryPass(app).run(FRIEND) is True
+
+    content = user_content(app)
+    assert content.count('<file name="') == 1
+    assert f'name="chats/{FRIEND}.md"' in content
+    assert "Own DM note" in content and "New DM message" in content
+    assert "Shared fact" not in content and "Person fact" not in content
+
+
+async def test_friend_dm_notes_not_loaded_in_group_prompt(make_app):
+    app = make_app(contents=(ops(
+        add("MEMORY.md", "DM-only fact"),
+        add(f"people/{FRIEND}.md", "DM-only fact"),
+        add(f"chats/{FRIEND}.md", "DM-only fact"),
+    ),))
+    await approve(app, FRIEND)
+    await put(app, FRIEND, 1, "DM-only fact")
+    assert await MemoryPass(app).run(FRIEND) is True
+
+    group_prompt = build_messages(app.home, "group", GROUP, [FRIEND], "<chat_window/>", "")
+    dm_prompt = build_messages(app.home, "friend_dm", FRIEND, [FRIEND], "<chat_window/>", "")
+    assert "DM-only fact" not in json.dumps(group_prompt)
+    assert "DM-only fact" in json.dumps(dm_prompt)
 
 
 def test_the_system_instruction_is_exact():
