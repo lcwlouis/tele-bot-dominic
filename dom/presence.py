@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -24,12 +25,17 @@ class Habits:
     kapoh_wake: float
 
 
-def _range(value: str, default: tuple[int, int]) -> tuple[int, int]:
+def _clamp(value, low, high):
+    return min(max(value, low), high)
+
+
+def _range(value: str, default: tuple[int, int], low: int, high: int) -> tuple[int, int]:
+    """`lo-hi` with both ends clamped into [low, high]; anything malformed or out of order is `default`."""
     match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", value)
     if match:
         lo, hi = map(int, match.groups())
-        if 0 < lo <= hi:
-            return lo, hi
+        if lo <= hi:
+            return _clamp(lo, low, high), _clamp(hi, low, high)
     return default
 
 
@@ -38,7 +44,7 @@ def parse_habits(text: str) -> Habits:
     for line in text.splitlines():
         key, sep, value = line.partition(":")
         if sep:
-            values[key.strip()] = value.split("#", 1)[0].strip().strip("\"'")
+            values[key.strip().lstrip("-*").strip()] = value.split("#", 1)[0].strip().strip("\"'")
 
     start, end = time(23, 59), time(7, 30)
     sleep = re.fullmatch(r"(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})", values.get("sleep", ""))
@@ -62,10 +68,10 @@ def parse_habits(text: str) -> Habits:
         kapoh = 2.0
     return Habits(
         start, end,
-        _range(values.get("online_minutes", ""), (5, 25)),
-        _range(values.get("offline_minutes", ""), (15, 90)),
-        wake_after if wake_after > 0 else 5,
-        kapoh if 0 <= kapoh <= 3 else 2.0,
+        _range(values.get("online_minutes", ""), (5, 25), 1, 120),
+        _range(values.get("offline_minutes", ""), (15, 90), 5, 600),
+        _clamp(wake_after, 3, 50),
+        _clamp(kapoh, 1.0, 3.0) if math.isfinite(kapoh) else 2.0,
     )
 
 
