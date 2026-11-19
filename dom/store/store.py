@@ -868,6 +868,50 @@ class Store:
 
     format_chat_window_xml = staticmethod(format_chat_window_xml)
 
+    async def reflection_messages(self, start: datetime, end: datetime, *, private: bool) -> str:
+        return await self._run(self._reflection_messages, start.isoformat(), end.isoformat(), private)
+
+    def _reflection_messages(self, start: str, end: str, private: bool) -> str:
+        owner = str(self.owner_id)
+        bounds = (
+            "m.is_deleted = 0 AND julianday(m.created_at) >= julianday(?) AND julianday(m.created_at) <= julianday(?)"
+        )
+        if private:
+            if self.owner_id is None or self._conn.execute(
+                f"SELECT 1 FROM messages m WHERE {bounds} AND m.chat_id = ? "
+                "AND m.role IN ('user', 'assistant') LIMIT 1",
+                (start, end, owner),
+            ).fetchone() is None:
+                return ""
+            scope = "m.chat_id = ? AND m.role IN ('user', 'assistant', 'event')"
+        else:
+            scope = (
+                "m.chat_id != ? AND c.authorization_status = 'approved' AND m.role IN ('user', 'assistant') "
+                f"AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+            )
+        rows = self._conn.execute(
+            "SELECT m.role, m.text, COALESCE(NULLIF(c.title, ''), m.chat_id) "
+            f"FROM messages m JOIN chats c ON c.chat_id = m.chat_id WHERE {bounds} AND {scope} "
+            "ORDER BY julianday(m.created_at) DESC, m.id DESC",
+            (start, end, owner),
+        )
+        parts = []
+        remaining = 12000
+        for role, text, title in rows:
+            header = f"<message chat={quoteattr(title[:256])} role={quoteattr(role)}>"
+            footer = "</message>"
+            if not private:
+                room = remaining - len(header) - len(footer)
+                if room <= 0:
+                    break
+                body = escape(text[:room])[:room]
+                body = re.sub(r"&[^;]*$", "", body)  # keep any final XML entity whole
+                parts.append(header + body + footer)
+                remaining -= len(parts[-1]) + 1  # newline between messages
+            else:
+                parts.append(header + escape(text) + footer)
+        return "\n".join(parts)
+
     async def hourly_message_counts(
         self, days: int = 14, tz: tzinfo = timezone.utc, *, now: datetime | None = None,
     ) -> list[int]:
@@ -900,12 +944,19 @@ class Store:
         return row[0] if row is not None else None
 
     async def kv_set(self, key: str, value: str) -> None:
-        await self._run(
-            self._conn.execute,
-            "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            (key, value, _now()),
-        )
+        await self.kv_set_many({key: value})
+
+    async def kv_set_many(self, values: dict[str, str]) -> None:
+        await self._run(self._kv_set_many, values)
+
+    def _kv_set_many(self, values: dict[str, str]) -> None:
+        with self._tx() as conn:
+            now = _now()
+            conn.executemany(
+                "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                [(key, value, now) for key, value in values.items()],
+            )
 
     # ---- usage ------------------------------------------------------------
 
