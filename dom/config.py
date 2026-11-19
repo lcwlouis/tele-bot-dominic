@@ -16,50 +16,48 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class ModelEndpoint(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    base_url: str
-    model: str
-    api_key_env: str | None = None
+    base_url: str = Field(description="Provider API base URL, including its API version path.")
+    model: str = Field(description="Provider model ID.")
+    api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for a compatible endpoint without authentication.")
 
 
 class OpenersConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    enabled: bool = True
-    max_per_day: int = Field(default=2, ge=0)
+    enabled: bool = Field(True, description="Allow Dom to start conversations in the owner's DM.")
+    max_per_day: int = Field(2, ge=0, description="Maximum number of openers per day in the configured timezone.")
 
 
 class WebConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    enabled: bool = False
-    bind: str = "127.0.0.1"
-    port: int = Field(default=8080, ge=1, le=65535)
-    access_team: str = ""
-    access_aud: str = ""
-    access_emails: list[str] = []
-    dev_token_env: str = ""
-    public_url: str = ""
+    enabled: bool = Field(False, description="Serve the owner dashboard inside the bot process.")
+    bind: str = Field("127.0.0.1", description="Dashboard listener address. Use loopback with a development token.")
+    port: int = Field(8080, ge=1, le=65535, description="Dashboard listener TCP port.")
+    access_team: str = Field("", description="Bare Cloudflare Access team name.")
+    access_aud: str = Field("", description="Cloudflare Access application audience tag.")
+    access_emails: list[str] = Field([], description="Optional allowlist for the Access assertion's email claim.")
+    dev_token_env: str = Field("", description="Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings.")
+    public_url: str = Field("", description="HTTPS dashboard base URL for links in desktop handoff messages.")
 
 
 class DesktopConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    image: str = "ghcr.io/agent-infra/sandbox:latest"
-    url: str = ""
-    api_key_env: str = "SANDBOX_API_KEY"
-    idle_minutes: float = Field(default=10, gt=0, allow_inf_nan=False)
-    profile_dir: str = ""
-    network: str = "dom-desktop"
-    subnet: str = "172.30.0.0/24"
-    port: int = Field(default=18080, ge=1, le=65535)
-    task_cost_cap_usd: float = Field(default=0.5, ge=0, allow_inf_nan=False)  # 0 turns the per-task ceiling off
-    # LAN "ipv4:port" targets the sandbox must not reach. Dom probes them before every sandbox start.
-    lan_probes: list[str] = []
-    probe_image: str = "alpine:3.22"  # must already be on the host: probes never pull
-    probe_control: str = "1.1.1.1:443"  # a public "ipv4:port" the probe container must reach, or the probe proves nothing
-    remote_isolation_confirmed: bool = False  # remote mode: the operator asserts the remote host blocks its LAN
-    # Prices a call whose provider reported no cost, for the per-task ceiling only. Keep it conservative (high).
-    fallback_usd_per_1k_tokens: float = Field(default=0.002, ge=0, allow_inf_nan=False)
+    image: str = Field("ghcr.io/agent-infra/sandbox:latest", description="Pre-pulled local sandbox image.")
+    url: str = Field("", description="Sandbox API base URL in remote mode.")
+    api_key_env: str = Field("SANDBOX_API_KEY", description="Secret variable for the remote sandbox API key. Local mode generates a key.")
+    idle_minutes: float = Field(10, gt=0, allow_inf_nan=False, description="Idle minutes before the local desktop stops.")
+    profile_dir: str = Field("", description="Local browser profile outside the instance home. Empty uses the sibling desktop-profile directory.")
+    network: str = Field("dom-desktop", description="Docker bridge name for local isolation.")
+    subnet: str = Field("172.30.0.0/24", description="IPv4 CIDR of the desktop bridge. Choose a subnet separate from your LAN and other bridges.")
+    port: int = Field(18080, ge=1, le=65535, description="Loopback host port for the local sandbox API.")
+    task_cost_cap_usd: float = Field(0.5, ge=0, allow_inf_nan=False, description="Per-desktop-task USD limit. Zero disables this limit.")
+    lan_probes: list[str] = Field([], description="LAN IPv4:port targets local mode must prove it cannot reach. Required in local mode.")
+    probe_image: str = Field("alpine:3.22", description="Pre-pulled image used for local isolation probes.")
+    probe_control: str = Field("1.1.1.1:443", description="Public IPv4:port target that the local isolation probe must reach.")
+    remote_isolation_confirmed: bool = Field(False, description="Set after verifying the remote desktop cannot reach your LAN or Dom host.")
+    fallback_usd_per_1k_tokens: float = Field(0.002, ge=0, allow_inf_nan=False, description="USD per 1,000 tokens when a desktop call reports no cost. Used for the task limit only.")
 
     @field_validator("lan_probes")
     @classmethod
@@ -91,18 +89,18 @@ class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     home: Path
-    owner_id: int | None = None
-    timezone: str = "Asia/Singapore"
+    owner_id: int | None = Field(None, description="Telegram user ID recorded after a successful /claim.")
+    timezone: str = Field("Asia/Singapore", description="IANA timezone for presence and daily jobs. Init writes the machine timezone or the supplied --timezone.")
     models: dict[str, ModelEndpoint] = {}
-    desktop_mode: Literal["local", "remote", "off"] = "off"
+    desktop_mode: Literal["local", "remote", "off"] = Field("off", description="Desktop mode. Use off to disable it, local for Docker, or remote for a separate sandbox host.")
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
-    window_size: int = 80
-    daily_spend_cap_usd: float = Field(default=1.0, ge=0, allow_inf_nan=False)
+    window_size: int = Field(80, description="Maximum recent messages in a chat's model window.")
+    daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap.")
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     web: WebConfig = Field(default_factory=WebConfig)
-    ephemeral_replies: bool = False
-    leak_check: bool = True
-    leak_threshold: float = Field(default=1.2, ge=0, le=3)
+    ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups when supported by Telegram.")
+    leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
+    leak_threshold: float = Field(1.2, ge=0, le=3, description="Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call.")
 
     def secret(self, name: str) -> str | None:
         """Read a secret from ``home/.env`` first, then the process environment."""
@@ -122,27 +120,24 @@ def _read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
+def starter_config() -> dict:
+    starter = resources.files("dom").joinpath("starter_home", "config.toml")
+    return tomllib.loads(starter.read_text(encoding="utf-8"))
+
+
 def load_config(home: Path) -> Config:
     raw = tomllib.loads((home / "config.toml").read_text())
-    starter = resources.files("dom").joinpath("starter_home", "config.toml")
-    defaults = tomllib.loads(starter.read_text(encoding="utf-8"))["models"]
+    defaults = starter_config()["models"]
     models = {key: defaults[key] for key in ("triage", "media")}
     models.update(raw.get("models", {}))
     if "search" in models:
         models["search"] = {**defaults["search"], **models["search"]}
-    return Config(
-        home=home,
-        owner_id=raw.get("owner_id"),
-        timezone=raw.get("timezone", "Asia/Singapore"),
-        models=models,
-        desktop_mode=raw.get("desktop", {}).get("mode", "off"),
-        desktop=raw.get("desktop", {}),
-        window_size=raw.get("window_size", 80),
-        daily_spend_cap_usd=raw.get("daily_spend_cap_usd", 1.0),
-        openers=raw.get("openers", {}),
-        web=raw.get("web", {}),
-        **{key: raw[key] for key in ("leak_check", "leak_threshold", "ephemeral_replies") if key in raw},
-    )
+    return Config.model_validate({
+        **raw,
+        "home": home,
+        "models": models,
+        "desktop_mode": raw.get("desktop", {}).get("mode", Config.model_fields["desktop_mode"].default),
+    })
 
 
 _OWNER_LINE = re.compile(r"^\s*owner_id\s*=.*$", re.MULTILINE)
