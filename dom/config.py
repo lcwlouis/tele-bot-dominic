@@ -55,6 +55,8 @@ def load_config(home: Path) -> Config:
     defaults = tomllib.loads(starter.read_text(encoding="utf-8"))["models"]
     models = {key: defaults[key] for key in ("triage", "media")}
     models.update(raw.get("models", {}))
+    if "search" in models:
+        models["search"] = {**defaults["search"], **models["search"]}
     return Config(
         home=home,
         owner_id=raw.get("owner_id"),

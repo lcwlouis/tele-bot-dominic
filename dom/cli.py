@@ -20,6 +20,7 @@ from dom.importer import import_v2
 from dom.jev import JevClient
 from dom.llm import ChatClient, FallbackClient
 from dom.media import MediaDescriber
+from dom.search import SearchClient
 from dom.store import Store
 from dom.telegram import executor, owner
 from dom.telegram.handlers import App, build_router
@@ -50,6 +51,16 @@ def chat_client(
     if "chat_fallback" in config.models:
         fallback = ChatClient(config.models["chat_fallback"], model_api_key(config, "chat_fallback"), http, usage=usage)
     return FallbackClient(primary, fallback)
+
+
+def search_client(
+    config: Config, http: httpx.AsyncClient, usage: UsageRecorder | None = None,
+) -> SearchClient | None:
+    endpoint = config.models.get("search")
+    if endpoint is None or not endpoint.api_key_env:
+        return None
+    key = config.secret(endpoint.api_key_env)
+    return SearchClient(endpoint, key, http, usage=usage) if key else None
 
 
 def cmd_init(home: Path, timezone: str | None = None) -> int:
@@ -113,6 +124,7 @@ async def run(home: Path) -> None:
             app = App(
                 config=config, home=Home(home), store=store, client=client,
                 bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id, media_describer=media_describer,
+                search_client=search_client(config, http, usage),
             )
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))

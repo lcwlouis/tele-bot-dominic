@@ -11,7 +11,7 @@ async def test_capabilities_reflect_offered_tools(make_app, monkeypatch, scope):
 
     app = make_app()
     owner_tool = Tool("example_tool", "Only here.", {}, None, {"owner_dm"})
-    monkeypatch.setattr(capabilities, "core_tools", lambda: [*core_tools(), owner_tool])
+    monkeypatch.setattr(capabilities, "core_tools", lambda search: [*core_tools(search), owner_tool])
     note = capabilities.describe(app, scope)
     assert ("example_tool" in note) == (scope == "owner_dm")
     assert all(tool.name in note for tool in core_tools() if scope in tool.scopes)

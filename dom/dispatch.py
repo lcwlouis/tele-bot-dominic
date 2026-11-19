@@ -471,9 +471,10 @@ class Dispatcher:
         )
         ctx = TurnCtx(
             scope, chat_id, newest.sender_user_id, app.home, app.store, app.owner_id, self.presence, habits,
+            model_allowed=partial(self.model_allowed, chat_id),
         )
         try:
-            actions = await run_turn(app.client, messages, core_tools(), ctx)
+            actions = await run_turn(app.client, messages, core_tools(app.search_client), ctx)
         except ModelCallSkipped:
             raise
         except Exception:

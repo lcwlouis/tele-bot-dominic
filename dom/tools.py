@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
+
+import httpx
 
 from dom.home import Home
 from dom.models import Scope
 from dom.presence import Habits, Presence
+from dom.search import SearchClient
 from dom.store import Store
+from dom.usage import ModelCallSkipped, model_request
 
 ALL_SCOPES: set[Scope] = {"owner_dm", "friend_dm", "group"}
 
@@ -25,6 +29,7 @@ class TurnCtx:
     owner_id: int | None
     presence: Presence | None = None
     habits: Habits | None = None
+    model_allowed: Callable[[], Awaitable[bool]] | None = None
 
 
 @dataclass(frozen=True)
@@ -100,5 +105,42 @@ EXTEND_ONLINE_TOOL = Tool(
 )
 
 
-def core_tools() -> list[Tool]:
-    return [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL]
+def _web_search_tool(client: SearchClient) -> Tool:
+    calls = 0
+
+    async def web_search(args: dict, ctx: TurnCtx) -> str:
+        nonlocal calls
+        if calls >= 2:
+            return "error: web_search is limited to two calls per turn"
+        calls += 1
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return "search failed: query must be non-empty text"
+        if ctx.model_allowed is None:
+            return "search unavailable right now"
+        try:
+            with model_request("search", ctx.chat_id, ctx.model_allowed):
+                return await client.search(query.strip())
+        except ModelCallSkipped:
+            return "search unavailable right now"
+        except (TimeoutError, httpx.TimeoutException):
+            return "search failed: request timed out"
+        except httpx.HTTPStatusError as exc:
+            return f"search failed: HTTP {exc.response.status_code}"
+        except Exception as exc:
+            return f"search failed: {type(exc).__name__}"
+
+    return Tool(
+        name="web_search",
+        description="Find current facts and sources on the web. Use at most twice per turn.",
+        schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        handler=web_search,
+        scopes=set(ALL_SCOPES),
+    )
+
+
+def core_tools(search: SearchClient | None = None) -> list[Tool]:
+    tools = [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL]
+    if search is not None:
+        tools.append(_web_search_tool(search))
+    return tools
