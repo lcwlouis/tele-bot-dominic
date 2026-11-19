@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from dom.actions import SendFile
 from dom.agent import _well_formed
 from dom.desktop import tools
-from dom.desktop.client import SandboxClient, SandboxError
+from dom.desktop.client import SandboxClient, SandboxError, url_host
 from dom.desktop.files import INBOX, download_results, upload_inbox
 from dom.skills import Skill, skill_view, skills_list
 
@@ -53,6 +53,7 @@ class DesktopWorker:
         self._job: asyncio.Task | None = None
         self.control = asyncio.Lock()
         self._handoff: tuple[int, int, asyncio.Event] | None = None
+        self.handoff_host: str | None = None  # the page the owner is asked to log in on
         if hasattr(sandbox, "alert"):
             sandbox.alert = self._alert_owner
 
@@ -252,6 +253,7 @@ class DesktopWorker:
                             reason = client.redact(args["reason"]).strip()[:500]
                             if not reason:
                                 raise ValueError("handoff needs a reason")
+                            host = await self._browser_host(client)
                         elif name == "propose_skill":
                             if proposed:
                                 result = "A worker may propose a skill only once per task."
@@ -267,7 +269,7 @@ class DesktopWorker:
                     else:
                         if name == "handoff":
                             before = clock()
-                            await self._wait_for_owner(task_id, chat_id, steps, reason)
+                            await self._wait_for_owner(task_id, chat_id, steps, reason, host)
                             deadline += clock() - before
                             result = "Owner confirmed the handoff is done."
                     messages.append({
@@ -299,9 +301,19 @@ class DesktopWorker:
             return await self.app.media_describer.describe_desktop(screenshot) or "No screenshot description."
         return await tools.invoke(client, name, args)
 
-    async def _wait_for_owner(self, task_id: int, chat_id: int, steps: int, reason: str) -> None:
+    @staticmethod
+    async def _browser_host(client: SandboxClient) -> str | None:
+        try:
+            async with asyncio.timeout(5):
+                return url_host(await client.current_url())
+        except Exception as exc:
+            log.warning("could not read the browser URL for a handoff (%s)", type(exc).__name__)
+            return None
+
+    async def _wait_for_owner(self, task_id: int, chat_id: int, steps: int, reason: str, host: str | None) -> None:
         done = asyncio.Event()
         self._handoff = (task_id, steps, done)
+        self.handoff_host = host
         try:
             async with asyncio.timeout(self.handoff_seconds):
                 row = await self.app.store.update_desktop_task(
@@ -309,9 +321,10 @@ class DesktopWorker:
                 )
                 if row is None:
                     raise asyncio.CancelledError
-                await self.app.dispatch.desktop_handoff(task_id, steps, chat_id, reason)
+                await self.app.dispatch.desktop_handoff(task_id, steps, chat_id, reason, host)
                 await done.wait()
         except TimeoutError:
             raise SandboxError("owner handoff timed out") from None
         finally:
             self._handoff = None
+            self.handoff_host = None

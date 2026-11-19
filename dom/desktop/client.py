@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 
 class SandboxError(RuntimeError):
     pass
+
+
+_HOST = re.compile(r"[a-z0-9.:-]{1,253}")
+
+
+def url_host(url: object) -> str | None:
+    """Only the host of a plain http(s) URL: no credentials, port, path, query or fragment."""
+    try:
+        parts = urlsplit(url) if isinstance(url, str) else None
+        host = parts.hostname if parts is not None and parts.scheme in ("http", "https") else None
+    except ValueError:
+        return None
+    return host if host and _HOST.fullmatch(host) else None
 
 
 class SandboxClient:
@@ -98,6 +113,14 @@ class SandboxClient:
 
     async def scroll(self, direction: str) -> Any:
         return await self._json("browser/page/scroll", {"direction": direction})
+
+    async def current_url(self) -> str | None:
+        """The URL of the browser's front page tab, or None when the sandbox does not say."""
+        tabs = await self._json("browser/tabs")
+        for tab in tabs if isinstance(tabs, list) else ():
+            if isinstance(tab, dict) and tab.get("type", "page") == "page" and isinstance(tab.get("url"), str):
+                return tab["url"]
+        return None
 
     async def screenshot(self) -> bytes:
         return await self._bytes("browser/screenshot")

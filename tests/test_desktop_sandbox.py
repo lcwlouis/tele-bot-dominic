@@ -1,12 +1,13 @@
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
 from dom.capabilities import describe
 from dom.config import Config, DesktopConfig, load_config
-from dom.desktop.client import SandboxClient, SandboxError
+from dom.desktop.client import SandboxClient, SandboxError, url_host
 from dom.desktop.network import LAN_PROBE as PROBE
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 from dom.desktop.worker import DesktopWorker
@@ -337,3 +338,33 @@ async def test_recover_stops_a_stray_container(make_app, tmp_path):
     assert stop_and_remove(docker)
     assert app.sandbox.status() == "stopped"
     await app.sandbox.close()
+
+
+TABS = json.loads((Path(__file__).parent / "fixtures" / "sandbox_browser_tabs.json").read_text())
+
+
+@pytest.mark.parametrize(("payload", "url"), [
+    (TABS, "https://login.example.org/session?token=SECRET#fragment"),
+    ({"success": True, "data": []}, None),
+    ({"success": True, "data": [{"type": "page"}, "text", {"type": "page", "url": 3}]}, None),
+    ({"success": True, "data": {"url": "https://example.org"}}, None),
+])
+async def test_current_url_reads_the_first_page_tab(payload, url):
+    def reply(request):
+        assert request.method == "GET" and request.url.path == "/v1/browser/tabs"
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        assert await SandboxClient("https://example.org", None, http).current_url() == url
+
+
+@pytest.mark.parametrize(("url", "host"), [
+    ("https://Login.Example.org:8443/a?b=c#d", "login.example.org"),
+    ("http://192.0.2.1/login", "192.0.2.1"),
+    ("https://user:pass@example.org/", "example.org"),
+    ("https://[2001:db8::1]/", "2001:db8::1"),
+    ("about:blank", None), ("javascript:alert(1)", None), ("chrome://settings", None), ("", None), (None, None),
+    ("https://exa mple.org/", None),
+])
+def test_url_host_is_only_a_plain_http_host(url, host):
+    assert url_host(url) == host
