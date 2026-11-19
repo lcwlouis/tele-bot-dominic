@@ -178,12 +178,13 @@ class PluginRunner:
         cmd = [str(self.bwrap), "--unshare-all", "--unshare-user"]
         if network:
             cmd.append("--share-net")
-        cmd += ["--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin"]
+        cmd += ["--unshare-cgroup", "--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin"]
         for mount in mounts:
             cmd += ["--ro-bind", str(mount), str(mount)]
         return cmd + [
             "--ro-bind", str(folder), "/plugin", "--size", str(TMP_BYTES), "--tmpfs", "/tmp", "--proc", "/proc",
-            "--dev", "/dev", "--chdir", "/plugin", "--disable-userns", "--seccomp", str(filter_fd), "--",
+            "--dev", "/dev", "--chdir", "/plugin", "--disable-userns", "--assert-userns-disabled", "--cap-drop", "ALL",
+            "--seccomp", str(filter_fd), "--",
             "/usr/bin/prlimit", f"--as={manifest.memory_mb * 1024 * 1024}", f"--cpu={manifest.timeout_seconds}",
             f"--fsize={FILE_BYTES}", f"--nofile={OPEN_FILES}", "--core=0",
             "--", str(executable), "-I", "-S", "-c", _BOOTSTRAP,
@@ -218,7 +219,7 @@ class PluginRunner:
                 "from _dom import tool, run\n"
                 "@tool\n"
                 "def probe(path, home):\n"
-                "    if os.path.exists(path) or (home and os.path.exists(home)):\n"
+                "    if os.path.exists(path) or os.path.exists(home):\n"
                 "        return 'host path visible'\n"
                 "    try:\n"
                 "        socket.socket().close()\n"

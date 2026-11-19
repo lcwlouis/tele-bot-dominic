@@ -122,3 +122,12 @@ listing = os.open("/proc/self/fd", os.O_RDONLY)
 return json.dumps(sorted(int(name) for name in os.listdir(listing) if int(name) != listing))
 """)
     assert json.loads(result) == [0, 1, 2]
+
+
+def test_plugin_holds_no_capabilities_and_sees_a_private_cgroup_root(tmp_path):
+    result = run_plugin(tmp_path, """
+status = dict(line.split(":\\t", 1) for line in open("/proc/self/status").read().splitlines() if ":\\t" in line)
+cgroup = open("/proc/self/cgroup").read().strip()
+return json.dumps({"CapEff": status["CapEff"].strip(), "cgroup": cgroup})
+""")
+    assert json.loads(result) == {"CapEff": "0000000000000000", "cgroup": "0::/"}
