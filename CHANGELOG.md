@@ -8,6 +8,9 @@ named `vX.Y.Z`.
 
 ### Added
 
+- **prompt:** Dom describes himself in his own words
+- **tools:** own_code reads Dom's own source, docs and changelog
+- **release:** changelog script, CHANGELOG.md and tag-based release docs
 - **version:** git archive writes the real version into dom/_version.py
 
 ## [0.7.0] - 2026-11-19
