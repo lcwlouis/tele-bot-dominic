@@ -49,7 +49,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             self.assertEqual(migrate_database(db), TARGET_VERSION)
-            self.assertEqual(TARGET_VERSION, 11)
+            self.assertEqual(TARGET_VERSION, 12)
             self.assertEqual(list(Path(d).glob("*.bak")), [])
             conn = sqlite3.connect(db)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
@@ -155,7 +155,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
             store = Store(Path(d), owner_id=OWNER_ID)
             try:
-                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 11)
+                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 12)
                 chat = store._conn.execute("SELECT * FROM chats WHERE chat_id = '-100'").fetchone()
                 self.assertEqual(
                     (chat["authorization_status"], chat["title"], chat["traits_json"], chat["bot_depth"],

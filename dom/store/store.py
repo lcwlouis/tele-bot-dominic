@@ -44,6 +44,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (9, "0008_proposals_reminders.sql"),
     (10, "0009_turn_log.sql"),
     (11, "0010_desktop_tasks.sql"),
+    (12, "0011_plugins.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1117,6 +1118,39 @@ class Store:
             return dict(row) if row else None
 
         return await self._run(update)
+
+    # ---- plugins ---------------------------------------------------------
+
+    async def stage_plugins(self, manifests: list[tuple[str, str, str]]) -> None:
+        def stage() -> None:
+            with self._tx() as conn:
+                conn.executemany(
+                    "INSERT INTO plugins (name, status, hash, manifest_json, updated_at) "
+                    "VALUES (?, 'pending', ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
+                    "status = CASE WHEN plugins.status = 'approved' THEN 'pending' ELSE plugins.status END, "
+                    "hash = excluded.hash, manifest_json = excluded.manifest_json, updated_at = excluded.updated_at "
+                    "WHERE plugins.hash != excluded.hash",
+                    [(name, digest, manifest, _now()) for name, digest, manifest in manifests],
+                )
+
+        await self._run(stage)
+
+    async def list_plugins(self) -> list[dict[str, Any]]:
+        return await self._run(lambda: [dict(row) for row in self._conn.execute("SELECT * FROM plugins ORDER BY name")])
+
+    async def set_plugin_status(self, name: str, digest: str, status: str) -> bool:
+        return await self._run(self._set_plugin_status, name, digest, status)
+
+    def _set_plugin_status(self, name: str, digest: str, status: str) -> bool:
+        now = _now()
+        cursor = self._conn.execute(
+            "UPDATE plugins SET status = ?, updated_at = ?, "
+            "approved_hash = CASE WHEN ? = 'approved' THEN hash ELSE approved_hash END, "
+            "approved_at = CASE WHEN ? = 'approved' THEN ? ELSE approved_at END "
+            "WHERE name = ? AND hash = ? AND status != ?",
+            (status, now, status, status, now, name, digest, status),
+        )
+        return cursor.rowcount == 1
 
     # ---- proposals and reminders -----------------------------------------
 
