@@ -228,9 +228,11 @@ class Dispatcher:
         if newest is None:
             return
 
-        bot_id = newest.sender_user_id if newest.is_bot else None
+        # A human among the unread messages makes this an ordinary turn; the bots are just context.
+        bots_only = newest.is_bot and not await store.has_unread_human(chat_id)
+        bot_id = newest.sender_user_id if bots_only else None
         bot_depth = None
-        if newest.is_bot:
+        if bots_only:
             bot_depth = await store.get_bot_depth(chat_id)
             if bot_depth > BOT_DEPTH_LIMIT or await self._suppress_bot(newest):
                 await store.mark_chat_read(chat_id, newest.msg_id)

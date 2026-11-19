@@ -745,6 +745,16 @@ class Store:
         ).fetchone()
         return (row["unread_count"], _row_to_message(row)) if row is not None else (0, None)
 
+    async def has_unread_human(self, chat_id: int | str) -> bool:
+        return await self._run(self._has_unread_human, str(chat_id))
+
+    def _has_unread_human(self, chat_id: str) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM messages WHERE chat_id = ? AND is_deleted = 0 AND role = 'user' AND is_bot = 0 "
+            "AND msg_id > COALESCE((SELECT last_read_msg_id FROM chats WHERE chat_id = ?), 0) LIMIT 1",
+            (chat_id, chat_id),
+        ).fetchone() is not None
+
     async def get_unread_media_to_describe(self, chat_id: int | str, limit: int) -> list[tuple[int, dict]]:
         """(msg_id, media) of undescribed attachments from people among the last `limit` unread messages."""
         return await self._run(self._get_unread_media_to_describe, str(chat_id), limit)
