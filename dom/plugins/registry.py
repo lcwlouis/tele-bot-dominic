@@ -159,14 +159,15 @@ class PluginRegistry:
                 previous, text = old.get(path, ""), current.get(path, "")
                 changes = list(unified_diff(previous.splitlines(), text.splitlines(), lineterm=""))[2:] if old else []
                 documents.append({"path": path, "text": text, "changes": changes, "removed": path not in current})
-            return {"plugin": plugin, "status": row["status"], "documents": documents}
+            reviewed = await self.store.kv_get(f"plugin-reviewed:{name}:{digest}") is not None
+            return {"plugin": plugin, "status": row["status"], "documents": documents, "reviewed": reviewed}
 
     async def mark_reviewed(self, name: str, digest: str) -> None:
         key = f"plugin-reviewed:{name}:{digest}"
         async with self.lock:
             if await self.store.kv_get(key) is None:
                 await self.store.kv_set(key, "yes")
-                await self.store.record_owner_event(f"Viewed plugin {name} ({digest[:12]}) on the dashboard")
+                await self.store.record_owner_event(f"Reviewed plugin {name} ({digest[:12]}) code on the dashboard")
 
     async def decide(self, name: str, digest: str, decision: str) -> str:
         async with self.lock:
