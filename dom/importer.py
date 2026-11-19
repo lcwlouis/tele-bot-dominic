@@ -213,3 +213,10 @@ async def _finish_database(
             conn.execute("UPDATE chats SET traits_json = ? WHERE chat_id = ?", (json.dumps(traits), chat_id))
         for old, new in path_remap.items():
             conn.execute("UPDATE people_identities SET profile_path = ? WHERE profile_path = ?", (new, old))
+        # Imported history is old news: without this every chat looks fully unread and Dom's first
+        # catch-up would answer months-old messages in every group.
+        conn.execute(
+            "UPDATE chats SET last_read_msg_id = "
+            "(SELECT MAX(msg_id) FROM messages m WHERE m.chat_id = chats.chat_id) "
+            "WHERE EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = chats.chat_id AND m.msg_id IS NOT NULL)"
+        )
