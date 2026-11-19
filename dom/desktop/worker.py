@@ -13,7 +13,7 @@ from dom.actions import SendFile
 from dom.agent import _well_formed
 from dom.desktop import tools
 from dom.desktop.client import SandboxClient, SandboxError
-from dom.desktop.files import download_results, upload_inbox
+from dom.desktop.files import INBOX, download_results, upload_inbox
 from dom.skills import Skill, skill_view, skills_list
 
 if TYPE_CHECKING:
@@ -146,7 +146,10 @@ class DesktopWorker:
         draft: Skill | None = None
         try:
             with self.sandbox.in_use():
-                result, files, draft = await self._work(row, progress)
+                try:
+                    result, files, draft = await self._work(row, progress)
+                finally:
+                    await self._clear_inbox()
         except (TimeoutError, SandboxError, ValueError) as exc:
             error = "desktop task time limit reached" if isinstance(exc, TimeoutError) else str(exc)
             row = await store.update_desktop_task(
@@ -165,6 +168,17 @@ class DesktopWorker:
             await self._report(row, files)
             if row["status"] == "done" and draft:
                 await self._publish_skill(draft)
+
+    async def _clear_inbox(self) -> None:
+        """Uploaded files must not outlive the task that was given them."""
+        client = getattr(self.sandbox, "client", None)
+        if client is None:
+            return
+        try:
+            async with asyncio.timeout(10):
+                await client.bash(f"rm -rf {INBOX}/*")
+        except Exception as exc:
+            log.warning("could not clear the desktop inbox (%s)", type(exc).__name__)
 
     async def _publish_skill(self, skill: Skill) -> None:
         try:

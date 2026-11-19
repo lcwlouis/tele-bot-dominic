@@ -12,6 +12,8 @@ from dom.desktop.client import SandboxClient, SandboxError
 
 MAX_FILE_BYTES = 20_000_000
 MAX_RESULT_FILES = 5
+MAX_INBOX_FILES = 5
+MAX_INBOX_BYTES = 50_000_000
 INBOX = "/home/gem/inbox"
 
 
@@ -39,6 +41,9 @@ def stage_inbox(home: Path, name: str | None, content: bytes) -> str:
         raise ValueError("Desktop documents can be at most 20 MB.")
     directory = _inbox(home)
     directory.mkdir(mode=0o700, exist_ok=True)
+    pending = [path.stat().st_size for path in directory.iterdir() if path.is_file() and not path.name.startswith(".")]
+    if len(pending) >= MAX_INBOX_FILES or sum(pending) + len(content) > MAX_INBOX_BYTES:
+        raise ValueError("Inbox full")
     filename = safe_filename(name)
     basename, suffix = Path(filename).stem, Path(filename).suffix
     with NamedTemporaryFile(dir=directory, prefix=".incoming-") as temporary:

@@ -252,7 +252,7 @@ async def handle_message(app: App, message: Message) -> None:
             return
         if (
             owner_dm and message.document is not None and app.config.desktop_mode != "off"
-            and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
+            and msg.text.lower().startswith("/desktop") and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
         ):
             msg = await _receive_desktop_document(app, message, msg)
         await _record(app, msg, describe_media=decision == "process")
