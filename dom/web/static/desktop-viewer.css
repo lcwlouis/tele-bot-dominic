@@ -1,0 +1,4 @@
+html, body { height: 100%; margin: 0; background: #1c1c1e; }
+body { display: flex; flex-direction: column; font: 12px system-ui, sans-serif; color: #eee; }
+#status { padding: 4px 8px; text-align: center; }
+#screen { flex: 1; overflow: hidden; }
