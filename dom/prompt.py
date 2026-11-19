@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dom.home import Home
+from dom.home import Home, PrivateAccessError
 from dom.models import Scope
 
 FRAME = """\
@@ -16,7 +16,11 @@ Use several short bubbles like a person texting. Use delete_after only for a mes
 
 
 def _file(home: Home, rel: str) -> str:
-    return f'<file path="{rel}">\n{home.read(rel)}\n</file>'
+    try:
+        content = home.read(rel)
+    except (PrivateAccessError, ValueError):  # e.g. a link into private/: leave the file out, never fail the turn
+        content = ""
+    return f'<file path="{rel}">\n{content}\n</file>'
 
 
 def build_messages(
