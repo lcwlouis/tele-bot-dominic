@@ -27,6 +27,7 @@ from dom.openers import Openers
 from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import build_messages
 from dom.reflection import mood
+from dom.reminders import Reminders
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, core_tools
 from dom.traits import for_chat
@@ -69,6 +70,7 @@ class Dispatcher:
         self.jobs = DailyJobs(app, now)
         self.jobs.register("proposal-expiry", lambda local, habits: True, app.proposals.expire)
         self.openers = Openers(app, presence.rng)
+        self.reminders = Reminders(app)
         self._heartbeat: asyncio.Task | None = None
         self._debounces: dict[int, asyncio.Task] = {}
         self._first_notify: dict[int, datetime] = {}
@@ -220,6 +222,7 @@ class Dispatcher:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run(self) -> None:
+        self._spawn(self._run_reminders())
         while True:
             await self.sleep(TICK_SECONDS)
             try:
@@ -228,6 +231,16 @@ class Dispatcher:
                 log.exception("could not check chat presence")
             if self._heartbeat is None or self._heartbeat.done():
                 self._heartbeat = self._spawn(self._background_jobs())
+
+    async def _run_reminders(self) -> None:
+        startup = True
+        while True:
+            try:
+                await self.reminders.tick(startup=startup)
+            except Exception:
+                log.exception("could not check reminders")
+            startup = False
+            await self.sleep(TICK_SECONDS)
 
     async def _background_jobs(self) -> None:
         await self.jobs.tick()
@@ -253,7 +266,7 @@ class Dispatcher:
             self._polls.pop(chat_id, None)
 
     async def tick(self) -> None:
-        await asyncio.gather(*(await self._poll_chats()))
+        await asyncio.gather(self.reminders.tick(), *(await self._poll_chats()))
 
     def _habits(self) -> Habits:
         return read_habits(self.app.home)
@@ -531,6 +544,9 @@ class Dispatcher:
             note += f"\nmood: {escape(current_mood)}"
         if away_count:
             note += "\nyou just came online"
+        if scope == "owner_dm" and chat_id == app.owner_id and newest is not None:
+            if casual := await self.reminders.casual_note():
+                note += f"\n{casual}"
         if extra_note:
             note += f"\n{extra_note}"
         if final_bot_turn:
@@ -548,7 +564,7 @@ class Dispatcher:
         )
         ctx = TurnCtx(
             scope, chat_id, sender_id, app.home, app.store, app.owner_id, self.presence, habits,
-            model_allowed=partial(self.turn_allowed, chat_id, scope),
+            model_allowed=partial(self.turn_allowed, chat_id, scope), reminders=self.reminders,
         )
         try:
             actions = await run_turn(app.client, messages, core_tools(app.search_client), ctx)

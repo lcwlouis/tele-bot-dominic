@@ -40,7 +40,9 @@ class ChatClient:
         self.usage = usage
         self.host = httpx.URL(endpoint.base_url).host
 
-    async def complete(self, messages: list[dict], tools: list[dict], *, fallback: bool = False) -> dict:
+    async def complete(
+        self, messages: list[dict], tools: list[dict], *, fallback: bool = False, once: bool = False,
+    ) -> dict:
         """POST /chat/completions and return the assistant message."""
         body: dict = {"model": self.endpoint.model, "messages": messages}
         if tools:
@@ -48,7 +50,7 @@ class ChatClient:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         url = f"{self.endpoint.base_url.rstrip('/')}/chat/completions"
 
-        for delay in (*RETRY_BACKOFF, None):
+        for delay in (None,) if once else (*RETRY_BACKOFF, None):
             await check_model_allowed()
             response = await self.http.post(url, json=body, headers=headers, timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS))
             if self.usage is not None:
@@ -71,7 +73,9 @@ class FallbackClient:
         self.last_model: str | None = None
         self.last_fallback_at: datetime | None = None
 
-    async def complete(self, messages: list[dict], tools: list[dict]) -> dict:
+    async def complete(self, messages: list[dict], tools: list[dict], *, once: bool = False) -> dict:
+        if once:
+            return await self.primary.complete(messages, tools, once=True)
         try:
             reply = await self.primary.complete(messages, tools)
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:

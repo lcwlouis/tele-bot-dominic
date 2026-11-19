@@ -1,11 +1,11 @@
-"""Tools the model may call while replying, each limited to the scopes that may use it. All read-only:
+"""Tools the model may call while replying, each limited to the scopes that may use it.
 notes are written by the background memory pass (dom/memory_pass.py)."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 import httpx
 
@@ -15,6 +15,9 @@ from dom.presence import Habits, Presence
 from dom.search import SearchClient
 from dom.store import Store
 from dom.usage import ModelCallSkipped, model_request
+
+if TYPE_CHECKING:
+    from dom.reminders import Reminders
 
 ALL_SCOPES: set[Scope] = {"owner_dm", "friend_dm", "group"}
 
@@ -30,6 +33,7 @@ class TurnCtx:
     presence: Presence | None = None
     habits: Habits | None = None
     model_allowed: Callable[[], Awaitable[bool]] | None = None
+    reminders: Reminders | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,33 @@ EXTEND_ONLINE_TOOL = Tool(
 )
 
 
+async def _remind(args: dict, ctx: TurnCtx) -> str:
+    if ctx.scope != "owner_dm" or ctx.chat_id != ctx.owner_id or ctx.reminders is None:
+        return "error: reminders are available only in the owner's DM"
+    reminder_id = await ctx.reminders.create(
+        args.get("when"), args.get("text"), args.get("importance", "normal"), args.get("repeat", ""),
+    )
+    return json.dumps({"id": reminder_id})
+
+
+REMIND_TOOL = Tool(
+    name="remind",
+    description="Schedule a reminder for the owner. Give an ISO-8601 date and time in the configured timezone or with an offset.",
+    schema={
+        "type": "object",
+        "properties": {
+            "when": {"type": "string"},
+            "text": {"type": "string"},
+            "importance": {"type": "string", "enum": ["critical", "normal", "casual"], "default": "normal"},
+            "repeat": {"type": "string", "enum": ["", "daily", "weekdays", "weekly"], "default": ""},
+        },
+        "required": ["when", "text"],
+    },
+    handler=_remind,
+    scopes={"owner_dm"},
+)
+
+
 def _web_search_tool(client: SearchClient) -> Tool:
     calls = 0
 
@@ -140,7 +171,7 @@ def _web_search_tool(client: SearchClient) -> Tool:
 
 
 def core_tools(search: SearchClient | None = None) -> list[Tool]:
-    tools = [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL]
+    tools = [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL, REMIND_TOOL]
     if search is not None:
         tools.append(_web_search_tool(search))
     return tools

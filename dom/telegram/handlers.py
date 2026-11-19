@@ -174,6 +174,10 @@ async def handle_message(app: App, message: Message) -> None:
             await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app))
             await _owner_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
             return
+        if command == "/reminders":
+            await owner.show_reminders(app)
+            await _owner_event(app, f"{who} ran /reminders")
+            return
         if command == "/proposals":
             await owner.show_proposals(app)
             await _owner_event(app, f"{who} ran /proposals")
@@ -400,10 +404,18 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
     owner_id = app.owner_id
     if owner_id is None or query.from_user.id != owner_id:
         return
-    if action == "prop":
-        decision, _, proposal_id = raw_chat_id.partition(":")
-        if not query.from_user.is_bot and decision in ("yes", "no") and proposal_id.isascii() and proposal_id.isdecimal():
-            await _toast(app, query, await app.proposals.decide(int(proposal_id), decision == "yes"))
+    if action in ("prop", "rem"):
+        decision, _, raw_id = raw_chat_id.partition(":")
+        if query.from_user.is_bot or not (raw_id.isascii() and raw_id.isdecimal() and len(raw_id) <= 19):
+            return
+        item_id = int(raw_id)
+        if not 0 < item_id < 2**63:
+            return
+        if action == "prop" and decision in ("yes", "no"):
+            await _toast(app, query, await app.proposals.decide(item_id, decision == "yes"))
+        if action == "rem" and decision == "cancel":
+            changed = await app.dispatch.reminders.cancel(item_id)
+            await _toast(app, query, "Cancelled" if changed else "already handled")
         return
     try:
         chat_id = int(raw_chat_id)
@@ -465,7 +477,7 @@ def build_router(app: App) -> Router:
     async def on_edited(message: Message) -> None:
         await handle_edited_message(app, message)
 
-    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:", "leave:", "leaveyes:", "status:", "prop:")))
+    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:", "leave:", "leaveyes:", "status:", "prop:", "rem:")))
     async def on_callback(query: CallbackQuery) -> None:
         await handle_callback(app, query)
 
