@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import doctor, habits, reflection
+from dom import doctor, habits, reflection, service
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -191,11 +191,16 @@ def main(argv: list[str] | None = None) -> int:
     doctor_cmd = sub.add_parser("doctor", help="check instance configuration and health")
     doctor_cmd.add_argument("home", type=Path)
     doctor_cmd.add_argument("--online", action="store_true", help="also contact Telegram and model providers")
+    service_cmd = sub.add_parser("install-service", help="install systemd user units for Dom and its backups")
+    service_cmd.add_argument("home", type=Path)
+    service_cmd.add_argument("--yes", action="store_true", help="write and enable the units")
+    service_cmd.add_argument("--force", action="store_true", help="replace existing units with differing contents")
     restore_cmd = sub.add_parser("restore", help="restore an archive into an empty home")
     restore_cmd.add_argument("archive", type=Path)
     restore_cmd.add_argument("home", type=Path)
     setup_cmd = sub.add_parser("desktop-setup", help="create the local desktop network and firewall rules")
     setup_cmd.add_argument("home", type=Path)
+    setup_cmd.add_argument("--yes", action="store_true", help="apply the network and firewall changes")
     check_cmd = sub.add_parser("desktop-check", help="check connectivity from the desktop network")
     check_cmd.add_argument("home", type=Path)
     check_cmd.add_argument("lan_address", help="IPv4 address of a known reachable LAN service")
@@ -206,6 +211,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             config = load_config(args.home)
             if args.command == "desktop-setup":
+                print(
+                    f"Ensure the Docker bridge {config.desktop.network!r} uses {config.desktop.subnet} "
+                    f"and install {desktop_network.CHAIN} firewall rules in DOCKER-USER and INPUT.",
+                    flush=True,
+                )
+                if not args.yes:
+                    print("Dry run. Add --yes to apply the network and firewall changes.")
+                    return 0
                 desktop_network.setup(config)
             else:
                 desktop_network.check(config, args.lan_address, args.lan_port, args.public_address)
@@ -215,6 +228,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "doctor":
         return doctor.run(args.home, online=args.online)
+    if args.command == "install-service":
+        try:
+            return service.install(args.home, yes=args.yes, force=args.force)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"install-service failed: {exc}")
+            return 1
     if args.command == "init":
         return cmd_init(args.home, getattr(args, "timezone", None))
     if args.command == "import-v2":

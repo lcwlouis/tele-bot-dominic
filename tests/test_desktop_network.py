@@ -156,7 +156,7 @@ def test_desktop_cli_accepts_home(tmp_path, monkeypatch):
     (tmp_path / "config.toml").write_text('[desktop]\nmode = "local"\n')
     seen = []
     monkeypatch.setattr("dom.cli.desktop_network.setup", lambda config: seen.append(config.home))
-    assert main(["desktop-setup", str(tmp_path)]) == 0
+    assert main(["desktop-setup", str(tmp_path), "--yes"]) == 0
     assert seen == [tmp_path]
 
 

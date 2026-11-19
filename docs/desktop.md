@@ -9,10 +9,11 @@ default bridge is `dom-desktop` with subnet `172.30.0.0/24`. Configure both unde
 `[desktop]` in `config.toml`.
 
 On the Linux Docker host, run the setup with permission to manage Docker and the
-host firewall. The command prints each rule it inserts and can be rerun.
+host firewall. Preview with `dom desktop-setup <home>`, then pass `--yes` to
+apply the changes. The command prints each rule it inserts and can be rerun.
 
 ```sh
-sudo /path/to/dom desktop-setup /path/to/dom-home
+sudo /path/to/dom desktop-setup /path/to/dom-home --yes
 /path/to/dom desktop-check /path/to/dom-home 192.0.2.1 --lan-port 443
 ```
 
@@ -44,12 +45,11 @@ Dom executable and instance home.
 Description=Dom desktop network
 Requires=docker.service
 After=docker.service
-Before=dom.service
 PartOf=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/path/to/dom desktop-setup /path/to/dom-home
+ExecStart=/path/to/dom desktop-setup /path/to/dom-home --yes
 RemainAfterExit=yes
 
 [Install]
@@ -91,18 +91,10 @@ start the desktop unless you set `[desktop] remote_isolation_confirmed = true`,
 which asserts that you checked the remote host cannot reach your LAN or the Dom
 host.
 
-Start the firewall unit before Dom so the rules exist when it starts. Add this to
-the Dom service:
-
-```ini
-[Unit]
-After=dom-desktop-network.service
-Requires=dom-desktop-network.service
-```
-
-and keep `Before=dom.service` in the `[Unit]` section of
-`dom-desktop-network.service`. The rules use the iptables backend with `-w`; the
-nftables backend is not supported.
+Run the firewall unit on the Docker host before requesting a desktop task.
+The firewall unit runs in the system manager, while `dom install-service` uses
+the user manager. In local mode Dom checks the rules before each container start.
+The rules use the iptables backend with `-w`.
 
 ## Documents
 
