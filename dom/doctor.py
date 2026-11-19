@@ -64,11 +64,17 @@ def _memory(home: Home) -> Check:
                     too_long += 1
             except (ValueError, OSError):
                 unreadable += 1
-    if too_long or unreadable:
+    if unreadable:
         return Check(
             "fail", "memory",
-            f"{too_long} non-file or oversized entries and {unreadable} unreadable notes. "
+            f"{unreadable} unreadable notes and {too_long} non-file or oversized entries. "
             "Check memory/ and private/ for file types, UTF-8 and character limits.",
+        )
+    if too_long:  # imported notes often start over their limit; Dom's notes pass trims them
+        return Check(
+            "warn", "memory",
+            f"{too_long} non-file or oversized entries. Dom trims oversized notes over time; "
+            "edit them in the dashboard to fix it now.",
         )
     return Check("ok", "memory", "Notes are within their character limits.")
 
@@ -239,6 +245,20 @@ async def _telegram(http: httpx.AsyncClient, token: str, owner: int | None) -> l
     return checks
 
 
+def _probe_hint(response: httpx.Response) -> str:
+    """The provider's own reason, which names problems like data-policy blocks. Never echoes secrets:
+    it is the response body of a request that carried only a fixed synthetic prompt."""
+    try:
+        message = str(response.json().get("error", {}).get("message", ""))
+    except ValueError:
+        message = ""
+    if "ZDR" in message or "data policy" in message:
+        return (f"HTTP {response.status_code}: the provider refused it under your account's data policy "
+                "(zero data retention). Pick a model with a ZDR-compliant provider.")
+    detail = " ".join(message.split())[:160]
+    return f"HTTP {response.status_code}: {detail or 'no reason given'}. Check the endpoint URL, model ID and key."
+
+
 async def _model(http: httpx.AsyncClient, name: str, endpoint: ModelEndpoint, key: str | None) -> Check:
     label = "models." + (name if ENV_NAME.fullmatch(name) else "<custom>")
     if endpoint.api_key_env and not key:
@@ -264,6 +284,8 @@ async def _model(http: httpx.AsyncClient, name: str, endpoint: ModelEndpoint, ke
             response.raise_for_status()
             if not isinstance(response.json()["choices"][0]["message"], dict):
                 raise ValueError
+    except httpx.HTTPStatusError as error:
+        return Check("fail", label, _probe_hint(error.response))
     except (httpx.HTTPError, httpx.InvalidURL, JevUnavailable, KeyError, IndexError, TypeError, ValueError):
         return Check("fail", label, "Probe failed. Check the endpoint URL, model ID, key and connectivity.")
     return Check("ok", label, "Endpoint answered a small synthetic request.")
