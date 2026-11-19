@@ -26,6 +26,7 @@ from dom.media import MediaDescriber
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
 from dom.store import Store
+from dom.traits import load_preset
 from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
 
@@ -167,6 +168,9 @@ async def handle_message(app: App, message: Message) -> None:
         if command == "/chats":
             await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app))
             await _owner_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
+            return
+        if command == "/preset":
+            await owner.show_presets(app)
             return
         if command in ("/wake", "/sleep"):
             parts = msg.text.split()
@@ -343,8 +347,41 @@ async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id
     await _refresh_status(app, query)
 
 
+async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str) -> None:
+    owner_id = app.owner_id
+    if (
+        owner_id is None or query.from_user.is_bot or query.from_user.id != owner_id
+        or query.message is None or query.message.chat.id != owner_id or query.message.chat.type != "private"
+    ):
+        await _toast(app, query, "not allowed")
+        return
+    raw_id, _, name = data.partition(":")
+    chat = next((c for c in await app.store.list_chats("approved") if c["chat_id"] == raw_id), None)
+    if chat is None:
+        await _toast(app, query, "unknown chat")
+        return
+    if action == "preset":
+        await _toast(app, query)
+        await owner.choose_preset(app, chat)
+        return
+
+    preset = load_preset(app.home, name) if name else None
+    if (name and preset is None) or not await app.store.set_chat_preset(raw_id, name):
+        await _toast(app, query, "preset or chat unavailable")
+        return
+    title = owner.display_title(chat, owner_id)
+    label = preset.title if preset else "None"
+    text = f"Preset for {title}: {label}"
+    await _owner_event(app, text)
+    await _toast(app, query)
+    await app.bot.send_message(owner_id, text)
+
+
 async def handle_callback(app: App, query: CallbackQuery) -> None:
     action, _, raw_chat_id = (query.data or "").partition(":")
+    if action in ("preset", "presetset"):
+        await _handle_preset(app, query, action, raw_chat_id)
+        return
     if action in _OVERRIDES:
         await _handle_override(app, query, action, raw_chat_id)
         return

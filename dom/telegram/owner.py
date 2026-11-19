@@ -17,6 +17,8 @@ from aiogram.types import (
     InputRichMessage,
 )
 
+from dom.traits import load_preset
+
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
@@ -28,6 +30,7 @@ OWNER_COMMANDS = [
     BotCommand(command="sleep", description="Send Dom to sleep"),
     BotCommand(command="pending", description="Chats waiting for your approval"),
     BotCommand(command="chats", description="Every group and DM Dom knows about"),
+    BotCommand(command="preset", description="Change Dom's persona in a chat"),
 ]
 
 MAX_MESSAGE = 4096  # Telegram's limit for a message's text
@@ -233,3 +236,35 @@ async def render_chats(app: App) -> View:
     if not shown:
         return View("Dom doesn't know any chats yet.", "Dom doesn't know any chats yet.", markup)
     return View("\n".join(["**Dom's chats**", *md]), "\n".join(["Dom's chats", *plain]), markup)
+
+
+async def _preset_buttons(app: App, text: str, choices: list[tuple[str, str]]) -> None:
+    for start in range(0, len(choices), MAX_BUTTONS):
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data=data)]
+            for label, data in choices[start:start + MAX_BUTTONS]
+        ])
+        await app.bot.send_message(app.owner_id, text, reply_markup=markup)
+
+
+async def show_presets(app: App) -> None:
+    choices = []
+    for chat in await app.store.list_chats("approved"):
+        preset = load_preset(app.home, chat["preset"]) if chat["preset"] else None
+        title = display_title(chat, app.owner_id)
+        choices.append((f"{_short(title, 30)} · {_short(preset.title, 30) if preset else 'None'}", f"preset:{chat['chat_id']}"))
+    if choices:
+        await _preset_buttons(app, "Choose a chat.", choices)
+    else:
+        await app.bot.send_message(app.owner_id, "No approved chats yet.")
+
+
+async def choose_preset(app: App, chat: dict) -> None:
+    prefix = f"presetset:{chat['chat_id']}:"
+    choices = []
+    for name in app.home.preset_names():
+        data = prefix + name
+        if len(data.encode("utf-8")) <= 64 and (preset := load_preset(app.home, name)) is not None:
+            choices.append((_short(preset.title, 64), data))
+    choices.append(("None", prefix))
+    await _preset_buttons(app, f"Choose a preset for {display_title(chat, app.owner_id)}.", choices)

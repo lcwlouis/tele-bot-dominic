@@ -363,7 +363,7 @@ class ChatAuthorizationTests(StoreTestCase):
         self.assertTrue(rows[0].pop("updated_at"))
         self.assertEqual(rows[0], {
             "chat_id": "-100", "authorization_status": "approved", "title": "Group",
-            "is_sleeping": False, "is_offline": True, "last_read_msg_id": 42,
+            "preset": "", "is_sleeping": False, "is_offline": True, "last_read_msg_id": 42,
         })
         self.assertEqual(len(await self.store.list_chats()), 2)
         with self.assertRaises(ValueError):

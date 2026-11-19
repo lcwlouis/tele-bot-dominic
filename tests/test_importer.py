@@ -235,3 +235,15 @@ def test_imported_history_is_not_fed_to_the_memory_pass(src, home):
     with sqlite3.connect(home / "state.db") as conn:
         rows = conn.execute("SELECT memory_cursor_msg_id, last_read_msg_id FROM chats WHERE last_read_msg_id IS NOT NULL").fetchall()
     assert rows and all(cursor == read for cursor, read in rows)
+
+
+def test_preset_copied_with_normalised_sliders(src, home):
+    from dom.home import Home, parse_front_matter
+
+    write(src, "presets/assistant.md", "---\ntitle: Assistant\ndescription: Direct\ntraits:\n  humor_level: 0.3\n  singlish: 0.2\n---\nKeep it clear.\n")
+    report = import_v2(src, home, OWNER)
+    assert "presets/assistant.md" in report.imported
+    assert parse_front_matter(Home(home).read("presets/assistant.md")) == (
+        {"title": "Assistant", "description": "Direct", "traits": {"humor": 0.3, "slang": 0.2}},
+        "Keep it clear.\n",
+    )
