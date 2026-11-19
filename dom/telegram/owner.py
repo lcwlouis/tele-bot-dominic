@@ -21,6 +21,7 @@ from aiogram.types import (
 )
 
 from dom import memory_import, proposals
+from dom.plugins.manifest import NETWORK_NOTICE
 from dom.traits import load_preset
 
 if TYPE_CHECKING:
@@ -381,7 +382,7 @@ async def show_plugins(app: App) -> None:
         for row in rows[start:start + 20]:
             name = row["name"]
             status = row["status"] + ("" if row["available"] else " · files unavailable")
-            lines.append(f"{name} · {status}")
+            lines.append(f"{name} · {status}" + (f" · {NETWORK_NOTICE}" if row["network"] else ""))
             if row["status"] != "disabled":
                 buttons.append([InlineKeyboardButton(text=f"Disable {name}", callback_data=f"plugin:disable:{name}")])
         await app.bot.send_message(

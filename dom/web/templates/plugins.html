@@ -10,7 +10,7 @@
       <h3>{{ manifest.name }}</h3>
       <p>{{ manifest.description }} · {{ review.status }}</p>
       <p class="fog">SHA-256 <span class="num">{{ review.plugin.hash }}</span></p>
-      {% if manifest.network %}<p class="kind">This plugin can reach the internet</p>{% endif %}
+      {% if manifest.network %}<p class="kind">{{ NETWORK_NOTICE }}</p>{% endif %}
       {% for tool in manifest.tools %}
       <p>{{ tool.name }} · {{ tool.scopes | join(", ") or "No scopes" }}</p>
       {% endfor %}
@@ -41,6 +41,7 @@
     <article class="proposal">
       <h3>{{ row.name }}</h3>
       <p{% if row.status == "pending" %} class="kind"{% endif %}>{{ row.status }}{% if not row.available %} · Files unavailable{% endif %}</p>
+      {% if row.network %}<p class="kind">{{ NETWORK_NOTICE }}</p>{% endif %}
       <div class="actions" hx-target="#plugins" hx-swap="outerHTML">
         {% if row.available %}<a href="{{ route }}">Review code</a>{% endif %}
         {% if row.status != "disabled" %}<button class="danger" hx-post="{{ route }}/disable">Disable</button>{% endif %}

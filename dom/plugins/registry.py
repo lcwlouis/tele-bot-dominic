@@ -93,7 +93,10 @@ class PluginRegistry:
         async with self.lock:
             found = await self._scan()
             return [
-                {**row, "available": row["name"] in found and found[row["name"]].hash == row["hash"]}
+                {
+                    **row, "available": row["name"] in found and found[row["name"]].hash == row["hash"],
+                    "network": json.loads(row["manifest_json"])["network"],
+                }
                 for row in await self.store.list_plugins()
             ]
 
