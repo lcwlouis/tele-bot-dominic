@@ -217,3 +217,14 @@ def test_import_requires_an_initialised_home(src, tmp_path):
     assert not fresh.exists()
     assert cli.main(["import-v2", str(src), str(fresh), "--owner-id", str(OWNER)]) == 1
     assert not fresh.exists()
+
+
+def test_imported_history_is_marked_read(src, home):
+    # Otherwise Dom's first catch-up answers months-old messages in every imported chat.
+    import_v2(src, home, OWNER)
+    with sqlite3.connect(home / "state.db") as conn:
+        rows = conn.execute(
+            "SELECT c.last_read_msg_id, (SELECT MAX(msg_id) FROM messages m WHERE m.chat_id = c.chat_id) "
+            "FROM chats c WHERE EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = c.chat_id)"
+        ).fetchall()
+    assert rows and all(read == newest for read, newest in rows)
