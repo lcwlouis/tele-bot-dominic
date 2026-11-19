@@ -11,7 +11,7 @@ from dom.telegram.handlers import handle_callback
 
 from tghelpers import FRIEND, GROUP, OWNER, tg
 from test_owner_controls import callback
-from test_web_auth import ORIGIN, POST_HEADERS
+from test_web_auth import ORIGIN, POST_HEADERS, TOKEN
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def browser(monkeypatch):
     from dom.web.app import create_app
     from dom.web.auth import Auth
 
-    monkeypatch.setenv("DOM_TEST_TOKEN", "test-token")
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
 
     def connect(app):
         config = app.config.model_copy(update={
@@ -27,7 +27,7 @@ def browser(monkeypatch):
         })
         return httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_app(app, Auth(config))),
-            base_url=ORIGIN, headers={"Authorization": "Bearer test-token"},
+            base_url=ORIGIN, headers={"Authorization": f"Bearer {TOKEN}"},
         )
 
     return connect

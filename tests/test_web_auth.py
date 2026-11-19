@@ -10,6 +10,7 @@ from dom import cli
 from dom.config import Config, load_config
 from dom.home import init_home
 
+TOKEN = "test-token-0123456789abcdef-0123456789"
 ORIGIN = "https://dashboard.example.org"
 POST_HEADERS = {"HX-Request": "true", "Origin": ORIGIN}
 ISSUER = "https://example-team.cloudflareaccess.com"
@@ -92,11 +93,11 @@ async def test_dev_token_and_security_headers(tmp_path, monkeypatch):
     from dom.web.app import create_app
     from dom.web.auth import Auth
 
-    monkeypatch.setenv("DOM_TEST_TOKEN", "test-token")
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
     config = Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"})
     web = create_app(SimpleNamespace(owner_id=None), Auth(config))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        for header, expected in (("Bearer incorrect", 403), ("Bearer test-token", 200)):
+        for header, expected in (("Bearer incorrect", 403), (f"Bearer {TOKEN}", 200)):
             response = await client.get("/", headers={"Authorization": header})
             assert response.status_code == expected
             assert "default-src 'self'" in response.headers["Content-Security-Policy"]
@@ -128,7 +129,7 @@ async def test_post_requires_htmx_and_same_origin(tmp_path, monkeypatch):
     from dom.web.app import create_app
     from dom.web.auth import Auth
 
-    monkeypatch.setenv("DOM_TEST_TOKEN", "test-token")
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
     config = Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"})
     web = create_app(SimpleNamespace(owner_id=None), Auth(config))
 
@@ -138,7 +139,7 @@ async def test_post_requires_htmx_and_same_origin(tmp_path, monkeypatch):
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=web), base_url=ORIGIN,
-        headers={"Authorization": "Bearer test-token"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
     ) as client:
         assert (await client.post("/action", headers=POST_HEADERS)).status_code == 200
         assert (await client.post("/action", headers={
@@ -304,3 +305,48 @@ async def test_clock_skew_of_a_minute_is_tolerated(tmp_path, access_keys, claim)
         far = assertion(key, "first", **{claim: now + timedelta(seconds=120)})
         assert (await client.get("/", headers=near)).status_code == 200
         assert (await client.get("/", headers=far)).status_code == 403
+
+
+# --- dev token hardening -------------------------------------------------------------------------
+
+
+def test_short_dev_token_refused(tmp_path, monkeypatch):
+    from dom.web.auth import Auth
+
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN[:31])
+    with pytest.raises(ValueError, match="at least 32"):
+        Auth(Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"}))
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN[:32])
+    Auth(Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"}))
+
+
+def test_dev_token_and_access_are_exclusive(tmp_path, monkeypatch):
+    from dom.web.auth import Auth
+
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
+    for access in ({"access_team": "example-team"}, {"access_team": "example-team", "access_aud": "example-audience"}):
+        with pytest.raises(ValueError, match="dev_token_env"):
+            Auth(Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"} | access))
+
+
+@pytest.mark.parametrize("bind", ["0.0.0.0", "192.0.2.1", "::", "", "dashboard.example.org"])
+def test_dev_token_refused_off_loopback(tmp_path, monkeypatch, bind):
+    from dom.web.auth import Auth
+
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
+    with pytest.raises(ValueError, match="web.bind"):
+        Auth(Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN", "bind": bind}))
+
+
+@pytest.mark.parametrize("bind", ["127.0.0.1", "127.0.0.2", "::1", "localhost"])
+def test_dev_token_allowed_on_loopback(tmp_path, monkeypatch, bind):
+    from dom.web.auth import Auth
+
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
+    Auth(Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN", "bind": bind}))
+
+
+def test_access_may_bind_off_loopback(tmp_path):
+    from dom.web.auth import Auth
+
+    Auth(Config(home=tmp_path, web={"bind": "192.0.2.1", "access_team": "example-team", "access_aud": "x"}))

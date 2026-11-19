@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -24,14 +25,26 @@ JWKS_STALE = 86400  # after a failed refresh, the previous keys stay usable this
 UNKNOWN_KID_INTERVAL = 60  # an unrecognised kid may trigger a refresh at most this often
 FAILURE_BACKOFF = 30  # after a failed refresh, serve from the cache this long before retrying
 FETCH_TIMEOUT = 5  # total seconds for one refresh
+DEV_TOKEN_MIN_LENGTH = 32
 CLOCK_LEEWAY = 60  # seconds of clock skew tolerated on exp, nbf and iat
 _TEAM = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE | re.ASCII)
 Identity = Literal["access", "local"]
 
 
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 class Auth:
     def __init__(self, config: Config, fetch_jwks: Callable[[str], Awaitable[dict]] | None = None):
         web = config.web
+        if web.dev_token_env and (web.access_team or web.access_aud):
+            raise ValueError("Dashboard auth: set either dev_token_env or access_team and access_aud, not both.")
         if (web.access_team or web.access_aud) and not (
             _TEAM.fullmatch(web.access_team) and web.access_aud.strip()
         ):
@@ -40,6 +53,11 @@ class Auth:
         self.audience = web.access_aud
         token = config.secret(web.dev_token_env) if web.dev_token_env else None
         self.dev_token = token.encode("utf-8") if token and token.strip() else b""
+        if self.dev_token:
+            if len(token.strip()) < DEV_TOKEN_MIN_LENGTH:
+                raise ValueError(f"Dashboard auth: the dev token must be at least {DEV_TOKEN_MIN_LENGTH} characters.")
+            if not _is_loopback(web.bind):
+                raise ValueError("Dashboard auth: web.bind must be a loopback address when only a dev token is set.")
         if not (self.issuer or self.dev_token):
             raise ValueError("Dashboard auth needs access_team and access_aud, or a populated dev_token_env.")
         self._fetch_jwks = fetch_jwks or self._fetch
