@@ -152,3 +152,20 @@ def test_allowlisted_bearer_fixture_is_limited_to_tests(repository):
     assert scan(repository).returncode == 0
     track(repository, "config.toml", f"authorization = {header!r}")
     assert scan(repository).returncode == 1
+
+
+def test_seccomp_constants_are_allowed_only_on_value_lines_in_the_profile(repository):
+    path = "dom/desktop/seccomp-chromium.json"
+    mask = str(0x0e020000)
+    personality_query = str(0xffffffff)
+    values = f'    "value": {mask},\n    "value": {personality_query},\n'
+    profile = track(repository, path, values)
+    assert scan(repository).returncode == 0
+
+    profile.write_text(values + f'    "value": {PLANTED["Telegram ID"]},\n    "owner_id": {mask},\n')
+    track(repository, "other.json", values)
+    result = scan(repository)
+    assert result.returncode == 1
+    assert f"{path}:3: Telegram ID" in result.stdout
+    assert f"{path}:4: Telegram ID" in result.stdout
+    assert "other.json:1: Telegram ID" in result.stdout

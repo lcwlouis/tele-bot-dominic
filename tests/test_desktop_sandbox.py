@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from ipaddress import IPv4Network
 from pathlib import Path
@@ -14,6 +15,8 @@ from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 from dom.desktop.worker import DesktopWorker
 from tghelpers import OWNER
 
+
+SECCOMP_PROFILE = Path(__file__).resolve().parents[1] / "dom/desktop/seccomp-chromium.json"
 
 PROBES = ["192.0.2.1:443", "192.0.2.2:22"]
 BRIDGE = IPv4Network("172.30.0.0/24")
@@ -104,7 +107,7 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
             ("docker", "run", "-d", "--name", "dom-desktop", "--pull=never",
              "--network", "dom-desktop", "-p", "127.0.0.1:18080:8080",
              "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
-             "--security-opt", "no-new-privileges", "--cpus", "3",
+             "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
              "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
              "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true",
              "-v", f"{tmp_path}/desktop-profile:/home/gem/.config/browser", config.desktop.image),
@@ -124,6 +127,35 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
         assert sandbox.client is None
         await sandbox.close()
     assert "secret-key" not in caplog.text
+
+
+def test_chromium_seccomp_changes_only_namespace_rules():
+    profile = json.loads(SECCOMP_PROFILE.read_text())
+    assert profile["defaultAction"] == "SCMP_ACT_ERRNO"
+    assert profile["defaultErrnoRet"] == 1
+
+    syscalls = profile["syscalls"]
+    clone_rules = [rule for rule in syscalls if rule["names"] == ["clone"]]
+    assert len(clone_rules) == 2
+    moby_mask = 0x7e020000
+    chromium_flags = 0x10000000 | 0x20000000 | 0x40000000  # CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNET
+    for index, rule in enumerate(clone_rules):
+        assert rule["action"] == "SCMP_ACT_ALLOW"
+        assert rule["args"] == [{
+            "index": index, "value": moby_mask & ~chromium_flags, "op": "SCMP_CMP_MASKED_EQ",
+        }]
+        rule["args"][0]["value"] = moby_mask
+
+    namespace_rule, = [rule for rule in syscalls if "clone3" in rule["names"] and "bpf" not in rule["names"]]
+    assert namespace_rule == {
+        "names": ["clone3", "setns", "unshare"], "action": "SCMP_ACT_ALLOW",
+        "excludes": {"caps": ["CAP_SYS_ADMIN"]},
+    }
+    namespace_rule.update(names=["clone3"], action="SCMP_ACT_ERRNO", errnoRet=38)
+
+    # Reconstruct the pinned Moby profile and check every other rule offline.
+    upstream = json.dumps(profile, sort_keys=True).encode()
+    assert hashlib.sha256(upstream).hexdigest() == "c1bd9400804f56f2b1f5dabbc34a1c8cfec2c6ebb91f02f38ba3f26af39d9011"
 
 
 def probe_call(config, targets):
