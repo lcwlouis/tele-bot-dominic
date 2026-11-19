@@ -228,3 +228,10 @@ def test_imported_history_is_marked_read(src, home):
             "FROM chats c WHERE EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = c.chat_id)"
         ).fetchall()
     assert rows and all(read == newest for read, newest in rows)
+
+
+def test_imported_history_is_not_fed_to_the_memory_pass(src, home):
+    import_v2(src, home, OWNER)
+    with sqlite3.connect(home / "state.db") as conn:
+        rows = conn.execute("SELECT memory_cursor_msg_id, last_read_msg_id FROM chats WHERE last_read_msg_id IS NOT NULL").fetchall()
+    assert rows and all(cursor == read for cursor, read in rows)

@@ -220,3 +220,5 @@ async def _finish_database(
             "(SELECT MAX(msg_id) FROM messages m WHERE m.chat_id = chats.chat_id) "
             "WHERE EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = chats.chat_id AND m.msg_id IS NOT NULL)"
         )
+        # Likewise the background memory pass starts from now, not from months of imported history.
+        conn.execute("UPDATE chats SET memory_cursor_msg_id = COALESCE(last_read_msg_id, memory_cursor_msg_id)")
