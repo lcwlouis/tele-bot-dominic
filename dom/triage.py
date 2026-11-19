@@ -17,6 +17,10 @@ _ACTION_CRITERIA = {
 }
 # Only choices supported by Telegram's ReactionTypeEmoji.
 _EMOJI_CRITERIA = {
+    "🤣": "Something is funny.",
+    "❤": "Warmth, support or affection.",
+    "💯": "Strong agreement; facts.",
+    "🗿": "Deadpan or unimpressed.",
     "🔥": "Impressed or excited.",
     "👍": "Acknowledgement or agreement.",
     "🤡": "Playful teasing about something foolish.",
