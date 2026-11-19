@@ -26,6 +26,7 @@ from dom.media import MediaDescriber
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
 from dom.store import Store
+from dom.search import SearchClient
 from dom.traits import load_preset
 from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
@@ -50,6 +51,7 @@ class App:
     jev: JevClient | None = None
     bot_id: int | None = None
     media_describer: MediaDescriber | None = None
+    search_client: SearchClient | None = None
     dispatch: Dispatcher = field(init=False)
 
     def __post_init__(self) -> None:

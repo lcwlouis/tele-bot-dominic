@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 def describe(app: App, scope: Scope) -> str:
     tools = "; ".join(
         f"{tool.name} ({tool.description.split('. ', 1)[0].rstrip('.')})"
-        for tool in core_tools() if scope in tool.scopes
+        for tool in core_tools(app.search_client) if scope in tool.scopes
     )
     media = ", photos, GIFs, video, voice" if app.media_describer is not None else ""
     desktop = "off" if app.config.desktop_mode == "off" else "unavailable"
