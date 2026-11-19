@@ -161,7 +161,7 @@
   - adds `chats.bot_depth INTEGER NOT NULL DEFAULT 0`
   - sets `user_version = 5`
 
-- [ ] **Step 1.** Port the V2 tests. Replace every `OWNER_ID` with `111`. Add:
+- [ ] **Step 1.** Port the V2 tests. Replace the real owner ID with `111`. Add:
   - `test_scope_for_owner_private_vs_group`
   - `test_v4_db_upgrades_to_5_preserving_rows`: build a DB at version 4 with V2 migrations 0001–0003, then open it with `Store`.
 - [ ] **Step 2.** Run the tests. Expected: FAIL.
