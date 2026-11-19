@@ -424,3 +424,24 @@ async def test_edit_in_unapproved_chat_is_not_recorded(make_app):
     await app.store.set_chat_auth_status(str(GROUP), "ignored")
     await handlers.handle_edited_message(app, tg(text="x", msg_id=9).model_copy(update={"edit_date": 1}))
     assert await app.store.get_recent_chat_window(GROUP) == []
+
+
+# ---- anonymous admins --------------------------------------------------------------
+
+def anonymous_admin(text="@dombot hi", msg_id=1):
+    sender_chat = Chat(id=GROUP, type="supergroup", title="The Group")
+    anon = User(id=1087968824, is_bot=True, first_name="Group", username="GroupAnonymousBot")
+    return tg(text=text, msg_id=msg_id).model_copy(update={"from_user": anon, "sender_chat": sender_chat})
+
+
+def test_convert_anonymous_admin_uses_sender_chat():
+    inc = to_incoming(anonymous_admin())
+    assert (inc.sender_id, inc.sender_name, inc.is_bot, inc.sender_handle) == (GROUP, "The Group", False, None)
+
+
+async def test_anonymous_admin_message_is_not_dropped_as_bot(make_app):
+    app = make_app()
+    await approve(app, GROUP)
+    await handlers.handle_message(app, anonymous_admin())
+    assert len(app.script.requests) == 1
+    assert [m.sender_user_id for m in await app.store.get_recent_chat_window(GROUP)][0] == GROUP

@@ -22,11 +22,14 @@ def _media(message: Message) -> dict | None:
 def to_incoming(message: Message) -> IncomingMessage:
     user = message.from_user
     chat = message.chat
-    if user is not None:
-        sender_id, sender_name, username, is_bot = user.id, user.full_name, user.username, user.is_bot
-    else:  # a message sent on behalf of a chat (anonymous admin, channel)
-        sender = message.sender_chat or chat
+    if message.sender_chat is not None:  # sent on behalf of a chat (anonymous admin, channel post)
+        # Telegram still fills from_user with a placeholder bot (GroupAnonymousBot): ignore it.
+        sender = message.sender_chat
         sender_id, sender_name, username, is_bot = sender.id, sender.title or "", None, False
+    elif user is not None:
+        sender_id, sender_name, username, is_bot = user.id, user.full_name, user.username, user.is_bot
+    else:
+        sender_id, sender_name, username, is_bot = chat.id, chat.title or "", None, False
     return IncomingMessage(
         chat_id=chat.id,
         chat_type=chat.type,
