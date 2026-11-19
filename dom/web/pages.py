@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import math
 from collections import defaultdict
 from datetime import datetime, time, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import parse_qs, urlencode
@@ -16,12 +19,16 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from dom import traits
+from dom.agent import unfence
+from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.presence import read_habits
 from dom.telegram import owner
+from dom.usage import check_model_allowed, model_request
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Environment(
     loader=FileSystemLoader(Path(__file__).with_name("templates")),
@@ -252,7 +259,7 @@ async def index(request: Request):
     chats = await _chats(app)
     return render(
         "dashboard.html", active="now", dial=await _dial(app, chats["rows"]), chats=chats,
-        proposals=await _proposals(app), usage=await _usage(app), turns=await _turns(app),
+        proposals=await _proposals(app), usage=await _usage(app), memory=await _memory(app), turns=await _turns(app),
     )
 
 
@@ -345,3 +352,130 @@ async def usage_page(request: Request):
 @router.get("/turns", response_class=HTMLResponse)
 async def turns_page(request: Request, chat: str = ""):
     return panel(request, "turns", **await _turns(owner_app(request), chat))
+
+
+MEMORY = "memory/MEMORY.md"
+HABITS = "memory/HABITS.md"
+SOUL = "SOUL.md"
+SOUL_INSTRUCTIONS = (
+    "Suggest one small change to Dom's SOUL.md in response to the owner's request. "
+    "Return only a JSON object with old and new string fields. The old text must occur "
+    "exactly once in SOUL.md. The new text replaces just those characters. "
+    f"Each string may contain at most {MAX_SOUL_EDIT} characters. "
+    "Keep private details from the request out of the proposed text, since SOUL.md is shared with other chats."
+)
+
+
+async def _memory(app: App, file: str = MEMORY, *, soul_chat: bool = False) -> dict:
+    people, chats = app.home.list_memory_notes()
+    known = {c["chat_id"]: c for c in await app.store.list_chats()}
+    known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
+    chat_notes, owner_notes = [], []
+    for rel in chats:
+        chat_id = Path(rel).stem
+        if chat_id == str(app.owner_id):
+            owner_notes.append((rel, "Your DM notes"))
+        else:
+            chat = known.get(chat_id, {"chat_id": chat_id, "title": ""})
+            label = _title(chat, app.owner_id) if chat_id.startswith("-") else f"Friend DM · {_title(chat, app.owner_id)}"
+            chat_notes.append((rel, label))
+    sections = [
+        ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
+        ("People", [(rel, Path(rel).name) for rel in people]),
+        ("Chats", chat_notes),
+        ("Only in your DM", [
+            ("private/USER.md", "USER.md"), ("private/NOTES.md", "NOTES.md"),
+            ("private/JOURNAL.md", "Private journal"), *owner_notes,
+        ]),
+    ]
+    labels = {rel: label for _, files in sections for rel, label in files}
+    if file not in labels:
+        raise HTTPException(404, "Unknown memory file.")
+    home = app.home.scoped(allow_private=file.startswith("private/"))
+    try:
+        content = home.read_memory_file(file)
+    except (OSError, ValueError):
+        raise HTTPException(404, "Memory file unavailable.") from None
+    return {
+        "sections": sections, "file": file, "label": labels[file], "readonly": file == HABITS,
+        "limit": MAX_SOUL if file == SOUL else limit_for(file), "soul_chat": soul_chat,
+        "content": content, "version": content_version(content),
+    }
+
+
+@router.get("/memory", response_class=HTMLResponse)
+async def memory_page(request: Request, file: str = MEMORY, talk: bool = False):
+    return panel(request, "memory", **await _memory(owner_app(request), SOUL if talk else file, soul_chat=talk))
+
+
+@router.post("/memory/save", response_class=HTMLResponse)
+async def save_memory(request: Request):
+    app = owner_app(request)
+    data = await form(request, max_bytes=1024 * 1024)
+    file = data.get("file", [""])[0]
+    if file == HABITS:
+        raise HTTPException(403, "HABITS.md is read-only.")
+    context = await _memory(app, file)
+    if "content" not in data or "version" not in data:
+        raise HTTPException(400, "Expected the edited text and file version.")
+    content = data["content"][0].replace("\r\n", "\n").replace("\r", "\n")
+    version = data["version"][0]
+    home = app.home.scoped(allow_private=file.startswith("private/"))
+    try:
+        result = home.save_memory(file, content, version)
+    except (OSError, ValueError):
+        log.exception("could not save a dashboard memory file")
+        return render("memory.html", context=context | {
+            "error": "Couldn't save this file. Check that Dom can write to it.",
+            "content": content, "version": version,
+        })
+    if not result.ok:
+        return render("memory.html", context=context | {"error": result.error, "content": content, "version": version})
+    label = context["label"]
+    await owner.record_event(app, f"Saved {file} in the dashboard")
+    return render("memory.html", context=context | {
+        "message": f"Saved {label}.", "content": result.content, "version": content_version(result.content),
+    })
+
+
+@router.post("/memory/soul", response_class=HTMLResponse)
+async def soul_chat(request: Request):
+    app = owner_app(request)
+    context = await _memory(app, SOUL, soul_chat=True)
+    data = await form(request, max_bytes=MAX_SOUL_EDIT * 12 + 1024)
+    text = data.get("message", [""])[0].strip()
+    if not text or len(text) > MAX_SOUL_EDIT:
+        return render("memory.html", context=context | {
+            "error": f"Enter a message of 1 to {MAX_SOUL_EDIT:,} characters.",
+        })
+    if len(context["content"]) > MAX_SOUL:
+        return render("memory.html", context=context | {"error": "Shorten SOUL.md before asking for a proposal."})
+    messages = [
+        {"role": "system", "content": SOUL_INSTRUCTIONS},
+        {"role": "user", "content": json.dumps({"soul": context["content"], "request": text}, ensure_ascii=False)},
+    ]
+    chat_id = app.owner_id
+    try:
+        async with asyncio.timeout(30):
+            with model_request("chat", chat_id, partial(app.dispatch.turn_allowed, chat_id, "owner_dm")):
+                await check_model_allowed()
+                reply = await app.client.complete(messages, [], once=True)
+        edit = json.loads(unfence(reply.get("content")))
+        if (
+            not isinstance(edit, dict) or edit.keys() != {"old", "new"}
+            or any(not isinstance(value, str) for value in edit.values()) or edit["old"] == edit["new"]
+        ):
+            raise ValueError("Dom didn't return a replacement. Try asking for one specific change.")
+        proposal_id = await app.proposals.create("soul_edit", "Soul edit from the dashboard", edit, "dashboard", notify=False)
+    except ValueError as exc:
+        error = str(exc) if not isinstance(exc, json.JSONDecodeError) else "Dom didn't return an edit. Try again."
+        return render("memory.html", context=context | {"error": error, "request_text": text})
+    except Exception as exc:
+        log.warning("dashboard soul chat failed (%s)", type(exc).__name__)
+        return render("memory.html", context=context | {
+            "error": "Couldn't get a proposal from Dom. Try again.", "request_text": text,
+        })
+    await owner.record_event(app, f"Dom proposed a soul edit (#{proposal_id}) from the dashboard")
+    return render("memory.html", context=context | {
+        "request_text": text, "edit": edit, "proposal_id": proposal_id,
+    })

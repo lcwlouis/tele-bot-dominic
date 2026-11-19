@@ -15,3 +15,18 @@ document.addEventListener("htmx:beforeSwap", (event) => {
         { duration: 180, easing: "ease-in", fill: "forwards" },
     );
 });
+
+document.addEventListener("input", (event) => {
+    if (event.target.id !== "memory-text") {
+        return;
+    }
+    const counter = event.target.form.querySelector(".fill");
+    const length = Array.from(event.target.value).length;
+    counter.querySelector("[data-count]").textContent = length.toLocaleString("en-US");
+    const limit = Number(counter.dataset.limit);
+    if (limit) {
+        const ring = counter.querySelector(".fill-value");
+        ring.setAttribute("stroke-dashoffset", Math.max(0, 1 - length / limit));
+        ring.classList.toggle("over", length > limit);
+    }
+});
