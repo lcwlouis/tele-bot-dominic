@@ -129,13 +129,31 @@ class LocalSandbox:
             raise SandboxError("Docker is unavailable") from None
         return process.returncode, stdout
 
-    async def _discard(self) -> None:
-        """Best effort: nothing else owns the container, so stop and remove it whatever state it is in."""
-        for verb in ("stop", "rm"):
-            try:
-                await self._docker(verb, CONTAINER)
-            except SandboxError:
-                return
+    async def _docker_to_completion(self, *args: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
+        """A cancelled `docker run` leaves its CLI running, and it may still create the container.
+        Wait for it so cleanup sees the container."""
+        call = asyncio.ensure_future(self._docker(*args, env=env))
+        try:
+            return await asyncio.shield(call)
+        except asyncio.CancelledError:
+            await asyncio.gather(call, return_exceptions=True)
+            raise
+
+    async def _discard(self) -> bool:
+        """Best effort: nothing else owns the container, so stop and remove it whatever state it is in.
+        Failures are logged; the result says whether the container is gone."""
+        try:
+            if (await self._docker("container", "inspect", "--format", "{{.State.Running}}", CONTAINER))[0]:
+                return True  # no such container
+            gone = True
+            for verb in ("stop", "rm"):
+                if (await self._docker(verb, CONTAINER))[0]:
+                    log.warning("could not %s the desktop container", verb)
+                    gone = False
+            return gone
+        except SandboxError:
+            log.warning("could not discard the desktop container: Docker is unavailable")
+            return False
 
     async def _remove_container(self, running: bool) -> None:
         if running and (await self._docker("stop", CONTAINER))[0]:
@@ -160,7 +178,9 @@ class LocalSandbox:
                 raise SandboxError(self.error) from None
             except asyncio.CancelledError:
                 self._status = "stopped"
-                await asyncio.shield(self._discard())
+                if not await asyncio.shield(self._discard()):
+                    self._status = "error"
+                    self.error = "could not remove the desktop container"
                 raise
             self._status = "ready"
             self.touch()
@@ -220,7 +240,7 @@ class LocalSandbox:
             raise SandboxError("desktop profile must be outside DOM_HOME")
         profile.mkdir(mode=0o700, parents=True, exist_ok=True)
         key = secrets.token_urlsafe(32)
-        code, _ = await self._docker(
+        code, _ = await self._docker_to_completion(
             "run", "-d", "--name", CONTAINER, "--pull=never", "--network", settings.network,
             "-p", f"127.0.0.1:{settings.port}:8080", "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
             "--security-opt", "no-new-privileges", "--cpus", "3",

@@ -11,6 +11,7 @@ from dom.desktop.client import SandboxClient, SandboxError, url_host
 from dom.desktop.network import PROBE_SCRIPT as PROBE
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 from dom.desktop.worker import DesktopWorker
+from tghelpers import OWNER
 
 
 PROBES = ["192.0.2.1:443", "192.0.2.2:22"]
@@ -29,6 +30,9 @@ class FakeDocker:
         self.probe = probe
         self.network = network
         self.probe_image = probe_image
+        self.failing = set()  # docker verbs that exit 1
+        self.run_gate = None  # an Event a plain "docker run" waits for
+        self.run_entered = asyncio.Event()
         self.running = False
         self.environments = []
 
@@ -46,8 +50,12 @@ class FakeDocker:
         elif command == "run" and "--rm" in args:
             code, output = self.probe, b""
         else:
-            self.running = command == "run"
-            code, output = 0, b""
+            if command == "run" and self.run_gate is not None:
+                self.run_entered.set()
+                await self.run_gate.wait()
+            code, output = (1 if command in self.failing else 0), b""
+            if not code:
+                self.running = command == "run"
         return Process(code, output)
 
     def started(self):
@@ -405,6 +413,108 @@ def test_probe_script_passes_only_a_timeout_and_requires_the_control(tmp_path):
     with ThreadPoolExecutor(len(cases)) as pool:
         codes = dict(zip(cases, pool.map(run, cases)))
     assert codes == {name: expected for name, (_, _, expected) in cases.items()}
+
+
+async def test_cancel_during_docker_run_waits_for_the_cli_before_cleanup(tmp_path):
+    docker = FakeDocker()
+    docker.run_gate = asyncio.Event()
+    sandbox = LocalSandbox(local_config(tmp_path), run=docker)
+    start = asyncio.create_task(sandbox.ensure_running())
+    await asyncio.wait_for(docker.run_entered.wait(), 2)
+    start.cancel()
+    await asyncio.sleep(0.02)
+    assert not start.done()  # waiting for the CLI that may still create the container
+    assert [call[1] for call in docker.calls][-1] == "run"
+    docker.run_gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await start
+    assert stop_and_remove(docker)
+    assert sandbox.status() == "stopped"
+    await sandbox.close()
+
+
+@pytest.mark.parametrize("verb", ["stop", "rm"])
+async def test_discard_checks_exit_codes_and_logs_failures(tmp_path, caplog, verb):
+    docker = FakeDocker()
+    docker.running = True
+    docker.failing = {verb}
+    sandbox = LocalSandbox(local_config(tmp_path), run=docker)
+    sandbox._status = "ready"
+    await sandbox.close()
+    assert f"could not {verb} the desktop container" in caplog.text
+    assert [call[1] for call in docker.calls if call[1] in ("stop", "rm")] == ["stop", "rm"]  # a failed stop still tries rm
+
+
+async def test_discard_is_quiet_when_there_is_no_container(tmp_path, caplog):
+    docker = FakeDocker()
+    sandbox = LocalSandbox(local_config(tmp_path), run=docker)
+    sandbox._status = "error"
+    await sandbox.close()
+    assert "could not" not in caplog.text
+    assert [call[1] for call in docker.calls] == ["container"]
+
+
+async def test_cancelling_a_task_stops_and_removes_the_running_container(make_app, tmp_path):
+    from test_desktop_worker import Model, task_row, wait_status
+
+    app = make_app()
+    docker = FakeDocker()
+    entered = asyncio.Event()
+
+    async def blocked():
+        entered.set()
+        await asyncio.Future()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"success": True, "data": None}),
+    )) as http:
+        sandbox = app.sandbox = LocalSandbox(local_config(tmp_path), run=docker, http=http)
+        app.client = Model(blocked, {"content": "invalid"})
+        app.desktop_worker = worker = DesktopWorker(app, sandbox)
+        app.config = app.config.model_copy(update={"desktop_mode": "local"})
+        task_id = await worker.enqueue(OWNER, "Example")
+        await asyncio.wait_for(entered.wait(), 2)
+        assert sandbox.status() == "ready" and docker.running
+        assert await worker.cancel(OWNER, task_id)
+        assert stop_and_remove(docker)
+        assert sandbox.status() == "stopped" and sandbox.client is None
+        assert (await task_row(app, task_id))["status"] == "cancelled"
+        await sandbox.close()
+
+
+async def test_cancel_releases_the_worker_lock_while_it_waits_for_the_sandbox(make_app):
+    from test_desktop_worker import Model, Sandbox, task_row, wait_task
+
+    app = make_app()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Slow(Sandbox):
+        stops = 0
+
+        async def stop(self):
+            entered.set()
+            await release.wait()
+            Slow.stops += 1
+
+    async def blocked():
+        await asyncio.Future()
+
+    sandbox = app.sandbox = Slow()
+    app.client = Model(blocked, {"content": "invalid"}, {"content": "invalid"})
+    app.desktop_worker = worker = DesktopWorker(app, sandbox)
+    app.config = app.config.model_copy(update={"desktop_mode": "local"})
+    task_id = await worker.enqueue(OWNER, "Example")
+    await asyncio.sleep(0.01)
+    cancelling = asyncio.create_task(worker.cancel(OWNER, task_id))
+    await asyncio.wait_for(entered.wait(), 2)
+    assert not worker.control.locked()  # the lock is not held while the sandbox lock is awaited
+    with pytest.raises(ValueError, match="shutting down"):  # but the stop is reserved: no new task can claim the container
+        await worker.enqueue(OWNER, "Another")
+    release.set()
+    assert await cancelling
+    assert Slow.stops == 1
+    await worker.enqueue(OWNER, "Another")  # reservation released
+    await wait_task(worker)
 
 
 def stop_and_remove(docker):

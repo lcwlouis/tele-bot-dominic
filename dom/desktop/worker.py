@@ -51,6 +51,7 @@ class DesktopWorker:
         self.work_seconds = work_seconds
         self.handoff_seconds = handoff_seconds
         self._job: asyncio.Task | None = None
+        self._stopping = 0  # cancels reserved but not finished: no new task may claim the container meanwhile
         self.control = asyncio.Lock()
         self._handoff: tuple[int, int, asyncio.Event] | None = None
         self.handoff_host: str | None = None  # the page the owner is asked to log in on
@@ -72,6 +73,8 @@ class DesktopWorker:
         async with self.control:
             if self._job is not None and not self._job.done():
                 raise ValueError("I'm already on something")
+            if self._stopping:
+                raise ValueError("I'm shutting down the desktop; try again in a moment")
             if not self.available():
                 raise ValueError("desktop is unavailable")
             task_id = await self.app.store.enqueue_desktop_task(chat_id, brief.strip())
@@ -126,8 +129,21 @@ class DesktopWorker:
                 self._job.cancel()
                 await asyncio.gather(self._job, return_exceptions=True)
             await self.app.store.record_owner_event(f"Cancelled desktop task #{task_id}")
+            self._stopping += 1  # reserved under the lock; the wait for the sandbox lock happens outside it
+        try:
+            await self._stop_sandbox()
+        finally:
+            self._stopping -= 1
         await self._report(row)
         return True
+
+    async def _stop_sandbox(self) -> None:
+        if (stop := getattr(self.sandbox, "stop", None)) is None:
+            return
+        try:
+            await stop()
+        except SandboxError as exc:
+            log.warning("could not stop the desktop after a cancel (%s)", exc)
 
     async def resume(self, chat_id: int, task_id: int, steps: int) -> bool:
         async with self.control:
