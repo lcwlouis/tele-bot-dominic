@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import PurePosixPath
 from typing import Any
@@ -14,6 +15,8 @@ class SandboxError(RuntimeError):
     pass
 
 
+JSON_LIMIT = 2_000_000
+SCREENSHOT_LIMIT = 5_000_000
 _HOST = re.compile(r"[a-z0-9.:-]{1,253}")
 
 
@@ -39,52 +42,55 @@ class SandboxClient:
     def redact(self, text: str) -> str:
         return text.replace(self._api_key, "[redacted]") if self._api_key else text
 
-    def _check(self, response: httpx.Response, *, envelope: bool = True) -> Any:
+    def _check(self, response: httpx.Response, body: bytes, *, envelope: bool = True) -> Any:
         data = None
-        if envelope or response.is_error:
+        if envelope or response.is_error or response.headers.get("content-type", "").startswith("application/json"):
             try:
-                data = response.json()
+                data = json.loads(body)
             except ValueError:
                 pass
         if isinstance(data, dict):
             message = data.get("message")
             if (response.is_error or data.get("success") is False) and isinstance(message, str):
                 raise SandboxError(self.redact(message))
+            if data.get("success") is False and not envelope:
+                raise SandboxError("sandbox reported an error")
         if not response.is_success:
             raise SandboxError(f"HTTP {response.status_code}")
         if envelope:
             if not isinstance(data, dict) or data.get("success") is not True or "data" not in data:
                 raise SandboxError("invalid sandbox response")
             return data["data"]
+        return body
 
-    async def _json(self, path: str, body: dict | None = None, *, timeout: int = 30, **kwargs) -> Any:
-        try:
-            response = await self.http.request(
-                "POST" if body is not None or "files" in kwargs else "GET",
-                f"{self.base_url}/v1/{path}", headers=self.auth_headers(), json=body,
-                timeout=timeout, follow_redirects=False, **kwargs,
-            )
-        except httpx.HTTPError as exc:
-            raise SandboxError(f"sandbox request failed ({type(exc).__name__})") from None
-        return self._check(response)
-
-    async def _bytes(self, path: str, *, params: dict | None = None, max_bytes: int | None = None) -> bytes:
+    async def _fetch(
+        self, method: str, path: str, *, limit: int | None, timeout: int = 30, **kwargs,
+    ) -> tuple[httpx.Response, bytes]:
+        """Read the body as a stream so a hostile sandbox cannot make Dom buffer more than `limit`."""
         try:
             async with self.http.stream(
-                "GET", f"{self.base_url}/v1/{path}", headers=self.auth_headers(),
-                params=params, timeout=30, follow_redirects=False,
+                method, f"{self.base_url}/v1/{path}", headers=self.auth_headers(),
+                timeout=timeout, follow_redirects=False, **kwargs,
             ) as response:
-                if response.is_error:
-                    await response.aread()
-                self._check(response, envelope=False)
-                content = bytearray()
+                body = bytearray()
                 async for chunk in response.aiter_bytes(chunk_size=65536):
-                    if max_bytes is not None and len(content) + len(chunk) > max_bytes:
-                        raise SandboxError(f"file exceeds {max_bytes} bytes")
-                    content.extend(chunk)
-                return bytes(content)
+                    if limit is not None and len(body) + len(chunk) > limit:
+                        raise SandboxError(f"sandbox response exceeds {limit} bytes")
+                    body.extend(chunk)
+                return response, bytes(body)
         except httpx.HTTPError as exc:
             raise SandboxError(f"sandbox request failed ({type(exc).__name__})") from None
+
+    async def _json(self, path: str, body: dict | None = None, *, timeout: int = 30, **kwargs) -> Any:
+        response, content = await self._fetch(
+            "POST" if body is not None or "files" in kwargs else "GET", path,
+            limit=JSON_LIMIT, timeout=timeout, json=body, **kwargs,
+        )
+        return self._check(response, content)
+
+    async def _bytes(self, path: str, *, params: dict | None = None, max_bytes: int | None = None) -> bytes:
+        response, content = await self._fetch("GET", path, limit=max_bytes, params=params)
+        return self._check(response, content, envelope=False)
 
     async def health(self) -> str | None:
         return await self._json("sandbox")
@@ -123,7 +129,7 @@ class SandboxClient:
         return None
 
     async def screenshot(self) -> bytes:
-        return await self._bytes("browser/screenshot")
+        return await self._bytes("browser/screenshot", max_bytes=SCREENSHOT_LIMIT)
 
     async def captcha_detect(self) -> Any:
         return await self._json("browser/captcha/detect")

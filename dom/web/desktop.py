@@ -160,7 +160,7 @@ async def vnc_websocket(websocket: WebSocket):
                 for task in relays:
                     task.cancel()
                 await asyncio.gather(*relays, return_exceptions=True)
-    except (OSError, TimeoutError, WebSocketException):
+    except (OSError, RuntimeError, TimeoutError, WebSocketException):
         code = 1011
     except WebSocketDisconnect:
         return

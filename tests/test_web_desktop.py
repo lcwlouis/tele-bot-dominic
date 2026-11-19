@@ -192,3 +192,32 @@ async def test_start_does_not_hold_the_worker_lock_while_the_computer_boots(make
         worker.control.release()
         gate.set()
         assert (await request).status_code == 200
+
+
+async def test_runtime_error_in_the_websocket_relay_closes_cleanly(make_app, monkeypatch):
+    app = make_app()
+    app.sandbox = FakeSandbox()
+    web = dashboard(app, monkeypatch)
+
+    @asynccontextmanager
+    async def connect(url, **kwargs):
+        yield FakeUpstream()
+
+    async def broken(websocket, upstream, sandbox):
+        raise RuntimeError('Cannot call "send" once a close message has been sent.')
+
+    monkeypatch.setattr("dom.web.desktop.connect_upstream", connect)
+    monkeypatch.setattr("dom.web.desktop._from_upstream", broken)
+    incoming, outgoing = asyncio.Queue(), asyncio.Queue()
+    scope = {
+        "type": "websocket", "scheme": "ws", "path": "/desktop/vnc/websockify", "root_path": "", "query_string": b"",
+        "subprotocols": ["binary"], "headers": [
+            (b"authorization", f"Bearer {TOKEN}".encode()),
+            (b"origin", b"http://dashboard.example.org"), (b"host", b"dashboard.example.org"),
+        ],
+    }
+    await incoming.put({"type": "websocket.connect"})
+    async with asyncio.timeout(2):
+        await web(scope, incoming.get, outgoing.put)
+    sent = [await outgoing.get() for _ in range(outgoing.qsize())]
+    assert sent[-1]["type"] == "websocket.close" and sent[-1]["code"] == 1011

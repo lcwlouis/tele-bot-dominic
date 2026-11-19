@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING
 
 from dom.actions import SendFile
@@ -160,7 +159,7 @@ class DesktopWorker:
         except (TimeoutError, SandboxError, ValueError, ModelCallSkipped) as exc:
             error = "desktop task time limit reached" if isinstance(exc, TimeoutError) else str(exc)
             if isinstance(exc, ModelCallSkipped):
-                error = progress.paused or "model calls are not allowed"
+                error = progress.paused or "paused by today's spend cap"
             row = await store.update_desktop_task(
                 task_id, chat_id, ("running", "waiting_owner"), "failed",
                 result=progress.note or f"Stopped after {progress.steps} steps: {error}"[:500], error=error[:500],

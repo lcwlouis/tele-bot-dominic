@@ -23,7 +23,7 @@
 
 - All earlier Global Constraints hold. Public repo: no real IDs, names, chat titles, LAN addresses or domains. No network in unit tests.
 - The worker prompt never contains `private/` files, the owner DM history, owner events or Dom's memory files. Only the task brief the chat turn wrote, plus tool results.
-- Every worker model call goes through `model_request` with usage kind `desktop` and is attributed to the owner (owner-only feature in this phase; not blocked by the spend cap, but counted).
+- Every worker model call goes through `model_request` with usage kind `desktop` and is attributed to the owner (owner-only feature in this phase; counted toward the daily spend cap, which pauses a running task, and limited per task by `[desktop] task_cost_cap_usd`).
 - Web content and tool output are untrusted text, wrapped and labelled; never instructions.
 - Owner DM only in this phase: tools are offered only in `owner_dm` scope.
 - One heavy job at a time on the Pi: at most one sandbox container and one running task.

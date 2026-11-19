@@ -9,7 +9,10 @@ import subprocess
 
 from dom.config import Config
 
-LAN_RANGES = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16")
+LAN_RANGES = (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+    "0.0.0.0/8", "192.0.0.0/24", "198.18.0.0/15", "224.0.0.0/3",
+)
 ESTABLISHED = ("-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED")
 
 
@@ -42,10 +45,12 @@ def setup(config: Config, run=subprocess.run) -> None:
     positions = {"DOCKER-USER": 0, "INPUT": 0}
     for chain, *args in rules(subnet):
         positions[chain] += 1
-        result = run(["iptables", "-C", chain, *args], capture_output=True)
+        result = run(["iptables", "-w", "-C", chain, *args], capture_output=True)
         if result.returncode == 0:
             continue
-        command = ["iptables", "-I", chain, str(positions[chain]), *args]
+        if result.returncode != 1:  # 1 means the rule is absent; anything else is a failure to ask
+            raise subprocess.CalledProcessError(result.returncode, result.args)
+        command = ["iptables", "-w", "-I", chain, str(positions[chain]), *args]
         run(command, check=True)
         print(shlex.join(command))
 

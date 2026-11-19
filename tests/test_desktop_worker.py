@@ -339,3 +339,47 @@ def test_task_cost_cap_default():
     assert DesktopConfig().task_cost_cap_usd == 0.5
     with pytest.raises(ValueError):
         DesktopConfig(task_cost_cap_usd=-1)
+
+
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "javascript:alert(1)", "data:text/html,hi", "chrome://settings", "https://", "example.org", ""])
+async def test_browse_accepts_only_http_and_https(make_app, url):
+    app = make_app()
+    worker = await worker_for(app, call("browse", url=url), {"content": "stop"}, {"content": "invalid"}, max_steps=2)
+    navigated = []
+
+    async def navigate(url):
+        navigated.append(url)
+
+    worker.sandbox.navigate = navigate
+    await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    assert navigated == []
+    assert "Tool error: invalid arguments" in str(app.client.requests[1][0])
+
+
+async def test_browse_passes_web_urls(make_app):
+    app = make_app()
+    worker = await worker_for(app, call("browse", url="HTTPS://example.org/a"), call("finish", result="ok"), {"content": "x"})
+    navigated = []
+
+    async def navigate(url):
+        navigated.append(url)
+
+    worker.sandbox.navigate = navigate
+    await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    assert navigated == ["HTTPS://example.org/a"]
+
+
+async def test_a_skipped_model_call_reports_the_spend_cap(make_app):
+    from dom.usage import ModelCallSkipped
+
+    async def skipped():
+        raise ModelCallSkipped
+
+    app = make_app()
+    worker = await worker_for(app, skipped, {"content": "invalid"})
+    task_id = await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    row = await task_row(app, task_id)
+    assert row["status"] == "failed" and row["error"] == "paused by today's spend cap"

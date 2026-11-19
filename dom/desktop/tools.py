@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit
 from xml.sax.saxutils import escape
 
 from dom.desktop.client import SandboxClient
@@ -78,7 +79,17 @@ def arguments(function: dict) -> tuple[str, dict]:
             raise ValueError("invalid tool arguments")
         if "enum" in properties[key] and value not in properties[key]["enum"]:
             raise ValueError("invalid tool arguments")
+    if name == "browse" and not _web_url(args["url"]):
+        raise ValueError("invalid tool arguments")
     return name, args
+
+
+def _web_url(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False
 
 
 def untrusted(value: Any) -> str:
