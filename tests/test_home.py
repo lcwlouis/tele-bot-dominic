@@ -21,6 +21,18 @@ def test_write_over_limit_rejected_unchanged(root):
     assert path.read_bytes() == before
 
 
+def test_over_limit_file_can_shrink_but_not_grow(root):
+    # Imported files may start over their limit; Dom must be able to prune them.
+    limit = LIMITS["memory/HABITS.md"]
+    path = root / "memory" / "HABITS.md"
+    path.write_text("- keep\n- " + "y" * limit)
+    home = Home(root)
+    assert home.memory_write("memory/HABITS.md", "add", "more").ok is False
+    res = home.memory_write("memory/HABITS.md", "remove", "", "y" * 10)
+    assert res.ok is True
+    assert path.read_text() == "- keep"
+
+
 def test_add_replace_remove_roundtrip(root):
     home = Home(root)
     assert home.memory_write("memory/MEMORY.md", "add", "likes tea").content == "- likes tea"

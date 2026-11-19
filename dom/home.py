@@ -93,7 +93,8 @@ class Home:
         else:
             return WriteResult(False, current, f"unknown op {op!r}")
 
-        if limit is not None and len(new) > limit:
+        # Shrinking is always allowed so a file that is already over its limit can be pruned.
+        if limit is not None and len(new) > limit and len(new) >= len(current):
             return WriteResult(
                 False,
                 current,
