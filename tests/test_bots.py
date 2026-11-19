@@ -119,3 +119,25 @@ async def test_bot_duplicate_check_is_scoped_to_the_chat(bot_chat):
     clock.advance(seconds=11)
     await bot_line(app, clock, 1, "repeat", chat_id=other)
     assert len(app.script.requests) == 2
+
+
+async def test_bot_rate_limit_is_per_chat(bot_chat):
+    app, clock = await bot_chat()
+    other = -2002
+    await app.store.set_chat_auth_status(other, "approved")
+    await app.dispatch.presence.go_online(other, parse_habits(""))
+    await bot_line(app, clock, 1, "first")
+    clock.advance(seconds=2)
+    await bot_line(app, clock, 1, "same bot, another chat", chat_id=other)
+    assert len(app.script.requests) == 2
+    clock.advance(seconds=1)
+    await bot_line(app, clock, 2, "too soon", chat_id=other)
+    assert len(app.script.requests) == 2
+
+
+async def test_old_bot_reply_times_are_pruned(bot_chat):
+    app, clock = await bot_chat()
+    await bot_line(app, clock, 1, "first")
+    clock.advance(seconds=61)
+    await bot_line(app, clock, 2, "much later", ANOTHER_BOT)
+    assert set(app.dispatch._bot_replies) == {(GROUP, ANOTHER_BOT.id)}

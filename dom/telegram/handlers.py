@@ -144,8 +144,8 @@ async def handle_message(app: App, message: Message) -> None:
                 target = msg.chat_id if len(parts) == 1 else int(parts[1])
             except ValueError:
                 return
-            if len(parts) <= 2:
-                await app.dispatch.override(target, command)
+            if len(parts) <= 2 and not await app.dispatch.override(target, command):
+                await app.bot.send_message(msg.chat_id, "unknown chat")
             return
     async with app.ingest_locks[msg.chat_id]:
         decision = await gate.decide(app.store, msg, app.owner_id)
