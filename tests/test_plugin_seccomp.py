@@ -49,3 +49,42 @@ def test_unknown_architecture_has_no_filter():
 def test_foreign_architecture_is_killed():
     program = runner._seccomp(True, "aarch64")
     assert sim.run(program, "x86_64", 0) == sim.RET_KILL
+
+
+# name: (aarch64, x86_64, armv7l), from the same kernel tables as SOCKETS above.
+HARDENED = {
+    "ptrace": (117, 101, 26), "bpf": (280, 321, 386), "perf_event_open": (241, 298, 364),
+    "userfaultfd": (282, 323, 388), "keyctl": (219, 250, 311), "add_key": (217, 248, 309),
+    "request_key": (218, 249, 310), "mount": (40, 165, 21), "umount2": (39, 166, 52),
+    "pivot_root": (41, 155, 218), "unshare": (97, 272, 337), "setns": (268, 308, 375),
+    "process_vm_readv": (270, 310, 376), "process_vm_writev": (271, 311, 377),
+    "open_by_handle_at": (265, 304, 371), "kcmp": (272, 312, 378),
+}
+# fork, vfork, clone, clone3, socketpair, io_uring_setup
+PROCESS = {
+    "aarch64": (220, 435, 199, 425), "x86_64": (56, 57, 58, 435, 53, 425), "armv7l": (2, 120, 190, 435, 288, 425),
+}
+# execve, openat, read, write, mmap, futex, prlimit64 are what bwrap, prlimit and Python themselves need.
+ORDINARY = {
+    "aarch64": (221, 56, 63, 64, 222, 98, 261), "x86_64": (59, 257, 0, 1, 9, 202, 302),
+    "armv7l": (11, 322, 3, 4, 192, 240, 369),
+}
+
+
+@pytest.mark.parametrize("network", [False, True])
+@pytest.mark.parametrize("machine", SOCKETS)
+def test_dangerous_syscalls_are_denied(machine, network):
+    program = runner._seccomp(network, machine)
+    column = list(SOCKETS).index(machine)
+    for name, numbers in HARDENED.items():
+        action = sim.run(program, machine, numbers[column])
+        assert sim.errno_of(action) == EPERM, name
+    for number in PROCESS[machine]:
+        assert sim.errno_of(sim.run(program, machine, number)) == EPERM, number
+    for number in ORDINARY[machine]:
+        assert sim.run(program, machine, number) == sim.RET_ALLOW, number
+
+
+@pytest.mark.parametrize("machine", SOCKETS)
+def test_x32_calls_are_denied(machine):
+    assert sim.errno_of(sim.run(runner._seccomp(True, machine), machine, 0x40000000 | 1)) == EPERM
