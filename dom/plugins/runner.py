@@ -22,6 +22,9 @@ from dom.plugins.manifest import Manifest, Plugin, read_plugin
 log = logging.getLogger(__name__)
 
 MAX_OUTPUT = 16 * 1024
+TMP_BYTES = 8 * 1024 * 1024  # size of the plugin's /tmp tmpfs
+FILE_BYTES = 1024 * 1024  # RLIMIT_FSIZE: largest file a plugin can write
+OPEN_FILES = 32  # RLIMIT_NOFILE; no clone, so no process limit is needed
 _BOOTSTRAP = 'import runpy, sys; sys.path.append("/plugin"); runpy.run_path("/plugin/main.py", run_name="__main__")'
 _PROCESS = Lock()
 _PROBE_LOCK = Lock()
@@ -177,9 +180,10 @@ class PluginRunner:
         for mount in mounts:
             cmd += ["--ro-bind", str(mount), str(mount)]
         return cmd + [
-            "--ro-bind", str(folder), "/plugin", "--tmpfs", "/tmp", "--proc", "/proc",
+            "--ro-bind", str(folder), "/plugin", "--size", str(TMP_BYTES), "--tmpfs", "/tmp", "--proc", "/proc",
             "--dev", "/dev", "--chdir", "/plugin", "--disable-userns", "--seccomp", str(filter_fd), "--",
             "/usr/bin/prlimit", f"--as={manifest.memory_mb * 1024 * 1024}", f"--cpu={manifest.timeout_seconds}",
+            f"--fsize={FILE_BYTES}", f"--nofile={OPEN_FILES}", "--core=0",
             "--", str(executable), "-I", "-S", "-c", _BOOTSTRAP,
         ]
 
