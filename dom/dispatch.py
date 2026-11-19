@@ -25,6 +25,7 @@ from dom.presence import Habits, Presence, State, parse_habits
 from dom.prompt import build_messages
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, core_tools
+from dom.traits import for_chat
 from dom.triage import persona_card, triage_offline, triage_online, triage_urgency
 from dom.usage import ModelCallSkipped, Usage, check_model_allowed, model_request
 
@@ -462,8 +463,10 @@ class Dispatcher:
         participants = [m.sender_user_id for m in window if m.role == "user" and m.sender_user_id is not None]
         if newest.sender_user_id is not None:
             participants.append(newest.sender_user_id)
+        sliders, preset = await for_chat(app.home, app.store, chat_id)
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window), note,
+            sliders=sliders, preset=preset,
         )
         ctx = TurnCtx(
             scope, chat_id, newest.sender_user_id, app.home, app.store, app.owner_id, self.presence, habits,

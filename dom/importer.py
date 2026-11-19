@@ -11,8 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dom.config import load_config, save_owner
-from dom.home import limit_for
+from dom.home import Home, limit_for, parse_front_matter
 from dom.store import Store
+from dom.traits import normalise
 
 # V2 kept these under identity/. Dom does not import them: the new soul is written fresh.
 LEGACY_NAMES = ("SOUL.md", "SCHEDULE.md", "TRAITS.json", "presets")
@@ -179,6 +180,26 @@ def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
             else:
                 shutil.copyfile(source, target)
             report.legacy.append(f"legacy/{name}")
+
+    # Keep the raw legacy copy and install normalised presets for use in chats.
+    installed: set[str] = set()
+    target_home = Home(home)
+    source_home = Home(src)
+    for directory in ("identity/presets", "presets"):
+        for source in sorted((src / directory).glob("*.md")):
+            if source.stem in installed or not _regular(src, source, report):
+                continue
+            rel = source.relative_to(src).as_posix()
+            text = source_home.read(rel)
+            meta, body = parse_front_matter(text)
+            if "traits" in meta:
+                header = [f"{key}: {meta[key]}" for key in ("title", "description") if key in meta]
+                header.append("traits:")
+                header.extend(f"  {key}: {value}" for key, value in normalise(meta["traits"]).items())
+                text = "\n".join(["---", *header, "---", body])
+            target_home.write_preset(source.stem, text)
+            installed.add(source.stem)
+            report.imported.append(f"presets/{source.name}")
 
     # database: plain file copies (never open the source), then migrate the copy
     for suffix in ("", "-wal"):

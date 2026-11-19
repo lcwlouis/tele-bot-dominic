@@ -51,8 +51,8 @@ def test_friend_dm_gets_no_private(home):
 
 def test_owner_dm_includes_private(home):
     msgs = build(home, scope="owner_dm", chat_id=111, participants=[111])
-    assert PRIVATE_USER in msgs[0]["content"] and PRIVATE_NOTES in msgs[0]["content"]
-    assert '<file path="private/USER.md">' in msgs[0]["content"]
+    assert PRIVATE_USER in msgs[1]["content"] and PRIVATE_NOTES in msgs[1]["content"]
+    assert '<file path="private/USER.md">' in msgs[1]["content"]
 
 
 def test_layout_and_order(home):
@@ -61,11 +61,12 @@ def test_layout_and_order(home):
     prefix = msgs[0]["content"]
     assert prefix.startswith(FRAME)
     order = [prefix.index(x) for x in (
-        "Soul body text.", "humor_level=0.5", '<file path="memory/MEMORY.md">',
-        '<file path="memory/HABITS.md">', '<file path="private/USER.md">', '<file path="private/NOTES.md">',
+        "Soul body text.", '<file path="memory/MEMORY.md">',
+        '<file path="memory/HABITS.md">',
     )]
     assert order == sorted(order)
     assert "- world fact" in prefix
+    assert msgs[1]["content"].startswith("Personality sliders (0 to 1): humor=0.5, emoji=0.25")
     assert "JOURNAL-NEVER-LOADED" not in blob(msgs)
     assert msgs[1]["content"].endswith("<chat_window>W</chat_window>\n\nTURN")
 

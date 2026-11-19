@@ -95,6 +95,7 @@ def test_owner_commands():
         ("sleep", "Send Dom to sleep"),
         ("pending", "Chats waiting for your approval"),
         ("chats", "Every group and DM Dom knows about"),
+        ("preset", "Change Dom's persona in a chat"),
     ]
 
 

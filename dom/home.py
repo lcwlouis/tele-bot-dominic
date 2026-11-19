@@ -117,6 +117,30 @@ class Home:
         path.write_text(new)
         return WriteResult(True, new)
 
+    def _write_regular(self, rel: str, content: str) -> None:
+        path = self._resolve(rel)
+        if path != self.root.resolve().joinpath(*PurePosixPath(rel).parts):
+            raise ValueError(f"{rel} is a link; expected a regular file")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def preset_names(self) -> list[str]:
+        try:
+            return sorted(path.stem for path in self.scoped(allow_private=False)._resolve("presets").glob("*.md"))
+        except (PrivateAccessError, ValueError):
+            return []
+
+    def preset(self, name: str) -> tuple[dict[str, Any], str] | None:
+        if not name or "/" in name or "\\" in name or name in (".", ".."):
+            return None
+        path = self.scoped(allow_private=False)._resolve(f"presets/{name}.md")
+        return parse_front_matter(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    def write_preset(self, name: str, content: str) -> None:
+        if not name or "/" in name or "\\" in name or name in (".", ".."):
+            raise ValueError("expected a preset filename without its extension")
+        self.scoped(allow_private=False)._write_regular(f"presets/{name}.md", content)
+
     def soul(self) -> tuple[dict[str, Any], str]:
         return parse_front_matter(self.read("SOUL.md"))
 

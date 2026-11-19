@@ -456,7 +456,7 @@ class Store:
 
     def _list_chats(self, status: str | None) -> list[dict[str, Any]]:
         sql = (
-            "SELECT chat_id, authorization_status, title, is_sleeping, is_offline, last_read_msg_id, updated_at "
+            "SELECT chat_id, authorization_status, title, preset, is_sleeping, is_offline, last_read_msg_id, updated_at "
             "FROM chats"
         )
         params = ()
@@ -468,6 +468,22 @@ class Store:
             chat["is_sleeping"] = bool(chat["is_sleeping"])
             chat["is_offline"] = bool(chat["is_offline"])
         return chats
+
+    async def get_chat_personality(self, chat_id: int | str) -> tuple[str, str]:
+        return await self._run(self._get_chat_personality, str(chat_id))
+
+    def _get_chat_personality(self, chat_id: str) -> tuple[str, str]:
+        row = self._conn.execute("SELECT preset, traits_json FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        return (row["preset"], row["traits_json"]) if row is not None else ("", "{}")
+
+    async def set_chat_preset(self, chat_id: int | str, preset: str) -> bool:
+        return await self._run(self._set_chat_preset, str(chat_id), preset)
+
+    def _set_chat_preset(self, chat_id: str, preset: str) -> bool:
+        return self._conn.execute(
+            "UPDATE chats SET preset = ?, updated_at = ? WHERE chat_id = ? AND authorization_status = 'approved'",
+            (preset, _now(), chat_id),
+        ).rowcount == 1
 
     async def list_approved_chats(self) -> list[dict[str, Any]]:
         """Read-only (never creates a row): every approved chat with its presence columns, when it last
