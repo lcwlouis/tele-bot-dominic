@@ -163,7 +163,8 @@ async def test_status_lists_approved_chats_with_buttons_and_a_footer(two_approve
     assert "1 unread" in body[2]
     assert lines[-1] == "Pending approval: 1 · Chat model: m · Triage model: n/a"
     assert buttons(markup) == [
-        [("☀️ Wake", f"wake:{chat}"), ("🌙 Sleep", f"sleep:{chat}")] for chat in (OWNER, FRIEND_GROUP, FRIEND)
+        [(f"☀️ {name}", f"wake:{chat}"), ("🌙 Sleep", f"sleep:{chat}")]
+        for chat, name in ((OWNER, "your DM"), (FRIEND_GROUP, "Book Club"), (FRIEND, "DM with Fran"))
     ]
     assert app.script.requests == []
 
@@ -223,7 +224,7 @@ async def test_wake_and_sleep_buttons_change_presence_and_refresh_the_status(two
     assert (chat_id, message_id) == (OWNER, 77)
     line = next(l for l in text.splitlines() if "DM with Fran" in l)
     assert "online until 12:30" in line
-    assert buttons(app.bot.edit_markups[-1])[0][0] == ("☀️ Wake", f"wake:{OWNER}")
+    assert buttons(app.bot.edit_markups[-1])[0][0] == ("☀️ your DM", f"wake:{OWNER}")
     assert await app.dispatch.presence.is_online(FRIEND, app.dispatch._habits())
 
     app.bot.calls.clear()
