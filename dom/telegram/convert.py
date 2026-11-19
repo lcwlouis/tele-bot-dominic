@@ -43,4 +43,5 @@ def to_incoming(message: Message) -> IncomingMessage:
         reply_to=message.reply_to_message.message_id if message.reply_to_message else None,
         media=_media(message),
         date=message.date,
+        thread_id=message.message_thread_id if message.is_topic_message else None,
     )

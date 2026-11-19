@@ -68,3 +68,4 @@ class IncomingMessage(BaseModel):
     reply_to: int | None
     media: dict | None
     date: datetime
+    thread_id: int | None = None  # forum topic to answer in

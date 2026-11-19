@@ -19,7 +19,7 @@ class FakeBot:
         self._next_id = 5000
 
     async def send_chat_action(self, chat_id, action, **kw):
-        self.calls.append(("action", chat_id, action))
+        self.calls.append(("action", chat_id, action, kw))
 
     async def send_message(self, chat_id, text, **kw):
         self._next_id += 1

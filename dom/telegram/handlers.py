@@ -124,7 +124,7 @@ async def _run_chat_turn(app: App, msg: IncomingMessage) -> None:
         home=app.home, store=app.store, owner_id=app.owner_id,
     )
     actions = await run_turn(app.client, messages, core_tools(), ctx)
-    await executor.perform(app.bot, app.store, msg.chat_id, msg.msg_id, actions, sleep=app.sleep)
+    await executor.perform(app.bot, app.store, msg.chat_id, msg.msg_id, actions, sleep=app.sleep, thread_id=msg.thread_id)
 
 
 def _claim_code(text: str, username: str) -> str | None:
