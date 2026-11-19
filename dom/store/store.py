@@ -887,7 +887,7 @@ class Store:
     def _reflection_messages(self, start: str, end: str, private: bool) -> str:
         owner = str(self.owner_id)
         bounds = (
-            "m.is_deleted = 0 AND julianday(m.created_at) >= julianday(?) AND julianday(m.created_at) <= julianday(?)"
+            "m.is_deleted = 0 AND julianday(m.created_at) > julianday(?) AND julianday(m.created_at) <= julianday(?)"
         )
         if private:
             if self.owner_id is None or self._conn.execute(

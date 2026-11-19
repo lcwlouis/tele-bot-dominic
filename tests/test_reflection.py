@@ -171,3 +171,42 @@ async def test_public_chat_content_is_bounded_and_escaped(make_app):
     assert "Books &amp; &lt;stuff&gt;" in excerpt
     assert "&lt;/message&gt;" in excerpt
     assert excerpt.endswith("</message>")
+
+
+async def test_reflection_covers_the_time_since_the_last_run_not_the_local_day(make_app):
+    from dom import reflection
+
+    app = make_app(contents=(json.dumps(PUBLIC), json.dumps(PUBLIC)))
+    clock = app.dispatch.now
+    clock.at = clock.at.replace(hour=22)
+    await title(app, GROUP, "Book Club")
+    await record(app, "FIRST-RUN-TEXT", delta=timedelta(hours=1))
+    await record(app, "AT-THE-BOUNDARY")
+    await reflection.run(app)
+    first = app.script.requests[0]["messages"][1]["content"]
+    assert "FIRST-RUN-TEXT" in first and "AT-THE-BOUNDARY" in first
+
+    clock.advance(days=1)
+    await record(app, "LATE-EVENING", delta=timedelta(hours=22, minutes=30))  # 23:30 the day before
+    await reflection.run(app)
+    second = app.script.requests[1]["messages"][1]["content"]
+    assert "LATE-EVENING" in second
+    assert "FIRST-RUN-TEXT" not in second and "AT-THE-BOUNDARY" not in second
+
+
+async def test_early_morning_run_reads_yesterday_and_dates_the_entry_to_the_waking_day(make_app):
+    from dom import reflection
+
+    app = make_app(contents=(json.dumps(PUBLIC), json.dumps(PRIVATE)))
+    clock = app.dispatch.now
+    clock.at = clock.at.replace(day=2, hour=1, minute=30)  # sleep starts 02:30, so this run is due
+    assert reflection.due(clock(), parse_habits("sleep: 02:30-09:00"))
+    await title(app, GROUP, "Book Club")
+    await record(app, "YESTERDAY-AFTERNOON", delta=timedelta(hours=10))
+    await record(app, "YESTERDAY-EVENING", OWNER, delta=timedelta(hours=3))
+    await reflection.run(app)
+
+    public, private = (request["messages"][1]["content"] for request in app.script.requests)
+    assert "YESTERDAY-AFTERNOON" in public and "YESTERDAY-EVENING" in private
+    assert "## 2026-01-01\nmood: quietly amused" in app.home.read("memory/JOURNAL.md")
+    assert "## 2026-01-01\nput a kettle on." in app.home.scoped(allow_private=True).read("private/JOURNAL.md")
