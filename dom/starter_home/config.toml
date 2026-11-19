@@ -3,6 +3,8 @@
 timezone = "UTC"
 window_size = 80
 daily_spend_cap_usd = 1.0  # 0 disables the cap
+leak_check = false
+leak_threshold = 1.5
 
 [models.chat]
 base_url = "https://openrouter.ai/api/v1"

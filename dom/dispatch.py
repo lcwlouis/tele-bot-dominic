@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
+from dom import guard
 from dom.actions import Actions, Bubble
 from dom.agent import run_turn
 from dom.capabilities import describe
@@ -457,6 +458,8 @@ class Dispatcher:
         actions = await self._compose_turn(
             chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
         )
+        if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
+            return
         try:
             await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
@@ -467,6 +470,46 @@ class Dispatcher:
                 now = self.now()
                 self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}
                 self._bot_replies[(chat_id, newest.sender_user_id)] = now
+
+    async def _hold_for_leak_check(
+        self, chat_id: int, scope: Scope, actions: Actions, title: str,
+    ) -> bool:
+        app = self.app
+        if scope == "owner_dm" or not app.config.leak_check or actions.no_response or not actions.bubbles:
+            return False
+        text = "\n".join(bubble.text for bubble in actions.bubbles)
+        try:
+            with model_request("guard", chat_id, partial(self.model_allowed, chat_id)):
+                await check_model_allowed()
+                score = await guard.leak_score(self.jev, guard.private_terms(app.home), text)
+        except ModelCallSkipped:
+            if not await app.store.is_chat_approved(chat_id):
+                raise
+            return False  # the spend cap pauses the guard, while the completed turn may be sent
+
+        if not await app.store.is_chat_approved(chat_id):
+            raise ModelCallSkipped
+        if score is None:
+            log.warning("leak check unavailable in chat %s; sending", chat_id)
+            return False
+        if score < app.config.leak_threshold:
+            return False
+
+        owner = app.owner_id
+        if owner is not None:
+            chat = title or (await app.store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
+            notice = f"Held back a message in {chat} that looked like it leaked private info\n\n{text}"
+            try:
+                await app.store.record_owner_event(notice)
+            except Exception:
+                log.exception("could not record the held-message event")
+            try:
+                # Each character can occupy two UTF-16 code units in Telegram.
+                for start in range(0, len(notice), 2000):
+                    await app.bot.send_message(owner, notice[start:start + 2000])
+            except Exception:
+                log.exception("could not notify the owner about a held message")
+        return True
 
     async def _compose_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage | None, live: IncomingMessage | None,
