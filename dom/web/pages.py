@@ -144,11 +144,10 @@ def _day_label(due: datetime, now: datetime) -> str:
     return f"{due:%H:%M}" if due.date() == now.date() else f"{due:%a %H:%M}"
 
 
-async def _today(app: App, now: datetime) -> list[tuple[str, str]]:
+async def _today(app: App, now: datetime, start: datetime, end: datetime) -> list[tuple[str, str]]:
     """The usage page's spend, the turn log's replies and the owner's next reminder, for the day dial's column."""
     tz = now.tzinfo
-    turns = [row for row in await app.store.recent_turns() if datetime.fromisoformat(row["at"]).astimezone(tz).date() == now.date()]
-    replies = sum(row["outcome"].startswith("Replied") for row in turns)
+    turns, replies = await app.store.turn_counts(start, end)
     _, spent = await app.dispatch.usage.today(ZoneInfo(app.config.timezone))
     reminders = await app.dispatch.reminders.active()
     if reminders:
@@ -157,7 +156,7 @@ async def _today(app: App, now: datetime) -> list[tuple[str, str]]:
         upcoming = f"{_day_label(due, now)} {text if len(text) <= 40 else text[:39] + '…'}"
     else:
         upcoming = "No reminders"
-    return [("Turns today", str(len(turns))), ("Replies sent", str(replies)), ("Spend today", f"${spent:,.2f}"), ("Next reminder", upcoming)]
+    return [("Turns today", str(turns)), ("Replies sent", str(replies)), ("Spend today", f"${spent:,.2f}"), ("Next reminder", upcoming)]
 
 
 async def _dial(app: App, chats: list[dict]) -> dict:
@@ -196,7 +195,7 @@ async def _dial(app: App, chats: list[dict]) -> dict:
         "all_day": arcs == [[0, 24]],
         "ticks": ticks, "hours": [(h, _point(h, 104)) for h in (0, 6, 12, 18)],
         "hand": (_point(_hour(now), 116), _point(_hour(now), 152)),
-        "clock": f"{now:%H:%M}", "title": title, "detail": detail, "today": await _today(app, now),
+        "clock": f"{now:%H:%M}", "title": title, "detail": detail, "today": await _today(app, now, start, end),
     }
 
 
