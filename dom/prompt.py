@@ -12,7 +12,7 @@ Files below are your own notes and memory; you may update them with the memory t
 You may stay silent. Reply in the language and register of the chat.
 When you are done (after any tool calls), answer with ONLY a JSON object:
 {"no_response": bool, "react": emoji or null, "bubbles": [{"text": str, "reply_to": message id or null, "delete_after": seconds or null}]}
-Use several short bubbles like a person texting. Use delete_after only for a message you would "unsend"."""
+Use several short bubbles like a person texting. Set reply_to only in a busy group when it is unclear which message you are answering, and then only on the first bubble; in a DM leave it null. Use delete_after only for a message you would "unsend"."""
 
 
 def _file(home: Home, rel: str) -> str:
