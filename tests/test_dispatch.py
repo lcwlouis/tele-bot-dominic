@@ -348,3 +348,22 @@ async def test_online_chat_with_an_orphaned_unread_message_is_answered_on_tick(s
     assert len(app.script.requests) == 1
     await dispatch.tick()
     assert len(app.script.requests) == 1
+
+
+@pytest.mark.parametrize("command", ["/wake", "/sleep"])
+async def test_owner_command_for_an_unknown_chat_creates_nothing(setup_dispatch, command):
+    app, _, _ = await setup_dispatch()
+    await deliver(app, chat_id=OWNER, sender=OWNER, text=f"{command} 424242")
+    assert app.bot.of("send", OWNER)[-1][2] == "unknown chat"
+    assert "424242" not in [chat["chat_id"] for chat in await app.store.list_chats()]
+    assert not app.script.requests
+
+
+@pytest.mark.parametrize("command", ["/wake", "/sleep"])
+async def test_owner_command_for_a_chat_that_is_not_approved_is_unknown(setup_dispatch, command):
+    app, dispatch, _ = await setup_dispatch()
+    await app.store.set_chat_auth_status(FRIEND, "pending_approval")
+    await deliver(app, chat_id=OWNER, sender=OWNER, text=f"{command} {FRIEND}")
+    assert app.bot.of("send", OWNER)[-1][2] == "unknown chat"
+    assert (await dispatch.presence.state(FRIEND, parse_habits("")))[0] == "offline"
+    assert not app.script.requests

@@ -59,8 +59,8 @@ class Dispatcher:
         self._loop: asyncio.Task | None = None
         self._failures: dict[int, int] = {}
         self._media_times: dict[int, deque[datetime]] = {}
-        self._bot_replies: dict[int, datetime] = {}
-        self._bots_in_flight: set[int] = set()
+        self._bot_replies: dict[tuple[int, int], datetime] = {}  # (chat_id, bot_id) -> last reply
+        self._bots_in_flight: set[tuple[int, int]] = set()
 
     def notify(self, msg: IncomingMessage) -> None:
         latest = self._latest.get(msg.chat_id)
@@ -207,18 +207,21 @@ class Dispatcher:
     async def _approved(self, chat_id: int) -> bool:
         return await gate.decide_chat(self.app.store, chat_id, self.app.owner_id) == "process"
 
-    async def override(self, chat_id: int, command: str) -> None:
+    async def override(self, chat_id: int, command: str) -> bool:
+        """The owner's /wake or /sleep. False if the chat is unknown or not approved; that lookup never
+        creates a chat row."""
         if command == "/wake":
             await self._wait_media(chat_id)
         async with self.app.locks[chat_id]:
-            if not await self._approved(chat_id):
-                return
+            if not await self.app.store.is_chat_approved(chat_id):
+                return False
             habits = self._habits()
             if command == "/sleep":
                 await self.presence.sleep(chat_id, habits)
-                return
+                return True
             await self.presence.wake(chat_id, habits)
             await self._guarded_dispatch(chat_id, habits, catch_up=True)
+            return True
 
     async def _decide(self, chat_id: int, *, background: bool = False) -> None:
         await self._wait_media(chat_id)
@@ -262,30 +265,31 @@ class Dispatcher:
 
         # A human among the unread messages makes this an ordinary turn; the bots are just context.
         bots_only = newest.is_bot and not await store.has_unread_human(chat_id)
-        bot_id = newest.sender_user_id if bots_only else None
+        bot_key = (chat_id, newest.sender_user_id) if bots_only and newest.sender_user_id is not None else None
         bot_depth = None
         if bots_only:
             bot_depth = await store.get_bot_depth(chat_id)
-            if bot_depth > BOT_DEPTH_LIMIT or await self._suppress_bot(newest):
+            if bot_depth > BOT_DEPTH_LIMIT or await self._suppress_bot(chat_id, newest):
                 await store.mark_chat_read(chat_id, newest.msg_id)
                 return
 
-        if bot_id is not None:
-            self._bots_in_flight.add(bot_id)
+        if bot_key is not None:
+            self._bots_in_flight.add(bot_key)
         try:
             await self._respond(chat_id, habits, state, until, count, newest, background, catch_up, bot_depth)
         finally:
-            if bot_id is not None:
-                self._bots_in_flight.remove(bot_id)
+            if bot_key is not None:
+                self._bots_in_flight.remove(bot_key)
 
-    async def _suppress_bot(self, newest: StoredMessage) -> bool:
+    async def _suppress_bot(self, chat_id: int, newest: StoredMessage) -> bool:
         if newest.sender_user_id is None:
             return False
+        key = (chat_id, newest.sender_user_id)
         since = datetime.fromisoformat(newest.created_at) - BOT_DEDUP_WINDOW
         duplicate = bool(newest.text) and await self.app.store.has_recent_bot_duplicate(newest, since)
-        last_reply = self._bot_replies.get(newest.sender_user_id)
+        last_reply = self._bot_replies.get(key)
         return (
-            duplicate or newest.sender_user_id in self._bots_in_flight
+            duplicate or key in self._bots_in_flight
             or (last_reply is not None and self.now() - last_reply < BOT_REPLY_INTERVAL)
         )
 
@@ -393,4 +397,6 @@ class Dispatcher:
             )
         finally:
             if newest.is_bot and newest.sender_user_id is not None and actions.bubbles and not actions.no_response:
-                self._bot_replies[newest.sender_user_id] = self.now()
+                now = self.now()
+                self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}
+                self._bot_replies[(chat_id, newest.sender_user_id)] = now

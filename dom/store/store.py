@@ -317,6 +317,14 @@ class Store:
 
     # ---- chat authorization and pending turns ----------------------------
 
+    async def is_chat_approved(self, chat_id: int | str) -> bool:
+        """Read-only: unlike get_chat_auth_status, never creates a row for an unknown chat."""
+        return await self._run(self._is_chat_approved, str(chat_id))
+
+    def _is_chat_approved(self, chat_id: str) -> bool:
+        row = self._conn.execute("SELECT authorization_status FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        return self._is_owner_chat(chat_id) if row is None else row["authorization_status"] == "approved"
+
     async def get_chat_auth_status(self, chat_id: str) -> dict[str, Any]:
         return await self._run(self._get_chat_auth_status, str(chat_id))
 
