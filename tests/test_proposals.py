@@ -122,3 +122,28 @@ async def test_public_reflection_proposes_at_most_once_a_week_without_editing_so
     assert app.home.read("SOUL.md") == "A curious friend."
     assert "soul_edit" in app.script.requests[0]["messages"][0]["content"]
     assert "soul_edit" not in app.script.requests[1]["messages"][0]["content"]
+
+
+async def test_bulk_approval_applies_memory_facts_but_never_a_soul_edit(make_app):
+    app = make_app()
+    soul_id = await soul_edit(app)
+    fact_id = await app.proposals.create(
+        "memory_fact", "Prefers tea", {"file": "USER.md", "text": "Prefers tea"}, "example",
+    )
+    await handlers.handle_message(app, tg(OWNER, OWNER, "/proposals"))
+    bulk = next(
+        b.callback_data for row in app.bot.of("send", OWNER)[-1][3]["reply_markup"].inline_keyboard
+        for b in row if b.text == "Approve all on this page"
+    )
+    await press(app, bulk)
+    assert app.bot.of("answer")[-1][2] == "Approved 1. 1 soul edit needs its own Approve."
+    assert app.home.read("SOUL.md") == "A curious friend."
+    assert [row["id"] for row in await app.proposals.pending()] == [soul_id]
+    assert app.home.scoped(allow_private=True).read("private/USER.md") == "- Prefers tea"
+    assert fact_id != soul_id
+
+    await press(app, bulk)  # only the soul edit is left: still never applied in bulk
+    assert app.home.read("SOUL.md") == "A curious friend."
+    assert [row["id"] for row in await app.proposals.pending()] == [soul_id]
+    await press(app, f"prop:yes:{soul_id}")
+    assert app.home.read("SOUL.md") == "A thoughtful friend."
