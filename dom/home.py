@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from importlib import resources
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -20,7 +21,6 @@ LIMITS: dict[str, int] = {
 # Writable through the memory tool but not size-bounded (never loaded into chat prompts).
 UNBOUNDED = {"memory/JOURNAL.md"}
 
-STARTER_KIT = Path(__file__).resolve().parent.parent / "examples" / "home"
 
 
 class PrivateAccessError(PermissionError):
@@ -161,4 +161,5 @@ def init_home(target: Path) -> None:
     target = Path(target)
     if target.exists() and any(target.iterdir()):
         raise FileExistsError(f"{target} is not empty")
-    shutil.copytree(STARTER_KIT, target, dirs_exist_ok=True)
+    with resources.as_file(resources.files("dom") / "starter_home") as starter:
+        shutil.copytree(starter, target, dirs_exist_ok=True)
