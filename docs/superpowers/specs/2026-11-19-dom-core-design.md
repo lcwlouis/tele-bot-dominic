@@ -8,7 +8,7 @@ Status: phases 1–2 live on the Pi · 2026-11-19 · replaces the uncommitted V2
 
 Dom is a Telegram **bot account** that acts like a friend in groups and DMs, and as a personal assistant to its owner in the owner's DM. It runs on a Raspberry Pi 4B with 4GB. Everything except the AI models runs on the Pi.
 
-The code is a **general base** that anyone can set up. Personal details live only in the instance's home folder, never in the code. the owner's Dom is one instance with a soul written around him.
+The code is a **general base** that anyone can set up. Personal details live only in the instance's home folder, never in the code. The author's own Dom is one instance with a soul written around him.
 
 Out of scope for the core: userbot features, MCP connectors (Google Workspace, iCloud), Office file generation. They come later as skills or plugins, if they come at all.
 
@@ -49,7 +49,7 @@ side services: scheduler (reminders, heartbeat/daydream), web UI (FastAPI),
 - No agent framework. The loop is small and ours.
 
 **Models**, all through OpenAI-compatible endpoints:
-- Main chat model: any OpenAI-compatible endpoint in `[models.chat]`, with an optional `[models.chat_fallback]` used when the first is down. the owner's instance uses the homelab model `default`, falling back to `deepseek/deepseek-v4.1-flash-1017` on OpenRouter.
+- Main chat model: any OpenAI-compatible endpoint in `[models.chat]`, with an optional `[models.chat_fallback]` used when the first is down. The author's instance uses the homelab model `default`, falling back to `deepseek/deepseek-v4.1-flash-1017` on OpenRouter.
 - A chat model may lack vision (the homelab one does). Anything visual goes through the media model.
 - Media: `qwen/qwen3.8-omni-flash` for images, GIFs, video and voice.
 - Triage: TypeSafe Jev via `POST /api/alpha/decisions` with `~typesafe/jev-latest`. This is not a chat model.
