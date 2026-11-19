@@ -20,6 +20,7 @@ from dom.dispatch import Dispatcher
 from dom.home import Home
 from dom.jev import JevClient
 from dom.llm import ChatClient
+from dom.media import MediaDescriber
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
 from dom.store import Store
@@ -43,6 +44,7 @@ class App:
 
     jev: JevClient | None = None
     bot_id: int | None = None
+    media_describer: MediaDescriber | None = None
     dispatch: Dispatcher = field(init=False)
 
     def __post_init__(self) -> None:
@@ -67,7 +69,11 @@ def _command_name(text: str, username: str) -> str | None:
     return name if not target or target.lower() == username.lower() else None
 
 
-async def _record(app: App, msg: IncomingMessage) -> None:
+async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = False) -> None:
+    new_media = (
+        describe_media and app.media_describer is not None and msg.media is not None
+        and not await app.store.has_message(msg.chat_id, msg.msg_id)
+    )
     await app.store.resolve_person(msg.sender_id, msg.sender_handle, msg.sender_name)
     await app.store.record_new_message(
         StoredMessage(
@@ -79,11 +85,13 @@ async def _record(app: App, msg: IncomingMessage) -> None:
             sender_name=msg.sender_name,
             is_bot=msg.is_bot,
             visibility_scope=app.store.visibility_for(msg.chat_id),
-            text=msg.text or (f"[{msg.media['type']}]" if msg.media else ""),
-            media_json=json.dumps(msg.media) if msg.media else None,
+            text=msg.text or (f"[{msg.media['kind']}]" if msg.media else ""),
+            media_json=json.dumps({**msg.media, "description": None}) if msg.media else None,
             created_at=msg.date.isoformat(),
         )
     )
+    if new_media:
+        app.dispatch.describe_media(msg)
 
 
 def _claim_code(text: str, username: str) -> str | None:
@@ -143,7 +151,7 @@ async def handle_message(app: App, message: Message) -> None:
         decision = await gate.decide(app.store, msg, app.owner_id)
         if decision == "drop":
             return
-        await _record(app, msg)
+        await _record(app, msg, describe_media=decision == "process")
         if decision == "process":
             app.dispatch.notify(msg)
     if decision == "hold":
@@ -164,8 +172,11 @@ async def handle_edited_message(app: App, message: Message) -> None:
         edited = await app.store.record_message_edit(
             msg.chat_id, msg.msg_id, msg.text, dom_was_online_and_read=False,
         )
-        if edited is None and await gate.decide(app.store, msg, app.owner_id) != "drop":
-            await _record(app, msg)  # the original never reached us: keep the edited text as a new message
+        if edited is None:
+            decision = await gate.decide(app.store, msg, app.owner_id)
+            if decision != "drop":
+                # The original never reached us. Keep this version as a new message.
+                await _record(app, msg, describe_media=decision == "process")
 
 
 # ---- owner decisions -----------------------------------------------------------------
