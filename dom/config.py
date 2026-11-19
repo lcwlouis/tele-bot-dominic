@@ -28,7 +28,7 @@ class Config(BaseModel):
     timezone: str = "Asia/Singapore"
     models: dict[str, ModelEndpoint] = {}
     desktop_mode: Literal["local", "remote", "off"] = "off"
-    window_size: int = 35
+    window_size: int = 80
 
     def secret(self, name: str) -> str | None:
         """Read a secret from ``home/.env`` first, then the process environment."""
@@ -60,7 +60,7 @@ def load_config(home: Path) -> Config:
         timezone=raw.get("timezone", "Asia/Singapore"),
         models=models,
         desktop_mode=raw.get("desktop", {}).get("mode", "off"),
-        window_size=raw.get("window_size", 35),
+        window_size=raw.get("window_size", 80),
     )
 
 
