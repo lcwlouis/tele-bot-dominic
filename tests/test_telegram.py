@@ -7,6 +7,7 @@ import pytest
 from aiogram.types import (
     CallbackQuery,
     Chat,
+    ChatMemberBanned,
     ChatMemberLeft,
     ChatMemberMember,
     ChatMemberUpdated,
@@ -189,9 +190,90 @@ async def test_bot_added_to_group_creates_pending_chat_and_prompts_once(make_app
     assert (status["title"], status["invited_by_handle"]) == ("New Group", "@fran")
     prompts = app.bot.of("send", OWNER)
     assert len(prompts) == 1 and "New Group" in prompts[0][2]
-    other = make_app()
-    await handlers.handle_my_chat_member(other, update(new=False))
-    assert other.bot.calls == []
+    await handlers.handle_my_chat_member(app, update(new=False))  # Dom removed again: no new approval prompt
+    assert len([c for c in app.bot.of("send", OWNER) if "wants Dom" in c[2]]) == 1
+
+
+def membership(new, actor=FRIEND, chat_id=GROUP, title="New Group"):
+    """A my_chat_member update: `new` is Dom's new status, `actor` who caused it."""
+    user = BOT_USER if actor == BOT_USER.id else User(id=actor, is_bot=False, first_name="Fran", username="fran")
+    members = {
+        "member": ChatMemberMember(user=BOT_USER),
+        "left": ChatMemberLeft(user=BOT_USER),
+        "kicked": ChatMemberBanned(user=BOT_USER, until_date=NOW),
+    }
+    return ChatMemberUpdated(
+        chat=Chat(id=chat_id, type="supergroup", title=title), from_user=user, date=NOW,
+        old_chat_member=members["left" if new == "member" else "member"], new_chat_member=members[new],
+    )
+
+
+async def status_of(app, chat_id=GROUP):
+    return (await app.store.get_chat_auth_status(chat_id))["authorization_status"]
+
+
+async def test_removed_from_a_group_marks_it_left_and_tells_the_owner_once(make_app):
+    app = make_app()
+    await approve(app, GROUP)
+    await handlers.handle_my_chat_member(app, membership("kicked"))
+    await handlers.handle_my_chat_member(app, membership("kicked"))
+    assert await status_of(app) == "left"
+    assert [c[2] for c in app.bot.of("send", OWNER)] == ["Dom was removed from New Group"]
+
+
+async def test_dom_leaving_by_itself_is_reported_as_leaving(make_app):
+    app = make_app()
+    await approve(app, GROUP)
+    await handlers.handle_my_chat_member(app, membership("left", actor=BOT_USER.id))
+    assert await status_of(app) == "left"
+    assert [c[2] for c in app.bot.of("send", OWNER)] == ["Dom left New Group"]
+
+
+async def test_removal_from_a_group_dom_never_knew_changes_nothing(make_app):
+    app = make_app()
+    await handlers.handle_my_chat_member(app, membership("kicked"))
+    assert app.bot.calls == []
+    assert [c["chat_id"] for c in await app.store.list_chats()] == []
+
+
+async def test_readded_after_leaving_or_ignoring_asks_for_approval_again(make_app):
+    app = make_app()
+    await handlers.handle_my_chat_member(app, membership("member"))
+    await handlers.handle_callback(app, CallbackQuery(
+        id="cb1", from_user=User(id=OWNER, is_bot=False, first_name="O"), chat_instance="ci",
+        data=f"ignore:{GROUP}", message=tg(chat_id=OWNER, sender=OWNER, msg_id=77),
+    ))
+    assert await status_of(app) == "ignored"
+    await handlers.handle_my_chat_member(app, membership("member"))   # ignored -> pending, prompted again
+    assert await status_of(app) == "pending_approval"
+    assert len(app.bot.of("send", OWNER)) == 2
+    await handlers.handle_my_chat_member(app, membership("member"))   # still pending: no third prompt
+    assert len(app.bot.of("send", OWNER)) == 2
+    await handlers.handle_my_chat_member(app, membership("kicked"))
+    assert await status_of(app) == "left"
+    await handlers.handle_my_chat_member(app, membership("member"))
+    assert await status_of(app) == "pending_approval"
+    prompts = [c for c in app.bot.of("send", OWNER) if "wants Dom" in c[2]]
+    assert len(prompts) == 3
+
+
+async def test_readding_to_an_approved_chat_keeps_it_approved(make_app):
+    app = make_app()
+    await approve(app, GROUP)
+    await handlers.handle_my_chat_member(app, membership("member"))
+    assert await status_of(app) == "approved"
+    assert app.bot.of("send", OWNER) == []
+
+
+async def test_messages_from_a_left_chat_are_dropped(make_app):
+    app = make_app()
+    await app.store.set_chat_auth_status(str(GROUP), "left")
+    assert await decide(app.store, to_incoming(tg()), OWNER) == "drop"
+    await handlers.handle_message(app, tg(text="anyone there?"))
+    await drain_dispatch(app.dispatch)
+    assert app.script.requests == []
+    assert app.bot.calls == []
+    assert not await app.store.has_message(GROUP, 1)
 
 
 async def test_edited_message_updates_store(make_app):
