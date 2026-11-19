@@ -559,8 +559,10 @@ class Dispatcher:
             note += f"\nmood: {escape(current_mood)}"
         if away_count:
             note += "\nyou just came online"
+        casual_ids: list[int] = []
         if scope == "owner_dm" and chat_id == app.owner_id and newest is not None:
-            if casual := await self.reminders.casual_note():
+            casual, casual_ids = await self.reminders.casual_note()
+            if casual:
                 note += f"\n{casual}"
         if self._ephemeral_recipient(scope, newest) is not None:
             note += (
@@ -597,6 +599,8 @@ class Dispatcher:
                 raise
             log.exception("model could not compose the bot exit in chat %s", chat_id)
             actions = Actions(no_response=True)
+        if casual_ids and not actions.no_response:
+            await self.reminders.consume(casual_ids)  # only once Dom has actually answered
         if final_bot_turn:
             bubbles = actions.bubbles[:1] if not actions.no_response else []
             actions = Actions(bubbles=bubbles or [Bubble(text="I'll leave it there for now.")])
