@@ -475,7 +475,7 @@ class Dispatcher:
         self, chat_id: int, scope: Scope, actions: Actions, title: str,
     ) -> bool:
         app = self.app
-        if scope == "owner_dm" or not app.config.leak_check or actions.no_response or not actions.bubbles:
+        if self.jev is None or scope == "owner_dm" or not app.config.leak_check or actions.no_response or not actions.bubbles:
             return False
         text = "\n".join(bubble.text for bubble in actions.bubbles)
         try:

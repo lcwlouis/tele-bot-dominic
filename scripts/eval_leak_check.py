@@ -1,7 +1,8 @@
 """Score fictional outbound messages with Jev.
 
 Run with `uv run python scripts/eval_leak_check.py` and OPENROUTER_API_KEY set in
-the environment. The evaluation sends the synthetic keywords and cases to OpenRouter.
+the environment. Add `--threshold N` to check a specific score cut-off (default: the shipped
+one). The evaluation sends the synthetic keywords and cases to OpenRouter.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import httpx
 
+from dom.config import Config
 from dom.guard import leak_score, private_terms
 from dom.home import Home
 from dom.jev import JevClient
@@ -67,7 +69,15 @@ def best_threshold(results: list[tuple[Case, float | None]]) -> tuple[float, flo
     return max(((threshold, *metrics(results, threshold)) for threshold in thresholds), key=rank)
 
 
-async def evaluate(home: Home, cases: list[Case], key: str, model: str) -> int:
+def report(results: list[tuple[Case, float | None]], threshold: float) -> int:
+    best, best_precision, best_recall = best_threshold(results)
+    print(f"Best threshold {best:g} | precision {best_precision:.3f} | recall {best_recall:.3f}")
+    precision, recall = metrics(results, threshold)
+    print(f"At threshold {threshold:g} | precision {precision:.3f} | recall {recall:.3f}")
+    return 0 if precision >= TARGET and recall >= TARGET else 1
+
+
+async def evaluate(home: Home, cases: list[Case], key: str, model: str, threshold: float) -> int:
     terms = private_terms(home)
     results = []
     async with httpx.AsyncClient() as http:
@@ -76,14 +86,21 @@ async def evaluate(home: Home, cases: list[Case], key: str, model: str) -> int:
             score = await leak_score(jev, terms, case.text)
             results.append((case, score))
             print(f"{number:02d} {'leak ' if case.leak else 'clean'} {score if score is not None else 'unavailable'}  {case.text}")
-    threshold, precision, recall = best_threshold(results)
-    print(f"Best threshold {threshold:g} | precision {precision:.3f} | recall {recall:.3f}")
-    return 0 if precision >= TARGET and recall >= TARGET else 1
+    return report(results, threshold)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", default="~typesafe/jev-latest")
+    parser.add_argument(
+        "--threshold", type=float, default=Config.model_fields["leak_threshold"].default,
+        help="score at which a message counts as held; pass/fail uses it (default: the configured default)",
+    )
+    return parser
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="~typesafe/jev-latest")
+    parser = build_parser()
     args = parser.parse_args()
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
@@ -93,7 +110,7 @@ def main() -> int:
         cases = parse_cases(home.read("cases.jsonl"))
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    return asyncio.run(evaluate(home, cases, key, args.model))
+    return asyncio.run(evaluate(home, cases, key, args.model, args.threshold))
 
 
 if __name__ == "__main__":

@@ -79,20 +79,31 @@ async def test_guard_checks_bubbles_once_and_tells_owner_when_held(make_app, cap
             assert "leak check unavailable" in caplog.text
 
 
-@pytest.mark.parametrize(("enabled", "chat_id"), [(False, GROUP), (True, OWNER)])
-async def test_guard_skips_owner_and_is_disabled_by_default(make_app, tmp_path, enabled, chat_id):
+def test_leak_check_ships_on_at_the_evaluated_threshold(tmp_path):
+    import tomllib
+    from importlib import resources
+
     (tmp_path / "config.toml").write_text("")
-    app = make_app(contents=(OUTGOING,))
     config = load_config(tmp_path)
-    assert not config.leak_check and config.leak_threshold == 1.5
-    assert not Config(home=tmp_path).leak_check
-    if enabled:
-        app.config = app.config.model_copy(update={"leak_check": True})
-    app.dispatch.jev = fake = FakeJev(3)
+    assert config.leak_check and config.leak_threshold == 1.2
+    assert Config(home=tmp_path).leak_check and Config(home=tmp_path).leak_threshold == 1.2
+    starter = tomllib.loads(resources.files("dom").joinpath("starter_home/config.toml").read_text())
+    assert starter["leak_check"] is True and starter["leak_threshold"] == 1.2
+    (tmp_path / "config.toml").write_text("leak_check = false\nleak_threshold = 2\n")
+    config = load_config(tmp_path)
+    assert not config.leak_check and config.leak_threshold == 2
+
+
+@pytest.mark.parametrize(("chat_id", "has_jev"), [(OWNER, True), (GROUP, False)])
+async def test_guard_skips_owner_and_runs_only_with_a_jev_client(make_app, chat_id, has_jev):
+    app = make_app(contents=(OUTGOING,))
+    app.config = app.config.model_copy(update={"leak_check": True})
+    app.dispatch.jev = fake = FakeJev(3) if has_jev else None
     await online(app, chat_id)
     await deliver(app, tg(chat_id=chat_id, sender=OWNER if chat_id == OWNER else FRIEND))
-    assert not fake.scored
+    assert not fake or not fake.scored
     assert len(app.bot.of("send", chat_id)) == 2
+    assert "guard" not in [row[0] for row in usage_rows(app)]
 
 
 @pytest.mark.parametrize("cap_reached", [False, True])
@@ -156,3 +167,22 @@ def test_eval_metrics_threshold_is_inclusive_and_unavailable_is_fail_open(eval_s
     assert metrics(results, 2) == (1.0, 0.5)
     assert best_threshold(results) == (1.5, 1.0, 1.0)
     assert metrics(list(zip(cases, [2, None, 1, None])), 1.5) == (1.0, 0.5)
+
+
+def test_eval_threshold_option_defaults_to_the_shipped_setting(eval_script):
+    parser = eval_script.build_parser()
+    assert parser.parse_args([]).threshold == Config(home=Path(".")).leak_threshold == 1.2
+    assert parser.parse_args(["--threshold", "1.5"]).threshold == 1.5
+
+
+def test_eval_report_passes_or_fails_at_the_given_threshold(eval_script, capsys):
+    Case, report = eval_script.Case, eval_script.report
+
+    cases = [Case("a", True), Case("b", True), Case("c", False), Case("d", False)]
+    results = list(zip(cases, [3, 1.2, 1, 0]))
+    assert report(results, 1.2) == 0
+    assert "At threshold 1.2 | precision 1.000 | recall 1.000" in capsys.readouterr().out
+    assert report(results, 2) == 1  # the best threshold would pass, the configured one misses a leak
+    output = capsys.readouterr().out
+    assert "At threshold 2 | precision 1.000 | recall 0.500" in output and "Best threshold 1.2" in output
+    assert report(list(zip(cases, [3, 1.2, 1.3, 0])), 1.2) == 1
