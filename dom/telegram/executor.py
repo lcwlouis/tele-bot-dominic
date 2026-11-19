@@ -30,6 +30,14 @@ async def _delete_later(bot, store: Store, chat_id: int, message_id: int, delay:
     await store.record_message_delete(chat_id, [message_id])
 
 
+async def cancel_pending_deletions() -> None:
+    """Stop scheduled send-then-delete tasks (shutdown): they need the bot and store, which are closing."""
+    tasks = list(_background)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def perform(
     bot,
     store: Store,

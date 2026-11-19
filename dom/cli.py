@@ -16,8 +16,10 @@ from dom.home import Home, init_home
 from dom.importer import import_v2
 from dom.llm import ChatClient
 from dom.store import Store
+from dom.telegram import executor
 from dom.telegram.handlers import App, build_router
 
+SHUTDOWN_DRAIN_SECONDS = 10
 ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"]
 
 
@@ -89,10 +91,15 @@ async def run(home: Path) -> None:
                 logging.getLogger("dom").warning(
                     "No owner yet: send /claim <code> to @%s (the code is in %s).", me.username, home / ".claim"
                 )
-            # aiogram stops cleanly on SIGINT/SIGTERM and closes the bot session.
-            await dispatcher.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
+            # aiogram stops on SIGINT/SIGTERM; it waits a bounded time for running handlers.
+            await dispatcher.start_polling(
+                bot, allowed_updates=ALLOWED_UPDATES,
+                tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
+            )
     finally:
+        await executor.cancel_pending_deletions()
         store.close()
+        await bot.session.close()
 
 
 def main(argv: list[str] | None = None) -> int:
