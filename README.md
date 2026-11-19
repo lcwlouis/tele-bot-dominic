@@ -41,6 +41,10 @@ Run these from the owner's DM.
 - `/wake [chat_id]` wakes Dom in the owner's DM or an approved chat.
 - `/sleep [chat_id]` sends Dom to sleep in the owner's DM or an approved chat.
 
+## Privacy
+
+Web searches Dom makes from the owner's DM are sent to OpenRouter's web search, so they may include private context from that DM.
+
 ## Backups
 
 `uv run dom backup ./dom-home` (run it as the same user that runs Dom; keeps 7 archives in `../backups`).
