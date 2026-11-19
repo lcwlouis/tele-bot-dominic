@@ -25,15 +25,22 @@ def parse_actions(text: str | None) -> Actions | None:
         text = fenced.group(1)
     try:
         data = json.loads(text)
-        if isinstance(data, dict):
+        if isinstance(data, dict) and data:  # at least one of no_response / react / bubbles
             return Actions.model_validate(data)
     except (ValueError, ValidationError):
         pass
     return None
 
 
+def _well_formed(calls: object) -> bool:
+    return isinstance(calls, list) and all(
+        isinstance(c, dict) and isinstance(c.get("function"), dict) and isinstance(c["function"].get("name"), str)
+        for c in calls
+    )
+
+
 async def _run_tool_call(call: dict, offered: dict[str, Tool], ctx: TurnCtx) -> str:
-    function = call.get("function", {})
+    function = call["function"]
     tool = offered.get(function.get("name", ""))
     if tool is None:
         return "tool not available here"
@@ -61,16 +68,19 @@ async def run_turn(
 
     for _ in range(max_steps):
         reply = await client.complete(messages, schemas)
-        messages.append(reply)
         calls = reply.get("tool_calls")
-        if calls:
+        if calls and _well_formed(calls):
+            messages.append(reply)
             for call in calls:
                 result = await _run_tool_call(call, offered, ctx)
-                messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
+                messages.append({"role": "tool", "tool_call_id": str(call.get("id") or ""), "content": result})
             continue
-        actions = parse_actions(reply.get("content"))
-        if actions is not None:
-            return actions
+        if not calls:
+            messages.append(reply)
+            actions = parse_actions(reply.get("content"))
+            if actions is not None:
+                return actions
+        # else: malformed tool calls are kept out of the history and handled like a malformed final
         if corrected:
             break
         corrected = True

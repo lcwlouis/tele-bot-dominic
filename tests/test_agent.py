@@ -288,3 +288,47 @@ async def test_owner_dm_can_still_write_private_files(env):
     owner = ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER)
     for file in ("USER.md", "NOTES.md"):
         assert json.loads(await memory.handler({"file": file, "op": "add", "text": "x"}, owner))["ok"] is True
+
+
+async def _turn(env, *responses):
+    _, _, store = env
+    script = Script(*responses)
+    actions = await run_turn(make_client(script), [{"role": "user", "content": "hi"}], core_tools(), ctx_for(env))
+    return actions, script
+
+
+@pytest.mark.parametrize("final", [
+    {"answer": "x"},
+    {},
+    {"bubbles": [{"text": "hi"}], "extra": 1},
+    {"bubbles": [{"text": "hi", "mood": "x"}]},
+])
+async def test_wrong_shaped_final_object_is_malformed(env, final):
+    actions, script = await _turn(env, reply(json.dumps(final)), reply(json.dumps(final)))
+    assert actions == Actions(no_response=True)
+    assert len(script.requests) == 2  # one correction, then give up
+
+
+async def test_partial_final_object_is_accepted(env):
+    actions, script = await _turn(env, reply(json.dumps({"bubbles": [{"text": "hi"}]})))
+    assert [b.text for b in actions.bubbles] == ["hi"]
+    assert len(script.requests) == 1
+
+
+@pytest.mark.parametrize("bad_call", [
+    {"id": "c1", "type": "function", "function": None},
+    {"id": "c1", "type": "function"},
+    {"id": "c1", "type": "function", "function": {"arguments": "{}"}},
+    "not even an object",
+])
+async def test_malformed_tool_calls_never_raise(env, bad_call):
+    actions, script = await _turn(env, reply(tool_calls=[bad_call]), reply(json.dumps(FINAL)))
+    assert actions.bubbles[0].text == "hey"
+    assert len(script.requests) == 2
+    assert all("tool_calls" not in m for m in script.requests[1]["messages"])  # bad call kept out of history
+
+
+async def test_malformed_tool_calls_twice_fall_back_to_no_response(env):
+    bad = {"id": "c1", "type": "function", "function": None}
+    actions, _ = await _turn(env, reply(tool_calls=[bad]), reply(tool_calls=[bad]))
+    assert actions == Actions(no_response=True)
