@@ -25,6 +25,9 @@ def test_skill_caps():
 HIDDEN = {
     "zero-width": "\u200b", "bidi override": "\u202e", "bidi isolate": "\u2066", "tag": "\U000e0041",
     "private use": "\ue000", "unassigned": "\u0378", "lone surrogate": "\ud800",
+    "combining grapheme joiner": "\u034f", "variation selector": "\ufe0f", "soft hyphen": "\u00ad",
+    "hangul filler": "\u3164", "variation selector supplement": "\U000e0100", "invisible operator": "\u2063",
+    "interlinear annotation": "\ufff9", "musical begin beam": "\U0001d173",
     "escape": "\x1b", "carriage return": "\r", "null": "\x00", "delete": "\x7f", "c1": "\x85",
 }
 
@@ -37,6 +40,11 @@ def test_hidden_characters_are_rejected_everywhere(hidden):
         Skill("example", f"Read{hidden} text", "Procedure")
     with pytest.raises(ValueError):
         Skill(f"exam{hidden}ple", "Description", "Procedure")
+
+
+@pytest.mark.parametrize("neighbour", ["\u00ac", "\u00ae", "\u034e", "\u0350", "\u2070", "\u3165", "\ufe10", "\uffa1", "\U0001d172"])
+def test_characters_next_to_the_ignorable_ranges_are_allowed(neighbour):
+    assert Skill("example", "Example", f"a{neighbour}b").body == f"a{neighbour}b"
 
 
 def test_visible_text_newlines_and_tabs_are_allowed():
