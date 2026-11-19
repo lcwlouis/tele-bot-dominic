@@ -386,3 +386,41 @@ async def test_pending_command_is_owner_only(make_app):
     await approve(app, FRIEND)
     await handlers.handle_message(app, tg(chat_id=FRIEND, sender=FRIEND, text="/pending", msg_id=3))
     assert app.bot.of("send", OWNER) == []
+
+
+# ---- edit ordering ----------------------------------------------------------------
+
+async def test_edit_racing_the_original_is_not_lost(make_app):
+    app = make_app()
+    await approve(app, GROUP)
+    real_record = app.store.record_new_message
+
+    async def slow_record(msg):
+        await asyncio.sleep(0.1)
+        return await real_record(msg)
+
+    app.store.record_new_message = slow_record
+    original = asyncio.create_task(handlers.handle_message(app, tg(text="first draft")))
+    await asyncio.sleep(0.02)  # the original is mid-flight
+    edited = tg(text="second draft").model_copy(update={"edit_date": 1})
+    await handlers.handle_edited_message(app, edited)
+    await original
+    window = await app.store.get_recent_chat_window(GROUP)
+    assert [(m.text, m.is_edited) for m in window] == [("second draft", True)]
+
+
+async def test_edit_of_unseen_message_is_recorded_as_new(make_app):
+    app = make_app()
+    await approve(app, GROUP)
+    edited = tg(text="only the edited text", msg_id=9).model_copy(update={"edit_date": 1})
+    await handlers.handle_edited_message(app, edited)
+    window = await app.store.get_recent_chat_window(GROUP)
+    assert [(m.msg_id, m.text) for m in window] == [(9, "only the edited text")]
+    assert app.script.requests == []  # recording only, no turn
+
+
+async def test_edit_in_unapproved_chat_is_not_recorded(make_app):
+    app = make_app()
+    await app.store.set_chat_auth_status(str(GROUP), "ignored")
+    await handlers.handle_edited_message(app, tg(text="x", msg_id=9).model_copy(update={"edit_date": 1}))
+    assert await app.store.get_recent_chat_window(GROUP) == []
