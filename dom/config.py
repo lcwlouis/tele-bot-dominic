@@ -35,6 +35,7 @@ class WebConfig(BaseModel):
     port: int = Field(default=8080, ge=1, le=65535)
     access_team: str = ""
     access_aud: str = ""
+    access_emails: list[str] = []
     dev_token_env: str = ""
 
 
