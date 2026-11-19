@@ -31,6 +31,9 @@ def try_claim(home: Path, config: Config, sender_id: int, chat_type: str, code: 
         return False
     if not expected or not hmac.compare_digest(code.encode(), expected.encode()):
         return False
-    save_owner(home, sender_id)
+    try:
+        save_owner(home, sender_id)
+    except (OSError, ValueError):  # not saved: keep the code so the claim can be retried
+        return False
     (home / ".claim").unlink()
     return True
