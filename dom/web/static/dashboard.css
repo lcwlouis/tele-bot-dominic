@@ -232,3 +232,9 @@ summary { cursor: pointer; }
 .desktop-live[hidden] { display: none; }
 
 .skill-text { font: inherit; white-space: pre-wrap; }
+
+.brief-body { margin-top: var(--s3); overflow-wrap: anywhere; }
+.brief-body p { white-space: pre-wrap; }
+#briefs summary { cursor: pointer; }
+#briefs .chat { display: block; }
+#briefs textarea { width: 100%; min-height: 10rem; }

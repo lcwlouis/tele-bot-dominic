@@ -20,6 +20,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from dom import proposals, traits
 from dom.agent import unfence
+from dom.briefs import list_briefs, markdown_blocks
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.presence import read_habits
 from dom.skills import skill_diff
@@ -376,6 +377,16 @@ async def plugin_action(request: Request, name: str, digest: str, decision: Lite
     if message not in ("Approved", "Rejected", "Disabled", "already handled"):
         response.status_code = 409
     return response
+
+
+@router.get("/briefs", response_class=HTMLResponse)
+async def briefs_page(request: Request):
+    app = owner_app(request)
+    try:
+        briefs = await asyncio.to_thread(list_briefs, app.home)
+    except (OSError, ValueError, RuntimeError):
+        return panel(request, "briefs", rows=[], message="Could not read the briefs folder.")
+    return panel(request, "briefs", rows=[(brief, markdown_blocks(brief.markdown)) for brief in briefs])
 
 
 @router.get("/usage", response_class=HTMLResponse)

@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 import httpx
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import BufferedInputFile
+
+from dom._version import VERSION
+from dom.briefs import LIMITS as BRIEF_LIMITS, write_brief
+from dom.guard import check_local_private_text
 
 from dom.home import Home
 from dom.models import Scope
@@ -209,3 +215,81 @@ def core_tools(search: SearchClient | None = None, desktop: DesktopWorker | None
     if desktop is not None and desktop.available():
         tools.append(START_DESKTOP_TASK)
     return tools
+
+
+async def _write_brief(args: dict, ctx: TurnCtx) -> str:
+    app = ctx.app
+    if app is None or not ctx.is_owner_dm():
+        return "error: briefs can only be written in the owner's DM"
+    fields = {field: args.get(field) for field in BRIEF_LIMITS}
+    try:
+        check_local_private_text(app.config, app.home, [text for text in fields.values() if isinstance(text, str)])
+        day = app.dispatch.now().astimezone(app.dispatch.presence.tz).date()
+        brief = write_brief(app.home, day, **fields)
+    except ValueError as error:
+        return f"error: {error}"
+    except OSError:
+        return "error: could not save the brief"
+    await app.store.record_owner_event(f"Dom wrote a core-change brief ({brief.filename})")
+    document = BufferedInputFile(brief.markdown.encode("utf-8"), filename=brief.filename)
+    try:
+        await app.bot.send_document(ctx.chat_id, document, caption=f"Core-change brief: {brief.title}")
+    except TelegramAPIError:
+        return json.dumps({"filename": brief.filename, "error": "Saved the brief, but could not send the document."})
+    return json.dumps({"filename": brief.filename})
+
+
+WRITE_BRIEF_TOOL = Tool(
+    name="write_brief",
+    description=(
+        "Write and send a brief for a coding agent working on Dom's public code. "
+        "Describe the problem, proposed change and acceptance criteria using only public information. "
+        "Exclude private notes, chat history, memory and credentials."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            field: {"type": "string", "maxLength": limit} for field, limit in BRIEF_LIMITS.items()
+        },
+        "required": list(BRIEF_LIMITS),
+    },
+    handler=_write_brief,
+    scopes={"owner_dm"},
+)
+
+
+async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
+    from dom.capabilities import desktop_status
+    from dom.plugins.manifest import SCOPES
+
+    app = ctx.app
+    if app is None or not ctx.is_owner_dm():
+        return "error: self_inspect is available only in the owner's DM"
+    enabled = {scope: [tool.name for tool in await enabled_tools(app, scope)] for scope in SCOPES}
+    return json.dumps({
+        "version": VERSION,
+        "tools": enabled,
+        "approved_plugins": [
+            {"name": plugin.manifest.name, "hash": plugin.hash} for plugin in await app.plugins.approved()
+        ],
+        "desktop": desktop_status(app, "owner_dm"),
+        "models": {kind: endpoint.model for kind, endpoint in app.config.models.items()},
+        "last_errors": await app.store.recent_turn_errors(),
+    })
+
+
+SELF_INSPECT_TOOL = Tool(
+    name="self_inspect",
+    description="Read Dom's version, available tools by chat scope, approved plugins, desktop status, models and recent errors.",
+    schema={"type": "object", "properties": {}, "additionalProperties": False},
+    handler=_self_inspect,
+    scopes={"owner_dm"},
+)
+
+
+async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
+    from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
+
+    tools = core_tools(app.search_client, app.desktop_worker)
+    tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL))
+    return [tool for tool in tools if scope in tool.scopes] + await offered(app, scope)
