@@ -16,6 +16,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from dom.actions import Actions, Bubble
 from dom.agent import run_turn
+from dom.capabilities import describe
 from dom.home import PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
 from dom.jobs import DailyJobs
@@ -452,7 +453,7 @@ class Dispatcher:
         note = (
             f"It is {now:%A %Y-%m-%d %H:%M} ({app.config.timezone}). You are in {where} ({scope}).\n"
             f"state: online\nonline minutes left: {minutes:.1f}\n"
-            f"messages that arrived while away: {away_count}\ndesktop: off"
+            f"messages that arrived while away: {away_count}\n{describe(app, scope)}"
         )
         if away_count:
             note += "\nyou just came online"
