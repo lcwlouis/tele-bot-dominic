@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from aiogram.exceptions import TelegramNetworkError
 from pydantic import ValidationError
 
 from dom.actions import Actions, Bubble
@@ -116,3 +117,61 @@ async def test_only_owner_dm_sticker_commands_change_sets(make_app):
     assert not app.stickers.by_emoji
     texts = [row["text"] for row in await events(app)]
     assert all(any(action in text for text in texts) for action in ("Added sticker set", "Removed sticker set"))
+
+
+async def test_a_crashing_refresh_is_logged_and_never_raised(make_app, caplog):
+    app = make_app()
+
+    async def explode(name):
+        raise RuntimeError("boom")
+
+    app.bot.get_sticker_set = explode
+    put(app.home, "stickers.toml", f"sets = [{json.dumps(SET)}]")
+    await app.stickers.refresh()
+    assert app.stickers.by_emoji == {}
+    assert "sticker" in caplog.text
+
+
+async def test_a_failed_set_is_retried_only_after_an_hour(make_app):
+    app = make_app()
+    requested, failing = [], {"on": True}
+
+    async def get_sticker_set(name):
+        requested.append(name)
+        if failing["on"]:
+            raise TelegramNetworkError(method=None, message="down")
+        return SimpleNamespace(stickers=[SimpleNamespace(emoji="📚", file_id="file-a")])
+
+    app.bot.get_sticker_set = get_sticker_set
+    put(app.home, "stickers.toml", f"sets = [{json.dumps(SET)}]")
+    await app.stickers.refresh()
+    app.dispatch.now.advance(minutes=59)
+    await app.stickers.refresh()
+    assert requested == [SET]
+    failing["on"] = False
+    app.dispatch.now.advance(minutes=1)
+    await app.stickers.refresh()
+    assert requested == [SET, SET] and app.stickers.by_emoji == {"📚": ["file-a"]}
+    await app.stickers.refresh()
+    assert requested == [SET, SET]
+
+
+async def test_a_failing_sticker_refresh_does_not_stop_jobs_or_openers_in_the_same_pass(make_app, monkeypatch):
+    app = make_app()
+    ran = []
+
+    async def explode(name):
+        raise RuntimeError("boom")
+
+    async def job():
+        ran.append("job")
+
+    async def maybe(now):
+        ran.append("opener")
+
+    app.bot.get_sticker_set = explode
+    put(app.home, "stickers.toml", f"sets = [{json.dumps(SET)}]")
+    app.dispatch.jobs.register("probe", lambda local, habits: True, job)
+    monkeypatch.setattr(app.dispatch.openers, "maybe", maybe)
+    await app.dispatch._background_jobs()
+    assert ran == ["job", "opener"]

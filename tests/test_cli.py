@@ -172,6 +172,39 @@ async def test_run_bounds_handler_drain_and_cancels_pending_deletions(home, monk
     assert seen["close_bot_session"] is False
 
 
+async def test_run_starts_even_when_the_sticker_refresh_crashes(home, monkeypatch):
+    from types import SimpleNamespace
+
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=t\nOPENROUTER_API_KEY=k\n")
+    (home / "stickers.toml").write_text('sets = ["example_set_by_examplebot"]\n')
+    started = []
+
+    class FakeBot:
+        def __init__(self, token):
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self):
+            pass
+
+        async def get_me(self):
+            return SimpleNamespace(id=999, username="dombot")
+
+        async def get_sticker_set(self, name):
+            raise RuntimeError("boom")
+
+    class FakeDispatcher:
+        def include_router(self, router):
+            pass
+
+        async def start_polling(self, bot, **kwargs):
+            started.append(True)
+
+    monkeypatch.setattr(cli, "Bot", FakeBot)
+    monkeypatch.setattr(cli, "Dispatcher", FakeDispatcher)
+    await cli.run(home)
+    assert started == [True]
+
+
 def test_init_sets_timezone(tmp_path):
     from dom.cli import main
     from dom.config import load_config

@@ -65,7 +65,7 @@ class App:
             return datetime.now(timezone.utc)
 
         self.proposals = Proposals(self)
-        self.stickers = Stickers(self.home, self.bot)
+        self.stickers = Stickers(self.home, self.bot, lambda: self.dispatch.now())
         self.memory_import = MemoryImport(self)
         presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
