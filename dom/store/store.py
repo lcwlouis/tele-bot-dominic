@@ -348,6 +348,38 @@ class Store:
             )
             return self._read_chat_auth(conn, chat_id)
 
+    async def note_pending_chat(self, chat_id: str, title: str, invited_by: str) -> None:
+        """Remember who asked and what the chat is called. Never touches the authorization status."""
+        await self._run(self._note_pending_chat, str(chat_id), title, invited_by)
+
+    def _note_pending_chat(self, chat_id: str, title: str, invited_by: str) -> None:
+        with self._tx() as conn:
+            self._ensure_chat(conn, chat_id)
+            conn.execute(
+                "UPDATE chats SET title = ?, invited_by_handle = ?, updated_at = ? "
+                "WHERE chat_id = ? AND authorization_status = 'pending_approval'",
+                (title, invited_by, _now(), chat_id),
+            )
+
+    async def list_pending_chats(self) -> list[dict[str, Any]]:
+        return await self._run(self._list_pending_chats)
+
+    def _list_pending_chats(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._conn.execute(
+            "SELECT chat_id, title, invited_by_handle FROM chats "
+            "WHERE authorization_status = 'pending_approval' ORDER BY chat_id"
+        )]
+
+    async def release_approval_prompt(self, chat_id: int | str) -> None:
+        """Allow the owner prompt to be sent again after a definite delivery failure."""
+        await self._run(self._release_approval_prompt, str(chat_id))
+
+    def _release_approval_prompt(self, chat_id: str) -> None:
+        self._conn.execute(
+            "UPDATE chats SET approval_prompt_sent = 0 WHERE chat_id = ? AND authorization_status = 'pending_approval'",
+            (chat_id,),
+        )
+
     async def resolve_pending_chat(self, chat_id: str, status: str) -> dict[str, Any] | None:
         """Decide a chat only if it is still pending_approval. None means it was already decided."""
         if status not in _CHAT_AUTH_STATUSES:
