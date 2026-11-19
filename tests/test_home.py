@@ -25,10 +25,10 @@ def test_over_limit_file_can_shrink_but_not_grow(root):
     # Imported files may start over their limit; Dom must be able to prune them.
     limit = LIMITS["memory/HABITS.md"]
     path = root / "memory" / "HABITS.md"
-    path.write_text("- keep\n- " + "y" * limit)
+    path.write_text("- keep\n- LONG " + "y" * limit)
     home = Home(root)
     assert home.memory_write("memory/HABITS.md", "add", "more").ok is False
-    res = home.memory_write("memory/HABITS.md", "remove", "", "y" * 10)
+    res = home.memory_write("memory/HABITS.md", "remove", "", "LONG")
     assert res.ok is True
     assert path.read_text() == "- keep"
 
