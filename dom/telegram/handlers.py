@@ -63,6 +63,20 @@ class App:
         return self.store.owner_id
 
 
+# ---- owner events ------------------------------------------------------------------
+
+async def _owner_event(app: App, text: str) -> None:
+    """Note an owner command or button press in the owner's DM history. Never lets a failure reach the owner."""
+    try:
+        await app.store.record_owner_event(text)
+    except Exception:
+        log.exception("could not record an owner event")
+
+
+def _person(name: str) -> str:
+    return " ".join(name.split()) or "The owner"
+
+
 # ---- triggers --------------------------------------------------------------------
 
 def _command_name(text: str, username: str) -> str | None:
@@ -140,16 +154,20 @@ async def handle_message(app: App, message: Message) -> None:
             return
     if not msg.is_bot and msg.chat_type == "private" and msg.chat_id == msg.sender_id == app.owner_id:
         command = _command_name(msg.text, app.bot_username)
+        who = _person(msg.sender_name)
         if command == "/pending":
             await gate.resend_pending(app.bot, app.store, app.owner_id)
+            await _owner_event(app, f"{who} ran /pending: {await owner.pending_summary(app)}")
             return
         if command == "/status":
             text, markup = await owner.render_status(app)
             await app.bot.send_message(msg.chat_id, text, reply_markup=markup)
+            await _owner_event(app, f"{who} ran /status: {await owner.status_summary(app)}")
             return
         if command == "/chats":
             text, markup = await owner.render_chats(app)
             await app.bot.send_message(msg.chat_id, text, reply_markup=markup)
+            await _owner_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
             return
         if command in ("/wake", "/sleep"):
             parts = msg.text.split()
@@ -160,8 +178,10 @@ async def handle_message(app: App, message: Message) -> None:
             if len(parts) <= 2:
                 if not await app.dispatch.override(target, command):
                     await app.bot.send_message(msg.chat_id, "unknown chat")
-                elif len(parts) == 1:
-                    await app.bot.send_message(msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
+                else:
+                    if len(parts) == 1:
+                        await app.bot.send_message(msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
+                    await _owner_event(app, await _override_event(app, who, command, target))
             return
     async with app.ingest_locks[msg.chat_id]:
         decision = await gate.decide(app.store, msg, app.owner_id)
@@ -203,6 +223,12 @@ _DECISIONS = {"approve": "approved", "ignore": "ignored"}
 _OVERRIDES = {"wake": "/wake", "sleep": "/sleep"}
 
 
+async def _override_event(app: App, who: str, command: str, chat_id: int) -> str:
+    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), {"chat_id": str(chat_id), "title": ""})
+    title = owner.display_title(chat, app.owner_id)
+    return f"{who} woke Dom in {title}" if command == "/wake" else f"{who} sent Dom to sleep in {title}"
+
+
 async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> None:
     try:
         await app.bot.answer_callback_query(query.id, text=text)
@@ -242,6 +268,7 @@ async def _handle_override(app: App, query: CallbackQuery, action: str, raw_chat
         return
     title = owner.display_title(chat, app.owner_id)
     await _toast(app, query, f"Dom is up in {title}" if action == "wake" else f"Dom is asleep in {title}")
+    await _owner_event(app, await _override_event(app, _person(query.from_user.full_name), _OVERRIDES[action], chat_id))
     await _refresh_status(app, query)
 
 
@@ -267,9 +294,11 @@ async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id
     if app.owner_id is None or query.from_user.id != app.owner_id:
         await _toast(app, query, "not allowed")
         return
+    who = _person(query.from_user.full_name)
     if action == "status":
         await _toast(app, query)
         if raw_chat_id == "refresh":
+            await _owner_event(app, f"{who} refreshed the /status list")
             await _refresh_status(app, query)
         return
     chat = await _leavable_chat(app, raw_chat_id)
@@ -279,6 +308,7 @@ async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id
     title = owner.display_title(chat, app.owner_id)
     if action == "leave":
         await _toast(app, query)
+        await _owner_event(app, f"{who} tapped Leave on {title} (asked to confirm)")
         await _edit_prompt(app, query, f"Leave {title}? Friends will see Dom leave.", InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="Yes, leave", callback_data=f"leaveyes:{chat['chat_id']}"),
             InlineKeyboardButton(text="Cancel", callback_data="status:refresh"),
@@ -292,8 +322,10 @@ async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id
     except Exception as error:
         log.exception("could not leave chat %s", chat["chat_id"])
         await _toast(app, query, f"Couldn't leave: {(getattr(error, 'message', '') or str(error) or type(error).__name__)[:100]}")
+        await _owner_event(app, f"{who} tapped Leave on {title}: Dom couldn't leave")
         return
     await app.store.set_chat_auth_status(chat["chat_id"], "left")
+    await _owner_event(app, f"{who} tapped Leave on {title}: {result}")
     await _toast(app, query, result)
     await _refresh_status(app, query)
 
@@ -320,6 +352,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         await app.bot.answer_callback_query(query.id, text="already handled")
         return
     label = "Approved" if action == "approve" else "Ignored"
+    await _owner_event(app, f"{_person(query.from_user.full_name)} {label.lower()} {owner.display_title(chat, owner_id)}")
     await app.bot.answer_callback_query(query.id, text=label)
     if query.message is not None:
         await app.bot.edit_message_text(

@@ -151,6 +151,9 @@ def format_chat_window_xml(chat_id: str, messages: list[StoredMessage]) -> str:
     Dom actually saw the original before it was edited."""
     out = [f"<chat_window chat_id={quoteattr(str(chat_id))}>"]
     for m in messages:
+        if m.role == "event":
+            out.append(f"  <event time={quoteattr(m.created_at)}>{escape(m.text)}</event>")
+            continue
         attrs = [f"id={quoteattr(str(m.msg_id if m.msg_id is not None else ''))}"]
         if m.sender_handle:
             attrs.append(f"from={quoteattr(m.sender_handle)}")
@@ -633,6 +636,16 @@ class Store:
             ),
         )
         return int(cur.lastrowid)
+
+    async def record_owner_event(self, text: str) -> None:
+        """A one-line note in the owner's DM history (a command they ran, a button they tapped). It is owner-private,
+        never unread and has no msg_id."""
+        if self.owner_id is None:
+            raise ValueError("there is no owner to record an event for")
+        await self.record_new_message(StoredMessage(
+            chat_id=str(self.owner_id), role="event", visibility_scope=VISIBILITY_OWNER_PRIVATE,
+            text=text, created_at=_now(),
+        ))
 
     async def has_message(self, chat_id: int | str, msg_id: int) -> bool:
         return await self._run(self._has_message, str(chat_id), msg_id)

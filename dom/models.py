@@ -23,7 +23,7 @@ class StoredMessage(BaseModel):
     sender_handle: str = ""
     sender_name: str = ""
     is_bot: bool = False
-    role: Literal["user", "assistant", "system"] = "user"
+    role: Literal["user", "assistant", "system", "event"] = "user"  # event: a one-line note, never chat content
     visibility_scope: str
     text: str
     media_json: str | None = None
