@@ -16,7 +16,8 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from dom.agent import run_turn
-from dom.config import Config
+from dom.claim import try_claim
+from dom.config import Config, load_config
 from dom.home import Home
 from dom.llm import ChatClient
 from dom.models import IncomingMessage, StoredMessage
@@ -118,12 +119,37 @@ async def _run_chat_turn(app: App, msg: IncomingMessage) -> None:
     await executor.perform(app.bot, app.store, msg.chat_id, msg.msg_id, actions, sleep=app.sleep)
 
 
+def _claim_code(text: str, username: str) -> str | None:
+    """The code in `/claim <code>` (or `/claim@bot <code>`), or None if this is not a claim."""
+    parts = text.split()
+    if not parts:
+        return None
+    command, _, target = parts[0].partition("@")
+    if command != "/claim" or (target and target.lower() != username.lower()):
+        return None
+    return parts[1] if len(parts) > 1 else ""
+
+
+async def _handle_claim(app: App, msg: IncomingMessage, code: str) -> None:
+    if try_claim(app.config.home, app.config, msg.sender_id, msg.chat_type, code):
+        await app.store.set_owner(msg.sender_id)
+        app.config = load_config(app.config.home)
+        await app.bot.send_message(msg.chat_id, "Done: you are my owner now. Other chats will ask you before I talk in them.")
+    elif msg.chat_type == "private":
+        await app.bot.send_message(msg.chat_id, "That code did not work.")
+
+
 async def handle_message(app: App, message: Message) -> None:
     if message.chat.type not in CHAT_TYPES:
         return
     msg = to_incoming(message)
     if msg.is_bot:
         return
+    if app.owner_id is None:  # until an owner exists, the only thing Dom answers is /claim
+        code = _claim_code(msg.text, app.bot_username)
+        if code is not None:
+            await _handle_claim(app, msg, code)
+            return
     decision = await gate.decide(app.store, msg, app.owner_id)
     if decision == "drop":
         return

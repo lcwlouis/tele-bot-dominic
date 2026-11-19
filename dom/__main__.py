@@ -1,1 +1,4 @@
-"""Entry point: python -m dom (subcommands arrive with the CLI)."""
+from dom.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
