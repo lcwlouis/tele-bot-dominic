@@ -1,6 +1,8 @@
 # Dom core — design
 
-Status: draft for review · 2026-11-19 · replaces the uncommitted V2 attempt on `feat/v2-modernisation`
+Status: phases 1–2 live on the Pi · 2026-11-19 · replaces the uncommitted V2 attempt on `feat/v2-modernisation`
+
+**Phases 3–7 are revised in `docs/superpowers/plans/2026-11-19-roadmap-phases-3-7.md`.** Where the two disagree, the roadmap wins.
 
 ## 1. What Dom is
 
@@ -47,7 +49,8 @@ side services: scheduler (reminders, heartbeat/daydream), web UI (FastAPI),
 - No agent framework. The loop is small and ours.
 
 **Models**, all through OpenAI-compatible endpoints:
-- Main chat model: `deepseek/deepseek-v4.1-flash-1017` on OpenRouter, or homelab model `default`, or Strata Qwen 3.8 Flash Next.
+- Main chat model: any OpenAI-compatible endpoint in `[models.chat]`, with an optional `[models.chat_fallback]` used when the first is down. the owner's instance uses the homelab model `default`, falling back to `deepseek/deepseek-v4.1-flash-1017` on OpenRouter.
+- A chat model may lack vision (the homelab one does). Anything visual goes through the media model.
 - Media: `qwen/qwen3.8-omni-flash` for images, GIFs, video and voice.
 - Triage: TypeSafe Jev via `POST /api/alpha/decisions` with `~typesafe/jev-latest`. This is not a chat model.
 
@@ -97,7 +100,7 @@ Things that leave `SOUL.md`:
 **Per-chat sliders.** Overrides live in the `chats` table and are edited in the UI.
 
 **Starter kit.**
-- `examples/home/` ships a neutral starter soul and empty memory.
+- `dom/starter_home/` ships a neutral starter soul and empty memory, as package data.
 - `dom init` copies it and walks the owner through setup.
 
 ## 5. Chat scopes
@@ -179,7 +182,7 @@ Edits are handled, including edits made while Dom was offline.
 | Tool | Scope |
 |---|---|
 | `web_search` | all |
-| ~~`memory`~~ replaced by the background memory pass (`dom/memory_pass.py`): after an online session ends, or after 10 new messages, one model call turns new messages into add / replace / remove ops on the scope's note files, limits enforced; `private/` files in `owner_dm` only. Replies never write notes. | all scopes |
+| ~~`memory`~~ replaced by the background memory pass (`dom/memory_pass.py`): after an online session ends, or when unprocessed messages are about to leave the chat window (window size − 5), one model call turns new messages into add / replace / remove ops on the scope's note files, limits enforced; `private/` files in `owner_dm` only. Replies never write notes. | all scopes |
 | `search_history` | FTS over the current chat; the owner can search all chats |
 | `skills_list` / `skill_view` / `skill_manage` | all |
 | `remind` | owner, plus whitelisted friends |
@@ -191,7 +194,7 @@ Media is transcribed or described once by the media model when it arrives. The d
 
 ## 8. Self-evolution (three tiers)
 
-1. **Text, changed freely:** `memory/*`, `HABITS.md`, `JOURNAL.md`, `skills/`. Changes come through tools during chat, and through a background reflection job: daily, plus after long sessions.
+1. **Text, changed freely:** `memory/*`, `HABITS.md`, `JOURNAL.md`, `skills/`. Notes change through the background memory pass. `HABITS.md` is written by code from message-time statistics, never by a model. The journal and slider nudges come from a daily reflection job.
    - Reflection also proposes slider nudges, at most ±0.1 each time.
    - Reflection may *propose* `SOUL.md` edits. The owner approves them in DM or in the UI.
 2. **Plugins:**
@@ -218,7 +221,8 @@ Media is transcribed or described once by the media model when it arrives. The d
 **Logins.** Dom calls `desktop_handoff(reason)`. The owner gets a link to the live view (VNC behind the UI's auth), logs in, and taps "done". Cookies stay in the container profile and never reach Dom's core.
 
 **Candidates:** AIO Sandbox (`ghcr.io/agent-infra/sandbox`) and Cua (`ghcr.io/trycua/linux:24.04[-slim]`). Both have arm64 images.
-- **Choice pending the memory spike.**
+- **Chosen: AIO Sandbox, run lean** (`2026-11-19-desktop-spike-results.md`). Still to confirm on the Pi itself.
+- Desktop tasks run in a worker agent that never sees `private/`; see the roadmap, phase 5.
 - Acceptance: idle under 1.2GB and working peak under 1.6GB on the Pi, with the core still responsive.
 - If neither passes, `local` mode uses the slim image without VS Code. The full image goes to `remote`.
 
@@ -284,7 +288,11 @@ Each phase ends with a demo on a real test bot, not mocks.
 6. **Plugins (tier 2), `self_inspect`, tier 3 briefs.**
 7. **JARVIS redesign, docs, Pi packaging** (compose file, setup guide).
 
-## 15. Pi cleanup (when it's back)
+## 15. Pi cleanup
+
+Done on 2026-11-19: read-only look, backup, old pilot stopped (not removed), persistent logs, per-minute health log, Dom as a systemd user service. Still open: remove old containers and images, DHCP reservation, swap check.
+
+Original list:
 
 1. Look around read-only.
 2. Back up `state.db`, `runtime.env` and the session file.
@@ -294,6 +302,8 @@ Each phase ends with a demo on a real test bot, not mocks.
 6. Check that swap isn't thrashing the SD card. Consider zram.
 
 ## 16. Open questions for the owner
+
+The current list is in the roadmap (D1–D15). The two below are kept for history.
 
 1. Dom's voice: what in the current soul reads as "not Dom"? The rewrite in phase 1 starts from V1's prompt plus the classic preset.
 2. Should Jev's leak check send private headings to OpenRouter? This is the same trust level as the main model, which already sees them in your DM.
