@@ -75,7 +75,9 @@ def tree_hashes(root: Path) -> dict[str, str]:
 
 @pytest.fixture
 def home(tmp_path):
-    return tmp_path / "home"
+    path = tmp_path / "home"
+    init_home(path)
+    return path
 
 
 def test_owner_dm_context_goes_private(src, home):
@@ -139,7 +141,7 @@ def test_state_db_migrated_with_traits_and_owner_approval(src, home):
 
 def test_legacy_files_go_to_legacy_not_home(src, home):
     import_v2(src, home, OWNER)
-    assert not (home / "SOUL.md").exists()
+    assert (home / "SOUL.md").read_text() != "OLD SOUL"
     assert (home / "legacy" / "SOUL.md").read_text() == "OLD SOUL"
     assert (home / "legacy" / "SCHEDULE.md").is_file()
     assert (home / "legacy" / "TRAITS.json").is_file()
@@ -148,7 +150,6 @@ def test_legacy_files_go_to_legacy_not_home(src, home):
 
 
 def test_refuses_to_overwrite_existing_state_db(src, home):
-    home.mkdir()
     (home / "state.db").write_bytes(b"live data")
     with pytest.raises(FileExistsError):
         import_v2(src, home, OWNER)
@@ -156,7 +157,6 @@ def test_refuses_to_overwrite_existing_state_db(src, home):
 
 
 def test_import_into_initialised_home_sets_owner(src, home):
-    init_home(home)
     (home / ".claim").write_text("CODE1234")
     import_v2(src, home, OWNER)
     assert load_config(home).owner_id == OWNER
@@ -166,7 +166,6 @@ def test_import_into_initialised_home_sets_owner(src, home):
 
 
 def test_import_into_home_with_other_owner_refused(src, home):
-    init_home(home)
     cli_owner = 999
     from dom.config import save_owner
     save_owner(home, cli_owner)
@@ -185,7 +184,7 @@ def test_cli_import_v2_prints_report(src, home, capsys):
 def test_legacy_owner_differing_from_owner_id_refused_before_writing(src, home):
     with pytest.raises(ValueError, match="legacy owner"):
         import_v2(src, home, FRIEND)
-    assert not home.exists()
+    assert not (home / "state.db").exists() and not (home / "legacy").exists()
 
 
 def test_legacy_owner_found_from_private_memory_when_no_state_json(src, home):
@@ -193,7 +192,7 @@ def test_legacy_owner_found_from_private_memory_when_no_state_json(src, home):
     write(src, "admin/PRIVATE_MEMORY.md", "- see memory/people/uid_111_louis.md\n- owner private fact")
     with pytest.raises(ValueError, match="legacy owner"):
         import_v2(src, home, FRIEND)
-    assert not home.exists()
+    assert not (home / "state.db").exists() and not (home / "legacy").exists()
 
 
 def test_symlinks_in_source_are_skipped_and_reported(src, home, tmp_path):
@@ -209,3 +208,12 @@ def test_symlinks_in_source_are_skipped_and_reported(src, home, tmp_path):
     assert any("uid_333_eve.md" in item for item in report.skipped)
     assert any("MEMORY.md" in item for item in report.skipped)
     assert not (home / "legacy" / "presets" / "evil.md").exists()
+
+
+def test_import_requires_an_initialised_home(src, tmp_path):
+    fresh = tmp_path / "fresh"
+    with pytest.raises(ValueError, match="dom init"):
+        import_v2(src, fresh, OWNER)
+    assert not fresh.exists()
+    assert cli.main(["import-v2", str(src), str(fresh), "--owner-id", str(OWNER)]) == 1
+    assert not fresh.exists()
