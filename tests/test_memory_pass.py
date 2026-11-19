@@ -434,10 +434,10 @@ async def test_a_pass_runs_when_the_owner_sends_dom_to_sleep(make_app, tmp_path)
 
 
 async def test_messages_about_to_leave_the_window_trigger_a_pass(make_app, tmp_path):
-    # window_size 35 - margin 5 = 30 unprocessed messages
+    # window_size 80 - margin 5 = 75 unprocessed messages
     app = make_app(contents=(FINAL, ops(add("MEMORY.md", "fact"))))
     await approve(app, GROUP)
-    for msg_id in range(1, 31):
+    for msg_id in range(1, 76):
         await put(app, GROUP, msg_id, f"message {msg_id}")
     await app.dispatch.presence.wake(GROUP, parse_habits(""))
     await app.dispatch.tick()
@@ -445,6 +445,17 @@ async def test_messages_about_to_leave_the_window_trigger_a_pass(make_app, tmp_p
     assert len(app.script.requests) == 2
     assert "tools" in app.script.requests[0] and app.script.requests[1]["messages"][0]["content"] == SYSTEM_PROMPT
     assert files(tmp_path, "memory/MEMORY.md") == "- fact"
+
+
+async def test_just_under_the_threshold_does_not_trigger_a_pass(make_app):
+    app = make_app(contents=(FINAL,))
+    await approve(app, GROUP)
+    for msg_id in range(1, 74):  # 73 + Dom's one reply = 74: one short of window_size 80 - margin 5
+        await put(app, GROUP, msg_id, f"message {msg_id}")
+    await app.dispatch.presence.wake(GROUP, parse_habits(""))
+    await app.dispatch.tick()
+    await drain_dispatch(app.dispatch)
+    assert len(app.script.requests) == 1
 
 
 async def test_fewer_messages_do_not_trigger_a_pass(make_app):
