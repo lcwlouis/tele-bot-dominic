@@ -464,13 +464,13 @@ async def test_chats_groups_every_known_chat_by_status_with_member_counts(two_ap
     text, markup = await chats_message(app)
     lines = text.splitlines()
     assert lines[0] == "**Dom's chats**"
-    headings = [l for l in lines if l.startswith("### ")]
-    assert headings == ["### Approved", "### Pending", "### Ignored", "### Left"]
+    headings = [l for l in lines if l.startswith("**") and l.endswith("**") and l.strip("*") in ("Approved", "Pending", "Ignored", "Left")]
+    assert headings == ["**Approved**", "**Pending**", "**Ignored**", "**Left**"]
     assert lines.count("| Chat | Type | Members |") == 4 and lines.count("|---|---|---|") == 4
 
     def section(name):
-        start = lines.index(f"### {name}") + 1
-        end = next((i for i in range(start, len(lines)) if lines[i].startswith("### ")), len(lines))
+        start = lines.index(f"**{name}**") + 1
+        end = next((i for i in range(start, len(lines)) if lines[i].strip("*") in ("Approved", "Pending", "Ignored", "Left")), len(lines))
         return rows_of("\n".join(lines[start:end]))
 
     assert sorted(section("Approved")) == [["Book Club", "Group", "5"], ["DM with Fran", "DM", "—"], ["your DM", "DM", "—"]]
