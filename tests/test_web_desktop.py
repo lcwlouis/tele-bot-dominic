@@ -165,3 +165,27 @@ async def test_dashboard_done_resumes_task_with_csrf(make_app, monkeypatch):
         assert (await client.post(done, headers=auth | POST_HEADERS)).status_code == 200
     await wait_task(worker)
     assert any("Resumed desktop task" in row.text for row in await app.store.get_recent_chat_window(str(OWNER), 10))
+
+
+async def test_start_does_not_hold_the_worker_lock_while_the_computer_boots(make_app, monkeypatch):
+    app = make_app()
+    worker = await worker_for(app)
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    async def ensure_running():
+        entered.set()
+        await gate.wait()
+        return app.sandbox
+
+    app.sandbox.ensure_running = ensure_running
+    web = dashboard(app, monkeypatch)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        request = asyncio.create_task(client.post(
+            "/desktop/computer/start", headers={"Authorization": f"Bearer {TOKEN}"} | POST_HEADERS,
+        ))
+        await asyncio.wait_for(entered.wait(), 2)
+        async with asyncio.timeout(1):
+            await worker.control.acquire()
+        worker.control.release()
+        gate.set()
+        assert (await request).status_code == 200

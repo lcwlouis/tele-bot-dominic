@@ -46,29 +46,33 @@ async def desktop_state(request: Request):
     return render("desktop_state.html", context=await _context(owner_app(request)))
 
 
+async def _change_computer(app, sandbox, action: str) -> str:
+    try:
+        await (sandbox.ensure_running() if action == "start" else sandbox.stop())
+    except SandboxError:
+        await owner.record_event(app, f"Could not {action} the desktop from the dashboard")
+        return f"Couldn't {action} the computer."
+    await owner.record_event(app, f"Desktop {action} requested from the dashboard")
+    return "Computer ready." if action == "start" else "Computer stopped."
+
+
 @router.post("/computer/{action}")
 async def computer_action(request: Request, action: Literal["start", "stop"]):
     app = owner_app(request)
     sandbox, worker = app.sandbox, app.desktop_worker
     if sandbox is None or worker is None:
         raise HTTPException(409, "The desktop is off.")
-    async with worker.control:
-        if action == "stop" and not isinstance(sandbox, LocalSandbox):
+    if action == "start":
+        # Booting takes a while; the worker's lock must stay free for cancel and resume meanwhile.
+        message = await _change_computer(app, sandbox, action)
+    else:
+        if not isinstance(sandbox, LocalSandbox):
             raise HTTPException(409, "Manage the remote computer on its host.")
-        if action == "stop" and await app.store.desktop_tasks(app.owner_id, active=True):
-            message = "Cancel the current task before stopping the computer."
-        else:
-            try:
-                if action == "start":
-                    await sandbox.ensure_running()
-                else:
-                    await sandbox.stop()
-            except SandboxError:
-                await owner.record_event(app, f"Could not {action} the desktop from the dashboard")
-                message = f"Couldn't {action} the computer."
+        async with worker.control:
+            if await app.store.desktop_tasks(app.owner_id, active=True):
+                message = "Cancel the current task before stopping the computer."
             else:
-                await owner.record_event(app, f"Desktop {action} requested from the dashboard")
-                message = "Computer ready." if action == "start" else "Computer stopped."
+                message = await _change_computer(app, sandbox, action)
     return render("desktop_state.html", context=await _context(app, message))
 
 
