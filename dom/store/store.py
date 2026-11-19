@@ -661,8 +661,8 @@ class Store:
         )
         params: list[Any] = [match]
         if not self._is_owner_chat(requester_chat_id):  # the owner's DM searches every chat
-            sql += " AND m.visibility_scope IN (?, ?)"
-            params += [VISIBILITY_PUBLIC, f"chat:{requester_chat_id}"]
+            sql += f" AND m.chat_id = ? AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+            params.append(requester_chat_id)
         sql += " ORDER BY messages_fts.rank LIMIT ?"
         params.append(max(1, min(limit, 100)))
         return [dict(r) for r in self._conn.execute(sql, params)]

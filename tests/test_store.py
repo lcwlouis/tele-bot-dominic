@@ -405,12 +405,12 @@ class SearchSecurityTests(StoreTestCase):
     async def texts(self, requester):
         return sorted(h["text"] for h in await self.store.search_chat_history("banana", requester))
 
-    async def test_group_sees_only_public_and_own(self):
-        self.assertEqual(await self.texts("-100"), ["banana in group100", "banana public"])
-        self.assertEqual(await self.texts("-200"), ["banana in group200", "banana public"])
+    async def test_group_sees_only_own_chat(self):
+        self.assertEqual(await self.texts("-100"), ["banana in group100", "banana public"])  # public row is in -100
+        self.assertEqual(await self.texts("-200"), ["banana in group200"])
 
-    async def test_unknown_requester_sees_only_public(self):
-        self.assertEqual(await self.texts("999"), ["banana public"])
+    async def test_unknown_requester_sees_nothing(self):
+        self.assertEqual(await self.texts("999"), [])
 
     async def test_admin_sees_everything(self):
         self.assertEqual(len(await self.texts(ADMIN_USER_ID)), 4)
