@@ -131,8 +131,8 @@ A written design document plus one static HTML mock, committed under `docs/super
 
 **Files:** `docs/deploy-dashboard.md`, `dom/web/app.py` (bind), tests for bind config only.
 
-- The Cloudflare tunnel's ingress points at `http://dominic-dashboard:8080` on the Docker network `dominic-dashboard-net` (gateway 172.18.0.1), and `cloudflared` already enforces Access. No Cloudflare change is needed:
+- The Cloudflare tunnel's ingress points at `http://<forwarder>:8080` on the Docker network `<tunnel-network>` (gateway <bridge-gateway>), and `cloudflared` already enforces Access. No Cloudflare change is needed:
   - Dom's web server binds to the Docker bridge gateway address (config `bind`), reachable from that network but not from the LAN.
-  - A tiny forwarding container named `dominic-dashboard` (alpine + socat, `--restart unless-stopped`, memory limit 16 MB) joins `dominic-dashboard-net` and forwards :8080 to the gateway address.
+  - A tiny forwarding container named `<forwarder>` (alpine + socat, `--restart unless-stopped`, memory limit 16 MB) joins `<tunnel-network>` and forwards :8080 to the gateway address.
 - The doc describes this with placeholders (no real hostnames), plus the plain alternative of pointing a tunnel at `127.0.0.1`.
 - Commit: `docs: serving the dashboard through a Cloudflare tunnel`.

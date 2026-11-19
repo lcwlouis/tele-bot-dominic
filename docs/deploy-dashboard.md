@@ -11,12 +11,12 @@ validates the signed assertion against the same team and application audience.
 Use this layout when Dom runs on the host and `cloudflared` runs in Docker on
 an existing private bridge. The example public hostname is
 `dashboard.example.org` and the tunnel is `<tunnel>`. Keep the existing ingress
-service `http://dominic-dashboard:8080` and its Access validation.
+service `http://<forwarder>:8080` and its Access validation.
 
 Find the IPv4 gateway of the bridge used by `cloudflared`.
 
 ```sh
-docker network inspect '<dashboard-network>' --format '{{json .IPAM.Config}}'
+docker network inspect '<tunnel-network>' --format '{{json .IPAM.Config}}'
 ```
 
 Set these keys in `DOM_HOME/config.toml`. Replace `<bridge-gateway>` with that
@@ -54,8 +54,8 @@ RUN apk add --no-cache socat
 ENTRYPOINT ["socat"]
 DOCKERFILE
 
-docker run -d --name dominic-dashboard \
-  --network '<dashboard-network>' \
+docker run -d --name '<forwarder>' \
+  --network '<tunnel-network>' \
   --restart unless-stopped --memory 16m \
   dom-dashboard-forwarder TCP-LISTEN:8080,reuseaddr,fork 'TCP:<bridge-gateway>:8080'
 ```
