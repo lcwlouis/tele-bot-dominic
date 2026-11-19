@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 import re
 
@@ -17,6 +19,8 @@ CORRECTION = (
 )
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
+
+log = logging.getLogger("dom.agent")
 
 def parse_actions(text: str | None) -> Actions | None:
     text = (text or "").strip()
@@ -65,11 +69,13 @@ async def run_turn(
     schemas = [t.openai_schema() for t in offered.values()]
     messages = list(messages)
     corrected = False
+    trace: list[str] = []  # one entry per model call, logged once per turn
 
     for _ in range(max_steps):
         reply = await client.complete(messages, schemas)
         calls = reply.get("tool_calls")
         if calls and _well_formed(calls):
+            trace.append("tools:" + ",".join(str((c.get("function") or {}).get("name")) for c in calls))
             messages.append(reply)
             for call in calls:
                 result = await _run_tool_call(call, offered, ctx)
@@ -79,10 +85,14 @@ async def run_turn(
             messages.append(reply)
             actions = parse_actions(reply.get("content"))
             if actions is not None:
+                trace.append("final")
+                log.info("turn chat=%s scope=%s calls=%d [%s]", ctx.chat_id, ctx.scope, len(trace), " ".join(trace))
                 return actions
+        trace.append("malformed")
         # else: malformed tool calls are kept out of the history and handled like a malformed final
         if corrected:
             break
         corrected = True
         messages.append({"role": "user", "content": CORRECTION})
+    log.info("turn chat=%s scope=%s calls=%d [%s] -> no_response", ctx.chat_id, ctx.scope, len(trace), " ".join(trace))
     return Actions(no_response=True)
