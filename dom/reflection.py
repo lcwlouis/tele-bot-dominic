@@ -37,6 +37,11 @@ PUBLIC_FORMAT = (
     "The mood is a feeling only: no names, places, events or instructions. "
     f"Slider changes are optional, at most ±0.1 each, and only for {', '.join(NAMES)}."
 )
+SOUL_EDIT_FORMAT = (
+    ' You may also include "soul_edit": {"old": "exact text from the soul", '
+    '"new": "replacement text", "why": "short reason"} to propose a change for owner approval. '
+    "Keep the public soul free of chat details and personal information."
+)
 PRIVATE_FORMAT = 'Return only JSON: {"entry": "up to 600 characters"}. This entry is for the private journal.'
 
 
@@ -110,9 +115,14 @@ def _journal_body(reply: object, private: bool) -> str | None:
     return f"mood: {feeling}".rstrip() + f"\n{entry}\nnudges: {nudges}"
 
 
-async def _ask(app: App, owner: int, context: str, *, private: bool) -> str | None:
+async def _ask(
+    app: App, owner: int, context: str, *, private: bool, offer_edit: bool = False,
+) -> tuple[str | None, object]:
+    format_note = PRIVATE_FORMAT if private else PUBLIC_FORMAT
+    if offer_edit:
+        format_note += SOUL_EDIT_FORMAT
     request = [
-        {"role": "system", "content": f"{FRAME}\n{PRIVATE_FORMAT if private else PUBLIC_FORMAT}"},
+        {"role": "system", "content": f"{FRAME}\n{format_note}"},
         {"role": "user", "content": context},
     ]
     try:
@@ -123,13 +133,13 @@ async def _ask(app: App, owner: int, context: str, *, private: bool) -> str | No
                 raw = reply.get("content")
                 data = decode(unfence(raw)) if isinstance(raw, str) else None
                 if (body := _journal_body(data, private)) is not None:
-                    return body
+                    return body, data.get("soul_edit") if offer_edit else None
                 if attempt == 0:
                     request.append({"role": "user", "content": "Please answer again with only the required JSON object."})
     except ModelCallSkipped:
-        return None
+        return None, None
     log.warning("%s reflection skipped after two malformed replies", "private" if private else "public")
-    return None
+    return None, None
 
 
 def _context(soul: str, notes: str, entries: list[str], messages: str) -> str:
@@ -152,7 +162,9 @@ async def _public(app: App, home: Home, owner: int, day: date, start: datetime, 
     else:
         messages = await app.store.reflection_messages(start, now, private=False)
         context = _context(soul, _read(home, "memory/MEMORY.md"), entries, messages)
-        body = await _ask(app, owner, context, private=False)
+        body, edit = await _ask(app, owner, context, private=False, offer_edit=await app.proposals.reflection_due())
+        if edit is not None:
+            await app.proposals.from_reflection(edit)
         if body is not None:
             home.append_journal(day, body)
 
@@ -174,7 +186,7 @@ async def _private(app: App, home: Home, owner: int, day: date, start: datetime,
         entries = _entries(home, private=True)
         if not entries or not entries[-1].startswith(f"## {day.isoformat()}\n"):
             notes = "\n\n".join(_read(home, f"private/{name}.md") for name in ("USER", "NOTES"))
-            body = await _ask(app, owner, _context(soul, notes, entries, messages), private=True)
+            body, _ = await _ask(app, owner, _context(soul, notes, entries, messages), private=True)
             if body is not None:
                 home.append_journal(day, body, private=True)
     await app.store.kv_set(PRIVATE_DAY_KEY, day.isoformat())

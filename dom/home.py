@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 from tempfile import NamedTemporaryFile
+from threading import Lock
 from importlib import resources
 from dataclasses import dataclass
 from datetime import date, time
@@ -23,6 +24,7 @@ LIMITS: dict[str, int] = {
 }
 # Writable through memory_write but not size-bounded (never loaded into chat prompts).
 UNBOUNDED = {"memory/JOURNAL.md"}
+_MEMORY_WRITE_LOCK = Lock()
 _JOURNAL_HEADING = re.compile(r"^## \d{4}-\d{2}-\d{2}[ \t]*$", re.MULTILINE)
 
 
@@ -81,6 +83,17 @@ class Home:
         text: str,
         old: str | None = None,
     ) -> WriteResult:
+        # Proposal decisions run in the store worker. Serialize their edits with memory passes.
+        with _MEMORY_WRITE_LOCK:
+            return self._memory_write(rel, op, text, old)
+
+    def _memory_write(
+        self,
+        rel: str,
+        op: Literal["add", "replace", "remove"],
+        text: str,
+        old: str | None = None,
+    ) -> WriteResult:
         try:
             path = self._resolve(rel)
         except ValueError as exc:  # traversal; PrivateAccessError still propagates
@@ -116,8 +129,7 @@ class Home:
                 f"over limit: {len(new)} > {limit} characters; merge or remove entries first",
                 over_limit=True,
             )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new)
+        self._write_regular(rel, new)
         return WriteResult(True, new)
 
     def _write_regular(self, rel: str, content: str) -> None:
@@ -133,6 +145,15 @@ class Home:
                 pending.replace(path)
             finally:
                 pending.unlink(missing_ok=True)
+
+    def replace_soul(self, old: str, new: str) -> bool:
+        home = self.scoped(allow_private=False)
+        current = home.read("SOUL.md")
+        first = current.find(old) if old else -1
+        if first == -1 or current.find(old, first + 1) != -1:
+            return False
+        home._write_regular("SOUL.md", current[:first] + new + current[first + len(old):])
+        return True
 
     def journal_entries(self, *, private: bool = False) -> list[str]:
         return _split_journal(self.read(_journal_path(private)))[1]

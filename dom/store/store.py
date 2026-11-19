@@ -41,6 +41,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (6, "0005_memory_cursor.sql"),
     (7, "0006_usage.sql"),
     (8, "0007_phase3.sql"),
+    (9, "0008_proposals_reminders.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -979,6 +980,54 @@ class Store:
             )
 
     # ---- usage ------------------------------------------------------------
+
+    async def create_proposal(
+        self, kind: str, title: str, body: dict, source: str, at: str, *, since: str | None = None,
+    ) -> int | None:
+        def insert() -> int | None:
+            row = self._conn.execute(
+                "INSERT INTO proposals (kind, title, body_json, source, created_at) "
+                "SELECT ?, ?, ?, ?, ? WHERE ? IS NULL OR NOT EXISTS "
+                "(SELECT 1 FROM proposals WHERE kind = ? AND source = ? AND created_at > ?) RETURNING id",
+                (kind, title, json.dumps(body), source, at, since, kind, source, since),
+            ).fetchone()
+            return row["id"] if row else None
+
+        return await self._run(insert)
+
+    async def pending_proposals(self) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute("SELECT * FROM proposals WHERE status = 'pending' ORDER BY id")
+        ])
+
+    async def has_recent_proposal(self, kind: str, source: str, since: str) -> bool:
+        return await self._run(lambda: self._conn.execute(
+            "SELECT 1 FROM proposals WHERE kind = ? AND source = ? AND created_at > ? LIMIT 1",
+            (kind, source, since),
+        ).fetchone() is not None)
+
+    async def decide_proposal(
+        self, proposal_id: int, status: str, at: str, apply: Callable[[str, dict], None],
+    ) -> bool:
+        def decide() -> bool:
+            # The claim and the decision share a transaction. A refused file edit rolls back the claim.
+            with self._tx() as conn:
+                row = conn.execute(
+                    "UPDATE proposals SET status = ?, decided_at = ? WHERE id = ? AND status = 'pending' "
+                    "RETURNING kind, body_json",
+                    (status, at, proposal_id),
+                ).fetchone()
+                if row and status == "approved":
+                    apply(row["kind"], json.loads(row["body_json"]))
+                return row is not None
+
+        return await self._run(decide)
+
+    async def expire_proposals(self, before: str, at: str) -> None:
+        await self._run(self._conn.execute,
+            "UPDATE proposals SET status = 'expired', decided_at = ? WHERE status = 'pending' AND created_at < ?",
+            (at, before),
+        )
 
     async def record_usage(
         self, at: str, kind: str, model: str, host: str, chat_id: int | None,

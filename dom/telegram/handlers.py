@@ -25,6 +25,7 @@ from dom.llm import ChatClient
 from dom.media import MediaDescriber
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
+from dom.proposals import Proposals
 from dom.store import Store
 from dom.search import SearchClient
 from dom.traits import load_preset
@@ -53,11 +54,13 @@ class App:
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | None = None
     dispatch: Dispatcher = field(init=False)
+    proposals: Proposals = field(init=False)
 
     def __post_init__(self) -> None:
         def now() -> datetime:
             return datetime.now(timezone.utc)
 
+        self.proposals = Proposals(self)
         presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
 
@@ -170,6 +173,10 @@ async def handle_message(app: App, message: Message) -> None:
         if command == "/chats":
             await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app))
             await _owner_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
+            return
+        if command == "/proposals":
+            await owner.show_proposals(app)
+            await _owner_event(app, f"{who} ran /proposals")
             return
         if command == "/preset":
             await owner.show_presets(app)
@@ -393,6 +400,11 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
     owner_id = app.owner_id
     if owner_id is None or query.from_user.id != owner_id:
         return
+    if action == "prop":
+        decision, _, proposal_id = raw_chat_id.partition(":")
+        if not query.from_user.is_bot and decision in ("yes", "no") and proposal_id.isascii() and proposal_id.isdecimal():
+            await _toast(app, query, await app.proposals.decide(int(proposal_id), decision == "yes"))
+        return
     try:
         chat_id = int(raw_chat_id)
     except ValueError:
@@ -453,7 +465,7 @@ def build_router(app: App) -> Router:
     async def on_edited(message: Message) -> None:
         await handle_edited_message(app, message)
 
-    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:", "leave:", "leaveyes:", "status:")))
+    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:", "leave:", "leaveyes:", "status:", "prop:")))
     async def on_callback(query: CallbackQuery) -> None:
         await handle_callback(app, query)
 
