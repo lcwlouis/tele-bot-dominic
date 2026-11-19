@@ -27,6 +27,17 @@ class OpenersConfig(BaseModel):
     max_per_day: int = Field(default=2, ge=0)
 
 
+class WebConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False
+    bind: str = "127.0.0.1"
+    port: int = Field(default=8080, ge=1, le=65535)
+    access_team: str = ""
+    access_aud: str = ""
+    dev_token_env: str = ""
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -38,6 +49,7 @@ class Config(BaseModel):
     window_size: int = 80
     daily_spend_cap_usd: float = Field(default=1.0, ge=0, allow_inf_nan=False)
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
     ephemeral_replies: bool = False
     leak_check: bool = True
     leak_threshold: float = Field(default=1.2, ge=0, le=3)
@@ -77,6 +89,7 @@ def load_config(home: Path) -> Config:
         window_size=raw.get("window_size", 80),
         daily_spend_cap_usd=raw.get("daily_spend_cap_usd", 1.0),
         openers=raw.get("openers", {}),
+        web=raw.get("web", {}),
         **{key: raw[key] for key in ("leak_check", "leak_threshold", "ephemeral_replies") if key in raw},
     )
 
