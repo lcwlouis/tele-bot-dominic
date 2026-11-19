@@ -131,7 +131,7 @@ def test_state_db_migrated_with_traits_and_owner_approval(src, home):
     import_v2(src, home, OWNER)
     with sqlite3.connect(home / "state.db") as conn:
         conn.row_factory = sqlite3.Row
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
         chats = {r["chat_id"]: r for r in conn.execute("SELECT * FROM chats")}
         assert json.loads(chats[str(GROUP)]["traits_json"]) == {"humor_level": 0.9, "emoji_level": 0.1}
         assert chats[str(GROUP)]["authorization_status"] == "approved"  # earlier approvals survive

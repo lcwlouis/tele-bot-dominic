@@ -1,0 +1,123 @@
+import asyncio
+import json
+
+import pytest
+
+from dom import reflection
+from dom.telegram import handlers
+from test_owner_events import events, press
+from test_traits import put
+from tghelpers import FRIEND, GROUP, OWNER, tg
+
+
+async def soul_edit(app):
+    put(app.home, "SOUL.md", "A curious friend.")
+    return await app.proposals.create(
+        "soul_edit", "A gentler voice", {"old": "curious", "new": "thoughtful"}, "example",
+    )
+
+
+async def test_create_dms_owner_silently_and_lists_pending_with_buttons(make_app):
+    app = make_app()
+    proposal_id = await soul_edit(app)
+    (sent,) = app.bot.of("send")
+    assert sent[1] == OWNER and "A gentler voice" in sent[2] and sent[3]["disable_notification"]
+    assert [(b.text, b.callback_data) for b in sent[3]["reply_markup"].inline_keyboard[0]] == [
+        ("Approve", f"prop:yes:{proposal_id}"), ("Reject", f"prop:no:{proposal_id}"),
+    ]
+    assert "A gentler voice" in (await events(app))[0]["text"]
+    assert await events(app, GROUP) == []
+
+    app.bot.calls.clear()
+    await handlers.handle_message(app, tg(OWNER, OWNER, "/proposals"))
+    assert app.bot.of("send", OWNER)[0][3]["reply_markup"] == sent[3]["reply_markup"]
+
+
+async def test_approve_applies_once_even_with_two_taps(make_app):
+    app = make_app()
+    proposal_id = await app.proposals.create(
+        "memory_fact", "Prefers tea", {"file": "USER.md", "text": "Prefers tea"}, "example",
+    )
+    await asyncio.gather(*(press(app, f"prop:yes:{proposal_id}") for _ in range(2)))
+    assert app.home.scoped(allow_private=True).read("private/USER.md") == "- Prefers tea"
+    assert {call[2] for call in app.bot.of("answer")} == {"Approved", "already handled"}
+    assert any("Approved" in event["text"] for event in await events(app))
+
+
+async def test_reject_leaves_files_unchanged_and_non_owner_tap_is_ignored(make_app):
+    app = make_app()
+    proposal_id = await soul_edit(app)
+    await press(app, f"prop:yes:{proposal_id}", FRIEND)
+    assert app.bot.of("answer") == []
+    assert app.home.read("SOUL.md") == "A curious friend."
+    await press(app, f"prop:no:{proposal_id}")
+    assert app.home.read("SOUL.md") == "A curious friend."
+    assert app.bot.of("answer")[-1][2] == "Rejected"
+    assert await app.proposals.pending() == []
+
+
+@pytest.mark.parametrize("soul", ["A new friend.", "curious, curious"])
+async def test_soul_edit_requires_exact_unique_old_text(make_app, soul):
+    app = make_app()
+    proposal_id = await soul_edit(app)
+    put(app.home, "SOUL.md", soul)
+    await press(app, f"prop:yes:{proposal_id}")
+    assert app.home.read("SOUL.md") == soul
+    assert app.bot.of("answer")[-1][2] == "SOUL.md changed since; proposal can't apply"
+    assert [row["id"] for row in await app.proposals.pending()] == [proposal_id]
+
+    put(app.home, "SOUL.md", "A curious friend.")
+    await press(app, f"prop:yes:{proposal_id}")
+    assert app.home.read("SOUL.md") == "A thoughtful friend."
+
+
+async def test_memory_fact_over_limit_stays_pending(make_app):
+    app = make_app()
+    put(app.home, "private/USER.md", "x" * 1375)
+    proposal_id = await app.proposals.create(
+        "memory_fact", "A fact", {"file": "USER.md", "text": "A fact"}, "example",
+    )
+    await press(app, f"prop:yes:{proposal_id}")
+    assert "over limit" in app.bot.of("answer")[-1][2]
+    assert [row["id"] for row in await app.proposals.pending()] == [proposal_id]
+    assert app.home.scoped(allow_private=True).read("private/USER.md") == "x" * 1375
+
+
+async def test_daily_expiry_only_expires_proposals_older_than_14_days(make_app):
+    app = make_app()
+    old = await soul_edit(app)
+    app.dispatch.now.advance(hours=1)
+    current = await soul_edit(app)
+    app.dispatch.now.advance(days=14)
+    await app.dispatch.jobs.tick()
+    assert [row["id"] for row in await app.proposals.pending()] == [current]
+    await press(app, f"prop:yes:{old}")
+    assert app.bot.of("answer")[-1][2] == "already handled"
+
+
+@pytest.mark.parametrize("kind", ["skill", "plugin"])
+async def test_future_kinds_cannot_be_created(make_app, kind):
+    app = make_app()
+    with pytest.raises(NotImplementedError):
+        await app.proposals.create(kind, "Example", {}, "example")
+    assert not app.bot.calls
+
+
+async def test_public_reflection_proposes_at_most_once_a_week_without_editing_soul(make_app):
+    reply = json.dumps({
+        "entry": "A quiet day.", "mood": "calm", "nudges": {},
+        "soul_edit": {"old": "curious", "new": "thoughtful", "why": "A gentler voice"},
+    })
+    app = make_app(contents=(reply, reply, reply))
+    put(app.home, "SOUL.md", "A curious friend.")
+    await reflection.run(app)
+    app.dispatch.now.advance(days=6)
+    await reflection.run(app)
+    assert len(await app.proposals.pending()) == 1
+    app.dispatch.now.advance(days=1)
+    await reflection.run(app)
+
+    assert len(await app.proposals.pending()) == len(app.bot.of("send", OWNER)) == 2
+    assert app.home.read("SOUL.md") == "A curious friend."
+    assert "soul_edit" in app.script.requests[0]["messages"][0]["content"]
+    assert "soul_edit" not in app.script.requests[1]["messages"][0]["content"]

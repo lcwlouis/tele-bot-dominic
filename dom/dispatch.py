@@ -67,6 +67,7 @@ class Dispatcher:
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
         self.jobs = DailyJobs(app, now)
+        self.jobs.register("proposal-expiry", lambda local, habits: True, app.proposals.expire)
         self.openers = Openers(app, presence.rng)
         self._heartbeat: asyncio.Task | None = None
         self._debounces: dict[int, asyncio.Task] = {}

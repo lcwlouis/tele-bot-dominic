@@ -31,6 +31,7 @@ OWNER_COMMANDS = [
     BotCommand(command="pending", description="Chats waiting for your approval"),
     BotCommand(command="chats", description="Every group and DM Dom knows about"),
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
+    BotCommand(command="proposals", description="Review pending changes"),
 ]
 
 MAX_MESSAGE = 4096  # Telegram's limit for a message's text
@@ -268,3 +269,11 @@ async def choose_preset(app: App, chat: dict) -> None:
             choices.append((_short(preset.title, 64), data))
     choices.append(("None", prefix))
     await _preset_buttons(app, f"Choose a preset for {display_title(chat, app.owner_id)}.", choices)
+
+
+async def show_proposals(app: App) -> None:
+    rows = await app.proposals.pending()
+    if not rows:
+        await app.bot.send_message(app.owner_id, "No pending proposals.")
+    for row in rows:
+        await app.proposals.send(row)
