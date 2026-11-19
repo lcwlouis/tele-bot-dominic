@@ -38,7 +38,10 @@ network = "dom-desktop"
 subnet = "172.30.0.0/24"
 port = 18080
 task_cost_cap_usd = 0.5  # a desktop task stops once its model calls cost this much; 0 turns it off
-lan_probes = []  # LAN "host:port" targets the sandbox must not reach, e.g. ["192.0.2.1:443"]; required in local mode
+lan_probes = []  # LAN "ipv4:port" targets (IP literals, no names) the sandbox must not reach, e.g. ["192.0.2.1:443"]; required in local mode
+probe_image = "alpine:3.22"  # image of the isolation probe; pull it first, probes never pull
+probe_control = "1.1.1.1:443"  # public "ipv4:port" the probe container must reach, or the probe cannot prove isolation
+remote_isolation_confirmed = false  # remote mode only: set true once you have checked the remote host blocks your LAN
 
 [openers]
 enabled = true

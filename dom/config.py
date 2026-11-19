@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import tomllib
@@ -52,17 +53,36 @@ class DesktopConfig(BaseModel):
     subnet: str = "172.30.0.0/24"
     port: int = Field(default=18080, ge=1, le=65535)
     task_cost_cap_usd: float = Field(default=0.5, ge=0, allow_inf_nan=False)  # 0 turns the per-task ceiling off
-    # LAN "host:port" targets the sandbox must not reach. Dom probes them before it starts the sandbox.
+    # LAN "ipv4:port" targets the sandbox must not reach. Dom probes them before every sandbox start.
     lan_probes: list[str] = []
+    probe_image: str = "alpine:3.22"  # must already be on the host: probes never pull
+    probe_control: str = "1.1.1.1:443"  # a public "ipv4:port" the probe container must reach, or the probe proves nothing
+    remote_isolation_confirmed: bool = False  # remote mode: the operator asserts the remote host blocks its LAN
 
     @field_validator("lan_probes")
     @classmethod
     def _probe_targets(cls, targets: list[str]) -> list[str]:
         for target in targets:
-            host, _, port = target.rpartition(":")
-            if not host or not port.isdecimal() or not 1 <= int(port) <= 65535:
-                raise ValueError("lan_probes entries must look like host:port")
+            _ipv4_target(target)
         return targets
+
+    @field_validator("probe_control")
+    @classmethod
+    def _control_target(cls, target: str) -> str:
+        if not _ipv4_target(target).is_global:
+            raise ValueError("probe_control must be a public IPv4 address")
+        return target
+
+
+def _ipv4_target(target: str) -> ipaddress.IPv4Address:
+    host, _, port = target.rpartition(":")
+    try:
+        address = ipaddress.IPv4Address(host)
+    except ValueError:
+        raise ValueError("probe targets must look like ipv4:port (an IPv4 literal, not a name)") from None
+    if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
+        raise ValueError("probe targets must look like ipv4:port")
+    return address
 
 
 class Config(BaseModel):

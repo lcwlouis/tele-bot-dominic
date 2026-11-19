@@ -17,15 +17,21 @@ sudo /path/to/dom desktop-setup /path/to/dom-home
 ```
 
 Replace the example address and port with a LAN service known to answer from the
-host. The probe runs in a throwaway container and should time out for the LAN
-service and connect to a public address on TCP 443. Use `--public-address` to
-choose a different public endpoint. The AIO Sandbox image must already be on the
-host.
+host. `desktop-check` runs the same probe Dom runs at startup, once, against that
+address: the connect must time out, and the control address (`probe_control`,
+default `1.1.1.1:443`) must connect. The probe image (`probe_image`, default
+`alpine:3.22`) and the AIO Sandbox image must already be on the host; neither is
+ever pulled. Use `--public-address` to pick another control address.
 
-The rules return established traffic and same-bridge traffic to Docker's normal
-forwarding policy, then drop new connections to private, carrier-grade NAT and
-link-local ranges. Host input is filtered separately because connections to the
-Docker host do not pass through `DOCKER-USER`.
+Setup builds a dedicated chain, `DOM-DESKTOP`, that holds every rule. `DOCKER-USER`
+and `INPUT` each get one jump to it for the desktop subnet. The chain returns
+established and same-bridge traffic to Docker's normal forwarding, accepts
+established replies to the host, drops new connections to the host itself (host
+input does not pass through `DOCKER-USER`) and drops new connections to private,
+carrier-grade NAT and link-local ranges. Setup checks that the jump is rule 1 of
+both parent chains and moves it back to rule 1 if another tool displaced it, so a
+rerun after Docker restarts is always safe. Rules from an older Dom that sit
+directly in `DOCKER-USER` or `INPUT` are redundant and can be deleted.
 
 ## Reapply at boot
 
@@ -54,17 +60,36 @@ Enable it with `sudo systemctl enable --now dom-desktop-network.service`.
 
 ## Startup firewall check
 
-Before Dom starts the sandbox for the first time in a process, and again after any
-failed start, it runs a throwaway container on the desktop network. The container
-tries TCP connects to every `[desktop] lan_probes` entry and to the network's
-gateway on the dashboard port. Only a dropped (timed out) connection passes. If
-any target answers or refuses, Dom refuses to start the sandbox, sets the status to
-`error: LAN reachable from the sandbox — run dom desktop-setup` and sends the
-owner one DM.
+Dom proves isolation before **every** container start. Nothing is cached: a pass
+for one start says nothing about the next. First it runs `docker network inspect`
+and refuses to start unless the network is an IPv4-only bridge whose subnet equals
+`[desktop] subnet`. Then it runs a throwaway `probe_image` container
+(`--pull=never --rm`) on that network. The container uses busybox
+`nc -z -w 3` against each target on its own:
 
-Set `lan_probes` to `host:port` addresses of LAN services that are up, for
-example `lan_probes = ["192.0.2.1:443"]`. In local mode an empty list also
-refuses to start.
+- every `[desktop] lan_probes` entry,
+- the network's gateway on the dashboard port (`[web] port`) and on port 22.
+
+A target passes only if its single connect **times out**. A connect that succeeds
+or is refused means the target is reachable, and Dom refuses to start, sets the
+status to `error: LAN reachable from the sandbox — run dom desktop-setup` and sends
+the owner one DM.
+
+The probe also connects to `probe_control`, a public address that must answer. If
+it does not, the probe container had no working networking and its timeouts prove
+nothing, so the result is "could not verify" and Dom refuses to start (fail
+closed).
+
+`lan_probes` and `probe_control` are IPv4 literals with ports, for example
+`lan_probes = ["192.0.2.1:443"]`; DNS names are rejected when the config loads. In
+local mode an empty `lan_probes` also refuses to start.
+
+## Remote mode
+
+Dom cannot inspect a remote host's firewall. Remote mode therefore refuses to
+start the desktop unless you set `[desktop] remote_isolation_confirmed = true`,
+which asserts that you checked the remote host cannot reach your LAN or the Dom
+host.
 
 Start the firewall unit before Dom so the rules exist when it starts. Add this to
 the Dom service:
