@@ -1,7 +1,7 @@
 import pytest
 
 from dom.home import Home
-from dom.plugins.manifest import Manifest, read_plugin
+from dom.plugins.manifest import Manifest, read_plugin, validate_plugin
 from dom.plugins.registry import PluginRegistry
 from dom.store import Store
 
@@ -152,3 +152,17 @@ async def test_scan_scope_filtering_and_restaging(tmp_path):
         assert not await store.set_plugin_status("convert", row["hash"], "approved")
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("separator", [" ", " "])
+def test_line_and_paragraph_separators_count_as_invisible(separator):
+    from dom.skills import _visible
+
+    assert not _visible(f"one{separator}two")
+    assert _visible("one\ntwo\tthree")
+    with pytest.raises(ValueError):
+        validate_plugin("convert", {
+            "plugin.toml": MANIFEST.encode(), "main.py": f"x = 1{separator}y = 2\n".encode(),
+        })
+    with pytest.raises(ValueError):
+        Manifest.parse(MANIFEST.replace("Convert units", f"Convert{separator}units"))

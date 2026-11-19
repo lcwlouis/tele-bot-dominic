@@ -28,10 +28,10 @@ _IGNORABLE = (
 
 
 def _visible(text: str) -> bool:
-    """No invisible, bidi, tag, private-use, unassigned or control characters (newline and tab aside)."""
+    """No invisible, bidi, tag, private-use, unassigned, control or line-separator characters (newline and tab aside)."""
     return all(
         char in "\n\t" or (
-            unicodedata.category(char) not in ("Cc", "Cf", "Co", "Cn", "Cs")
+            unicodedata.category(char) not in ("Cc", "Cf", "Co", "Cn", "Cs", "Zl", "Zp")
             and not any(low <= ord(char) <= high for low, high in _IGNORABLE)
         )
         for char in text
