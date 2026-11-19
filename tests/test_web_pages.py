@@ -1,6 +1,7 @@
 import re
-from datetime import time, timedelta
+from datetime import datetime, time, timedelta
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -244,6 +245,29 @@ async def test_today_list_reads_usage_turns_and_reminders(make_app, browser):
     assert rows == {
         "Turns today": "4", "Replies sent": "2", "Spend today": "$0.80", "Next reminder": "15:00 Call the dentist",
     }
+
+
+async def test_today_counts_all_turns_across_the_owners_local_day(make_app, browser):
+    app = make_app()
+    zone = ZoneInfo("America/New_York")
+    app.config = app.config.model_copy(update={"timezone": zone.key})
+    start = datetime(2026, 11, 1, tzinfo=zone)  # This local day has 25 hours.
+    end = start + timedelta(days=1)
+    app.dispatch.now.at = end - timedelta(minutes=1)
+
+    async def record(at, outcome):
+        await app.store.record_turn(at, OWNER, "owner_dm", 1, [], "m", False, 5, outcome)
+
+    await record(start - timedelta(microseconds=1), "Replied")
+    for minute in range(205):
+        await record(start + timedelta(minutes=minute), "Replied privately" if minute % 2 == 0 else "replied")
+    await record(app.dispatch.now(), "Replied")
+    await record(end, "Replied")
+
+    async with browser(app) as client:
+        rows = today_rows((await client.get("/")).text)
+    assert rows["Turns today"] == "206"
+    assert rows["Replies sent"] == "104"
 
 
 async def test_a_reminder_on_another_day_names_the_day(make_app, browser):

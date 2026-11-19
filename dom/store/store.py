@@ -1056,6 +1056,20 @@ class Store:
              int(fallback), duration_ms, outcome),
         )
 
+    async def turn_counts(self, start: datetime, end: datetime) -> tuple[int, int]:
+        """Count turns and replies in the half-open interval [start, end)."""
+        bounds = (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat())
+
+        def count() -> tuple[int, int]:
+            row = self._conn.execute(
+                "SELECT COUNT(*), COUNT(CASE WHEN outcome GLOB 'Replied*' THEN 1 END) "
+                "FROM turns WHERE at >= ? AND at < ?",
+                bounds,
+            ).fetchone()
+            return row[0], row[1]
+
+        return await self._run(count)
+
     async def recent_turns(self, chat_id: str | None = None) -> list[dict[str, Any]]:
         return await self._run(lambda: [
             dict(row) for row in self._conn.execute(
