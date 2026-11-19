@@ -10,7 +10,7 @@ from dom import cli
 from dom.config import Config, load_config
 from dom.home import init_home
 
-TOKEN = "test-token-0123456789abcdef-0123456789"
+TOKEN = "test-token-" + "a" * 32
 ORIGIN = "https://dashboard.example.org"
 POST_HEADERS = {"HX-Request": "true", "Origin": ORIGIN}
 ISSUER = "https://example-team.cloudflareaccess.com"
@@ -360,7 +360,7 @@ def test_access_may_bind_off_loopback(tmp_path):
     ({"email": "owner@example.org"}, 200),
     ({"email": "Owner@Example.ORG"}, 200),
     ({"email": "other@example.org"}, 403),
-    ({"email": "owner@example.org.evil.example"}, 403),
+    ({"email": "owner@example.org.evil.example.net"}, 403),
     ({"email": ["owner@example.org"]}, 403),
     ({}, 403),
 ])

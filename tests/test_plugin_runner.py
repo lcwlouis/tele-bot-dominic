@@ -40,9 +40,9 @@ def test_exact_arguments(monkeypatch, network):
         expected += ["--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs", "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf"]
     expected += [
         "--ro-bind", str(prefix), str(prefix), "--ro-bind", "/sample/convert", "/plugin",
-        "--size", "8388608", "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev", "--chdir", "/plugin",
+        "--size", str(8 * 1024 * 1024), "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev", "--chdir", "/plugin",
         "--disable-userns", "--assert-userns-disabled", "--cap-drop", "ALL", "--seccomp", "3", "--",
-        "/usr/bin/prlimit", "--as=67108864", "--cpu=10", "--fsize=1048576", "--nofile=32", "--core=0",
+        "/usr/bin/prlimit", f"--as={64 * 1024 * 1024}", "--cpu=10", "--fsize=1048576", "--nofile=32", "--core=0",
         "--", str(executable),
         "-I", "-S", "-c", BOOTSTRAP,
     ]

@@ -14,7 +14,7 @@ LAN = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.25
 
 
 def test_rules_for_subnet():
-    subnet = "172.30.1.0/24"
+    subnet = "198.51.100.0/24"
     assert CHAIN == "DOM-DESKTOP"
     assert rules(subnet) == [
         ("-m", "addrtype", "--dst-type", "LOCAL", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"),

@@ -281,7 +281,7 @@ Use several short bubbles like a person texting. Use delete_after only for a mes
   - `my_chat_member`: added to a group creates a pending chat and triggers the prompt
 - Turn trigger for Phase 1 (presence comes in Phase 2):
   - `owner_dm` and `friend_dm`: always run a turn.
-  - `group`: run a turn only when Dom is mentioned by `@username`, a message replies to Dom, or the message is a command.
+  - `group`: run a turn only when Dom is mentioned by `@<username>`, a message replies to Dom, or the message is a command.
 - `executor.perform(bot, store: Store, chat_id: int, trigger_msg_id: int, actions: Actions, *, typing_cps: float = 8.0, sleep=asyncio.sleep) -> list[int]`, which returns the sent message IDs.
   - Per bubble:
     1. `send_chat_action("typing")`

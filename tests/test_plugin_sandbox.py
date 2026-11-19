@@ -3,6 +3,7 @@
 import json
 import socket
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +18,24 @@ pytestmark = pytest.mark.skipif(
     reason="requires Linux and /usr/bin/bwrap",
 )
 NETWORK = MANIFEST.replace('version = "1"', 'version = "1"\nnetwork = true')
+
+
+@pytest.fixture(scope="module", autouse=True)
+def check_user_namespaces():
+    # Check the host's ability to create a user namespace independently of PluginRunner.
+    result = subprocess.run(
+        ["/usr/bin/bwrap", "--unshare-user", "--ro-bind", "/", "/", "--", "/usr/bin/true"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode:
+        reason = result.stderr.strip()
+        normalized = reason.lower()
+        if ("namespace" in normalized or "uid map" in normalized) and any(
+            fragment in normalized for fragment in
+            ("operation not permitted", "permission denied", "no permissions", "not enabled")
+        ):
+            pytest.skip(f"unprivileged user namespaces unavailable: {reason}")
+        pytest.fail(f"bubblewrap namespace probe failed: {reason}")
 
 
 def run_plugin(tmp_path, source, *, manifest=MANIFEST, args=None):
