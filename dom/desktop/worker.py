@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,12 @@ WORKER_SYSTEM_PROMPT = (
     "and omit personal data and secrets. Call finish with a concise result."
 )
 ACTIVE = ("queued", "running", "waiting_owner")
+
+
+@dataclass
+class Progress:
+    steps: int = 0
+    note: str = ""  # the model's own latest progress text, never tool output
 
 
 class DesktopWorker:
@@ -134,23 +141,23 @@ class DesktopWorker:
         row = await store.update_desktop_task(task_id, chat_id, ("queued",), "running")
         if row is None:
             return
-        partial_result: list[str] = []
+        progress = Progress()
         files: tuple[SendFile, ...] = ()
         draft: Skill | None = None
         try:
             with self.sandbox.in_use():
-                result, files, draft = await self._work(row, partial_result)
+                result, files, draft = await self._work(row, progress)
         except (TimeoutError, SandboxError, ValueError) as exc:
             error = "desktop task time limit reached" if isinstance(exc, TimeoutError) else str(exc)
             row = await store.update_desktop_task(
                 task_id, chat_id, ("running", "waiting_owner"), "failed",
-                result=partial_result[-1] if partial_result else None, error=error[:500],
+                result=progress.note or f"Stopped after {progress.steps} steps: {error}"[:500], error=error[:500],
             )
         except Exception as exc:
             log.warning("desktop task %s failed (%s)", task_id, type(exc).__name__)
             row = await store.update_desktop_task(
                 task_id, chat_id, ("running", "waiting_owner"), "failed",
-                result=partial_result[-1] if partial_result else None, error="desktop task failed",
+                result=progress.note or f"Stopped after {progress.steps} steps: desktop task failed", error="desktop task failed",
             )
         else:
             row = await store.update_desktop_task(task_id, chat_id, ("running",), "done", result=result)
@@ -169,7 +176,7 @@ class DesktopWorker:
             log.warning("could not propose a desktop skill (%s)", type(exc).__name__)
 
     async def _work(
-        self, row: dict, partial_result: list[str],
+        self, row: dict, progress: Progress,
     ) -> tuple[str, tuple[SendFile, ...], Skill | None]:
         task_id, chat_id = row["id"], row["chat_id"]
         clock = asyncio.get_running_loop().time
@@ -197,10 +204,11 @@ class DesktopWorker:
                 calls = reply.get("tool_calls")
                 if not calls or not _well_formed(calls):
                     steps += 1
+                    progress.steps = steps
                     await self._step(task_id, chat_id, steps, deadline)
                     content = reply.get("content")
                     if isinstance(content, str) and content.strip():
-                        partial_result[:] = [client.redact(content)[:tools.RESULT_LIMIT]]
+                        progress.note = client.redact(content)[:tools.RESULT_LIMIT]
                     messages.append({"role": "user", "content": "Use a desktop tool or call finish with the result."})
                     continue
 
@@ -209,6 +217,7 @@ class DesktopWorker:
                 messages.append(reply)
                 for call in calls:
                     steps += 1
+                    progress.steps = steps
                     await self._step(task_id, chat_id, steps, deadline)
                     self.sandbox.touch()
                     try:
@@ -234,8 +243,6 @@ class DesktopWorker:
                         else:
                             async with asyncio.timeout_at(deadline):
                                 result = await self._tool(client, name, args)
-                            if not partial_result and name in ("read_page", "run_shell", "run_python", "read_file"):
-                                partial_result[:] = [self._result_text(client, result)[:tools.RESULT_LIMIT]]
                     except (SandboxError, ValueError, TypeError) as exc:
                         result = f"Tool error: {exc}" if isinstance(exc, SandboxError) else "Tool error: invalid arguments"
                     else:

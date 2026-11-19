@@ -11,7 +11,9 @@ from random import choice
 from typing import Awaitable, Callable
 
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import BufferedInputFile, EphemeralMessageParameters, ReactionTypeEmoji, ReplyParameters
+from aiogram.types import (
+    BufferedInputFile, EphemeralMessageParameters, LinkPreviewOptions, ReactionTypeEmoji, ReplyParameters,
+)
 from pydantic import ValidationError
 
 from dom.actions import Actions, SendFile
@@ -64,6 +66,7 @@ async def perform(
     on_sent: Callable[[int], Awaitable[None]] | None = None,
     stickers: Mapping[str, Sequence[str]] | None = None,
     ephemeral_recipient: int | None = None,
+    link_previews: bool = True,
 ) -> list[int]:
     """Send the bubbles, reaction and sticker; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
@@ -101,7 +104,10 @@ async def perform(
             if bubble.reply_to is not None
             else None
         )
-        sent = await bot.send_message(chat_id, bubble.text, reply_parameters=reply, message_thread_id=thread_id)
+        options = {} if link_previews else {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+        sent = await bot.send_message(
+            chat_id, bubble.text, reply_parameters=reply, message_thread_id=thread_id, **options,
+        )
         await store.record_new_message(
             StoredMessage(
                 chat_id=str(chat_id),
