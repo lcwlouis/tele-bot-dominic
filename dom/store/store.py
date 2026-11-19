@@ -348,6 +348,21 @@ class Store:
             )
             return self._read_chat_auth(conn, chat_id)
 
+    async def resolve_pending_chat(self, chat_id: str, status: str) -> dict[str, Any] | None:
+        """Decide a chat only if it is still pending_approval. None means it was already decided."""
+        if status not in _CHAT_AUTH_STATUSES:
+            raise ValueError(f"Unknown chat authorization status: {status!r}")
+        return await self._run(self._resolve_pending_chat, str(chat_id), status)
+
+    def _resolve_pending_chat(self, chat_id: str, status: str) -> dict[str, Any] | None:
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE chats SET authorization_status = ?, updated_at = ? "
+                "WHERE chat_id = ? AND authorization_status = 'pending_approval'",
+                (status, _now(), chat_id),
+            )
+            return self._read_chat_auth(conn, chat_id) if cur.rowcount == 1 else None
+
     async def claim_approval_prompt(self, chat_id: int | str) -> bool:
         """Atomically mark the owner prompt as sent. True for exactly one caller per pending chat."""
         return await self._run(self._claim_approval_prompt, str(chat_id))

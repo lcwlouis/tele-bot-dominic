@@ -172,8 +172,8 @@ async def test_callback_from_non_owner_ignored(make_app):
     await handlers.handle_callback(app, cb(OWNER, f"approve:{GROUP}"))
     assert (await app.store.get_chat_auth_status(GROUP))["authorization_status"] == "approved"
     assert len(app.bot.of("edit")) == 1
-    await handlers.handle_callback(app, cb(OWNER, f"ignore:{GROUP}"))
-    assert (await app.store.get_chat_auth_status(GROUP))["authorization_status"] == "ignored"
+    await handlers.handle_callback(app, cb(OWNER, f"ignore:{GROUP}"))  # already decided: no change
+    assert (await app.store.get_chat_auth_status(GROUP))["authorization_status"] == "approved"
 
 
 async def test_bot_added_to_group_creates_pending_chat_and_prompts_once(make_app):
@@ -273,3 +273,35 @@ async def test_executor_react_and_no_response(store):
     quiet = FakeBot()
     ids = await executor.perform(quiet, store, GROUP, 9, Actions(no_response=True, react="🔥", bubbles=[Bubble(text="x")]), sleep=no_sleep)
     assert ids == [] and quiet.calls == []
+
+
+# ---- stale approval decisions -----------------------------------------------------
+
+async def test_turn_rechecks_authorization_after_waiting_for_lock(make_app):
+    app = make_app()
+    await approve(app, GROUP)
+    async with app.locks[GROUP]:
+        task = asyncio.create_task(handlers.handle_message(app, tg(text="@dombot hello")))
+        await asyncio.sleep(0.05)  # decided "process", now waiting for the turn lock
+        await app.store.set_chat_auth_status(str(GROUP), "ignored")
+    await task
+    assert app.script.requests == []
+    assert app.bot.of("send", GROUP) == []
+
+
+async def test_callback_does_not_override_an_already_decided_chat(make_app):
+    app = make_app()
+    await handlers.handle_message(app, tg())
+    prompt = tg(chat_id=OWNER, sender=999, text="prompt", msg_id=60)
+
+    def cb(data):
+        return CallbackQuery(
+            id="cb1", from_user=User(id=OWNER, is_bot=False, first_name="X"),
+            chat_instance="ci", data=data, message=prompt,
+        )
+
+    await handlers.handle_callback(app, cb(f"approve:{GROUP}"))
+    await handlers.handle_callback(app, cb(f"ignore:{GROUP}"))  # stale second tap
+    assert (await app.store.get_chat_auth_status(GROUP))["authorization_status"] == "approved"
+    assert app.bot.of("answer")[-1][2] == "already handled"
+    assert len(app.bot.of("edit")) == 1
