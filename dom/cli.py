@@ -90,7 +90,7 @@ async def run(home: Path) -> None:
             jev = JevClient(http, triage_key, triage.model) if triage_key else None
             app = App(
                 config=config, home=Home(home), store=store, client=client,
-                bot=bot, bot_username=me.username or "", jev=jev,
+                bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id,
             )
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))

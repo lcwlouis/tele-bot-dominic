@@ -428,7 +428,7 @@ async def test_edit_in_unapproved_chat_is_not_recorded(make_app):
 
 def anonymous_admin(text="@dombot hi", msg_id=1):
     sender_chat = Chat(id=GROUP, type="supergroup", title="The Group")
-    anon = User(id=1087968824, is_bot=True, first_name="Group", username="GroupAnonymousBot")
+    anon = User(id=888, is_bot=True, first_name="Test Group Proxy", username="test_group_proxy_bot")
     return tg(text=text, msg_id=msg_id).model_copy(update={"from_user": anon, "sender_chat": sender_chat})
 
 

@@ -42,6 +42,7 @@ class App:
     ingest_locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))  # decide + record, in order
 
     jev: JevClient | None = None
+    bot_id: int | None = None
     dispatch: Dispatcher = field(init=False)
 
     def __post_init__(self) -> None:
@@ -105,18 +106,26 @@ async def _handle_claim(app: App, msg: IncomingMessage, code: str) -> None:
         await app.bot.send_message(msg.chat_id, "That code did not work.")
 
 
+def _is_own_message(app: App, msg: IncomingMessage) -> bool:
+    if not msg.is_bot:
+        return False
+    if app.bot_id is not None:
+        return msg.sender_id == app.bot_id
+    return bool(app.bot_username and (msg.sender_handle or "").lower() == f"@{app.bot_username.lower()}")
+
+
 async def handle_message(app: App, message: Message) -> None:
     if message.chat.type not in CHAT_TYPES:
         return
     msg = to_incoming(message)
-    if msg.is_bot:
+    if _is_own_message(app, msg):
         return
-    if app.owner_id is None:  # until an owner exists, the only thing Dom answers is /claim
+    if app.owner_id is None and not msg.is_bot:  # until an owner exists, the only thing Dom answers is /claim
         code = _claim_code(msg.text, app.bot_username)
         if code is not None:
             await _handle_claim(app, msg, code)
             return
-    if msg.chat_type == "private" and msg.chat_id == msg.sender_id == app.owner_id:
+    if not msg.is_bot and msg.chat_type == "private" and msg.chat_id == msg.sender_id == app.owner_id:
         command = _command_name(msg.text, app.bot_username)
         if command == "/pending":
             await gate.resend_pending(app.bot, app.store, app.owner_id)
@@ -149,11 +158,13 @@ async def handle_edited_message(app: App, message: Message) -> None:
     if message.chat.type not in CHAT_TYPES:
         return
     msg = to_incoming(message)
+    if _is_own_message(app, msg):
+        return
     async with app.ingest_locks[msg.chat_id]:  # after the original's own decide + record has finished
         edited = await app.store.record_message_edit(
             msg.chat_id, msg.msg_id, msg.text, dom_was_online_and_read=False,
         )
-        if edited is None and not msg.is_bot and await gate.decide(app.store, msg, app.owner_id) != "drop":
+        if edited is None and await gate.decide(app.store, msg, app.owner_id) != "drop":
             await _record(app, msg)  # the original never reached us: keep the edited text as a new message
 
 
