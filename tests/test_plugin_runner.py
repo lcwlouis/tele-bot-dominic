@@ -186,3 +186,13 @@ run()
     instance = PluginRunner(home=home)
     assert instance.self_test()
     assert instance.run(folder, "length", {"path": str(secret)}, plugin.manifest, approved_hash=plugin.hash) == "isolated"
+
+
+def test_busy_sandbox_is_refused_instead_of_queued(monkeypatch, tmp_path):
+    folder = write_plugin(tmp_path)
+    plugin = read_plugin(folder)
+    monkeypatch.setattr(PluginRunner, "self_test", lambda self: True)
+    monkeypatch.setattr(PluginRunner, "_execute_locked", lambda *a: pytest.fail("ran while busy"))
+    with runner._PROCESS:
+        with pytest.raises(PluginError, match="plugin busy, try again"):
+            PluginRunner(home=tmp_path).run(folder, "length", {}, plugin.manifest, approved_hash=plugin.hash)

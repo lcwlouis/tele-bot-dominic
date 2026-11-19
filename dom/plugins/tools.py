@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import TYPE_CHECKING
 
 from dom.desktop.tools import untrusted
@@ -13,6 +14,7 @@ from dom.plugins.manifest import MAX_BYTES, MAX_FILES, Plugin, ToolManifest
 from dom.plugins.runner import MAX_OUTPUT, PluginError
 from dom.tools import Tool, TurnCtx
 
+log = logging.getLogger(__name__)
 WRAPPED_OUTPUT_LIMIT = 5 * MAX_OUTPUT + 64
 
 if TYPE_CHECKING:
@@ -70,13 +72,15 @@ def _tool(app: App, plugin: Plugin, tool: ToolManifest) -> Tool:
             return "error: tool not available here"
         try:
             check_local_private_text(app.config, app.home, _argument_texts(args))
+            # The registry lock covers only the approval check. The runner pins the hash again and refuses
+            # to queue behind another plugin, so a slow plugin never stalls approvals or scans.
             async with app.plugins.lock:
                 if not any(p.manifest.name == name and p.hash == plugin.hash for p in await app.plugins._approved()):
                     return "error: plugin changed or is no longer approved"
                 folder = app.home.scoped(allow_private=False)._regular_path(f"plugins/{name}")
-                result = await asyncio.to_thread(
-                    app.plugin_runner.run, folder, tool.name, args, plugin.manifest, approved_hash=plugin.hash,
-                )
+            result = await asyncio.to_thread(
+                app.plugin_runner.run, folder, tool.name, args, plugin.manifest, approved_hash=plugin.hash,
+            )
         except PluginError as error:
             return untrusted(f"error: {error}", limit=WRAPPED_OUTPUT_LIMIT)
         except (OSError, ValueError, RuntimeError):
@@ -87,7 +91,12 @@ def _tool(app: App, plugin: Plugin, tool: ToolManifest) -> Tool:
 
 
 async def offered(app: App, scope: Scope) -> list[Tool]:
-    entries = await app.plugins.entries(scope)
-    if not entries or not await asyncio.to_thread(app.plugin_runner.self_test):
+    try:
+        entries = await app.plugins.entries(scope)
+        if not entries or not await asyncio.to_thread(app.plugin_runner.self_test):
+            return []
+        return [_tool(app, plugin, tool) for plugin, tool in entries]
+    except Exception:
+        # Plugins are optional; a failed scan or probe must not break the turn.
+        log.exception("could not offer plugin tools")
         return []
-    return [_tool(app, plugin, tool) for plugin, tool in entries]

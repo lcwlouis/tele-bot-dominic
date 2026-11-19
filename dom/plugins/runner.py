@@ -39,6 +39,10 @@ class PluginsUnavailable(PluginError):
     """No working sandbox is available on this host."""
 
 
+class PluginBusy(PluginError):
+    """Another plugin is running; the caller may retry."""
+
+
 def parse_output(data: bytes) -> str:
     if len(data) > MAX_OUTPUT:
         raise PluginError("Plugin output exceeded 16 KB.")
@@ -233,7 +237,9 @@ class PluginRunner:
     ) -> str:
         if not self.self_test():
             raise PluginsUnavailable("Plugins are unavailable because the sandbox could not be verified.")
-        with _PROCESS:
+        if not _PROCESS.acquire(blocking=False):
+            raise PluginBusy("plugin busy, try again")
+        try:
             try:
                 snapshot = read_plugin(plugin_dir)
                 if snapshot.manifest != manifest or (approved_hash is not None and snapshot.hash != approved_hash):
@@ -244,6 +250,8 @@ class PluginRunner:
                 return self._execute_locked(snapshot, request.encode("utf-8"), manifest.network)
             except OSError:
                 raise PluginError("Could not start or read the plugin.") from None
+        finally:
+            _PROCESS.release()
 
     def _execute(self, snapshot: Plugin, request: bytes, network: bool) -> str:
         with _PROCESS:
