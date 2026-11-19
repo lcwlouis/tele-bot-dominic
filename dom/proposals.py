@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
+from dom.skills import Skill, skill_diff, skill_text, write_skill
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -49,6 +50,9 @@ def summary(row: dict) -> str:
     heading = f"#{row['id']} {row['title']}"
     if row["kind"] == "soul_edit":
         return f"{heading}\n\nReplace:\n{body['old']}\n\nWith:\n{body['new']}"
+    if row["kind"] == "skill":
+        changes = "\n".join(skill_diff(body["old"], body["new"])) if body["old"] else ""
+        return "\n\n".join(filter(None, (heading, changes, body["new"])))
     if row["kind"] == "memory_fact":
         if row["title"] == body["text"]:
             return f"#{row['id']} {body['file']}: {body['text']}"
@@ -61,13 +65,20 @@ class Proposals:
         self.app = app
 
     async def create(self, kind: str, title: str, body: dict, source: str, *, notify: bool = True) -> int:
-        if kind in ("skill", "plugin"):
+        if kind == "plugin":
             raise NotImplementedError(kind)
         if kind == "soul_edit":
             if not (isinstance(body.get("old"), str) and body["old"] and isinstance(body.get("new"), str)):
                 raise ValueError("a soul edit needs old and new text")
             if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
                 raise ValueError(problem)
+        elif kind == "skill":
+            skill = Skill(body.get("name"), body.get("description"), body.get("body"))
+            self._check_skill_secrets(skill)
+            body = {
+                "name": skill.name, "description": skill.description, "body": skill.body,
+                "old": skill_text(self.app.home, skill.name), "new": skill.render(),
+            }
         elif kind == "memory_fact":
             text, file = body.get("text"), body.get("file")
             if not isinstance(text, str) or not text.strip() or not isinstance(file, str) or file not in MEMORY_FILES:
@@ -143,6 +154,15 @@ class Proposals:
         await app.store.record_owner_event(f"{status.capitalize()} proposal #{proposal_id}")
         return status.capitalize()
 
+    def _check_skill_secrets(self, skill: Skill) -> None:
+        config = self.app.config
+        names = {"TELEGRAM_BOT_TOKEN", config.desktop.api_key_env, config.web.dev_token_env}
+        names.update(model.api_key_env for model in config.models.values())
+        content = f"{skill.name}\n{skill.description}\n{skill.body}"
+        for name in filter(None, names):
+            if (secret := config.secret(name)) and len(secret) >= 8 and secret in content:
+                raise ValueError("Public skills cannot include an instance credential.")
+
     def _apply(self, kind: str, body: dict) -> None:
         if kind == "soul_edit":
             if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
@@ -155,6 +175,14 @@ class Proposals:
             result = home.memory_write(rel, "add", body["text"])
             if not result.ok:
                 raise Refused(f"{body['file']}: {result.error}")
+            return
+        if kind == "skill":
+            try:
+                skill = Skill(body["name"], body["description"], body["body"])
+                self._check_skill_secrets(skill)
+                write_skill(self.app.home, skill, body["old"])
+            except ValueError as error:
+                raise Refused(str(error)) from None
             return
         raise Refused("This proposal kind is unavailable")
 

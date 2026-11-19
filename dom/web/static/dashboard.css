@@ -230,3 +230,5 @@ summary { cursor: pointer; }
 .desktop-handoff { border-left: 2px solid var(--amber); padding-left: var(--s3); margin-bottom: var(--s4); }
 .desktop-live { display: block; width: 100%; min-height: min(65vh, 44rem); border: 1px solid var(--seam); margin-top: var(--s4); }
 .desktop-live[hidden] { display: none; }
+
+.skill-text { font: inherit; white-space: pre-wrap; }

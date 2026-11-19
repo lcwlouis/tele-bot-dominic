@@ -9,6 +9,7 @@ from xml.sax.saxutils import escape
 from dom.desktop.client import SandboxClient
 
 from dom.desktop.files import MAX_RESULT_FILES
+from dom.skills import BODY_LIMIT, DESCRIPTION_LIMIT, NAME_LIMIT
 
 RESULT_LIMIT = 6000
 _STRING = {"type": "string"}
@@ -28,6 +29,12 @@ _TOOLS = {
     "read_file": ("Read a text file inside the sandbox.", {"path": _STRING}),
     "write_file": ("Write a text file inside the sandbox.", {"path": _STRING, "content": _STRING}),
     "handoff": ("Pause for the owner at a login, captcha or payment.", {"reason": _STRING}),
+    "skill_view": ("Read an owner-approved skill by name.", {"name": _STRING}),
+    "propose_skill": ("Draft a reusable public skill once, after the work succeeds and before finish.", {
+        "name": {"type": "string", "maxLength": NAME_LIMIT},
+        "description": {"type": "string", "maxLength": DESCRIPTION_LIMIT},
+        "body": {"type": "string", "maxLength": BODY_LIMIT},
+    }),
     "finish": ("Finish with a concise result and optional sandbox files to send.", {
         "result": _STRING, "files": {"type": "array", "items": _STRING, "maxItems": MAX_RESULT_FILES},
     }),
