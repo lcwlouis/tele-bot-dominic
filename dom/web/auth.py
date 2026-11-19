@@ -24,6 +24,7 @@ JWKS_STALE = 86400  # after a failed refresh, the previous keys stay usable this
 UNKNOWN_KID_INTERVAL = 60  # an unrecognised kid may trigger a refresh at most this often
 FAILURE_BACKOFF = 30  # after a failed refresh, serve from the cache this long before retrying
 FETCH_TIMEOUT = 5  # total seconds for one refresh
+CLOCK_LEEWAY = 60  # seconds of clock skew tolerated on exp, nbf and iat
 _TEAM = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE | re.ASCII)
 Identity = Literal["access", "local"]
 
@@ -109,7 +110,7 @@ class Auth:
             if key is not None:
                 jwt.decode(
                     assertion, key, algorithms=["RS256"], audience=self.audience, issuer=self.issuer,
-                    options={"require": ["aud", "exp", "iss"]},
+                    leeway=CLOCK_LEEWAY, options={"require": ["aud", "exp", "iss"]},
                 )
                 return "access"
         except (jwt.PyJWTError, httpx.HTTPError, KeyError, TypeError, ValueError, OverflowError):

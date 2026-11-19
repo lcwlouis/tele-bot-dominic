@@ -289,3 +289,18 @@ async def test_previous_keys_survive_a_failed_refresh_for_a_day(tmp_path, access
         clock.now += 86400
         assert (await client.get("/", headers=assertion(key, "first"))).status_code == 403
         assert len(calls) == 3
+
+
+@pytest.mark.parametrize("claim", ["iat", "nbf"])
+async def test_clock_skew_of_a_minute_is_tolerated(tmp_path, access_keys, claim):
+    (key, jwk), _ = access_keys
+
+    async def jwks(url):
+        return {"keys": [jwk]}
+
+    now = datetime.now(timezone.utc)
+    async with access_dashboard(tmp_path, jwks) as client:
+        near = assertion(key, "first", **{claim: now + timedelta(seconds=30)})
+        far = assertion(key, "first", **{claim: now + timedelta(seconds=120)})
+        assert (await client.get("/", headers=near)).status_code == 200
+        assert (await client.get("/", headers=far)).status_code == 403
