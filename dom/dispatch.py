@@ -465,6 +465,16 @@ class Dispatcher:
         chat = [m for m in window if m.role != "event"]  # events are the owner's commands, not chat content for Jev
         return self.app.store.format_chat_window_xml(chat_id, chat[-TRIAGE_WINDOW:])
 
+    def _ephemeral_recipient(self, scope: Scope, trigger: StoredMessage | None) -> int | None:
+        owner = self.app.owner_id
+        if (
+            self.app.config.ephemeral_replies and scope == "group" and owner is not None
+            and trigger is not None and trigger.role == "user" and not trigger.is_bot
+            and trigger.sender_user_id == owner
+        ):
+            return owner
+        return None
+
     async def _run_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
@@ -479,6 +489,7 @@ class Dispatcher:
             await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
                 thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
+                ephemeral_recipient=self._ephemeral_recipient(scope, newest),
             )
         finally:
             if (
@@ -551,6 +562,11 @@ class Dispatcher:
         if scope == "owner_dm" and chat_id == app.owner_id and newest is not None:
             if casual := await self.reminders.casual_note():
                 note += f"\n{casual}"
+        if self._ephemeral_recipient(scope, newest) is not None:
+            note += (
+                '\nThe latest message is from the owner. For an assistant-like answer to that message, '
+                'you may add "private": true to the actions to send ephemeral bubbles visible only to the owner.'
+            )
         if not final_bot_turn and (sticker_note := app.stickers.turn_note()):
             note += f"\n{sticker_note}"
         if extra_note:

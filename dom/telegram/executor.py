@@ -11,7 +11,7 @@ from random import choice
 from typing import Awaitable, Callable
 
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import ReactionTypeEmoji, ReplyParameters
+from aiogram.types import EphemeralMessageParameters, ReactionTypeEmoji, ReplyParameters
 from pydantic import ValidationError
 
 from dom.actions import Actions
@@ -54,10 +54,23 @@ async def perform(
     now: Callable[[], datetime] | None = None,
     on_sent: Callable[[int], Awaitable[None]] | None = None,
     stickers: Mapping[str, Sequence[str]] | None = None,
+    ephemeral_recipient: int | None = None,
 ) -> list[int]:
     """Send the bubbles, reaction and sticker; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
         return []
+    if actions.private and chat_id < 0:
+        if ephemeral_recipient is None or ephemeral_recipient != store.owner_id:
+            log.warning("ignored a private action without an eligible receiver in chat %s", chat_id)
+            return []
+        parameters = EphemeralMessageParameters(receiver_user_id=ephemeral_recipient)
+        # Keep these bubbles out of the group's history and skip public side effects.
+        return [
+            (await bot.send_message(
+                chat_id, bubble.text, message_thread_id=thread_id, ephemeral_message_parameters=parameters,
+            )).message_id
+            for bubble in actions.bubbles
+        ]
     if actions.react and trigger_msg_id is not None:
         try:
             await bot.set_message_reaction(chat_id, trigger_msg_id, reaction=[ReactionTypeEmoji(emoji=actions.react)])

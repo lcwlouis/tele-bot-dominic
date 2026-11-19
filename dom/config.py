@@ -38,6 +38,7 @@ class Config(BaseModel):
     window_size: int = 80
     daily_spend_cap_usd: float = Field(default=1.0, ge=0, allow_inf_nan=False)
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
+    ephemeral_replies: bool = False
     leak_check: bool = True
     leak_threshold: float = Field(default=1.2, ge=0, le=3)
 
@@ -76,7 +77,7 @@ def load_config(home: Path) -> Config:
         window_size=raw.get("window_size", 80),
         daily_spend_cap_usd=raw.get("daily_spend_cap_usd", 1.0),
         openers=raw.get("openers", {}),
-        **{key: raw[key] for key in ("leak_check", "leak_threshold") if key in raw},
+        **{key: raw[key] for key in ("leak_check", "leak_threshold", "ephemeral_replies") if key in raw},
     )
 
 
