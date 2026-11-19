@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from collections.abc import Awaitable, Callable
@@ -9,7 +10,11 @@ from collections.abc import Awaitable, Callable
 from dom.llm import ChatClient
 
 log = logging.getLogger("dom.media")
-MAX_FILE_SIZE = 20_000_000
+# Per-kind download limits in bytes; the Pi that runs Dom has 4 GB of memory.
+MAX_BYTES = {
+    "photo": 10_000_000, "sticker": 10_000_000, "voice": 10_000_000, "audio": 10_000_000,
+    "video": 8_000_000, "animation": 8_000_000, "video_note": 8_000_000,
+}
 PROMPT = (
     "Describe this for a friend reading a group chat: what it shows/says, any text, the vibe. "
     "Voice/audio: transcribe, then one line on tone. Max 80 words."
@@ -39,15 +44,23 @@ _AUDIO_FORMATS = {"mpeg": "mp3", "mp4": "m4a", "x-m4a": "m4a", "x-wav": "wav"}
 class MediaDescriber:
     def __init__(self, client: ChatClient, bot):
         self.client, self.bot = client, bot
+        self._one_at_a_time = asyncio.Semaphore(1)  # one file in memory at once, across all chats
 
     async def describe(
         self, media: dict, *, authorize: Callable[[], Awaitable[bool]] | None = None,
     ) -> str | None:
         kind = media.get("kind")
+        async with self._one_at_a_time:
+            return await self._describe(kind, media, authorize)
+
+    async def _describe(
+        self, kind: str | None, media: dict, authorize: Callable[[], Awaitable[bool]] | None,
+    ) -> str | None:
         try:
             part_type = _PART_TYPES.get(kind)
+            limit = MAX_BYTES.get(kind)
             size = media.get("file_size")
-            if part_type is None or (size is not None and size > MAX_FILE_SIZE):
+            if part_type is None or limit is None or (size is not None and size > limit):
                 return None
             mime = (media.get("mime") or DEFAULT_MIME[kind]).partition(";")[0].strip().lower()
             file_id = media["file_id"]
@@ -60,8 +73,8 @@ class MediaDescriber:
             if downloaded is None:
                 raise ValueError("no attachment returned")
             with downloaded:
-                data = downloaded.read(MAX_FILE_SIZE + 1)
-            if len(data) > MAX_FILE_SIZE:
+                data = downloaded.read(limit + 1)
+            if len(data) > limit:
                 return None
             if not data:
                 raise ValueError("empty attachment")

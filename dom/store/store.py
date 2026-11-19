@@ -745,6 +745,26 @@ class Store:
         ).fetchone()
         return (row["unread_count"], _row_to_message(row)) if row is not None else (0, None)
 
+    async def get_unread_media_to_describe(self, chat_id: int | str, limit: int) -> list[tuple[int, dict]]:
+        """(msg_id, media) of undescribed attachments from people among the last `limit` unread messages."""
+        return await self._run(self._get_unread_media_to_describe, str(chat_id), limit)
+
+    def _get_unread_media_to_describe(self, chat_id: str, limit: int) -> list[tuple[int, dict]]:
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        rows = self._conn.execute(
+            "SELECT msg_id, media_json, is_bot FROM messages "
+            "WHERE chat_id = ? AND is_deleted = 0 AND role = 'user' "
+            "AND msg_id > COALESCE((SELECT last_read_msg_id FROM chats WHERE chat_id = ?), 0)"
+            f"{hide} ORDER BY msg_id DESC LIMIT ?",
+            (chat_id, chat_id, limit),
+        ).fetchall()
+        found = []
+        for row in reversed(rows):
+            media = _read_media_json(row["media_json"])
+            if media and not row["is_bot"] and media.get("description") is None:
+                found.append((row["msg_id"], media))
+        return found
+
     async def get_recent_chat_window(
         self, chat_id: int | str, limit: int = 35, *, through_id: int | None = None,
     ) -> list[StoredMessage]:
