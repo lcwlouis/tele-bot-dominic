@@ -128,6 +128,22 @@ async def test_opener_no_response_counts_as_attempt_only(make_app):
     assert len(app.bot.of("send", OWNER)) == 1
 
 
+async def test_opener_only_goes_online_once_it_actually_texts(make_app):
+    app = make_app(contents=(NO_RESPONSE, FINAL))
+    openers, now = always_try(app)
+    before = await app.store.get_presence(OWNER)
+    await openers.maybe(now())
+    assert len(app.script.requests) == 1 and not app.bot.of("send")
+    assert await app.store.get_presence(OWNER) == before
+
+    now.advance(hours=3)
+    await openers.maybe(now())
+    assert len(app.bot.of("send", OWNER)) == 1
+    habits = parse_habits("")
+    state, until = app.dispatch.presence.peek(await app.store.get_presence(OWNER), habits)
+    assert state == "online" and until > now()
+
+
 async def test_openers_never_use_other_chat_if_owner_missing(make_app):
     app = make_app(owner_id=None)
     await online(app, GROUP)

@@ -86,8 +86,10 @@ class Openers:
                 return
             await store.kv_set(LAST_ATTEMPT, now.isoformat())
             window = await store.get_recent_chat_window(owner, app.config.window_size)
+            minutes = None  # a session is only started once Dom really texts
             if state != "online" or until is None:
-                until = await dispatch.presence.go_online(owner, habits)
+                minutes = dispatch.presence.session_minutes(habits)
+                until = dispatch.now() + timedelta(minutes=minutes)
 
         with model_request("chat", owner, allowed):
             await check_model_allowed()
@@ -108,6 +110,8 @@ class Openers:
             sent = await self._sent_today(day)
             if not app.config.openers.enabled or sent >= app.config.openers.max_per_day:
                 return
+            if minutes is not None:
+                await dispatch.presence.go_online(owner, habits, minutes)
             first = True
 
             async def on_sent(msg_id: int) -> None:
