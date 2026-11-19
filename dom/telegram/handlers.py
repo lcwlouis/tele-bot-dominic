@@ -13,7 +13,7 @@ from random import Random
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-from aiogram import F, Router
+from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -555,7 +555,9 @@ def build_router(app: App) -> Router:
     async def on_edited(message: Message) -> None:
         await handle_edited_message(app, message)
 
-    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:", "leave:", "leaveyes:", "status:", "prop:", "rem:", "desktop:")))
+    # Every button goes to handle_callback, which checks the sender and ignores unknown data.
+    # A prefix list here once dropped /preset and plugin buttons without any error.
+    @router.callback_query()
     async def on_callback(query: CallbackQuery) -> None:
         await handle_callback(app, query)
 
