@@ -38,6 +38,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (3, "0002_offline_edit_tracking.sql"),
     (4, "0003_chat_auth_and_outbox.sql"),
     (5, "0004_dom_core.sql"),
+    (6, "0005_memory_cursor.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -836,6 +837,64 @@ class Store:
         return [_row_to_message(r) for r in reversed(rows)]
 
     format_chat_window_xml = staticmethod(format_chat_window_xml)
+
+    # ---- memory pass --------------------------------------------------------
+
+    def _memory_filter(self, chat_id: str) -> str:
+        """Rows the memory pass may read: messages past its cursor, never a private row in another chat."""
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        return (
+            "chat_id = ? AND is_deleted = 0 AND role != 'event' AND "
+            f"msg_id > (SELECT memory_cursor_msg_id FROM chats WHERE chat_id = ?){hide}"
+        )
+
+    async def get_memory_cursor(self, chat_id: int | str) -> int:
+        return await self._run(self._get_memory_cursor, str(chat_id))
+
+    def _get_memory_cursor(self, chat_id: str) -> int:
+        row = self._conn.execute("SELECT memory_cursor_msg_id FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        return row[0] if row is not None else 0
+
+    async def advance_memory_cursor(self, chat_id: int | str, msg_id: int) -> None:
+        """Mark messages up to `msg_id` as read by the memory pass. Never moves backwards."""
+        await self._run(self._advance_memory_cursor, str(chat_id), msg_id)
+
+    def _advance_memory_cursor(self, chat_id: str, msg_id: int) -> None:
+        with self._tx() as conn:
+            self._ensure_chat(conn, chat_id)
+            conn.execute(
+                "UPDATE chats SET memory_cursor_msg_id = MAX(memory_cursor_msg_id, ?) WHERE chat_id = ?",
+                (msg_id, chat_id),
+            )
+
+    async def count_new_for_memory(self, chat_id: int | str) -> int:
+        """Messages (not events) the memory pass has not read yet."""
+        return await self._run(self._count_new_for_memory, str(chat_id))
+
+    def _count_new_for_memory(self, chat_id: str) -> int:
+        return self._conn.execute(
+            f"SELECT COUNT(*) FROM messages WHERE {self._memory_filter(chat_id)}", (chat_id, chat_id)
+        ).fetchone()[0]
+
+    async def get_memory_batch(self, chat_id: int | str, limit: int) -> list[StoredMessage]:
+        """The newest `limit` messages past the memory cursor, oldest first. In the owner's DM the events
+        between them come along, so the pass sees what the owner did as well as what they said."""
+        return await self._run(self._get_memory_batch, str(chat_id), limit)
+
+    def _get_memory_batch(self, chat_id: str, limit: int) -> list[StoredMessage]:
+        rows = self._conn.execute(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {self._memory_filter(chat_id)} "
+            "ORDER BY msg_id DESC LIMIT ?",
+            (chat_id, chat_id, max(0, limit)),
+        ).fetchall()[::-1]
+        if rows and self._is_owner_chat(chat_id):
+            rows += self._conn.execute(
+                f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND role = 'event' AND id > ? AND id < ? "
+                "ORDER BY id DESC LIMIT ?",
+                (chat_id, rows[0]["id"], max(r["id"] for r in rows), max(0, limit)),
+            ).fetchall()
+            rows.sort(key=lambda r: r["id"])
+        return [_row_to_message(r) for r in rows]
 
     async def search_chat_history(
         self, query: str, requester_chat_id: str, limit: int = 10

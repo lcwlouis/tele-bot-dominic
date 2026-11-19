@@ -91,6 +91,11 @@ class Presence:
     def __init__(self, store: Store, tz: ZoneInfo, rng: Random, now: Callable[[], datetime]):
         self.store, self.tz, self.rng, self.now = store, tz, rng, now
         self._session_start: dict[int, datetime] = {}  # lost on restart; extensions then count from the next one
+        self.on_session_end: Callable[[int], None] | None = None  # an online session ended (expired, slept, offline)
+
+    def _session_ended(self, chat_id) -> None:
+        if self.on_session_end is not None:
+            self.on_session_end(int(chat_id))
 
     def _sleep_end(self, now: datetime, habits: Habits) -> datetime | None:
         local = now.astimezone(self.tz)
@@ -125,6 +130,8 @@ class Presence:
                     chat_id, is_sleeping=True, sleep_until=sleep_end.isoformat(),
                     is_offline=False, offline_until=None, online_until=None,
                 )
+                if online:
+                    self._session_ended(chat_id)
             return "asleep", sleep_end
         if online and online > now:
             return "online", online
@@ -177,6 +184,7 @@ class Presence:
             chat_id, is_sleeping=False, sleep_until=None, is_offline=True,
             offline_until=until.isoformat(), online_until=None,
         )
+        self._session_ended(chat_id)
         return until
 
     async def extend_online(self, chat_id, habits: Habits, minutes: float) -> datetime:
@@ -204,8 +212,11 @@ class Presence:
         if end <= now:
             end += timedelta(days=1)
         end = min(end, now + MAX_SLEEP_COMMAND)
+        was_online = (await self.store.get_presence(chat_id))["online_until"] is not None
         await self.store.set_presence(
             chat_id, is_sleeping=True, sleep_until=end.isoformat(),
             is_offline=False, offline_until=None, online_until=None,
         )
+        if was_online:
+            self._session_ended(chat_id)
         return end

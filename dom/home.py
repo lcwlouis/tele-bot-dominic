@@ -19,7 +19,7 @@ LIMITS: dict[str, int] = {
     "private/USER.md": 1375,
     "private/NOTES.md": 2200,
 }
-# Writable through the memory tool but not size-bounded (never loaded into chat prompts).
+# Writable through memory_write but not size-bounded (never loaded into chat prompts).
 UNBOUNDED = {"memory/JOURNAL.md"}
 
 
@@ -33,6 +33,7 @@ class WriteResult:
     ok: bool
     content: str
     error: str | None = None
+    over_limit: bool = False
 
 
 def limit_for(rel: str) -> int | None:
@@ -110,6 +111,7 @@ class Home:
                 False,
                 current,
                 f"over limit: {len(new)} > {limit} characters; merge or remove entries first",
+                over_limit=True,
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(new)

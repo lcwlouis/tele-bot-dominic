@@ -16,6 +16,7 @@ from dom.actions import Actions, Bubble
 from dom.agent import run_turn
 from dom.home import PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
+from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.presence import Habits, Presence, State, parse_habits
 from dom.prompt import build_messages
@@ -40,6 +41,8 @@ BOT_REPLY_INTERVAL = timedelta(seconds=10)
 BOT_DEDUP_WINDOW = timedelta(seconds=60)
 MAX_TURN_FAILURES = 3  # consecutive failures after which a chat's unread messages are given up on
 _CHAT_GONE = re.compile(r"chat not found|kicked|not a member", re.IGNORECASE)
+MEMORY_PASS_INTERVAL = timedelta(minutes=5)  # per chat
+MEMORY_PASS_MESSAGES = 10  # new messages after a turn that start a pass without waiting for the session to end
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 
 
@@ -61,6 +64,10 @@ class Dispatcher:
         self._media_times: dict[int, deque[datetime]] = {}
         self._bot_replies: dict[tuple[int, int], datetime] = {}  # (chat_id, bot_id) -> last reply
         self._bots_in_flight: set[tuple[int, int]] = set()
+        self._memory_running: set[int] = set()
+        self._memory_last: dict[int, datetime] = {}  # when the chat's last pass finished
+        self._memory_slot = asyncio.Semaphore(1)  # one pass at a time across chats
+        presence.on_session_end = self.request_memory_pass
 
     def notify(self, msg: IncomingMessage) -> None:
         latest = self._latest.get(msg.chat_id)
@@ -74,6 +81,27 @@ class Dispatcher:
             previous.cancel()
         delay = min(self.presence.rng.uniform(2, 6), (DEBOUNCE_CAP - waited).total_seconds())
         self._debounces[msg.chat_id] = self._spawn(self._after_debounce(msg.chat_id, delay))
+
+    def request_memory_pass(self, chat_id: int) -> None:
+        """Start a background memory pass for the chat unless one is running or the last one was under
+        MEMORY_PASS_INTERVAL ago. Never waits, so it is safe to call under the turn lock."""
+        last = self._memory_last.get(chat_id)
+        if chat_id in self._memory_running or (last is not None and self.now() - last < MEMORY_PASS_INTERVAL):
+            return
+        self._memory_running.add(chat_id)
+        self._spawn(self._memory_pass(chat_id))
+
+    async def _memory_pass(self, chat_id: int) -> None:
+        ran = True  # a failed attempt counts too: do not hammer a model that is down
+        try:
+            async with self._memory_slot:
+                ran = await MemoryPass(self.app).run(chat_id)
+        except Exception:
+            log.exception("memory pass failed in chat %s", chat_id)
+        finally:
+            if ran:
+                self._memory_last[chat_id] = self.now()
+            self._memory_running.discard(chat_id)
 
     def _debounce_pending(self, chat_id: int) -> bool:
         """A debounce older than its cap is overdue, not pending: it must not hold off other dispatches."""
@@ -356,6 +384,8 @@ class Dispatcher:
             chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
         )
         await store.mark_chat_read(chat_id, newest.msg_id)
+        if await store.count_new_for_memory(chat_id) >= MEMORY_PASS_MESSAGES:
+            self.request_memory_pass(chat_id)
 
     async def _window(self, chat_id: int, newest: StoredMessage) -> list[StoredMessage]:
         return await self.app.store.get_recent_chat_window(

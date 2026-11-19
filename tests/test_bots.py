@@ -5,7 +5,7 @@ from aiogram.types import User
 
 from dom.presence import parse_habits
 from dom.telegram.handlers import handle_message
-from tghelpers import BOT_USER, GROUP, drain_dispatch, tg
+from tghelpers import BOT_USER, GROUP, drain_dispatch, tg, turn_requests
 
 EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 OTHER_BOT = User(id=333, first_name="Test Bot", is_bot=True)
@@ -36,7 +36,7 @@ async def test_bot_loop_stops_after_depth(bot_chat):
     for msg_id in range(1, 9):
         await bot_line(app, clock, msg_id, f"bot message {msg_id}")
         clock.advance(seconds=11)
-    contents = [request["messages"][-1]["content"] for request in app.script.requests]
+    contents = [request["messages"][-1]["content"] for request in turn_requests(app)]
     assert len(contents) == len(app.bot.of("send", GROUP)) == 7
     assert all(EXIT_NOTE not in content for content in contents[:6])
     assert EXIT_NOTE in contents[-1]
@@ -55,8 +55,8 @@ async def test_human_message_resets_depth(bot_chat):
     assert await app.store.get_bot_depth(GROUP) == 0
     await bot_line(app, clock, 9, "another topic")
     assert await app.store.get_bot_depth(GROUP) == 1
-    assert len(app.script.requests) == 9
-    assert EXIT_NOTE not in app.script.requests[-1]["messages"][-1]["content"]
+    assert len(turn_requests(app)) == 9
+    assert EXIT_NOTE not in turn_requests(app)[-1]["messages"][-1]["content"]
 
 
 async def test_bot_rate_limit(bot_chat):

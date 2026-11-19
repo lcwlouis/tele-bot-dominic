@@ -65,21 +65,36 @@ def ctx_for(env, scope="group", chat_id=-1009, sender=222):
 
 
 async def test_tool_call_then_final_actions(env):
-    root, _, _ = env
+    _, _, store = env
+    await store.record_new_message(StoredMessage(
+        chat_id="-1009", msg_id=1, text="banana bread", visibility_scope="chat:-1009",
+        created_at="2026-11-18T10:00:00+00:00"))
     script = Script(
-        reply(tool_calls=[call("memory", {"file": "MEMORY.md", "op": "add", "text": "likes tea"})]),
+        reply(tool_calls=[call("search_history", {"query": "banana"})]),
         reply(content=json.dumps(FINAL)),
     )
     actions = await run_turn(make_client(script), [{"role": "user", "content": "hi"}], core_tools(), ctx_for(env))
     assert actions == Actions(bubbles=[Bubble(text="hey")])
-    assert (root / "memory" / "MEMORY.md").read_text() == "- likes tea"
     second = script.requests[1]["messages"]
     assert second[-1]["role"] == "tool" and second[-1]["tool_call_id"] == "c1"
-    assert json.loads(second[-1]["content"])["ok"] is True
+    assert "banana bread" in second[-1]["content"]
     assert second[-2]["tool_calls"][0]["id"] == "c1"
     assert script.requests[0]["model"] == "test/model"
-    assert {t["function"]["name"] for t in script.requests[0]["tools"]} == {"memory", "search_history", "extend_online"}
     assert script.last_headers["authorization"] == "Bearer k"
+
+
+@pytest.mark.parametrize("scope", ["owner_dm", "friend_dm", "group"])
+async def test_replies_only_get_read_only_tools_and_cannot_write_notes(env, scope):
+    root, _, _ = env
+    assert {t.name for t in core_tools()} == {"search_history", "extend_online"}
+    script = Script(
+        reply(tool_calls=[call("memory", {"file": "MEMORY.md", "op": "add", "text": "pwned"})]),
+        reply(content=json.dumps(FINAL)),
+    )
+    await run_turn(make_client(script), [], core_tools(), ctx_for(env, scope=scope, chat_id=OWNER, sender=OWNER))
+    assert {t["function"]["name"] for t in script.requests[0]["tools"]} == {"search_history", "extend_online"}
+    assert script.requests[1]["messages"][-1]["content"] == "tool not available here"
+    assert not (root / "memory").exists() and not (root / "private").exists()
 
 
 async def test_fenced_json_accepted(env):
@@ -110,58 +125,6 @@ async def test_invalid_actions_object_counts_as_malformed(env):
     assert await run_turn(make_client(script), [], core_tools(), ctx_for(env)) == Actions(no_response=True)
 
 
-async def test_private_memory_tool_refused_outside_owner_dm(env):
-    root, _, _ = env
-    (root / "private").mkdir()
-    (root / "private" / "USER.md").write_text("owner secret")
-    script = Script(
-        reply(tool_calls=[call("memory", {"file": "USER.md", "op": "add", "text": "x"})]),
-        reply(content=json.dumps(FINAL)),
-    )
-    await run_turn(make_client(script), [], core_tools(), ctx_for(env, scope="friend_dm", chat_id=222))
-    result = json.loads(script.requests[1]["messages"][-1]["content"])
-    assert result["ok"] is False
-    assert "owner secret" not in json.dumps(result)
-    assert (root / "private" / "USER.md").read_text() == "owner secret"
-
-
-async def test_private_memory_tool_works_in_owner_dm(env):
-    root, _, _ = env
-    script = Script(
-        reply(tool_calls=[call("memory", {"file": "NOTES.md", "op": "add", "text": "owner likes tea"})]),
-        reply(content=json.dumps(FINAL)),
-    )
-    await run_turn(make_client(script), [], core_tools(), ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER))
-    assert (root / "private" / "NOTES.md").read_text() == "- owner likes tea"
-
-
-@pytest.mark.parametrize("file", ["../SOUL.md", "memory/MEMORY.md", "people/abc.md", "JOURNAL.md", "/etc/passwd"])
-async def test_memory_tool_rejects_unknown_files(env, file):
-    memory = next(t for t in core_tools() if t.name == "memory")
-    result = json.loads(await memory.handler({"file": file, "op": "add", "text": "x"}, ctx_for(env)))
-    assert result["ok"] is False
-
-
-async def test_chat_notes_limited_to_current_chat_outside_owner_dm(env):
-    root, _, _ = env
-    memory = next(t for t in core_tools() if t.name == "memory")
-    args = {"file": "chats/-5555.md", "op": "add", "text": "x"}
-    assert json.loads(await memory.handler(args, ctx_for(env, chat_id=-1009)))["ok"] is False
-    assert not (root / "memory" / "chats" / "-5555.md").exists()
-    assert json.loads(await memory.handler(args, ctx_for(env, chat_id=-5555)))["ok"] is True
-    owner = ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER)
-    assert json.loads(await memory.handler({**args, "text": "y"}, owner))["ok"] is False  # owner DM: private files only
-
-
-async def test_memory_over_limit_returns_error_and_content(env):
-    root, _, _ = env
-    (root / "memory").mkdir()
-    (root / "memory" / "MEMORY.md").write_text("world facts")
-    memory = next(t for t in core_tools() if t.name == "memory")
-    result = json.loads(await memory.handler({"file": "MEMORY.md", "op": "add", "text": "x" * 3000}, ctx_for(env)))
-    assert result["ok"] is False and result["content"] == "world facts"
-
-
 async def test_unoffered_tool_call_gets_error_result(env):
     seen = []
 
@@ -178,7 +141,7 @@ async def test_unoffered_tool_call_gets_error_result(env):
 
 
 async def test_unknown_tool_and_bad_arguments_get_error_results(env):
-    bad_args = {"id": "c2", "type": "function", "function": {"name": "memory", "arguments": "{not json"}}
+    bad_args = {"id": "c2", "type": "function", "function": {"name": "search_history", "arguments": "{not json"}}
     script = Script(
         reply(tool_calls=[call("nope", {}, "c1"), bad_args]),
         reply(content=json.dumps(FINAL)),
@@ -270,40 +233,6 @@ def test_actions_validation_limits():
     assert Bubble(text="a", delete_after=1).delete_after == 1
     assert Bubble(text="a", delete_after=30).delete_after == 30
     assert Actions().no_response is False and Actions().bubbles == []
-
-
-@pytest.mark.parametrize("file", ["MEMORY.md", "people/222.md", "chats/111.md", "chats/-1009.md"])
-async def test_owner_dm_cannot_write_shared_memory(env, file):
-    root, _, _ = env
-    memory = next(t for t in core_tools() if t.name == "memory")
-    owner = ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER)
-    result = json.loads(await memory.handler({"file": file, "op": "add", "text": "owner secret"}, owner))
-    assert result["ok"] is False
-    assert "only write USER.md or NOTES.md" in result["error"]
-    assert not (root / "memory").exists() or not list((root / "memory").rglob("*.md"))
-
-
-@pytest.mark.parametrize("scope", ["owner_dm", "friend_dm", "group"])
-async def test_habits_file_is_not_writable_in_any_scope(env, scope):
-    root, _, _ = env
-    (root / "memory").mkdir()
-    (root / "memory" / "HABITS.md").write_text("sleep: 23:59-07:30")
-    memory = next(t for t in core_tools() if t.name == "memory")
-    assert "HABITS.md" not in memory.description
-    ctx = ctx_for(env, scope=scope, chat_id=OWNER if scope == "owner_dm" else 222, sender=OWNER)
-    for op in ("add", "replace", "remove"):
-        result = json.loads(await memory.handler(
-            {"file": "HABITS.md", "op": op, "text": "sleep: never", "old": "sleep"}, ctx,
-        ))
-        assert result["ok"] is False and "HABITS.md" in result["error"] and "cannot be edited" in result["error"]
-    assert (root / "memory" / "HABITS.md").read_text() == "sleep: 23:59-07:30"
-
-
-async def test_owner_dm_can_still_write_private_files(env):
-    memory = next(t for t in core_tools() if t.name == "memory")
-    owner = ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER)
-    for file in ("USER.md", "NOTES.md"):
-        assert json.loads(await memory.handler({"file": file, "op": "add", "text": "x"}, owner))["ok"] is True
 
 
 async def _turn(env, *responses):
