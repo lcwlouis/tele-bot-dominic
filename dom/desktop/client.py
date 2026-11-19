@@ -127,10 +127,13 @@ class SandboxClient:
     async def scroll(self, direction: str) -> Any:
         return await self._json("browser/page/scroll", {"direction": direction})
 
+    async def browser_tabs(self) -> Any:
+        return await self._json("browser/tabs")
+
     async def current_url(self) -> str | None:
         """The URL of the browser's active tab, or None when no tab is marked active or the sandbox does not
         say. The sandbox reports tabs as {index, url, title, is_active} (checked 2026-11-19)."""
-        tabs = await self._json("browser/tabs")
+        tabs = await self.browser_tabs()
         return next((
             tab["url"] for tab in (tabs if isinstance(tabs, list) else ())
             if isinstance(tab, dict) and tab.get("type", "page") == "page" and tab.get("is_active") is True

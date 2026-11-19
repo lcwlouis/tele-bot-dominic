@@ -264,18 +264,26 @@ class LocalSandbox:
         if code:
             raise SandboxError("could not start the desktop container")
         client = SandboxClient(f"http://127.0.0.1:{settings.port}", key, self._http)
+        failure = "API not healthy"
         try:
-            async with asyncio.timeout(60):
-                while True:
-                    try:
-                        await client.health()
-                        break
-                    except SandboxError:
-                        await asyncio.sleep(1)
+            async with asyncio.timeout(settings.start_timeout_seconds):
+                await self._wait_until_ready(client.health)
+                failure = "browser did not start"
+                await self._wait_until_ready(client.browser_tabs)
         except TimeoutError:
-            await self._remove_container(True)
-            raise SandboxError("desktop health check timed out") from None
+            if not await self._discard():
+                failure += " (could not remove the desktop container)"
+            raise SandboxError(failure) from None
         self.client = client
+
+    @staticmethod
+    async def _wait_until_ready(check: Callable[[], Awaitable[object]]) -> None:
+        while True:
+            try:
+                await check()
+                return
+            except SandboxError:
+                await asyncio.sleep(1)
 
     async def stop(self) -> None:
         async with self._lock:

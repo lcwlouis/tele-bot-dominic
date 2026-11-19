@@ -47,6 +47,9 @@ class DesktopConfig(BaseModel):
     image: str = Field("ghcr.io/agent-infra/sandbox:latest", description="Pre-pulled local sandbox image.")
     url: str = Field("", description="Sandbox API base URL in remote mode.")
     api_key_env: str = Field("SANDBOX_API_KEY", description="Secret variable for the remote sandbox API key. Local mode generates a key.")
+    start_timeout_seconds: float = Field(
+        180, gt=0, allow_inf_nan=False, description="Seconds for the local sandbox API and browser to become ready.",
+    )
     idle_minutes: float = Field(10, gt=0, allow_inf_nan=False, description="Idle minutes before the local desktop stops.")
     profile_dir: str = Field("", description="Local browser profile outside the instance home. Empty uses the sibling desktop-profile directory.")
     network: str = Field("dom-desktop", description="Docker bridge name for local isolation.")
