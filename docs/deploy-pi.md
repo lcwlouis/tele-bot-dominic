@@ -6,8 +6,8 @@ moving the database, notes or secrets.
 
 ```text
 ~/dom/
-  app -> releases/<sha>
-  releases/<sha>/
+  app -> releases/<tag>
+  releases/<tag>/
   instance/
   backups/
 ```
@@ -16,20 +16,51 @@ Run Python from `~/dom/app`. When you run `python -m dom` from your user home,
 the `~/dom` folder can shadow the installed `dom` package. Use a normal `cd` into
 the `app` symlink so the installer records the stable app path.
 
+## Cut a release
+
+Deploy from tags, not from branch heads. A tag is the version Dom reports about
+himself, and it names the release folder. Do this on the development machine, from
+a clean `main` that has passed CI. It needs Git 2.32 or later and the
+[GitHub CLI](https://cli.github.com/).
+
+1. Bump `version` in `pyproject.toml` to the new `X.Y.Z` and commit it.
+2. Generate the changelog section from the commits since the previous tag. It
+   lists one line per commit, so edit it into bullets a reader can follow.
+   Put it in `CHANGELOG.md` directly under an empty `## [Unreleased]` heading,
+   replacing the old Unreleased content, and commit.
+
+   ```sh
+   uv run python scripts/changelog.py vPREVIOUS HEAD --title "[X.Y.Z] - $(date +%F)"
+   ```
+
+3. Tag the commit and publish the release, using the changelog section as notes.
+
+   ```sh
+   git tag vX.Y.Z
+   git push origin main vX.Y.Z
+   awk '/^## \[X.Y.Z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md > release-notes.md
+   gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes-file release-notes.md
+   rm release-notes.md
+   ```
+
+`git archive` writes the tag into `dom/_version.py` (`.gitattributes` marks it
+`export-subst`), so a release folder built from a tag reports `vX.Y.Z` to
+`self_inspect`. A folder built from an untagged commit reports the nearest tag
+plus the commit, such as `v0.7.0-3-g1a2b3c4`. Only a history with no tag at all
+reports the bare commit.
+
 ## Stage a release
 
 Clone the repository into a separate checkout, then run these commands from it.
-Choose a reviewed commit. On a fresh install, `HEAD` is the checked-out commit.
-For an update, advance the checkout first with `git pull --ff-only` and choose the
-commit to deploy.
+Choose a release tag. For an update, fetch tags first with `git fetch --tags`.
 
 ```sh
 root=~/dom
-sha=$(git rev-parse HEAD)
-release="$root/releases/$sha"
+tag=vX.Y.Z
+release="$root/releases/$tag"
 mkdir -p "$root/releases"
 mkdir "$release"
-git archive "$sha" | tar -x -C "$release"
+git archive "$tag" | tar -x -C "$release"
 (cd "$release" && uv sync --frozen --no-dev)
 ```
 
@@ -39,7 +70,7 @@ at the current release until the new one is ready.
 ## Install on first run
 
 ```sh
-ln -s "releases/$sha" "$root/app"
+ln -s "releases/$tag" "$root/app"
 cd "$root/app"
 .venv/bin/python -m dom init "$root/instance"
 ```
@@ -73,7 +104,7 @@ cd "$root/app"
 previous=$(readlink "$root/app")
 systemctl --user stop dom.service
 .venv/bin/python -m dom backup "$root/instance"
-ln -s "releases/$sha" "$root/app.next"
+ln -s "releases/$tag" "$root/app.next"
 mv -Tf "$root/app.next" "$root/app"
 systemctl --user start dom.service
 cd "$root/app"
