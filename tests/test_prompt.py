@@ -93,3 +93,8 @@ def test_chat_notes_only_for_this_chat(home):
 
 def test_frame_discourages_reply_to_in_dms():
     assert "in a DM leave it null" in FRAME
+
+
+def test_frame_does_not_offer_memory_editing():
+    assert "memory tool" not in FRAME
+    assert "cannot edit them" in FRAME

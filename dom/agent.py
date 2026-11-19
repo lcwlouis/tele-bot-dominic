@@ -22,11 +22,15 @@ _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 log = logging.getLogger("dom.agent")
 
-def parse_actions(text: str | None) -> Actions | None:
+def unfence(text: str | None) -> str:
+    """The model's reply without a surrounding ```json fence."""
     text = (text or "").strip()
     fenced = _FENCE.match(text)
-    if fenced:
-        text = fenced.group(1)
+    return fenced.group(1) if fenced else text
+
+
+def parse_actions(text: str | None) -> Actions | None:
+    text = unfence(text)
     try:
         data = json.loads(text)
         if isinstance(data, dict) and data:  # at least one of no_response / react / bubbles

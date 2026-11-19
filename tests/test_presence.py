@@ -142,3 +142,34 @@ async def test_sleep_lasts_until_wake_time_or_eight_hours(rhythm):
     assert (await presence.state(GROUP, habits)) == ("asleep", clock.at.replace(hour=20))
     clock.at = clock.at.replace(hour=2)
     assert await presence.sleep(GROUP, habits) == clock.at.replace(hour=7, minute=30)
+
+
+async def test_session_end_is_reported_once_per_online_session(rhythm):
+    presence, clock, _ = rhythm
+    ended = []
+    presence.on_session_end = ended.append
+    habits = parse_habits("")
+    await presence.go_online(GROUP, habits, minutes=5)
+    await presence.state(GROUP, habits)
+    assert ended == []
+    clock.advance(minutes=5)
+    await presence.state(GROUP, habits)
+    await presence.state(GROUP, habits)
+    assert ended == [GROUP]
+
+
+async def test_session_end_is_reported_when_sent_to_sleep_or_when_sleep_hours_begin(rhythm):
+    presence, clock, _ = rhythm
+    ended = []
+    presence.on_session_end = ended.append
+    habits = parse_habits("")
+    await presence.sleep(GROUP, habits)  # was not online: nothing ended
+    assert ended == []
+    await presence.go_online(GROUP, habits, minutes=60)
+    await presence.sleep(GROUP, habits)
+    assert ended == [GROUP]
+    clock.at = clock.at.replace(hour=23, minute=30)
+    await presence.go_online(GROUP, habits, minutes=60)
+    clock.advance(minutes=31)  # past 23:59: sleep hours cut the session short
+    assert (await presence.state(GROUP, habits))[0] == "asleep"
+    assert ended == [GROUP, GROUP]

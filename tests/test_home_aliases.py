@@ -5,8 +5,6 @@ import pytest
 from dom.home import Home, PrivateAccessError
 from dom.models import Scope
 from dom.prompt import build_messages
-from dom.store import Store
-from dom.tools import TurnCtx, core_tools
 
 SECRET = "owner-only secret"
 
@@ -47,17 +45,3 @@ def test_symlink_outside_home_rejected(root, tmp_path_factory):
 def test_symlink_not_leaked_into_group_prompt(root):
     messages = build_messages(Home(root), "group", -1009, [222], "<chat_window/>", "note")
     assert SECRET not in json.dumps(messages)
-
-
-async def test_symlink_not_leaked_by_memory_tool_error(root):
-    store = Store(root, owner_id=111)
-    try:
-        ctx = TurnCtx(scope="group", chat_id=-1009, sender_id=222, home=Home(root), store=store, owner_id=111)
-        memory = next(t for t in core_tools() if t.name == "memory")
-        try:
-            out = await memory.handler({"file": "MEMORY.md", "op": "add", "text": "x"}, ctx)
-        except PrivateAccessError as exc:
-            out = str(exc)
-        assert SECRET not in out
-    finally:
-        store.close()

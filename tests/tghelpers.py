@@ -76,6 +76,11 @@ class ModelScript:
         return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": content}}]})
 
 
+def turn_requests(app):
+    """The model requests that were reply turns (they offer tools), not background memory passes."""
+    return [request for request in app.script.requests if "tools" in request]
+
+
 async def no_sleep(seconds):
     return None
 

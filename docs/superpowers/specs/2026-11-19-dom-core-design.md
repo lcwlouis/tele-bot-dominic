@@ -179,7 +179,7 @@ Edits are handled, including edits made while Dom was offline.
 | Tool | Scope |
 |---|---|
 | `web_search` | all |
-| `memory` (add / replace / remove on a named file, with limits enforced) | all scopes; `private/` files in `owner_dm` only |
+| ~~`memory`~~ replaced by the background memory pass (`dom/memory_pass.py`): after an online session ends, or after 10 new messages, one model call turns new messages into add / replace / remove ops on the scope's note files, limits enforced; `private/` files in `owner_dm` only. Replies never write notes. | all scopes |
 | `search_history` | FTS over the current chat; the owner can search all chats |
 | `skills_list` / `skill_view` / `skill_manage` | all |
 | `remind` | owner, plus whitelisted friends |

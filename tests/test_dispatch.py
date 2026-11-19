@@ -12,7 +12,7 @@ from dom.jev import JevUnavailable
 from dom.models import StoredMessage
 from dom.presence import Presence, parse_habits
 from dom.telegram.handlers import handle_message
-from tghelpers import FRIEND, GROUP, OWNER, Clock, FixedRandom, drain_dispatch, no_sleep, tg
+from tghelpers import FRIEND, GROUP, OWNER, Clock, FixedRandom, drain_dispatch, no_sleep, tg, turn_requests
 
 
 class FakeJev:
@@ -65,8 +65,8 @@ async def test_asleep_flood_no_calls_single_catchup(setup_dispatch):
     await dispatch.tick()
     await dispatch.tick()
     assert not jev.calls
-    assert len(app.script.requests) == 1
-    note = app.script.requests[0]["messages"][-1]["content"]
+    assert len(turn_requests(app)) == 1
+    note = turn_requests(app)[0]["messages"][-1]["content"]
     assert "state: online" in note and "online minutes left: 15" in note
     assert "messages that arrived while away: 200" in note
     assert "you just came online" in note and "desktop: off" in note
