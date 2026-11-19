@@ -8,9 +8,11 @@ import logging
 from functools import partial
 from typing import TYPE_CHECKING
 
+from dom.actions import SendFile
 from dom.agent import _well_formed
 from dom.desktop import tools
 from dom.desktop.client import SandboxClient, SandboxError
+from dom.desktop.files import download_results, upload_inbox
 
 if TYPE_CHECKING:
     from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
@@ -112,9 +114,9 @@ class DesktopWorker:
             await self.app.store.record_owner_event(f"Resumed desktop task #{task_id}")
             return True
 
-    async def _report(self, row: dict) -> None:
+    async def _report(self, row: dict, files: tuple[SendFile, ...] = ()) -> None:
         try:
-            await self.app.dispatch.report_desktop_task(row)
+            await self.app.dispatch.report_desktop_task(row, files)
         except Exception as exc:
             log.warning("could not report desktop task %s (%s)", row["id"], type(exc).__name__)
 
@@ -124,9 +126,10 @@ class DesktopWorker:
         if row is None:
             return
         partial_result: list[str] = []
+        files: tuple[SendFile, ...] = ()
         try:
             with self.sandbox.in_use():
-                result = await self._work(row, partial_result)
+                result, files = await self._work(row, partial_result)
         except (TimeoutError, SandboxError, ValueError) as exc:
             error = "desktop task time limit reached" if isinstance(exc, TimeoutError) else str(exc)
             row = await store.update_desktop_task(
@@ -142,14 +145,15 @@ class DesktopWorker:
         else:
             row = await store.update_desktop_task(task_id, chat_id, ("running",), "done", result=result)
         if row:
-            await self._report(row)
+            await self._report(row, files)
 
-    async def _work(self, row: dict, partial_result: list[str]) -> str:
+    async def _work(self, row: dict, partial_result: list[str]) -> tuple[str, tuple[SendFile, ...]]:
         task_id, chat_id = row["id"], row["chat_id"]
         clock = asyncio.get_running_loop().time
         deadline = clock() + self.work_seconds
         async with asyncio.timeout_at(deadline):
             client = await self.sandbox.ensure_running()
+            await upload_inbox(self.app.home.root, client)
         messages = [
             {"role": "system", "content": WORKER_SYSTEM_PROMPT},
             {"role": "user", "content": row["brief"]},
@@ -185,7 +189,9 @@ class DesktopWorker:
                             result = client.redact(args["result"]).strip()[:tools.RESULT_LIMIT]
                             if not result:
                                 raise ValueError("finish needs a result")
-                            return result
+                            async with asyncio.timeout_at(deadline):
+                                documents = await download_results(client, args.get("files", []))
+                            return result, tuple(documents)
                         if name == "handoff":
                             reason = client.redact(args["reason"]).strip()[:500]
                             if not reason:

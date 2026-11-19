@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections import deque
@@ -18,7 +19,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom import guard, turn_log
-from dom.actions import Actions, Bubble
+from dom.actions import Actions, Bubble, SendFile
 from dom.agent import parse_actions, run_turn
 from dom.desktop.tools import untrusted
 from dom.capabilities import describe
@@ -575,7 +576,7 @@ class Dispatcher:
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
         )
 
-    async def report_desktop_task(self, row: dict) -> None:
+    async def report_desktop_task(self, row: dict, files: tuple[SendFile, ...] = ()) -> None:
         app = self.app
         chat_id, task_id = row["chat_id"], row["id"]
         if chat_id != app.owner_id:
@@ -607,6 +608,7 @@ class Dispatcher:
                 plain = f"Desktop task #{task_id} {status}. {result}"
                 actions = Actions(bubbles=[Bubble(text=plain[i:i + 2000]) for i in range(0, len(plain), 2000)])
             await executor.perform(app.bot, app.store, chat_id, None, Actions(bubbles=actions.bubbles), sleep=app.sleep)
+            await executor.send_files(app.bot, app.store, chat_id, files)
 
     async def _compose_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage | None, live: IncomingMessage | None,
@@ -639,6 +641,10 @@ class Dispatcher:
             )
         if not final_bot_turn and (sticker_note := app.stickers.turn_note()):
             note += f"\n{sticker_note}"
+        if scope == "owner_dm" and newest is not None and newest.media_json:
+            inbox_name = json.loads(newest.media_json).get("desktop_inbox")
+            if inbox_name:
+                note += f"\nfile received: inbox/{inbox_name}"
         if extra_note:
             note += f"\n{extra_note}"
         if final_bot_turn:

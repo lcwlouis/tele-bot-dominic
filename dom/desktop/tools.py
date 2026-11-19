@@ -8,6 +8,8 @@ from xml.sax.saxutils import escape
 
 from dom.desktop.client import SandboxClient
 
+from dom.desktop.files import MAX_RESULT_FILES
+
 RESULT_LIMIT = 6000
 _STRING = {"type": "string"}
 _TOOLS = {
@@ -26,7 +28,9 @@ _TOOLS = {
     "read_file": ("Read a text file inside the sandbox.", {"path": _STRING}),
     "write_file": ("Write a text file inside the sandbox.", {"path": _STRING, "content": _STRING}),
     "handoff": ("Pause for the owner at a login, captcha or payment.", {"reason": _STRING}),
-    "finish": ("Finish with a concise result.", {"result": _STRING}),
+    "finish": ("Finish with a concise result and optional sandbox files to send.", {
+        "result": _STRING, "files": {"type": "array", "items": _STRING, "maxItems": MAX_RESULT_FILES},
+    }),
 }
 
 _METHODS = {
@@ -41,7 +45,7 @@ def schemas() -> list[dict]:
         "type": "function",
         "function": {
             "name": name, "description": description,
-            "parameters": {"type": "object", "properties": properties, "required": list(properties),
+            "parameters": {"type": "object", "properties": properties, "required": [key for key in properties if key != "files"],
                            "additionalProperties": False},
         },
     } for name, (description, properties) in _TOOLS.items()]
@@ -53,9 +57,14 @@ def arguments(function: dict) -> tuple[str, dict]:
         raise ValueError("unknown desktop tool")
     args = json.loads(function.get("arguments") or "{}")
     properties = _TOOLS[name][1]
-    if not isinstance(args, dict) or args.keys() != properties.keys():
+    required = properties.keys() - {"files"}
+    if not isinstance(args, dict) or not required <= args.keys() <= properties.keys():
         raise ValueError("invalid tool arguments")
     for key, value in args.items():
+        if key == "files":
+            if isinstance(value, list) and len(value) <= MAX_RESULT_FILES and all(isinstance(item, str) for item in value):
+                continue
+            raise ValueError("invalid files")
         if key == "selector_or_index" and type(value) is int and value >= 0:
             continue
         if not isinstance(value, str):

@@ -26,11 +26,10 @@ def describe(app: App, scope: Scope) -> str:
             desktop = "unavailable (desktop is not configured)"
         else:
             status = app.sandbox.status()
-            desktop = {
-                "stopped": "available (starts on use)",
-                "starting": "available (starting)",
-                "error": f"unavailable ({app.sandbox.error})",
-            }.get(status, status)
+            if status == "error":
+                desktop = f"unavailable ({app.sandbox.error})"
+            else:
+                desktop = {"stopped": "available (starts on use)", "starting": "available (starting)"}.get(status, status)
     rest = (
         f"\nunderstands: text{media}\ndesktop: {desktop}\n"
         "cannot see read receipts, see deleted messages, or read chats he isn't in"
