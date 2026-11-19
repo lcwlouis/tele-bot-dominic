@@ -138,6 +138,14 @@ def migrate_database(db_path: Path) -> int:
         conn.close()
 
 
+def _read_media_json(value: str | None) -> dict[str, Any]:
+    try:
+        media = json.loads(value) if value else None
+    except ValueError:
+        return {}
+    return media if isinstance(media, dict) else {}
+
+
 def format_chat_window_xml(chat_id: str, messages: list[StoredMessage]) -> str:
     """Render messages as ``<chat_window>`` XML. ``previous_seen_text`` is shown only when
     Dom actually saw the original before it was edited."""
@@ -155,6 +163,13 @@ def format_chat_window_xml(chat_id: str, messages: list[StoredMessage]) -> str:
         if m.is_edited:
             attrs.append('edited="true"')
         body = escape(m.text)
+        media = _read_media_json(m.media_json)
+        kind = media.get("kind") or media.get("type")
+        if isinstance(kind, str) and kind:
+            emoji, description = media.get("emoji"), media.get("description")
+            emoji_attr = f" emoji={quoteattr(emoji)}" if isinstance(emoji, str) and emoji else ""
+            description = escape(description) if isinstance(description, str) else ""
+            body += f"<media kind={quoteattr(kind)}{emoji_attr}>{description}</media>"
         if m.is_edited and m.original_seen_before_edit and m.previous_seen_text is not None:
             body += f"<previous_seen_text>{escape(m.previous_seen_text)}</previous_seen_text>"
         out.append(f"  <msg {' '.join(attrs)}>{body}</msg>")
@@ -587,6 +602,33 @@ class Store:
         )
         return int(cur.lastrowid)
 
+    async def has_message(self, chat_id: int | str, msg_id: int) -> bool:
+        return await self._run(self._has_message, str(chat_id), msg_id)
+
+    def _has_message(self, chat_id: str, msg_id: int) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM messages WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id),
+        ).fetchone() is not None
+
+    async def set_media_description(self, chat_id: int | str, msg_id: int, description: str | None) -> None:
+        await self._run(self._set_media_description, str(chat_id), msg_id, description)
+
+    def _set_media_description(self, chat_id: str, msg_id: int, description: str | None) -> None:
+        with self._tx() as conn:
+            row = self._get_message(chat_id, msg_id)
+            media = _read_media_json(row["media_json"]) if row is not None else {}
+            if not media or ("description" in media and media["description"] == description):
+                return
+            media["description"] = description
+            conn.execute(
+                "UPDATE messages SET media_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(media, ensure_ascii=False), _now(), row["id"]),
+            )
+        self._append_transcript(
+            chat_id, "media_described", msg_id=msg_id,
+            description=description, visibility_scope=row["visibility_scope"],
+        )
+
     async def record_message_edit(
         self,
         chat_id: str,
@@ -713,7 +755,7 @@ class Store:
         hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
         rows = self._conn.execute(
             f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND is_deleted = 0{hide} "
-            "AND (? IS NULL OR id <= ?) ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
+            "AND (? IS NULL OR role != 'user' OR id <= ?) ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
             (chat_id, through_id, through_id, max(0, limit)),
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]

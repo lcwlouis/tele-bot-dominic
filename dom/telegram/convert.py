@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from aiogram.types import Message
 
+from dom.media import DEFAULT_MIME
 from dom.models import IncomingMessage
 
 _MEDIA_KINDS = ("photo", "voice", "video", "video_note", "audio", "animation", "sticker", "document")
@@ -14,8 +15,20 @@ def _media(message: Message) -> dict | None:
         value = getattr(message, kind, None)
         if not value:
             continue
-        item = value[-1] if kind == "photo" else value  # photo is a list of sizes, largest last
-        return {"type": kind, "file_id": item.file_id, "file_unique_id": item.file_unique_id}
+        item = value
+        if kind == "photo":
+            item = max(value, key=lambda photo: (photo.width * photo.height, photo.file_size or 0))
+        mime = getattr(item, "mime_type", None) or DEFAULT_MIME.get(kind, "application/octet-stream")
+        media = {"kind": kind, "file_id": item.file_id, "file_size": item.file_size, "mime": mime}
+        if kind == "sticker":
+            if item.is_animated:
+                media["mime"] = "application/x-tgsticker"
+            elif item.is_video:
+                media["mime"] = "video/webm"
+            if (item.is_animated or item.is_video) and item.thumbnail:
+                media["preview_file_id"] = item.thumbnail.file_id
+            media["emoji"] = item.emoji
+        return media
     return None
 
 

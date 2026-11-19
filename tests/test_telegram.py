@@ -46,7 +46,7 @@ def test_convert_caption_and_reply():
     assert (inc.sender_id, inc.sender_handle, inc.sender_name, inc.is_bot) == (FRIEND, "@fran", "Fran", False)
     assert inc.text == "look at this"
     assert inc.reply_to == 7
-    assert inc.media == {"type": "photo", "file_id": "big", "file_unique_id": "u2"}
+    assert inc.media == {"kind": "photo", "file_id": "big", "file_size": None, "mime": "image/jpeg"}
     assert inc.date == NOW
     plain = to_incoming(tg(text="just text"))
     assert plain.media is None and plain.reply_to is None

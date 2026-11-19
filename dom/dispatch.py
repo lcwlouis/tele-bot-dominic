@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("dom.dispatch")
 TICK_SECONDS = 60
+MEDIA_WAIT_SECONDS = 15
 TRIAGE_WINDOW = 15
 BOT_DEPTH_LIMIT = 6
 BOT_REPLY_INTERVAL = timedelta(seconds=10)
@@ -40,6 +41,7 @@ class Dispatcher:
         self.sleep, self.now = sleep, now
         self._debounces: dict[int, asyncio.Task] = {}
         self._latest: dict[int, IncomingMessage] = {}
+        self._media_tasks: dict[int, set[asyncio.Task]] = {}
         self._tasks: set[asyncio.Task] = set()
         self._polls: dict[int, asyncio.Task] = {}
         self._loop: asyncio.Task | None = None
@@ -54,6 +56,40 @@ class Dispatcher:
         if previous is not None:
             previous.cancel()
         self._debounces[msg.chat_id] = self._spawn(self._after_debounce(msg.chat_id))
+
+    def describe_media(self, msg: IncomingMessage) -> None:
+        task = self._spawn(self._describe_media(msg))
+        self._media_tasks.setdefault(msg.chat_id, set()).add(task)
+        task.add_done_callback(lambda done: self._clear_media_task(msg.chat_id, done))
+
+    def _clear_media_task(self, chat_id: int, task: asyncio.Task) -> None:
+        tasks = self._media_tasks[chat_id]
+        tasks.discard(task)
+        if not tasks:
+            del self._media_tasks[chat_id]
+
+    async def _describe_media(self, msg: IncomingMessage) -> None:
+        describer = self.app.media_describer
+        if describer is None or msg.media is None:
+            return
+
+        async def authorize() -> bool:
+            async with self.app.locks[msg.chat_id]:
+                return await self._approved(msg.chat_id) and (
+                    not msg.is_bot or await self.app.store.get_bot_depth(msg.chat_id) <= BOT_DEPTH_LIMIT
+                )
+
+        try:
+            description = await describer.describe(msg.media, authorize=authorize)
+            await self.app.store.set_media_description(msg.chat_id, msg.msg_id, description)
+        except Exception:
+            log.exception("could not record media description in chat %s", msg.chat_id)
+
+    async def _wait_media(self, chat_id: int) -> None:
+        tasks = self._media_tasks.get(chat_id)
+        if tasks:
+            # Leave slow downloads and model calls running so their results can be stored later.
+            await asyncio.wait(tuple(tasks), timeout=MEDIA_WAIT_SECONDS)
 
     def _spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -118,6 +154,8 @@ class Dispatcher:
         return await gate.decide_chat(self.app.store, chat_id, self.app.owner_id) == "process"
 
     async def override(self, chat_id: int, command: str) -> None:
+        if command == "/wake":
+            await self._wait_media(chat_id)
         async with self.app.locks[chat_id]:
             if not await self._approved(chat_id):
                 return
@@ -132,9 +170,10 @@ class Dispatcher:
                 log.exception("wake catch-up failed in chat %s", chat_id)
 
     async def _decide(self, chat_id: int, *, background: bool = False) -> None:
+        await self._wait_media(chat_id)
         async with self.app.locks[chat_id]:
-            # Approval can change while the timer or the previous turn holds us up.
-            if not await self._approved(chat_id):
+            # A newer message can restart the timer while we wait for media or the turn lock.
+            if chat_id in self._debounces or not await self._approved(chat_id):
                 return
             try:
                 await self._dispatch(chat_id, self._habits(), background=background)

@@ -16,6 +16,7 @@ from dom.home import Home, init_home
 from dom.importer import import_v2
 from dom.jev import JevClient
 from dom.llm import ChatClient
+from dom.media import MediaDescriber
 from dom.store import Store
 from dom.telegram import executor
 from dom.telegram.handlers import App, build_router
@@ -88,9 +89,14 @@ async def run(home: Path) -> None:
             triage = config.models["triage"]
             triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
             jev = JevClient(http, triage_key, triage.model) if triage_key else None
+            media = config.models["media"]
+            media_key = config.secret(media.api_key_env) if media.api_key_env else None
+            media_describer = (
+                MediaDescriber(ChatClient(media, media_key, http), bot) if media_key or not media.api_key_env else None
+            )
             app = App(
                 config=config, home=Home(home), store=store, client=client,
-                bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id,
+                bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id, media_describer=media_describer,
             )
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
