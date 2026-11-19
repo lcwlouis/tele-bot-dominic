@@ -99,6 +99,7 @@ def test_owner_commands():
         ("proposals", "Review pending changes"),
         ("reminders", "List and cancel reminders"),
         ("stickers", "Add or remove a sticker set"),
+        ("import", "Bring memories from another assistant"),
     ]
 
 

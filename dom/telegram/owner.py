@@ -16,8 +16,10 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputRichMessage,
+    Message,
 )
 
+from dom import memory_import, proposals
 from dom.traits import load_preset
 
 if TYPE_CHECKING:
@@ -35,8 +37,10 @@ OWNER_COMMANDS = [
     BotCommand(command="proposals", description="Review pending changes"),
     BotCommand(command="reminders", description="List and cancel reminders"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
+    BotCommand(command="import", description="Bring memories from another assistant"),
 ]
 
+PROPOSALS_PER_PAGE = 10
 MAX_MESSAGE = 4096  # Telegram's limit for a message's text
 MAX_BUTTONS = 100  # Telegram's limit for one keyboard
 MAX_MEMBER_LOOKUPS = 30  # get_chat_member_count calls per /chats, 0.2 s apart
@@ -274,12 +278,55 @@ async def choose_preset(app: App, chat: dict) -> None:
     await _preset_buttons(app, f"Choose a preset for {display_title(chat, app.owner_id)}.", choices)
 
 
-async def show_proposals(app: App) -> None:
+async def show_proposals(app: App, page: int = 1) -> None:
     rows = await app.proposals.pending()
     if not rows:
         await app.bot.send_message(app.owner_id, "No pending proposals.")
-    for row in rows:
-        await app.proposals.send(row)
+        return
+    pages = (len(rows) + PROPOSALS_PER_PAGE - 1) // PROPOSALS_PER_PAGE
+    page = min(max(1, page), pages)
+    start = (page - 1) * PROPOSALS_PER_PAGE
+    shown = rows[start:start + PROPOSALS_PER_PAGE]
+    lines = [f"Pending proposals ({page}/{pages})"]
+    keyboard = []
+    for row in shown:
+        text = " ".join(proposals.summary(row).split())
+        preview = text.encode("utf-16-le")[:720].decode("utf-16-le", errors="ignore")
+        controls = proposals.buttons(row["id"], numbered=len(shown) > 1)
+        if preview != text:
+            preview += "…"
+            controls.append(InlineKeyboardButton(text=f"Details #{row['id']}", callback_data=f"prop:show:{row['id']}"))
+        lines.append(preview)
+        keyboard.append(controls)
+    # IDs are ascending and never reused. The range refers to this page even if other proposals are decided.
+    keyboard.append([InlineKeyboardButton(
+        text="Approve all on this page", callback_data=f"prop:all:{shown[0]['id']}:{shown[-1]['id']}",
+    )])
+    navigation = []
+    if page > 1:
+        navigation.append(InlineKeyboardButton(text="Previous", callback_data=f"prop:page:{page - 1}"))
+    if page < pages:
+        navigation.append(InlineKeyboardButton(text="Next", callback_data=f"prop:page:{page + 1}"))
+    if navigation:
+        keyboard.append(navigation)
+    await app.bot.send_message(
+        app.owner_id, "\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        disable_notification=True,
+    )
+
+
+async def approve_proposal_page(app: App, first: int, last: int) -> str:
+    rows = [row for row in await app.proposals.pending() if first <= row["id"] <= last]
+    if not rows or len(rows) > PROPOSALS_PER_PAGE:
+        return "already handled"
+    results = [await app.proposals.decide(row["id"], True) for row in rows]
+    approved = results.count("Approved")
+    errors = [result for result in results if result not in ("Approved", "already handled")]
+    if not approved and not errors:
+        return "already handled"
+    if errors:
+        return f"Approved {approved}. {len(errors)} still pending. {errors[0]}"[:180]
+    return f"Approved {approved}."
 
 
 async def show_reminders(app: App) -> None:
@@ -311,3 +358,43 @@ async def edit_stickers(app: App, args: list[str]) -> None:
         result = str(error) if isinstance(error, ValueError) else "Could not update stickers.toml."
     await app.store.record_owner_event(result)
     await app.bot.send_message(app.owner_id, result)
+
+
+async def import_memory(app: App, message: Message, text: str) -> tuple[str, str]:
+    """Prepare the DM response and owner event for an import command."""
+    line, _, inline = text.partition("\n")
+    args = line.split()[1:]
+    event = "Ran /import"
+    if not args and message.document is None:
+        response = (
+            "Paste this prompt into ChatGPT, Claude or Muse. Reply here with /import <service> on the first "
+            "line and the export below. You can also reply to the export with /import <service>, or attach "
+            "a .txt or .md document with that caption.\n\n" + memory_import.export_prompt()
+        )
+    elif len(args) == 1 and args[0].lower() == "siri":
+        response = "Siri has no exportable memory."
+        event = "Ran /import siri"
+    elif len(args) != 1 or args[0].lower() not in memory_import.SERVICES:
+        response = "Use /import chatgpt, /import claude or /import muse."
+    else:
+        service = args[0].lower()
+        try:
+            if message.document is not None:
+                source = await memory_import.download_text(app.bot, message.document)
+            elif inline.strip():
+                source = inline
+            elif (
+                (reply := message.reply_to_message) is not None
+                and reply.chat.id == app.owner_id and reply.chat.type == "private" and reply.text
+            ):
+                source = reply.text
+            else:
+                raise ValueError("Reply to the export or attach a .txt or .md document with /import <service>.")
+            count = await app.memory_import.run(service, source)
+        except (OSError, ValueError) as error:
+            response = str(error) if isinstance(error, ValueError) else "Could not read the import or existing notes."
+            event = f"Could not import memories from {service}"
+        else:
+            response = f"Imported {count} facts from {service}. Review them in the dashboard or with /proposals."
+            event = response
+    return response, event
