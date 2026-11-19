@@ -37,14 +37,13 @@
           hx-confirm="Leave {{ chat.title }}? Friends will see Dom leave.">Leave group</button>
         {% endif %}
         <form class="inline-form" method="post" action="/chats/{{ chat.id }}/preset" hx-post="/chats/{{ chat.id }}/preset" hx-trigger="change">
-          <label class="sr-only" for="preset-{{ chat.id }}">Preset for {{ chat.title }}</label>
+          <label class="sr-only" for="preset-{{ chat.id }}">Preset for {{ chat.title }} (changes on selection)</label>
           <select name="preset" id="preset-{{ chat.id }}">
             <option value=""{% if not chat.preset %} selected{% endif %}>None</option>
             {% for preset in context.presets %}
             <option value="{{ preset.name }}"{% if chat.preset and chat.preset.name == preset.name %} selected{% endif %}>{{ preset.title }}</option>
             {% endfor %}
           </select>
-          <noscript><button class="quiet">Set preset</button></noscript>
         </form>
       </div>
     </li>
