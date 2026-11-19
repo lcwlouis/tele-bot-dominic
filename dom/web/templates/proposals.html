@@ -28,7 +28,8 @@
   <article class="proposal" id="proposal-{{ card.id }}">
     {% if card.facts is defined %}
     <span class="kind">{{ card.facts|length }} {{ "memory" if card.facts|length == 1 else "memories" }} imported from {{ card.service }}</span>
-    <form hx-post="/proposals/import/{{ card.id }}?{{ query }}" hx-target="#proposals" hx-swap="outerHTML">
+    <form method="post" action="/proposals/import/{{ card.id }}?{{ query }}"
+      hx-post="/proposals/import/{{ card.id }}?{{ query }}" hx-target="#proposals" hx-swap="outerHTML">
       <ul class="facts">
       {% for fact in card.facts %}
         <li><label><input type="checkbox" name="selected" value="{{ fact.id }}" checked>{{ fact.body.text }}</label></li>

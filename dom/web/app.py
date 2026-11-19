@@ -70,6 +70,8 @@ async def serving(dom: App, auth: Auth | None):
         yield
         return
     settings = dom.config.web
+    if not settings.bind.strip():
+        raise ValueError("web.bind must name a listening address.")
     server = DashboardServer(uvicorn.Config(
         create_app(dom, auth), host=settings.bind, port=settings.port,
         proxy_headers=False, access_log=False, timeout_graceful_shutdown=10,
