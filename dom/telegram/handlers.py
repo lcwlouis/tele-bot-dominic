@@ -23,6 +23,7 @@ from dom.home import Home
 from dom.jev import JevClient
 from dom.llm import ChatClient
 from dom.media import MediaDescriber
+from dom.memory_import import MemoryImport
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
 from dom.proposals import Proposals
@@ -57,6 +58,7 @@ class App:
     dispatch: Dispatcher = field(init=False)
     proposals: Proposals = field(init=False)
     stickers: Stickers = field(init=False)
+    memory_import: MemoryImport = field(init=False)
 
     def __post_init__(self) -> None:
         def now() -> datetime:
@@ -64,6 +66,7 @@ class App:
 
         self.proposals = Proposals(self)
         self.stickers = Stickers(self.home, self.bot)
+        self.memory_import = MemoryImport(self)
         presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
 
@@ -162,8 +165,18 @@ async def handle_message(app: App, message: Message) -> None:
         if code is not None:
             await _handle_claim(app, msg, code)
             return
-    if not msg.is_bot and msg.chat_type == "private" and msg.chat_id == msg.sender_id == app.owner_id:
-        command = _command_name(msg.text, app.bot_username)
+    command = _command_name(msg.text, app.bot_username)
+    owner_dm = (
+        message.from_user is not None and not msg.is_bot and message.sender_chat is None
+        and msg.chat_type == "private" and msg.chat_id == msg.sender_id == app.owner_id
+    )
+    if command == "/import":
+        if owner_dm:
+            response, event = await owner.import_memory(app, message, msg.text)
+            await _owner_event(app, event)
+            await app.bot.send_message(msg.chat_id, response)
+        return
+    if owner_dm:
         who = _person(msg.sender_name)
         if command == "/pending":
             await gate.resend_pending(app.bot, app.store, app.owner_id)
@@ -226,7 +239,7 @@ async def handle_edited_message(app: App, message: Message) -> None:
     if message.chat.type not in CHAT_TYPES:
         return
     msg = to_incoming(message)
-    if _is_own_message(app, msg):
+    if _is_own_message(app, msg) or _command_name(msg.text, app.bot_username) == "/import":
         return
     async with app.ingest_locks[msg.chat_id]:  # after the original's own decide + record has finished
         edited = await app.store.record_message_edit(
@@ -396,6 +409,39 @@ async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str)
     await app.bot.send_message(owner_id, text)
 
 
+def _item_id(raw: str) -> int | None:
+    if raw.isascii() and raw.isdecimal() and len(raw) <= 19:
+        number = int(raw)
+        if 0 < number < 2**63:
+            return number
+    return None
+
+
+async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
+    action, _, payload = data.partition(":")
+    if action == "all":
+        first, _, last = payload.partition(":")
+        first_id, last_id = _item_id(first), _item_id(last)
+        if first_id is not None and last_id is not None:
+            await _toast(app, query, await owner.approve_proposal_page(app, first_id, last_id))
+        return
+    proposal_id = _item_id(payload)
+    if proposal_id is None:
+        return
+    if action in ("yes", "no"):
+        await _toast(app, query, await app.proposals.decide(proposal_id, action == "yes"))
+    elif action == "page":
+        await _toast(app, query)
+        await owner.show_proposals(app, proposal_id)
+        await _owner_event(app, "Paged through pending proposals")
+    elif action == "show":
+        row = next((row for row in await app.proposals.pending() if row["id"] == proposal_id), None)
+        await _toast(app, query, None if row else "already handled")
+        if row:
+            await app.proposals.send(row)
+            await _owner_event(app, f"Viewed proposal #{proposal_id}")
+
+
 async def handle_callback(app: App, query: CallbackQuery) -> None:
     action, _, raw_chat_id = (query.data or "").partition(":")
     if action in ("preset", "presetset"):
@@ -410,16 +456,13 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
     owner_id = app.owner_id
     if owner_id is None or query.from_user.id != owner_id:
         return
-    if action in ("prop", "rem"):
+    if action == "prop":
+        if not query.from_user.is_bot:
+            await _handle_proposal(app, query, raw_chat_id)
+        return
+    if action == "rem":
         decision, _, raw_id = raw_chat_id.partition(":")
-        if query.from_user.is_bot or not (raw_id.isascii() and raw_id.isdecimal() and len(raw_id) <= 19):
-            return
-        item_id = int(raw_id)
-        if not 0 < item_id < 2**63:
-            return
-        if action == "prop" and decision in ("yes", "no"):
-            await _toast(app, query, await app.proposals.decide(item_id, decision == "yes"))
-        if action == "rem" and decision == "cancel":
+        if not query.from_user.is_bot and decision == "cancel" and (item_id := _item_id(raw_id)) is not None:
             changed = await app.dispatch.reminders.cancel(item_id)
             await _toast(app, query, "Cancelled" if changed else "already handled")
         return

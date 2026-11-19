@@ -22,20 +22,23 @@ class Refused(ValueError):
     """The proposal remains pending because its change could not be applied."""
 
 
-def buttons(proposal_id: int) -> list[InlineKeyboardButton]:
+def buttons(proposal_id: int, *, numbered: bool = False) -> list[InlineKeyboardButton]:
+    suffix = f" #{proposal_id}" if numbered else ""
     return [
-        InlineKeyboardButton(text="Approve", callback_data=f"prop:yes:{proposal_id}"),
-        InlineKeyboardButton(text="Reject", callback_data=f"prop:no:{proposal_id}"),
+        InlineKeyboardButton(text=f"Approve{suffix}", callback_data=f"prop:yes:{proposal_id}"),
+        InlineKeyboardButton(text=f"Reject{suffix}", callback_data=f"prop:no:{proposal_id}"),
     ]
 
 
 def summary(row: dict) -> str:
     body = json.loads(row["body_json"])
-    heading = f"#{row['id']} {row['title'][:250]}"
+    heading = f"#{row['id']} {row['title']}"
     if row["kind"] == "soul_edit":
-        return f"{heading}\n\nReplace:\n{body['old'][:700]}\n\nWith:\n{body['new'][:700]}"
+        return f"{heading}\n\nReplace:\n{body['old']}\n\nWith:\n{body['new']}"
     if row["kind"] == "memory_fact":
-        return f"{heading}\n\n{body['file']}: {body['text'][:1400]}"
+        if row["title"] == body["text"]:
+            return f"#{row['id']} {body['file']}: {body['text']}"
+        return f"{heading}\n{body['file']}: {body['text']}"
     return heading
 
 
@@ -43,7 +46,7 @@ class Proposals:
     def __init__(self, app: App):
         self.app = app
 
-    async def create(self, kind: str, title: str, body: dict, source: str) -> int:
+    async def create(self, kind: str, title: str, body: dict, source: str, *, notify: bool = True) -> int:
         if kind in ("skill", "plugin"):
             raise NotImplementedError(kind)
         if kind == "soul_edit":
@@ -58,7 +61,8 @@ class Proposals:
         at = self.app.dispatch.now().astimezone(timezone.utc).isoformat()
         proposal_id = await self.app.store.create_proposal(kind, title, body, source, at)
         assert proposal_id is not None
-        await self._notify(proposal_id, kind, title, body)
+        if notify:
+            await self._notify(proposal_id, kind, title, body)
         return proposal_id
 
     async def _notify(self, proposal_id: int, kind: str, title: str, body: dict) -> None:
@@ -73,10 +77,14 @@ class Proposals:
 
     async def send(self, row: dict) -> None:
         app = self.app
-        await app.bot.send_message(
-            app.owner_id, summary(row), disable_notification=True,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons(row["id"])]),
-        )
+        text = summary(row)
+        for start in range(0, len(text), 2000):
+            markup = None
+            if start + 2000 >= len(text):
+                markup = InlineKeyboardMarkup(inline_keyboard=[buttons(row["id"])])
+            await app.bot.send_message(
+                app.owner_id, text[start:start + 2000], disable_notification=True, reply_markup=markup,
+            )
 
     async def pending(self) -> list[dict]:
         return await self.app.store.pending_proposals()

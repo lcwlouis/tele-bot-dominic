@@ -30,7 +30,8 @@ async def test_create_dms_owner_silently_and_lists_pending_with_buttons(make_app
 
     app.bot.calls.clear()
     await handlers.handle_message(app, tg(OWNER, OWNER, "/proposals"))
-    assert app.bot.of("send", OWNER)[0][3]["reply_markup"] == sent[3]["reply_markup"]
+    listed = app.bot.of("send", OWNER)[0][3]["reply_markup"]
+    assert listed.inline_keyboard[0] == sent[3]["reply_markup"].inline_keyboard[0]
 
 
 async def test_approve_applies_once_even_with_two_taps(make_app):
