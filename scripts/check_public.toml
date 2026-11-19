@@ -1,0 +1,21 @@
+# Known synthetic values in tests only. Signed chat IDs retain their sign.
+# Synthetic dates in backup filenames.
+test_telegram_ids = ["20000101", "29990101", "29990102"]
+test_handles = ["@dombot", "@inviter", "@newbie"]
+
+# Exact network addresses used by the local desktop bridge and firewall.
+generic_cidrs = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "169.254.0.0/16",
+    "0.0.0.0/8",
+    "192.0.0.0/24",
+    "198.18.0.0/15",
+    "224.0.0.0/3",
+    "172.30.0.0/24",
+]
+
+# Vendored licence authors if their licence is included outside the vendor trees.
+emails = []

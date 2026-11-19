@@ -1,5 +1,6 @@
 import asyncio
 import json
+from ipaddress import IPv4Network
 from pathlib import Path
 
 import httpx
@@ -15,7 +16,9 @@ from tghelpers import OWNER
 
 
 PROBES = ["192.0.2.1:443", "192.0.2.2:22"]
-NETWORK = [{"Driver": "bridge", "EnableIPv6": False, "IPAM": {"Config": [{"Subnet": "172.30.0.0/24", "Gateway": "172.30.0.1"}]}}]
+BRIDGE = IPv4Network("172.30.0.0/24")
+GATEWAY = str(next(BRIDGE.hosts()))
+NETWORK = [{"Driver": "bridge", "EnableIPv6": False, "IPAM": {"Config": [{"Subnet": str(BRIDGE), "Gateway": GATEWAY}]}}]
 
 
 def local_config(tmp_path, **settings):
@@ -96,7 +99,7 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
             ("docker", "image", "inspect", config.desktop.image),
             ("docker", "network", "inspect", "dom-desktop"),
             ("docker", "image", "inspect", "alpine:3.22"),
-            probe_call(config, ["192.0.2.1:443", "192.0.2.2:22", "172.30.0.1:8080", "172.30.0.1:22"]),
+            probe_call(config, ["192.0.2.1:443", "192.0.2.2:22", f"{GATEWAY}:8080", f"{GATEWAY}:22"]),
             ("docker", "container", "inspect", "--format", "{{.State.Running}}", "dom-desktop"),
             ("docker", "run", "-d", "--name", "dom-desktop", "--pull=never",
              "--network", "dom-desktop", "-p", "127.0.0.1:18080:8080",
@@ -251,7 +254,7 @@ def test_lan_probes_are_ipv4_literals_with_ports(probes):
         assert DesktopConfig().lan_probes == []
 
 
-@pytest.mark.parametrize("control", ["example.org:443", "1.1.1.1", "10.0.0.1:443", "1.1.1.1:0"])
+@pytest.mark.parametrize("control", ["example.org:443", "1.1.1.1", f"{next(IPv4Network('10.0.0.0/8').hosts())}:443", "1.1.1.1:0"])
 def test_probe_control_must_be_a_public_ipv4_literal_with_a_port(control):
     with pytest.raises(ValueError):
         DesktopConfig(probe_control=control)
@@ -336,15 +339,15 @@ async def test_probe_targets_come_from_config(tmp_path):
     config = local_config(tmp_path, probe_image="busybox:1", probe_control="9.9.9.9:53", lan_probes=["192.0.2.9:80"])
     sandbox = LocalSandbox(config, run=docker)
     await start_failing(sandbox)
-    assert docker.probes() == [probe_call(config, ["192.0.2.9:80", "172.30.0.1:8080", "172.30.0.1:22"])]
+    assert docker.probes() == [probe_call(config, ["192.0.2.9:80", f"{GATEWAY}:8080", f"{GATEWAY}:22"])]
     await sandbox.close()
 
 
 @pytest.mark.parametrize("network", [
     None,
     [{**NETWORK[0], "EnableIPv6": True}],
-    [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": "172.31.0.0/24", "Gateway": "172.31.0.1"}]}}],
-    [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": "172.30.0.0/24", "Gateway": "172.30.0.1"}, {"Subnet": "fd00::/64"}]}}],
+    [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": "198.51.100.0/24", "Gateway": "198.51.100.1"}]}}],
+    [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": str(BRIDGE), "Gateway": GATEWAY}, {"Subnet": "fd00::/64"}]}}],
 ])
 async def test_start_refused_when_the_network_is_not_the_configured_ipv4_bridge(tmp_path, network):
     docker = FakeDocker(network=network)

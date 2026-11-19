@@ -189,7 +189,7 @@ def test_legacy_owner_differing_from_owner_id_refused_before_writing(src, home):
 
 def test_legacy_owner_found_from_private_memory_when_no_state_json(src, home):
     (src / "chats" / str(OWNER) / "STATE.json").unlink()
-    write(src, "admin/PRIVATE_MEMORY.md", "- see memory/people/uid_111_louis.md\n- owner private fact")
+    write(src, "admin/PRIVATE_MEMORY.md", "- see memory/people/uid_111_owner.md\n- owner private fact")
     with pytest.raises(ValueError, match="legacy owner"):
         import_v2(src, home, FRIEND)
     assert not (home / "state.db").exists() and not (home / "legacy").exists()

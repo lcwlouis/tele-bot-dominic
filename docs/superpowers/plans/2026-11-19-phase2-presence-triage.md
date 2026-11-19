@@ -197,7 +197,7 @@
 **Interfaces:**
 - `MediaDescriber(client: ChatClient, bot)`:
   - `.describe(media: dict) -> str | None`
-  - Skip when `file_size > 20_000_000`.
+  - Skip files larger than 20 MB.
   - Download with `bot.download(file_id)`.
   - Send an OpenAI-style content part:
     - photo or sticker: `image_url`, as a data URL

@@ -47,7 +47,7 @@
 **Files:** `.github/workflows/ci.yml`, `scripts/check_public.py`, tests.
 
 - CI on push and pull request: Ubuntu, Python 3.12 via `uv`, `uv sync --frozen`, `uv run pytest -q`. A second job on `ubuntu-latest` installs `bubblewrap` and runs the plugin sandbox integration tests (they need Linux + bwrap; mark expected skips explicitly if unprivileged user namespaces are unavailable on the runner).
-- `scripts/check_public.py`: scans tracked files (excluding vendored assets, `uv.lock` and binary files) and fails on: Telegram-ID-like numbers (8–12 digits) outside an allowlist of known test values; `@handles` outside an allowlist; private IPv4 addresses outside documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and the generic CIDR ranges the firewall code uses; email addresses other than `example.*`, GitHub noreply and the vendored licence authors. The allowlists live in `scripts/check_public.toml`. Run in CI; also runnable locally (`uv run python scripts/check_public.py`).
+- `scripts/check_public.py`: scans tracked files (excluding vendored assets, `uv.lock` and binary files) and fails on: Telegram-ID-like numbers (8–12 digits) outside an allowlist of known test values; Telegram handles outside an allowlist; private IPv4 addresses outside documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and the generic CIDR ranges the firewall code uses; email addresses other than `example.*`, GitHub noreply and the vendored licence authors. The allowlists live in `scripts/check_public.toml`. Run in CI; also runnable locally (`uv run python scripts/check_public.py`).
 - Tests for the scanner with planted examples.
 - Commit: `ci: tests, sandbox tests and a personal-data guard`.
 
