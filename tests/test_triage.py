@@ -85,7 +85,11 @@ async def test_low_confidence_not_confident(jev):
             "react": "Just react with an emoji; acknowledgement is enough.",
             "ignore": "Stay silent; nothing for him here.",
         }
-        assert list(emoji["criteria"]) == ["🔥", "👍", "🤡", "😭", "👀"]
+        assert list(emoji["criteria"]) == ["🤣", "❤", "💯", "🗿", "🔥", "👍", "🤡", "😭", "👀"]
+        import inspect
+        from aiogram.types import reaction_type_emoji
+        allowed = inspect.getsource(reaction_type_emoji)
+        assert all(f'"{e}"' in allowed for e in emoji["criteria"])
         return httpx.Response(200, json={"answers": {
             "action": {
                 "type": "choice", "choice": "react",
