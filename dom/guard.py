@@ -6,6 +6,7 @@ import logging
 import re
 from xml.sax.saxutils import escape
 
+from dom.config import Config
 from dom.home import Home, PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
 
@@ -75,3 +76,21 @@ async def leak_score(jev: JevClient | None, terms: str, outgoing_text: str) -> f
         return None
     score = answer.get("score")
     return float(score) if type(score) in (int, float) and 0 <= score <= 3 else None
+
+
+def check_local_private_text(config: Config, home: Home, texts: list[str]) -> None:
+    """Keep known credentials and verbatim private notes out of public artifacts and plugin inputs."""
+    names = {"TELEGRAM_BOT_TOKEN", config.desktop.api_key_env, config.web.dev_token_env, "JEV_API_KEY"}
+    names.update(model.api_key_env for model in config.models.values())
+    secrets = [config.secret(name) for name in names if name]
+    if any(secret and len(secret) >= 8 and secret in text for secret in secrets for text in texts):
+        raise ValueError("This content includes an instance credential.")
+    private = home.scoped(allow_private=True)
+    candidates = set()
+    for rel in ("private/USER.md", "private/NOTES.md", "private/JOURNAL.md"):
+        for line in private.read(rel).splitlines():
+            line = line.strip(" \t#-*")
+            if len(line) >= 8:
+                candidates.add(line.casefold())
+    if candidates and any(candidate in text.casefold() for text in texts for candidate in candidates):
+        raise ValueError("This content includes private notes.")

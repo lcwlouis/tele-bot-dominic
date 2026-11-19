@@ -10,6 +10,7 @@
         <option value="">All kinds</option>
         <option value="soul_edit"{% if context.kind == "soul_edit" %} selected{% endif %}>Soul edit</option>
         <option value="skill"{% if context.kind == "skill" %} selected{% endif %}>Skill</option>
+        <option value="plugin"{% if context.kind == "plugin" %} selected{% endif %}>Plugin</option>
         <option value="memory_fact"{% if context.kind == "memory_fact" %} selected{% endif %}>Memory fact</option>
       </select>
     </label>
@@ -43,7 +44,7 @@
       </div>
     </form>
     {% else %}
-    <span class="kind">{{ {"soul_edit": "Soul edit", "skill": "Skill", "memory_fact": "Memory fact"}[card.kind] }} · {{ card.source }}</span>
+    <span class="kind">{{ {"soul_edit": "Soul edit", "skill": "Skill", "plugin": "Plugin", "memory_fact": "Memory fact"}[card.kind] }} · {{ card.source }}</span>
     <p>{{ card.title }}</p>
     {% if card.kind == "soul_edit" %}
     {{ diff(card.body) }}
@@ -59,11 +60,17 @@
       {% endfor %}
     </div>
     {% endif %}
+    {% elif card.kind == "plugin" %}
+    <p>{{ card.body.description }}</p>
+    {% if card.body.network %}<p class="kind">This plugin can reach the internet</p>{% endif %}
+    <div class="actions"><a href="{{ card.review_path }}">Review code</a></div>
     {% else %}<p>{{ card.body.file }} · {{ card.body.text }}</p>{% endif %}
+    {% if card.kind != "plugin" %}
     <div class="actions" hx-target="#proposals" hx-swap="outerHTML">
       <button class="primary" hx-post="/proposals/{{ card.id }}/approve?{{ query }}">Approve</button>
       <button class="danger" hx-post="/proposals/{{ card.id }}/reject?{{ query }}">Reject</button>
     </div>
+    {% endif %}
     {% endif %}
   </article>
   {% endfor %}

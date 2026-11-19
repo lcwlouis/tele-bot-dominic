@@ -1,0 +1,51 @@
+<section class="panel" id="plugins">
+  <header><h2>Plugins</h2></header>
+  {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
+  {% if context.review %}
+    {% set review = context.review %}
+    {% set manifest = review.plugin.manifest %}
+    {% set route = "/plugins/" ~ manifest.name ~ "/" ~ review.plugin.hash %}
+    <article class="proposal">
+      <a href="/plugins">All plugins</a>
+      <h3>{{ manifest.name }}</h3>
+      <p>{{ manifest.description }} · {{ review.status }}</p>
+      <p class="fog">SHA-256 <span class="num">{{ review.plugin.hash }}</span></p>
+      {% if manifest.network %}<p class="kind">This plugin can reach the internet</p>{% endif %}
+      {% for tool in manifest.tools %}
+      <p>{{ tool.name }} · {{ tool.scopes | join(", ") or "No scopes" }}</p>
+      {% endfor %}
+      {% for file in review.documents %}
+      <h4>{{ file.path }}{% if file.removed %} · Removed{% endif %}</h4>
+      {% if not file.removed %}<pre class="diff">{{ file.text }}</pre>{% endif %}
+      {% if file.changes %}
+      <div class="diff" aria-label="Changes since approval">
+        {% for line in file.changes %}
+        {% if line.startswith("-") %}<del>{{ line }}</del>
+        {% elif line.startswith("+") %}<ins>{{ line }}</ins>
+        {% else %}<div>{{ line }}</div>{% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endfor %}
+      {% if review.status == "pending" %}
+      <div class="actions" hx-target="#plugins" hx-swap="outerHTML">
+        <button class="primary" hx-post="{{ route }}/approve">Approve</button>
+        <button class="danger" hx-post="{{ route }}/reject">Reject</button>
+      </div>
+      {% endif %}
+    </article>
+  {% else %}
+    {% if not context.rows %}<p class="fog">No plugins are installed.</p>{% endif %}
+    {% for row in context.rows %}
+    {% set route = "/plugins/" ~ row.name ~ "/" ~ row.hash %}
+    <article class="proposal">
+      <h3>{{ row.name }}</h3>
+      <p{% if row.status == "pending" %} class="kind"{% endif %}>{{ row.status }}{% if not row.available %} · Files unavailable{% endif %}</p>
+      <div class="actions" hx-target="#plugins" hx-swap="outerHTML">
+        {% if row.available %}<a href="{{ route }}">Review code</a>{% endif %}
+        {% if row.status != "disabled" %}<button class="danger" hx-post="{{ route }}/disable">Disable</button>{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  {% endif %}
+</section>

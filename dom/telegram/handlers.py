@@ -31,6 +31,8 @@ from dom.memory_import import MemoryImport
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
 from dom.proposals import Proposals
+from dom.plugins.registry import PluginRegistry
+from dom.plugins.runner import PluginRunner
 from dom.stickers import Stickers
 from dom.store import Store
 from dom.search import SearchClient
@@ -64,11 +66,15 @@ class App:
     proposals: Proposals = field(init=False)
     stickers: Stickers = field(init=False)
     memory_import: MemoryImport = field(init=False)
+    plugins: PluginRegistry = field(init=False)
+    plugin_runner: PluginRunner = field(init=False)
 
     def __post_init__(self) -> None:
         def now() -> datetime:
             return datetime.now(timezone.utc)
 
+        self.plugins = PluginRegistry(self.home, self.store)
+        self.plugin_runner = PluginRunner(home=self.home.root)
         self.proposals = Proposals(self)
         self.stickers = Stickers(self.home, self.bot, lambda: self.dispatch.now())
         self.memory_import = MemoryImport(self)
@@ -202,6 +208,11 @@ async def handle_message(app: App, message: Message) -> None:
         message.from_user is not None and not msg.is_bot and message.sender_chat is None
         and msg.chat_type == "private" and msg.chat_id == msg.sender_id == app.owner_id
     )
+    if command == "/plugins":
+        if owner_dm:
+            await owner.show_plugins(app)
+            await owner.record_event(app, f"{_person(msg.sender_name)} ran /plugins")
+        return
     if command == "/tasks":
         if owner_dm:
             await owner.show_tasks(app)
@@ -467,9 +478,16 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
                 changed = await app.desktop_worker.resume(owner_id, task_id, steps)
                 await _toast(app, query, "Resumed" if changed else "already handled")
         return
-    if action == "prop":
-        if not query.from_user.is_bot:
+    if action in ("prop", "plugin"):
+        if (
+            query.from_user.is_bot or query.message is None or query.message.chat.id != owner_id
+            or query.message.chat.type != "private"
+        ):
+            return
+        if action == "prop":
             await _handle_proposal(app, query, raw_chat_id)
+        elif raw_chat_id.startswith("disable:"):
+            await _toast(app, query, await owner.disable_plugin(app, raw_chat_id.removeprefix("disable:")))
         return
     if action == "rem":
         decision, _, raw_id = raw_chat_id.partition(":")

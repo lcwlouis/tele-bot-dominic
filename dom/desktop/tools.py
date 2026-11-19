@@ -92,10 +92,10 @@ def _web_url(url: str) -> bool:
         return False
 
 
-def untrusted(value: Any) -> str:
+def untrusted(value: Any, *, limit: int = RESULT_LIMIT) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     opening, closing = "<untrusted_tool_result>\n", "\n</untrusted_tool_result>"
-    return opening + escape(text)[:RESULT_LIMIT - len(opening) - len(closing)] + closing
+    return opening + escape(text)[:limit - len(opening) - len(closing)] + closing
 
 
 async def invoke(client: SandboxClient, name: str, args: dict) -> Any:

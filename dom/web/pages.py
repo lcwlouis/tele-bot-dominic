@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from dom import traits
+from dom import proposals, traits
 from dom.agent import unfence
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.presence import read_habits
@@ -183,6 +183,8 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
         if (kind and raw["kind"] != kind) or (source and raw["source"] != source):
             continue
         row = _proposal_body(raw)
+        if row["kind"] == "plugin":
+            row["review_path"] = proposals.plugin_review_path(row["body"])
         if row["kind"] == "skill" and row["body"]["old"]:
             row["changes"] = skill_diff(row["body"]["old"], row["body"]["new"])[2:]
         if (key := _import_key(row)) is not None:
@@ -344,6 +346,35 @@ async def decide_import(request: Request, proposal_id: int, kind: str = "", sour
     response = render("proposals.html", context=await _proposals(app, kind, source) | {"message": message})
     if len(results) == sum(_import_key(row) == key for row in rows) and not errors:
         response.headers["X-Dom-Decided"] = "true"
+    return response
+
+
+@router.get("/plugins", response_class=HTMLResponse)
+async def plugins_page(request: Request):
+    return panel(request, "plugins", rows=await owner_app(request).plugins.listing())
+
+
+@router.get("/plugins/{name}/{digest}", response_class=HTMLResponse)
+async def plugin_review(request: Request, name: str, digest: str):
+    app = owner_app(request)
+    try:
+        review = await app.plugins.review(name, digest)
+    except ValueError:
+        raise HTTPException(404) from None
+    if review is None:
+        raise HTTPException(404)
+    response = panel(request, "plugins", review=review)
+    await app.plugins.mark_reviewed(name, digest)
+    return response
+
+
+@router.post("/plugins/{name}/{digest}/{decision}", response_class=HTMLResponse)
+async def plugin_action(request: Request, name: str, digest: str, decision: Literal["approve", "reject", "disable"]):
+    app = owner_app(request)
+    message = await app.plugins.decide(name, digest, decision)
+    response = render("plugins.html", context={"rows": await app.plugins.listing(), "message": message})
+    if message not in ("Approved", "Rejected", "Disabled", "already handled"):
+        response.status_code = 409
     return response
 
 

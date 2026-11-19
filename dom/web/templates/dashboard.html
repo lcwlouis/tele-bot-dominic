@@ -16,7 +16,7 @@
     {% if active != "setup" %}
       {% for id, route, label in [
         ("now", "/", "Now"), ("proposals", "/proposals", "Waiting for you"), ("chats", "/chats", "Chats"),
-        ("usage", "/usage", "Usage"), ("desktop", "/desktop", "Desktop"), ("memory", "/memory", "Memory"), ("turns", "/turns", "Turn log"),
+        ("usage", "/usage", "Usage"), ("desktop", "/desktop", "Desktop"), ("plugins", "/plugins", "Plugins"), ("memory", "/memory", "Memory"), ("turns", "/turns", "Turn log"),
       ] %}
       <a href="{{ route }}"{% if active == id %} aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
@@ -32,6 +32,7 @@
     {% if active in ("now", "usage") %}{% with context = usage %}{% include "usage.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "memory") %}{% with context = memory %}{% include "memory.html" %}{% endwith %}{% endif %}
     {% if active == "desktop" %}{% with context = desktop %}{% include "desktop.html" %}{% endwith %}{% endif %}
+    {% if active == "plugins" %}{% with context = plugins %}{% include "plugins.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "turns") %}{% with context = turns %}{% include "turns.html" %}{% endwith %}{% endif %}
   </main>
 </div>
