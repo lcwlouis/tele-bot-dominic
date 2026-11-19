@@ -17,10 +17,24 @@ _NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 _READ_LIMIT = 4 * (BODY_LIMIT + DESCRIPTION_LIMIT + NAME_LIMIT) + 300
 
 
+# Unicode Default_Ignorable_Code_Point: rendered as nothing, so text can hide in them. Several are
+# category Mn or Lo (U+034F, U+FE0F, U+3164), which the category check below does not catch.
+_IGNORABLE = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5),
+    (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164),
+    (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF),
+)
+
+
 def _visible(text: str) -> bool:
     """No invisible, bidi, tag, private-use, unassigned or control characters (newline and tab aside)."""
     return all(
-        char in "\n\t" or unicodedata.category(char) not in ("Cc", "Cf", "Co", "Cn", "Cs") for char in text
+        char in "\n\t" or (
+            unicodedata.category(char) not in ("Cc", "Cf", "Co", "Cn", "Cs")
+            and not any(low <= ord(char) <= high for low, high in _IGNORABLE)
+        )
+        for char in text
     )
 
 
