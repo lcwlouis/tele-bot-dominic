@@ -41,6 +41,7 @@ MIGRATIONS: list[tuple[int, str]] = [
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
+_PRESENCE_COLUMNS = ("is_sleeping", "sleep_until", "is_offline", "offline_until", "online_until")
 _CHAT_AUTH_STATUSES = {"approved", "pending_approval", "ignored", "blocked"}
 _CHAT_AUTH_COLUMNS = "chat_id, authorization_status, title, invited_by_handle, approval_prompt_sent"
 # Visibility labels that mark owner-only rows ("admin_private" comes from V2 databases).
@@ -426,6 +427,29 @@ class Store:
             chat["is_sleeping"] = bool(chat["is_sleeping"])
             chat["is_offline"] = bool(chat["is_offline"])
         return chats
+
+    async def get_presence(self, chat_id: int | str) -> dict[str, Any]:
+        return await self._run(self._get_presence, str(chat_id))
+
+    def _get_presence(self, chat_id: str) -> dict[str, Any]:
+        self._ensure_chat(self._conn, chat_id)
+        columns = ", ".join(_PRESENCE_COLUMNS)
+        return dict(self._conn.execute(f"SELECT {columns} FROM chats WHERE chat_id = ?", (chat_id,)).fetchone())
+
+    async def set_presence(self, chat_id: int | str, **cols: Any) -> None:
+        if cols.keys() - set(_PRESENCE_COLUMNS):
+            raise ValueError("unknown presence column")
+        if cols:
+            await self._run(self._set_presence, str(chat_id), cols)
+
+    def _set_presence(self, chat_id: str, cols: dict[str, Any]) -> None:
+        with self._tx() as conn:
+            self._ensure_chat(conn, chat_id)
+            assignments = ", ".join(f"{col} = ?" for col in cols)
+            conn.execute(
+                f"UPDATE chats SET {assignments}, updated_at = ? WHERE chat_id = ?",
+                (*cols.values(), _now(), chat_id),
+            )
 
     async def enqueue_pending_turn(self, chat_id: str, msg_id: int | None) -> None:
         await self._run(self._enqueue_pending_turn, str(chat_id), msg_id)
