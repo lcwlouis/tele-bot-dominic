@@ -119,3 +119,52 @@ async def test_claim_by_second_person_or_wrong_code_changes_nothing(make_app, tm
     assert app.owner_id == OWNER
     await handlers.handle_message(app, tg(chat_id=222, sender=222, text=f"/claim {CODE}"))
     assert app.owner_id == OWNER and load_config(tmp_path).owner_id == OWNER
+
+
+async def test_run_bounds_handler_drain_and_cancels_pending_deletions(home, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from dom.telegram import executor
+
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=t\nOPENROUTER_API_KEY=k\n")
+    seen = {}
+    events = []
+
+    class FakeBot:
+        def __init__(self, token):
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self):
+            events.append(("session", seen["task"].done()))
+
+        async def get_me(self):
+            return SimpleNamespace(username="dombot")
+
+    class FakeDispatcher:
+        def include_router(self, router):
+            pass
+
+        async def start_polling(self, bot, **kwargs):
+            seen.update(kwargs)
+            forever = asyncio.Event()
+
+            async def blocked(_):
+                await forever.wait()
+
+            task = asyncio.create_task(executor._delete_later(bot, None, 1, 2, 5, blocked))
+            executor._background.add(task)
+            task.add_done_callback(executor._background.discard)
+            seen["task"] = task
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(cli, "Bot", FakeBot)
+    monkeypatch.setattr(cli, "Dispatcher", FakeDispatcher)
+    real_close = cli.Store.close
+    monkeypatch.setattr(cli.Store, "close", lambda self: (events.append(("store", seen["task"].done())), real_close(self)))
+    await cli.run(home)
+    assert 0 < seen["tasks_shutdown_timeout"] <= 30
+    assert seen["task"].cancelled()
+    assert not executor._background
+    assert sorted(events) == [("session", True), ("store", True)]  # deletions were cancelled before either closed
+    assert seen["close_bot_session"] is False
