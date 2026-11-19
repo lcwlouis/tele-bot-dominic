@@ -1,4 +1,4 @@
-"""Canonical personality sliders, per-chat presets and reflection drift."""
+"""Canonical personality sliders, the global and per-chat presets and reflection drift."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 NAMES = ("sarcasm", "playfulness", "humor", "formality", "empathy", "enthusiasm", "slang", "emoji")
 MAX_OVERLAY = 800
+GLOBAL_PRESET_KEY = "preset:global"
 
 
 def numeric(value: object) -> float | None:
@@ -84,11 +85,18 @@ async def for_chat(home: Home, store: Store, chat_id: int) -> tuple[dict[str, fl
     drift = decode(await store.kv_get("traits:drift"))
     sliders = normalise({name: value + (numeric(drift.get(name)) or 0) for name, value in sliders.items()})
     name, overrides = await store.get_chat_personality(chat_id)
-    preset = load_preset(home, name) if name else None
-    if preset is not None:
-        sliders.update(preset.traits)
+    everywhere = await global_preset_name(store)
+    shared = load_preset(home, everywhere) if everywhere else None
+    own = load_preset(home, name) if name else None
+    for layer in (shared, own):
+        if layer is not None:
+            sliders.update(layer.traits)
     sliders.update(normalise(decode(overrides)))
-    return sliders, preset
+    return sliders, own or shared
+
+
+async def global_preset_name(store: Store) -> str:
+    return await store.kv_get(GLOBAL_PRESET_KEY) or ""
 
 
 async def effective(home: Home, store: Store, chat_id: int) -> dict[str, float]:

@@ -287,7 +287,7 @@ async def test_forms_apply_on_change_and_only_get_filters_have_no_script_buttons
         chats = (await client.get("/chats")).text
         proposals = (await client.get("/proposals")).text
         turns = (await client.get("/turns")).text
-    preset = re.search(r'<form class="inline-form" method="post" action="/chats/[^"]+/preset".*?</form>', chats, re.S).group(0)
+    preset = re.search(r'<form class="inline-form" method="post" action="/chats/-?\d+/preset".*?</form>', chats, re.S).group(0)
     assert 'hx-trigger="change"' in preset
     assert re.search(
         r'<label class="sr-only" for="preset-\d+">Preset for .+ \(changes on selection\)</label>', preset,
@@ -338,3 +338,32 @@ def test_every_interactive_element_keeps_the_arc_focus_ring():
     assert ":focus-visible { outline: 2px solid var(--arc); outline-offset: 2px; }" in css
     assert not re.search(r"outline:\s*(none|0)\b", css)
     assert "prefers-reduced-motion: reduce" in css
+
+
+async def test_everywhere_preset_select_sits_above_the_chats_and_sets_the_global_preset(make_app, browser):
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    app.home.write_preset("classic", "---\ntitle: Classic\n---\n")
+    await app.store.set_chat_preset(GROUP, "classic")
+    async with browser(app) as client:
+        chats = (await client.get("/chats")).text
+        everywhere = re.search(r'<form class="inline-form" method="post" action="/chats/all/preset".*?</form>', chats, re.S).group(0)
+        assert chats.index("/chats/all/preset") < chats.index(f"/chats/{GROUP}/preset")
+        assert 'hx-trigger="change"' in everywhere and 'hx-post="/chats/all/preset"' in everywhere
+        assert re.search(r'<select name="preset" id="preset-all"', everywhere)
+        assert "<button" not in everywhere and "Everywhere" in everywhere
+        own = re.search(rf'<form class="inline-form" method="post" action="/chats/{GROUP}/preset".*?</form>', chats, re.S).group(0)
+        assert re.search(r'<option value="">Same as everywhere</option>', own)
+
+        assert (await client.post("/chats/all/preset", data={"preset": "classic"})).status_code in (401, 403)
+        response = await client.post("/chats/all/preset", headers=POST_HEADERS, data={"preset": "classic"})
+        assert response.status_code == 200 and "everywhere to Classic" in response.text
+        assert await app.store.kv_get("preset:global") == "classic"
+        assert '<option value="classic" selected>' in re.search(
+            r'action="/chats/all/preset".*?</form>', response.text, re.S).group(0)
+
+        response = await client.post("/chats/all/preset", headers=POST_HEADERS, data={"preset": "nope"})
+        assert "unavailable" in response.text and await app.store.kv_get("preset:global") == "classic"
+
+        await client.post(f"/chats/{GROUP}/preset", headers=POST_HEADERS, data={"preset": ""})
+        assert (await app.store.list_chats("approved"))[0]["preset"] == ""

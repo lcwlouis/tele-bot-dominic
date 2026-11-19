@@ -30,3 +30,11 @@ async def test_every_button_prefix_reaches_the_callback_handler(make_app):
         query = callback(app, OWNER, f"{prefix}:1")
         accepted = [ok for handler in handlers for ok, _ in [await handler.check(query)]]
         assert any(accepted), f"no handler accepts {prefix}: buttons"
+
+
+async def test_everywhere_preset_buttons_reach_the_callback_handler(make_app):
+    app = make_app()
+    handlers = build_router(app).callback_query.handlers
+    for data in ("preset:all", "presetset:all:", "presetset:all:classic"):
+        query = callback(app, OWNER, data)
+        assert any([ok for handler in handlers for ok, _ in [await handler.check(query)]]), data

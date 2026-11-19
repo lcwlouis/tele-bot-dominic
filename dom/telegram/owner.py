@@ -22,7 +22,7 @@ from aiogram.types import (
 
 from dom import memory_import, proposals
 from dom.plugins.manifest import NETWORK_NOTICE
-from dom.traits import load_preset
+from dom.traits import GLOBAL_PRESET_KEY, global_preset_name, load_preset
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -201,6 +201,16 @@ async def set_preset(app: App, chat: dict, name: str) -> str | None:
     return message
 
 
+async def set_global_preset(app: App, name: str, who: str) -> str | None:
+    preset = load_preset(app.home, name) if name else None
+    if name and preset is None:
+        return None
+    await app.store.kv_set(GLOBAL_PRESET_KEY, name)
+    message = f"{who} set Dom's preset everywhere to {preset.title if preset else 'None'}"
+    await record_event(app, message)
+    return message
+
+
 async def chats_summary(app: App) -> str:
     """What /chats listed, in one line: the groups with their titles, then each DM, the owner's last."""
     known = [c for c in await app.store.list_chats() if c["authorization_status"] in ("approved", "pending_approval")]
@@ -350,26 +360,28 @@ async def _preset_buttons(app: App, text: str, choices: list[tuple[str, str]]) -
 
 
 async def show_presets(app: App) -> None:
-    choices = []
+    everywhere = await global_preset_name(app.store)
+    shared = load_preset(app.home, everywhere) if everywhere else None
+    choices = [(f"Everywhere · {_short(shared.title, 30) if shared else 'None'}", "preset:all")]
     for chat in await app.store.list_chats("approved"):
         preset = load_preset(app.home, chat["preset"]) if chat["preset"] else None
         title = display_title(chat, app.owner_id)
-        choices.append((f"{_short(title, 30)} · {_short(preset.title, 30) if preset else 'None'}", f"preset:{chat['chat_id']}"))
-    if choices:
-        await _preset_buttons(app, "Choose a chat.", choices)
-    else:
-        await app.bot.send_message(app.owner_id, "No approved chats yet.")
+        label = _short(preset.title, 30) if preset else "uses Everywhere"
+        choices.append((f"{_short(title, 30)} · {label}", f"preset:{chat['chat_id']}"))
+    await _preset_buttons(app, "Choose where to set a preset.", choices)
 
 
-async def choose_preset(app: App, chat: dict) -> None:
-    prefix = f"presetset:{chat['chat_id']}:"
+async def choose_preset(app: App, chat: dict | None) -> None:
+    """Preset choices for one chat, or for every chat when `chat` is None."""
+    prefix = f"presetset:{chat['chat_id'] if chat else 'all'}:"
     choices = []
     for name in app.home.preset_names():
         data = prefix + name
         if len(data.encode("utf-8")) <= 64 and (preset := load_preset(app.home, name)) is not None:
             choices.append((_short(preset.title, 64), data))
     choices.append(("None", prefix))
-    await _preset_buttons(app, f"Choose a preset for {display_title(chat, app.owner_id)}.", choices)
+    where = display_title(chat, app.owner_id) if chat else "every chat"
+    await _preset_buttons(app, f"Choose a preset for {where}.", choices)
 
 
 async def show_plugins(app: App) -> None:

@@ -80,6 +80,18 @@ async def test_brief_excludes_private_content_and_requires_owner(make_app):
     assert not (app.home.root / "briefs").exists()
 
 
+async def test_self_inspect_reports_the_global_preset_and_chats_that_override_it(make_app):
+    app = make_app()
+    app.home.write_preset("calm", "---\ntitle: Calm\n---\n")
+    app.home.write_preset("loud", "Loud")
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    await app.store.set_chat_auth_status(OWNER, "approved")
+    await app.store.kv_set("preset:global", "calm")
+    await app.store.set_chat_preset(GROUP, "loud")
+    found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))
+    assert found["preset"] == {"everywhere": "calm", "chats_with_own": [{"title": "Book Club", "preset": "loud"}]}
+
+
 async def test_self_inspect_shape_and_owner_only_tools(make_app):
     app = make_app()
     now = app.dispatch.now()
@@ -89,8 +101,9 @@ async def test_self_inspect_shape_and_owner_only_tools(make_app):
     found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))
     assert found.keys() == {
         "version", "changelog_latest", "tools", "approved_plugins", "plugin_sandbox_failure", "desktop", "models",
-        "last_errors",
+        "last_errors", "preset",
     }
+    assert found["preset"] == {"everywhere": "", "chats_with_own": []}
     assert found["plugin_sandbox_failure"] is None
     app.plugin_runner.last_failure = "network probe: bind allowed"
     assert json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))["plugin_sandbox_failure"] == (
