@@ -245,7 +245,7 @@ Media is transcribed or described once by the media model when it arrives. The d
 ## 12. Web UI
 
 - FastAPI serves a small single-page UI.
-- Auth: Cloudflare Access in front, as today on `dom.example.com`, plus a local session token. It binds to localhost.
+- Auth: Cloudflare Access in front, plus a local session token. It binds to localhost.
 - Pages:
   - chats and their presence state
   - approvals: groups, plugins, soul edits, imports

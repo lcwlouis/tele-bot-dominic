@@ -81,6 +81,8 @@ These are small and should be fixed before phase 3 starts ("phase 2.5").
 
 **4.4 Ephemeral replies in groups** (spec §5, previously in no phase). Verify against the live API first.
 
+**4.4b Stickers and GIFs.** A `sticker` action. Dom chooses from sticker sets the owner adds in the dashboard (by set name); each sticker's emoji is its meaning. GIFs come later, through search.
+
 **4.5 Dashboard v1.**
 - Runs inside the Dom process; server-rendered pages with htmx. No Node build step on the Pi.
 - Auth: verify the Cloudflare Access JWT (signature and audience) on every request. Bind to localhost.
@@ -128,29 +130,48 @@ These are small and should be fixed before phase 3 starts ("phase 2.5").
 - Setup guide for a new owner, from BotFather to first message. CI running the tests.
 - Before the repo is promoted: check git history for secrets and personal data, pick a licence (D11).
 
-## Decisions needed from the owner
+## Decisions (answered 2026-11-19)
 
-| # | Question | Proposed default |
+| # | Question | Decision |
 |---|---|---|
-| D1 | Web search provider | OpenRouter web search, no new key |
-| D2 | Journal: public-safe journal Dom can discuss with friends, plus a private one for your DM? | Yes |
-| D3 | Should Dom text first? In which chats, how often? | Your DM only, up to 2 a day |
-| D4 | Leak check when Jev is down | Send and log |
-| D5 | OK to send headings and key terms of `private/` to OpenRouter for the leak check? | Yes; same trust as the fallback chat model |
-| D6 | Repoint the Cloudflare tunnel to the new dashboard: you do it, or give an API token? | You, guided, when phase 4 is ready |
-| D7 | Which AI services will you export memories from? Sample files needed. | — |
-| D8 | Pi power supply model, and is a USB SSD an option? | — |
-| D9 | Desktop browser profile: keep logins or wipe each session? | Keep |
-| D10 | Core-change briefs as GitHub issues? | File plus DM only |
-| D11 | Is the repo meant to be public? Licence? | — |
-| D12 | Push `dom-core` to GitHub and archive V2 on a branch? | Yes to both |
-| D13 | Stop the old dashboard container (it shows frozen data)? | Yes |
-| D14 | Should Dom send stickers and GIFs? (Nic asked for stickers.) | Later; not in a phase yet |
-| D15 | Fixed address for the Pi in the Deco app | Yours to do |
+| D1 | Web search provider | OpenRouter web search, no new key (default; verify with a real call) |
+| D2 | Public-safe journal plus a private one for the owner DM | Yes (default) |
+| D3 | Dom texting first | Owner DM only, up to 2 a day |
+| D4 | Leak check when Jev is down | Send and log (default) |
+| D5 | Send headings and key terms of `private/` to OpenRouter for the leak check | Yes, as an experiment. If Jev can't do it, consider a small local classifier |
+| D6 | Cloudflare tunnel | An agent set it up, so it can be repointed the same way when phase 4 is ready |
+| D7 | Memory import sources | Muse, ChatGPT, Claude, Siri. No sample files; see "Memory import design" below |
+| D8 | Pi power and storage | 30W USB-PD brick; treated as adequate. The health log (`pi-health`) records under-voltage if it happens. SD card stays the storage risk for the 8.4GB image |
+| D9 | Desktop browser profile | Keep logins between sessions |
+| D10 | Core-change briefs | File plus DM only (default) |
+| D11 | Repo visibility and licence | Public, MIT (already so on GitHub). All personal data must be cleaned first; see "Publishing" below |
+| D12 | Push `dom-core`, archive V2 | Yes, with the conditions in "Publishing" |
+| D13 | Old dashboard container | Stopped on 2026-11-19 (not removed; auto-restart off) |
+| D14 | Stickers and GIFs | Yes. Phase 4: Dom sends from sticker sets the owner picks in the dashboard |
+| D15 | Fixed address for the Pi | Owner's to do in the router app |
+
+## Publishing (the repo is public)
+
+- **Never push the V2 archive.** Its `workspace/` holds friends' messages, profiles and the owner's private memory. Archive it as a local branch or a tarball outside the repo, and keep `workspace/`, session files and image tarballs out of git.
+- **`dom-core` history needs one rewrite before its first push.** Commit `1afe645` put the owner's Telegram ID into a plan document. It is gone from the tip, but still in history; remove it with `git filter-repo --replace-text` when no builder is working on the branch.
+- Before every push: scan the diff for Telegram IDs, handles, chat titles, LAN addresses and domains. Add this scan to CI in phase 7.
+- Code and tests already use made-up IDs only (checked across all `dom-core` commits).
+
+## Memory import design (D7)
+
+No service offers a clean "export my memories" file, so the import path is a prompt, not a parser.
+
+1. `dom` ships one export prompt. The owner pastes it into each assistant; it asks for everything the assistant remembers about them, one fact per line, in a fixed format (`- [category] fact (when learned, if known)`), with nothing left out and nothing invented.
+2. The owner sends the reply to Dom as text or a file, saying which service it came from.
+3. Dom splits it into facts; each becomes a proposal (phase 4.2) marked private by default.
+
+Per service, to be checked when built:
+- **ChatGPT, Claude, Muse:** the prompt works wherever the assistant can see its own memory. Their settings pages also list saved memories, which can be copied as a fallback. Full data exports (conversation archives) are a different, much larger input and are out of scope.
+- **Siri:** has no memory of this kind to export. Skipped unless Apple adds one.
 
 ## Suggested order
 
-1. Phase 2.5: G1, G6, G7, G9, G11, then G4 and G5.
+1. Phase 2.5: G1, G7, G9, G11, then G4 and G5. G6 follows the rules in "Publishing".
 2. Phase 3 in this order: 3.2, 3.6, 3.1, 3.4, 3.3, 3.5, 3.7.
 3. Phase 4, design direction first.
 4. Phase 5, phase 6, phase 7.
