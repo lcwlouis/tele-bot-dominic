@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from dom.actions import SendFile
@@ -294,6 +295,7 @@ class DesktopWorker:
                             if not reason:
                                 raise ValueError("handoff needs a reason")
                             host = await self._browser_host(client)
+                            observed = self.app.dispatch.now()
                         elif name == "propose_skill":
                             if proposed:
                                 result = "A worker may propose a skill only once per task."
@@ -309,7 +311,7 @@ class DesktopWorker:
                     else:
                         if name == "handoff":
                             before = clock()
-                            await self._wait_for_owner(task_id, chat_id, steps, reason, host)
+                            await self._wait_for_owner(task_id, chat_id, steps, reason, host, observed)
                             deadline += clock() - before
                             result = "Owner confirmed the handoff is done."
                     messages.append({
@@ -350,7 +352,9 @@ class DesktopWorker:
             log.warning("could not read the browser URL for a handoff (%s)", type(exc).__name__)
             return None
 
-    async def _wait_for_owner(self, task_id: int, chat_id: int, steps: int, reason: str, host: str | None) -> None:
+    async def _wait_for_owner(
+        self, task_id: int, chat_id: int, steps: int, reason: str, host: str | None, observed: datetime,
+    ) -> None:
         done = asyncio.Event()
         self._handoff = (task_id, steps, done)
         self.handoff_host = host
@@ -361,7 +365,7 @@ class DesktopWorker:
                 )
                 if row is None:
                     raise asyncio.CancelledError
-                await self.app.dispatch.desktop_handoff(task_id, steps, chat_id, reason, host)
+                await self.app.dispatch.desktop_handoff(task_id, steps, chat_id, reason, host, observed)
                 await done.wait()
         except TimeoutError:
             raise SandboxError("owner handoff timed out") from None

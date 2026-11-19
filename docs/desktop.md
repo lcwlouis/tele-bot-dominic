@@ -125,3 +125,8 @@ Set `[web].public_url` in `config.toml` to the HTTPS base URL of the
 authenticated dashboard. Dom uses it for the Open Desktop button in the owner's
 handoff message. On the Desktop page, use the live view and tap Done when the
 computer is ready for Dom to continue.
+
+The handoff message names the site the browser was on and when Dom looked, for
+example "browser was on login.example.org at 14:05" in the configured timezone.
+If the sandbox marks no tab as active it says "an unknown site". Treat the host as
+a hint: check the live view before you enter anything.

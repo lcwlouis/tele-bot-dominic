@@ -581,9 +581,11 @@ TABS = json.loads((Path(__file__).parent / "fixtures" / "sandbox_browser_tabs.js
     ({"success": True, "data": []}, None),
     ({"success": True, "data": [{"type": "page"}, "text", {"type": "page", "url": 3}]}, None),
     ({"success": True, "data": {"url": "https://example.org"}}, None),
-    ({"success": True, "data": [{"index": 0, "url": "https://first.example.org/"}]}, "https://first.example.org/"),
+    # No tab is marked active: the sandbox does not say where the browser is, so neither do we.
+    ({"success": True, "data": [{"index": 0, "url": "https://first.example.org/"}]}, None),
+    ({"success": True, "data": [{"url": "https://a.example.org/", "is_active": False}, {"url": "https://b.example.org/", "is_active": "yes"}]}, None),
 ])
-async def test_current_url_prefers_the_active_tab(payload, url):
+async def test_current_url_is_the_active_tab_only(payload, url):
     def reply(request):
         assert request.method == "GET" and request.url.path == "/v1/browser/tabs"
         return httpx.Response(200, json=payload)

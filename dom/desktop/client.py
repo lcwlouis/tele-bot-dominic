@@ -121,15 +121,14 @@ class SandboxClient:
         return await self._json("browser/page/scroll", {"direction": direction})
 
     async def current_url(self) -> str | None:
-        """The URL of the browser's active tab (else the first page tab), or None when the sandbox
-        does not say. The sandbox reports tabs as {index, url, title, is_active} (checked 2026-11-19)."""
+        """The URL of the browser's active tab, or None when no tab is marked active or the sandbox does not
+        say. The sandbox reports tabs as {index, url, title, is_active} (checked 2026-11-19)."""
         tabs = await self._json("browser/tabs")
-        pages = [
-            tab for tab in (tabs if isinstance(tabs, list) else ())
-            if isinstance(tab, dict) and tab.get("type", "page") == "page" and isinstance(tab.get("url"), str)
-        ]
-        active = [tab for tab in pages if tab.get("is_active") is True]
-        return (active or pages)[0]["url"] if pages else None
+        return next((
+            tab["url"] for tab in (tabs if isinstance(tabs, list) else ())
+            if isinstance(tab, dict) and tab.get("type", "page") == "page" and tab.get("is_active") is True
+            and isinstance(tab.get("url"), str)
+        ), None)
 
     async def screenshot(self) -> bytes:
         return await self._bytes("browser/screenshot", max_bytes=SCREENSHOT_LIMIT)
