@@ -89,3 +89,7 @@ def test_people_notes_only_for_participants(home):
 def test_chat_notes_only_for_this_chat(home):
     (home.root / "memory/chats/-5555.md").write_text("- other chat joke")
     assert "other chat joke" not in build(home)[1]["content"]
+
+
+def test_frame_discourages_reply_to_in_dms():
+    assert "in a DM leave it null" in FRAME
