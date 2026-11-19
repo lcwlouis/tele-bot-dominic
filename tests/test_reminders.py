@@ -218,3 +218,86 @@ async def test_critical_styling_must_carry_the_stored_text_or_it_is_appended(mak
     app.dispatch.now.advance(minutes=1)
     await app.dispatch.tick()
     assert [call[2] for call in app.bot.of("send", OWNER)] == [expected]
+
+
+def _flaky_sends(app, fail_on):
+    """Make the bot's send_message raise on the given 1-based call numbers. Returns the counter of attempts."""
+    send, attempts = app.bot.send_message, []
+
+    async def flaky(chat_id, text, **kw):
+        attempts.append(text)
+        if len(attempts) in fail_on or fail_on == "all":
+            raise OSError("network down")
+        return await send(chat_id, text, **kw)
+
+    app.bot.send_message = flaky
+    return attempts
+
+
+async def test_failed_critical_delivery_retries_with_backoff_and_styles_only_once(make_app):
+    app = make_app()
+    await add(app, "critical")
+    attempts = _flaky_sends(app, {1, 2})
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    await app.dispatch.tick()
+    assert len(attempts) == 1  # backing off for 1 minute
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    assert len(attempts) == 2
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    assert len(attempts) == 2  # the second failure backs off for 2 minutes
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    assert len(attempts) == 3
+    assert [call[2] for call in app.bot.of("send", OWNER)] == ["hey\n⏰ Check the kettle"]
+    assert len(app.script.requests) == 1
+    assert await app.dispatch.reminders.active() == []
+
+
+async def test_delivery_is_cancelled_with_an_error_after_ten_failed_attempts(make_app, caplog):
+    app = make_app()
+    await add(app)
+    attempts = _flaky_sends(app, "all")
+    app.dispatch.now.advance(minutes=1)
+    for _ in range(12):
+        await app.dispatch.tick()
+        app.dispatch.now.advance(minutes=60)
+    assert len(attempts) == 10
+    assert await app.dispatch.reminders.active() == []
+    status = app.store._conn.execute("SELECT status FROM reminders").fetchone()["status"]
+    assert status == "cancelled"
+    assert any(record.levelname == "ERROR" and "reminder" in record.getMessage() for record in caplog.records)
+
+
+async def test_backoff_doubles_and_caps_at_an_hour(make_app):
+    app = make_app()
+    await add(app)
+    attempts = _flaky_sends(app, "all")
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    waits = []
+    for _ in range(9):
+        waited, before = 0, len(attempts)
+        while len(attempts) == before:
+            app.dispatch.now.advance(minutes=1)
+            waited += 1
+            await app.dispatch.tick()
+        waits.append(waited)
+    assert waits == [1, 2, 4, 8, 16, 32, 60, 60, 60]
+
+
+async def test_chunks_already_sent_are_not_resent_on_retry(make_app):
+    app = make_app()
+    text = "".join(chr(ord("a") + i // 2000) * 2000 for i in range(5))[:9000]
+    await app.dispatch.reminders.create("2026-01-01T12:01", text, "normal", "")
+    attempts = _flaky_sends(app, {3})
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    sent = [call[2] for call in app.bot.of("send", OWNER)]
+    assert len(attempts) == 6 and len(sent) == 5
+    assert "".join(sent) == f"⏰ {text}"
+    assert await app.dispatch.reminders.active() == []
