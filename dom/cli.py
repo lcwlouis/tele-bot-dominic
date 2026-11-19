@@ -37,15 +37,15 @@ def model_api_key(config: Config) -> str | None:
     return require_secret(config, endpoint.api_key_env) if endpoint.api_key_env else None
 
 
-def cmd_init(home: Path) -> int:
+def cmd_init(home: Path, timezone: str | None = None) -> int:
     try:
-        init_home(home)
+        init_home(home, timezone)
     except FileExistsError as exc:
         print(f"Refusing to initialise: {exc}")
         return 1
     code = write_claim_code(home)
     print(
-        f"Created {home}\n\n"
+        f"Created {home} (timezone {load_config(home).timezone}; change it in config.toml)\n\n"
         "Next steps:\n"
         f"  1. Copy {home / '.env.example'} to {home / '.env'} and fill in your tokens.\n"
         f"  2. Edit {home / 'SOUL.md'} to make Dom yours.\n"
@@ -127,13 +127,15 @@ def main(argv: list[str] | None = None) -> int:
     for name, help_text in (("init", "create a new home folder"), ("run", "run the bot")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("home", type=Path)
+        if name == "init":
+            p.add_argument("--timezone", help="IANA timezone, e.g. Asia/Singapore (default: this machine's)")
     imp = sub.add_parser("import-v2", help="import a V2 workspace into a home folder")
     imp.add_argument("old_workspace", type=Path)
     imp.add_argument("home", type=Path)
     imp.add_argument("--owner-id", type=int, required=True)
     args = parser.parse_args(argv)
     if args.command == "init":
-        return cmd_init(args.home)
+        return cmd_init(args.home, getattr(args, "timezone", None))
     if args.command == "import-v2":
         return cmd_import(args.old_workspace, args.home, args.owner_id)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

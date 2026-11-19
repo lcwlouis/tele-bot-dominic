@@ -170,3 +170,20 @@ async def test_run_bounds_handler_drain_and_cancels_pending_deletions(home, monk
     assert not executor._background
     assert sorted(events) == [("session", True), ("store", True)]  # deletions were cancelled before either closed
     assert seen["close_bot_session"] is False
+
+
+def test_init_sets_timezone(tmp_path):
+    from dom.cli import main
+    from dom.config import load_config
+
+    assert main(["init", str(tmp_path / "h"), "--timezone", "Asia/Singapore"]) == 0
+    assert load_config(tmp_path / "h").timezone == "Asia/Singapore"
+
+
+def test_init_defaults_to_machine_timezone(tmp_path, monkeypatch):
+    from dom.cli import main
+    from dom.config import load_config
+
+    monkeypatch.setenv("TZ", "Europe/Berlin")
+    assert main(["init", str(tmp_path / "h")]) == 0
+    assert load_config(tmp_path / "h").timezone == "Europe/Berlin"
