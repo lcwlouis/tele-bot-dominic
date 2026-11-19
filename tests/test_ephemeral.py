@@ -1,9 +1,12 @@
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import EphemeralMessageParameters
 from pydantic import ValidationError
 
 from dom.actions import Actions
 from dom.config import Config, load_config
+from dom.telegram import executor
+from test_owner_events import events
 from test_traits import put
 from test_usage import deliver, online
 from tghelpers import FRIEND, GROUP, OWNER, tg, turn_requests
@@ -78,3 +81,30 @@ async def test_ineligible_private_action_never_sends_ephemerally_or_falls_back_t
     else:
         assert [call[2] for call in sent] == ["A reply."]
         assert sent[0][3].get("ephemeral_message_parameters") is None
+
+
+@pytest.mark.parametrize("sender,enabled", [(OWNER, False), (FRIEND, True)])
+async def test_dropping_an_ineligible_private_group_reply_tells_the_owner(make_app, sender, enabled):
+    app = make_app(contents=('{"private":true,"bubbles":[{"text":"A reply."}]}',))
+    app.config = app.config.model_copy(update={"ephemeral_replies": enabled})
+    await online(app, GROUP)
+    await deliver(app, tg(GROUP, sender))
+    assert app.bot.of("send", GROUP) == []
+    assert [event["text"] for event in await events(app)] == [
+        "Held back a private reply in The Group: it wasn't eligible",
+    ]
+
+
+async def test_a_refused_ephemeral_send_is_logged_not_raised(make_app, caplog):
+    app = make_app()
+
+    async def refuse(chat_id, text, **kw):
+        raise TelegramBadRequest(method=None, message="Bad Request: ephemeral refused")
+
+    app.bot.send_message = refuse
+    sent = await executor.perform(
+        app.bot, app.store, GROUP, 1, Actions(private=True, bubbles=[{"text": "One"}, {"text": "Two"}]),
+        ephemeral_recipient=OWNER, sleep=app.sleep,
+    )
+    assert sent == []
+    assert "ephemeral" in caplog.text
