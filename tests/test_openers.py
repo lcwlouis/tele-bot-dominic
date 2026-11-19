@@ -81,11 +81,13 @@ async def test_owner_only_normal_turn_with_daily_cap_and_persisted_unanswered_ch
     await openers.maybe(now())  # last owner DM message is still the opener
     assert len(app.script.requests) == 1
     await record(app, 6000, minutes_ago=45)  # answer the opener
+    await app.store.mark_chat_read(OWNER, 6000)
     app.bot._next_id = 6000
     await openers.maybe(now())
     second = await app.store.kv_get("opener:last_msg_id")
     assert second != first
     await record(app, 6002, minutes_ago=45)
+    await app.store.mark_chat_read(OWNER, 6002)
     now.advance(hours=3)
     await openers.maybe(now())
     assert len(app.script.requests) == len(app.bot.of("send", OWNER)) == 2
@@ -93,6 +95,20 @@ async def test_owner_only_normal_turn_with_daily_cap_and_persisted_unanswered_ch
     now.advance(days=1)
     await openers.maybe(now())
     assert len(app.bot.of("send", OWNER)) == 3
+
+
+async def test_opener_waits_while_the_owner_has_unread_messages(make_app):
+    app = make_app()
+    await online(app, OWNER)
+    await record(app, 100, minutes_ago=50)  # quiet long enough, but Dom has not read it yet
+    openers, now = always_try(app)
+    await openers.maybe(now())
+    assert app.script.requests == [] and app.bot.of("send") == []
+    assert await app.store.kv_get("opener:last_attempt") is None
+
+    await app.store.mark_chat_read(OWNER, 100)
+    await openers.maybe(now())
+    assert len(app.script.requests) == 1
 
 
 async def test_opener_no_response_counts_as_attempt_only(make_app):
