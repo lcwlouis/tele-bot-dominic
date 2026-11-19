@@ -75,3 +75,50 @@ except OSError as error:
 return "opened"
 """)
     assert result == "EPERM"
+
+
+def test_tmp_is_a_small_tmpfs(tmp_path):
+    result = run_plugin(tmp_path, """
+chunk = b"x" * 1_000_000  # below the per-file limit, so only the tmpfs size can stop it
+for number in range(16):
+    try:
+        with open(f"/tmp/fill{number}", "wb") as file:
+            file.write(chunk)
+    except OSError as error:
+        return f"{errno.errorcode[error.errno]} after {number} files"
+return "wrote 16 MB"
+""")
+    assert result.startswith("ENOSPC after ")
+
+
+def test_single_file_size_is_limited(tmp_path):
+    result = run_plugin(tmp_path, """
+try:
+    with open("/tmp/big", "wb") as file:
+        file.write(b"x" * 2_000_000)
+except OSError as error:
+    return errno.errorcode[error.errno]
+return "wrote 2 MB"
+""")
+    assert result == "EFBIG"
+
+
+def test_open_files_are_limited(tmp_path):
+    result = run_plugin(tmp_path, """
+files = []
+try:
+    for number in range(40):
+        files.append(open("/plugin/main.py", "rb"))
+except OSError as error:
+    return errno.errorcode[error.errno]
+return "opened 40 files"
+""")
+    assert result == "EMFILE"
+
+
+def test_no_stray_file_descriptors_reach_the_plugin(tmp_path):
+    result = run_plugin(tmp_path, """
+listing = os.open("/proc/self/fd", os.O_RDONLY)
+return json.dumps(sorted(int(name) for name in os.listdir(listing) if int(name) != listing))
+""")
+    assert json.loads(result) == [0, 1, 2]
