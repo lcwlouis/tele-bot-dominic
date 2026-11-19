@@ -88,7 +88,8 @@ async def test_self_inspect_shape_and_owner_only_tools(make_app):
     await app.store.record_turn(now, GROUP, "group", 1, [], "m", False, 22, "Replied")
     found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))
     assert found.keys() == {
-        "version", "tools", "approved_plugins", "plugin_sandbox_failure", "desktop", "models", "last_errors",
+        "version", "changelog_latest", "tools", "approved_plugins", "plugin_sandbox_failure", "desktop", "models",
+        "last_errors",
     }
     assert found["plugin_sandbox_failure"] is None
     app.plugin_runner.last_failure = "network probe: bind allowed"

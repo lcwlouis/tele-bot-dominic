@@ -3,6 +3,7 @@ notes are written by the background memory pass (dom/memory_pass.py)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
@@ -11,6 +12,7 @@ import httpx
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile
 
+from dom import own_code
 from dom._version import VERSION
 from dom.briefs import LIMITS as BRIEF_LIMITS, write_brief
 from dom.guard import check_local_private_text
@@ -268,6 +270,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
     enabled = {scope: [tool.name for tool in await enabled_tools(app, scope)] for scope in SCOPES}
     return json.dumps({
         "version": VERSION,
+        "changelog_latest": own_code.latest_release(own_code.installed_base()),
         "tools": enabled,
         "approved_plugins": [
             {"name": plugin.manifest.name, "hash": plugin.hash} for plugin in await app.plugins.approved()
@@ -281,9 +284,52 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
 
 SELF_INSPECT_TOOL = Tool(
     name="self_inspect",
-    description="Read Dom's version, available tools by chat scope, approved plugins, desktop status, models and recent errors.",
+    description=(
+        "Read Dom's version, newest changelog entry, available tools by chat scope, approved plugins, desktop status, "
+        "models and recent errors. When someone asks about you, answer in your own words like a person would; "
+        "give exact numbers or internal names only when asked for them."
+    ),
     schema={"type": "object", "properties": {}, "additionalProperties": False},
     handler=_self_inspect,
+    scopes={"owner_dm"},
+)
+
+
+async def _own_code(args: dict, ctx: TurnCtx) -> str:
+    if not ctx.is_owner_dm():
+        return "error: own_code is available only in the owner's DM"
+    base, action = own_code.installed_base(), args.get("action")
+    path, query = args.get("path"), args.get("query")
+    if action == "changelog":
+        run = (own_code.changelog, base)
+    elif action == "list":
+        run = (own_code.list_files, base, path if isinstance(path, str) else "")
+    elif action == "read":
+        run = (own_code.read_file, base, path)
+    elif action == "search":
+        run = (own_code.search, base, query, path if isinstance(path, str) else "")
+    else:
+        return "error: action must be changelog, list, read or search"
+    return await asyncio.to_thread(*run)
+
+
+OWN_CODE_TOOL = Tool(
+    name="own_code",
+    description=(
+        "Read your own source code, docs and changelog (read-only). Actions: changelog (latest releases); "
+        "list (files with sizes; optional path narrows to a folder); read (one file by relative path such as "
+        "dom/tools.py or docs/privacy.md); search (case-insensitive text search, optional path folder)."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["changelog", "list", "read", "search"]},
+            "path": {"type": "string"},
+            "query": {"type": "string"},
+        },
+        "required": ["action"],
+    },
+    handler=_own_code,
     scopes={"owner_dm"},
 )
 
@@ -292,5 +338,5 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 
     tools = core_tools(app.search_client, app.desktop_worker)
-    tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL))
+    tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL))
     return [tool for tool in tools if scope in tool.scopes] + await offered(app, scope)
