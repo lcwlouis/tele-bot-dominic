@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import secrets
@@ -22,10 +23,16 @@ Status = Literal["off", "stopped", "starting", "ready", "error"]
 log = logging.getLogger(__name__)
 CONTAINER = "dom-desktop"
 LAN_REACHABLE = "LAN reachable from the sandbox — run dom desktop-setup"
+REMOTE_UNCONFIRMED = (
+    "remote desktop not started: set [desktop] remote_isolation_confirmed = true once the remote host blocks access to your LAN"
+)
 
 
 class RemoteSandbox:
-    def __init__(self, url: str, api_key: str | None, *, http: httpx.AsyncClient | None = None):
+    def __init__(
+        self, url: str, api_key: str | None, *, http: httpx.AsyncClient | None = None, isolation_confirmed: bool = False,
+    ):
+        self._isolation_confirmed = isolation_confirmed
         self._http = http or httpx.AsyncClient(trust_env=False)
         self._owns_http = http is None
         self._lock = asyncio.Lock()
@@ -44,6 +51,11 @@ class RemoteSandbox:
     async def ensure_running(self) -> SandboxClient:
         async with self._lock:
             if not hasattr(self, "_remote"):
+                raise SandboxError(self.error)
+            if not self._isolation_confirmed:
+                self.client = None
+                self._status = "error"
+                self.error = REMOTE_UNCONFIRMED
                 raise SandboxError(self.error)
             self._status = "starting"
             try:
@@ -88,7 +100,6 @@ class LocalSandbox:
         self.client: SandboxClient | None = None
         # Told once, with a short message, when the LAN probe stops a start.
         self.alert: Callable[[str], Awaitable[None]] | None = None
-        self._firewall_verified = False
         self._alerted = False
 
     def status(self) -> Status:
@@ -144,7 +155,6 @@ class LocalSandbox:
             try:
                 await self._start()
             except (SandboxError, OSError) as exc:
-                self._firewall_verified = False
                 self._status = "error"
                 self.error = str(exc) if isinstance(exc, SandboxError) else "could not prepare desktop profile"
                 raise SandboxError(self.error) from None
@@ -160,20 +170,25 @@ class LocalSandbox:
             return self.client
 
     async def _verify_firewall(self) -> None:
-        """Fail closed: the sandbox starts only after a throwaway container fails to reach the LAN."""
-        if self._firewall_verified:
-            return
+        """Fail closed, on every start: the sandbox starts only after a throwaway container on the
+        desktop network fails to reach the LAN while it does reach the control address."""
         settings = self.config.desktop
         if not settings.lan_probes:
-            raise SandboxError("set [desktop] lan_probes to LAN host:port addresses so Dom can verify the firewall")
-        code, gateway = await self._docker(
-            "network", "inspect", "--format", "{{(index .IPAM.Config 0).Gateway}}", settings.network,
-        )
-        if code or not gateway.strip():
-            raise SandboxError("desktop network missing — run dom desktop-setup")
-        targets = [*settings.lan_probes, f"{gateway.decode().strip()}:{self.config.web.port}"]
-        code, _ = await self._docker(*network.probe_command(self.config, network.LAN_PROBE, *targets)[1:])
-        if code == network.LAN_REACHABLE:
+            raise SandboxError("set [desktop] lan_probes to LAN ipv4:port addresses so Dom can verify the firewall")
+        code, output = await self._docker("network", "inspect", settings.network)
+        try:
+            if code:
+                raise ValueError
+            details = json.loads(output)[0]
+            network.verify_network(details, settings.subnet)
+            gateway = network.gateway(details, settings.subnet)
+        except (ValueError, LookupError, TypeError):
+            raise SandboxError("desktop network missing or not the configured IPv4 bridge — run dom desktop-setup") from None
+        if (await self._docker("image", "inspect", settings.probe_image))[0]:
+            raise SandboxError(f"probe image not present: docker pull {settings.probe_image}")
+        targets = [*settings.lan_probes, f"{gateway}:{self.config.web.port}", f"{gateway}:22"]
+        code, _ = await self._docker(*network.probe_command(self.config, *targets)[1:])
+        if code == network.PROBE_REACHABLE:
             if self.alert is not None and not self._alerted:
                 self._alerted = True
                 try:
@@ -181,9 +196,10 @@ class LocalSandbox:
                 except Exception as exc:
                     log.warning("could not alert the owner about the desktop firewall (%s)", type(exc).__name__)
             raise SandboxError(LAN_REACHABLE)
+        if code == network.PROBE_NO_CONTROL:
+            raise SandboxError("could not verify the desktop firewall: the probe could not reach its control address")
         if code:
             raise SandboxError("could not verify the desktop firewall")
-        self._firewall_verified = True
         self._alerted = False
 
     async def _start(self) -> None:
@@ -278,5 +294,8 @@ def configured_sandbox(config: Config) -> LocalSandbox | RemoteSandbox | None:
     if config.desktop_mode == "local":
         return LocalSandbox(config)
     if config.desktop_mode == "remote":
-        return RemoteSandbox(config.desktop.url, config.secret(config.desktop.api_key_env))
+        return RemoteSandbox(
+            config.desktop.url, config.secret(config.desktop.api_key_env),
+            isolation_confirmed=config.desktop.remote_isolation_confirmed,
+        )
     return None

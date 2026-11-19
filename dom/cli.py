@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     check_cmd.add_argument("home", type=Path)
     check_cmd.add_argument("lan_address", help="IPv4 address of a known reachable LAN service")
     check_cmd.add_argument("--lan-port", type=int, default=443)
-    check_cmd.add_argument("--public-address", default="1.1.1.1")
+    check_cmd.add_argument("--public-address", default=None, help="override [desktop] probe_control (port 443)")
     args = parser.parse_args(argv)
     if args.command in ("desktop-setup", "desktop-check"):
         try:

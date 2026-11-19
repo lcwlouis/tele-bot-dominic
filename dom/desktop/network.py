@@ -13,19 +13,72 @@ LAN_RANGES = (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
     "0.0.0.0/8", "192.0.0.0/24", "198.18.0.0/15", "224.0.0.0/3",
 )
+CHAIN = "DOM-DESKTOP"
 ESTABLISHED = ("-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED")
+LOCAL = ("-m", "addrtype", "--dst-type", "LOCAL")
 
 
 def rules(subnet: str) -> list[tuple[str, ...]]:
-    source = ("-s", str(ipaddress.IPv4Network(subnet)))
+    """The DOM-DESKTOP chain. DOCKER-USER and INPUT both jump to it for the desktop subnet.
+
+    Traffic addressed to the Docker host never passes through DOCKER-USER, so LOCAL destinations are
+    only seen from INPUT; everything else is forwarded traffic.
+    """
     return [
-        ("DOCKER-USER", *source, *ESTABLISHED, "-j", "RETURN"),
-        ("DOCKER-USER", *source, "-d", subnet, "-j", "RETURN"),
-        *[("DOCKER-USER", *source, "-d", target, "-j", "DROP") for target in LAN_RANGES],
-        # Traffic addressed to the Docker host does not pass through DOCKER-USER.
-        ("INPUT", *source, *ESTABLISHED, "-j", "ACCEPT"),
-        ("INPUT", *source, "-j", "DROP"),
+        (*LOCAL, *ESTABLISHED, "-j", "ACCEPT"),
+        (*LOCAL, "-j", "DROP"),
+        (*ESTABLISHED, "-j", "RETURN"),
+        ("-d", str(ipaddress.IPv4Network(subnet)), "-j", "RETURN"),
+        *[("-d", target, "-j", "DROP") for target in LAN_RANGES],
     ]
+
+
+def jump(subnet: str) -> tuple[str, ...]:
+    return ("-s", str(ipaddress.IPv4Network(subnet)), "-j", CHAIN)
+
+
+def verify_network(details: dict, subnet: str) -> None:
+    """The desktop network must be an IPv4-only bridge with exactly the configured subnet."""
+    try:
+        subnets = {item["Subnet"] for item in details["IPAM"]["Config"]}
+        valid = details["Driver"] == "bridge" and not details["EnableIPv6"] and subnets == {subnet}
+    except (KeyError, TypeError):
+        valid = False
+    if not valid:
+        raise ValueError(f"the desktop network must be an IPv4-only bridge with subnet {subnet}")
+
+
+def gateway(details: dict, subnet: str) -> str:
+    configured = details["IPAM"]["Config"][0].get("Gateway")
+    return str(ipaddress.IPv4Address(configured)) if configured else str(next(ipaddress.IPv4Network(subnet).hosts()))
+
+
+def _query(run, *args: str) -> subprocess.CompletedProcess:
+    """Run an iptables query: status 1 means "absent"; any other failure is an error to surface."""
+    result = run(["iptables", "-w", *args], capture_output=True, text=True)
+    if result.returncode not in (0, 1):
+        raise subprocess.CalledProcessError(result.returncode, result.args)
+    return result
+
+
+def _change(run, *args: str) -> None:
+    command = ["iptables", "-w", *args]
+    run(command, check=True)
+    print(shlex.join(command))
+
+
+def _ensure_first(run, parent: str, entry: tuple[str, ...]) -> None:
+    """Rule 1 of `parent` is the jump, exactly once. A moved jump is inserted anew before the old one is deleted."""
+    listing = _query(run, "-S", parent)
+    if listing.returncode:
+        raise subprocess.CalledProcessError(listing.returncode, listing.args)
+    entries = [tuple(shlex.split(line)[2:]) for line in listing.stdout.splitlines() if line.startswith(f"-A {parent} ")]
+    if entries[:1] == [entry] and entry not in entries[1:]:
+        return
+    stale = [number for number, existing in enumerate(entries, 1) if existing == entry]
+    _change(run, "-I", parent, "1", *entry)
+    for number in reversed(stale):
+        _change(run, "-D", parent, str(number + 1))
 
 
 def setup(config: Config, run=subprocess.run) -> None:
@@ -37,77 +90,70 @@ def setup(config: Config, run=subprocess.run) -> None:
         run(["docker", "network", "create", "--driver", "bridge", "--ipv6=false",
              "--subnet", subnet, network], check=True)
     else:
-        details, = json.loads(inspect.stdout)
-        subnets = {item["Subnet"] for item in details["IPAM"]["Config"]}
-        if details["Driver"] != "bridge" or details["EnableIPv6"] or subnets != {subnet}:
-            raise ValueError(f"{network} must be an IPv4-only bridge with subnet {subnet}")
+        verify_network(json.loads(inspect.stdout)[0], subnet)
 
-    positions = {"DOCKER-USER": 0, "INPUT": 0}
-    for chain, *args in rules(subnet):
-        positions[chain] += 1
-        result = run(["iptables", "-w", "-C", chain, *args], capture_output=True)
-        if result.returncode == 0:
-            continue
-        if result.returncode != 1:  # 1 means the rule is absent; anything else is a failure to ask
-            raise subprocess.CalledProcessError(result.returncode, result.args)
-        command = ["iptables", "-w", "-I", chain, str(positions[chain]), *args]
-        run(command, check=True)
-        print(shlex.join(command))
+    if _query(run, "-S", CHAIN).returncode:
+        _change(run, "-N", CHAIN)
+    for position, args in enumerate(rules(subnet), 1):
+        if _query(run, "-C", CHAIN, *args).returncode:
+            _change(run, "-I", CHAIN, str(position), *args)
+    for parent in ("DOCKER-USER", "INPUT"):
+        _ensure_first(run, parent, jump(subnet))
 
 
-_PROBE = """
-import socket
-import sys
-
-lan, port, public = sys.argv[1:]
-try:
-    with socket.create_connection((lan, int(port)), timeout=3):
-        sys.exit("LAN probe reached the target")
-except TimeoutError:
-    print("LAN probe timed out")
-except OSError as exc:
-    sys.exit(f"LAN probe did not time out: {exc}")
-
-try:
-    with socket.create_connection((public, 443), timeout=5):
-        print("Public probe answered")
-except OSError as exc:
-    sys.exit(f"Public probe failed: {exc}")
+# Arguments: SECONDS CONTROL TARGET... Exit status 0: every target timed out and the control connected.
+# 7: a target connected or failed fast (reachable). 8: the control did not connect, so a timeout proves nothing.
+# Each target is judged on its own. `timeout` stops an nc that ignores -w.
+PROBE_SECONDS = 3
+PROBE_REACHABLE = 7
+PROBE_NO_CONTROL = 8
+PROBE_SCRIPT = """
+w=$1; control=$2; shift 2
+try() {
+  host=${1%:*}; port=${1##*:}
+  start=$(date +%s)
+  timeout $((w + 2)) nc -z -w "$w" "$host" "$port" >/dev/null 2>&1 && return 0
+  [ $(( $(date +%s) - start )) -ge "$w" ] && return 1
+  return 2
+}
+try "$control" || exit 8
+dir=$(mktemp -d)
+n=0
+for target in "$@"; do
+  n=$((n + 1))
+  ( try "$target"; echo $? > "$dir/$n" ) &
+done
+wait
+for result in "$dir"/*; do
+  [ "$(cat "$result")" = 1 ] || exit 7
+done
 """
 
 
-# Exit status 7 means a target answered or refused instead of timing out. Only a dropped connection passes.
-LAN_PROBE = """
-import socket
-import sys
-
-for target in sys.argv[1:]:
-    host, _, port = target.rpartition(":")
-    try:
-        socket.create_connection((host, int(port)), timeout=2).close()
-    except TimeoutError:
-        continue
-    except Exception:
-        pass
-    sys.exit(7)
-"""
-LAN_REACHABLE = 7
-
-
-def probe_command(config: Config, script: str, *arguments: str) -> list[str]:
+def probe_command(config: Config, *targets: str) -> list[str]:
     """A throwaway container on the desktop network. It never pulls the image."""
     settings = config.desktop
     return [
-        "docker", "run", "--rm", "--pull=never", "--network", settings.network,
-        "--entrypoint", "python3", settings.image, "-c", script, *arguments,
+        "docker", "run", "--rm", "--pull=never", "--network", settings.network, settings.probe_image,
+        "sh", "-c", PROBE_SCRIPT, "probe", str(PROBE_SECONDS), settings.probe_control, *targets,
     ]
 
 
 def check(
-    config: Config, lan_address: str, lan_port: int = 443, public_address: str = "1.1.1.1", *, run=subprocess.run,
+    config: Config, lan_address: str, lan_port: int = 443, public_address: str | None = None, *, run=subprocess.run,
 ) -> None:
     lan = ipaddress.IPv4Address(lan_address)
-    public = ipaddress.IPv4Address(public_address)
-    if not 1 <= lan_port <= 65535 or not public.is_global:
-        raise ValueError("provide a valid LAN port and a public IPv4 address")
-    run(probe_command(config, _PROBE, str(lan), str(lan_port), str(public)), check=True)
+    if not 1 <= lan_port <= 65535:
+        raise ValueError("provide a valid LAN port")
+    if public_address is not None:
+        config = config.model_copy(update={"desktop": config.desktop.model_copy(update={
+            "probe_control": f"{ipaddress.IPv4Address(public_address)}:443",
+        })})
+    code = run(probe_command(config, f"{lan}:{lan_port}")).returncode
+    if code == PROBE_REACHABLE:
+        raise ValueError(f"the desktop network can reach {lan}:{lan_port}; run dom desktop-setup")
+    if code == PROBE_NO_CONTROL:
+        raise ValueError("the probe could not reach its control address, so the result proves nothing")
+    if code:
+        raise ValueError("could not verify the desktop firewall (the probe container failed to run)")
+    print(f"{lan}:{lan_port} timed out and the control connected: the sandbox cannot reach it.")

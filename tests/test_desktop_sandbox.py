@@ -8,12 +8,13 @@ import pytest
 from dom.capabilities import describe
 from dom.config import Config, DesktopConfig, load_config
 from dom.desktop.client import SandboxClient, SandboxError, url_host
-from dom.desktop.network import LAN_PROBE as PROBE
+from dom.desktop.network import PROBE_SCRIPT as PROBE
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 from dom.desktop.worker import DesktopWorker
 
 
 PROBES = ["192.0.2.1:443", "192.0.2.2:22"]
+NETWORK = [{"Driver": "bridge", "EnableIPv6": False, "IPAM": {"Config": [{"Subnet": "172.30.0.0/24", "Gateway": "172.30.0.1"}]}}]
 
 
 def local_config(tmp_path, **settings):
@@ -22,10 +23,12 @@ def local_config(tmp_path, **settings):
 
 
 class FakeDocker:
-    def __init__(self, image=True, probe=0):
+    def __init__(self, image=True, probe=0, network=NETWORK, probe_image=True):
         self.calls = []
         self.image = image
         self.probe = probe
+        self.network = network
+        self.probe_image = probe_image
         self.running = False
         self.environments = []
 
@@ -34,11 +37,12 @@ class FakeDocker:
         self.environments.append(kwargs.get("env"))
         command = args[1]
         if command == "image":
-            code, output = (0 if self.image else 1), b""
+            present = self.probe_image if args[3] == "alpine:3.22" else self.image
+            code, output = (0 if present else 1), b""
         elif command == "container":
             code, output = (0, b"true") if self.running else (1, b"")
         elif command == "network":
-            code, output = 0, b"172.30.0.1\n"
+            code, output = (0, json.dumps(self.network).encode()) if self.network else (1, b"")
         elif command == "run" and "--rm" in args:
             code, output = self.probe, b""
         else:
@@ -82,8 +86,9 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
         assert observed == ["starting"]
         assert docker.calls == [
             ("docker", "image", "inspect", config.desktop.image),
-            ("docker", "network", "inspect", "--format", "{{(index .IPAM.Config 0).Gateway}}", "dom-desktop"),
-            probe_call(config, ["192.0.2.1:443", "192.0.2.2:22", "172.30.0.1:8080"]),
+            ("docker", "network", "inspect", "dom-desktop"),
+            ("docker", "image", "inspect", "alpine:3.22"),
+            probe_call(config, ["192.0.2.1:443", "192.0.2.2:22", "172.30.0.1:8080", "172.30.0.1:22"]),
             ("docker", "container", "inspect", "--format", "{{.State.Running}}", "dom-desktop"),
             ("docker", "run", "-d", "--name", "dom-desktop", "--pull=never",
              "--network", "dom-desktop", "-p", "127.0.0.1:18080:8080",
@@ -111,8 +116,9 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
 
 
 def probe_call(config, targets):
-    return ("docker", "run", "--rm", "--pull=never", "--network", "dom-desktop",
-            "--entrypoint", "python3", config.desktop.image, "-c", PROBE, *targets)
+    settings = config.desktop
+    return ("docker", "run", "--rm", "--pull=never", "--network", "dom-desktop", settings.probe_image,
+            "sh", "-c", PROBE, "probe", "3", settings.probe_control, *targets)
 
 
 async def test_missing_image_is_an_error(tmp_path):
@@ -136,7 +142,7 @@ async def test_remote_health_check(make_app, tmp_path):
         return httpx.Response(200, json={"success": True, "data": "ok"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
-        app.sandbox = RemoteSandbox("https://example.org", "fake", http=http)
+        app.sandbox = RemoteSandbox("https://example.org", "fake", http=http, isolation_confirmed=True)
         assert "desktop: available (starts on use)" in describe(app, "owner_dm")
         await app.sandbox.ensure_running()
         assert "desktop: ready" in describe(app, "owner_dm")
@@ -226,13 +232,26 @@ async def start_failing(sandbox):
     return str(caught.value)
 
 
-@pytest.mark.parametrize("probes", [[], ["not-a-target"], ["192.0.2.1:99999"]])
-def test_lan_probes_are_validated(probes):
+@pytest.mark.parametrize("probes", [
+    [], ["not-a-target"], ["192.0.2.1:99999"], ["example.org:443"], ["[2001:db8::1]:443"], ["192.0.2.1"], ["192.0.2.256:80"],
+])
+def test_lan_probes_are_ipv4_literals_with_ports(probes):
     if probes:
         with pytest.raises(ValueError):
             DesktopConfig(lan_probes=probes)
     else:
         assert DesktopConfig().lan_probes == []
+
+
+@pytest.mark.parametrize("control", ["example.org:443", "1.1.1.1", "10.0.0.1:443", "1.1.1.1:0"])
+def test_probe_control_must_be_a_public_ipv4_literal_with_a_port(control):
+    with pytest.raises(ValueError):
+        DesktopConfig(probe_control=control)
+
+
+def test_desktop_probe_defaults():
+    settings = DesktopConfig()
+    assert (settings.probe_image, settings.probe_control, settings.remote_isolation_confirmed) == ("alpine:3.22", "1.1.1.1:443", False)
 
 
 async def test_local_mode_without_lan_probes_refuses_to_start(tmp_path):
@@ -270,23 +289,122 @@ async def test_probe_that_cannot_run_fails_closed(tmp_path):
     await sandbox.close()
 
 
-async def test_firewall_is_probed_once_per_process_and_again_after_a_failure(tmp_path):
+async def test_firewall_is_probed_before_every_start(tmp_path):
     docker = FakeDocker()
     async with httpx.AsyncClient(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={"success": True, "data": None}),
     )) as http:
         sandbox = LocalSandbox(local_config(tmp_path), run=docker, http=http)
         await sandbox.ensure_running()
+        await sandbox.ensure_running()  # already running: no new start, no new probe
+        assert len(docker.probes()) == 1
         await sandbox.stop()
         await sandbox.ensure_running()
-        assert len(docker.probes()) == 1 and len(docker.started()) == 2
-        await sandbox.stop()
-        docker.image = False
-        assert "image" in await start_failing(sandbox)
-        docker.image = True
-        await sandbox.ensure_running()
-        assert len(docker.probes()) == 2
+        assert len(docker.probes()) == 2 and len(docker.started()) == 2
+        # Each container start is preceded by its own probe.
+        kinds = ["probe" if call in docker.probes() else "start" for call in docker.calls if call in docker.probes() or call in docker.started()]
+        assert kinds == ["probe", "start", "probe", "start"]
         await sandbox.close()
+
+
+async def test_probe_fails_closed_when_the_control_does_not_connect(tmp_path):
+    docker = FakeDocker(probe=8)
+    sandbox = LocalSandbox(local_config(tmp_path), run=docker)
+    assert "could not verify" in await start_failing(sandbox)
+    assert docker.started() == []
+    await sandbox.close()
+
+
+async def test_missing_probe_image_refuses_to_start(tmp_path):
+    docker = FakeDocker(probe_image=False)
+    sandbox = LocalSandbox(local_config(tmp_path), run=docker)
+    assert "alpine:3.22" in await start_failing(sandbox)
+    assert docker.started() == [] and docker.probes() == []
+    await sandbox.close()
+
+
+async def test_probe_targets_come_from_config(tmp_path):
+    docker = FakeDocker(probe=7)
+    config = local_config(tmp_path, probe_image="busybox:1", probe_control="9.9.9.9:53", lan_probes=["192.0.2.9:80"])
+    sandbox = LocalSandbox(config, run=docker)
+    await start_failing(sandbox)
+    assert docker.probes() == [probe_call(config, ["192.0.2.9:80", "172.30.0.1:8080", "172.30.0.1:22"])]
+    await sandbox.close()
+
+
+@pytest.mark.parametrize("network", [
+    None,
+    [{**NETWORK[0], "EnableIPv6": True}],
+    [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": "172.31.0.0/24", "Gateway": "172.31.0.1"}]}}],
+    [{**NETWORK[0], "IPAM": {"Config": [{"Subnet": "172.30.0.0/24", "Gateway": "172.30.0.1"}, {"Subnet": "fd00::/64"}]}}],
+])
+async def test_start_refused_when_the_network_is_not_the_configured_ipv4_bridge(tmp_path, network):
+    docker = FakeDocker(network=network)
+    sandbox = LocalSandbox(local_config(tmp_path), run=docker)
+    assert "network" in await start_failing(sandbox)
+    assert docker.started() == [] and docker.probes() == []
+    await sandbox.close()
+
+
+async def test_remote_start_requires_the_operator_to_confirm_isolation(tmp_path):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"success": True, "data": "ok"}),
+    )) as http:
+        sandbox = RemoteSandbox("https://example.org", "fake", http=http)
+        with pytest.raises(SandboxError, match="remote_isolation_confirmed"):
+            await sandbox.ensure_running()
+        assert sandbox.status() == "error"
+        confirmed = RemoteSandbox("https://example.org", "fake", http=http, isolation_confirmed=True)
+        assert await confirmed.ensure_running() is confirmed.client
+
+
+def test_configured_remote_sandbox_follows_the_config_flag(tmp_path):
+    from dom.desktop.sandbox import configured_sandbox
+
+    def sandbox(**settings):
+        return configured_sandbox(Config(home=tmp_path, desktop_mode="remote", desktop=DesktopConfig(url="https://example.org", **settings)))
+
+    assert sandbox()._isolation_confirmed is False
+    assert sandbox(remote_isolation_confirmed=True)._isolation_confirmed is True
+
+
+FAKE_NC = """#!/bin/sh
+# usage: nc -z -w SECONDS HOST PORT
+w=$3; host=$4
+case $host in
+  192.0.2.1) sleep "$w"; exit 1 ;;   # dropped
+  192.0.2.2) exit 1 ;;               # refused at once
+  *) exit 0 ;;                       # connects
+esac
+"""
+FAKE_TIMEOUT = '#!/bin/sh\nshift\nexec "$@"\n'
+
+
+def test_probe_script_passes_only_a_timeout_and_requires_the_control(tmp_path):
+    import os
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+
+    for name, body in (("nc", FAKE_NC), ("timeout", FAKE_TIMEOUT)):
+        (tmp_path / name).write_text(body)
+        (tmp_path / name).chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    live, dropped, refused, open_ = "198.51.100.1:443", "192.0.2.1:443", "192.0.2.2:443", "192.0.2.3:443"
+    cases = {
+        "all dropped": (live, [dropped, "192.0.2.1:22"], 0),
+        "one refused": (live, [dropped, refused], 7),
+        "one open": (live, [open_, dropped], 7),
+        "control refused": (refused, [dropped], 8),
+        "control dropped": (dropped, [dropped], 8),
+    }
+
+    def run(case):
+        control, targets, _ = cases[case]
+        return subprocess.run(["sh", "-c", PROBE, "probe", "2", control, *targets], env=env, capture_output=True).returncode
+
+    with ThreadPoolExecutor(len(cases)) as pool:
+        codes = dict(zip(cases, pool.map(run, cases)))
+    assert codes == {name: expected for name, (_, _, expected) in cases.items()}
 
 
 def stop_and_remove(docker):
