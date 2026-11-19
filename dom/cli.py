@@ -27,6 +27,8 @@ from dom.store import Store
 from dom.telegram import executor, owner
 from dom.telegram.handlers import App, build_router
 from dom.usage import UsageRecorder
+from dom.web.app import serving
+from dom.web.auth import Auth
 
 SHUTDOWN_DRAIN_SECONDS = 10
 ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"]
@@ -106,6 +108,10 @@ def cmd_import(old_workspace: Path, home: Path, owner_id: int) -> int:
 
 async def run(home: Path) -> None:
     config = load_config(home)
+    try:
+        auth = Auth(config) if config.web.enabled else None
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if "chat" not in config.models:
         raise SystemExit(f"{home / 'config.toml'} needs a [models.chat] section.")
     bot = Bot(token=require_secret(config, "TELEGRAM_BOT_TOKEN"))
@@ -140,14 +146,15 @@ async def run(home: Path) -> None:
                     "No owner yet: send /claim <code> to @%s (the code is in %s).", me.username, home / ".claim"
                 )
             # aiogram stops on SIGINT/SIGTERM; it waits a bounded time for running handlers.
-            app.dispatch.start()
-            try:
-                await dispatcher.start_polling(
-                    bot, allowed_updates=ALLOWED_UPDATES,
-                    tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
-                )
-            finally:
-                await app.dispatch.close()
+            async with serving(app, auth):
+                app.dispatch.start()
+                try:
+                    await dispatcher.start_polling(
+                        bot, allowed_updates=ALLOWED_UPDATES,
+                        tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
+                    )
+                finally:
+                    await app.dispatch.close()
     finally:
         await executor.cancel_pending_deletions()
         store.close()

@@ -33,3 +33,11 @@ mode = "off"
 [openers]
 enabled = true
 max_per_day = 2
+
+[web]
+enabled = false
+bind = "127.0.0.1"
+port = 8080
+access_team = ""
+access_aud = ""
+dev_token_env = ""  # env var name, for local testing
