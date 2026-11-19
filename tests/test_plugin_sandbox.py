@@ -131,3 +131,22 @@ cgroup = open("/proc/self/cgroup").read().strip()
 return json.dumps({"CapEff": status["CapEff"].strip(), "cgroup": cgroup})
 """)
     assert json.loads(result) == {"CapEff": "0000000000000000", "cgroup": "0::/"}
+
+
+def test_hardened_syscalls_fail_with_eperm(tmp_path):
+    result = run_plugin(tmp_path, """
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+out = {}
+for name, call in {
+    "ptrace": lambda: libc.ptrace(0, 0, 0, 0),
+    "unshare": lambda: libc.unshare(0x00020000),  # CLONE_NEWNS
+    "mount": lambda: libc.mount(b"none", b"/tmp", b"tmpfs", 0, None),
+    "setns": lambda: libc.setns(-1, 0),
+    "fork": lambda: libc.fork(),
+}.items():
+    ctypes.set_errno(0)
+    out[name] = errno.errorcode.get(ctypes.get_errno()) if call() == -1 else "succeeded"
+return json.dumps(out)
+""")
+    assert json.loads(result) == {name: "EPERM" for name in ("ptrace", "unshare", "mount", "setns", "fork")}

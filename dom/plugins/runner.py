@@ -109,43 +109,78 @@ def exchange(process: subprocess.Popen, request: bytes, timeout: int) -> str:
                 stream.close()
 
 
+# Syscall numbers per architecture, in this order. Sources: aarch64 include/uapi/asm-generic/unistd.h,
+# x86_64 arch/x86/entry/syscalls/syscall_64.tbl, armv7l arch/arm/tools/syscall.tbl (EABI), Linux 6.12.
+# None: the architecture has no such call.
+_MACHINES = ("aarch64", "x86_64", "armv7l")
+_AUDIT_ARCH = {"aarch64": 0xC00000B7, "x86_64": 0xC000003E, "armv7l": 0x40000028}
+_SOCKET = (198, 41, 281)
+# No new processes, no unix socket pairs, no io_uring (it could bypass the socket restriction).
+_NO_PROCESSES = (
+    (220, 56, 120),  # clone
+    (None, 57, 2),  # fork
+    (None, 58, 190),  # vfork
+    (435, 435, 435),  # clone3
+    (199, 53, 288),  # socketpair
+    (None, None, 102),  # socketcall (OABI only; harmless to deny)
+    (425, 425, 425),  # io_uring_setup
+)
+# The filter is default-allow, so also deny what could attack the kernel, other processes or the mounts.
+_HARDENED = (
+    (117, 101, 26),  # ptrace
+    (280, 321, 386),  # bpf
+    (241, 298, 364),  # perf_event_open
+    (282, 323, 388),  # userfaultfd
+    (219, 250, 311),  # keyctl
+    (217, 248, 309),  # add_key
+    (218, 249, 310),  # request_key
+    (40, 165, 21),  # mount
+    (39, 166, 52),  # umount2
+    (41, 155, 218),  # pivot_root
+    (97, 272, 337),  # unshare
+    (268, 308, 375),  # setns
+    (270, 310, 376),  # process_vm_readv
+    (271, 311, 377),  # process_vm_writev
+    (265, 304, 371),  # open_by_handle_at
+    (272, 312, 378),  # kcmp
+)
+# An online plugin may connect out but never serve: bind, listen, accept, accept4.
+_SERVER_SOCKETS = ((200, 49, 282), (201, 50, 284), (202, 43, 285), (242, 288, 366))
+
+
 def _seccomp(network: bool, machine: str | None = None) -> bytes:
-    """Classic BPF for Linux seccomp_data. Permit only internet sockets when network is approved."""
-    # Per architecture: audit arch, socket syscall, always-denied syscalls (process creation, socketpair,
-    # clone3, io_uring_setup) and the server-side socket calls (bind, listen, accept, accept4) denied online.
-    profiles = {
-        "aarch64": (0xC00000B7, 198, (220, 435, 199, 425), (200, 201, 202, 242)),
-        "x86_64": (0xC000003E, 41, (56, 57, 58, 435, 53, 425), (49, 50, 43, 288)),
-        "armv7l": (0x40000028, 281, (2, 120, 190, 435, 288, 102, 425), (282, 284, 285, 366)),
-    }
-    profile = profiles.get(machine or os.uname().machine)
-    if profile is None:
+    """Classic BPF for Linux seccomp_data. Permit only internet client sockets when network is approved."""
+    machine = machine or os.uname().machine
+    if machine not in _MACHINES:
         raise PluginsUnavailable("No plugin sandbox filter for this Linux architecture.")
-    arch, socket_syscall, blocked, servers = profile
+    column = _MACHINES.index(machine)
+    denied = [
+        numbers[column] for numbers in (*_NO_PROCESSES, *_HARDENED, *(_SERVER_SOCKETS if network else ()))
+        if numbers[column] is not None
+    ]
     load, equal, bit_set, ret = 0x20, 0x15, 0x45, 0x06
     allow, kill, deny = 0x7FFF0000, 0x80000000, 0x00050000 | errno.EPERM
     instructions = [
         (load, 0, 0, 4),  # arch
-        (equal, 1, 0, arch),
+        (equal, 1, 0, _AUDIT_ARCH[machine]),
         (ret, 0, 0, kill),
         (load, 0, 0, 0),  # syscall number
         (bit_set, 0, 1, 0x40000000),  # reject the x32 compatibility ABI
         (ret, 0, 0, deny),
     ]
-    # io_uring_setup could bypass the socket restriction; a network plugin may connect but never serve.
-    for syscall in (*blocked, *(servers if network else ())):
+    for syscall in denied:
         instructions += [(equal, 0, 1, syscall), (ret, 0, 0, deny)]
     if network:
         # Socket domain is the low 32 bits of args[0]. Supported profiles above are little endian.
         instructions += [
-            (equal, 0, 4, socket_syscall),
+            (equal, 0, 4, _SOCKET[column]),
             (load, 0, 0, 16),
             (equal, 2, 0, 2),   # AF_INET
             (equal, 1, 0, 10),  # AF_INET6
             (ret, 0, 0, deny),
         ]
     else:
-        instructions += [(equal, 0, 1, socket_syscall), (ret, 0, 0, deny)]
+        instructions += [(equal, 0, 1, _SOCKET[column]), (ret, 0, 0, deny)]
     instructions.append((ret, 0, 0, allow))
     return b"".join(struct.pack("=HBBI", *instruction) for instruction in instructions)
 
