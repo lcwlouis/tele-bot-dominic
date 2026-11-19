@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 import httpx
@@ -46,6 +46,7 @@ class TurnCtx:
     reminders: Reminders | None = None
     desktop: DesktopWorker | None = None
     app: App | None = None
+    t3_notes: list[str] = field(default_factory=list)
 
     def is_owner_dm(self) -> bool:
         return (
@@ -347,5 +348,9 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 
     tools = core_tools(app.search_client, app.desktop_worker)
+    if scope == "owner_dm" and app.t3 is not None and app.t3.available():
+        from dom.t3.tools import TOOLS
+
+        tools.extend(TOOLS)
     tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL))
     return [tool for tool in tools if scope in tool.scopes] + await offered(app, scope)

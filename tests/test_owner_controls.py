@@ -99,6 +99,7 @@ def test_owner_commands():
         ("proposals", "Review pending changes"),
         ("plugins", "List and disable plugins"),
         ("reminders", "List and cancel reminders"),
+        ("t3", "View T3 sign-in, machines and audit history"),
         ("tasks", "List and cancel desktop tasks"),
         ("stickers", "Add or remove a sticker set"),
         ("import", "Bring memories from another assistant"),

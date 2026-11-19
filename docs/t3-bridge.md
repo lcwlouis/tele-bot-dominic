@@ -95,3 +95,22 @@ the local gateway and authorize it using Supervised access. The command
 stores the sign-in in `<home>/t3-token.json` with mode 0600. Sign-in lasts
 30 days. Set `[t3] base_url` to the matching loopback origin if you changed
 the service port.
+
+## Use the bridge from Telegram
+
+Enable `[t3] enabled` and restart Dom. In the owner's private chat, ask Dom
+to summarize coding work, search for a thread, or read its latest messages.
+Use a machine or thread ID if more than one matches a name. Dom sends one DM
+note after a turn that accessed T3. Thread content is treated as untrusted
+and shortened before reaching the model.
+
+When you ask Dom to pass on a message, review the thread, machine, and exact
+text in the confirmation. Tap **Send** to submit it in queue mode or
+**Cancel** to discard it. The button expires after 10 minutes and can be
+used once. Dom reports the result in the DM.
+
+Use `/t3` to see the bridge status, sign-in expiry, reachable machines, and
+the latest 15 audit entries. Dom keeps 180 days of audit history, including
+failed operations and the exact text of staged and submitted messages.
+Tap **Reconnect** to renew Supervised access. Dom sends one expiry reminder
+per sign-in when three days or fewer remain.

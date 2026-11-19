@@ -60,7 +60,7 @@ def test_mcp_reuses_and_reopens_session(tmp_path):
         assert request.headers["authorization"] == "Bearer " + "fixture"
         if method == "initialize":
             return httpx.Response(200, headers={"mcp-session-id": "fixture"}, json={
-                "result": {"protocolVersion": "2025-03-26"}})
+                "result": {"protocolVersion": "2025-06-18"}})
         assert request.headers["mcp-session-id"] == "fixture"
         if method == "notifications/initialized":
             return httpx.Response(202)
@@ -78,3 +78,29 @@ def test_mcp_reuses_and_reopens_session(tmp_path):
     assert client.call("t3_project_list", {}) == {"projects": []}
     assert client.call("t3_project_list", {}) == {"projects": []}
     assert methods.count("initialize") == 2
+
+
+def test_confirmed_send_uses_queue_and_audit_id(tmp_path):
+    path = tmp_path / "token"
+    path.write_text(json.dumps({"access_token": "fixture", "expires_at": time.time() + 3600}))
+    thread = "9bd62f03-ebb5-4ec3-9cf3-ed7e3712012a"
+    machine = "bcbfab34-8339-4399-85fa-763d1b882bcf"
+
+    def handle(request):
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            return httpx.Response(200, headers={"mcp-session-id": "fixture"}, json={
+                "result": {"protocolVersion": "2025-06-18"}})
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        assert body["params"] == {"name": "t3_thread_send", "arguments": {
+            "mode": "queue", "threadId": thread, "message": "Fixture text", "environmentId": machine,
+            "clientRequestId": "dom-7",
+        }}
+        return httpx.Response(200, json={"result": {"structuredContent": {
+            "_tag": "OrchestratorMcpFailure", "code": "capability_denied", "message": "Private details",
+        }}})
+
+    client = T3Client(BASE, path, ["t3"], transport=httpx.MockTransport(handle))
+    with pytest.raises(T3Unavailable, match="tool failed"):
+        client.confirmed_send(thread, "Fixture text", machine, 7)

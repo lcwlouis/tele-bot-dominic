@@ -14,8 +14,8 @@ def callback_prefixes() -> set[str]:
     found = set()
     for path in DOM.rglob("*.py"):
         text = path.read_text()
-        found |= set(re.findall(r'callback_data=f?"([a-z_]+):', text))
-        found |= set(re.findall(r'f"([a-z_]+):\{', text)) & {"preset", "presetset", "plugin", "prop", "rem", "desktop"}
+        found |= set(re.findall(r'callback_data=f?"([a-z0-9_]+):', text))
+        found |= set(re.findall(r'f"([a-z0-9_]+):\{', text)) & {"preset", "presetset", "plugin", "prop", "rem", "desktop"}
     return found
 
 
@@ -25,11 +25,11 @@ async def test_every_button_prefix_reaches_the_callback_handler(make_app):
     app = make_app()
     handlers = build_router(app).callback_query.handlers
     prefixes = callback_prefixes()
-    assert {"preset", "presetset", "plugin", "prop", "wake"} <= prefixes
-    for prefix in sorted(prefixes):
-        query = callback(app, OWNER, f"{prefix}:1")
+    assert {"preset", "presetset", "plugin", "prop", "wake", "t3send", "t3cancel"} <= prefixes
+    for data in sorted({f"{prefix}:1" for prefix in prefixes} | {"t3reconnect"}):
+        query = callback(app, OWNER, data)
         accepted = [ok for handler in handlers for ok, _ in [await handler.check(query)]]
-        assert any(accepted), f"no handler accepts {prefix}: buttons"
+        assert any(accepted), f"no handler accepts {data} buttons"
 
 
 async def test_everywhere_preset_buttons_reach_the_callback_handler(make_app):
