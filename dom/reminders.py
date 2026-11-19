@@ -1,9 +1,13 @@
-"""Owner reminders, including delivery independent of the chat model."""
+"""Owner reminders, including delivery independent of the chat model.
+
+A reminder is advanced only after every chunk of it was sent, so a crash between send and advance can duplicate a
+reminder, never lose one. A failed delivery is retried with a growing delay and cancelled after MAX_ATTEMPTS."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import TYPE_CHECKING
@@ -23,6 +27,8 @@ MODEL_TIMEOUT = 20
 MAX_ACTIVE = 50
 IMPORTANCE = ("critical", "normal", "casual")
 REPEATS = ("", "daily", "weekdays", "weekly")
+MAX_ATTEMPTS = 10
+MAX_BACKOFF_MINUTES = 60
 
 
 def _utc_local(wall: datetime, tz: ZoneInfo) -> datetime | None:
@@ -68,9 +74,21 @@ def _carry(styled: str | None, text: str) -> str:
     return f"{styled}\n{plain}"
 
 
+@dataclass
+class _Delivery:
+    """What one reminder has done so far in memory: its styled chunks (styling costs a model call, so once), the
+    message ids of the chunks already sent (never resent), and the failed attempts."""
+
+    chunks: list[str] = field(default_factory=list)
+    sent: list[int] = field(default_factory=list)
+    failures: int = 0
+    retry_at: datetime | None = None
+
+
 class Reminders:
     def __init__(self, app: App):
         self.app = app
+        self._deliveries: dict[int, _Delivery] = {}
         self._tick_lock = asyncio.Lock()
         self._delivery_lock = asyncio.Lock()
         self._started_at: datetime | None = None
@@ -110,6 +128,7 @@ class Reminders:
         app = self.app
         async with self._delivery_lock:
             changed = await app.store.cancel_reminder(app.owner_id, reminder_id)
+            self._deliveries.pop(reminder_id, None)
         if changed:
             await app.store.record_owner_event(f"Cancelled reminder #{reminder_id}")
         return changed
@@ -148,6 +167,8 @@ class Reminders:
                 due = datetime.fromisoformat(row["due_at"])
                 if due > now or row["importance"] == "casual":
                     continue
+                if (delivery := self._deliveries.get(row["id"])) and delivery.retry_at and delivery.retry_at > now:
+                    continue
                 missed = self._started_at is not None and due < self._started_at
                 if row["importance"] == "normal" and asleep and not missed:
                     continue
@@ -177,24 +198,48 @@ class Reminders:
 
     async def _deliver(self, owner: int, row: dict, late: bool) -> None:
         app = self.app
+        delivery = self._deliveries.setdefault(row["id"], _Delivery())
         try:
-            styled = await self._in_character(owner, row["text"]) if row["importance"] == "critical" else None
-            text = _carry(styled, row["text"])
-            if late:
-                text += " (late)"
-            chunks = [text] if len(text.encode("utf-16-le")) <= 8192 else [
-                text[start:start + 2000] for start in range(0, len(text), 2000)
-            ]
+            if not delivery.chunks:
+                styled = await self._in_character(owner, row["text"]) if row["importance"] == "critical" else None
+                text = _carry(styled, row["text"])
+                if late:
+                    text += " (late)"
+                delivery.chunks = [text] if len(text.encode("utf-16-le")) <= 8192 else [
+                    text[start:start + 2000] for start in range(0, len(text), 2000)
+                ]
             async with self._delivery_lock:
                 if owner != app.owner_id or not await app.store.reminder_is_active(row["id"]):
+                    self._deliveries.pop(row["id"], None)
                     return
-                sent = [await app.bot.send_message(owner, chunk) for chunk in chunks]
+                for chunk in delivery.chunks[len(delivery.sent):]:
+                    delivery.sent.append((await app.bot.send_message(owner, chunk)).message_id)
                 now = self._now()
                 await self._advance(row, now)
-            for message, chunk in zip(sent, chunks):
+                self._deliveries.pop(row["id"], None)
+        except Exception:
+            log.exception("could not deliver reminder %s", row["id"])
+            await self._failed(owner, row, delivery)
+            return
+        try:
+            for message_id, chunk in zip(delivery.sent, delivery.chunks):
                 await app.store.record_new_message(StoredMessage(
-                    chat_id=str(owner), msg_id=message.message_id, role="assistant", is_bot=True,
+                    chat_id=str(owner), msg_id=message_id, role="assistant", is_bot=True,
                     visibility_scope=app.store.visibility_for(owner), text=chunk, created_at=now.isoformat(),
                 ))
         except Exception:
-            log.exception("could not deliver reminder %s", row["id"])
+            log.exception("could not record reminder %s in the chat", row["id"])
+
+    async def _failed(self, owner: int, row: dict, delivery: _Delivery) -> None:
+        """Back off 1, 2, 4... minutes (at most an hour) before the next attempt; give up after MAX_ATTEMPTS."""
+        delivery.failures += 1
+        if delivery.failures < MAX_ATTEMPTS:
+            wait = min(2 ** (delivery.failures - 1), MAX_BACKOFF_MINUTES)
+            delivery.retry_at = self._now() + timedelta(minutes=wait)
+            return
+        log.error("giving up on reminder %s after %s failed deliveries", row["id"], delivery.failures)
+        self._deliveries.pop(row["id"], None)
+        try:
+            await self.app.store.cancel_reminder(owner, row["id"])
+        except Exception:
+            log.exception("could not cancel reminder %s", row["id"])
