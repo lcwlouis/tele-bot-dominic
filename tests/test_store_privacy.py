@@ -33,3 +33,18 @@ async def test_owner_window_keeps_private_rows(store):
     await store.record_new_message(row(OWNER, 2, "admin_private", "legacy dm"))
     texts = [m.text for m in await store.get_recent_chat_window(str(OWNER), 10)]
     assert texts == ["dm", "legacy dm"]
+
+
+async def test_search_for_friend_stays_in_own_chat_even_with_mislabeled_rows(store):
+    await store.record_new_message(row(333, 1, f"chat:{FRIEND}", "pineapple from another chat"))
+    await store.record_new_message(row(333, 2, "global_public", "pineapple public label"))
+    await store.record_new_message(row(FRIEND, 3, "admin_private", "pineapple owner secret"))
+    await store.record_new_message(row(FRIEND, 4, f"chat:{FRIEND}", "pineapple mine"))
+    hits = await store.search_chat_history("pineapple", str(FRIEND))
+    assert [h["text"] for h in hits] == ["pineapple mine"]
+
+
+async def test_owner_search_covers_every_chat(store):
+    await store.record_new_message(row(333, 1, "chat:333", "pineapple one"))
+    await store.record_new_message(row(OWNER, 2, "owner_private", "pineapple two"))
+    assert len(await store.search_chat_history("pineapple", str(OWNER))) == 2
