@@ -39,7 +39,10 @@
       {% endif %}
     </article>
   {% else %}
-    {% if not context.rows %}<p class="fog">No plugins are installed.</p>{% endif %}
+    {% if not context.rows %}
+    <p class="fog">No plugins are installed.</p>
+    <p class="fog">Ask Dom in your DM to write a plugin for something he does often. You'll review the code here before it runs.</p>
+    {% endif %}
     {% for row in context.rows %}
     {% set route = "/plugins/" ~ row.name ~ "/" ~ row.hash %}
     <article class="proposal">

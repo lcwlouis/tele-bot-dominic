@@ -124,6 +124,42 @@ def _hour(value: time | datetime) -> float:
     return value.hour + value.minute / 60 + value.second / 3600
 
 
+MIN_ARC_HOURS = 0.25  # a 3-minute wake still reads as a mark on the dial
+
+
+def _online_arcs(spans: list[tuple[float, float]]) -> list[list[float]]:
+    """Give each session a drawn length of at least MIN_ARC_HOURS inside the day, then merge overlaps."""
+    arcs: list[list[float]] = []
+    for a, b in sorted(spans):
+        b = min(24, max(b, a + MIN_ARC_HOURS))
+        a = min(a, b - MIN_ARC_HOURS)
+        if arcs and a < arcs[-1][1]:
+            arcs[-1][1] = max(arcs[-1][1], b)
+        else:
+            arcs.append([a, b])
+    return arcs
+
+
+def _day_label(due: datetime, now: datetime) -> str:
+    return f"{due:%H:%M}" if due.date() == now.date() else f"{due:%a %H:%M}"
+
+
+async def _today(app: App, now: datetime) -> list[tuple[str, str]]:
+    """The usage page's spend, the turn log's replies and the owner's next reminder, for the day dial's column."""
+    tz = now.tzinfo
+    turns = [row for row in await app.store.recent_turns() if datetime.fromisoformat(row["at"]).astimezone(tz).date() == now.date()]
+    replies = sum(row["outcome"].startswith("Replied") for row in turns)
+    _, spent = await app.dispatch.usage.today(ZoneInfo(app.config.timezone))
+    reminders = await app.dispatch.reminders.active()
+    if reminders:
+        due = datetime.fromisoformat(reminders[0]["due_at"]).astimezone(tz)
+        text = reminders[0]["text"]
+        upcoming = f"{_day_label(due, now)} {text if len(text) <= 40 else text[:39] + '…'}"
+    else:
+        upcoming = "No reminders"
+    return [("Turns today", str(len(turns))), ("Replies sent", str(replies)), ("Spend today", f"${spent:,.2f}"), ("Next reminder", upcoming)]
+
+
 async def _dial(app: App, chats: list[dict]) -> dict:
     now = app.dispatch.now().astimezone(ZoneInfo(app.config.timezone))
     habits = read_habits(app.home)
@@ -136,12 +172,7 @@ async def _dial(app: App, chats: list[dict]) -> dict:
         b = _hour(exited.astimezone(now.tzinfo)) if exited < end else 24
         if b > a:
             spans.append((a, b))
-    arcs: list[list[float]] = []
-    for a, b in sorted(spans):
-        if arcs and a < arcs[-1][1]:
-            arcs[-1][1] = max(arcs[-1][1], b)
-        else:
-            arcs.append([a, b])
+    arcs = _online_arcs(spans)
     counts = await app.store.hourly_message_counts(tz=now.tzinfo, now=now)
     maximum = max(counts)
     ticks = [
@@ -165,7 +196,7 @@ async def _dial(app: App, chats: list[dict]) -> dict:
         "all_day": arcs == [[0, 24]],
         "ticks": ticks, "hours": [(h, _point(h, 104)) for h in (0, 6, 12, 18)],
         "hand": (_point(_hour(now), 116), _point(_hour(now), 152)),
-        "clock": f"{now:%H:%M}", "title": title, "detail": detail,
+        "clock": f"{now:%H:%M}", "title": title, "detail": detail, "today": await _today(app, now),
     }
 
 
@@ -179,13 +210,26 @@ def _proposal_body(row: dict) -> dict:
     return {**row, "body": json.loads(row["body_json"])}
 
 
+def _proposal_label(kind: str, source: str) -> str:
+    if kind == "soul_edit":
+        return {
+            "reflection": "Soul edit, suggested in reflection", "dashboard": "Soul edit, asked for in the dashboard",
+        }.get(source, "Soul edit")
+    if kind == "memory_fact":
+        service = source.partition("import:")[2]
+        return f"Memory imported from {IMPORT_SERVICES.get(service, service)}" if service else "Memory fact"
+    if kind == "skill":
+        return "Skill proposed after a desktop task" if source == "desktop" else "Skill proposal"
+    return "Plugin draft" if kind == "plugin" else kind.replace("_", " ").capitalize()
+
+
 async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
     rows = await app.proposals.pending()
     cards, imports = [], {}
     for raw in rows:
         if (kind and raw["kind"] != kind) or (source and raw["source"] != source):
             continue
-        row = _proposal_body(raw)
+        row = _proposal_body(raw) | {"label": _proposal_label(raw["kind"], raw["source"])}
         if row["kind"] == "plugin":
             row["review_path"] = proposals.plugin_review_path(row["body"])
         if row["kind"] == "skill" and row["body"]["old"]:
