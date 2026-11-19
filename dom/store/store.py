@@ -851,6 +851,19 @@ class Store:
                 found.append((row["msg_id"], media))
         return found
 
+    async def latest_chat_message(self, chat_id: int | str) -> tuple[int, str] | None:
+        """Latest visible Telegram message id and timestamp, excluding owner events."""
+        return await self._run(self._latest_chat_message, str(chat_id))
+
+    def _latest_chat_message(self, chat_id: str) -> tuple[int, str] | None:
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        row = self._conn.execute(
+            "SELECT msg_id, created_at FROM messages WHERE chat_id = ? AND msg_id IS NOT NULL "
+            f"AND is_deleted = 0 AND role IN ('user', 'assistant'){hide} ORDER BY msg_id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        return (row["msg_id"], row["created_at"]) if row is not None else None
+
     async def get_recent_chat_window(
         self, chat_id: int | str, limit: int = 35, *, through_id: int | None = None,
     ) -> list[StoredMessage]:

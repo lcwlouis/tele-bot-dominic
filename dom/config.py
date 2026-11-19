@@ -20,6 +20,13 @@ class ModelEndpoint(BaseModel):
     api_key_env: str | None = None
 
 
+class OpenersConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    max_per_day: int = Field(default=2, ge=0)
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -30,6 +37,7 @@ class Config(BaseModel):
     desktop_mode: Literal["local", "remote", "off"] = "off"
     window_size: int = 80
     daily_spend_cap_usd: float = Field(default=1.0, ge=0, allow_inf_nan=False)
+    openers: OpenersConfig = Field(default_factory=OpenersConfig)
 
     def secret(self, name: str) -> str | None:
         """Read a secret from ``home/.env`` first, then the process environment."""
@@ -65,6 +73,7 @@ def load_config(home: Path) -> Config:
         desktop_mode=raw.get("desktop", {}).get("mode", "off"),
         window_size=raw.get("window_size", 80),
         daily_spend_cap_usd=raw.get("daily_spend_cap_usd", 1.0),
+        openers=raw.get("openers", {}),
     )
 
 

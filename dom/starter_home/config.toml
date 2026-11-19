@@ -26,3 +26,7 @@ api_key_env = "OPENROUTER_API_KEY"
 
 [desktop]
 mode = "off"
+
+[openers]
+enabled = true
+max_per_day = 2
