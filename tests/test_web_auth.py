@@ -103,6 +103,7 @@ async def test_dev_token_and_security_headers(tmp_path, monkeypatch):
             assert "default-src 'self'" in response.headers["Content-Security-Policy"]
             assert "'unsafe-inline'" not in response.headers["Content-Security-Policy"]
             assert response.headers["X-Frame-Options"] == "DENY"
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
             assert response.headers["Referrer-Policy"] == "no-referrer"
             assert response.headers["Cache-Control"] == "no-store"
 
