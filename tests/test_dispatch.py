@@ -16,15 +16,17 @@ from tghelpers import FRIEND, GROUP, OWNER, Clock, FixedRandom, drain_dispatch, 
 
 
 class FakeJev:
-    def __init__(self, action="reply", confidence=1, kapoh=0, failure=None):
+    def __init__(self, action="reply", confidence=1, kapoh=0, failure=None, urgency=None):
         self.action, self.confidence, self.kapoh = action, confidence, kapoh
-        self.failure = failure
+        self.failure, self.urgency = failure, urgency
         self.calls = []
 
     async def decide(self, state, questions):
         self.calls.append((state, questions))
         if self.failure:
             raise self.failure
+        if "urgency" in questions:
+            return {"urgency": {"type": "score", "score": self.urgency} if self.urgency is not None else None}
         if "kapoh" in questions:
             return {"kapoh": {"type": "score", "score": self.kapoh}}
         return {
@@ -81,6 +83,62 @@ async def test_offline_wakes_after_n_messages(setup_dispatch):
     assert not app.script.requests and not jev.calls
     await deliver(app, 5, chat_id=FRIEND)
     assert len(app.script.requests) == 1 and not jev.calls
+
+
+@pytest.mark.parametrize(("hour", "score", "wakes"), [
+    (12, 0, False),   # offline, casual
+    (12, 1.5, True),  # offline, needs an answer
+    (2, 2, False),    # asleep, task can wait
+    (2, 2.5, True),   # asleep, urgent enough to wake
+    (2, 3, True),     # asleep, emergency
+    (2, None, False), # refused
+])
+async def test_owner_urgency_wakes_only_above_the_state_threshold(setup_dispatch, hour, score, wakes):
+    jev = FakeJev(urgency=score)
+    app, dispatch, clock = await setup_dispatch(jev, chat_id=OWNER)
+    clock.at = clock.at.replace(hour=hour)
+    await deliver(app, chat_id=OWNER, sender=OWNER, text="Please check this.")
+
+    (state, questions), = jev.calls
+    assert "Please check this." in state
+    assert list(questions) == ["urgency"]
+    assert questions["urgency"]["type"] == "score"
+    assert questions["urgency"]["criteria"] == [
+        "casual chat, can wait", "would like an answer soon",
+        "needs Dom now: a task, a deadline, a problem", "emergency",
+    ]
+    assert len(turn_requests(app)) == int(wakes)
+    assert (await app.store.get_unread(OWNER))[0] == int(not wakes)
+    presence, until = await dispatch.presence.state(OWNER, parse_habits(""))
+    assert presence == ("online" if wakes else "asleep" if hour == 2 else "offline")
+    if hour == 2 and wakes:
+        assert until == clock() + timedelta(minutes=15)
+    if hour == 2 and not wakes:
+        await dispatch.tick()
+        assert len(jev.calls) == 1
+
+
+async def test_jev_down_does_not_wake_owner_early_but_count_rule_still_works(setup_dispatch):
+    jev = FakeJev(failure=JevUnavailable("unavailable"))
+    app, dispatch, _ = await setup_dispatch(jev, chat_id=OWNER)
+    for msg_id in range(1, 5):
+        await deliver(app, msg_id, chat_id=OWNER, sender=OWNER)
+    assert len(jev.calls) == 4 and not turn_requests(app)
+    assert (await dispatch.presence.state(OWNER, parse_habits("")))[0] == "offline"
+
+    await deliver(app, 5, chat_id=OWNER, sender=OWNER)
+    assert len(jev.calls) == 5
+    assert len(turn_requests(app)) == 1
+    assert (await app.store.get_unread(OWNER))[0] == 0
+
+
+@pytest.mark.parametrize("hour", [2, 12])
+async def test_friend_dm_never_runs_urgency_triage(setup_dispatch, hour):
+    jev = FakeJev(urgency=3)
+    app, _, clock = await setup_dispatch(jev, chat_id=FRIEND)
+    clock.at = clock.at.replace(hour=hour)
+    await deliver(app, chat_id=FRIEND)
+    assert jev.calls == [] and turn_requests(app) == []
 
 
 async def test_offline_kapoh_wakes_group(setup_dispatch):

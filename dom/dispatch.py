@@ -24,7 +24,7 @@ from dom.presence import Habits, Presence, State, parse_habits
 from dom.prompt import build_messages
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, core_tools
-from dom.triage import persona_card, triage_offline, triage_online
+from dom.triage import persona_card, triage_offline, triage_online, triage_urgency
 from dom.usage import ModelCallSkipped, Usage, check_model_allowed, model_request
 
 if TYPE_CHECKING:
@@ -36,6 +36,9 @@ DEBOUNCE_CAP = timedelta(seconds=15)  # a steady stream of messages cannot postp
 MEDIA_WAIT_SECONDS = 15
 ORPHAN_AGE = timedelta(seconds=10)  # an online chat's unread message this old lost its debounce
 TRIAGE_WINDOW = 15
+OFFLINE_URGENCY = 1.5
+ASLEEP_URGENCY = 2.5
+URGENT_WAKE_MINUTES = 15
 MEDIA_CAP = 10  # descriptions per chat within MEDIA_CAP_WINDOW
 MEDIA_CAP_WINDOW = timedelta(minutes=10)
 CATCH_UP_MEDIA = 5  # unread messages checked for undescribed media when Dom comes online
@@ -310,7 +313,9 @@ class Dispatcher:
     ) -> None:
         store = self.app.store
         state, until = await self.presence.state(chat_id, habits)
-        if state == "asleep" or (background and state == "offline" and until is not None and until > self.now()):
+        if state == "asleep" and (background or chat_id != self.app.owner_id):
+            return
+        if background and state == "offline" and until is not None and until > self.now():
             return
         count, newest = await store.get_unread(chat_id)
         if newest is None:
@@ -361,8 +366,22 @@ class Dispatcher:
         window = await self._window(chat_id, newest)
         await check_model_allowed()
 
-        if state == "offline":
-            wake = background or count >= habits.wake_after_messages
+        urgency = None
+        if state != "online" and scope == "owner_dm" and not background and self.jev is not None:
+            try:
+                urgency = await triage_urgency(self.jev, persona_card(self.app.home), self._triage_xml(chat_id, window))
+            except JevUnavailable:
+                pass
+
+        if state == "asleep":
+            if urgency is None or urgency < ASLEEP_URGENCY:
+                return
+            until = await self.presence.wake(chat_id, habits, minutes=URGENT_WAKE_MINUTES)
+            catch_up = True
+        elif state == "offline":
+            wake = background or count >= habits.wake_after_messages or (
+                urgency is not None and urgency >= OFFLINE_URGENCY
+            )
             if not wake and scope == "group" and self.jev is not None:
                 try:
                     triage = await triage_offline(self.jev, persona_card(self.app.home), self._triage_xml(chat_id, window))

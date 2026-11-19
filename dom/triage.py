@@ -107,3 +107,21 @@ async def triage_offline(jev: JevClient, card: str, window_xml: str) -> Triage:
     })
     score = (answers.get("kapoh") or {}).get("score")
     return Triage(None, None, score if type(score) in (int, float) and 0 <= score <= 3 else None, False)
+
+
+async def triage_urgency(jev: JevClient, card: str, window_xml: str) -> float | None:
+    answers = await jev.decide(_state(card, window_xml), {
+        "urgency": {
+            "type": "score",
+            "instructions": "How urgently do the owner's newest messages need Dom to respond?",
+            "criteria": [
+                "casual chat, can wait",
+                "would like an answer soon",
+                "needs Dom now: a task, a deadline, a problem",
+                "emergency",
+            ],
+        },
+    })
+    answer = answers.get("urgency") or {}
+    score = answer.get("score")
+    return score if answer.get("type") == "score" and type(score) in (int, float) and 0 <= score <= 3 else None
