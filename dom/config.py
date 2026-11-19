@@ -39,6 +39,18 @@ class WebConfig(BaseModel):
     dev_token_env: str = ""
 
 
+class DesktopConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    image: str = "ghcr.io/agent-infra/sandbox:latest"
+    url: str = ""
+    api_key_env: str = "SANDBOX_API_KEY"
+    idle_minutes: float = Field(default=10, gt=0, allow_inf_nan=False)
+    profile_dir: str = ""
+    network: str = "dom-desktop"
+    port: int = Field(default=18080, ge=1, le=65535)
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -47,6 +59,7 @@ class Config(BaseModel):
     timezone: str = "Asia/Singapore"
     models: dict[str, ModelEndpoint] = {}
     desktop_mode: Literal["local", "remote", "off"] = "off"
+    desktop: DesktopConfig = Field(default_factory=DesktopConfig)
     window_size: int = 80
     daily_spend_cap_usd: float = Field(default=1.0, ge=0, allow_inf_nan=False)
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
@@ -87,6 +100,7 @@ def load_config(home: Path) -> Config:
         timezone=raw.get("timezone", "Asia/Singapore"),
         models=models,
         desktop_mode=raw.get("desktop", {}).get("mode", "off"),
+        desktop=raw.get("desktop", {}),
         window_size=raw.get("window_size", 80),
         daily_spend_cap_usd=raw.get("daily_spend_cap_usd", 1.0),
         openers=raw.get("openers", {}),

@@ -25,7 +25,7 @@ async def test_capabilities_reflect_offered_tools(make_app, monkeypatch, scope):
     app.config = app.config.model_copy(update={"desktop_mode": "local"})
     note = capabilities.describe(app, scope)
     assert "understands: text, photos, GIFs, video, voice" in note
-    assert "desktop: unavailable" in note
+    assert ("desktop: unavailable" if scope == "owner_dm" else "desktop: off") in note
     assert len(note) <= 600
 
 
