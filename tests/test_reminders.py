@@ -82,7 +82,7 @@ async def test_critical_fires_asleep_and_makes_one_unlocked_model_call(make_app)
         clock.advance(minutes=1)
         await app.dispatch.tick()
         await app.dispatch.tick()
-    assert [call[2] for call in app.bot.of("send", OWNER)] == ["hey"]
+    assert [call[2] for call in app.bot.of("send", OWNER)] == ["hey\n⏰ Check the kettle"]
     assert len(app.script.requests) == 1
 
 
@@ -199,3 +199,22 @@ async def test_reminders_command_has_owner_only_cancel_buttons(make_app):
     assert app.bot.of("answer")[-1][2] == "Cancelled"
     assert await app.dispatch.reminders.active() == []
     assert any("Cancelled" in event["text"] for event in await events(app))
+
+
+def _styled(app, *bubbles):
+    app.script.contents[:] = [json.dumps({"no_response": False, "bubbles": [{"text": text} for text in bubbles]})]
+
+
+@pytest.mark.parametrize("bubbles,expected", [
+    (("Psst, CHECK  the\nkettle!",), "Psst, CHECK  the\nkettle!"),
+    (("Heads up.", "Time to check the kettle."), "Heads up.\nTime to check the kettle."),
+    (("Time for tea!",), "Time for tea!\n⏰ Check the kettle"),
+    (("Check the", "other thing"), "Check the\nother thing\n⏰ Check the kettle"),
+])
+async def test_critical_styling_must_carry_the_stored_text_or_it_is_appended(make_app, bubbles, expected):
+    app = make_app()
+    await add(app, "critical")
+    _styled(app, *bubbles)
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    assert [call[2] for call in app.bot.of("send", OWNER)] == [expected]
