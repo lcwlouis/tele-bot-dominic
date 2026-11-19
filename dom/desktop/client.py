@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -145,8 +146,14 @@ class SandboxClient:
     async def bash(self, command: str) -> dict | None:
         return await self._json("bash/exec", {"command": command}, timeout=120)
 
-    async def jupyter(self, code: str) -> dict | None:
-        return await self._json("jupyter/execute", {"code": code}, timeout=120)
+    async def run_python(self, code: str) -> dict:
+        path = f"/tmp/{secrets.token_hex(16)}.py"
+        await self.write_file(path, code)
+        # Stop the script before the Bash request's 120-second HTTP timeout.
+        result = await self.bash(f"trap 'rm -f -- {path}' EXIT; timeout --kill-after=5s 110s python3 {path}")
+        if not isinstance(result, dict):
+            raise SandboxError("invalid sandbox bash response")
+        return {key: result.get(key) for key in ("exit_code", "stdout", "stderr")}
 
     async def read_file(self, path: str) -> dict | None:
         return await self._json("file/read", {"file": path})

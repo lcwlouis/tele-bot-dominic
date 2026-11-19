@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Disable Jupyter for faster local desktop startup and run Python scripts through the sandbox Bash API.
 - Ship a Docker seccomp profile that lets Chromium start its namespace sandbox on the Raspberry Pi.
 - `/preset` and the dashboard Chats panel can set one preset for every chat ("Everywhere"); a chat's own preset still wins, and a chat can go back to "Same as everywhere". `self_inspect` reports it.
 
