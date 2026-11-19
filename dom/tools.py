@@ -263,6 +263,7 @@ WRITE_BRIEF_TOOL = Tool(
 async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
     from dom.capabilities import desktop_status
     from dom.plugins.manifest import SCOPES
+    from dom.traits import global_preset_name
 
     app = ctx.app
     if app is None or not ctx.is_owner_dm():
@@ -279,6 +280,13 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
         "desktop": desktop_status(app, "owner_dm"),
         "models": {kind: endpoint.model for kind, endpoint in app.config.models.items()},
         "last_errors": await app.store.recent_turn_errors(),
+        "preset": {
+            "everywhere": await global_preset_name(app.store),
+            "chats_with_own": [
+                {"title": row["title"] or row["chat_id"], "preset": row["preset"]}
+                for row in await app.store.list_chats("approved") if row["preset"]
+            ],
+        },
     })
 
 
@@ -286,7 +294,8 @@ SELF_INSPECT_TOOL = Tool(
     name="self_inspect",
     description=(
         "Read Dom's version, newest changelog entry, available tools by chat scope, approved plugins, desktop status, "
-        "models and recent errors. When someone asks about you, answer in your own words like a person would; "
+        "models, the preset used everywhere with the chats that override it, and recent errors. "
+        "When someone asks about you, answer in your own words like a person would; "
         "give exact numbers or internal names only when asked for them."
     ),
     schema={"type": "object", "properties": {}, "additionalProperties": False},

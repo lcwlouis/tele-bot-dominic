@@ -94,16 +94,17 @@ async def _chats(app: App) -> dict:
         chat_id = int(row["chat_id"])
         sliders, preset = await traits.for_chat(app.home, app.store, chat_id)
         unread, _ = await app.store.get_unread(chat_id)
+        own, _ = await app.store.get_chat_personality(chat_id)
         chats.append({
             "id": chat_id, "title": _title(row, app.owner_id), "state": state, "until": until,
             "when": until.astimezone(tz).strftime("%H:%M") if until else "",
             "scope": app.store.scope_for(chat_id, "group" if chat_id < 0 else "private"),
-            "unread": unread, "traits": sliders, "preset": preset,
+            "unread": unread, "traits": sliders, "preset": preset, "own_preset": own,
         })
     presets = [preset for name in app.home.preset_names() if (preset := traits.load_preset(app.home, name))]
     pending = await app.store.list_pending_chats()
     return {
-        "rows": chats, "presets": presets, "pending": len(pending),
+        "rows": chats, "presets": presets, "everywhere": await traits.global_preset_name(app.store), "pending": len(pending),
         "stickers": app.stickers.names(),
     }
 
@@ -317,6 +318,14 @@ async def index(request: Request):
 @router.get("/chats", response_class=HTMLResponse)
 async def chats_page(request: Request):
     return panel(request, "chats", **await _chats(owner_app(request)))
+
+
+@router.post("/chats/all/preset", response_class=HTMLResponse)
+async def set_everywhere_preset(request: Request):
+    app = owner_app(request)
+    name = (await form(request)).get("preset", [""])[0]
+    message = await owner.set_global_preset(app, name, WHO) or "Preset unavailable."
+    return render("chats.html", context=await _chats(app) | {"message": message})
 
 
 @router.post("/chats/{chat_id}/{action}", response_class=HTMLResponse)

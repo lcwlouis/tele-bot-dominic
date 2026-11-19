@@ -397,6 +397,16 @@ async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str)
         await _toast(app, query, "not allowed")
         return
     raw_id, _, name = data.partition(":")
+    if raw_id == "all":
+        if action == "preset":
+            await _toast(app, query)
+            await owner.choose_preset(app, None)
+            return
+        text = await owner.set_global_preset(app, name, _person(query.from_user.full_name))
+        await _toast(app, query, None if text else "preset unavailable")
+        if text:
+            await app.bot.send_message(owner_id, text)
+        return
     chat = next((c for c in await app.store.list_chats("approved") if c["chat_id"] == raw_id), None)
     if chat is None:
         await _toast(app, query, "unknown chat")

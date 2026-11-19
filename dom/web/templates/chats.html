@@ -2,6 +2,15 @@
   <header><h2>Chats</h2><span class="fog">{{ context.rows|length }} approved, {{ context.pending }} waiting</span></header>
   {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
   {% if not context.rows %}<p class="fog">Dom doesn't know any chats yet.</p>{% endif %}
+  <form class="inline-form" method="post" action="/chats/all/preset" hx-post="/chats/all/preset" hx-trigger="change" hx-target="#chats" hx-swap="outerHTML">
+    <label for="preset-all">Everywhere <span class="fog">(a chat's own preset wins)</span></label>
+    <select name="preset" id="preset-all">
+      <option value=""{% if not context.everywhere %} selected{% endif %}>None</option>
+      {% for preset in context.presets %}
+      <option value="{{ preset.name }}"{% if context.everywhere == preset.name %} selected{% endif %}>{{ preset.title }}</option>
+      {% endfor %}
+    </select>
+  </form>
   <ul class="chats">
     {% for chat in context.rows %}
     <li class="chat{% if chat.id == context.woke %} woke{% endif %}">
@@ -39,9 +48,9 @@
         <form class="inline-form" method="post" action="/chats/{{ chat.id }}/preset" hx-post="/chats/{{ chat.id }}/preset" hx-trigger="change">
           <label class="sr-only" for="preset-{{ chat.id }}">Preset for {{ chat.title }} (changes on selection)</label>
           <select name="preset" id="preset-{{ chat.id }}">
-            <option value=""{% if not chat.preset %} selected{% endif %}>None</option>
+            <option value=""{% if not chat.own_preset %} selected{% endif %}>Same as everywhere</option>
             {% for preset in context.presets %}
-            <option value="{{ preset.name }}"{% if chat.preset and chat.preset.name == preset.name %} selected{% endif %}>{{ preset.title }}</option>
+            <option value="{{ preset.name }}"{% if chat.own_preset == preset.name %} selected{% endif %}>{{ preset.title }}</option>
             {% endfor %}
           </select>
         </form>

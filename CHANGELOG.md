@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- `/preset` and the dashboard Chats panel can set one preset for every chat ("Everywhere"); a chat's own preset still wins, and a chat can go back to "Same as everywhere". `self_inspect` reports it.
+
 ## [0.7.0] - 2026-11-19
 
 The rebuild: Dom is now a single asyncio service with a privacy-scoped prompt, a
