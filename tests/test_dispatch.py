@@ -118,6 +118,15 @@ async def test_owner_urgency_wakes_only_above_the_state_threshold(setup_dispatch
         assert len(jev.calls) == 1
 
 
+async def test_owner_urgency_is_not_asked_when_the_message_count_already_wakes_dom(setup_dispatch):
+    jev = FakeJev(urgency=0)
+    app, _, _ = await setup_dispatch(jev, chat_id=OWNER)
+    for msg_id in range(1, 6):
+        await deliver(app, msg_id, chat_id=OWNER, sender=OWNER)
+    assert len(jev.calls) == 4
+    assert len(turn_requests(app)) == 1
+
+
 async def test_jev_down_does_not_wake_owner_early_but_count_rule_still_works(setup_dispatch):
     jev = FakeJev(failure=JevUnavailable("unavailable"))
     app, dispatch, _ = await setup_dispatch(jev, chat_id=OWNER)
@@ -127,7 +136,7 @@ async def test_jev_down_does_not_wake_owner_early_but_count_rule_still_works(set
     assert (await dispatch.presence.state(OWNER, parse_habits("")))[0] == "offline"
 
     await deliver(app, 5, chat_id=OWNER, sender=OWNER)
-    assert len(jev.calls) == 5
+    assert len(jev.calls) == 4  # the count rule already wakes Dom: no urgency call
     assert len(turn_requests(app)) == 1
     assert (await app.store.get_unread(OWNER))[0] == 0
 
