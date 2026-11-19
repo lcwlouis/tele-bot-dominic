@@ -35,6 +35,7 @@ api_key_env = "SANDBOX_API_KEY"
 idle_minutes = 10
 profile_dir = ""  # defaults to DOM_HOME/../desktop-profile
 network = "dom-desktop"
+subnet = "172.30.0.0/24"
 port = 18080
 
 [openers]

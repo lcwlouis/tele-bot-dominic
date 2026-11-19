@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import sqlite3
+import subprocess
 import tarfile
 from functools import partial
 from pathlib import Path
@@ -17,6 +18,7 @@ from dom import habits, reflection
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
+from dom.desktop import network as desktop_network
 from dom.desktop.sandbox import configured_sandbox
 from dom.home import Home, init_home
 from dom.importer import import_v2
@@ -184,7 +186,25 @@ def main(argv: list[str] | None = None) -> int:
     restore_cmd = sub.add_parser("restore", help="restore an archive into an empty home")
     restore_cmd.add_argument("archive", type=Path)
     restore_cmd.add_argument("home", type=Path)
+    setup_cmd = sub.add_parser("desktop-setup", help="create the local desktop network and firewall rules")
+    setup_cmd.add_argument("home", type=Path)
+    check_cmd = sub.add_parser("desktop-check", help="check connectivity from the desktop network")
+    check_cmd.add_argument("home", type=Path)
+    check_cmd.add_argument("lan_address", help="IPv4 address of a known reachable LAN service")
+    check_cmd.add_argument("--lan-port", type=int, default=443)
+    check_cmd.add_argument("--public-address", default="1.1.1.1")
     args = parser.parse_args(argv)
+    if args.command in ("desktop-setup", "desktop-check"):
+        try:
+            config = load_config(args.home)
+            if args.command == "desktop-setup":
+                desktop_network.setup(config)
+            else:
+                desktop_network.check(config, args.lan_address, args.lan_port, args.public_address)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"{args.command} failed: {exc}")
+            return 1
+        return 0
     if args.command == "init":
         return cmd_init(args.home, getattr(args, "timezone", None))
     if args.command == "import-v2":

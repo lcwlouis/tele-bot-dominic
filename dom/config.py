@@ -48,6 +48,7 @@ class DesktopConfig(BaseModel):
     idle_minutes: float = Field(default=10, gt=0, allow_inf_nan=False)
     profile_dir: str = ""
     network: str = "dom-desktop"
+    subnet: str = "172.30.0.0/24"
     port: int = Field(default=18080, ge=1, le=65535)
 
 
