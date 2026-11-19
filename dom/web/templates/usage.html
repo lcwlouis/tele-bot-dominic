@@ -1,0 +1,52 @@
+{% macro breakdown(rows, heading, kinds) %}
+{% if rows %}
+<table>
+  <thead><tr><th scope="col">{{ heading }}</th><th scope="col">Calls</th><th scope="col">Spend</th></tr></thead>
+  <tbody>
+    {% for name, calls, spent in rows %}
+    <tr><th scope="row">{{ kinds.get(name, name) }}</th><td class="num">{{ calls }}</td><td class="num">{{ spent|money }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="fog">No calls recorded.</p>{% endif %}
+{% endmacro %}
+<section class="panel usage" id="usage">
+  <header><h2>Usage</h2><span class="fog">Today</span></header>
+  <div class="meter">
+    <svg viewBox="-110 -110 220 120" role="img" aria-label="{{ context.spent|money }} spent{% if context.cap %} of a {{ context.cap|money }} daily cap{% endif %}">
+      <path class="meter-track" d="M-90 0 A90 90 0 0 1 90 0"/>
+      {% if context.ratio %}
+      <path class="meter-value {{ context.tone }}" d="M-90 0 A90 90 0 0 1 90 0"
+        pathLength="1" stroke-dasharray="{{ context.ratio }} 1"/>
+      {% endif %}
+    </svg>
+    <span class="val num">{{ context.spent|money }}</span>
+    <span class="fog">{% if context.cap %}of {{ context.cap|money }} daily cap{% else %}Daily cap disabled{% endif %}</span>
+  </div>
+  <figure class="history">
+    <figcaption>Last 30 days</figcaption>
+    <svg class="bars" viewBox="0 0 300 72" preserveAspectRatio="none" role="img" aria-label="30 days of spend by kind, {{ context.fallbacks }} fallback calls">
+      {% for day in context.bars %}
+        {% set x = loop.index0 * 10 %}
+        <g>
+          <title>{{ day.date }} · {{ day.spent|money }}{% if day.fallbacks %} · {{ day.fallbacks }} fallback calls{% endif %}</title>
+          <rect x="{{ x }}" y="68" width="7" height="2" class="bar-base{% if loop.last %} today{% endif %}"/>
+          {% for kind, y, height in day.parts %}<rect x="{{ x }}" y="{{ y }}" width="7" height="{{ height }}" class="bar-{{ kind }}"/>{% endfor %}
+          {% if day.fallbacks %}<rect x="{{ x }}" y="1" width="7" height="3" class="fallback-mark"/>{% endif %}
+        </g>
+      {% endfor %}
+    </svg>
+    <ul class="chart-key">
+      {% for kind, _, _ in context.month_kinds %}
+      <li><svg viewBox="0 0 10 10" aria-hidden="true"><rect width="10" height="10" class="bar-{{ kind }}"/></svg>{{ context.kinds[kind] }}</li>
+      {% endfor %}
+      {% if context.fallbacks %}<li><svg viewBox="0 0 10 10" aria-hidden="true"><rect width="10" height="10" class="fallback-mark"/></svg>{{ context.fallbacks }} fallback calls</li>{% endif %}
+    </ul>
+  </figure>
+  {{ breakdown(context.today_kinds, "Today by kind", context.kinds) }}
+  <details><summary>Today by model</summary>{{ breakdown(context.today_models, "Model", {}) }}</details>
+  <details><summary>Last 30 days by kind and model</summary>
+    {{ breakdown(context.month_kinds, "Kind", context.kinds) }}
+    {{ breakdown(context.month_models, "Model", {}) }}
+  </details>
+</section>

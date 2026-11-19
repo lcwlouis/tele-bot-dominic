@@ -10,6 +10,7 @@ from random import Random
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from dom import turn_log
 from dom.presence import read_habits
 from dom.telegram import executor
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
@@ -55,7 +56,8 @@ class Openers:
             return
         async with self._lock:
             try:
-                await self._maybe(owner, now)
+                async with turn_log.capture(app.store, now, owner, "owner_dm"):
+                    await self._maybe(owner, now)
             except ModelCallSkipped:
                 return
             except Exception:
@@ -124,7 +126,9 @@ class Openers:
                 await store.kv_set_many(values)
                 first = False
 
-            await executor.perform(
+            sent_ids = await executor.perform(
                 app.bot, store, owner, None, actions, sleep=app.sleep, now=dispatch.now, on_sent=on_sent,
                 stickers=app.stickers.by_emoji,
             )
+            if sent_ids:
+                turn_log.outcome("Texted first")

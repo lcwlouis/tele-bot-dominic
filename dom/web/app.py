@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, nullcontext
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from dom.web.auth import Auth, same_origin
+from dom.web.pages import router
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -26,7 +29,7 @@ SECURITY_HEADERS = {
 }
 
 
-def create_app(dom: App | None, auth: Auth) -> FastAPI:
+def create_app(dom: App, auth: Auth) -> FastAPI:
     web = FastAPI(openapi_url=None, docs_url=None, redoc_url=None, redirect_slashes=False)
 
     @web.middleware("http")
@@ -44,9 +47,13 @@ def create_app(dom: App | None, auth: Auth) -> FastAPI:
         response.headers.update(SECURITY_HEADERS)
         return response
 
-    @web.get("/")
-    async def index() -> HTMLResponse:
-        return HTMLResponse("<!doctype html><title>Dom</title><h1>Dom</h1>")
+    @web.exception_handler(Exception)
+    async def server_error(request: Request, error: Exception):
+        return PlainTextResponse("Internal server error", status_code=500, headers=SECURITY_HEADERS)
+
+    web.state.dom = dom
+    web.include_router(router)
+    web.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
     return web
 

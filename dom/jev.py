@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import httpx
 
-from dom.usage import UsageRecorder, check_model_allowed
+from dom import turn_log
+from dom.usage import UsageRecorder, check_model_allowed, request_kind
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/alpha"  # [models.triage].base_url in the starter config
 
@@ -25,6 +26,7 @@ class JevClient:
 
     async def decide(self, state: str, questions: dict) -> dict[str, dict | None]:
         await check_model_allowed()
+        turn_log.attempt(self.model, request_kind("triage"))
         try:
             response = await self.http.post(
                 self.url,

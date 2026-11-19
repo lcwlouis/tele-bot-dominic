@@ -42,6 +42,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (7, "0006_usage.sql"),
     (8, "0007_phase3.sql"),
     (9, "0008_proposals_reminders.sql"),
+    (10, "0009_turn_log.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -532,20 +533,63 @@ class Store:
         columns = ", ".join(_PRESENCE_COLUMNS)
         return dict(self._conn.execute(f"SELECT {columns} FROM chats WHERE chat_id = ?", (chat_id,)).fetchone())
 
-    async def set_presence(self, chat_id: int | str, **cols: Any) -> None:
+    async def set_presence(
+        self, chat_id: int | str, *, observed_at: datetime | None = None, start_session: bool = False, **cols: Any,
+    ) -> None:
         if cols.keys() - set(_PRESENCE_COLUMNS):
             raise ValueError("unknown presence column")
         if cols:
-            await self._run(self._set_presence, str(chat_id), cols)
+            await self._run(self._set_presence, str(chat_id), cols, observed_at, start_session)
 
-    def _set_presence(self, chat_id: str, cols: dict[str, Any]) -> None:
+    def _set_presence(
+        self, chat_id: str, cols: dict[str, Any], observed_at: datetime | None, start_session: bool,
+    ) -> None:
         with self._tx() as conn:
             self._ensure_chat(conn, chat_id)
+            if observed_at is not None and "online_until" in cols:
+                self._record_online_session(conn, chat_id, observed_at, cols["online_until"], start_session)
             assignments = ", ".join(f"{col} = ?" for col in cols)
             conn.execute(
                 f"UPDATE chats SET {assignments}, updated_at = ? WHERE chat_id = ?",
                 (*cols.values(), _now(), chat_id),
             )
+
+    @staticmethod
+    def _record_online_session(
+        conn: sqlite3.Connection, chat_id: str, observed_at: datetime, deadline: str | None, start_session: bool,
+    ) -> None:
+        at = observed_at.astimezone(timezone.utc).isoformat()
+        ends = datetime.fromisoformat(deadline).astimezone(timezone.utc).isoformat() if deadline else None
+        previous = conn.execute("SELECT online_until FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()[0]
+        try:
+            previous = datetime.fromisoformat(previous) if previous else None
+        except ValueError:
+            previous = None  # some older stores have no usable presence deadline
+        if previous is not None:
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=timezone.utc)
+            previous = previous.astimezone(timezone.utc).isoformat()
+            if ends is not None and not start_session:
+                new_end = ends
+            else:
+                new_end = min(previous, at)
+            conn.execute(
+                "UPDATE online_sessions SET ends_at = MAX(started_at, ?) WHERE id = "
+                "(SELECT id FROM online_sessions WHERE chat_id = ? AND ends_at = ? ORDER BY id DESC LIMIT 1)",
+                (new_end, chat_id, previous),
+            )
+        if start_session and ends is not None and ends > at:
+            conn.execute(
+                "INSERT INTO online_sessions (chat_id, started_at, ends_at) VALUES (?, ?, ?)",
+                (chat_id, at, ends),
+            )
+
+    async def online_sessions(self, start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+        rows = await self._run(lambda: self._conn.execute(
+            "SELECT started_at, ends_at FROM online_sessions WHERE ends_at > ? AND started_at < ? ORDER BY started_at",
+            (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()),
+        ).fetchall())
+        return [(datetime.fromisoformat(row[0]), datetime.fromisoformat(row[1])) for row in rows]
 
     async def enqueue_pending_turn(self, chat_id: str, msg_id: int | None) -> None:
         await self._run(self._enqueue_pending_turn, str(chat_id), msg_id)
@@ -993,7 +1037,39 @@ class Store:
                 [(key, value, now) for key, value in values.items()],
             )
 
-    # ---- usage ------------------------------------------------------------
+    # ---- turn log ---------------------------------------------------------
+
+    async def record_turn(
+        self, at: datetime, chat_id: int, scope: Scope, calls: int, trace: list[str], model: str, fallback: bool,
+        duration_ms: int, outcome: str,
+    ) -> None:
+        await self._run(
+            self._conn.execute,
+            "INSERT INTO turns (at, chat_id, scope, calls, trace, model, fallback, duration_ms, outcome) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (at.astimezone(timezone.utc).isoformat(), str(chat_id), scope, calls, json.dumps(trace), model,
+             int(fallback), duration_ms, outcome),
+        )
+
+    async def recent_turns(self, chat_id: str | None = None) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT * FROM turns WHERE (? IS NULL OR chat_id = ?) ORDER BY at DESC, id DESC LIMIT 200",
+                (chat_id, chat_id),
+            )
+        ])
+
+    async def prune_turn_history(self, before: datetime) -> None:
+        cutoff = before.astimezone(timezone.utc).isoformat()
+
+        def prune() -> None:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM turns WHERE at < ?", (cutoff,))
+                conn.execute("DELETE FROM online_sessions WHERE ends_at < ?", (cutoff,))
+
+        await self._run(prune)
+
+    # ---- proposals and reminders -----------------------------------------
 
     async def create_proposal(
         self, kind: str, title: str, body: dict, source: str, at: str, *, since: str | None = None,
@@ -1081,6 +1157,20 @@ class Store:
             "WHERE id = ? AND status = 'active'",
             (fired_at, "active" if next_due else "done", next_due, reminder_id),
         )
+
+    # ---- usage ------------------------------------------------------------
+
+    async def usage_by_day(self, bounds: list[tuple[str, str, str]]) -> list[dict[str, Any]]:
+        values = ", ".join(["(?, ?, ?)"] * len(bounds))
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                f"WITH days(day, start_at, end_at) AS (VALUES {values}) "
+                "SELECT day, kind, model, COUNT(*) AS calls, TOTAL(cost_usd) AS cost, SUM(fallback) AS fallbacks "
+                "FROM days JOIN usage ON at >= start_at AND at < end_at GROUP BY day, kind, model "
+                "ORDER BY day, kind, model",
+                [value for day in bounds for value in day],
+            )
+        ]) if bounds else []
 
     async def record_usage(
         self, at: str, kind: str, model: str, host: str, chat_id: int | None,

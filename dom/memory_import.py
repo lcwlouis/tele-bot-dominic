@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from importlib import resources
 from io import BytesIO
 from pathlib import PurePath
+from uuid import uuid4
 from typing import TYPE_CHECKING
 
 from aiogram.types import Document
@@ -138,8 +139,9 @@ class MemoryImport:
                     bullet = _fact(line)
                     seen.add(line if bullet is None else bullet)
             parsed = parse_facts(text, existing=seen)
+            batch = uuid4().hex
             for fact in parsed.facts:
                 await app.proposals.create(
-                    "memory_fact", fact, {"file": "USER.md", "text": fact}, f"import:{service}", notify=False,
+                    "memory_fact", fact, {"file": "USER.md", "text": fact, "import_batch": batch}, f"import:{service}", notify=False,
                 )
         return parsed

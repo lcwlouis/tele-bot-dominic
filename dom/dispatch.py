@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from dom import guard
+from dom import guard, turn_log
 from dom.actions import Actions, Bubble
 from dom.agent import run_turn
 from dom.capabilities import describe
@@ -69,6 +69,7 @@ class Dispatcher:
         self.usage = Usage(app.store, now)
         self.jobs = DailyJobs(app, now)
         self.jobs.register("proposal-expiry", lambda local, habits: True, app.proposals.expire)
+        self.jobs.register("turn-log-retention", lambda local, habits: True, self._prune_turn_log)
         self.openers = Openers(app, presence.rng)
         self.reminders = Reminders(app)
         self._heartbeat: asyncio.Task | None = None
@@ -242,6 +243,9 @@ class Dispatcher:
             startup = False
             await self.sleep(TICK_SECONDS)
 
+    async def _prune_turn_log(self) -> None:
+        await self.app.store.prune_turn_history(self.now() - timedelta(days=30))
+
     async def _background_jobs(self) -> None:
         await self.app.stickers.refresh()
         await self.jobs.tick()
@@ -367,7 +371,9 @@ class Dispatcher:
         if bot_key is not None:
             self._bots_in_flight.add(bot_key)
         try:
-            await self._respond(chat_id, habits, state, until, count, newest, background, catch_up, bot_depth)
+            scope = store.scope_for(chat_id, "group" if chat_id < 0 else "private")
+            async with turn_log.capture(store, self.now(), chat_id, scope):
+                await self._respond(chat_id, habits, state, until, count, newest, background, catch_up, bot_depth)
         finally:
             if bot_key is not None:
                 self._bots_in_flight.remove(bot_key)
@@ -435,6 +441,7 @@ class Dispatcher:
                     return
                 if triage.confident and triage.action == "react" and triage.emoji:
                     await executor.perform(self.app.bot, store, chat_id, newest.msg_id, Actions(react=triage.emoji))
+                    turn_log.outcome(f"Reacted {triage.emoji[:16]}")
                     await store.mark_chat_read(chat_id, newest.msg_id)
                     return
 
@@ -484,13 +491,23 @@ class Dispatcher:
             chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
         )
         if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
+            turn_log.outcome("Held back: possible leak")
             return
+        recipient = self._ephemeral_recipient(scope, newest)
         try:
-            await executor.perform(
+            sent = await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
                 thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
-                ephemeral_recipient=self._ephemeral_recipient(scope, newest),
+                ephemeral_recipient=recipient,
             )
+            if actions.private and scope == "group" and not actions.no_response:
+                turn_log.outcome("Replied privately" if sent else "Held back: private reply")
+            elif sent:
+                bubbles = len(actions.bubbles)
+                label = "bubble" if bubbles == 1 else "bubbles"
+                turn_log.outcome(f"Replied in {bubbles} {label}" if bubbles else "Sent a sticker")
+            elif actions.react and not actions.no_response:
+                turn_log.outcome(f"Reacted {actions.react[:16]}")
         finally:
             if (
                 newest.is_bot and newest.sender_user_id is not None and not actions.no_response

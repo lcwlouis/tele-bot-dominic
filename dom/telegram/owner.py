@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
@@ -123,6 +123,78 @@ def display_title(chat: dict, owner_id: int | None) -> str:
 def _one_line(parts: list[str], limit: int = 400) -> str:
     text = ", ".join(parts)
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+async def record_event(app: App, text: str) -> None:
+    """Note an owner action without interrupting its response if the event cannot be stored."""
+    try:
+        await app.store.record_owner_event(text)
+    except Exception:
+        log.exception("could not record an owner event")
+
+
+@dataclass(frozen=True)
+class PresenceChange:
+    message: str
+    spend_paused: bool = False
+
+
+async def override_chat(app: App, chat_id: int, command: str, who: str) -> PresenceChange | None:
+    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), None)
+    if chat is None or not await app.dispatch.override(chat_id, command):
+        return None
+    title = display_title(chat, app.owner_id)
+    if command == "/wake":
+        await record_event(app, f"{who} woke Dom in {title}")
+        if await app.dispatch.spend_paused(chat_id):
+            return PresenceChange(f"Dom is up in {title}, but friends' chats are paused by today's spend cap", True)
+        return PresenceChange(f"Dom is up in {title}")
+    await record_event(app, f"{who} sent Dom to sleep in {title}")
+    return PresenceChange(f"Dom is asleep in {title}")
+
+
+LEAVABLE = ("approved", "pending_approval", "ignored")
+
+
+async def leavable_chat(app: App, chat_id: int) -> dict | None:
+    if chat_id >= 0:
+        return None
+    return next((
+        c for c in await app.store.list_chats()
+        if c["chat_id"] == str(chat_id) and c["authorization_status"] in LEAVABLE
+    ), None)
+
+
+async def leave_chat(app: App, chat_id: int, who: str) -> tuple[str, bool]:
+    async with app.locks[chat_id]:
+        chat = await leavable_chat(app, chat_id)
+        if chat is None:
+            return "unknown chat", False
+        title = display_title(chat, app.owner_id)
+        try:
+            await app.bot.leave_chat(chat_id)
+            result = f"Dom left {title}"
+        except (TelegramBadRequest, TelegramForbiddenError):
+            result = f"Dom wasn't in {title} anymore"
+        except Exception as error:
+            log.exception("could not leave chat %s", chat_id)
+            await record_event(app, f"{who} tapped Leave on {title}: Dom couldn't leave")
+            message = (getattr(error, "message", "") or str(error) or type(error).__name__)[:100]
+            return f"Couldn't leave: {message}", False
+        await app.store.set_chat_auth_status(chat_id, "left")
+        await record_event(app, f"{who} tapped Leave on {title}: {result}")
+        return result, True
+
+
+async def set_preset(app: App, chat: dict, name: str) -> str | None:
+    preset = load_preset(app.home, name) if name else None
+    if (name and preset is None) or not await app.store.set_chat_preset(chat["chat_id"], name):
+        return None
+    title = display_title(chat, app.owner_id)
+    label = preset.title if preset else "None"
+    message = f"Preset for {title}: {label}"
+    await record_event(app, message)
+    return message
 
 
 async def chats_summary(app: App) -> str:
@@ -356,12 +428,19 @@ async def edit_stickers(app: App, args: list[str]) -> None:
     if len(args) != 2 or args[0] not in ("add", "remove"):
         await app.bot.send_message(app.owner_id, "Use /stickers add <set_name> or /stickers remove <set_name>.")
         return
+    result = await change_sticker_set(app, *args)
+    await app.bot.send_message(app.owner_id, result)
+
+
+async def change_sticker_set(app: App, action: str, name: str) -> str:
+    if action not in ("add", "remove"):
+        raise ValueError("Choose Add or Remove.")
     try:
-        result = await app.stickers.change(*args)
+        result = await app.stickers.change(action, name)
     except (OSError, ValueError) as error:
         result = str(error) if isinstance(error, ValueError) else "Could not update stickers.toml."
     await app.store.record_owner_event(result)
-    await app.bot.send_message(app.owner_id, result)
+    return result
 
 
 async def import_memory(app: App, message: Message, text: str) -> tuple[str, str]:

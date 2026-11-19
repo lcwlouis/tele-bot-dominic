@@ -114,6 +114,15 @@ class Usage(UsageRecorder):
             start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat(),
         )
 
+    async def last_30_days(self, tz: ZoneInfo) -> tuple[list[str], list[dict]]:
+        today, _ = self._day_bounds(tz)
+        dates = [today + timedelta(days=offset) for offset in range(-29, 2)]
+        bounds = [
+            (start.date().isoformat(), start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat())
+            for start, end in zip(dates, dates[1:])
+        ]
+        return [day for day, _, _ in bounds], await self.store.usage_by_day(bounds)
+
     async def over_cap(self, config: Config, bot) -> bool:
         cap = config.daily_spend_cap_usd
         if cap == 0:

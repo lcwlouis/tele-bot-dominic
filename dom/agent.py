@@ -9,6 +9,7 @@ import re
 
 from pydantic import ValidationError
 
+from dom import turn_log
 from dom.actions import Actions
 from dom.llm import ChatClient
 from dom.tools import Tool, TurnCtx
@@ -80,6 +81,11 @@ async def run_turn(
         calls = reply.get("tool_calls")
         if calls and _well_formed(calls):
             trace.append("tools:" + ",".join(str((c.get("function") or {}).get("name")) for c in calls))
+            for name in dict.fromkeys(call["function"]["name"] for call in calls):
+                if name in offered:
+                    turn_log.step(name)
+            if not any(call["function"]["name"] in offered for call in calls):
+                turn_log.step("unavailable tool")
             messages.append(reply)
             for call in calls:
                 result = await _run_tool_call(call, offered, ctx)
@@ -90,9 +96,11 @@ async def run_turn(
             actions = parse_actions(reply.get("content"))
             if actions is not None:
                 trace.append("final")
+                turn_log.step("final")
                 log.info("turn chat=%s scope=%s calls=%d [%s]", ctx.chat_id, ctx.scope, len(trace), " ".join(trace))
                 return actions
         trace.append("malformed")
+        turn_log.step("malformed")
         # else: malformed tool calls are kept out of the history and handled like a malformed final
         if corrected:
             break

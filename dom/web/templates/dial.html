@@ -1,0 +1,37 @@
+<section class="now" id="now" aria-label="Dom right now">
+  <div class="dial">
+    <svg id="dial" viewBox="-164 -164 328 328" role="img" aria-label="Dom's day: sleep {{ dial.sleep_window }}, now {{ dial.clock }}. {{ dial.title }} {{ dial.detail }}">
+      <defs>
+        <mask id="day-sweep" maskUnits="userSpaceOnUse" x="-160" y="-160" width="320" height="320">
+          <circle class="sweep" r="128" pathLength="1" fill="none" stroke="white" stroke-width="24" transform="rotate(-90)"/>
+        </mask>
+      </defs>
+      <circle r="150" class="dial-plate"/>
+      <circle r="128" class="dial-ring"/>
+      <path d="{{ dial.sleep_arc }}" class="sleep-arc"/>
+      <g mask="url(#day-sweep)">
+        {% for path in dial.arcs %}<path d="{{ path }}" class="online-arc"/>{% endfor %}
+        {% if dial.all_day %}<circle r="128" class="online-arc"/>{% endif %}
+      </g>
+      {% for hour, count, start, end in dial.ticks %}
+      <line x1="{{ start[0] }}" y1="{{ start[1] }}" x2="{{ end[0] }}" y2="{{ end[1] }}" class="message-tick" data-hour="{{ hour }}" data-count="{{ count }}">
+        <title>{{ "%02d"|format(hour) }}:00 · {{ count }} message activity buckets</title>
+      </line>
+      {% endfor %}
+      {% for hour, position in dial.hours %}
+      <text x="{{ position[0] }}" y="{{ position[1] + 5 }}" class="dial-hour">{{ "%02d"|format(hour) }}</text>
+      {% endfor %}
+      <line x1="{{ dial.hand[0][0] }}" y1="{{ dial.hand[0][1] }}" x2="{{ dial.hand[1][0] }}" y2="{{ dial.hand[1][1] }}" class="clock-hand"/>
+      <circle cx="{{ dial.hand[1][0] }}" cy="{{ dial.hand[1][1] }}" r="5" class="clock-dot"/>
+    </svg>
+    <div class="centre">
+      <strong>{{ dial.title }}</strong>
+      <span>{{ dial.detail }}</span>
+    </div>
+  </div>
+  <div class="legend" aria-hidden="true">
+    <span><i class="sleep-key"></i>Sleep</span>
+    <span><i class="online-key"></i>Online today</span>
+    <span><i class="message-key"></i>Messages per hour</span>
+  </div>
+</section>

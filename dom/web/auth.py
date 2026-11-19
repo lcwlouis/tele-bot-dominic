@@ -93,7 +93,8 @@ def _origin(url: str) -> tuple[str, str, int] | None:
         parts = urlsplit(url)
         if parts.scheme not in ("https", "http") or not parts.hostname or parts.username is not None:
             return None
-        return parts.scheme, parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
+        port = parts.port
+        return parts.scheme, parts.hostname, port if port is not None else (443 if parts.scheme == "https" else 80)
     except ValueError:
         return None
 
