@@ -353,8 +353,9 @@ TABS = json.loads((Path(__file__).parent / "fixtures" / "sandbox_browser_tabs.js
     ({"success": True, "data": []}, None),
     ({"success": True, "data": [{"type": "page"}, "text", {"type": "page", "url": 3}]}, None),
     ({"success": True, "data": {"url": "https://example.org"}}, None),
+    ({"success": True, "data": [{"index": 0, "url": "https://first.example.org/"}]}, "https://first.example.org/"),
 ])
-async def test_current_url_reads_the_first_page_tab(payload, url):
+async def test_current_url_prefers_the_active_tab(payload, url):
     def reply(request):
         assert request.method == "GET" and request.url.path == "/v1/browser/tabs"
         return httpx.Response(200, json=payload)
