@@ -156,10 +156,10 @@ async def test_chat_notes_limited_to_current_chat_outside_owner_dm(env):
 async def test_memory_over_limit_returns_error_and_content(env):
     root, _, _ = env
     (root / "memory").mkdir()
-    (root / "memory" / "HABITS.md").write_text("sleep: late")
+    (root / "memory" / "MEMORY.md").write_text("world facts")
     memory = next(t for t in core_tools() if t.name == "memory")
-    result = json.loads(await memory.handler({"file": "HABITS.md", "op": "add", "text": "x" * 2000}, ctx_for(env)))
-    assert result["ok"] is False and result["content"] == "sleep: late"
+    result = json.loads(await memory.handler({"file": "MEMORY.md", "op": "add", "text": "x" * 3000}, ctx_for(env)))
+    assert result["ok"] is False and result["content"] == "world facts"
 
 
 async def test_unoffered_tool_call_gets_error_result(env):
@@ -272,7 +272,7 @@ def test_actions_validation_limits():
     assert Actions().no_response is False and Actions().bubbles == []
 
 
-@pytest.mark.parametrize("file", ["MEMORY.md", "HABITS.md", "people/222.md", "chats/111.md", "chats/-1009.md"])
+@pytest.mark.parametrize("file", ["MEMORY.md", "people/222.md", "chats/111.md", "chats/-1009.md"])
 async def test_owner_dm_cannot_write_shared_memory(env, file):
     root, _, _ = env
     memory = next(t for t in core_tools() if t.name == "memory")
@@ -281,6 +281,22 @@ async def test_owner_dm_cannot_write_shared_memory(env, file):
     assert result["ok"] is False
     assert "only write USER.md or NOTES.md" in result["error"]
     assert not (root / "memory").exists() or not list((root / "memory").rglob("*.md"))
+
+
+@pytest.mark.parametrize("scope", ["owner_dm", "friend_dm", "group"])
+async def test_habits_file_is_not_writable_in_any_scope(env, scope):
+    root, _, _ = env
+    (root / "memory").mkdir()
+    (root / "memory" / "HABITS.md").write_text("sleep: 23:59-07:30")
+    memory = next(t for t in core_tools() if t.name == "memory")
+    assert "HABITS.md" not in memory.description
+    ctx = ctx_for(env, scope=scope, chat_id=OWNER if scope == "owner_dm" else 222, sender=OWNER)
+    for op in ("add", "replace", "remove"):
+        result = json.loads(await memory.handler(
+            {"file": "HABITS.md", "op": op, "text": "sleep: never", "old": "sleep"}, ctx,
+        ))
+        assert result["ok"] is False and "HABITS.md" in result["error"] and "cannot be edited" in result["error"]
+    assert (root / "memory" / "HABITS.md").read_text() == "sleep: 23:59-07:30"
 
 
 async def test_owner_dm_can_still_write_private_files(env):

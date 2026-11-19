@@ -44,6 +44,28 @@ def test_parse_habits_defaults_and_clamps():
     assert parse_habits("sleep: 20:00-12:00").sleep_end == time(7)
 
 
+def test_parse_habits_accepts_bullets_and_clamps_ranges():
+    habits = parse_habits(
+        '- sleep: "22:00-06:00"\n* online_minutes: 0-500\n  - offline_minutes: 1-9000\n'
+        '\twake_after_messages: 500\nkapoh_wake: 9'
+    )
+    assert (habits.sleep_start, habits.sleep_end) == (time(22), time(6))
+    assert (habits.online_minutes, habits.offline_minutes) == ((1, 120), (5, 600))
+    assert (habits.wake_after_messages, habits.kapoh_wake) == (50, 3.0)
+    low = parse_habits("wake_after_messages: 0\nkapoh_wake: 0.2\noffline_minutes: 1-3")
+    assert (low.wake_after_messages, low.kapoh_wake, low.offline_minutes) == (3, 1.0, (5, 5))
+
+
+@pytest.mark.parametrize("text", [
+    "online_minutes: 30-10\noffline_minutes: 90-15\nwake_after_messages: many\nkapoh_wake: nan",
+    "online_minutes: soon\noffline_minutes: 10\nkapoh_wake: inf",
+])
+def test_parse_habits_malformed_values_keep_defaults(text):
+    habits = parse_habits(text)
+    assert (habits.online_minutes, habits.offline_minutes) == ((5, 25), (15, 90))
+    assert (habits.wake_after_messages, habits.kapoh_wake) == (5, 2.0)
+
+
 async def test_online_session_expires_to_offline(rhythm):
     presence, clock, _ = rhythm
     habits = parse_habits("")

@@ -47,11 +47,14 @@ OWNER_DM_MEMORY_ERROR = (
     "in the owner's DM you can only write USER.md or NOTES.md; "
     "shared memory is only written from other chats"
 )
-_MEMORY_FILE = re.compile(r"^(?:(MEMORY|HABITS|USER|NOTES)\.md|people/(\d+)\.md|chats/(-?\d+)\.md)$")
+HABITS_ERROR = "HABITS.md cannot be edited here; your rhythm is kept up to date for you"
+_MEMORY_FILE = re.compile(r"^(?:(MEMORY|USER|NOTES)\.md|people/(\d+)\.md|chats/(-?\d+)\.md)$")
 
 
 def _memory_target(file: str, ctx: TurnCtx) -> tuple[str | None, str | None]:
     """Map a tool-facing file name to (home-relative path, error)."""
+    if file == "HABITS.md":
+        return None, HABITS_ERROR
     match = _MEMORY_FILE.match(file or "")
     if not match:
         return None, f"unknown memory file {file!r}"
@@ -86,7 +89,7 @@ MEMORY_TOOL = Tool(
     description=(
         "Edit your own notes. Each file has a small character limit; when a write is refused you get the "
         "current content back, so merge or remove entries first. Files: MEMORY.md (world and friend-circle "
-        "knowledge), HABITS.md (your rhythm: sleep, busy hours), people/<user_id>.md (one friend), "
+        "knowledge), people/<user_id>.md (one friend), "
         "chats/<chat_id>.md (this chat's running jokes and vibe) in friend chats and groups; in the owner's DM "
         "you can write ONLY USER.md (the owner) and NOTES.md (assistant notes), never the shared files, "
         "because shared memory is read in other chats. op=add appends a bullet; op=replace swaps the unique "
