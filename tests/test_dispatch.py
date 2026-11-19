@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -7,6 +8,7 @@ from aiogram.methods import SendMessage
 
 from dom.dispatch import Dispatcher
 from dom.jev import JevUnavailable
+from dom.models import StoredMessage
 from dom.presence import Presence, parse_habits
 from dom.telegram.handlers import handle_message
 from tghelpers import FRIEND, GROUP, OWNER, Clock, FixedRandom, drain_dispatch, no_sleep, tg
@@ -329,3 +331,20 @@ async def test_a_successful_turn_resets_the_failure_count(setup_dispatch):
     for msg_id in range(1, 6):
         await deliver(app, msg_id)
     assert (await app.store.get_unread(GROUP))[0] == 2
+
+
+async def test_online_chat_with_an_orphaned_unread_message_is_answered_on_tick(setup_dispatch):
+    app, dispatch, clock = await setup_dispatch()
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    # Recorded before a restart: its debounce died with the process.
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(GROUP), msg_id=1, sender_user_id=FRIEND, text="did you see this?",
+        visibility_scope=app.store.visibility_for(GROUP), created_at=(clock.at - timedelta(seconds=5)).isoformat(),
+    ))
+    await dispatch.tick()
+    assert not app.script.requests  # too fresh: a live debounce would normally own it
+    clock.advance(seconds=6)
+    await dispatch.tick()
+    assert len(app.script.requests) == 1
+    await dispatch.tick()
+    assert len(app.script.requests) == 1

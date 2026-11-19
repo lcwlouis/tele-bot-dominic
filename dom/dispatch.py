@@ -30,6 +30,7 @@ log = logging.getLogger("dom.dispatch")
 TICK_SECONDS = 60
 DEBOUNCE_CAP = timedelta(seconds=15)  # a steady stream of messages cannot postpone a turn longer
 MEDIA_WAIT_SECONDS = 15
+ORPHAN_AGE = timedelta(seconds=10)  # an online chat's unread message this old lost its debounce
 TRIAGE_WINDOW = 15
 MEDIA_CAP = 10  # descriptions per chat within MEDIA_CAP_WINDOW
 MEDIA_CAP_WINDOW = timedelta(minutes=10)
@@ -251,13 +252,13 @@ class Dispatcher:
     ) -> None:
         store = self.app.store
         state, until = await self.presence.state(chat_id, habits)
-        if state == "asleep" or (background and state == "online"):
-            return
-        if background and until is not None and until > self.now():
+        if state == "asleep" or (background and state == "offline" and until is not None and until > self.now()):
             return
         count, newest = await store.get_unread(chat_id)
         if newest is None:
             return
+        if background and state == "online" and self.now() - datetime.fromisoformat(newest.created_at) < ORPHAN_AGE:
+            return  # a message that fresh still has its debounce
 
         # A human among the unread messages makes this an ordinary turn; the bots are just context.
         bots_only = newest.is_bot and not await store.has_unread_human(chat_id)
