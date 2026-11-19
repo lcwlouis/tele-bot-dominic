@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
 from dom.config import Config
 from dom.home import Home, PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
+
+if TYPE_CHECKING:
+    from dom.telegram.handlers import App
 
 log = logging.getLogger(__name__)
 MAX_TERMS = 800
@@ -76,6 +80,22 @@ async def leak_score(jev: JevClient | None, terms: str, outgoing_text: str) -> f
         return None
     score = answer.get("score")
     return float(score) if type(score) in (int, float) and 0 <= score <= 3 else None
+
+
+async def notify_held(app: App, notice: str) -> None:
+    """Record a held message or call and tell the owner. A failure here is logged, never raised."""
+    if app.owner_id is None:
+        return
+    try:
+        await app.store.record_owner_event(notice)
+    except Exception:
+        log.exception("could not record the held-message event")
+    try:
+        # Each character can occupy two UTF-16 code units in Telegram.
+        for start in range(0, len(notice), 2000):
+            await app.bot.send_message(app.owner_id, notice[start:start + 2000])
+    except Exception:
+        log.exception("could not notify the owner about a held message")
 
 
 def check_local_private_text(config: Config, home: Home, texts: list[str]) -> None:

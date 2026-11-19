@@ -559,20 +559,9 @@ class Dispatcher:
         if score < app.config.leak_threshold:
             return False
 
-        owner = app.owner_id
-        if owner is not None:
+        if app.owner_id is not None:
             chat = title or (await app.store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
-            notice = f"Held back a message in {chat} that looked like it leaked private info\n\n{text}"
-            try:
-                await app.store.record_owner_event(notice)
-            except Exception:
-                log.exception("could not record the held-message event")
-            try:
-                # Each character can occupy two UTF-16 code units in Telegram.
-                for start in range(0, len(notice), 2000):
-                    await app.bot.send_message(owner, notice[start:start + 2000])
-            except Exception:
-                log.exception("could not notify the owner about a held message")
+            await guard.notify_held(app, f"Held back a message in {chat} that looked like it leaked private info\n\n{text}")
         return True
 
     async def desktop_handoff(

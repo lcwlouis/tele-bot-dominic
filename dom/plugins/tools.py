@@ -8,13 +8,16 @@ import logging
 from typing import TYPE_CHECKING
 
 from dom.desktop.tools import untrusted
+from dom import guard
 from dom.guard import check_local_private_text
 from dom.models import Scope
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, Plugin, ToolManifest
 from dom.plugins.runner import MAX_OUTPUT, PluginError
 from dom.tools import Tool, TurnCtx
+from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
 log = logging.getLogger(__name__)
+MAX_ARGUMENT_BYTES = 4 * 1024
 WRAPPED_OUTPUT_LIMIT = 5 * MAX_OUTPUT + 64
 
 if TYPE_CHECKING:
@@ -64,6 +67,29 @@ def _argument_texts(value: object) -> list[str]:
     return []
 
 
+async def _held_by_leak_check(app: App, ctx: TurnCtx, plugin: Plugin, args: dict) -> bool:
+    """Arguments to an online plugin leave the machine, so they get the check outgoing messages get."""
+    if not plugin.manifest.network or app.jev is None or not app.config.leak_check:
+        return False
+    text = "\n".join(_argument_texts(args))
+
+    async def allowed() -> bool:
+        return ctx.model_allowed is None or await ctx.model_allowed()
+
+    with model_request("guard", ctx.chat_id, allowed):
+        await check_model_allowed()
+        score = await guard.leak_score(app.jev, guard.private_terms(app.home), text)
+    if score is None:
+        log.warning("leak check unavailable for plugin %s; running", plugin.manifest.name)
+        return False
+    if score < app.config.leak_threshold:
+        return False
+    await guard.notify_held(
+        app, f"Held back a call to plugin {plugin.manifest.name} that looked like it leaked private info\n\n{text}",
+    )
+    return True
+
+
 def _tool(app: App, plugin: Plugin, tool: ToolManifest) -> Tool:
     name = plugin.manifest.name
 
@@ -71,7 +97,18 @@ def _tool(app: App, plugin: Plugin, tool: ToolManifest) -> Tool:
         if ctx.scope not in tool.scopes:
             return "error: tool not available here"
         try:
+            encoded = json.dumps(args, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            return "error: plugin arguments must be JSON"
+        if len(encoded.encode("utf-8")) > MAX_ARGUMENT_BYTES:
+            return "error: plugin arguments are limited to 4 KB"
+        try:
             check_local_private_text(app.config, app.home, _argument_texts(args))
+            try:
+                if await _held_by_leak_check(app, ctx, plugin, args):
+                    return "error: arguments held back because they looked like private information"
+            except ModelCallSkipped:
+                return "error: plugin call skipped"
             # The registry lock covers only the approval check. The runner pins the hash again and refuses
             # to queue behind another plugin, so a slow plugin never stalls approvals or scans.
             async with app.plugins.lock:

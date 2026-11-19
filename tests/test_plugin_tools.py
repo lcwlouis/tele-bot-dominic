@@ -9,6 +9,8 @@ from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 from dom.presence import read_habits
 from dom.telegram import handlers
 from dom.tools import TurnCtx
+from dom.jev import JevUnavailable
+from test_guard import FakeJev
 from test_owner_events import events, press
 from test_plugins import MANIFEST
 from test_web_auth import POST_HEADERS
@@ -238,8 +240,8 @@ async def test_network_notice_is_shown_wherever_a_plugin_is_listed(make_app, bro
     assert notice not in app.bot.of("send", OWNER)[0][2]
 
 
-async def approved_tool(app, browser, monkeypatch):
-    await draft(app)
+async def approved_tool(app, browser, monkeypatch, manifest=MANIFEST):
+    await draft(app, manifest=manifest)
     route = review_path(await status(app))
     async with browser(app) as client:
         await review_code(client, route)
@@ -295,3 +297,51 @@ async def test_offering_plugins_never_raises(make_app, monkeypatch, caplog, brok
         monkeypatch.setattr(app.plugin_runner, "self_test", boom)
     assert await offered(app, "owner_dm") == []
     assert "scan failed" in caplog.text
+
+
+@pytest.mark.parametrize(("size", "allowed"), [(4088, True), (4089, False)])
+async def test_argument_json_is_capped_at_4_kb(make_app, browser, monkeypatch, size, allowed):
+    app = make_app()
+    tool = await approved_tool(app, browser, monkeypatch)
+    ran = []
+    monkeypatch.setattr(app.plugin_runner, "run", lambda *a, **kw: ran.append(1) or "done")
+    args = {"t": "x" * size}
+    assert len(json.dumps(args, separators=(",", ":"))) == size + 8
+    result = await tool.handler(args, ctx(app))
+    assert (ran == [1] and "done" in result) if allowed else (ran == [] and result.startswith("error:") and "4 KB" in result)
+
+
+async def test_network_plugin_arguments_are_leak_checked(make_app, browser, monkeypatch):
+    app = make_app()
+    app.config = app.config.model_copy(update={"leak_check": True})
+    network = MANIFEST.replace('version = "1"', 'version = "1"\nnetwork = true')
+    tool = await approved_tool(app, browser, monkeypatch, network)
+    ran = []
+    monkeypatch.setattr(app.plugin_runner, "run", lambda *a, **kw: ran.append(1) or "done")
+    assert "done" in await tool.handler({"q": "weather"}, ctx(app))  # no Jev client: nothing to check with
+    app.jev = FakeJev(3)
+    result = await tool.handler({"q": "a private fact"}, ctx(app))
+    assert result.startswith("error:") and "held back" in result and ran == [1]
+    assert "a private fact" in app.jev.scored[0][0]
+    notice = app.bot.of("send", OWNER)[-1][2]
+    assert "Held back" in notice and "a private fact" in notice
+    assert any("Held back" in row["text"] for row in await events(app))
+    app.jev = FakeJev(0)
+    assert "done" in await tool.handler({"q": "weather"}, ctx(app))
+    app.jev = FakeJev(JevUnavailable("down"))
+    assert "done" in await tool.handler({"q": "weather"}, ctx(app))
+    assert ran == [1, 1, 1]
+    app.jev = FakeJev(3)
+    app.config = app.config.model_copy(update={"leak_check": False})
+    assert "done" in await tool.handler({"q": "weather"}, ctx(app))
+    assert app.jev.scored == []
+
+
+async def test_offline_plugin_arguments_are_not_leak_checked(make_app, browser, monkeypatch):
+    app = make_app()
+    app.config = app.config.model_copy(update={"leak_check": True})
+    tool = await approved_tool(app, browser, monkeypatch)
+    monkeypatch.setattr(app.plugin_runner, "run", lambda *a, **kw: "done")
+    app.jev = FakeJev(3)
+    assert "done" in await tool.handler({"q": "anything"}, ctx(app))
+    assert app.jev.scored == []
