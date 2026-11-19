@@ -147,3 +147,16 @@ def test_backup_rotation_never_deletes_the_archive_just_created(source, tmp_path
         ["dom-29990102-000000.tar.gz", archive.name]
     )
 
+
+
+def test_backup_falls_back_when_hard_links_are_unsupported(source, tmp_path, monkeypatch):
+    def no_link(*args, **kwargs):
+        raise PermissionError("hard links unsupported")
+
+    monkeypatch.setattr(os, "link", no_link)
+
+    archive = backup(source, destination=tmp_path / "custom")
+
+    assert archive.is_file()
+    with tarfile.open(archive) as tar:
+        assert "state.db" in tar.getnames()

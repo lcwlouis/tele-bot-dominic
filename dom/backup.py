@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sqlite3
 import tarfile
 import tempfile
@@ -37,6 +38,24 @@ def _home_files(tar: tarfile.TarFile, home: Path, folder: Path, destination: Pat
             _home_files(tar, home, path, destination, work)
 
 
+def _publish(temp_archive: Path, archive: Path) -> None:
+    """Atomically place `temp_archive` at `archive`; never overwrite an existing archive."""
+    try:
+        os.link(temp_archive, archive)
+        return
+    except FileExistsError:
+        raise
+    except OSError:
+        pass  # no hard links on this filesystem: exclusive copy instead
+    fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as out, temp_archive.open("rb") as source:
+            shutil.copyfileobj(source, out)
+    except BaseException:
+        archive.unlink(missing_ok=True)
+        raise
+
+
 def backup(home: Path, *, keep: int = 7, destination: Path | None = None) -> Path:
     if keep < 1:
         raise ValueError("--keep must be at least 1")
@@ -66,7 +85,7 @@ def backup(home: Path, *, keep: int = 7, destination: Path | None = None) -> Pat
         while True:
             archive = destination / f"dom-{stamp:%Y%m%d-%H%M%S}.tar.gz"
             try:
-                os.link(temp_archive, archive)
+                _publish(temp_archive, archive)
                 break
             except FileExistsError:
                 stamp += timedelta(seconds=1)
