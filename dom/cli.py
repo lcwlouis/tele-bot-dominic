@@ -27,7 +27,8 @@ from dom.llm import ChatClient, FallbackClient
 from dom.media import MediaDescriber
 from dom.search import SearchClient
 from dom.store import Store
-from dom.t3 import service as t3_service
+from dom.t3 import auth as t3_auth, service as t3_service
+from dom.t3.client import T3Unavailable
 from dom.telegram import executor, owner
 from dom.telegram.handlers import App, build_router
 from dom.usage import UsageRecorder
@@ -196,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
     service_cmd.add_argument("home", type=Path)
     service_cmd.add_argument("--yes", action="store_true", help="write and enable the units")
     service_cmd.add_argument("--force", action="store_true", help="replace existing units with differing contents")
+    connect_cmd = sub.add_parser("t3-connect", help="sign in to T3 Code with Supervised access")
+    connect_cmd.add_argument("home", type=Path)
+    connect_cmd.add_argument("--yes", action="store_true")
     t3_cmd = sub.add_parser("t3-service", help="install the pinned T3 Code systemd user service")
     t3_cmd.add_argument("home", type=Path)
     t3_cmd.add_argument("--yes", action="store_true", help="write and enable the service")
@@ -238,6 +242,17 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             print(f"install-service failed: {exc}")
             return 1
+    if args.command == "t3-connect":
+        if not args.yes:
+            print("Dry run. Add --yes to sign in with Supervised access and save t3-token.json.")
+            return 0
+        try:
+            t3_auth.connect_home(args.home, load_config(args.home).t3)
+        except (T3Unavailable, ValueError) as exc:
+            print(f"t3-connect failed: {exc}")
+            return 1
+        print("Signed in to T3 Code with Supervised access.")
+        return 0
     if args.command == "t3-service":
         try:
             return t3_service.install(load_config(args.home).t3, yes=args.yes)

@@ -48,6 +48,7 @@ def test_t3_config_defaults_are_off(tmp_path):
     assert Config(home=tmp_path).t3.model_dump() == starter_config()["t3"] == {
         "enabled": False,
         "port": 39731,
+        "base_url": "http://127.0.0.1:39731",
         "version": "0.1.10",
         "node": "~/.local/node/bin/node",
     }
