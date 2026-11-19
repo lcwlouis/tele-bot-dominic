@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from dom.claim import try_claim
@@ -24,10 +26,12 @@ from dom.media import MediaDescriber
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
 from dom.store import Store
-from dom.telegram import gate
+from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
 
 CHAT_TYPES = ("private", "group", "supergroup")
+
+log = logging.getLogger("dom.handlers")
 
 
 @dataclass
@@ -110,6 +114,7 @@ async def _handle_claim(app: App, msg: IncomingMessage, code: str) -> None:
         await app.store.set_owner(msg.sender_id)
         app.config = load_config(app.config.home)
         await app.bot.send_message(msg.chat_id, "Done: you are my owner now. Other chats will ask you before I talk in them.")
+        await owner.publish_menu(app.bot, msg.sender_id)
     elif msg.chat_type == "private":
         await app.bot.send_message(msg.chat_id, "That code did not work.")
 
@@ -138,14 +143,21 @@ async def handle_message(app: App, message: Message) -> None:
         if command == "/pending":
             await gate.resend_pending(app.bot, app.store, app.owner_id)
             return
+        if command == "/status":
+            text, markup = await owner.render_status(app)
+            await app.bot.send_message(msg.chat_id, text, reply_markup=markup)
+            return
         if command in ("/wake", "/sleep"):
             parts = msg.text.split()
             try:
                 target = msg.chat_id if len(parts) == 1 else int(parts[1])
             except ValueError:
                 return
-            if len(parts) <= 2 and not await app.dispatch.override(target, command):
-                await app.bot.send_message(msg.chat_id, "unknown chat")
+            if len(parts) <= 2:
+                if not await app.dispatch.override(target, command):
+                    await app.bot.send_message(msg.chat_id, "unknown chat")
+                elif len(parts) == 1:
+                    await app.bot.send_message(msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
             return
     async with app.ingest_locks[msg.chat_id]:
         decision = await gate.decide(app.store, msg, app.owner_id)
@@ -184,11 +196,49 @@ async def handle_edited_message(app: App, message: Message) -> None:
 _DECISIONS = {"approve": "approved", "ignore": "ignored"}
 
 
+_OVERRIDES = {"wake": "/wake", "sleep": "/sleep"}
+
+
+async def _handle_override(app: App, query: CallbackQuery, action: str, raw_chat_id: str) -> None:
+    """The Wake / Sleep buttons under /status: the owner's /wake or /sleep, then refresh that message."""
+    async def toast(text: str) -> None:
+        try:
+            await app.bot.answer_callback_query(query.id, text=text)
+        except TelegramBadRequest:  # a turn can outlast the callback's validity; the edit below still matters
+            log.warning("could not answer callback %s", query.id)
+
+    if app.owner_id is None or query.from_user.id != app.owner_id:
+        await toast("not allowed")
+        return
+    try:
+        chat_id = int(raw_chat_id)
+    except ValueError:
+        await toast("unknown chat")
+        return
+    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), None)
+    if chat is None or not await app.dispatch.override(chat_id, _OVERRIDES[action]):
+        await toast("unknown chat")
+        return
+    title = owner.display_title(chat, app.owner_id)
+    await toast(f"Dom is up in {title}" if action == "wake" else f"Dom is asleep in {title}")
+    if query.message is not None:
+        text, markup = await owner.render_status(app)
+        try:
+            await app.bot.edit_message_text(
+                text, chat_id=query.message.chat.id, message_id=query.message.message_id, reply_markup=markup
+            )
+        except TelegramBadRequest:  # "message is not modified": nothing to refresh
+            log.info("the status message was already up to date")
+
+
 async def handle_callback(app: App, query: CallbackQuery) -> None:
+    action, _, raw_chat_id = (query.data or "").partition(":")
+    if action in _OVERRIDES:
+        await _handle_override(app, query, action, raw_chat_id)
+        return
     owner_id = app.owner_id
     if owner_id is None or query.from_user.id != owner_id:
         return
-    action, _, raw_chat_id = (query.data or "").partition(":")
     try:
         chat_id = int(raw_chat_id)
     except ValueError:
@@ -232,7 +282,7 @@ def build_router(app: App) -> Router:
     async def on_edited(message: Message) -> None:
         await handle_edited_message(app, message)
 
-    @router.callback_query(F.data.startswith(("approve:", "ignore:")))
+    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:")))
     async def on_callback(query: CallbackQuery) -> None:
         await handle_callback(app, query)
 

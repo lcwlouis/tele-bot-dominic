@@ -208,6 +208,11 @@ class Dispatcher:
             text = ""
         return parse_habits(text)
 
+    def peek_presence(self, rows: list[dict]) -> list[tuple[State, datetime | None]]:
+        """Presence of each stored row as the next turn would find it; writes nothing."""
+        habits = self._habits()
+        return [self.presence.peek(row, habits) for row in rows]
+
     async def _approved(self, chat_id: int) -> bool:
         return await gate.decide_chat(self.app.store, chat_id, self.app.owner_id) == "process"
 

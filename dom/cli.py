@@ -18,7 +18,7 @@ from dom.jev import JevClient
 from dom.llm import ChatClient
 from dom.media import MediaDescriber
 from dom.store import Store
-from dom.telegram import executor
+from dom.telegram import executor, owner
 from dom.telegram.handlers import App, build_router
 
 SHUTDOWN_DRAIN_SECONDS = 10
@@ -100,7 +100,9 @@ async def run(home: Path) -> None:
             )
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
-            if config.owner_id is None:
+            if config.owner_id is not None:
+                await owner.publish_menu(bot, config.owner_id)
+            else:
                 logging.getLogger("dom").warning(
                     "No owner yet: send /claim <code> to @%s (the code is in %s).", me.username, home / ".claim"
                 )
