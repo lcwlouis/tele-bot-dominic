@@ -19,3 +19,7 @@ generic_cidrs = [
 
 # Vendored licence authors if their licence is included outside the vendor trees.
 emails = []
+
+# The documented header placeholder and exact fake authorization values in tests.
+bearer_placeholders = ["token"]
+test_bearer_tokens = ["fake", "fake-key", "incorrect", "k", "sandbox-key", "secret-key"]
