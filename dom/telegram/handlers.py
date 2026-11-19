@@ -13,8 +13,8 @@ from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from dom.claim import try_claim
 from dom.config import Config, load_config
@@ -147,6 +147,10 @@ async def handle_message(app: App, message: Message) -> None:
             text, markup = await owner.render_status(app)
             await app.bot.send_message(msg.chat_id, text, reply_markup=markup)
             return
+        if command == "/chats":
+            text, markup = await owner.render_chats(app)
+            await app.bot.send_message(msg.chat_id, text, reply_markup=markup)
+            return
         if command in ("/wake", "/sleep"):
             parts = msg.text.split()
             try:
@@ -199,42 +203,108 @@ _DECISIONS = {"approve": "approved", "ignore": "ignored"}
 _OVERRIDES = {"wake": "/wake", "sleep": "/sleep"}
 
 
+async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> None:
+    try:
+        await app.bot.answer_callback_query(query.id, text=text)
+    except TelegramBadRequest:  # a turn can outlast the callback's validity; the edit that follows still matters
+        log.warning("could not answer callback %s", query.id)
+
+
+async def _edit_prompt(app: App, query: CallbackQuery, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
+    if query.message is None:
+        return
+    try:
+        await app.bot.edit_message_text(
+            text, chat_id=query.message.chat.id, message_id=query.message.message_id, reply_markup=markup
+        )
+    except TelegramBadRequest:  # "message is not modified": nothing to refresh
+        log.info("the message was already up to date")
+
+
+async def _refresh_status(app: App, query: CallbackQuery) -> None:
+    text, markup = await owner.render_status(app)
+    await _edit_prompt(app, query, text, markup)
+
+
 async def _handle_override(app: App, query: CallbackQuery, action: str, raw_chat_id: str) -> None:
     """The Wake / Sleep buttons under /status: the owner's /wake or /sleep, then refresh that message."""
-    async def toast(text: str) -> None:
-        try:
-            await app.bot.answer_callback_query(query.id, text=text)
-        except TelegramBadRequest:  # a turn can outlast the callback's validity; the edit below still matters
-            log.warning("could not answer callback %s", query.id)
-
     if app.owner_id is None or query.from_user.id != app.owner_id:
-        await toast("not allowed")
+        await _toast(app, query, "not allowed")
         return
     try:
         chat_id = int(raw_chat_id)
     except ValueError:
-        await toast("unknown chat")
+        await _toast(app, query, "unknown chat")
         return
     chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), None)
     if chat is None or not await app.dispatch.override(chat_id, _OVERRIDES[action]):
-        await toast("unknown chat")
+        await _toast(app, query, "unknown chat")
         return
     title = owner.display_title(chat, app.owner_id)
-    await toast(f"Dom is up in {title}" if action == "wake" else f"Dom is asleep in {title}")
-    if query.message is not None:
-        text, markup = await owner.render_status(app)
-        try:
-            await app.bot.edit_message_text(
-                text, chat_id=query.message.chat.id, message_id=query.message.message_id, reply_markup=markup
-            )
-        except TelegramBadRequest:  # "message is not modified": nothing to refresh
-            log.info("the status message was already up to date")
+    await _toast(app, query, f"Dom is up in {title}" if action == "wake" else f"Dom is asleep in {title}")
+    await _refresh_status(app, query)
+
+
+_LEAVABLE = ("approved", "pending_approval", "ignored")
+
+
+async def _leavable_chat(app: App, raw_chat_id: str) -> dict | None:
+    """A known group Dom could still be in. Read-only: never creates a row."""
+    try:
+        chat_id = int(raw_chat_id)
+    except ValueError:
+        return None
+    if chat_id >= 0:
+        return None
+    return next(
+        (c for c in await app.store.list_chats() if c["chat_id"] == str(chat_id) and c["authorization_status"] in _LEAVABLE),
+        None,
+    )
+
+
+async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id: str) -> None:
+    """The Leave buttons and `status:refresh` (the confirmation's Cancel). The owner confirms before Dom leaves."""
+    if app.owner_id is None or query.from_user.id != app.owner_id:
+        await _toast(app, query, "not allowed")
+        return
+    if action == "status":
+        await _toast(app, query)
+        if raw_chat_id == "refresh":
+            await _refresh_status(app, query)
+        return
+    chat = await _leavable_chat(app, raw_chat_id)
+    if chat is None:
+        await _toast(app, query, "unknown chat")
+        return
+    title = owner.display_title(chat, app.owner_id)
+    if action == "leave":
+        await _toast(app, query)
+        await _edit_prompt(app, query, f"Leave {title}? Friends will see Dom leave.", InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Yes, leave", callback_data=f"leaveyes:{chat['chat_id']}"),
+            InlineKeyboardButton(text="Cancel", callback_data="status:refresh"),
+        ]]))
+        return
+    try:
+        await app.bot.leave_chat(int(chat["chat_id"]))
+        result = f"Dom left {title}"
+    except (TelegramBadRequest, TelegramForbiddenError):  # Telegram says Dom is not in that chat (any more)
+        result = f"Dom wasn't in {title} anymore"
+    except Exception as error:
+        log.exception("could not leave chat %s", chat["chat_id"])
+        await _toast(app, query, f"Couldn't leave: {(getattr(error, 'message', '') or str(error) or type(error).__name__)[:100]}")
+        return
+    await app.store.set_chat_auth_status(chat["chat_id"], "left")
+    await _toast(app, query, result)
+    await _refresh_status(app, query)
 
 
 async def handle_callback(app: App, query: CallbackQuery) -> None:
     action, _, raw_chat_id = (query.data or "").partition(":")
     if action in _OVERRIDES:
         await _handle_override(app, query, action, raw_chat_id)
+        return
+    if action in ("leave", "leaveyes", "status"):
+        await _handle_leave(app, query, action, raw_chat_id)
         return
     owner_id = app.owner_id
     if owner_id is None or query.from_user.id != owner_id:
@@ -257,15 +327,31 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         )
 
 
-async def handle_my_chat_member(app: App, update: ChatMemberUpdated) -> None:
-    """Dom was added to a group: it starts pending and the owner is asked."""
-    if update.chat.type not in ("group", "supergroup") or update.new_chat_member.status not in ("member", "administrator"):
+async def _note_removed(app: App, update: ChatMemberUpdated, owner_id: int) -> None:
+    """Dom is no longer in a group it knew: stop listening to it and tell the owner once."""
+    chat = next((c for c in await app.store.list_chats() if c["chat_id"] == str(update.chat.id)), None)
+    if chat is None or chat["authorization_status"] not in _LEAVABLE:  # unknown, already left, or blocked
         return
+    await app.store.set_chat_auth_status(chat["chat_id"], "left")
+    title = update.chat.title or chat["title"] or chat["chat_id"]
+    own_choice = update.new_chat_member.status == "left" and update.from_user.id == app.bot_id
+    await app.bot.send_message(owner_id, f"Dom left {title}" if own_choice else f"Dom was removed from {title}")
+
+
+async def handle_my_chat_member(app: App, update: ChatMemberUpdated) -> None:
+    """Dom was added to a group (it starts pending and the owner is asked) or removed from one (it is `left`)."""
     owner_id = app.owner_id
-    if owner_id is None:
+    if update.chat.type not in ("group", "supergroup") or owner_id is None:
+        return
+    status = update.new_chat_member.status
+    if status in ("left", "kicked"):
+        await _note_removed(app, update, owner_id)
+        return
+    if status not in ("member", "administrator"):
         return
     inviter = f"@{update.from_user.username}" if update.from_user.username else update.from_user.full_name
-    await app.store.get_chat_auth_status(update.chat.id)
+    if (await app.store.get_chat_auth_status(update.chat.id))["authorization_status"] in ("left", "ignored"):
+        await app.store.set_chat_auth_status(update.chat.id, "pending_approval", approval_prompt_sent=False)
     await gate.request_approval(
         app.bot, app.store, owner_id, update.chat.id, update.chat.title or str(update.chat.id), "group", inviter
     )
@@ -282,7 +368,7 @@ def build_router(app: App) -> Router:
     async def on_edited(message: Message) -> None:
         await handle_edited_message(app, message)
 
-    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:")))
+    @router.callback_query(F.data.startswith(("approve:", "ignore:", "wake:", "sleep:", "leave:", "leaveyes:", "status:")))
     async def on_callback(query: CallbackQuery) -> None:
         await handle_callback(app, query)
 

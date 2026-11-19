@@ -19,6 +19,8 @@ class FakeBot:
         self.calls: list[tuple] = []
         self.edit_markups: list = []
         self._next_id = 5000
+        self.leave_error: Exception | None = None
+        self.member_counts: dict = {}  # chat_id -> int, or an Exception to raise
 
     async def send_chat_action(self, chat_id, action, **kw):
         self.calls.append(("action", chat_id, action, kw))
@@ -40,6 +42,18 @@ class FakeBot:
     async def edit_message_text(self, text, chat_id=None, message_id=None, **kw):
         self.calls.append(("edit", chat_id, message_id, text))
         self.edit_markups.append(kw.get("reply_markup"))
+
+    async def leave_chat(self, chat_id, **kw):
+        self.calls.append(("leave", chat_id))
+        if self.leave_error is not None:
+            raise self.leave_error
+
+    async def get_chat_member_count(self, chat_id, **kw):
+        self.calls.append(("count", chat_id))
+        result = self.member_counts.get(chat_id, 3)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     async def set_my_commands(self, commands, scope=None, **kw):
         self.calls.append(("set_commands", commands, scope))

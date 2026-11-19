@@ -42,7 +42,7 @@ MIGRATIONS: list[tuple[int, str]] = [
 TARGET_VERSION = MIGRATIONS[-1][0]
 
 _PRESENCE_COLUMNS = ("is_sleeping", "sleep_until", "is_offline", "offline_until", "online_until")
-_CHAT_AUTH_STATUSES = {"approved", "pending_approval", "ignored", "blocked"}
+_CHAT_AUTH_STATUSES = {"approved", "pending_approval", "ignored", "left", "blocked"}
 _CHAT_AUTH_COLUMNS = "chat_id, authorization_status, title, invited_by_handle, approval_prompt_sent"
 # Visibility labels that mark owner-only rows ("admin_private" comes from V2 databases).
 _PRIVATE_SCOPES = (VISIBILITY_OWNER_PRIVATE, "admin_private")

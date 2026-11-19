@@ -17,7 +17,7 @@ Decision = Literal["process", "hold", "drop"]
 
 
 async def decide(store: Store, msg: IncomingMessage, owner_id: int | None) -> Decision:
-    """process: approved. hold: pending, record only. drop: owner unset, ignored or blocked."""
+    """process: approved. hold: pending, record only. drop: owner unset, or the chat is ignored, left or blocked."""
     return await decide_chat(store, msg.chat_id, owner_id)
 
 
