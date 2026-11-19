@@ -6,6 +6,7 @@ import re
 import shutil
 from importlib import resources
 from dataclasses import dataclass
+from datetime import time
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -123,6 +124,22 @@ class Home:
             raise ValueError(f"{rel} is a link; expected a regular file")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+
+    def write_habits_line(self, start: time, end: time) -> None:
+        home = self.scoped(allow_private=False)
+        rel = "memory/HABITS.md"
+        path = home._resolve(rel)
+        content = path.read_bytes().decode("utf-8") if path.is_file() else ""
+        window = f'"{start:%H:%M}-{end:%H:%M}"'
+        matches = list(re.finditer(r"^([ \t]*(?:[-*][ \t]*)?sleep[ \t]*:[ \t]*)[^\r\n]*", content, re.MULTILINE))
+        if matches:
+            line = matches[-1]  # the parser uses the last value of a repeated key
+            content = content[:line.end(1)] + window + content[line.end():]
+        else:
+            newline = "\r\n" if "\r\n" in content else "\n"
+            separator = newline if content and not content.endswith("\n") else ""
+            content += f"{separator}sleep: {window}{newline}"
+        home._write_regular(rel, content)
 
     def preset_names(self) -> list[str]:
         try:

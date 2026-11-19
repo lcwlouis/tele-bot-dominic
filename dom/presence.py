@@ -10,6 +10,7 @@ from random import Random
 from typing import Callable, Literal
 from zoneinfo import ZoneInfo
 
+from dom.home import Home, PrivateAccessError
 from dom.store import Store
 
 State = Literal["asleep", "offline", "online"]
@@ -41,6 +42,19 @@ def _range(value: str, default: tuple[int, int], low: int, high: int) -> tuple[i
     return default
 
 
+def clamp_sleep_end(start_min: int, end_min: int) -> int:
+    duration = (end_min - start_min) % (24 * 60)
+    return (start_min + _clamp(duration, 4 * 60, 11 * 60)) % (24 * 60)
+
+
+def read_habits(home: Home) -> Habits:
+    try:
+        text = home.scoped(allow_private=False).read("memory/HABITS.md")
+    except (PrivateAccessError, ValueError):
+        text = ""
+    return parse_habits(text)
+
+
 def parse_habits(text: str) -> Habits:
     values = {}
     for line in text.splitlines():
@@ -56,8 +70,7 @@ def parse_habits(text: str) -> Habits:
         except ValueError:
             pass
     start_min = start.hour * 60 + start.minute
-    duration = (end.hour * 60 + end.minute - start_min) % (24 * 60)
-    end_min = (start_min + min(max(duration, 4 * 60), 11 * 60)) % (24 * 60)
+    end_min = clamp_sleep_end(start_min, end.hour * 60 + end.minute)
     end = time(*divmod(end_min, 60))
 
     try:

@@ -9,8 +9,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from dom.home import PrivateAccessError
-from dom.presence import Habits, parse_habits
+from dom.presence import Habits, read_habits
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -33,7 +32,6 @@ class DailyJobs:
     async def tick(self) -> None:
         async with self._lock:
             store = self.app.store
-            home = self.app.home.scoped(allow_private=False)
             for name, (due, run) in self._jobs.items():
                 local = self.now().astimezone(ZoneInfo(self.app.config.timezone))
                 day = local.date().isoformat()
@@ -41,11 +39,7 @@ class DailyJobs:
                 try:
                     if await store.kv_get(f"{key}:last") == day:
                         continue
-                    try:
-                        text = home.read("memory/HABITS.md")
-                    except (PrivateAccessError, ValueError):
-                        text = ""
-                    if not due(local, parse_habits(text)):
+                    if not due(local, read_habits(self.app.home)):
                         continue
                     attempt_day, _, count = (await store.kv_get(f"{key}:attempts") or "").partition("/")
                     attempts = int(count) if attempt_day == day else 0

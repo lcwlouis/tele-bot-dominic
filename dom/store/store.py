@@ -15,7 +15,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 from xml.sax.saxutils import escape, quoteattr
@@ -867,6 +867,30 @@ class Store:
         return [_row_to_message(r) for r in reversed(rows)]
 
     format_chat_window_xml = staticmethod(format_chat_window_xml)
+
+    async def hourly_message_counts(
+        self, days: int = 14, tz: tzinfo = timezone.utc, *, now: datetime | None = None,
+    ) -> list[int]:
+        """Count approved chats' incoming human messages by local hour, reading timestamps only."""
+        end = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        start = end - timedelta(days=days)
+        return await self._run(self._hourly_message_counts, start.isoformat(), end.isoformat(), tz)
+
+    def _hourly_message_counts(self, start: str, end: str, tz: tzinfo) -> list[int]:
+        rows = self._conn.execute(
+            "SELECT m.created_at FROM messages m JOIN chats c ON c.chat_id = m.chat_id "
+            "WHERE c.authorization_status = 'approved' AND m.role = 'user' "
+            "AND m.is_bot = 0 AND m.is_deleted = 0 "
+            "AND julianday(m.created_at) >= julianday(?) AND julianday(m.created_at) <= julianday(?)",
+            (start, end),
+        )
+        counts = [0] * 24
+        for (at,) in rows:
+            time = datetime.fromisoformat(at)
+            if time.tzinfo is None:
+                time = time.replace(tzinfo=timezone.utc)
+            counts[time.astimezone(tz).hour] += 1
+        return counts
 
     async def kv_get(self, key: str) -> str | None:
         return await self._run(self._kv_get, key)
