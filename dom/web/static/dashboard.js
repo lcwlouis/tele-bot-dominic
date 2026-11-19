@@ -30,3 +30,18 @@ document.addEventListener("input", (event) => {
         ring.classList.toggle("over", length > limit);
     }
 });
+
+document.addEventListener("htmx:afterSwap", (event) => {
+    if (event.detail.target.id !== "desktop-state") {
+        return;
+    }
+    const state = document.getElementById("desktop-state");
+    const live = document.getElementById("desktop-live");
+    const ready = state.dataset.status === "ready";
+    live.hidden = !ready;
+    if (ready && !live.hasAttribute("src")) {
+        live.setAttribute("src", live.dataset.src);
+    } else if (!ready && live.hasAttribute("src")) {
+        live.removeAttribute("src");
+    }
+});

@@ -50,3 +50,10 @@ WantedBy=multi-user.target
 ```
 
 Enable it with `sudo systemctl enable --now dom-desktop-network.service`.
+
+## Dashboard handoff
+
+Set `[web].public_url` in `config.toml` to the HTTPS base URL of the
+authenticated dashboard. Dom uses it for the Open Desktop button in the owner's
+handoff message. On the Desktop page, use the live view and tap Done when the
+computer is ready for Dom to continue.
