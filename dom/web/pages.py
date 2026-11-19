@@ -22,6 +22,7 @@ from dom import traits
 from dom.agent import unfence
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.presence import read_habits
+from dom.skills import skill_diff
 from dom.telegram import owner
 from dom.usage import check_model_allowed, model_request
 
@@ -182,6 +183,8 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
         if (kind and raw["kind"] != kind) or (source and raw["source"] != source):
             continue
         row = _proposal_body(raw)
+        if row["kind"] == "skill" and row["body"]["old"]:
+            row["changes"] = skill_diff(row["body"]["old"], row["body"]["new"])[2:]
         if (key := _import_key(row)) is not None:
             if key not in imports:
                 service = key[0].partition(":")[2]

@@ -16,9 +16,9 @@ from dom.usage import UsageRecorder
 from tghelpers import FRIEND, GROUP, OWNER, tg
 
 
-def call(name, **args):
+def call(tool_name, **args):
     return {"role": "assistant", "tool_calls": [{
-        "id": name, "type": "function", "function": {"name": name, "arguments": json.dumps(args)},
+        "id": tool_name, "type": "function", "function": {"name": tool_name, "arguments": json.dumps(args)},
     }]}
 
 

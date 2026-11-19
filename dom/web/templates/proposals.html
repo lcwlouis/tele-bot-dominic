@@ -9,6 +9,7 @@
       <select name="kind">
         <option value="">All kinds</option>
         <option value="soul_edit"{% if context.kind == "soul_edit" %} selected{% endif %}>Soul edit</option>
+        <option value="skill"{% if context.kind == "skill" %} selected{% endif %}>Skill</option>
         <option value="memory_fact"{% if context.kind == "memory_fact" %} selected{% endif %}>Memory fact</option>
       </select>
     </label>
@@ -42,9 +43,23 @@
       </div>
     </form>
     {% else %}
-    <span class="kind">{{ "Soul edit" if card.kind == "soul_edit" else "Memory fact" }} · {{ card.source }}</span>
+    <span class="kind">{{ {"soul_edit": "Soul edit", "skill": "Skill", "memory_fact": "Memory fact"}[card.kind] }} · {{ card.source }}</span>
     <p>{{ card.title }}</p>
-    {% if card.kind == "soul_edit" %}{{ diff(card.body) }}{% else %}<p>{{ card.body.file }} · {{ card.body.text }}</p>{% endif %}
+    {% if card.kind == "soul_edit" %}
+    {{ diff(card.body) }}
+    {% elif card.kind == "skill" %}
+    <p>{{ card.body.description }}</p>
+    <pre class="skill-text">{{ card.body.body }}</pre>
+    {% if card.changes %}
+    <div class="diff" aria-label="Proposed changes">
+      {% for line in card.changes %}
+      {% if line[0] == "-" %}<del>- {{ line[1:] }}</del>
+      {% elif line[0] == "+" %}<ins>+ {{ line[1:] }}</ins>
+      {% else %}<div>{{ line }}</div>{% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% else %}<p>{{ card.body.file }} · {{ card.body.text }}</p>{% endif %}
     <div class="actions" hx-target="#proposals" hx-swap="outerHTML">
       <button class="primary" hx-post="/proposals/{{ card.id }}/approve?{{ query }}">Approve</button>
       <button class="danger" hx-post="/proposals/{{ card.id }}/reject?{{ query }}">Reject</button>
