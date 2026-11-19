@@ -1138,7 +1138,7 @@ class Store:
                 conn.executemany(
                     "INSERT INTO plugins (name, status, hash, manifest_json, updated_at) "
                     "VALUES (?, 'pending', ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
-                    "status = CASE WHEN plugins.status = 'approved' THEN 'pending' ELSE plugins.status END, "
+                    "status = CASE WHEN plugins.status IN ('approved', 'disabled') THEN 'pending' ELSE plugins.status END, "
                     "hash = excluded.hash, manifest_json = excluded.manifest_json, updated_at = excluded.updated_at "
                     "WHERE plugins.hash != excluded.hash",
                     [(name, digest, manifest, _now()) for name, digest, manifest in manifests],
