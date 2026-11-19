@@ -17,6 +17,10 @@ class T3Unavailable(RuntimeError):
     pass
 
 
+class T3Uncertain(T3Unavailable):
+    pass
+
+
 class SessionGone(T3Unavailable):
     pass
 
@@ -47,10 +51,21 @@ def cli_json(cli, args, runner):
     raise T3Unavailable("T3 CLI did not return a usable response.")
 
 
-def request(http, url, **kwargs):
-    deadline = time.monotonic() + 20
+def remaining_time(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise T3Uncertain("T3 gateway exceeded its time limit.")
+    return remaining
+
+
+def request(http, url, *, deadline=None, **kwargs):
+    if deadline is None:
+        deadline = time.monotonic() + 20
+    remaining = remaining_time(deadline)
+    timeout = httpx.Timeout(remaining, connect=min(5, remaining))
     try:
-        with http.stream("POST", url, **kwargs) as response:
+        with http.stream("POST", url, timeout=timeout, **kwargs) as response:
+            remaining_time(deadline)
             if response.status_code == 401:
                 raise T3Unavailable("T3 sign-in was rejected. Reconnect to T3 Code.")
             if response.status_code == 404 and "mcp-session-id" in kwargs.get("headers", {}):
@@ -60,9 +75,10 @@ def request(http, url, **kwargs):
             received = 0
             event_stream = response.headers.get("content-type", "").startswith("text/event-stream")
             for chunk in response.iter_bytes():
+                remaining_time(deadline)
                 received += len(chunk)
-                if time.monotonic() > deadline or received > LIMIT:
-                    raise T3Unavailable("T3 response exceeded its time or size limit.")
+                if received > LIMIT:
+                    raise T3Uncertain("T3 response exceeded its size limit.")
                 data.extend(chunk)
                 if event_stream:
                     while (event := next_sse_event(data)) is not None:
@@ -71,11 +87,15 @@ def request(http, url, **kwargs):
                             message = json.loads(b"\n".join(lines))
                             if isinstance(message, dict) and ("result" in message or "error" in message):
                                 return message, response.headers
+            remaining_time(deadline)
             if event_stream:
-                raise T3Unavailable("T3 returned no MCP result.")
+                raise T3Uncertain("T3 returned no MCP result.")
             return (json.loads(data) if data else {}), response.headers
-    except (httpx.HTTPError, ValueError):
-        raise T3Unavailable("T3 gateway request failed.") from None
+    except httpx.HTTPStatusError as exc:
+        kind = T3Uncertain if exc.response.status_code >= 500 else T3Unavailable
+        raise kind("T3 gateway request failed.") from None
+    except (httpx.RequestError, ValueError):
+        raise T3Uncertain("T3 gateway request failed.") from None
 
 
 def next_sse_event(data):
@@ -107,7 +127,7 @@ class T3Client:
         except (TypeError, KeyError):
             raise T3Unavailable("T3 returned invalid machine data.") from None
 
-    def _rpc(self, http, method, params):
+    def _rpc(self, http, deadline, method, params):
         headers = {"authorization": f"Bearer {self.token}", "accept": "application/json, text/event-stream"}
         if self.session:
             headers.update({"mcp-session-id": self.session, "mcp-protocol-version": self.protocol})
@@ -115,13 +135,13 @@ class T3Client:
         if method != "notifications/initialized":
             self.request_id += 1
             body["id"] = self.request_id
-        data, response_headers = request(http, self.url, headers=headers, json=body)
+        data, response_headers = request(http, self.url, deadline=deadline, headers=headers, json=body)
         if not isinstance(data, dict) or "error" in data:
             raise T3Unavailable("T3 rejected the MCP request.")
         return data.get("result"), response_headers
 
-    def _initialize(self, http):
-        result, headers = self._rpc(http, "initialize", {
+    def _initialize(self, http, deadline):
+        result, headers = self._rpc(http, deadline, "initialize", {
             "protocolVersion": "2025-06-18", "capabilities": {},
             "clientInfo": {"name": "Dom", "version": "1"},
         })
@@ -131,7 +151,7 @@ class T3Client:
             self.session = None
             raise T3Unavailable("T3 did not establish an MCP session.")
         try:
-            self._rpc(http, "notifications/initialized", {})
+            self._rpc(http, deadline, "notifications/initialized", {})
         except T3Unavailable:
             self.session = None
             raise
@@ -148,6 +168,7 @@ class T3Client:
         return self._call("t3_thread_send", args)
 
     def _call(self, tool, args):
+        deadline = time.monotonic() + 20
         token = read_token(self.token_path)
         try:
             if not isinstance(token["access_token"], str) or not token["expires_at"] > time.time():
@@ -161,8 +182,8 @@ class T3Client:
             for attempt in range(2):
                 try:
                     if not self.session:
-                        self._initialize(http)
-                    result, _ = self._rpc(http, "tools/call", {"name": tool, "arguments": args})
+                        self._initialize(http, deadline)
+                    result, _ = self._rpc(http, deadline, "tools/call", {"name": tool, "arguments": args})
                     if not isinstance(result, dict) or result.get("isError") or "structuredContent" not in result:
                         raise T3Unavailable("T3 tool failed or the machine is unreachable.")
                     content = result["structuredContent"]
