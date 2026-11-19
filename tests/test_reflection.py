@@ -284,3 +284,18 @@ async def test_an_entry_that_looks_like_a_heading_stays_inside_its_own_entry(mak
     private = app.home.scoped(allow_private=True).journal_entries(private=True)
     assert private == ["## 2026-01-01\nentry: ## 2026-01-01"]
     assert reflection.mood(app.home, date(2026, 1, 1)) == "quietly amused"
+
+
+async def test_private_chat_content_is_bounded_newest_first(make_app):
+    from dom import reflection
+
+    app = make_app(contents=(json.dumps(PUBLIC), json.dumps(PRIVATE)))
+    for index in range(60):
+        await record(app, f"MSG-{index:02d} " + "x" * 500, OWNER, delta=timedelta(minutes=60 - index))
+    await reflection.run(app)
+    content = app.script.requests[1]["messages"][1]["content"]
+    excerpt = content.split("<messages>\n")[1].split("\n</messages>")[0]
+    assert len(excerpt) <= 12000
+    assert "MSG-59" in excerpt and "MSG-00" not in excerpt
+    assert excerpt.index("MSG-59") < excerpt.index("MSG-58")
+    assert excerpt.endswith("</message>")

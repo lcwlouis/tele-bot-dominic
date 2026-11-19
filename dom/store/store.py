@@ -914,16 +914,13 @@ class Store:
         for role, text, title in rows:
             header = f"<message chat={quoteattr(title[:256])} role={quoteattr(role)}>"
             footer = "</message>"
-            if not private:
-                room = remaining - len(header) - len(footer)
-                if room <= 0:
-                    break
-                body = escape(text[:room])[:room]
-                body = re.sub(r"&[^;]*$", "", body)  # keep any final XML entity whole
-                parts.append(header + body + footer)
-                remaining -= len(parts[-1]) + 1  # newline between messages
-            else:
-                parts.append(header + escape(text) + footer)
+            room = remaining - len(header) - len(footer)
+            if room <= 0:
+                break
+            body = escape(text[:room])[:room]
+            body = re.sub(r"&[^;]*$", "", body)  # keep any final XML entity whole
+            parts.append(header + body + footer)
+            remaining -= len(parts[-1]) + 1  # newline between messages
         return "\n".join(parts)
 
     async def hourly_message_counts(
