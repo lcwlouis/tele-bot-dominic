@@ -19,6 +19,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton
 from dom.claim import try_claim
 from dom.config import Config, load_config
 from dom.dispatch import Dispatcher
+from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 from dom.home import Home
 from dom.jev import JevClient
 from dom.llm import ChatClient
@@ -54,6 +55,7 @@ class App:
     bot_id: int | None = None
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | None = None
+    sandbox: LocalSandbox | RemoteSandbox | None = None
     dispatch: Dispatcher = field(init=False)
     proposals: Proposals = field(init=False)
     stickers: Stickers = field(init=False)

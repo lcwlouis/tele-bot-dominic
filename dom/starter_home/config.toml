@@ -29,6 +29,13 @@ api_key_env = "OPENROUTER_API_KEY"
 
 [desktop]
 mode = "off"
+image = "ghcr.io/agent-infra/sandbox:latest"
+url = ""
+api_key_env = "SANDBOX_API_KEY"
+idle_minutes = 10
+profile_dir = ""  # defaults to DOM_HOME/../desktop-profile
+network = "dom-desktop"
+port = 18080
 
 [openers]
 enabled = true
