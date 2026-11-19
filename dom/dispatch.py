@@ -363,7 +363,8 @@ class Dispatcher:
         )
 
     def _triage_xml(self, chat_id: int, window: list[StoredMessage]) -> str:
-        return self.app.store.format_chat_window_xml(chat_id, window[-TRIAGE_WINDOW:])
+        chat = [m for m in window if m.role != "event"]  # events are the owner's commands, not chat content for Jev
+        return self.app.store.format_chat_window_xml(chat_id, chat[-TRIAGE_WINDOW:])
 
     async def _run_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,

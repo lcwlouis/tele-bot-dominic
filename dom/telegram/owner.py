@@ -64,6 +64,35 @@ def display_title(chat: dict, owner_id: int | None) -> str:
     return f"DM with {(name or ' '.join((chat.get('peer_name') or '').split()) or chat_id)[:50]}"
 
 
+def _one_line(parts: list[str], limit: int = 400) -> str:
+    text = ", ".join(parts)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+async def chats_summary(app: App) -> str:
+    """What /chats listed, in one line: the groups with their titles, then each DM, the owner's last."""
+    known = [c for c in await app.store.list_chats() if c["authorization_status"] in ("approved", "pending_approval")]
+    groups = [display_title(c, app.owner_id) for c in known if _is_group(c)]
+    dms = [c for c in known if not _is_group(c)]
+    dms.sort(key=lambda c: c["chat_id"] == str(app.owner_id))
+    parts = [f"{len(groups)} group{'s' if len(groups) != 1 else ''} ({', '.join(groups)})"] if groups else []
+    return _one_line(parts + [display_title(c, app.owner_id) for c in dms]) or "no chats"
+
+
+async def status_summary(app: App) -> str:
+    """What /status showed, in one line: each approved chat with its state."""
+    chats = await app.store.list_approved_chats()
+    states = app.dispatch.peek_presence(chats)
+    return _one_line([f"{display_title(c, app.owner_id)} {state}" for c, (state, _) in zip(chats, states)])
+
+
+async def pending_summary(app: App) -> str:
+    pending = await app.store.list_pending_chats()
+    if not pending:
+        return "nothing waiting"
+    return f"{len(pending)} waiting ({_one_line([display_title(c, app.owner_id) for c in pending])})"
+
+
 async def render_status(app: App) -> tuple[str, InlineKeyboardMarkup]:
     """One line and one Wake/Sleep(/Leave, for groups) button row per approved chat, the owner's DM first,
     then by recent activity."""

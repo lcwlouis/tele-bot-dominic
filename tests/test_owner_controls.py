@@ -197,7 +197,8 @@ async def test_status_never_creates_rows(make_app):
     before = await chat_rows(app)
     text, _ = await status_message(app)
     assert "your DM" in text and "DM with" in text
-    assert await chat_rows(app) == before
+    # /status leaves a note in the owner's DM history, so that one chat may appear; no other row may.
+    assert {r["chat_id"] for r in await chat_rows(app)} - {r["chat_id"] for r in before} <= {str(OWNER)}
 
 
 async def test_status_truncates_a_long_list(make_app):
