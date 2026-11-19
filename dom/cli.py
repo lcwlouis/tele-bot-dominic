@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import habits, reflection
+from dom import doctor, habits, reflection
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -188,6 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     backup_cmd.add_argument("home", type=Path)
     backup_cmd.add_argument("--keep", type=int, default=7)
     backup_cmd.add_argument("--to", type=Path)
+    doctor_cmd = sub.add_parser("doctor", help="check instance configuration and health")
+    doctor_cmd.add_argument("home", type=Path)
+    doctor_cmd.add_argument("--online", action="store_true", help="also contact Telegram and model providers")
     restore_cmd = sub.add_parser("restore", help="restore an archive into an empty home")
     restore_cmd.add_argument("archive", type=Path)
     restore_cmd.add_argument("home", type=Path)
@@ -210,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{args.command} failed: {exc}")
             return 1
         return 0
+    if args.command == "doctor":
+        return doctor.run(args.home, online=args.online)
     if args.command == "init":
         return cmd_init(args.home, getattr(args, "timezone", None))
     if args.command == "import-v2":

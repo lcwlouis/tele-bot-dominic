@@ -28,6 +28,23 @@ REMOTE_UNCONFIRMED = (
 )
 
 
+def valid_remote_url(value: str) -> bool:
+    try:
+        url = httpx.URL(value)
+    except httpx.InvalidURL:
+        return False
+    return url.scheme in ("http", "https") and bool(url.host)
+
+
+def desktop_profile_path(config: Config) -> Path:
+    home = config.home.resolve()
+    setting = config.desktop.profile_dir
+    profile = (home / setting if setting else home.parent / "desktop-profile").resolve()
+    if profile.is_relative_to(home) or home.is_relative_to(profile):
+        raise SandboxError("desktop profile must be outside DOM_HOME")
+    return profile
+
+
 class RemoteSandbox:
     def __init__(
         self, url: str, api_key: str | None, *, http: httpx.AsyncClient | None = None, isolation_confirmed: bool = False,
@@ -39,7 +56,7 @@ class RemoteSandbox:
         self._status: Status = "stopped"
         self.error: str | None = None
         self.client: SandboxClient | None = None
-        if httpx.URL(url).scheme not in ("http", "https") or not httpx.URL(url).host:
+        if not valid_remote_url(url):
             self._status = "error"
             self.error = "desktop URL is missing or invalid"
         else:
@@ -231,13 +248,7 @@ class LocalSandbox:
         if exists == 0:
             # A previous Dom process may have exited with its key still in memory.
             await self._remove_container(running.strip() == b"true")
-        home = self.config.home.resolve()
-        profile = Path(settings.profile_dir) if settings.profile_dir else home.parent / "desktop-profile"
-        if not profile.is_absolute():
-            profile = home / profile
-        profile = profile.resolve()
-        if profile == home or home in profile.parents or profile in home.parents:
-            raise SandboxError("desktop profile must be outside DOM_HOME")
+        profile = desktop_profile_path(self.config)
         profile.mkdir(mode=0o700, parents=True, exist_ok=True)
         key = secrets.token_urlsafe(32)
         code, _ = await self._docker_to_completion(
