@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import math
 import os
@@ -246,21 +247,15 @@ async def _telegram(http: httpx.AsyncClient, token: str, owner: int | None) -> l
 
 
 def _probe_hint(response: httpx.Response) -> str:
-    """The provider's own reason, which names problems like data-policy blocks. Never echoes secrets:
-    it is the response body of a request that carried only a fixed synthetic prompt."""
+    """Classify provider errors and return the HTTP status and fixed diagnostic text."""
     try:
-        payload = response.json()
+        body = json.dumps(response.json(), ensure_ascii=False)
     except (ValueError, RecursionError):
-        payload = None
-    error = payload.get("error") if isinstance(payload, dict) else None
-    if isinstance(error, dict):
-        error = error.get("message")
-    message = error if isinstance(error, str) else ""
-    if "ZDR" in message or "data policy" in message:
+        body = response.text
+    if re.search(r"\bzdr\b|\bdata[ -]+policy\b|\bzero[ -]+data[ -]+retention\b", body, re.IGNORECASE):
         return (f"HTTP {response.status_code}: the provider refused it under your account's data policy "
                 "(zero data retention). Pick a model with a ZDR-compliant provider.")
-    detail = " ".join(message.split())[:160]
-    return f"HTTP {response.status_code}: {detail or 'no reason given'}. Check the endpoint URL, model ID and key."
+    return f"HTTP {response.status_code}: Check the endpoint URL, model ID and key."
 
 
 async def _model(http: httpx.AsyncClient, name: str, endpoint: ModelEndpoint, key: str | None) -> Check:

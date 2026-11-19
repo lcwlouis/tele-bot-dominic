@@ -272,8 +272,25 @@ async def test_model_probe_names_a_data_policy_block():
     ('null', False),
     ('"service unavailable"', False),
     ('service unavailable', False),
+    ('provider data policy blocked the request', True),
+    ('["Zero Data Retention required"]', True),
 ])
 def test_probe_hint_accepts_different_error_bodies(body, zdr):
     hint = doctor._probe_hint(httpx.Response(403, content=body))
     assert hint.startswith("HTTP 403:")
     assert ("zero data retention" in hint) is zdr
+
+
+@pytest.mark.parametrize("policy", [False, True])
+def test_online_probe_hints_redact_provider_text(home, monkeypatch, capsys, policy):
+    fake_key = "sk-" + "ExampleFakeKeyOnlyForTests"
+    escape = "\x1b[31m"
+    reason = "request blocked by data policy" if policy else "request failed"
+    message = f"{reason}: {fake_key} {escape}"
+    mock_http(monkeypatch, lambda _: httpx.Response(403, json={"error": {"message": message}}))
+
+    assert main(["doctor", str(home), "--online"]) == 1
+    out = capsys.readouterr().out
+    assert "fail models.chat: HTTP 403:" in out
+    assert ("zero data retention" in out) is policy
+    assert reason not in out and fake_key not in out and escape not in out
