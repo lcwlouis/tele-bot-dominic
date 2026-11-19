@@ -85,7 +85,9 @@ def _regular(src: Path, path: Path, report: ImportReport) -> bool:
 
 def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
     src, home = Path(src), Path(home)
-    if (home / "config.toml").is_file() and load_config(home).owner_id not in (None, owner_id):
+    if not (home / "config.toml").is_file():
+        raise ValueError(f"{home} is not an initialised home: run `dom init {home}` first")
+    if load_config(home).owner_id not in (None, owner_id):
         raise ValueError("the home already has a different owner")
     if (home / "state.db").exists():
         raise FileExistsError(f"{home / 'state.db'} already exists; import into a fresh home")
@@ -186,7 +188,7 @@ def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
                 report.imported.append("state.db")
     asyncio.run(_finish_database(home, owner_id, chat_traits, path_remap))
 
-    if (home / "config.toml").is_file() and load_config(home).owner_id is None:
+    if load_config(home).owner_id is None:
         save_owner(home, owner_id)
         (home / ".claim").unlink(missing_ok=True)
 
