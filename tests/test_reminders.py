@@ -326,3 +326,18 @@ async def test_casual_reminder_survives_a_silent_or_failed_turn_until_dom_answer
     assert "reminder: Check the kettle" in first["messages"][-1]["content"]
     assert "reminder: Check the kettle" in answered["messages"][-1]["content"]
     assert await app.dispatch.reminders.active() == []
+
+
+@pytest.mark.parametrize("repeat,due,next_due", [
+    ("weekly", "2027-03-21T01:30", "2027-03-28T01:00:00+00:00"),  # Sunday 01:30 does not exist: 02:00 BST is the first valid time
+    ("daily", "2027-03-27T01:30", "2027-03-28T01:00:00+00:00"),
+    ("weekdays", "2027-03-26T01:30", "2027-03-29T00:30:00+00:00"),  # Monday is a normal day again, 01:30 BST
+])
+async def test_repeat_into_a_spring_forward_gap_fires_at_the_first_valid_time_that_day(make_app, repeat, due, next_due):
+    app = make_app()
+    app.config = app.config.model_copy(update={"timezone": "Europe/London"})
+    await add(app, "critical", when=due, repeat=repeat)
+    app.dispatch.now.at = datetime.fromisoformat(due).replace(tzinfo=timezone.utc)
+    await app.dispatch.tick()
+    (row,) = await app.dispatch.reminders.active()
+    assert row["due_at"] == next_due

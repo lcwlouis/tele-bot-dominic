@@ -37,6 +37,16 @@ def _utc_local(wall: datetime, tz: ZoneInfo) -> datetime | None:
     return utc if utc.astimezone(tz).replace(tzinfo=None) == wall else None
 
 
+def _after_gap(wall: datetime, tz: ZoneInfo) -> datetime | None:
+    """The first valid time after a local time that does not exist, on the same day (None if the gap lasts past it)."""
+    probe = wall.replace(second=0, microsecond=0)
+    while probe.date() == wall.date():
+        if (instant := _utc_local(probe, tz)) is not None:
+            return instant
+        probe += timedelta(minutes=1)
+    return None
+
+
 def _parse_when(when: str, tz: ZoneInfo) -> datetime:
     if not isinstance(when, str) or when[10:11] not in ("T", " "):
         raise ValueError("when must be an ISO-8601 date and time")
@@ -59,7 +69,7 @@ def _next_due(due: datetime, repeat: str, now: datetime, tz: ZoneInfo) -> str | 
         wall += step
         if repeat == "weekdays" and wall.weekday() >= 5:
             continue
-        candidate = _utc_local(wall, tz)
+        candidate = _utc_local(wall, tz) or _after_gap(wall, tz)
         if candidate is not None and candidate > now:
             return candidate.isoformat()
 
