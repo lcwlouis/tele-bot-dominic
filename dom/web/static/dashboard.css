@@ -225,3 +225,8 @@ summary { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .sweep, .woke { animation: none; stroke-dashoffset: 0; }
 }
+
+.desktop-ready { color: var(--arc); }
+.desktop-handoff { border-left: 2px solid var(--amber); padding-left: var(--s3); margin-bottom: var(--s4); }
+.desktop-live { display: block; width: 100%; min-height: min(65vh, 44rem); border: 1px solid var(--seam); margin-top: var(--s4); }
+.desktop-live[hidden] { display: none; }

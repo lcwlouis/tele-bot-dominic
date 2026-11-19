@@ -1,0 +1,27 @@
+<div id="desktop-state" data-status="{{ context.status }}" hx-get="/desktop/state" hx-trigger="every 4s"
+  hx-swap="outerHTML" hx-sync="this:drop">
+  <p class="{{ 'desktop-ready' if context.status == 'ready' else 'fog' }}">Computer {{ context.status }}</p>
+  {% if context.error %}<p class="notice">{{ context.error }}</p>{% endif %}
+  {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
+  {% if context.task %}
+    <p>Task #{{ context.task.id }} · {{ context.task.status|replace("_", " ") }} · {{ context.task.steps }} steps</p>
+    <p class="fog">{{ context.task.brief }}</p>
+    {% if context.task.status == "waiting_owner" %}
+    <div class="desktop-handoff">
+      <p>Dom needs you to log in: {{ context.task.error }}</p>
+      <button class="primary" hx-post="/desktop/tasks/{{ context.task.id }}/{{ context.task.steps }}/done"
+        hx-target="#desktop-state" hx-swap="outerHTML" hx-sync="#desktop-state:replace">Done</button>
+    </div>
+    {% endif %}
+  {% else %}
+    <p class="fog">No task running.</p>
+  {% endif %}
+  <div class="actions" hx-target="#desktop-state" hx-swap="outerHTML" hx-sync="#desktop-state:replace">
+    {% if context.status in ("stopped", "error") %}
+    <button class="primary" hx-post="/desktop/computer/start">{{ "Start computer" if context.local else "Connect to computer" }}</button>
+    {% endif %}
+    {% if context.local and context.status in ("ready", "error") and not context.task %}
+    <button class="quiet" hx-post="/desktop/computer/stop">Stop computer</button>
+    {% endif %}
+  </div>
+</div>

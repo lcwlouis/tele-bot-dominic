@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import jwt
-from starlette.requests import Request
+from starlette.requests import HTTPConnection
 
 from dom.config import Config
 
@@ -113,7 +113,7 @@ class Auth:
                 await asyncio.shield(self._refresh)
         return self._keys.get(kid) if monotonic() < self._stale_at else None
 
-    async def authenticate(self, request: Request) -> Identity | None:
+    async def authenticate(self, request: HTTPConnection) -> Identity | None:
         scheme, _, token = request.headers.get("Authorization", "").partition(" ")
         if self.dev_token and scheme.lower() == "bearer" and hmac.compare_digest(
             self.dev_token, token.encode("latin-1"),
@@ -153,12 +153,16 @@ def _origin(url: str) -> tuple[str, str, int] | None:
         return None
 
 
-def same_origin(request: Request, identity: Identity) -> bool:
+def request_origin(request: HTTPConnection, identity: Identity) -> tuple[str, str, int] | None:
     # The tunnel terminates HTTPS. Use its scheme on an authenticated Access request and the
     # preserved Host header. Never use X-Forwarded-Host or derive the expected origin from Referer.
-    scheme = request.url.scheme
+    scheme = {"ws": "http", "wss": "https"}.get(request.url.scheme, request.url.scheme)
     if identity == "access" and request.headers.get("X-Forwarded-Proto") == "https":
         scheme = "https"
-    expected = _origin(f"{scheme}://{request.headers.get('Host', '')}")
+    return _origin(f"{scheme}://{request.headers.get('Host', '')}")
+
+
+def same_origin(request: HTTPConnection, identity: Identity) -> bool:
+    expected = request_origin(request, identity)
     origin = request.headers.get("Origin", request.headers.get("Referer", ""))
     return expected is not None and _origin(origin) == expected

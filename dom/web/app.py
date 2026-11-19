@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager, nullcontext
 from functools import partial
 from pathlib import Path
@@ -14,7 +15,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from dom.web.auth import Auth, same_origin
+from dom.web.auth import Auth, request_origin, same_origin
+from dom.web.desktop import VNC_PATH, VNC_SOCKET, router as desktop_router
 from dom.web.pages import router
 
 if TYPE_CHECKING:
@@ -31,6 +33,15 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",
+}
+VNC_HEADERS = {
+    **SECURITY_HEADERS,
+    "Content-Security-Policy": (
+        "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'self'; frame-src 'none'; worker-src 'none'; "
+        "img-src 'self' data: blob:; media-src 'self' data: blob:"
+    ),
+    "X-Frame-Options": "SAMEORIGIN",
 }
 
 
@@ -49,7 +60,19 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
             response = PlainTextResponse("Forbidden", status_code=403)
         else:
             response = await call_next(request)
-        response.headers.update(SECURITY_HEADERS)
+        if identity and request.url.path.startswith(VNC_PATH) and response.status_code < 300:
+            response.headers.update(VNC_HEADERS)
+            origin = request_origin(request, identity)
+            if origin is not None:
+                scheme, host, port = origin
+                if re.fullmatch(r"[a-zA-Z0-9.:-]+", host):
+                    authority = f"[{host}]" if ":" in host else host
+                    socket_scheme = "wss" if scheme == "https" else "ws"
+                    response.headers["Content-Security-Policy"] += (
+                        f"; connect-src 'self' {socket_scheme}://{authority}:{port}{VNC_SOCKET}"
+                    )
+        else:
+            response.headers.update(SECURITY_HEADERS)
         return response
 
     @web.exception_handler(Exception)
@@ -57,7 +80,9 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
         return PlainTextResponse("Internal server error", status_code=500, headers=SECURITY_HEADERS)
 
     web.state.dom = dom
+    web.state.auth = auth
     web.include_router(router)
+    web.include_router(desktop_router)
     web.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
     return web
