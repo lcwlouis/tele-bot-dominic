@@ -102,7 +102,7 @@
 - `persona_card(home: Home) -> str`: the SOUL body up to the end of its first `##` section, capped at 600 chars.
 - `Triage(action: Literal["reply","react","ignore"] | None, emoji: str | None, kapoh: float | None, confident: bool)`
 - `triage_online(jev, card: str, window_xml: str) -> Triage`. One Jev call with 2 questions:
-  - `action` (choice): `reply`, `react`, `ignore`, with the criteria text from the real test call in the spec notes
+  - `action` (choice): `reply`, `react`, `ignore`, with criteria `reply`: "Write a reply; he is addressed or has something worth adding.", `react`: "Just react with an emoji; acknowledgement is enough.", `ignore`: "Stay silent; nothing for him here."; instructions "What should Dom do with the newest messages?"
   - `emoji` (choice): `😂 💀 🔥 👍 🤡 ❤️ 😭 👀`
   - `confident = action.confidence >= 0.70`
 - `triage_offline(jev, card, window_xml) -> Triage`. One question: `kapoh` (score) with criteria `["boring","mildly interesting","juicy","must jump in now"]`.
@@ -140,7 +140,7 @@
       - If that count is at least `wake_after_messages`, wake.
       - Otherwise, if it's a group and Jev is available, run `triage_offline`; if `kapoh >= kapoh_wake`, wake.
       - A wake calls `go_online`, then runs one catch-up turn over the window, and the turn note says how many messages arrived.
-    - **offline → online at a DM:** a DM from a non-owner, or from the owner, while offline doesn't wake on its own. It waits for the count rule or the next session.
+    - Offline DMs (owner's included) wake only through the count rule, `/wake`, or the background loop's next session; kapoh triage applies to groups only.
     - **online:** run `triage_online`.
       - `ignore` with `confident`: do nothing.
       - `react` with `confident`: call `set_message_reaction` with the emoji on the newest message.
