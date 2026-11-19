@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timedelta
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -26,6 +27,9 @@ log = logging.getLogger("dom.dispatch")
 TICK_SECONDS = 60
 MEDIA_WAIT_SECONDS = 15
 TRIAGE_WINDOW = 15
+MEDIA_CAP = 10  # descriptions per chat within MEDIA_CAP_WINDOW
+MEDIA_CAP_WINDOW = timedelta(minutes=10)
+CATCH_UP_MEDIA = 5  # unread messages checked for undescribed media when Dom comes online
 BOT_DEPTH_LIMIT = 6
 BOT_REPLY_INTERVAL = timedelta(seconds=10)
 BOT_DEDUP_WINDOW = timedelta(seconds=60)
@@ -45,6 +49,7 @@ class Dispatcher:
         self._tasks: set[asyncio.Task] = set()
         self._polls: dict[int, asyncio.Task] = {}
         self._loop: asyncio.Task | None = None
+        self._media_times: dict[int, deque[datetime]] = {}
         self._bot_replies: dict[int, datetime] = {}
         self._bots_in_flight: set[int] = set()
 
@@ -57,7 +62,10 @@ class Dispatcher:
             previous.cancel()
         self._debounces[msg.chat_id] = self._spawn(self._after_debounce(msg.chat_id))
 
-    def describe_media(self, msg: IncomingMessage) -> None:
+    async def describe_media(self, msg: IncomingMessage) -> None:
+        # Attachments are only described while Dom is online; catch-up covers the rest.
+        if msg.is_bot or not await self.presence.is_online(msg.chat_id, self._habits()):
+            return
         task = self._spawn(self._describe_media(msg))
         self._media_tasks.setdefault(msg.chat_id, set()).add(task)
         task.add_done_callback(lambda done: self._clear_media_task(msg.chat_id, done))
@@ -69,21 +77,48 @@ class Dispatcher:
             del self._media_tasks[chat_id]
 
     async def _describe_media(self, msg: IncomingMessage) -> None:
-        describer = self.app.media_describer
-        if describer is None or msg.media is None:
-            return
-
         async def authorize() -> bool:
             async with self.app.locks[msg.chat_id]:
-                return await self._approved(msg.chat_id) and (
-                    not msg.is_bot or await self.app.store.get_bot_depth(msg.chat_id) <= BOT_DEPTH_LIMIT
-                )
+                return await self._approved(msg.chat_id)
+
+        await self._describe(msg.chat_id, msg.msg_id, msg.media, authorize)
+
+    async def _describe(self, chat_id: int, msg_id: int, media: dict, authorize: Callable[[], Awaitable[bool]]) -> None:
+        describer = self.app.media_describer
+        if describer is None or not self._media_budget(chat_id):
+            return
+        try:
+            description = await describer.describe(media, authorize=authorize)
+            await self.app.store.set_media_description(chat_id, msg_id, description)
+        except Exception:
+            log.exception("could not record media description in chat %s", chat_id)
+
+    def _media_budget(self, chat_id: int) -> bool:
+        """Take one of the chat's MEDIA_CAP descriptions per MEDIA_CAP_WINDOW, if any is left."""
+        now = self.now()
+        times = self._media_times.setdefault(chat_id, deque())
+        while times and now - times[0] >= MEDIA_CAP_WINDOW:
+            times.popleft()
+        if len(times) >= MEDIA_CAP:
+            return False
+        times.append(now)
+        return True
+
+    async def _describe_unread_media(self, chat_id: int) -> None:
+        """Describe what arrived while Dom was away. The turn lock is already held, so approval is
+        checked directly; the wait is bounded because an arrival-time description may hold the
+        describer while it waits for that same lock."""
+        async def authorize() -> bool:
+            return await self._approved(chat_id)
+
+        async def describe_all() -> None:
+            for msg_id, media in await self.app.store.get_unread_media_to_describe(chat_id, CATCH_UP_MEDIA):
+                await self._describe(chat_id, msg_id, media, authorize)
 
         try:
-            description = await describer.describe(msg.media, authorize=authorize)
-            await self.app.store.set_media_description(msg.chat_id, msg.msg_id, description)
-        except Exception:
-            log.exception("could not record media description in chat %s", msg.chat_id)
+            await asyncio.wait_for(describe_all(), MEDIA_WAIT_SECONDS)
+        except TimeoutError:
+            log.warning("catch-up media descriptions timed out in chat %s", chat_id)
 
     async def _wait_media(self, chat_id: int) -> None:
         tasks = self._media_tasks.get(chat_id)
@@ -230,9 +265,7 @@ class Dispatcher:
         live = latest if latest is not None and latest.msg_id == newest.msg_id else None
         chat_type = live.chat_type if live else ("group" if chat_id < 0 else "private")
         scope = store.scope_for(chat_id, chat_type)
-        window = await store.get_recent_chat_window(
-            chat_id, max(TRIAGE_WINDOW, self.app.config.window_size), through_id=newest.id,
-        )
+        window = await self._window(chat_id, newest)
         if not await self._approved(chat_id):
             return
 
@@ -266,10 +299,18 @@ class Dispatcher:
             return
         if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
             return
+        if catch_up:
+            await self._describe_unread_media(chat_id)
+            window = await self._window(chat_id, newest)
         await self._run_turn(
             chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn,
         )
         await store.mark_chat_read(chat_id, newest.msg_id)
+
+    async def _window(self, chat_id: int, newest: StoredMessage) -> list[StoredMessage]:
+        return await self.app.store.get_recent_chat_window(
+            chat_id, max(TRIAGE_WINDOW, self.app.config.window_size), through_id=newest.id,
+        )
 
     def _triage_xml(self, chat_id: int, window: list[StoredMessage]) -> str:
         return self.app.store.format_chat_window_xml(chat_id, window[-TRIAGE_WINDOW:])

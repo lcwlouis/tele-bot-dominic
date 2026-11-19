@@ -5,7 +5,7 @@ import json
 import xml.etree.ElementTree as ET
 
 import pytest
-from aiogram.types import PhotoSize, Sticker, Voice
+from aiogram.types import PhotoSize, Sticker, User, Voice
 
 import dom.dispatch
 from dom.media import MediaDescriber
@@ -14,7 +14,7 @@ from dom.presence import parse_habits
 from dom.store.store import format_chat_window_xml
 from dom.telegram.convert import to_incoming
 from dom.telegram.handlers import handle_message
-from tghelpers import GROUP, drain_dispatch, tg
+from tghelpers import GROUP, OWNER, drain_dispatch, tg
 
 
 class FakeMediaClient:
@@ -51,10 +51,11 @@ def photo_message(msg_id=1, **kwargs):
 
 @pytest.fixture
 def media_app(make_app):
-    async def setup(error=None, wait=None):
+    async def setup(error=None, wait=None, online=True):
         app = make_app()
         await app.store.set_chat_auth_status(GROUP, "approved")
-        await app.dispatch.presence.go_online(GROUP, parse_habits(""))
+        if online:
+            await app.dispatch.presence.go_online(GROUP, parse_habits(""))
         bot, client = FakeDownload(wait), FakeMediaClient(error)
         app.media_describer = MediaDescriber(client, bot)
         return app, bot, client
@@ -224,3 +225,104 @@ async def test_new_message_restarts_debounce_while_dispatch_waits_for_media(medi
     await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 1
     assert "here's another message" in app.script.requests[0]["messages"][-1]["content"]
+
+
+# ---- cost and memory limits -------------------------------------------------------
+
+def media_text(app):
+    return app.script.requests[-1]["messages"][-1]["content"]
+
+
+async def test_media_arriving_offline_is_not_described_on_arrival(media_app):
+    app, bot, client = await media_app(online=False)
+    await handle_message(app, photo_message())
+    await drain_dispatch(app.dispatch)
+    assert not bot.downloads and not client.calls
+    assert json.loads((await app.store.get_recent_chat_window(GROUP))[0].media_json)["description"] is None
+
+
+async def test_catch_up_describes_media_among_last_five_unread(media_app):
+    app, bot, client = await media_app(online=False)
+    app.dispatch.now.at = app.dispatch.now.at.replace(hour=2)  # asleep: nothing is described on arrival
+    for msg_id, make in enumerate([photo_message, *[tg] * 3, photo_message, *[tg] * 2], start=1):
+        await handle_message(app, make(msg_id=msg_id))
+    await drain_dispatch(app.dispatch)
+    assert not bot.downloads
+    await handle_message(app, tg(chat_id=OWNER, sender=OWNER, text=f"/wake {GROUP}"))
+    await drain_dispatch(app.dispatch)
+    assert len(client.calls) == 1  # msg 1 is older than the last five unread (3-7); msg 5 is not
+    assert media_text(app).count("<media kind=\"photo\">") == 2
+    assert media_text(app).count("A fox &amp; a crescent moon.") == 1
+    media = [json.loads(m.media_json)["description"] for m in await app.store.get_recent_chat_window(GROUP) if m.media_json]
+    assert media == [None, "A fox & a crescent moon."]
+
+
+async def test_catch_up_media_respects_approval(media_app):
+    app, bot, client = await media_app(online=False)
+    app.dispatch.now.at = app.dispatch.now.at.replace(hour=2)
+    await handle_message(app, photo_message())
+    await drain_dispatch(app.dispatch)
+    await app.store.set_chat_auth_status(GROUP, "ignored")
+    await handle_message(app, tg(chat_id=OWNER, sender=OWNER, text=f"/wake {GROUP}"))
+    await drain_dispatch(app.dispatch)
+    assert not bot.downloads and not client.calls and not app.script.requests
+
+
+async def test_media_from_bots_is_never_described(media_app):
+    app, bot, client = await media_app()
+    sender = User(id=333, first_name="Test Bot", is_bot=True)
+    await handle_message(app, photo_message().model_copy(update={"from_user": sender}))
+    await drain_dispatch(app.dispatch)
+    assert not bot.downloads and not client.calls
+
+
+async def test_only_one_description_runs_at_a_time():
+    ready = asyncio.Event()
+    bot, client = FakeDownload(ready), FakeMediaClient()
+    describer = MediaDescriber(client, bot)
+    media = {"kind": "photo", "file_id": "fake-photo", "file_size": 10, "mime": "image/jpeg"}
+    tasks = [asyncio.create_task(describer.describe(media)) for _ in range(3)]
+    await bot.started.wait()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert len(bot.downloads) == 1
+    ready.set()
+    assert await asyncio.gather(*tasks) == ["A fox & a crescent moon."] * 3
+    assert len(bot.downloads) == 3
+
+
+@pytest.mark.parametrize(("kind", "limit"), [
+    ("photo", 10_000_000), ("sticker", 10_000_000), ("voice", 10_000_000), ("audio", 10_000_000),
+    ("video", 8_000_000), ("animation", 8_000_000), ("video_note", 8_000_000),
+])
+async def test_size_limits_by_kind(kind, limit):
+    bot, client = FakeDownload(), FakeMediaClient()
+    describer = MediaDescriber(client, bot)
+    media = {"kind": kind, "file_id": "fake-file", "file_size": limit + 1}
+    assert await describer.describe(media) is None
+    assert not bot.downloads and not client.calls
+    assert await describer.describe({**media, "file_size": limit}) == "A fox & a crescent moon."
+
+
+async def test_download_larger_than_limit_is_dropped_when_size_is_unknown():
+    class Big(FakeDownload):
+        async def download(self, file_id):
+            await super().download(file_id)
+            return io.BytesIO(b"x" * 8_000_001)
+
+    bot, client = Big(), FakeMediaClient()
+    media = {"kind": "video", "file_id": "fake-video", "file_size": None}
+    assert await MediaDescriber(client, bot).describe(media) is None
+    assert not client.calls
+
+
+async def test_per_chat_cap_of_ten_descriptions_per_ten_minutes(media_app):
+    app, bot, client = await media_app()
+    for msg_id in range(1, 12):
+        await handle_message(app, photo_message(msg_id))
+        await drain_dispatch(app.dispatch)
+    assert len(bot.downloads) == 10
+    app.dispatch.now.advance(minutes=10)
+    await handle_message(app, photo_message(12))
+    await drain_dispatch(app.dispatch)
+    assert len(bot.downloads) == 11

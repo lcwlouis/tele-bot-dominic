@@ -91,7 +91,7 @@ async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = Fals
         )
     )
     if new_media:
-        app.dispatch.describe_media(msg)
+        await app.dispatch.describe_media(msg)
 
 
 def _claim_code(text: str, username: str) -> str | None:
