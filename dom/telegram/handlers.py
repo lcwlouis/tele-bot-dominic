@@ -60,6 +60,13 @@ def _is_command_for_us(text: str, username: str) -> bool:
     return not target or target.lower() == username.lower()
 
 
+def _command_name(text: str, username: str) -> str | None:
+    """`/cmd` from `/cmd`, `/cmd args` or `/cmd@bot args` addressed to us; otherwise None."""
+    if not _is_command_for_us(text, username):
+        return None
+    return text.split()[0].partition("@")[0]
+
+
 def should_respond(app: App, message: Message, msg: IncomingMessage) -> bool:
     """DMs always get a turn; groups only on @mention, a reply to Dom, or a command for Dom."""
     if msg.chat_type == "private":
@@ -150,6 +157,12 @@ async def handle_message(app: App, message: Message) -> None:
         if code is not None:
             await _handle_claim(app, msg, code)
             return
+    if (
+        msg.chat_type == "private" and msg.sender_id == app.owner_id
+        and _command_name(msg.text, app.bot_username) == "/pending"
+    ):
+        await gate.resend_pending(app.bot, app.store, app.owner_id)
+        return
     decision = await gate.decide(app.store, msg, app.owner_id)
     if decision == "drop":
         return

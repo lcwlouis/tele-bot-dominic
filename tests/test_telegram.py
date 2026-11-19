@@ -305,3 +305,84 @@ async def test_callback_does_not_override_an_already_decided_chat(make_app):
     assert (await app.store.get_chat_auth_status(GROUP))["authorization_status"] == "approved"
     assert app.bot.of("answer")[-1][2] == "already handled"
     assert len(app.bot.of("edit")) == 1
+
+
+# ---- approval delivery -----------------------------------------------------------
+
+def _method_error(cls):
+    from aiogram.methods import SendMessage
+    return cls(SendMessage(chat_id=OWNER, text="x"), "boom")
+
+
+async def _pending_group(app):
+    await handlers.handle_message(app, tg())  # records, prompts the owner
+    return app
+
+
+async def test_prompt_stays_reserved_on_network_failure(make_app):
+    from aiogram.exceptions import TelegramNetworkError
+    app = make_app()
+
+    async def failing(chat_id, text, **kw):
+        raise _method_error(TelegramNetworkError)
+
+    app.bot.send_message = failing
+    await handlers.handle_message(app, tg())
+    assert (await app.store.get_chat_auth_status(GROUP))["approval_prompt_sent"] is True
+
+
+@pytest.mark.parametrize("name", ["TelegramBadRequest", "TelegramForbiddenError"])
+async def test_prompt_released_on_definite_failure(make_app, name):
+    from aiogram import exceptions
+    app = make_app()
+
+    async def failing(chat_id, text, **kw):
+        raise _method_error(getattr(exceptions, name))
+
+    app.bot.send_message = failing
+    await handlers.handle_message(app, tg())
+    assert (await app.store.get_chat_auth_status(GROUP))["approval_prompt_sent"] is False
+
+
+async def test_failed_prompt_never_overwrites_a_decision(make_app):
+    from aiogram.exceptions import TelegramBadRequest
+    app = make_app()
+
+    async def decided_then_failing(chat_id, text, **kw):
+        await app.store.set_chat_auth_status(str(GROUP), "approved")  # owner decided meanwhile
+        raise _method_error(TelegramBadRequest)
+
+    app.bot.send_message = decided_then_failing
+    await handlers.handle_message(app, tg())
+    assert (await app.store.get_chat_auth_status(GROUP))["authorization_status"] == "approved"
+
+
+async def test_request_approval_records_metadata_only(make_app):
+    app = make_app()
+    await handlers.handle_message(app, tg())
+    chat = await app.store.get_chat_auth_status(GROUP)
+    assert chat["authorization_status"] == "pending_approval"
+    assert chat["title"] == "The Group" and chat["invited_by_handle"] == "@fran"
+
+
+async def test_pending_command_resends_prompts_for_pending_chats(make_app):
+    app = make_app()
+    await handlers.handle_message(app, tg())                      # pending group, prompt sent
+    await handlers.handle_message(app, tg(chat_id=FRIEND))        # pending friend DM, prompt sent
+    await approve(app, FRIEND)
+    await handlers.handle_message(app, tg(chat_id=-2002, sender=333, text="hey"))  # another pending group
+    app.bot.calls.clear()
+    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="/pending", msg_id=9))
+    prompts = app.bot.of("send", OWNER)
+    callbacks = sorted(b.callback_data for p in prompts for b in p[3]["reply_markup"].inline_keyboard[0])
+    assert callbacks == sorted([f"approve:{GROUP}", f"ignore:{GROUP}", "approve:-2002", "ignore:-2002"])
+    assert app.script.requests == []  # a command, not a model turn
+
+
+async def test_pending_command_is_owner_only(make_app):
+    app = make_app()
+    await handlers.handle_message(app, tg())
+    app.bot.calls.clear()
+    await approve(app, FRIEND)
+    await handlers.handle_message(app, tg(chat_id=FRIEND, sender=FRIEND, text="/pending", msg_id=3))
+    assert app.bot.of("send", OWNER) == []
