@@ -11,6 +11,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 RELOAD = ["systemctl", "--user", "daemon-reload"]
+IS_ACTIVE = ["systemctl", "--user", "is-active", "--quiet", "dom.service"]
+RESTART = ["systemctl", "--user", "restart", "dom.service"]
 ENABLE = ["systemctl", "--user", "enable", "--now", "dom.service", "dom-backup.timer"]
 
 
@@ -50,7 +52,6 @@ def render_units(app: Path, python: Path, home: Path) -> dict[str, str]:
     return {
         "dom.service": f"""[Unit]
 Description=Dom Telegram bot
-After=network-online.target
 
 [Service]
 WorkingDirectory={working_dir}
@@ -101,7 +102,10 @@ def _write_unit(path: Path, content: str) -> None:
 def install(home: Path, *, yes: bool, force: bool) -> int:
     app, python = _app_and_python()
     units = render_units(app, python, home.resolve())
-    folder = Path.home() / ".config" / "systemd" / "user"
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", ""))
+    if not config_home.is_absolute():
+        config_home = Path.home() / ".config"
+    folder = config_home / "systemd" / "user"
     changes = {}
     conflicts = []
     for name, content in units.items():
@@ -131,8 +135,10 @@ def install(home: Path, *, yes: bool, force: bool) -> int:
             print(f"{'Writing' if path in changes else 'Keeping'} {path}")
         else:
             print(f"--- {path} ---\n{content}", end="")
-    for command in (RELOAD, ENABLE):
-        print(shlex.join(command), flush=True)
+    print(shlex.join(RELOAD), flush=True)
+    if force:
+        print(f"if {shlex.join(IS_ACTIVE)}; then {shlex.join(RESTART)}; fi", flush=True)
+    print(shlex.join(ENABLE), flush=True)
     if not yes:
         print(shlex.join(show_linger))
         print(f"If linger is off, run: {enable_linger}")
@@ -142,8 +148,10 @@ def install(home: Path, *, yes: bool, force: bool) -> int:
     folder.mkdir(parents=True, exist_ok=True)
     for path, content in changes.items():
         _write_unit(path, content)
-    for command in (RELOAD, ENABLE):
-        subprocess.run(command, check=True, timeout=60)
+    subprocess.run(RELOAD, check=True, timeout=60)
+    if force and subprocess.run(IS_ACTIVE, check=False, timeout=60).returncode == 0:
+        subprocess.run(RESTART, check=True, timeout=60)
+    subprocess.run(ENABLE, check=True, timeout=60)
     try:
         linger = subprocess.run(show_linger, capture_output=True, text=True, check=True, timeout=10).stdout.strip()
     except (OSError, subprocess.SubprocessError):

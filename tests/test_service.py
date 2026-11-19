@@ -28,10 +28,10 @@ def install(tmp_path, monkeypatch):
     monkeypatch.chdir(app)
     monkeypatch.setenv("PWD", str(app))
     monkeypatch.setenv("HOME", str(account))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(account / ".config"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(account / "xdg-config"))
     monkeypatch.setattr(service.sys, "executable", str(release / ".venv/bin/python"))
     monkeypatch.setattr(service.subprocess, "run", run)
-    return work, app, account / ".config/systemd/user", calls
+    return work, app, account / "xdg-config/systemd/user", calls
 
 
 def test_install_dry_run_prints_units_and_commands_without_writes(install, capsys):
@@ -50,6 +50,9 @@ def test_install_dry_run_prints_units_and_commands_without_writes(install, capsy
         assert line in out
     assert not units.exists() and not calls
     assert "/releases/" not in out
+    assert f"--- {units / 'dom.service'} ---" in out
+    assert "After=network-online.target" not in out
+    assert "systemctl --user restart" not in out
 
 
 def test_install_writes_user_units_enables_service_and_timer_and_reports_linger(install, capsys):
@@ -90,14 +93,55 @@ def test_existing_different_unit_requires_force_and_yes(install, capsys, flags):
     assert "--force" in capsys.readouterr().out
 
 
-def test_force_replaces_differing_unit(install):
+def test_force_dry_run_prints_conditional_restart(install, capsys):
+    home, _, units, calls = install
+    assert main(["install-service", str(home), "--force"]) == 0
+    out = capsys.readouterr().out
+    assert "systemctl --user is-active --quiet dom.service" in out
+    assert "systemctl --user restart dom.service" in out
+    assert not units.exists() and not calls
+
+
+@pytest.mark.parametrize("running", [True, False])
+def test_force_replaces_differing_unit_and_restarts_only_if_running(install, monkeypatch, running):
     home, _, units, calls = install
     units.mkdir(parents=True)
     path = units / "dom-backup.timer"
     path.write_text("operator customization")
+    is_active = ["systemctl", "--user", "is-active", "--quiet", "dom.service"]
+    run = service.subprocess.run
+
+    def run_with_status(args, **kwargs):
+        result = run(args, **kwargs)
+        if args == is_active and not running:
+            result.returncode = 3
+        return result
+
+    monkeypatch.setattr(service.subprocess, "run", run_with_status)
     assert main(["install-service", str(home), "--yes", "--force"]) == 0
     assert "Persistent=true" in path.read_text()
-    assert len(calls) == 3
+    expected = [
+        ["systemctl", "--user", "daemon-reload"],
+        is_active,
+    ]
+    if running:
+        expected.append(["systemctl", "--user", "restart", "dom.service"])
+    expected.append(["systemctl", "--user", "enable", "--now", "dom.service", "dom-backup.timer"])
+    assert calls[:-1] == expected
+    assert calls[-1][:2] == ["loginctl", "show-user"]
+
+
+@pytest.mark.parametrize("xdg_home", [None, "", "relative"])
+def test_unset_or_relative_xdg_config_home_uses_default(install, monkeypatch, capsys, xdg_home):
+    home, _, units, calls = install
+    if xdg_home is None:
+        monkeypatch.delenv("XDG_CONFIG_HOME")
+    else:
+        monkeypatch.setenv("XDG_CONFIG_HOME", xdg_home)
+    assert main(["install-service", str(home)]) == 0
+    default_unit = units.parents[2] / ".config/systemd/user/dom.service"
+    assert f"--- {default_unit} ---" in capsys.readouterr().out
+    assert not calls
 
 
 def test_existing_linger_needs_no_command(install, monkeypatch, capsys):
