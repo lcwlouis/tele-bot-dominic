@@ -108,6 +108,7 @@ async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = Fals
             created_at=msg.date.isoformat(),
         )
     )
+    await app.store.set_chat_title(msg.chat_id, msg.chat_title)
     if new_media:
         await app.dispatch.describe_media(msg)
 
