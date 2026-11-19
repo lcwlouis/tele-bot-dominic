@@ -83,7 +83,9 @@ belongs to that container, so use the bridge setup in that case.
 For a local check without Access, set `enabled = true`, use
 `bind = "127.0.0.1"` and `port = 8080`, leave `access_team` and
 `access_aud` empty, and set `dev_token_env = "DOM_DASHBOARD_TOKEN"`. Put a
-random value under `DOM_DASHBOARD_TOKEN` in the environment or
-`DOM_HOME/.env`. Each local request supplies that value as an
+random value of at least 32 characters under `DOM_DASHBOARD_TOKEN` in the
+environment or `DOM_HOME/.env`. Dom refuses to start if the token is shorter,
+if `bind` is not a loopback address, or if `access_team` or `access_aud` is
+also set. Each local request supplies that value as an
 `Authorization: Bearer <token>` header. POST requests also need
 `HX-Request: true` and the same-origin `Origin` or `Referer` header.
