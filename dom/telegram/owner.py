@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
     BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputRichMessage,
 )
 
 if TYPE_CHECKING:
@@ -31,7 +34,49 @@ MAX_MESSAGE = 4096  # Telegram's limit for a message's text
 MAX_BUTTONS = 100  # Telegram's limit for one keyboard
 MAX_MEMBER_LOOKUPS = 30  # get_chat_member_count calls per /chats, 0.2 s apart
 _STATUS_ORDER = (("approved", "Approved"), ("pending_approval", "Pending"), ("ignored", "Ignored"), ("left", "Left"))
+_CHATS_HEAD = "| Chat | Type | Members |\n|---|---|---|"
 _ICONS = {"asleep": "🌙", "online": "☀️", "offline": "💤"}
+
+
+@dataclass(frozen=True)
+class View:
+    """One owner message: rich-message markdown, the plain text sent instead if rich messages are refused, and its keyboard."""
+
+    markdown: str
+    plain: str
+    markup: InlineKeyboardMarkup
+
+
+def _cell(text: str) -> str:
+    """A title or value safe inside a markdown table cell: nothing in it may be read as table or emphasis syntax."""
+    for char in "\\|*_`":
+        text = text.replace(char, "\\" + char)
+    return text
+
+
+def _row(cells: list[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
+def _table(header: list[str], rows: list[list[str]]) -> list[str]:
+    return [_row(header), "|" + "---|" * len(header), *map(_row, rows)]
+
+
+async def send_view(bot, chat_id: int, view: View) -> None:
+    """Send `view` as a rich message; if Telegram refuses rich messages, send its plain text with the same keyboard."""
+    try:
+        await bot.send_rich_message(chat_id=chat_id, rich_message=InputRichMessage(markdown=view.markdown), reply_markup=view.markup)
+    except TelegramBadRequest as error:
+        log.warning("rich message refused, sending plain text instead: %s", error)
+        await bot.send_message(chat_id, view.plain, reply_markup=view.markup)
+
+
+async def delete_message(bot, chat_id: int, message_id: int) -> None:
+    """Remove an old owner message. Rich messages cannot be edited in place, so a change means delete and send anew."""
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except TelegramBadRequest:  # already deleted by the owner
+        log.info("the message was already gone")
 
 
 def _is_group(chat: dict) -> bool:
@@ -93,8 +138,8 @@ async def pending_summary(app: App) -> str:
     return f"{len(pending)} waiting ({_one_line([display_title(c, app.owner_id) for c in pending])})"
 
 
-async def render_status(app: App) -> tuple[str, InlineKeyboardMarkup]:
-    """One line and one Wake/Sleep(/Leave, for groups) button row per approved chat, the owner's DM first,
+async def render_status(app: App) -> View:
+    """One table row and one Wake/Sleep(/Leave, for groups) button row per approved chat, the owner's DM first,
     then by recent activity."""
     chats = await app.store.list_approved_chats()
     states = app.dispatch.peek_presence(chats)
@@ -105,45 +150,48 @@ async def render_status(app: App) -> tuple[str, InlineKeyboardMarkup]:
         pending, *(models[name].model if name in models else "n/a" for name in ("chat", "triage"))
     )
 
-    lines, rows, used, button_count = [], [], len(footer) + 80, 0  # room for the footer, the heading and the "more" line
+    table, plain, buttons, used, button_count = [], [], [], len(footer) * 2 + 160, 0  # room for the footer, heading, table head and "more" line
     for chat, (state, until) in zip(chats, states):
         unread, _ = await app.store.get_unread(chat["chat_id"])
+        title = display_title(chat, app.owner_id)
         when = f" until {until.astimezone(tz):%H:%M}" if until else ""
-        line = f"{_ICONS[state]} {display_title(chat, app.owner_id)}: {state}{when} · {unread} unread"
+        line = f"{_ICONS[state]} {title}: {state}{when} · {unread} unread"
+        cells = [_cell(title), f"{_ICONS[state]} {state}", f"{until.astimezone(tz):%H:%M}" if until else "—", str(unread)]
         row = [
-            InlineKeyboardButton(text=f"☀️ {_short(display_title(chat, app.owner_id))}", callback_data=f"wake:{chat['chat_id']}"),
+            InlineKeyboardButton(text=f"☀️ {_short(title)}", callback_data=f"wake:{chat['chat_id']}"),
             InlineKeyboardButton(text="🌙 Sleep", callback_data=f"sleep:{chat['chat_id']}"),
         ]
         if _is_group(chat):
             row.append(InlineKeyboardButton(text="🚪 Leave", callback_data=f"leave:{chat['chat_id']}"))
-        if used + len(line) + 1 > MAX_MESSAGE or button_count + len(row) > MAX_BUTTONS:
+        cost = max(len(line), len(_row(cells))) + 1
+        if used + cost > MAX_MESSAGE or button_count + len(row) > MAX_BUTTONS:
             break
-        used += len(line) + 1
+        used += cost
         button_count += len(row)
-        lines.append(line)
-        rows.append(row)
-    if len(chats) > len(lines):
-        lines.append(f"…and {len(chats) - len(lines)} more")
-    text = "\n".join(["Dom's chats", "", *lines, "", footer])
-    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+        table.append(cells)
+        plain.append(line)
+        buttons.append(row)
+    more = [f"…and {len(chats) - len(table)} more"] if len(chats) > len(table) else []
+    markdown = "\n".join(["**Dom's chats**", "", *_table(["Chat", "State", "Until", "Unread"], table), "", *more, *([""] if more else []), _cell(footer)])
+    return View(markdown, "\n".join(["Dom's chats", "", *plain, *more, "", footer]), InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
-async def render_chats(app: App) -> tuple[str, InlineKeyboardMarkup]:
-    """Every chat Dom knows, grouped by status. Groups show their member count (the first MAX_MEMBER_LOOKUPS
+async def render_chats(app: App) -> View:
+    """Every chat Dom knows, one table per status. Groups show their member count (the first MAX_MEMBER_LOOKUPS
     of them, "?" when Telegram refuses); approved and pending groups get a Leave button."""
     known = await app.store.list_chats()
     by_status = [(label, [c for c in known if c["authorization_status"] == status]) for status, label in _STATUS_ORDER]
     total = sum(len(chats) for _, chats in by_status)
 
-    lines, rows, used, lookups, shown = [], [], 80, 0, 0  # room for the heading and the "more" line
+    md, plain, buttons, used, lookups, shown = [], [], [], 160, 0, 0  # room for the heading and the "more" line
     full = False
     for label, chats in by_status:
-        heading_added = False
+        cells_list, lines = [], []
         for chat in chats:
             if full:
                 break
             title = display_title(chat, app.owner_id)
-            count = ""
+            members = None
             if _is_group(chat) and label != "Left" and lookups < MAX_MEMBER_LOOKUPS:
                 if lookups:
                     await app.sleep(0.2)
@@ -153,21 +201,27 @@ async def render_chats(app: App) -> tuple[str, InlineKeyboardMarkup]:
                 except Exception:
                     log.warning("could not count the members of chat %s", chat["chat_id"])
                     members = "?"
-                count = f" · {members} members" if members != 1 else " · 1 member"
+            count = "" if members is None else f" · {members} members" if members != 1 else " · 1 member"
+            cells = [_cell(title), "Group" if _is_group(chat) else "DM", "—" if members is None else str(members)]
             line = f"• {title}{count}"
-            cost = len(line) + 1 + (0 if heading_added else len(label) + 2)
+            cost = max(len(line), len(_row(cells))) + 1 + (0 if cells_list else len(label) + len(_CHATS_HEAD) + 8)
             leave = label in ("Approved", "Pending") and _is_group(chat)
-            if used + cost > MAX_MESSAGE or len(rows) + leave > MAX_BUTTONS:
+            if used + cost > MAX_MESSAGE or len(buttons) + leave > MAX_BUTTONS:
                 full = True
                 break
-            if not heading_added:
-                lines += ["", label]
-                heading_added = True
             used += cost
             shown += 1
+            cells_list.append(cells)
             lines.append(line)
             if leave:
-                rows.append([InlineKeyboardButton(text=f"🚪 Leave {_short(title)}", callback_data=f"leave:{chat['chat_id']}")])
+                buttons.append([InlineKeyboardButton(text=f"🚪 Leave {_short(title)}", callback_data=f"leave:{chat['chat_id']}")])
+        if cells_list:
+            md += ["", f"### {label}", "", *_table(["Chat", "Type", "Members"], cells_list)]
+            plain += ["", label, *lines]
     if total > shown:
-        lines += ["", f"…and {total - shown} more"]
-    return "\n".join(["Dom's chats", *lines]) if shown else "Dom doesn't know any chats yet.", InlineKeyboardMarkup(inline_keyboard=rows)
+        md += ["", f"…and {total - shown} more"]
+        plain += ["", f"…and {total - shown} more"]
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    if not shown:
+        return View("Dom doesn't know any chats yet.", "Dom doesn't know any chats yet.", markup)
+    return View("\n".join(["**Dom's chats**", *md]), "\n".join(["Dom's chats", *plain]), markup)

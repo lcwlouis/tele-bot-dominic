@@ -1,4 +1,4 @@
-"""Owner controls: the "/" command menu, /status and its wake/sleep buttons."""
+"""Owner controls: the "/" command menu, /status and /chats (rich-message tables) and their buttons."""
 
 import asyncio
 
@@ -6,8 +6,8 @@ import pytest
 import pytest_asyncio
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.methods import LeaveChat
-from aiogram.methods import EditMessageText
-from aiogram.types import BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, User
+from aiogram.methods import DeleteMessage, SendRichMessage
+from aiogram.types import BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, InputRichMessage, User
 from tghelpers import FRIEND, GROUP, OWNER, FakeBot, drain_dispatch, tg
 
 from dom import cli
@@ -28,10 +28,28 @@ async def say(app, chat_id, sender, text, msg_id):
 
 
 async def status_message(app):
-    """Ask for /status and return the sent (text, reply_markup), clearing the bot's call log."""
+    """Ask for /status and return the sent (markdown, reply_markup), clearing the bot's call log."""
     app.bot.calls.clear()
     await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="/status", msg_id=900))
-    (_, chat_id, text, kw), = app.bot.of("send")
+    (_, chat_id, text, kw), = app.bot.of("rich")
+    assert chat_id == OWNER and app.bot.of("send") == []
+    return text, kw["reply_markup"]
+
+
+def rows_of(markdown):
+    """The body rows of every markdown table in a rich message, as lists of cell texts (header and separator skipped)."""
+    rows = []
+    for line in markdown.splitlines():
+        if line.startswith("|") and not line.startswith("|---"):
+            rows.append([cell.strip() for cell in line.strip("|").split(" | ")])
+    return [r for r in rows if r[0] != "Chat"]
+
+
+def only_replacement(app, old_message_id=77):
+    """The one fresh rich message sent after the old /status or /chats message was deleted."""
+    assert app.bot.of("delete") == [("delete", OWNER, old_message_id)]
+    assert app.bot.of("edit") == []
+    (_, chat_id, text, kw), = app.bot.of("rich")
     assert chat_id == OWNER
     return text, kw["reply_markup"]
 
@@ -159,10 +177,12 @@ async def test_status_lists_approved_chats_with_buttons_and_a_footer(two_approve
     app = two_approved_one_pending
     text, markup = await status_message(app)
     lines = text.splitlines()
-    body = [l for l in lines if "unread" in l]
-    assert "your DM" in body[0] and "Book Club" in body[1] and "DM with Fran" in body[2]  # owner, then newest
-    assert len(body) == 3 and "The Group" not in text  # pending chats are not listed
-    assert "1 unread" in body[2]
+    assert lines[0] == "**Dom's chats**"
+    assert "| Chat | State | Until | Unread |" in lines and "|---|---|---|---|" in lines
+    body = rows_of(text)
+    assert [r[0] for r in body] == ["your DM", "Book Club", "DM with Fran"]  # owner, then newest
+    assert "The Group" not in text  # pending chats are not listed
+    assert body[2][3] == "1" and all(r[1].endswith(("asleep", "offline", "online")) for r in body)
     assert lines[-1] == "Pending approval: 1 · Chat model: m · Triage model: n/a"
     assert buttons(markup) == [
         [("☀️ your DM", f"wake:{OWNER}"), ("🌙 Sleep", f"sleep:{OWNER}")],  # DMs have no Leave button
@@ -177,7 +197,8 @@ async def test_status_shows_presence_with_until_in_the_configured_timezone(make_
     app = make_app()
     await say(app, OWNER, OWNER, "/wake", 1)          # Clock() starts 12:00 UTC; wake lasts 30 minutes
     text, _ = await status_message(app)
-    assert "online until 12:30" in text
+    row = next(r for r in rows_of(text) if r[0] == "your DM")
+    assert row[1].endswith("online") and row[2] == "12:30"
 
 
 async def test_status_is_owner_only(make_app):
@@ -186,9 +207,9 @@ async def test_status_is_owner_only(make_app):
     await approve(app, FRIEND)
     await handlers.handle_message(app, tg(chat_id=FRIEND, sender=FRIEND, text="/status", msg_id=5))
     await handlers.handle_message(app, tg(chat_id=GROUP, sender=OWNER, text="/status", msg_id=6))
-    assert not [c for c in app.bot.of("send") if c[2].startswith("Dom's chats")]
+    assert app.bot.of("rich") == []
     await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="/status", msg_id=7))
-    assert len([c for c in app.bot.of("send", OWNER) if c[2].startswith("Dom's chats")]) == 1
+    assert len(app.bot.of("rich", OWNER)) == 1
 
 
 async def test_status_never_creates_rows(make_app):
@@ -212,8 +233,31 @@ async def test_status_truncates_a_long_list(make_app):
     more = re.search(r"…and (\d+) more", text)
     assert more
     shown = len(markup.inline_keyboard)
-    assert shown + int(more.group(1)) == 301
+    assert shown == len(rows_of(text)) and shown + int(more.group(1)) == 301
     assert sum(len(row) for row in markup.inline_keyboard) <= 100  # Telegram's button limit
+
+
+async def test_status_titles_cannot_break_the_table(make_app):
+    app = make_app()
+    await say(app, OWNER, OWNER, "hi", 1)
+    await approve(app, -5001, title="a | b *c* _d_ `e` \\f")
+    text, _ = await status_message(app)
+    row = next(l for l in text.splitlines() if l.startswith("| a "))
+    assert row.startswith("| a \\| b \\*c\\* \\_d\\_ \\`e\\` \\\\f | ")
+    assert row.count(" | ") == 3  # the escaped pipe is not a column separator
+
+
+async def test_status_falls_back_to_plain_text_when_rich_messages_are_refused(two_approved_one_pending, caplog):
+    app = two_approved_one_pending
+    app.bot.rich_error = TelegramBadRequest(method=SendRichMessage(chat_id=1, rich_message=InputRichMessage(markdown="x")),
+                                            message="Bad Request: method not found")
+    app.bot.calls.clear()
+    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="/status", msg_id=900))
+    (_, chat_id, text, kw), = app.bot.of("send")
+    assert chat_id == OWNER and text.startswith("Dom's chats\n")
+    assert any("Book Club: " in l and "unread" in l for l in text.splitlines())
+    assert buttons(kw["reply_markup"])[1][0] == ("☀️ Book Club", f"wake:{FRIEND_GROUP}")
+    assert sum("rich" in r.getMessage().lower() for r in caplog.records) == 1  # logged once
 
 
 # ---- wake / sleep buttons --------------------------------------------------------------
@@ -225,18 +269,18 @@ async def test_wake_and_sleep_buttons_change_presence_and_refresh_the_status(two
     app.bot.calls.clear()
     await handlers.handle_callback(app, callback(app, OWNER, f"wake:{FRIEND}", prompt))
     assert app.bot.of("answer") == [("answer", "cb1", "Dom is up in DM with Fran")]
-    (_, chat_id, message_id, text), = app.bot.of("edit")
-    assert (chat_id, message_id) == (OWNER, 77)
-    line = next(l for l in text.splitlines() if "DM with Fran" in l)
-    assert "online until 12:30" in line
-    assert buttons(app.bot.edit_markups[-1])[0][0] == ("☀️ your DM", f"wake:{OWNER}")
+    text, markup = only_replacement(app)
+    row = next(r for r in rows_of(text) if r[0] == "DM with Fran")
+    assert row[1].endswith("online") and row[2] == "12:30"
+    assert buttons(markup)[0][0] == ("☀️ your DM", f"wake:{OWNER}")
     assert await app.dispatch.presence.is_online(FRIEND, app.dispatch._habits())
 
     app.bot.calls.clear()
     await handlers.handle_callback(app, callback(app, OWNER, f"sleep:{FRIEND}", prompt))
     assert app.bot.of("answer") == [("answer", "cb1", "Dom is asleep in DM with Fran")]
-    line = next(l for l in app.bot.of("edit")[0][3].splitlines() if "DM with Fran" in l)
-    assert "asleep" in line and "until" in line
+    text, _ = only_replacement(app)
+    row = next(r for r in rows_of(text) if r[0] == "DM with Fran")
+    assert row[1].endswith("asleep") and row[2] != "—"
     assert not await app.dispatch.presence.is_online(FRIEND, app.dispatch._habits())
 
 
@@ -248,7 +292,7 @@ async def test_buttons_from_a_non_owner_change_nothing(two_approved_one_pending)
         await handlers.handle_callback(app, callback(app, sender, f"wake:{FRIEND}"))
         await handlers.handle_callback(app, callback(app, sender, f"sleep:{FRIEND}"))
     assert [c[2] for c in app.bot.of("answer")] == ["not allowed"] * 4
-    assert app.bot.of("edit") == []
+    assert app.bot.of("rich") == [] and app.bot.of("delete") == []
     assert await app.store.get_presence(FRIEND) == before
 
 
@@ -259,22 +303,20 @@ async def test_buttons_for_unknown_or_unapproved_chats_change_nothing_and_insert
     for data in (f"wake:{GROUP}", f"sleep:{GROUP}", "wake:-123456", "sleep:424242", "wake:nope"):
         await handlers.handle_callback(app, callback(app, OWNER, data))
     assert [c[2] for c in app.bot.of("answer")] == ["unknown chat"] * 5
-    assert app.bot.of("edit") == []
+    assert app.bot.of("rich") == [] and app.bot.of("delete") == []
     assert await chat_rows(app) == before
     assert not await app.dispatch.presence.is_online(GROUP, app.dispatch._habits())
 
 
-async def test_an_unchanged_status_message_is_not_an_error(two_approved_one_pending):
+async def test_a_status_message_that_is_already_gone_is_not_an_error(two_approved_one_pending):
     app = two_approved_one_pending
-
-    async def not_modified(*args, **kwargs):
-        raise TelegramBadRequest(
-            method=EditMessageText(text="x"), message="Bad Request: message is not modified"
-        )
-
-    app.bot.edit_message_text = not_modified
+    app.bot.delete_error = TelegramBadRequest(
+        method=DeleteMessage(chat_id=1, message_id=1), message="Bad Request: message to delete not found"
+    )
+    app.bot.calls.clear()
     await handlers.handle_callback(app, callback(app, OWNER, f"sleep:{FRIEND}"))
     assert app.bot.of("answer")[-1][2] == "Dom is asleep in DM with Fran"
+    assert len(app.bot.of("rich")) == 1  # the fresh message still goes out
 
 
 # ---- /wake and /sleep without an argument ------------------------------------------------
@@ -310,10 +352,11 @@ async def test_leave_button_asks_for_confirmation_without_leaving(two_approved_o
     app = two_approved_one_pending
     app.bot.calls.clear()
     await handlers.handle_callback(app, callback(app, OWNER, f"leave:{FRIEND_GROUP}"))
-    (_, chat_id, message_id, text), = app.bot.of("edit")
-    assert (chat_id, message_id) == (OWNER, 77)
+    assert app.bot.of("delete") == [("delete", OWNER, 77)] and app.bot.of("edit") == []
+    (_, chat_id, text, kw), = app.bot.of("send")
+    assert chat_id == OWNER
     assert text == "Leave Book Club? Friends will see Dom leave."
-    assert buttons(app.bot.edit_markups[-1]) == [
+    assert buttons(kw["reply_markup"]) == [
         [("Yes, leave", f"leaveyes:{FRIEND_GROUP}"), ("Cancel", "status:refresh")]
     ]
     assert app.bot.of("leave") == []
@@ -327,9 +370,8 @@ async def test_confirming_leaves_the_group_and_refreshes_the_status(two_approved
     assert app.bot.of("leave") == [("leave", FRIEND_GROUP)]
     assert await auth_status(app, FRIEND_GROUP) == "left"
     assert app.bot.of("answer") == [("answer", "cb1", "Dom left Book Club")]
-    (_, chat_id, message_id, text), = app.bot.of("edit")
-    assert (chat_id, message_id) == (OWNER, 77)
-    assert text.startswith("Dom's chats") and "Book Club" not in text
+    text, _ = only_replacement(app)
+    assert text.startswith("**Dom's chats**") and "Book Club" not in text
 
 
 async def test_a_pending_or_ignored_group_can_be_left_too(two_approved_one_pending):
@@ -348,7 +390,8 @@ async def test_leave_controls_from_a_non_owner_do_nothing(two_approved_one_pendi
     app.bot.calls.clear()
     await handlers.handle_callback(app, callback(app, sender, data))
     assert [c[2] for c in app.bot.of("answer")] == ["not allowed"]
-    assert app.bot.of("leave") == [] and app.bot.of("edit") == []
+    assert app.bot.of("leave") == [] and app.bot.of("delete") == []
+    assert app.bot.of("rich") == [] and app.bot.of("send") == []
     assert await auth_status(app, FRIEND_GROUP) == "approved"
 
 
@@ -356,8 +399,8 @@ async def test_cancel_refreshes_the_status_without_leaving(two_approved_one_pend
     app = two_approved_one_pending
     app.bot.calls.clear()
     await handlers.handle_callback(app, callback(app, OWNER, "status:refresh"))
-    (_, _, _, text), = app.bot.of("edit")
-    assert text.startswith("Dom's chats") and "Book Club" in text
+    text, _ = only_replacement(app)
+    assert text.startswith("**Dom's chats**") and "Book Club" in text
     assert app.bot.of("leave") == []
     assert await auth_status(app, FRIEND_GROUP) == "approved"
 
@@ -370,7 +413,7 @@ async def test_already_not_a_member_still_marks_the_chat_left(two_approved_one_p
     await handlers.handle_callback(app, callback(app, OWNER, f"leaveyes:{FRIEND_GROUP}"))
     assert await auth_status(app, FRIEND_GROUP) == "left"
     assert app.bot.of("answer") == [("answer", "cb1", "Dom wasn't in Book Club anymore")]
-    assert len(app.bot.of("edit")) == 1
+    assert len(app.bot.of("rich")) == 1 and len(app.bot.of("delete")) == 1
 
 
 async def test_any_other_error_changes_nothing(two_approved_one_pending):
@@ -380,7 +423,7 @@ async def test_any_other_error_changes_nothing(two_approved_one_pending):
     await handlers.handle_callback(app, callback(app, OWNER, f"leaveyes:{FRIEND_GROUP}"))
     assert await auth_status(app, FRIEND_GROUP) == "approved"
     assert app.bot.of("answer") == [("answer", "cb1", "Couldn't leave: telegram is down")]
-    assert app.bot.of("edit") == []
+    assert app.bot.of("rich") == [] and app.bot.of("delete") == []
 
 
 async def test_leaving_only_applies_to_known_non_private_chats_and_inserts_nothing(two_approved_one_pending):
@@ -392,7 +435,7 @@ async def test_leaving_only_applies_to_known_non_private_chats_and_inserts_nothi
                  "leave:-424242", "leaveyes:-3003", "leaveyes:nope"):
         await handlers.handle_callback(app, callback(app, OWNER, data))
     assert [c[2] for c in app.bot.of("answer")] == ["unknown chat"] * 7
-    assert app.bot.of("leave") == [] and app.bot.of("edit") == []
+    assert app.bot.of("leave") == [] and app.bot.of("rich") == [] and app.bot.of("delete") == []
     assert await chat_rows(app) == before
 
 
@@ -401,8 +444,8 @@ async def test_leaving_only_applies_to_known_non_private_chats_and_inserts_nothi
 async def chats_message(app):
     app.bot.calls.clear()
     await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="/chats", msg_id=901))
-    (_, chat_id, text, kw), = app.bot.of("send")
-    assert chat_id == OWNER
+    (_, chat_id, text, kw), = app.bot.of("rich")
+    assert chat_id == OWNER and app.bot.of("send") == []
     return text, kw["reply_markup"]
 
 
@@ -419,20 +462,21 @@ async def test_chats_groups_every_known_chat_by_status_with_member_counts(two_ap
 
     app.sleep = record_sleep
     text, markup = await chats_message(app)
-    headings = [l for l in text.splitlines() if l in ("Approved", "Pending", "Ignored", "Left")]
-    assert headings == ["Approved", "Pending", "Ignored", "Left"]
     lines = text.splitlines()
+    assert lines[0] == "**Dom's chats**"
+    headings = [l for l in lines if l.startswith("### ")]
+    assert headings == ["### Approved", "### Pending", "### Ignored", "### Left"]
+    assert lines.count("| Chat | Type | Members |") == 4 and lines.count("|---|---|---|") == 4
 
     def section(name):
-        start = lines.index(name) + 1
-        end = next((i for i in range(start, len(lines)) if lines[i] in ("Approved", "Pending", "Ignored", "Left")),
-                   len(lines))
-        return [l for l in lines[start:end] if l]
+        start = lines.index(f"### {name}") + 1
+        end = next((i for i in range(start, len(lines)) if lines[i].startswith("### ")), len(lines))
+        return rows_of("\n".join(lines[start:end]))
 
-    assert sorted(section("Approved")) == ["• Book Club · 5 members", "• DM with Fran", "• your DM"]
-    assert section("Pending") == ["• The Group · ? members"]
-    assert section("Ignored") == ["• Ignored Club · 3 members"]
-    assert section("Left") == ["• Old Club"]
+    assert sorted(section("Approved")) == [["Book Club", "Group", "5"], ["DM with Fran", "DM", "—"], ["your DM", "DM", "—"]]
+    assert section("Pending") == [["The Group", "Group", "?"]]
+    assert section("Ignored") == [["Ignored Club", "Group", "3"]]
+    assert section("Left") == [["Old Club", "Group", "—"]]
     assert [c[1] for c in app.bot.of("count")] == [FRIEND_GROUP, GROUP, -3003]  # groups only, never left or DMs
     assert slept == [0.2, 0.2]
     assert buttons(markup) == [
@@ -448,7 +492,7 @@ async def test_chats_is_owner_only_and_never_creates_rows(make_app):
     await handlers.handle_message(app, tg(chat_id=FRIEND, sender=FRIEND, text="/chats", msg_id=5))
     await handlers.handle_message(app, tg(chat_id=GROUP, sender=OWNER, text="/chats", msg_id=6))
     assert app.bot.of("send", FRIEND) == [] and app.bot.of("count") == []
-    assert not [c for c in app.bot.of("send") if "chats" in c[2].lower()]
+    assert app.bot.of("rich") == [] and app.bot.of("send", FRIEND) == []
     before = await chat_rows(app)  # ordinary messages from others may create rows; the owner's /chats must not
     await chats_message(app)
     assert await chat_rows(app) == before
@@ -465,6 +509,26 @@ async def test_chats_looks_up_at_most_thirty_groups_and_truncates(make_app):
     import re
     more = re.search(r"…and (\d+) more", text)
     assert more
-    shown = text.count("•")
+    shown = len(rows_of(text))
     assert shown + int(more.group(1)) == 301
     assert sum(len(row) for row in markup.inline_keyboard) <= 100
+
+
+async def test_chats_titles_cannot_break_the_table(make_app):
+    app = make_app()
+    await say(app, OWNER, OWNER, "hi", 1)
+    await approve(app, -5001, title="x | *y*")
+    text, _ = await chats_message(app)
+    assert "| x \\| \\*y\\* | Group | 3 |" in text.splitlines()
+
+
+async def test_chats_falls_back_to_plain_text_when_rich_messages_are_refused(two_approved_one_pending, caplog):
+    app = two_approved_one_pending
+    app.bot.rich_error = TelegramBadRequest(method=SendRichMessage(chat_id=1, rich_message=InputRichMessage(markdown="x")),
+                                            message="Bad Request: method not found")
+    app.bot.calls.clear()
+    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="/chats", msg_id=901))
+    (_, chat_id, text, kw), = app.bot.of("send")
+    assert chat_id == OWNER and text.startswith("Dom's chats\n") and "• Book Club · 3 members" in text
+    assert buttons(kw["reply_markup"])[0] == [("🚪 Leave Book Club", f"leave:{FRIEND_GROUP}")]
+    assert sum("rich" in r.getMessage().lower() for r in caplog.records) == 1

@@ -188,7 +188,7 @@ async def test_recording_failure_does_not_break_the_command(app, monkeypatch):
 
     monkeypatch.setattr(app.store, "record_owner_event", boom)
     await say(app, OWNER, OWNER, "/chats", 10)
-    assert len(app.bot.of("send", OWNER)) == 1
+    assert len(app.bot.of("rich", OWNER)) == 1
 
 
 async def test_events_do_not_wake_dom_or_count_toward_wake_after_messages(app):
