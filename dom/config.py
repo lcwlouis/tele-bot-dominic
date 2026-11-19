@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
+from importlib import resources
 from pathlib import Path
 from typing import Literal
 
@@ -49,11 +50,15 @@ def _read_dotenv(path: Path) -> dict[str, str]:
 
 def load_config(home: Path) -> Config:
     raw = tomllib.loads((home / "config.toml").read_text())
+    starter = resources.files("dom").joinpath("starter_home", "config.toml")
+    defaults = tomllib.loads(starter.read_text(encoding="utf-8"))["models"]
+    models = {key: defaults[key] for key in ("triage", "media")}
+    models.update(raw.get("models", {}))
     return Config(
         home=home,
         owner_id=raw.get("owner_id"),
         timezone=raw.get("timezone", "Asia/Singapore"),
-        models=raw.get("models", {}),
+        models=models,
         desktop_mode=raw.get("desktop", {}).get("mode", "off"),
         window_size=raw.get("window_size", 35),
     )
