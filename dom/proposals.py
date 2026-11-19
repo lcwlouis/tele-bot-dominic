@@ -81,11 +81,11 @@ class Proposals:
             await self._notify(proposal_id, kind, title, body)
         return proposal_id
 
-    async def _notify(self, proposal_id: int, kind: str, title: str, body: dict) -> None:
+    async def _notify(self, proposal_id: int, kind: str, title: str, body: dict, event: str | None = None) -> None:
         app = self.app
         if app.owner_id is None:
             return
-        await app.store.record_owner_event(f"Proposed #{proposal_id}: {title[:250]}")
+        await app.store.record_owner_event(event or f"Proposed #{proposal_id}: {title[:250]}")
         try:
             await self.send({"id": proposal_id, "kind": kind, "title": title, "body_json": json.dumps(body)})
         except Exception:
@@ -126,7 +126,8 @@ class Proposals:
             since=(now - REFLECTION_INTERVAL).isoformat(),
         )
         if proposal_id is not None:
-            await self._notify(proposal_id, "soul_edit", title, body)
+            # The reason is model-written from chat content; the event row goes back into Dom's own prompt.
+            await self._notify(proposal_id, "soul_edit", title, body, event=f"Dom proposed a soul edit (#{proposal_id})")
 
     async def decide(self, proposal_id: int, approve: bool) -> str:
         app = self.app
