@@ -43,6 +43,9 @@ TARGET_VERSION = MIGRATIONS[-1][0]
 
 _CHAT_AUTH_STATUSES = {"approved", "pending_approval", "ignored", "blocked"}
 _CHAT_AUTH_COLUMNS = "chat_id, authorization_status, title, invited_by_handle, approval_prompt_sent"
+# Visibility labels that mark owner-only rows ("admin_private" comes from V2 databases).
+_PRIVATE_SCOPES = (VISIBILITY_OWNER_PRIVATE, "admin_private")
+_PRIVATE_SCOPES_SQL = "(" + ", ".join(f"'{s}'" for s in _PRIVATE_SCOPES) + ")"
 _ADD_COLUMN_RE = re.compile(
     r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)", re.IGNORECASE
 )
@@ -583,8 +586,10 @@ class Store:
         return await self._run(self._get_recent_chat_window, str(chat_id), limit)
 
     def _get_recent_chat_window(self, chat_id: str, limit: int) -> list[StoredMessage]:
+        # Rows labelled private (e.g. from a legacy import) never enter another chat's window.
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
         rows = self._conn.execute(
-            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND is_deleted = 0 "
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND is_deleted = 0{hide} "
             "ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
             (chat_id, max(0, limit)),
         ).fetchall()

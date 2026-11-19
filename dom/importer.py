@@ -46,12 +46,37 @@ def _person_destination(filename: str) -> tuple[str, bool] | None:
     return None
 
 
+def _legacy_owner_ids(src: Path) -> set[str]:
+    """Who owned the V2 workspace: the chats whose STATE.json says admin_dm, else the uid_<id> profile
+    that admin/PRIVATE_MEMORY.md refers to."""
+    chats_dir = src / "chats"
+    found: set[str] = set()
+    for chat_dir in sorted(p for p in chats_dir.iterdir() if p.is_dir()) if chats_dir.is_dir() else []:
+        try:
+            state = json.loads((chat_dir / "STATE.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(state, dict) and state.get("chat_type") == "admin_dm":
+            found.add(chat_dir.name)
+    if found:
+        return found
+    memory = src / "admin" / "PRIVATE_MEMORY.md"
+    return set(re.findall(r"uid_(\d+)_", memory.read_text())) if memory.is_file() else set()
+
+
 def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
     src, home = Path(src), Path(home)
     if (home / "config.toml").is_file() and load_config(home).owner_id not in (None, owner_id):
         raise ValueError("the home already has a different owner")
     if (home / "state.db").exists():
         raise FileExistsError(f"{home / 'state.db'} already exists; import into a fresh home")
+
+    legacy_owners = _legacy_owner_ids(src)
+    if legacy_owners - {str(owner_id)}:
+        raise ValueError(
+            f"the workspace's legacy owner is {', '.join(sorted(legacy_owners))}, not --owner-id {owner_id}; "
+            "importing would put their private notes in the wrong place"
+        )
 
     report = ImportReport()
     home.mkdir(parents=True, exist_ok=True)
