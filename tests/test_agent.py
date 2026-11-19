@@ -150,7 +150,7 @@ async def test_chat_notes_limited_to_current_chat_outside_owner_dm(env):
     assert not (root / "memory" / "chats" / "-5555.md").exists()
     assert json.loads(await memory.handler(args, ctx_for(env, chat_id=-5555)))["ok"] is True
     owner = ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER)
-    assert json.loads(await memory.handler({**args, "text": "y"}, owner))["ok"] is True
+    assert json.loads(await memory.handler({**args, "text": "y"}, owner))["ok"] is False  # owner DM: private files only
 
 
 async def test_memory_over_limit_returns_error_and_content(env):
@@ -270,3 +270,21 @@ def test_actions_validation_limits():
     assert Bubble(text="a", delete_after=1).delete_after == 1
     assert Bubble(text="a", delete_after=30).delete_after == 30
     assert Actions().no_response is False and Actions().bubbles == []
+
+
+@pytest.mark.parametrize("file", ["MEMORY.md", "HABITS.md", "people/222.md", "chats/111.md", "chats/-1009.md"])
+async def test_owner_dm_cannot_write_shared_memory(env, file):
+    root, _, _ = env
+    memory = next(t for t in core_tools() if t.name == "memory")
+    owner = ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER)
+    result = json.loads(await memory.handler({"file": file, "op": "add", "text": "owner secret"}, owner))
+    assert result["ok"] is False
+    assert "only write USER.md or NOTES.md" in result["error"]
+    assert not (root / "memory").exists() or not list((root / "memory").rglob("*.md"))
+
+
+async def test_owner_dm_can_still_write_private_files(env):
+    memory = next(t for t in core_tools() if t.name == "memory")
+    owner = ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER)
+    for file in ("USER.md", "NOTES.md"):
+        assert json.loads(await memory.handler({"file": file, "op": "add", "text": "x"}, owner))["ok"] is True
