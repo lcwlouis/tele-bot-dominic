@@ -13,6 +13,7 @@ from aiogram import Bot, Dispatcher
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
 from dom.home import Home, init_home
+from dom.importer import import_v2
 from dom.llm import ChatClient
 from dom.store import Store
 from dom.telegram.handlers import App, build_router
@@ -50,6 +51,27 @@ def cmd_init(home: Path) -> int:
     return 0
 
 
+def cmd_import(old_workspace: Path, home: Path, owner_id: int) -> int:
+    try:
+        report = import_v2(old_workspace, home, owner_id)
+    except (FileExistsError, ValueError) as exc:
+        print(f"Import refused: {exc}")
+        return 1
+    print(f"Imported {len(report.imported)} files into {home}.")
+    sections = (
+        ("Handle-only profiles (numeric id unknown, they bind on the person's first message)", report.unresolved),
+        ("Over their memory limit (copied as is; Dom will prune them)", report.over_limit),
+        ("Skipped (unrecognised)", report.skipped),
+        ("Kept for reference, not imported", report.legacy),
+    )
+    for title, items in sections:
+        if items:
+            print(f"\n{title}:")
+            for item in items:
+                print(f"  {item}")
+    return 0
+
+
 async def run(home: Path) -> None:
     config = load_config(home)
     if "chat" not in config.models:
@@ -79,9 +101,15 @@ def main(argv: list[str] | None = None) -> int:
     for name, help_text in (("init", "create a new home folder"), ("run", "run the bot")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("home", type=Path)
+    imp = sub.add_parser("import-v2", help="import a V2 workspace into a home folder")
+    imp.add_argument("old_workspace", type=Path)
+    imp.add_argument("home", type=Path)
+    imp.add_argument("--owner-id", type=int, required=True)
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init(args.home)
+    if args.command == "import-v2":
+        return cmd_import(args.old_workspace, args.home, args.owner_id)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     asyncio.run(run(args.home))
     return 0
