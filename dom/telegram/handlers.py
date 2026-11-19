@@ -4,30 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from random import Random
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
-from dom.agent import run_turn
 from dom.claim import try_claim
 from dom.config import Config, load_config
+from dom.dispatch import Dispatcher
 from dom.home import Home
+from dom.jev import JevClient
 from dom.llm import ChatClient
 from dom.models import IncomingMessage, StoredMessage
-from dom.prompt import build_messages
+from dom.presence import Presence
 from dom.store import Store
-from dom.telegram import executor, gate
+from dom.telegram import gate
 from dom.telegram.convert import to_incoming
-from dom.tools import TurnCtx, core_tools
 
-log = logging.getLogger("dom.handlers")
 CHAT_TYPES = ("private", "group", "supergroup")
 
 
@@ -43,6 +41,16 @@ class App:
     locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))  # one turn at a time per chat
     ingest_locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))  # decide + record, in order
 
+    jev: JevClient | None = None
+    dispatch: Dispatcher = field(init=False)
+
+    def __post_init__(self) -> None:
+        def now() -> datetime:
+            return datetime.now(timezone.utc)
+
+        presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
+        self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
+
     @property
     def owner_id(self) -> int | None:
         return self.store.owner_id
@@ -50,39 +58,13 @@ class App:
 
 # ---- triggers --------------------------------------------------------------------
 
-def _is_mention(text: str, username: str) -> bool:
-    return re.search(rf"(?<![A-Za-z0-9_])@{re.escape(username)}(?![A-Za-z0-9_])", text, re.IGNORECASE) is not None
-
-
-def _is_command_for_us(text: str, username: str) -> bool:
-    if not text.startswith("/"):
-        return False
-    _, _, target = text.split()[0].partition("@")
-    return not target or target.lower() == username.lower()
-
-
 def _command_name(text: str, username: str) -> str | None:
     """`/cmd` from `/cmd`, `/cmd args` or `/cmd@bot args` addressed to us; otherwise None."""
-    if not _is_command_for_us(text, username):
+    if not text.startswith("/"):
         return None
-    return text.split()[0].partition("@")[0]
+    name, _, target = text.split()[0].partition("@")
+    return name if not target or target.lower() == username.lower() else None
 
-
-def should_respond(app: App, message: Message, msg: IncomingMessage) -> bool:
-    """DMs always get a turn; groups only on @mention, a reply to Dom, or a command for Dom."""
-    if msg.chat_type == "private":
-        return True
-    username = app.bot_username
-    replied = message.reply_to_message
-    replied_to_dom = (
-        replied is not None
-        and replied.from_user is not None
-        and (replied.from_user.username or "").lower() == username.lower()
-    )
-    return replied_to_dom or _is_mention(msg.text, username) or _is_command_for_us(msg.text, username)
-
-
-# ---- recording and turns -----------------------------------------------------------
 
 async def _record(app: App, msg: IncomingMessage) -> None:
     await app.store.resolve_person(msg.sender_id, msg.sender_handle, msg.sender_name)
@@ -101,30 +83,6 @@ async def _record(app: App, msg: IncomingMessage) -> None:
             created_at=msg.date.isoformat(),
         )
     )
-
-
-def _turn_note(app: App, msg: IncomingMessage, scope: str) -> str:
-    now = datetime.now(ZoneInfo(app.config.timezone))
-    where = f'chat "{msg.chat_title}"' if msg.chat_title else "a direct message"
-    return f"It is {now:%A %Y-%m-%d %H:%M} ({app.config.timezone}). You are in {where} ({scope})."
-
-
-async def _run_chat_turn(app: App, msg: IncomingMessage) -> None:
-    scope = app.store.scope_for(msg.chat_id, msg.chat_type)
-    window = await app.store.get_recent_chat_window(msg.chat_id, app.config.window_size)
-    participants = list(dict.fromkeys(
-        [m.sender_user_id for m in window if m.role == "user" and m.sender_user_id is not None] + [msg.sender_id]
-    ))
-    messages = build_messages(
-        app.home, scope, msg.chat_id, participants,
-        app.store.format_chat_window_xml(str(msg.chat_id), window), _turn_note(app, msg, scope),
-    )
-    ctx = TurnCtx(
-        scope=scope, chat_id=msg.chat_id, sender_id=msg.sender_id,
-        home=app.home, store=app.store, owner_id=app.owner_id,
-    )
-    actions = await run_turn(app.client, messages, core_tools(), ctx)
-    await executor.perform(app.bot, app.store, msg.chat_id, msg.msg_id, actions, sleep=app.sleep, thread_id=msg.thread_id)
 
 
 def _claim_code(text: str, username: str) -> str | None:
@@ -158,17 +116,27 @@ async def handle_message(app: App, message: Message) -> None:
         if code is not None:
             await _handle_claim(app, msg, code)
             return
-    if (
-        msg.chat_type == "private" and msg.sender_id == app.owner_id
-        and _command_name(msg.text, app.bot_username) == "/pending"
-    ):
-        await gate.resend_pending(app.bot, app.store, app.owner_id)
-        return
+    if msg.chat_type == "private" and msg.chat_id == msg.sender_id == app.owner_id:
+        command = _command_name(msg.text, app.bot_username)
+        if command == "/pending":
+            await gate.resend_pending(app.bot, app.store, app.owner_id)
+            return
+        if command in ("/wake", "/sleep"):
+            parts = msg.text.split()
+            try:
+                target = msg.chat_id if len(parts) == 1 else int(parts[1])
+            except ValueError:
+                return
+            if len(parts) <= 2:
+                await app.dispatch.override(target, command)
+            return
     async with app.ingest_locks[msg.chat_id]:
         decision = await gate.decide(app.store, msg, app.owner_id)
         if decision == "drop":
             return
         await _record(app, msg)
+        if decision == "process":
+            app.dispatch.notify(msg)
     if decision == "hold":
         kind = "chat" if msg.chat_type == "private" else "group"
         await gate.request_approval(
@@ -176,24 +144,15 @@ async def handle_message(app: App, message: Message) -> None:
             msg.chat_title or msg.sender_name, kind, msg.sender_handle or msg.sender_name,
         )
         return
-    if not should_respond(app, message, msg):
-        return
-    async with app.locks[msg.chat_id]:
-        # The owner may have decided while this turn waited for the lock.
-        if await gate.decide(app.store, msg, app.owner_id) != "process":
-            return
-        try:
-            await _run_chat_turn(app, msg)
-        except Exception:  # one failed turn must not stop the bot
-            log.exception("turn failed in chat %s", msg.chat_id)
-
 
 async def handle_edited_message(app: App, message: Message) -> None:
     if message.chat.type not in CHAT_TYPES:
         return
     msg = to_incoming(message)
     async with app.ingest_locks[msg.chat_id]:  # after the original's own decide + record has finished
-        edited = await app.store.record_message_edit(msg.chat_id, msg.msg_id, message.text or message.caption or "")
+        edited = await app.store.record_message_edit(
+            msg.chat_id, msg.msg_id, msg.text, dom_was_online_and_read=False,
+        )
         if edited is None and not msg.is_bot and await gate.decide(app.store, msg, app.owner_id) != "drop":
             await _record(app, msg)  # the original never reached us: keep the edited text as a new message
 

@@ -18,9 +18,13 @@ Decision = Literal["process", "hold", "drop"]
 
 async def decide(store: Store, msg: IncomingMessage, owner_id: int | None) -> Decision:
     """process: approved. hold: pending, record only. drop: owner unset, ignored or blocked."""
+    return await decide_chat(store, msg.chat_id, owner_id)
+
+
+async def decide_chat(store: Store, chat_id: int, owner_id: int | None) -> Decision:
     if owner_id is None:
         return "drop"
-    status = (await store.get_chat_auth_status(msg.chat_id))["authorization_status"]
+    status = (await store.get_chat_auth_status(chat_id))["authorization_status"]
     if status == "approved":
         return "process"
     if status == "pending_approval":
