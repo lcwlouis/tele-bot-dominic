@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,6 +36,7 @@ OWNER_COMMANDS = [
     BotCommand(command="chats", description="Every group and DM Dom knows about"),
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
     BotCommand(command="proposals", description="Review pending changes"),
+    BotCommand(command="plugins", description="List and disable plugins"),
     BotCommand(command="reminders", description="List and cancel reminders"),
     BotCommand(command="tasks", description="List and cancel desktop tasks"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
@@ -369,6 +371,30 @@ async def choose_preset(app: App, chat: dict) -> None:
     await _preset_buttons(app, f"Choose a preset for {display_title(chat, app.owner_id)}.", choices)
 
 
+async def show_plugins(app: App) -> None:
+    rows = await app.plugins.listing()
+    if not rows:
+        await app.bot.send_message(app.owner_id, "No plugins are installed.")
+        return
+    for start in range(0, len(rows), 20):
+        lines, buttons = [], []
+        for row in rows[start:start + 20]:
+            name = row["name"]
+            status = row["status"] + ("" if row["available"] else " · files unavailable")
+            lines.append(f"{name} · {status}")
+            if row["status"] != "disabled":
+                buttons.append([InlineKeyboardButton(text=f"Disable {name}", callback_data=f"plugin:disable:{name}")])
+        await app.bot.send_message(
+            app.owner_id, "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
+        )
+
+
+async def disable_plugin(app: App, name: str) -> str:
+    row = next((row for row in await app.plugins.listing() if row["name"] == name), None)
+    return await app.plugins.decide(name, row["hash"], "disable") if row else "Unknown plugin"
+
+
 async def show_proposals(app: App, page: int = 1) -> None:
     rows = await app.proposals.pending()
     if not rows:
@@ -387,6 +413,8 @@ async def show_proposals(app: App, page: int = 1) -> None:
         if preview != text:
             preview += "…"
             controls.append(InlineKeyboardButton(text=f"Details #{row['id']}", callback_data=f"prop:show:{row['id']}"))
+        if row["kind"] == "plugin" and (review := proposals.review_button(app, json.loads(row["body_json"]))):
+            controls.append(review)
         lines.append(preview)
         keyboard.append(controls)
     # IDs are ascending and never reused. The range refers to this page even if other proposals are decided.
@@ -412,8 +440,10 @@ async def approve_proposal_page(app: App, first: int, last: int) -> str:
     if not rows or len(rows) > PROPOSALS_PER_PAGE:
         return "already handled"
     facts = [row for row in rows if row["kind"] == "memory_fact"]
-    souls = len(rows) - len(facts)
+    souls = sum(row["kind"] == "soul_edit" for row in rows)
     held = (" 1 soul edit needs its own Approve." if souls == 1 else f" {souls} soul edits need their own Approve.") if souls else ""
+    if any(row["kind"] == "plugin" for row in rows):
+        held += " Plugins need their own review and approval."
     results = [await app.proposals.decide(row["id"], True) for row in facts]
     approved = results.count("Approved")
     errors = [result for result in results if result not in ("Approved", "already handled")]

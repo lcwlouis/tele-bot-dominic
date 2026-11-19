@@ -1032,12 +1032,15 @@ class Store:
 
     def _kv_set_many(self, values: dict[str, str]) -> None:
         with self._tx() as conn:
-            now = _now()
-            conn.executemany(
-                "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                [(key, value, now) for key, value in values.items()],
-            )
+            self._write_kv(conn, values)
+
+    def _write_kv(self, conn: sqlite3.Connection, values: dict[str, str]) -> None:
+        now = _now()
+        conn.executemany(
+            "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            [(key, value, now) for key, value in values.items()],
+        )
 
     # ---- turn log ---------------------------------------------------------
 
@@ -1132,6 +1135,12 @@ class Store:
                     "WHERE plugins.hash != excluded.hash",
                     [(name, digest, manifest, _now()) for name, digest, manifest in manifests],
                 )
+                conn.executemany(
+                    "UPDATE proposals SET status = 'expired', decided_at = ? WHERE kind = 'plugin' "
+                    "AND status = 'pending' AND json_extract(body_json, '$.name') = ? "
+                    "AND json_extract(body_json, '$.hash') != ?",
+                    [(_now(), name, digest) for name, digest, _ in manifests],
+                )
 
         await self._run(stage)
 
@@ -1151,6 +1160,28 @@ class Store:
             (status, now, status, status, now, name, digest, status),
         )
         return cursor.rowcount == 1
+
+    async def decide_plugin(
+        self, name: str, digest: str, decision: str, snapshot: dict[str, str] | None = None,
+    ) -> bool:
+        def decide() -> bool:
+            status = "approved" if decision == "approve" else "disabled"
+            with self._tx() as conn:
+                row = conn.execute("SELECT status FROM plugins WHERE name = ? AND hash = ?", (name, digest)).fetchone()
+                if row is None or (decision != "disable" and row["status"] != "pending"):
+                    return False
+                if not self._set_plugin_status(name, digest, status):
+                    return False
+                if snapshot is not None:
+                    self._write_kv(conn, {f"plugin-files:{name}": json.dumps(snapshot)})
+                conn.execute(
+                    "UPDATE proposals SET status = ?, decided_at = ? WHERE kind = 'plugin' AND status = 'pending' "
+                    "AND json_extract(body_json, '$.name') = ? AND json_extract(body_json, '$.hash') = ?",
+                    ("approved" if decision == "approve" else "rejected", _now(), name, digest),
+                )
+                return True
+
+        return await self._run(decide)
 
     # ---- proposals and reminders -----------------------------------------
 

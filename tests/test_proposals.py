@@ -96,9 +96,9 @@ async def test_daily_expiry_only_expires_proposals_older_than_14_days(make_app):
     assert app.bot.of("answer")[-1][2] == "already handled"
 
 
-async def test_future_plugin_kind_cannot_be_created(make_app):
+async def test_invalid_plugin_proposal_cannot_be_created(make_app):
     app = make_app()
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError):
         await app.proposals.create("plugin", "Example", {}, "example")
     assert not app.bot.calls
 

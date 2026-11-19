@@ -6,9 +6,12 @@ import json
 import logging
 from datetime import timedelta, timezone
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from dom.guard import check_local_private_text
+from dom.plugins.manifest import MAX_BYTES, MAX_FILES, validate_plugin
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
 from dom.skills import Skill, skill_diff, skill_text, write_skill
 
@@ -45,6 +48,18 @@ def buttons(proposal_id: int, *, numbered: bool = False) -> list[InlineKeyboardB
     ]
 
 
+def plugin_review_path(body: dict) -> str:
+    return f"/plugins/{body['name']}/{body['hash']}"
+
+
+def review_button(app: App, body: dict) -> InlineKeyboardButton | None:
+    base = app.config.web.public_url.rstrip("/")
+    url = urlsplit(base)
+    if url.scheme == "https" and url.netloc and url.username is None and not (url.query or url.fragment):
+        return InlineKeyboardButton(text="Review on dashboard", url=base + plugin_review_path(body))
+    return None
+
+
 def summary(row: dict) -> str:
     body = json.loads(row["body_json"])
     heading = f"#{row['id']} {row['title']}"
@@ -53,6 +68,14 @@ def summary(row: dict) -> str:
     if row["kind"] == "skill":
         changes = "\n".join(skill_diff(body["old"], body["new"])) if body["old"] else ""
         return "\n\n".join(filter(None, (heading, changes, body["new"])))
+    if row["kind"] == "plugin":
+        tools = [f"{tool['name']} ({', '.join(tool['scopes']) or 'no scopes'})" for tool in body["tools"]]
+        files = [f"{path} ({size} bytes)" for path, size in body["files"].items()]
+        network = "This plugin can reach the internet" if body["network"] else "Network off"
+        return "\n".join([
+            heading, body["description"], f"Tools: {', '.join(tools)}", network,
+            f"Files: {', '.join(files)}", f"Hash: {body['hash'][:12]}",
+        ])
     if row["kind"] == "memory_fact":
         if row["title"] == body["text"]:
             return f"#{row['id']} {body['file']}: {body['text']}"
@@ -66,8 +89,9 @@ class Proposals:
 
     async def create(self, kind: str, title: str, body: dict, source: str, *, notify: bool = True) -> int:
         if kind == "plugin":
-            raise NotImplementedError(kind)
-        if kind == "soul_edit":
+            body = await self._draft_plugin(body)
+            title = f"Plugin: {body['name']}"
+        elif kind == "soul_edit":
             if not (isinstance(body.get("old"), str) and body["old"] and isinstance(body.get("new"), str)):
                 raise ValueError("a soul edit needs old and new text")
             if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
@@ -92,6 +116,28 @@ class Proposals:
             await self._notify(proposal_id, kind, title, body)
         return proposal_id
 
+    async def _draft_plugin(self, body: dict) -> dict:
+        name, description = body.get("name"), body.get("description")
+        files, manifest = body.get("files"), body.get("manifest_toml")
+        if (
+            not isinstance(manifest, str) or len(manifest) > MAX_BYTES or not isinstance(files, dict)
+            or "plugin.toml" in files or len(files) >= MAX_FILES
+            or any(not isinstance(path, str) or not isinstance(text, str) or len(text) > MAX_BYTES
+                   for path, text in files.items())
+        ):
+            raise ValueError("Supply manifest_toml separately and up to nine Python source files.")
+        texts = {"plugin.toml": manifest, **files}
+        plugin = validate_plugin(name, {path: text.encode("utf-8") for path, text in texts.items()})
+        if description != plugin.manifest.description:
+            raise ValueError("The description must match plugin.toml.")
+        check_local_private_text(self.app.config, self.app.home, [*texts, *texts.values()])
+        await self.app.plugins.draft(plugin)
+        return {
+            "name": name, "description": description, "hash": plugin.hash, "network": plugin.manifest.network,
+            "tools": [{"name": tool.name, "scopes": tool.scopes} for tool in plugin.manifest.tools],
+            "files": {path: len(data) for path, data in sorted(plugin.files.items())},
+        }
+
     async def _notify(self, proposal_id: int, kind: str, title: str, body: dict, event: str | None = None) -> None:
         app = self.app
         if app.owner_id is None:
@@ -105,10 +151,19 @@ class Proposals:
     async def send(self, row: dict) -> None:
         app = self.app
         text = summary(row)
+        review = None
+        if row["kind"] == "plugin":
+            body = json.loads(row["body_json"])
+            review = review_button(app, body)
+            if review is None:
+                text += f"\nOpen {plugin_review_path(body)} in the dashboard to review."
         for start in range(0, len(text), 2000):
             markup = None
             if start + 2000 >= len(text):
-                markup = InlineKeyboardMarkup(inline_keyboard=[buttons(row["id"])])
+                keyboard = [buttons(row["id"])]
+                if review is not None:
+                    keyboard.insert(0, [review])
+                markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
             await app.bot.send_message(
                 app.owner_id, text[start:start + 2000], disable_notification=True, reply_markup=markup,
             )
@@ -145,6 +200,11 @@ class Proposals:
         status = "approved" if approve else "rejected"
         at = app.dispatch.now().astimezone(timezone.utc).isoformat()
         try:
+            for row in await self.pending():
+                if row["id"] == proposal_id and row["kind"] == "plugin":
+                    body = json.loads(row["body_json"])
+                    decision = "approve" if approve else "reject"
+                    return await app.plugins.decide(body["name"], body["hash"], decision)
             changed = await app.store.decide_proposal(proposal_id, status, at, self._apply)
         except (OSError, ValueError) as error:
             await app.store.record_owner_event(f"Could not approve proposal #{proposal_id}")

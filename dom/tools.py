@@ -19,6 +19,7 @@ from dom.usage import ModelCallSkipped, model_request
 if TYPE_CHECKING:
     from dom.desktop.worker import DesktopWorker
     from dom.reminders import Reminders
+    from dom.telegram.handlers import App
 
 ALL_SCOPES: set[Scope] = {"owner_dm", "friend_dm", "group"}
 
@@ -36,6 +37,13 @@ class TurnCtx:
     model_allowed: Callable[[], Awaitable[bool]] | None = None
     reminders: Reminders | None = None
     desktop: DesktopWorker | None = None
+    app: App | None = None
+
+    def is_owner_dm(self) -> bool:
+        return (
+            self.app is not None and self.owner_id is not None and self.scope == "owner_dm"
+            and self.sender_id == self.chat_id == self.owner_id == self.app.owner_id
+        )
 
 
 @dataclass(frozen=True)

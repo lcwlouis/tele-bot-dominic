@@ -97,6 +97,7 @@ def test_owner_commands():
         ("chats", "Every group and DM Dom knows about"),
         ("preset", "Change Dom's persona in a chat"),
         ("proposals", "Review pending changes"),
+        ("plugins", "List and disable plugins"),
         ("reminders", "List and cancel reminders"),
         ("tasks", "List and cancel desktop tasks"),
         ("stickers", "Add or remove a sticker set"),
