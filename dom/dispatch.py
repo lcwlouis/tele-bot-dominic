@@ -17,12 +17,11 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from dom.actions import Actions, Bubble
 from dom.agent import run_turn
 from dom.capabilities import describe
-from dom.home import PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
 from dom.jobs import DailyJobs
 from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
-from dom.presence import Habits, Presence, State, parse_habits
+from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import build_messages
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, core_tools
@@ -245,11 +244,7 @@ class Dispatcher:
         await asyncio.gather(*(await self._poll_chats()))
 
     def _habits(self) -> Habits:
-        try:
-            text = self.app.home.scoped(allow_private=False).read("memory/HABITS.md")
-        except (PrivateAccessError, ValueError):
-            text = ""
-        return parse_habits(text)
+        return read_habits(self.app.home)
 
     def peek_presence(self, rows: list[dict]) -> list[tuple[State, datetime | None]]:
         """Presence of each stored row as the next turn would find it; writes nothing."""
