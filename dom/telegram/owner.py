@@ -394,11 +394,11 @@ async def import_memory(app: App, message: Message, text: str) -> tuple[str, str
                 source = reply.text
             else:
                 raise ValueError("Reply to the export or attach a .txt or .md document with /import <service>.")
-            count = await app.memory_import.run(service, source)
+            parsed = await app.memory_import.run(service, source)
         except (OSError, ValueError) as error:
             response = str(error) if isinstance(error, ValueError) else "Could not read the import or existing notes."
             event = f"Could not import memories from {service}"
         else:
-            response = f"Imported {count} facts from {service}. Review them in the dashboard or with /proposals."
+            response = memory_import.summary(service, parsed)
             event = response
     return response, event
