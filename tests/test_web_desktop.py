@@ -19,39 +19,46 @@ def dashboard(app, monkeypatch):
     return create_app(app, Auth(app.config))
 
 
-async def test_http_proxy_forwards_key_and_strips_client_auth(make_app, monkeypatch):
+async def test_viewer_is_local_and_nothing_sandbox_is_served(make_app, monkeypatch):
     app = make_app()
     await worker_for(app)
     sent = []
 
     def upstream(request):
         sent.append(request)
-        assert request.url == "https://example.org/vnc/index.html"
-        assert request.headers["authorization"] == "Bearer sandbox-key"
-        assert not {"cookie", "cf-access-jwt-assertion", "x-api-key"} & request.headers.keys()
-        return httpx.Response(200, text="<html>noVNC</html>", headers={
-            "content-type": "text/html", "set-cookie": "upstream=value", "x-upstream": "private",
-        })
+        return httpx.Response(200, text="<script>steal()</script>", headers={"content-type": "text/html"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as http:
         app.sandbox.client = SandboxClient("https://example.org", "sandbox-key", http)
         web = dashboard(app, monkeypatch)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+            auth = {"Authorization": f"Bearer {TOKEN}"}
             path = "/desktop/vnc/index.html"
             assert (await client.get(path)).status_code == 403
-            headers = {"Authorization": f"Bearer {TOKEN}", "Cf-Access-Jwt-Assertion": "fake",
-                       "Cookie": "secret=value", "X-API-Key": "client-key"}
-            result = await client.get(path, headers=headers)
-            assert result.status_code == 200
-            assert result.text == "<html>noVNC</html>"
-            assert result.headers["x-frame-options"] == "SAMEORIGIN"
-            assert result.headers["cache-control"] == "no-store"
-            assert "sandbox-key" not in str(result.headers)
-            assert "set-cookie" not in result.headers
-            assert "x-upstream" not in result.headers
-            for blocked in ("/desktop/vnc/app/%2e%2e/index.html", "/desktop/vnc/health", "/desktop/vnc/app/%252e%252e/a.js"):
-                assert (await client.get(blocked, headers=headers)).status_code == 404
-    assert len(sent) == 1
+            page = await client.get(path, headers=auth)
+            assert page.status_code == 200
+            assert "steal" not in page.text
+            assert 'src="/static/desktop-viewer.js"' in page.text
+            assert "<script>" not in page.text.replace('<script type="module" src', "")
+            assert page.headers["x-frame-options"] == "SAMEORIGIN"
+            assert page.headers["cache-control"] == "no-store"
+            csp = page.headers["content-security-policy"]
+            assert "default-src 'self'" in csp and "unsafe" not in csp
+            assert "sandbox-key" not in str(page.headers)
+            for other in ("app/ui.js", "core/rfb.js", "health", "app/%2e%2e/index.html", "vendor/pako/x.js"):
+                assert (await client.get(f"/desktop/vnc/{other}", headers=auth)).status_code == 404
+            assert (await client.head(path, headers=auth)).status_code in (200, 405)
+            for asset in ("core/rfb.js", "vendor/pako/lib/zlib/inflate.js", "LICENSE.txt"):
+                served = await client.get(f"/static/novnc/{asset}", headers=auth)
+                assert served.status_code == 200, asset
+            js = await client.get("/static/novnc/core/rfb.js", headers=auth)
+            assert "javascript" in js.headers["content-type"]
+            viewer = await client.get("/static/desktop-viewer.js", headers=auth)
+            assert "/static/novnc/core/rfb.js" in viewer.text
+    assert sent == []
+    for route in web.routes:
+        assert "{asset" not in getattr(route, "path", "")
+        assert "GET" not in (getattr(route, "methods", None) or ()) or route.path != "/desktop/vnc/{asset:path}"
 
 
 @pytest.mark.parametrize("origin", [ORIGIN, "https://attacker.example.org", None])

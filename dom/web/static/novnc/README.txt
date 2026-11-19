@@ -1,0 +1,1 @@
+noVNC v1.7.0 (https://github.com/novnc/noVNC/releases/tag/v1.7.0), MPL-2.0. Only core/ and vendor/pako/ are vendored, unmodified. The viewer page is dom/web/templates/desktop_viewer.html with dom/web/static/desktop-viewer.js.

@@ -40,6 +40,8 @@ dom = [
     "web/templates/*.html",
     "web/static/*",
     "web/static/fonts/*",
+    "web/static/novnc/*",
+    "web/static/novnc/**/*",
 ]
 
 [tool.pytest.ini_options]

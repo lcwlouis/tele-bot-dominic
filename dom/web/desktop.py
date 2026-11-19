@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket
-from fastapi.responses import Response
 from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
@@ -22,10 +20,6 @@ from dom.web.pages import owner_app, panel, render
 router = APIRouter(prefix="/desktop")
 VNC_PATH = "/desktop/vnc/"
 VNC_SOCKET = VNC_PATH + "websockify"
-_VNC_ASSET = re.compile(
-    r"(?:app|core|vendor|images)/(?:(?:[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)/)*"
-    r"[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.(?:css|js|png|ico|svg|woff2?|json|webp|jpg|gif|mp3|ogg|wav)"
-)
 _FRAME_LIMIT = 16 * 1024 * 1024
 
 
@@ -88,34 +82,11 @@ async def desktop_done(request: Request, task_id: int, steps: int):
     return render("desktop_state.html", context=await _context(app, message))
 
 
-@router.api_route("/vnc/{asset:path}", methods=["GET", "HEAD"])
-async def vnc_http(request: Request, asset: str):
-    app = owner_app(request)
-    if asset != "index.html" and _VNC_ASSET.fullmatch(asset) is None:
-        raise HTTPException(404)
-    sandbox = app.sandbox
-    if sandbox is None or sandbox.status() != "ready" or sandbox.client is None:
-        raise HTTPException(503, "The desktop is stopped.")
-    sandbox.touch()
-    client = sandbox.client
-    upstream = httpx.Request(
-        request.method, f"{client.base_url}/vnc/{asset}", headers=client.auth_headers(),
-        extensions={"timeout": httpx.Timeout(30).as_dict()},
-    )
-    try:
-        response = await client.http.send(upstream, auth=None, follow_redirects=False)
-    except httpx.HTTPError:
-        raise HTTPException(502, "Couldn't reach the desktop.") from None
-    if response.status_code == 404:
-        raise HTTPException(404)
-    if not response.is_success:
-        raise HTTPException(502, "Couldn't open the live view.")
-
-    # Keep the viewer under the dashboard's policy. The sandbox supplies only the asset bytes and type.
-    upstream_type = response.headers.get("content-type", "application/octet-stream")
-    if asset != "index.html" and upstream_type.partition(";")[0].lower() in ("text/html", "application/xhtml+xml"):
-        raise HTTPException(502, "Unexpected desktop asset.")
-    return Response(response.content, status_code=response.status_code, headers={"Content-Type": upstream_type})
+@router.get("/vnc/index.html")
+async def vnc_viewer(request: Request):
+    # The page and its noVNC scripts are Dom's own files; only the websocket reaches the sandbox.
+    owner_app(request)
+    return render("desktop_viewer.html")
 
 
 class NoRedirectConnection(connect):
