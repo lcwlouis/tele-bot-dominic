@@ -3,7 +3,8 @@
 Replying never writes notes. This pass reads the messages since its last run (`chats.memory_cursor_msg_id`) and the
 notes this chat's scope may see, asks the model for JSON ops, and applies each one through Home.memory_write. The
 scope decides which files exist for the pass exactly as it did for the old in-turn memory tool: the owner's DM
-writes only private/USER.md and private/NOTES.md, every other chat only the shared notes, never HABITS.md.
+writes only private/USER.md and private/NOTES.md, a friend's DM only its own chat notes, and groups only
+the shared notes. No pass writes HABITS.md.
 """
 
 from __future__ import annotations
@@ -65,6 +66,10 @@ def memory_target(file: str, scope: Scope, chat_id: int) -> tuple[str | None, st
         if named not in ("USER", "NOTES"):
             return None, OWNER_DM_MEMORY_ERROR
         return f"private/{named}.md", None
+    if scope == "friend_dm":
+        if file != f"chats/{chat_id}.md":
+            return None, "a friend's DM may only edit its own chat notes"
+        return f"memory/{file}", None
     if named in ("USER", "NOTES"):
         return None, f"{file} is not available here"
     if named:
@@ -160,6 +165,8 @@ class MemoryPass:
         """Short note name -> home path for the files this pass may read and write."""
         if scope == "owner_dm":
             names = ["USER.md", "NOTES.md"]
+        elif scope == "friend_dm":
+            names = [f"chats/{chat_id}.md"]
         else:
             people = dict.fromkeys(
                 m.sender_user_id for m in messages
