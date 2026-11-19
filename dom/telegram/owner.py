@@ -316,17 +316,21 @@ async def show_proposals(app: App, page: int = 1) -> None:
 
 
 async def approve_proposal_page(app: App, first: int, last: int) -> str:
+    """Approve the memory facts on one page. A soul edit changes who Dom is, so it keeps its own Approve button."""
     rows = [row for row in await app.proposals.pending() if first <= row["id"] <= last]
     if not rows or len(rows) > PROPOSALS_PER_PAGE:
         return "already handled"
-    results = [await app.proposals.decide(row["id"], True) for row in rows]
+    facts = [row for row in rows if row["kind"] == "memory_fact"]
+    souls = len(rows) - len(facts)
+    held = (" 1 soul edit needs its own Approve." if souls == 1 else f" {souls} soul edits need their own Approve.") if souls else ""
+    results = [await app.proposals.decide(row["id"], True) for row in facts]
     approved = results.count("Approved")
     errors = [result for result in results if result not in ("Approved", "already handled")]
     if not approved and not errors:
-        return "already handled"
+        return held.strip() or "already handled"
     if errors:
         return f"Approved {approved}. {len(errors)} still pending. {errors[0]}"[:180]
-    return f"Approved {approved}."
+    return f"Approved {approved}.{held}"
 
 
 async def show_reminders(app: App) -> None:
