@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import httpx
+
 import asyncio
 import base64
 import logging
@@ -100,5 +102,8 @@ class MediaDescriber:
         except ModelCallSkipped:
             return None
         except Exception as exc:
-            log.warning("media description failed for %s (%s)", kind, type(exc).__name__)
+            detail = ""
+            if isinstance(exc, httpx.HTTPStatusError):
+                detail = f" {exc.response.status_code}: {exc.response.text[:300]!r}"
+            log.warning("media description failed for %s (%s)%s", kind, type(exc).__name__, detail)
             return None
