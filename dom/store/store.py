@@ -1064,6 +1064,14 @@ class Store:
             )
         ])
 
+    async def recent_turn_errors(self) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT at, scope, model, outcome FROM turns WHERE outcome LIKE 'Turn failed%' OR outcome LIKE 'Error%' "
+                "ORDER BY at DESC, id DESC LIMIT 20"
+            )
+        ])
+
     async def prune_turn_history(self, before: datetime) -> None:
         cutoff = before.astimezone(timezone.utc).isoformat()
 

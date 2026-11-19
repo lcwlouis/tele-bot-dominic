@@ -45,3 +45,22 @@ document.addEventListener("htmx:afterSwap", (event) => {
         live.removeAttribute("src");
     }
 });
+
+document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-brief]");
+    if (!button) {
+        return;
+    }
+    const card = button.closest("details");
+    const source = card.querySelector("textarea");
+    const status = card.querySelector("[role=status]");
+    try {
+        await navigator.clipboard.writeText(source.value);
+        status.textContent = "Copied.";
+    } catch {
+        source.hidden = false;
+        source.focus();
+        source.select();
+        status.textContent = "Copy the selected Markdown.";
+    }
+});
