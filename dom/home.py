@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from importlib import resources
 from dataclasses import dataclass
@@ -156,10 +157,36 @@ def parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
     return meta, body
 
 
-def init_home(target: Path) -> None:
-    """Copy the starter kit into ``target``. Refuses a non-empty directory."""
+def local_timezone() -> str:
+    """The machine's IANA timezone name (TZ, then /etc/localtime), or "UTC" if it can't be told."""
+    import os
+    from zoneinfo import ZoneInfo
+
+    candidates = [os.environ.get("TZ", "")]
+    try:
+        link = os.readlink("/etc/localtime")
+        candidates.append(link.split("zoneinfo/", 1)[1] if "zoneinfo/" in link else "")
+    except OSError:
+        pass
+    for name in candidates:
+        name = name.lstrip(":")
+        if name:
+            try:
+                ZoneInfo(name)
+                return name
+            except Exception:
+                continue
+    return "UTC"
+
+
+def init_home(target: Path, timezone: str | None = None) -> None:
+    """Copy the starter kit into ``target``. Refuses a non-empty directory. Sets ``timezone`` in
+    config.toml (default: this machine's timezone)."""
     target = Path(target)
     if target.exists() and any(target.iterdir()):
         raise FileExistsError(f"{target} is not empty")
     with resources.as_file(resources.files("dom") / "starter_home") as starter:
         shutil.copytree(starter, target, dirs_exist_ok=True)
+    config = target / "config.toml"
+    tz = timezone or local_timezone()
+    config.write_text(re.sub(r'(?m)^timezone = ".*"$', f'timezone = "{tz}"', config.read_text(), count=1))
