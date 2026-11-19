@@ -31,6 +31,10 @@ MAX_CHATS = 40  # two buttons a row; Telegram allows at most 100 buttons on a ke
 _ICONS = {"asleep": "🌙", "online": "☀️", "offline": "💤"}
 
 
+def _short(title: str, limit: int = 20) -> str:
+    return title if len(title) <= limit else title[: limit - 1] + "…"
+
+
 async def publish_menu(bot, owner_id: int) -> None:
     """Show the owner the command menu and everyone else none. A failure is logged, never raised."""
     try:
@@ -74,7 +78,7 @@ async def render_status(app: App) -> tuple[str, InlineKeyboardMarkup]:
         used += len(line) + 1
         lines.append(line)
         rows.append([
-            InlineKeyboardButton(text="☀️ Wake", callback_data=f"wake:{chat['chat_id']}"),
+            InlineKeyboardButton(text=f"☀️ {_short(display_title(chat, app.owner_id))}", callback_data=f"wake:{chat['chat_id']}"),
             InlineKeyboardButton(text="🌙 Sleep", callback_data=f"sleep:{chat['chat_id']}"),
         ])
     if len(chats) > len(lines):
