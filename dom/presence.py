@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 from dom.store import Store
 
 State = Literal["asleep", "offline", "online"]
+MAX_SESSION = timedelta(minutes=120)  # an online session, extensions included
+MAX_SLEEP_COMMAND = timedelta(hours=8)
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,7 @@ def _deadline(value: str | None) -> datetime | None:
 class Presence:
     def __init__(self, store: Store, tz: ZoneInfo, rng: Random, now: Callable[[], datetime]):
         self.store, self.tz, self.rng, self.now = store, tz, rng, now
+        self._session_start: dict[int, datetime] = {}  # lost on restart; extensions then count from the next one
 
     def _sleep_end(self, now: datetime, habits: Habits) -> datetime | None:
         local = now.astimezone(self.tz)
@@ -99,6 +102,11 @@ class Presence:
             else:
                 start -= timedelta(days=1)
         return end if start <= local < end else None
+
+    def _next_sleep_start(self, now: datetime, habits: Habits) -> datetime:
+        local = now.astimezone(self.tz)
+        start = datetime.combine(local.date(), habits.sleep_start, self.tz)
+        return start if start > local else start + timedelta(days=1)
 
     async def state(self, chat_id, habits: Habits) -> tuple[State, datetime | None]:
         now = self.now()
@@ -143,6 +151,7 @@ class Presence:
         if minutes is None:
             lo, hi = habits.online_minutes
             minutes = self.rng.triangular(lo, hi, hi - 0.2 * (hi - lo))
+        self._session_start[chat_id] = self.now()
         return await self._set_online(chat_id, self.now() + timedelta(minutes=minutes))
 
     async def _set_online(self, chat_id, until: datetime, override: bool = False) -> datetime:
@@ -164,16 +173,23 @@ class Presence:
         )
         return until
 
-    async def extend_online(self, chat_id, minutes: float) -> datetime:
+    async def extend_online(self, chat_id, habits: Habits, minutes: float) -> datetime:
+        """Extend by up to 30 minutes, but never past 2 hours after the session began, nor (unless the
+        owner woke Dom) into the next sleep window. When nothing can be added the deadline is unchanged."""
         row = await self.store.get_presence(chat_id)
         online = _deadline(row["online_until"])
         now = self.now()
         if online is None or online <= now:
             raise ValueError("the chat is no longer online")
+        owner_wake = _deadline(row["sleep_until"]) == online
         until = online + timedelta(minutes=min(max(minutes, 0), 30))
-        return await self._set_online(chat_id, until, override=_deadline(row["sleep_until"]) == online)
+        until = min(until, self._session_start.get(chat_id, now) + MAX_SESSION)
+        if not owner_wake:
+            until = min(until, self._next_sleep_start(now, habits))
+        return await self._set_online(chat_id, max(until, online), override=owner_wake)
 
     async def wake(self, chat_id, habits: Habits, minutes: float = 30) -> datetime:
+        self._session_start[chat_id] = self.now()
         return await self._set_online(chat_id, self.now() + timedelta(minutes=minutes), override=True)
 
     async def sleep(self, chat_id, habits: Habits) -> datetime:
@@ -181,6 +197,7 @@ class Presence:
         end = datetime.combine(now.date(), habits.sleep_end, self.tz)
         if end <= now:
             end += timedelta(days=1)
+        end = min(end, now + MAX_SLEEP_COMMAND)
         await self.store.set_presence(
             chat_id, is_sleeping=True, sleep_until=end.isoformat(),
             is_offline=False, offline_until=None, online_until=None,

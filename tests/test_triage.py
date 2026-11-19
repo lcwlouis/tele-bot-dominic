@@ -134,3 +134,22 @@ def test_existing_config_gets_phase_two_model_defaults(tmp_path):
     config = load_config(tmp_path)
     assert config.models["triage"].model == "~typesafe/jev-latest"
     assert config.models["media"].model == "fake-media"
+
+
+async def test_decisions_url_is_built_from_the_triage_base_url(tmp_path):
+    seen = []
+
+    def respond(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"answers": {}})
+
+    (tmp_path / "config.toml").write_text('[models.chat]\nbase_url = "https://llm.test/v1"\nmodel = "m"\n')
+    default = load_config(tmp_path).models["triage"]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        await JevClient(http, "fake-key", default.model, default.base_url).decide("s", {})
+        await JevClient(http, "fake-key", "m", "https://jev.test/alpha/").decide("s", {})
+        await JevClient(http, "fake-key", "m").decide("s", {})
+    assert seen == [
+        "https://openrouter.ai/api/alpha/decisions", "https://jev.test/alpha/decisions",
+        "https://openrouter.ai/api/alpha/decisions",
+    ]

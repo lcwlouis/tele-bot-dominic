@@ -88,7 +88,7 @@ async def run(home: Path) -> None:
             client = ChatClient(config.models["chat"], model_api_key(config), http)
             triage = config.models["triage"]
             triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
-            jev = JevClient(http, triage_key, triage.model) if triage_key else None
+            jev = JevClient(http, triage_key, triage.model, triage.base_url) if triage_key else None
             media = config.models["media"]
             media_key = config.secret(media.api_key_env) if media.api_key_env else None
             media_describer = (

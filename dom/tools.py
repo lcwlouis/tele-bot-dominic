@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from dom.home import Home
 from dom.models import Scope
-from dom.presence import Presence
+from dom.presence import Habits, Presence
 from dom.store import Store
 
 ALL_SCOPES: set[Scope] = {"owner_dm", "friend_dm", "group"}
@@ -24,6 +24,7 @@ class TurnCtx:
     store: Store
     owner_id: int | None
     presence: Presence | None = None
+    habits: Habits | None = None
 
 
 @dataclass(frozen=True)
@@ -146,15 +147,18 @@ async def _extend_online(args: dict, ctx: TurnCtx) -> str:
     minutes = args.get("minutes")
     if type(minutes) not in (int, float) or not 0 < minutes <= 30:
         return "error: minutes must be greater than 0 and at most 30"
-    if ctx.presence is None:
+    if ctx.presence is None or ctx.habits is None:
         return "error: presence is unavailable"
-    until = await ctx.presence.extend_online(ctx.chat_id, minutes)
+    until = await ctx.presence.extend_online(ctx.chat_id, ctx.habits, minutes)
     return json.dumps({"online_until": until.isoformat()})
 
 
 EXTEND_ONLINE_TOOL = Tool(
     name="extend_online",
-    description="Add up to 30 minutes to this chat's online session when you want to stay longer.",
+    description=(
+        "Add up to 30 minutes to this chat's online session when you want to stay longer. A session lasts "
+        "at most 2 hours in total and does not run into your sleep hours."
+    ),
     schema={
         "type": "object",
         "properties": {"minutes": {"type": "number", "exclusiveMinimum": 0, "maximum": 30}},
