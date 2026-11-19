@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import deque
 from datetime import datetime, timedelta
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from dom.actions import Actions, Bubble
 from dom.agent import run_turn
@@ -34,6 +37,8 @@ CATCH_UP_MEDIA = 5  # unread messages checked for undescribed media when Dom com
 BOT_DEPTH_LIMIT = 6
 BOT_REPLY_INTERVAL = timedelta(seconds=10)
 BOT_DEDUP_WINDOW = timedelta(seconds=60)
+MAX_TURN_FAILURES = 3  # consecutive failures after which a chat's unread messages are given up on
+_CHAT_GONE = re.compile(r"chat not found|kicked|not a member", re.IGNORECASE)
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 
 
@@ -51,6 +56,7 @@ class Dispatcher:
         self._tasks: set[asyncio.Task] = set()
         self._polls: dict[int, asyncio.Task] = {}
         self._loop: asyncio.Task | None = None
+        self._failures: dict[int, int] = {}
         self._media_times: dict[int, deque[datetime]] = {}
         self._bot_replies: dict[int, datetime] = {}
         self._bots_in_flight: set[int] = set()
@@ -211,10 +217,7 @@ class Dispatcher:
                 await self.presence.sleep(chat_id, habits)
                 return
             await self.presence.wake(chat_id, habits)
-            try:
-                await self._dispatch(chat_id, habits, catch_up=True)
-            except Exception:
-                log.exception("wake catch-up failed in chat %s", chat_id)
+            await self._guarded_dispatch(chat_id, habits, catch_up=True)
 
     async def _decide(self, chat_id: int, *, background: bool = False) -> None:
         await self._wait_media(chat_id)
@@ -222,10 +225,26 @@ class Dispatcher:
             # A newer message can restart the timer while we wait for media or the turn lock.
             if self._debounce_pending(chat_id) or not await self._approved(chat_id):
                 return
-            try:
-                await self._dispatch(chat_id, self._habits(), background=background)
-            except Exception:
-                log.exception("turn failed in chat %s", chat_id)
+            await self._guarded_dispatch(chat_id, self._habits(), background=background)
+
+    async def _guarded_dispatch(self, chat_id: int, habits: Habits, **kwargs: bool) -> None:
+        """Run a dispatch; a chat whose turns keep failing is given up on instead of retried forever."""
+        try:
+            await self._dispatch(chat_id, habits, **kwargs)
+        except Exception as exc:
+            log.exception("turn failed in chat %s", chat_id)
+            gone = isinstance(exc, TelegramForbiddenError) or (
+                isinstance(exc, TelegramBadRequest) and _CHAT_GONE.search(str(exc)) is not None
+            )
+            failures = self._failures[chat_id] = self._failures.get(chat_id, 0) + 1
+            if gone or failures >= MAX_TURN_FAILURES:
+                log.warning("giving up on the unread messages in chat %s (%s)", chat_id, type(exc).__name__)
+                self._failures.pop(chat_id, None)
+                _, newest = await self.app.store.get_unread(chat_id)
+                if newest is not None:
+                    await self.app.store.mark_chat_read(chat_id, newest.msg_id)
+        else:
+            self._failures.pop(chat_id, None)
 
     async def _dispatch(
         self, chat_id: int, habits: Habits, *, background: bool = False, catch_up: bool = False,
