@@ -17,7 +17,9 @@ async def make_app(tmp_path):
 
     def make(owner_id=OWNER, contents=()):
         endpoint = ModelEndpoint(base_url="https://llm.test/v1", model="m", api_key_env=None)
-        config = Config(home=tmp_path, owner_id=owner_id, timezone="UTC", models={"chat": endpoint})
+        config = Config(  # the leak check ships on; tests that are not about it keep their Jev calls to themselves
+            home=tmp_path, owner_id=owner_id, timezone="UTC", models={"chat": endpoint}, leak_check=False,
+        )
         script = ModelScript(*contents)
         client = ChatClient(endpoint, None, httpx.AsyncClient(transport=httpx.MockTransport(script)), sleep=no_sleep)
         store = Store(tmp_path, owner_id=owner_id)
