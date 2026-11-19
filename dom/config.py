@@ -126,7 +126,11 @@ def starter_config() -> dict:
 
 
 def load_config(home: Path) -> Config:
-    raw = tomllib.loads((home / "config.toml").read_text())
+    return validate_config(home, tomllib.loads((home / "config.toml").read_text()))
+
+
+def validate_config(home: Path, raw: dict) -> Config:
+    """Apply starter defaults and validate an instance's parsed TOML table."""
     defaults = starter_config()["models"]
     models = {key: defaults[key] for key in ("triage", "media")}
     models.update(raw.get("models", {}))
