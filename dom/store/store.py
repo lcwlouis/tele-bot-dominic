@@ -899,14 +899,15 @@ class Store:
             scope = "m.chat_id = ? AND m.role IN ('user', 'assistant', 'event')"
         else:
             scope = (
-                "m.chat_id != ? AND c.authorization_status = 'approved' AND m.role IN ('user', 'assistant') "
+                "CAST(m.chat_id AS INTEGER) < 0 AND c.authorization_status = 'approved' "
+                "AND m.role IN ('user', 'assistant') "
                 f"AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
             )
         rows = self._conn.execute(
             "SELECT m.role, m.text, COALESCE(NULLIF(c.title, ''), m.chat_id) "
             f"FROM messages m JOIN chats c ON c.chat_id = m.chat_id WHERE {bounds} AND {scope} "
             "ORDER BY julianday(m.created_at) DESC, m.id DESC",
-            (start, end, owner),
+            (start, end, owner) if private else (start, end),
         )
         parts = []
         remaining = 12000
