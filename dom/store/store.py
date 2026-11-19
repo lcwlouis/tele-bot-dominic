@@ -150,13 +150,27 @@ def _read_media_json(value: str | None) -> dict[str, Any]:
     return media if isinstance(media, dict) else {}
 
 
-def format_chat_window_xml(chat_id: str, messages: list[StoredMessage]) -> str:
+def _display_time(stamp: str, tz: tzinfo | None) -> str:
+    """Message times in the owner's local time, matching the turn note's "It is …" line.
+    Mixing UTC stamps with a local "now" made the model misjudge how long ago things happened."""
+    if tz is None:
+        return stamp
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        return stamp
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+
+
+def format_chat_window_xml(chat_id: str, messages: list[StoredMessage], tz: tzinfo | None = None) -> str:
     """Render messages as ``<chat_window>`` XML. ``previous_seen_text`` is shown only when
-    Dom actually saw the original before it was edited."""
+    Dom actually saw the original before it was edited. With ``tz``, times are local."""
     out = [f"<chat_window chat_id={quoteattr(str(chat_id))}>"]
     for m in messages:
         if m.role == "event":
-            out.append(f"  <event time={quoteattr(m.created_at)}>{escape(m.text)}</event>")
+            out.append(f"  <event time={quoteattr(_display_time(m.created_at, tz))}>{escape(m.text)}</event>")
             continue
         attrs = [f"id={quoteattr(str(m.msg_id if m.msg_id is not None else ''))}"]
         if m.sender_handle:
@@ -166,7 +180,7 @@ def format_chat_window_xml(chat_id: str, messages: list[StoredMessage]) -> str:
         attrs.append(f"role={quoteattr(m.role)}")
         if m.reply_to_msg_id is not None:
             attrs.append(f"reply_to={quoteattr(str(m.reply_to_msg_id))}")
-        attrs.append(f"time={quoteattr(m.created_at)}")
+        attrs.append(f"time={quoteattr(_display_time(m.created_at, tz))}")
         if m.is_edited:
             attrs.append('edited="true"')
         body = escape(m.text)

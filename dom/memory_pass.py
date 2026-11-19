@@ -9,6 +9,8 @@ the shared notes. No pass writes HABITS.md.
 
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 import json
 import logging
 import re
@@ -124,7 +126,7 @@ class MemoryPass:
             request = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": "\n\n".join([
-                    *self._files(home, offered), store.format_chat_window_xml(str(chat_id), batch), FORMAT_NOTE,
+                    *self._files(home, offered), store.format_chat_window_xml(str(chat_id), batch, ZoneInfo(app.config.timezone)), FORMAT_NOTE,
                 ])},
             ]
         reply = await self._ask(chat_id, request)
