@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("dom.dispatch")
 TICK_SECONDS = 60
+DEBOUNCE_CAP = timedelta(seconds=15)  # a steady stream of messages cannot postpone a turn longer
 MEDIA_WAIT_SECONDS = 15
 TRIAGE_WINDOW = 15
 MEDIA_CAP = 10  # descriptions per chat within MEDIA_CAP_WINDOW
@@ -44,6 +45,7 @@ class Dispatcher:
         self.app, self.presence, self.jev = app, presence, jev
         self.sleep, self.now = sleep, now
         self._debounces: dict[int, asyncio.Task] = {}
+        self._first_notify: dict[int, datetime] = {}
         self._latest: dict[int, IncomingMessage] = {}
         self._media_tasks: dict[int, set[asyncio.Task]] = {}
         self._tasks: set[asyncio.Task] = set()
@@ -57,10 +59,19 @@ class Dispatcher:
         latest = self._latest.get(msg.chat_id)
         if latest is None or msg.msg_id >= latest.msg_id:
             self._latest[msg.chat_id] = msg
+        waited = self.now() - self._first_notify.setdefault(msg.chat_id, self.now())
         previous = self._debounces.get(msg.chat_id)
         if previous is not None:
+            if waited >= DEBOUNCE_CAP:
+                return  # the pending timer fires on its own and sees this message
             previous.cancel()
-        self._debounces[msg.chat_id] = self._spawn(self._after_debounce(msg.chat_id))
+        delay = min(self.presence.rng.uniform(2, 6), (DEBOUNCE_CAP - waited).total_seconds())
+        self._debounces[msg.chat_id] = self._spawn(self._after_debounce(msg.chat_id, delay))
+
+    def _debounce_pending(self, chat_id: int) -> bool:
+        """A debounce older than its cap is overdue, not pending: it must not hold off other dispatches."""
+        first = self._first_notify.get(chat_id)
+        return chat_id in self._debounces and first is not None and self.now() - first <= DEBOUNCE_CAP
 
     async def describe_media(self, msg: IncomingMessage) -> None:
         # Attachments are only described while Dom is online; catch-up covers the rest.
@@ -132,10 +143,11 @@ class Dispatcher:
         task.add_done_callback(self._tasks.discard)
         return task
 
-    async def _after_debounce(self, chat_id: int) -> None:
-        await self.sleep(self.presence.rng.uniform(2, 6))
+    async def _after_debounce(self, chat_id: int, delay: float) -> None:
+        await self.sleep(delay)
         # A new message may cancel the timer, but must never cancel a turn in progress.
         self._debounces.pop(chat_id)
+        self._first_notify.pop(chat_id, None)
         await self._decide(chat_id)
 
     def start(self) -> None:
@@ -162,7 +174,7 @@ class Dispatcher:
         tasks = []
         for row in await self.app.store.list_chats("approved"):
             chat_id = int(row["chat_id"])
-            if chat_id in self._debounces:
+            if self._debounce_pending(chat_id):
                 continue
             if chat_id not in self._polls:
                 self._polls[chat_id] = self._spawn(self._poll_chat(chat_id))
@@ -208,7 +220,7 @@ class Dispatcher:
         await self._wait_media(chat_id)
         async with self.app.locks[chat_id]:
             # A newer message can restart the timer while we wait for media or the turn lock.
-            if chat_id in self._debounces or not await self._approved(chat_id):
+            if self._debounce_pending(chat_id) or not await self._approved(chat_id):
                 return
             try:
                 await self._dispatch(chat_id, self._habits(), background=background)

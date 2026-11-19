@@ -207,3 +207,58 @@ async def test_expired_offline_session_is_caught_up_on_tick(setup_dispatch):
     await dispatch.tick()
     await dispatch.tick()
     assert len(app.script.requests) == 1
+
+
+@pytest.fixture
+def gated_sleep():
+    waits = []
+
+    async def sleep(seconds):
+        gate = asyncio.Event()
+        waits.append((seconds, gate))
+        await gate.wait()
+
+    return sleep, waits
+
+
+async def test_debounce_stops_restarting_after_fifteen_seconds(setup_dispatch, gated_sleep):
+    sleep, waits = gated_sleep
+    app, dispatch, clock = await setup_dispatch(sleep=sleep)
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    for msg_id in range(1, 5):
+        await handle_message(app, tg(msg_id=msg_id, text=f"line {msg_id}"))
+        await asyncio.sleep(0)
+        clock.advance(seconds=5)
+    assert len(waits) == 3  # the fourth message arrived at the 15 s cap and did not restart the timer
+    waits[-1][1].set()
+    await drain_dispatch(dispatch)
+    assert len(app.script.requests) == 1
+    assert "line 4" in app.script.requests[0]["messages"][-1]["content"]
+
+
+async def test_debounce_delay_is_shortened_to_the_cap(setup_dispatch, gated_sleep):
+    sleep, waits = gated_sleep
+    app, dispatch, clock = await setup_dispatch(sleep=sleep)
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    await handle_message(app, tg(msg_id=1))
+    await asyncio.sleep(0)
+    clock.advance(seconds=13)
+    await handle_message(app, tg(msg_id=2))
+    await asyncio.sleep(0)
+    assert [seconds for seconds, _ in waits] == [4, 2]
+    waits[-1][1].set()
+    await drain_dispatch(dispatch)
+
+
+async def test_background_poll_does_not_skip_a_chat_with_an_overdue_debounce(setup_dispatch, gated_sleep):
+    sleep, waits = gated_sleep
+    app, dispatch, clock = await setup_dispatch(sleep=sleep)
+    await handle_message(app, tg())
+    await asyncio.sleep(0)
+    await dispatch.tick()
+    assert not app.script.requests  # the debounce is still within its cap
+    clock.advance(seconds=20)
+    await dispatch.tick()
+    assert len(app.script.requests) == 1
+    waits[-1][1].set()
+    await drain_dispatch(dispatch)
