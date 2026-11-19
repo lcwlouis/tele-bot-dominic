@@ -1,6 +1,7 @@
 """Backup and restore through the CLI using a temporary synthetic home."""
 
 import io
+import os
 import re
 import sqlite3
 import stat
@@ -9,6 +10,7 @@ from contextlib import closing
 
 import pytest
 
+from dom.backup import backup
 from dom.cli import main
 
 
@@ -130,3 +132,18 @@ def test_restore_refuses_unsafe_members_without_installing_any_files(tmp_path, n
     assert main(["restore", str(archive), str(home)]) == 1
     assert list(home.iterdir()) == []
     assert not (tmp_path / "outside").exists()
+
+
+def test_backup_rotation_never_deletes_the_archive_just_created(source, tmp_path):
+    dest = tmp_path / "custom"
+    dest.mkdir()
+    for name in ("dom-29990101-000000.tar.gz", "dom-29990102-000000.tar.gz"):
+        (dest / name).touch()
+
+    archive = backup(source, keep=2, destination=dest)
+
+    assert archive.exists()
+    assert sorted(path.name for path in dest.glob("dom-*.tar.gz")) == sorted(
+        ["dom-29990102-000000.tar.gz", archive.name]
+    )
+
