@@ -20,6 +20,8 @@ class FakeBot:
         self.edit_markups: list = []
         self._next_id = 5000
         self.leave_error: Exception | None = None
+        self.rich_error: Exception | None = None  # raised by send_rich_message
+        self.delete_error: Exception | None = None  # raised by delete_message
         self.member_counts: dict = {}  # chat_id -> int, or an Exception to raise
 
     async def send_chat_action(self, chat_id, action, **kw):
@@ -33,8 +35,17 @@ class FakeBot:
     async def set_message_reaction(self, chat_id, message_id, reaction=None, **kw):
         self.calls.append(("react", chat_id, message_id, reaction))
 
+    async def send_rich_message(self, chat_id, rich_message, **kw):
+        if self.rich_error is not None:
+            raise self.rich_error
+        self._next_id += 1
+        self.calls.append(("rich", chat_id, rich_message.markdown, kw))
+        return SimpleNamespace(message_id=self._next_id)
+
     async def delete_message(self, chat_id, message_id, **kw):
         self.calls.append(("delete", chat_id, message_id))
+        if self.delete_error is not None:
+            raise self.delete_error
 
     async def answer_callback_query(self, callback_query_id, text=None, **kw):
         self.calls.append(("answer", callback_query_id, text))

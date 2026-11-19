@@ -161,13 +161,11 @@ async def handle_message(app: App, message: Message) -> None:
             await _owner_event(app, f"{who} ran /pending: {await owner.pending_summary(app)}")
             return
         if command == "/status":
-            text, markup = await owner.render_status(app)
-            await app.bot.send_message(msg.chat_id, text, reply_markup=markup)
+            await owner.send_view(app.bot, msg.chat_id, await owner.render_status(app))
             await _owner_event(app, f"{who} ran /status: {await owner.status_summary(app)}")
             return
         if command == "/chats":
-            text, markup = await owner.render_chats(app)
-            await app.bot.send_message(msg.chat_id, text, reply_markup=markup)
+            await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app))
             await _owner_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
             return
         if command in ("/wake", "/sleep"):
@@ -237,20 +235,21 @@ async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> Non
         log.warning("could not answer callback %s", query.id)
 
 
-async def _edit_prompt(app: App, query: CallbackQuery, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
+async def _replace_with_prompt(app: App, query: CallbackQuery, text: str, markup: InlineKeyboardMarkup) -> None:
+    """Rich messages cannot be edited, so the owner's old /status message is deleted and the new one sent after it."""
     if query.message is None:
         return
-    try:
-        await app.bot.edit_message_text(
-            text, chat_id=query.message.chat.id, message_id=query.message.message_id, reply_markup=markup
-        )
-    except TelegramBadRequest:  # "message is not modified": nothing to refresh
-        log.info("the message was already up to date")
+    chat_id = query.message.chat.id
+    await app.bot.send_message(chat_id, text, reply_markup=markup)
+    await owner.delete_message(app.bot, chat_id, query.message.message_id)
 
 
 async def _refresh_status(app: App, query: CallbackQuery) -> None:
-    text, markup = await owner.render_status(app)
-    await _edit_prompt(app, query, text, markup)
+    if query.message is None:
+        return
+    chat_id = query.message.chat.id
+    await owner.send_view(app.bot, chat_id, await owner.render_status(app))
+    await owner.delete_message(app.bot, chat_id, query.message.message_id)
 
 
 async def _handle_override(app: App, query: CallbackQuery, action: str, raw_chat_id: str) -> None:
@@ -310,7 +309,7 @@ async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id
     if action == "leave":
         await _toast(app, query)
         await _owner_event(app, f"{who} tapped Leave on {title} (asked to confirm)")
-        await _edit_prompt(app, query, f"Leave {title}? Friends will see Dom leave.", InlineKeyboardMarkup(inline_keyboard=[[
+        await _replace_with_prompt(app, query, f"Leave {title}? Friends will see Dom leave.", InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="Yes, leave", callback_data=f"leaveyes:{chat['chat_id']}"),
             InlineKeyboardButton(text="Cancel", callback_data="status:refresh"),
         ]]))
