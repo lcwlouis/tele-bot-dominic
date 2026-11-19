@@ -29,7 +29,7 @@ from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
 from dom.presence import Habits, Presence, State, read_habits
-from dom.prompt import build_messages
+from dom.prompt import build_messages, report_messages
 from dom.reflection import mood
 from dom.reminders import Reminders
 from dom.telegram import executor, gate
@@ -589,6 +589,7 @@ class Dispatcher:
             f"Dom needs you to log in{f' on {host}' if host else ''}: {reason}\nLogins you make here are kept for later tasks."
             + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
 
     async def report_desktop_task(self, row: dict, files: tuple[SendFile, ...] = ()) -> None:
@@ -607,13 +608,8 @@ class Dispatcher:
                 "Tell your friend in your own words."
             )
             try:
-                window = await app.store.get_recent_chat_window(str(chat_id), app.config.window_size)
-                sliders, preset = await for_chat(app.home, app.store, chat_id)
-                messages = build_messages(
-                    app.home, "owner_dm", chat_id, [chat_id],
-                    app.store.format_chat_window_xml(str(chat_id), window, self.presence.tz),
-                    note, sliders=sliders, preset=preset,
-                )
+                sliders, _ = await for_chat(app.home, app.store, chat_id)
+                messages = report_messages(app.home, sliders, note)
                 with model_request("chat", chat_id, partial(self.turn_allowed, chat_id, "owner_dm")):
                     await check_model_allowed()
                     reply = await app.client.complete(messages, [], once=True)
@@ -629,10 +625,13 @@ class Dispatcher:
                 )
                 await app.store.record_owner_event(f"Desktop task #{task_id} result sent as plain text")
             else:
+                # The bubbles reach the owner but stay out of the history the model reads: the text was
+                # composed from untrusted task output.
                 await executor.perform(
-                    app.bot, app.store, chat_id, None, Actions(bubbles=actions.bubbles),
-                    sleep=app.sleep, link_previews=False,
+                    app.bot, app.store, chat_id, None, Actions(bubbles=[Bubble(text=b.text) for b in actions.bubbles]),
+                    sleep=app.sleep, link_previews=False, record=False,
                 )
+                await app.store.record_owner_event(f"Dom reported desktop task #{task_id}")
             await executor.send_files(app.bot, app.store, chat_id, files)
 
     async def _compose_turn(

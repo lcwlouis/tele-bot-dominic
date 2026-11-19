@@ -19,6 +19,23 @@ When you are done (after any tool calls), answer with ONLY a JSON object:
 Use several short bubbles like a person texting. Set reply_to only in a busy group when it is unclear which message you are answering, and then only on the first bubble; in a DM leave it null. Use delete_after only for a message you would "unsend"."""
 
 
+REPORT_FRAME = """\
+You are the character described in SOUL below, texting your friend on Telegram. Stay in character.
+Answer with ONLY a JSON object: {"no_response": false, "bubbles": [{"text": str}]}
+Use one to three short bubbles like a person texting."""
+
+
+def report_messages(home: Home, sliders: dict[str, float], note: str) -> list[dict]:
+    """OpenAI chat messages for a report that needs only the voice: no files, notes or chat history."""
+    _, soul_body = home.scoped(allow_private=False).soul()
+    return [
+        {"role": "system", "content": f'{REPORT_FRAME}\n\n<file path="SOUL.md">\n{soul_body.strip()}\n</file>'},
+        {"role": "user", "content": "\n\n".join([
+            "Personality sliders (0 to 1): " + ", ".join(f"{k}={v}" for k, v in sliders.items()), note,
+        ])},
+    ]
+
+
 def _file(home: Home, rel: str) -> str:
     try:
         content = home.read(rel)
