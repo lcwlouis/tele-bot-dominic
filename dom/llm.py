@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Awaitable, Callable
 
 import httpx
@@ -10,6 +11,9 @@ import httpx
 from dom.config import ModelEndpoint
 
 TIMEOUT_SECONDS = 90
+CONNECT_TIMEOUT_SECONDS = 5  # an unreachable home lab should fail over fast
+
+log = logging.getLogger("dom.llm")
 RETRY_BACKOFF = (1, 3)  # seconds before the 1st and 2nd retry
 
 
@@ -39,9 +43,30 @@ class ChatClient:
         url = f"{self.endpoint.base_url.rstrip('/')}/chat/completions"
 
         for delay in (*RETRY_BACKOFF, None):
-            response = await self.http.post(url, json=body, headers=headers, timeout=TIMEOUT_SECONDS)
+            response = await self.http.post(url, json=body, headers=headers, timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS))
             if delay is None or not _retryable(response.status_code):
                 break
             await self._sleep(delay)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]
+
+
+class FallbackClient:
+    """Use `primary` (e.g. a home-lab endpoint); when it is unreachable or failing (connection error,
+    timeout, 429/5xx after retries) use `fallback` for that request. A 4xx from the primary is a bug in
+    the request, not an outage, so it is raised rather than hidden."""
+
+    def __init__(self, primary: ChatClient, fallback: ChatClient | None):
+        self.primary = primary
+        self.fallback = fallback
+
+    async def complete(self, messages: list[dict], tools: list[dict]) -> dict:
+        try:
+            return await self.primary.complete(messages, tools)
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            if self.fallback is None or (status is not None and not _retryable(status)):
+                raise
+            log.warning("chat model %s failed (%s); using fallback %s",
+                        self.primary.endpoint.model, status or type(exc).__name__, self.fallback.endpoint.model)
+            return await self.fallback.complete(messages, tools)

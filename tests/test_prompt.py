@@ -57,7 +57,7 @@ def test_owner_dm_includes_private(home):
 
 def test_layout_and_order(home):
     msgs = build(home, scope="owner_dm", chat_id=111, window="<chat_window>W</chat_window>", note="TURN")
-    assert [m["role"] for m in msgs] == ["system", "system", "user"]
+    assert [m["role"] for m in msgs] == ["system", "user"]  # Qwen templates allow one system message
     prefix = msgs[0]["content"]
     assert prefix.startswith(FRAME)
     order = [prefix.index(x) for x in (
@@ -67,7 +67,7 @@ def test_layout_and_order(home):
     assert order == sorted(order)
     assert "- world fact" in prefix
     assert "JOURNAL-NEVER-LOADED" not in blob(msgs)
-    assert msgs[2]["content"] == "<chat_window>W</chat_window>\n\nTURN"
+    assert msgs[1]["content"].endswith("<chat_window>W</chat_window>\n\nTURN")
 
 
 def test_prefix_identical_across_turns(home):
