@@ -9,7 +9,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ModelEndpoint(BaseModel):
@@ -51,6 +51,17 @@ class DesktopConfig(BaseModel):
     network: str = "dom-desktop"
     subnet: str = "172.30.0.0/24"
     port: int = Field(default=18080, ge=1, le=65535)
+    # LAN "host:port" targets the sandbox must not reach. Dom probes them before it starts the sandbox.
+    lan_probes: list[str] = []
+
+    @field_validator("lan_probes")
+    @classmethod
+    def _probe_targets(cls, targets: list[str]) -> list[str]:
+        for target in targets:
+            host, _, port = target.rpartition(":")
+            if not host or not port.isdecimal() or not 1 <= int(port) <= 65535:
+                raise ValueError("lan_probes entries must look like host:port")
+        return targets
 
 
 class Config(BaseModel):

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Literal
@@ -12,10 +14,13 @@ from typing import Literal
 import httpx
 
 from dom.config import Config
+from dom.desktop import network
 from dom.desktop.client import SandboxClient, SandboxError
 
 Status = Literal["off", "stopped", "starting", "ready", "error"]
+log = logging.getLogger(__name__)
 CONTAINER = "dom-desktop"
+LAN_REACHABLE = "LAN reachable from the sandbox — run dom desktop-setup"
 
 
 class RemoteSandbox:
@@ -80,6 +85,10 @@ class LocalSandbox:
         self._status: Status = "off" if config.desktop_mode == "off" else "stopped"
         self.error: str | None = None
         self.client: SandboxClient | None = None
+        # Told once, with a short message, when the LAN probe stops a start.
+        self.alert: Callable[[str], Awaitable[None]] | None = None
+        self._firewall_verified = False
+        self._alerted = False
 
     def status(self) -> Status:
         return self._status
@@ -123,6 +132,7 @@ class LocalSandbox:
             try:
                 await self._start()
             except (SandboxError, OSError) as exc:
+                self._firewall_verified = False
                 self._status = "error"
                 self.error = str(exc) if isinstance(exc, SandboxError) else "could not prepare desktop profile"
                 raise SandboxError(self.error) from None
@@ -136,10 +146,38 @@ class LocalSandbox:
             assert self.client is not None
             return self.client
 
+    async def _verify_firewall(self) -> None:
+        """Fail closed: the sandbox starts only after a throwaway container fails to reach the LAN."""
+        if self._firewall_verified:
+            return
+        settings = self.config.desktop
+        if not settings.lan_probes:
+            raise SandboxError("set [desktop] lan_probes to LAN host:port addresses so Dom can verify the firewall")
+        code, gateway = await self._docker(
+            "network", "inspect", "--format", "{{(index .IPAM.Config 0).Gateway}}", settings.network,
+        )
+        if code or not gateway.strip():
+            raise SandboxError("desktop network missing — run dom desktop-setup")
+        targets = [*settings.lan_probes, f"{gateway.decode().strip()}:{self.config.web.port}"]
+        code, _ = await self._docker(*network.probe_command(self.config, network.LAN_PROBE, *targets)[1:])
+        if code == network.LAN_REACHABLE:
+            if self.alert is not None and not self._alerted:
+                self._alerted = True
+                try:
+                    await self.alert("The desktop did not start: the sandbox can reach your LAN. Run dom desktop-setup on the Docker host.")
+                except Exception as exc:
+                    log.warning("could not alert the owner about the desktop firewall (%s)", type(exc).__name__)
+            raise SandboxError(LAN_REACHABLE)
+        if code:
+            raise SandboxError("could not verify the desktop firewall")
+        self._firewall_verified = True
+        self._alerted = False
+
     async def _start(self) -> None:
         settings = self.config.desktop
         if (await self._docker("image", "inspect", settings.image))[0]:
             raise SandboxError("image not present")
+        await self._verify_firewall()
         exists, running = await self._docker("container", "inspect", "--format", "{{.State.Running}}", CONTAINER)
         if exists == 0:
             # A previous Dom process may have exited with its key still in memory.
