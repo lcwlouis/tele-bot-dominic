@@ -17,6 +17,7 @@ from dom.store import Store
 from dom.usage import ModelCallSkipped, model_request
 
 if TYPE_CHECKING:
+    from dom.desktop.worker import DesktopWorker
     from dom.reminders import Reminders
 
 ALL_SCOPES: set[Scope] = {"owner_dm", "friend_dm", "group"}
@@ -34,6 +35,7 @@ class TurnCtx:
     habits: Habits | None = None
     model_allowed: Callable[[], Awaitable[bool]] | None = None
     reminders: Reminders | None = None
+    desktop: DesktopWorker | None = None
 
 
 @dataclass(frozen=True)
@@ -170,8 +172,32 @@ def _web_search_tool(client: SearchClient) -> Tool:
     )
 
 
-def core_tools(search: SearchClient | None = None) -> list[Tool]:
+async def _start_desktop_task(args: dict, ctx: TurnCtx) -> str:
+    if ctx.scope != "owner_dm" or ctx.chat_id != ctx.owner_id or ctx.desktop is None:
+        return "error: desktop tasks are available only in the owner's DM"
+    try:
+        task_id = await ctx.desktop.enqueue(ctx.chat_id, args.get("brief"))
+    except ValueError as exc:
+        return str(exc)
+    return json.dumps({"id": task_id})
+
+
+START_DESKTOP_TASK = Tool(
+    name="start_desktop_task",
+    description=(
+        "Start work on the desktop in the background. Reply in character right away (e.g. 'give me a few min'); "
+        "do not wait. Write a self-contained brief using only what the owner explicitly provided for this task. "
+        "Never include secrets, private notes, conversation history, owner events, or memory files."
+    ),
+    schema={"type": "object", "properties": {"brief": {"type": "string", "maxLength": 2000}}, "required": ["brief"]},
+    handler=_start_desktop_task, scopes={"owner_dm"},
+)
+
+
+def core_tools(search: SearchClient | None = None, desktop: DesktopWorker | None = None) -> list[Tool]:
     tools = [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL, REMIND_TOOL]
     if search is not None:
         tools.append(_web_search_tool(search))
+    if desktop is not None and desktop.available():
+        tools.append(START_DESKTOP_TASK)
     return tools

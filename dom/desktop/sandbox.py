@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Literal
 
@@ -57,6 +58,9 @@ class RemoteSandbox:
     def touch(self) -> None:
         pass
 
+    def in_use(self):
+        return nullcontext()
+
     async def close(self) -> None:
         if self._owns_http:
             await self._http.aclose()
@@ -70,6 +74,7 @@ class LocalSandbox:
         self._owns_http = http is None
         self._clock = clock
         self._last_use = clock()
+        self._users = 0
         self._lock = asyncio.Lock()
         self._idle_task: asyncio.Task | None = None
         self._status: Status = "off" if config.desktop_mode == "off" else "stopped"
@@ -81,6 +86,16 @@ class LocalSandbox:
 
     def touch(self) -> None:
         self._last_use = self._clock()
+
+    @contextmanager
+    def in_use(self):
+        self._users += 1
+        self.touch()
+        try:
+            yield
+        finally:
+            self._users -= 1
+            self.touch()
 
     async def _docker(self, *args: str) -> tuple[int, bytes]:
         try:
@@ -182,7 +197,8 @@ class LocalSandbox:
 
     async def stop_if_idle(self) -> None:
         async with self._lock:
-            if self._status == "ready" and self._clock() - self._last_use >= self.config.desktop.idle_minutes * 60:
+            cutoff = self.config.desktop.idle_minutes * 60
+            if self._status == "ready" and not self._users and self._clock() - self._last_use >= cutoff:
                 await self._stop()
 
     async def _watch_idle(self) -> None:

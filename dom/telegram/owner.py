@@ -36,6 +36,7 @@ OWNER_COMMANDS = [
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
     BotCommand(command="proposals", description="Review pending changes"),
     BotCommand(command="reminders", description="List and cancel reminders"),
+    BotCommand(command="tasks", description="List and cancel desktop tasks"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
     BotCommand(command="import", description="Bring memories from another assistant"),
 ]
@@ -221,6 +222,19 @@ async def pending_summary(app: App) -> str:
     return f"{len(pending)} waiting ({_one_line([display_title(c, app.owner_id) for c in pending])})"
 
 
+async def show_tasks(app: App) -> None:
+    if app.owner_id is None:
+        return
+    rows = await app.store.desktop_tasks(app.owner_id)
+    lines = [f"#{row['id']} · {row['status'].replace('_', ' ')} · {_short(' '.join(row['brief'].split()), 120)}" for row in rows]
+    buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"desktop:cancel:{row['id']}")]
+               for row in rows if row["status"] in ("queued", "running", "waiting_owner")]
+    await app.bot.send_message(
+        app.owner_id, "\n".join(lines) or "No desktop tasks yet.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
+    )
+
+
 async def render_status(app: App) -> View:
     """One table row and one Wake/Sleep(/Leave, for groups) button row per approved chat, the owner's DM first,
     then by recent activity."""
@@ -240,6 +254,11 @@ async def render_status(app: App) -> View:
     if fallback_at is not None and fallback_at.astimezone(tz).date() == app.dispatch.now().astimezone(tz).date():
         fallback = f" (fallback at {fallback_at.astimezone(tz):%H:%M})"
     footer += f"\nToday: {count} calls · ${spent:.2f}\nLast reply: {model or '—'}{fallback}"
+    current = await app.store.desktop_tasks(app.owner_id, active=True) if app.owner_id is not None else []
+    if current:
+        task = current[0]
+        footer += f"\nDesktop task #{task['id']} · {task['status'].replace('_', ' ')} · {task['steps']} steps"
+
 
     table, plain, buttons, used, button_count = [], [], [], len(footer) * 2 + 160, 0  # room for the footer, heading, table head and "more" line
     for chat, (state, until) in zip(chats, states):

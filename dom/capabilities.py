@@ -5,16 +5,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dom.models import Scope
-from dom.tools import core_tools
+from dom.tools import START_DESKTOP_TASK, core_tools
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
 
 def describe(app: App, scope: Scope) -> str:
+    offered = core_tools(app.search_client)
+    if app.desktop_worker is not None and app.desktop_worker.available():
+        offered.insert(0, START_DESKTOP_TASK)
     tools = "; ".join(
         f"{tool.name} ({tool.description.split('. ', 1)[0].rstrip('.')})"
-        for tool in core_tools(app.search_client) if scope in tool.scopes
+        for tool in offered if scope in tool.scopes
     )
     media = ", photos, GIFs, video, voice" if app.media_describer is not None else ""
     desktop = "off"

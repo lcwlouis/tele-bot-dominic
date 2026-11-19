@@ -37,6 +37,7 @@ class WebConfig(BaseModel):
     access_aud: str = ""
     access_emails: list[str] = []
     dev_token_env: str = ""
+    public_url: str = ""
 
 
 class DesktopConfig(BaseModel):

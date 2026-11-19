@@ -9,15 +9,18 @@ from collections import deque
 from contextlib import asynccontextmanager, nullcontext
 from functools import partial
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 from collections.abc import AsyncIterator, Coroutine
 from xml.sax.saxutils import escape
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom import guard, turn_log
 from dom.actions import Actions, Bubble
-from dom.agent import run_turn
+from dom.agent import parse_actions, run_turn
+from dom.desktop.tools import untrusted
 from dom.capabilities import describe
 from dom.jev import JevClient, JevUnavailable
 from dom.jobs import DailyJobs
@@ -557,6 +560,54 @@ class Dispatcher:
                 log.exception("could not notify the owner about a held message")
         return True
 
+    async def desktop_handoff(self, task_id: int, steps: int, chat_id: int, reason: str) -> None:
+        app = self.app
+        if chat_id != app.owner_id:
+            return
+        base = app.config.web.public_url.rstrip("/")
+        url = urlsplit(base)
+        buttons = []
+        if url.scheme == "https" and url.netloc and url.username is None and not (url.query or url.fragment):
+            buttons.append(InlineKeyboardButton(text="Open Desktop", url=f"{base}/desktop"))
+        buttons.append(InlineKeyboardButton(text="Done", callback_data=f"desktop:done:{task_id}:{steps}"))
+        await app.bot.send_message(
+            chat_id, f"Dom needs you to log in: {reason}" + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
+        )
+
+    async def report_desktop_task(self, row: dict) -> None:
+        app = self.app
+        chat_id, task_id = row["chat_id"], row["id"]
+        if chat_id != app.owner_id:
+            return
+        status = "finished" if row["status"] == "done" else row["status"]
+        result = "\n".join(filter(None, (row["error"], row["result"]))) or "No result."
+        await app.store.record_owner_event(f"Desktop task #{task_id} {status}: {result[:500]}")
+        async with app.locks[chat_id]:
+            note = (
+                f"Your desktop task #{task_id} {status}. Result: {untrusted(result)} "
+                "Tell your friend in your own words."
+            )
+            try:
+                window = await app.store.get_recent_chat_window(str(chat_id), app.config.window_size)
+                sliders, preset = await for_chat(app.home, app.store, chat_id)
+                messages = build_messages(
+                    app.home, "owner_dm", chat_id, [chat_id],
+                    app.store.format_chat_window_xml(str(chat_id), window, self.presence.tz),
+                    note, sliders=sliders, preset=preset,
+                )
+                with model_request("chat", chat_id, partial(self.turn_allowed, chat_id, "owner_dm")):
+                    await check_model_allowed()
+                    reply = await app.client.complete(messages, [], once=True)
+                actions = parse_actions(reply.get("content"))
+            except Exception as exc:
+                log.warning("could not compose desktop task %s report (%s)", task_id, type(exc).__name__)
+                actions = None
+            if actions is None or actions.no_response or not actions.bubbles:
+                plain = f"Desktop task #{task_id} {status}. {result}"
+                actions = Actions(bubbles=[Bubble(text=plain[i:i + 2000]) for i in range(0, len(plain), 2000)])
+            await executor.perform(app.bot, app.store, chat_id, None, Actions(bubbles=actions.bubbles), sleep=app.sleep)
+
     async def _compose_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage | None, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
@@ -606,9 +657,10 @@ class Dispatcher:
         ctx = TurnCtx(
             scope, chat_id, sender_id, app.home, app.store, app.owner_id, self.presence, habits,
             model_allowed=partial(self.turn_allowed, chat_id, scope), reminders=self.reminders,
+            desktop=app.desktop_worker,
         )
         try:
-            actions = await run_turn(app.client, messages, core_tools(app.search_client), ctx)
+            actions = await run_turn(app.client, messages, core_tools(app.search_client, ctx.desktop), ctx)
         except ModelCallSkipped:
             raise
         except Exception:
