@@ -1,20 +1,32 @@
 [project]
-name = "tele-friend-bot"
+name = "dom"
 version = "0.1.0"
-description = "This is a simple telegram chatbot that will sit in a group chat and act like another friend."
+description = "Dom: a Telegram bot account that acts like a friend, and a personal assistant to its owner."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp>=3.12.12",
-    "google-adk>=1.2.1",
-    "litellm>=1.72.6",
-    "psycopg2-binary>=2.9.10",
-    "telethon>=1.34.0",
+    "aiogram>=3.32,<4",
+    "httpx>=0.28",
+    "pydantic>=2.11",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
 ]
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["bot", "agentConversation"]
+[tool.setuptools.packages.find]
+include = ["dom*"]
+
+[tool.setuptools.package-data]
+dom = ["store/migrations/*.sql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
