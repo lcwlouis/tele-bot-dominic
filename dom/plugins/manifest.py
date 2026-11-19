@@ -20,6 +20,7 @@ MAX_BYTES = 64 * 1024
 MAX_FILES = 10
 MAX_PARAMETERS = 4 * 1024
 SCOPES = ("owner_dm", "friend_dm", "group")
+NETWORK_NOTICE = "This plugin can reach the internet and your local network"
 _NAME = re.compile(r"[a-z][a-z0-9_]{1,31}")
 _TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]+")
 
@@ -105,6 +106,9 @@ class Manifest:
             raise ValueError("network must be a boolean.")
         if any(set(tool) & {"network", "timeout_seconds", "memory_mb"} for tool in tools):
             raise ValueError("Set network, timeout_seconds and memory_mb before the tools tables.")
+        # A network plugin reaches the local network too, so only the owner may trigger it.
+        if network and any(tool.scopes != ("owner_dm",) for tool in parsed):
+            raise ValueError('A plugin with network access can only offer tools in the "owner_dm" scope.')
         return cls(name, description, version, tuple(parsed), network,
                    _integer(data, "timeout_seconds", 10, 1, 30), _integer(data, "memory_mb", 64, 16, 256))
 

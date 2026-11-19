@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom.guard import check_local_private_text
-from dom.plugins.manifest import MAX_BYTES, MAX_FILES, validate_plugin
+from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, validate_plugin
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
 from dom.skills import Skill, skill_diff, skill_text, write_skill
 
@@ -71,7 +71,7 @@ def summary(row: dict) -> str:
     if row["kind"] == "plugin":
         tools = [f"{tool['name']} ({', '.join(tool['scopes']) or 'no scopes'})" for tool in body["tools"]]
         files = [f"{path} ({size} bytes)" for path, size in body["files"].items()]
-        network = "This plugin can reach the internet" if body["network"] else "Network off"
+        network = NETWORK_NOTICE if body["network"] else "Network off"
         return "\n".join([
             heading, body["description"], f"Tools: {', '.join(tools)}", network,
             f"Files: {', '.join(files)}", f"Hash: {body['hash'][:12]}",

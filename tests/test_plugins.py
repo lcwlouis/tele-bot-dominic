@@ -66,10 +66,24 @@ def test_manifest_validation(old, new):
 def test_manifest_custom_settings():
     manifest = Manifest.parse(
         MANIFEST.replace('version = "1"', 'version = "1"\nnetwork = true\ntimeout_seconds = 30\nmemory_mb = 16')
-        + 'scopes = ["friend_dm", "group"]\n'
     )
     assert (manifest.network, manifest.timeout_seconds, manifest.memory_mb) == (True, 30, 16)
-    assert manifest.tools[0].scopes == ("friend_dm", "group")
+    assert manifest.tools[0].scopes == ("owner_dm",)
+    offline = Manifest.parse(MANIFEST + 'scopes = ["friend_dm", "group"]\n')
+    assert offline.tools[0].scopes == ("friend_dm", "group")
+
+
+@pytest.mark.parametrize("scopes", [
+    '["friend_dm"]', '["group"]', '["owner_dm", "group"]', '["owner_dm", "friend_dm", "group"]', "[]",
+])
+def test_network_plugins_are_owner_dm_only(scopes):
+    online = MANIFEST.replace('version = "1"', 'version = "1"\nnetwork = true')
+    with pytest.raises(ValueError, match="owner_dm"):
+        Manifest.parse(online + f"scopes = {scopes}\n")
+    assert Manifest.parse(online + 'scopes = ["owner_dm", "owner_dm"]\n').tools[0].scopes == ("owner_dm",)
+    second = '[[tools]]\nname = "other"\ndescription = "Other"\nparameters = {type = "object"}\nscopes = ["group"]\n'
+    with pytest.raises(ValueError, match="owner_dm"):
+        Manifest.parse(online + second)
 
 
 def test_hash_stable_in_filename_order_and_sensitive_to_paths_and_bytes(tmp_path):

@@ -102,18 +102,19 @@ def exchange(process: subprocess.Popen, request: bytes, timeout: int) -> str:
                 stream.close()
 
 
-def _seccomp(network: bool) -> bytes:
+def _seccomp(network: bool, machine: str | None = None) -> bytes:
     """Classic BPF for Linux seccomp_data. Permit only internet sockets when network is approved."""
-    # Audit architecture, socket syscall, and process creation / socketpair syscall numbers.
+    # Per architecture: audit arch, socket syscall, always-denied syscalls (process creation, socketpair,
+    # clone3, io_uring_setup) and the server-side socket calls (bind, listen, accept, accept4) denied online.
     profiles = {
-        "aarch64": (0xC00000B7, 198, (220, 435, 199)),
-        "x86_64": (0xC000003E, 41, (56, 57, 58, 435, 53)),
-        "armv7l": (0x40000028, 281, (2, 120, 190, 435, 288, 102)),
+        "aarch64": (0xC00000B7, 198, (220, 435, 199, 425), (200, 201, 202, 242)),
+        "x86_64": (0xC000003E, 41, (56, 57, 58, 435, 53, 425), (49, 50, 43, 288)),
+        "armv7l": (0x40000028, 281, (2, 120, 190, 435, 288, 102, 425), (282, 284, 285, 366)),
     }
-    profile = profiles.get(os.uname().machine)
+    profile = profiles.get(machine or os.uname().machine)
     if profile is None:
         raise PluginsUnavailable("No plugin sandbox filter for this Linux architecture.")
-    arch, socket_syscall, blocked = profile
+    arch, socket_syscall, blocked, servers = profile
     load, equal, bit_set, ret = 0x20, 0x15, 0x45, 0x06
     allow, kill, deny = 0x7FFF0000, 0x80000000, 0x00050000 | errno.EPERM
     instructions = [
@@ -124,7 +125,8 @@ def _seccomp(network: bool) -> bytes:
         (bit_set, 0, 1, 0x40000000),  # reject the x32 compatibility ABI
         (ret, 0, 0, deny),
     ]
-    for syscall in (*blocked, 425):  # io_uring_setup could bypass the socket syscall restriction
+    # io_uring_setup could bypass the socket restriction; a network plugin may connect but never serve.
+    for syscall in (*blocked, *(servers if network else ())):
         instructions += [(equal, 0, 1, syscall), (ret, 0, 0, deny)]
     if network:
         # Socket domain is the low 32 bits of args[0]. Supported profiles above are little endian.

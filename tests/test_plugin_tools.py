@@ -195,3 +195,24 @@ async def test_unavailable_and_private_arguments_never_reach_the_runner(make_app
     tool, = await offered(app, "owner_dm")
     app.home.scoped(allow_private=True)._write_regular("private/USER.md", "- Confidential sample phrase\n")
     assert (await tool.handler({"nested": [{"text": "Confidential sample phrase"}]}, ctx(app))).startswith("error:")
+
+
+async def test_network_notice_is_shown_wherever_a_plugin_is_listed(make_app, browser):
+    app = make_app()
+    network = MANIFEST.replace('version = "1"', 'version = "1"\nnetwork = true')
+    await draft(app, manifest=network)
+    row = await status(app)
+    notice = "This plugin can reach the internet and your local network"
+    sent, = app.bot.of("send", OWNER)
+    assert notice in sent[2]
+    async with browser(app) as client:
+        assert notice in (await client.get("/plugins")).text
+        assert notice in (await client.get(review_path(row))).text
+    app.bot.calls.clear()
+    await handlers.handle_message(app, tg(OWNER, OWNER, "/plugins"))
+    listing, = app.bot.of("send", OWNER)
+    assert notice in listing[2]
+    await draft(app, manifest=MANIFEST, source="print('offline')\n")
+    app.bot.calls.clear()
+    await handlers.handle_message(app, tg(OWNER, OWNER, "/plugins"))
+    assert notice not in app.bot.of("send", OWNER)[0][2]
