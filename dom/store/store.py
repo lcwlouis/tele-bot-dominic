@@ -45,6 +45,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (10, "0009_turn_log.sql"),
     (11, "0010_desktop_tasks.sql"),
     (12, "0011_plugins.sql"),
+    (13, "0012_t3_audit.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -728,6 +729,36 @@ class Store:
             ),
         )
         return int(cur.lastrowid)
+
+    async def record_t3(
+        self, chat_id: int, tool: str, machine: str, target: str, summary: str, outcome: str, error: str,
+    ) -> int:
+        def insert() -> int:
+            cursor = self._conn.execute(
+                """INSERT INTO t3_audit (at, chat_id, tool, machine, target, summary, outcome, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (_now(), str(chat_id), tool, machine[:200], target[:200], summary, outcome, error[:200]),
+            )
+            return int(cursor.lastrowid)
+
+        return await self._run(insert)
+
+    async def finish_t3(self, audit_id: int, outcome: str, error: str) -> None:
+        await self._run(self._conn.execute, "UPDATE t3_audit SET outcome = ?, error = ? WHERE id = ?",
+                        (outcome, error[:200], audit_id))
+
+    async def t3_history(self, chat_id: int) -> list[dict[str, Any]]:
+        def select() -> list[dict[str, Any]]:
+            rows = self._conn.execute(
+                "SELECT * FROM t3_audit WHERE chat_id = ? ORDER BY id DESC LIMIT 15", (str(chat_id),),
+            )
+            return [dict(row) for row in rows]
+
+        return await self._run(select)
+
+    async def prune_t3(self) -> None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()
+        await self._run(self._conn.execute, "DELETE FROM t3_audit WHERE at < ?", (cutoff,))
 
     async def record_owner_event(self, text: str) -> None:
         """A one-line note in the owner's DM history (a command they ran, a button they tapped). It is owner-private,

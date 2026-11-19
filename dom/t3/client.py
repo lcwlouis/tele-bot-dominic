@@ -48,6 +48,7 @@ def cli_json(cli, args, runner):
 
 
 def request(http, url, **kwargs):
+    deadline = time.monotonic() + 20
     try:
         with http.stream("POST", url, **kwargs) as response:
             if response.status_code == 401:
@@ -56,24 +57,35 @@ def request(http, url, **kwargs):
                 raise SessionGone("T3 session expired.")
             response.raise_for_status()
             data = bytearray()
-            deadline = time.monotonic() + 20
-            for chunk in response.iter_bytes(chunk_size=8192):
-                data.extend(chunk)
-                if time.monotonic() > deadline or len(data) > LIMIT:
+            received = 0
+            event_stream = response.headers.get("content-type", "").startswith("text/event-stream")
+            for chunk in response.iter_bytes():
+                received += len(chunk)
+                if time.monotonic() > deadline or received > LIMIT:
                     raise T3Unavailable("T3 response exceeded its time or size limit.")
-            if not data:
-                return {}, response.headers
-            if response.headers.get("content-type", "").startswith("text/event-stream"):
-                for event in data.decode().replace("\r\n", "\n").split("\n\n"):
-                    lines = [line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")]
-                    if lines:
-                        message = json.loads("\n".join(lines))
-                        if isinstance(message, dict) and ("result" in message or "error" in message):
-                            return message, response.headers
+                data.extend(chunk)
+                if event_stream:
+                    while (event := next_sse_event(data)) is not None:
+                        lines = [line[5:].lstrip() for line in event.splitlines() if line.startswith(b"data:")]
+                        if lines:
+                            message = json.loads(b"\n".join(lines))
+                            if isinstance(message, dict) and ("result" in message or "error" in message):
+                                return message, response.headers
+            if event_stream:
                 raise T3Unavailable("T3 returned no MCP result.")
-            return json.loads(data), response.headers
+            return (json.loads(data) if data else {}), response.headers
     except (httpx.HTTPError, ValueError):
         raise T3Unavailable("T3 gateway request failed.") from None
+
+
+def next_sse_event(data):
+    for delimiter in (b"\n\n", b"\r\n\r\n"):
+        index = data.find(delimiter)
+        if index != -1:
+            event = data[:index]
+            del data[:index + len(delimiter)]
+            return event
+    return None
 
 
 class T3Client:
@@ -110,7 +122,7 @@ class T3Client:
 
     def _initialize(self, http):
         result, headers = self._rpc(http, "initialize", {
-            "protocolVersion": "2025-03-26", "capabilities": {},
+            "protocolVersion": "2025-06-18", "capabilities": {},
             "clientInfo": {"name": "Dom", "version": "1"},
         })
         self.session = headers.get("mcp-session-id")
@@ -153,7 +165,10 @@ class T3Client:
                     result, _ = self._rpc(http, "tools/call", {"name": tool, "arguments": args})
                     if not isinstance(result, dict) or result.get("isError") or "structuredContent" not in result:
                         raise T3Unavailable("T3 tool failed or the machine is unreachable.")
-                    return result["structuredContent"]
+                    content = result["structuredContent"]
+                    if not isinstance(content, dict) or content.get("_tag") == "OrchestratorMcpFailure":
+                        raise T3Unavailable("T3 tool failed or the machine is unreachable.")
+                    return content
                 except SessionGone:
                     self.session = None
                     if attempt:

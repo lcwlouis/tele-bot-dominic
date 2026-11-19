@@ -32,8 +32,16 @@ def describe(app: App, scope: Scope, offered: list[Tool] | None = None) -> str:
         for tool in offered if scope in tool.scopes
     )
     media = ", photos, GIFs, video, voice" if app.media_describer is not None else ""
+    t3_status = ""
+    if scope == "owner_dm":
+        bridge = app.t3
+        if bridge is None:
+            t3_status = "\nT3 bridge: off"
+        else:
+            count = bridge.reachable if bridge.reachable is not None else "unknown"
+            t3_status = f"\nT3 bridge: on, reachable machines: {count}"
     rest = (
-        f"\nunderstands: text{media}\ndesktop: {desktop_status(app, scope)}\n"
+        f"\nunderstands: text{media}\ndesktop: {desktop_status(app, scope)}{t3_status}\n"
         "cannot see read receipts, see deleted messages, or read chats he isn't in"
     )
     return f"tools: {tools or 'none'}"[:600 - len(rest)] + rest

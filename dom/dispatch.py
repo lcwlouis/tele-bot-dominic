@@ -74,6 +74,7 @@ class Dispatcher:
         self.jobs = DailyJobs(app, now)
         self.jobs.register("proposal-expiry", lambda local, habits: True, app.proposals.expire)
         self.jobs.register("turn-log-retention", lambda local, habits: True, self._prune_turn_log)
+        self.jobs.register("t3-maintenance", lambda local, habits: True, self._maintain_t3)
         self.openers = Openers(app, presence.rng)
         self.reminders = Reminders(app)
         self._heartbeat: asyncio.Task | None = None
@@ -246,6 +247,12 @@ class Dispatcher:
                 log.exception("could not check reminders")
             startup = False
             await self.sleep(TICK_SECONDS)
+
+    async def _maintain_t3(self) -> None:
+        if self.app.t3 is not None:
+            await self.app.t3.remind()
+        else:
+            await self.app.store.prune_t3()
 
     async def _prune_turn_log(self) -> None:
         await self.app.store.prune_turn_history(self.now() - timedelta(days=30))
@@ -705,6 +712,13 @@ class Dispatcher:
                 raise
             log.exception("model could not compose the bot exit in chat %s", chat_id)
             actions = Actions(no_response=True)
+        finally:
+            if ctx.t3_notes:
+                try:
+                    note = "; ".join(dict.fromkeys(ctx.t3_notes))
+                    await app.bot.send_message(chat_id, f"🔎 Checked your coding work: {note}"[:1800])
+                except Exception:
+                    log.warning("Could not deliver T3 turn notification.")
         if casual_ids and not actions.no_response:
             await self.reminders.consume(casual_ids)  # only once Dom has actually answered
         if final_bot_turn:

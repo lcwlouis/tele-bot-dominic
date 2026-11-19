@@ -39,6 +39,7 @@ OWNER_COMMANDS = [
     BotCommand(command="proposals", description="Review pending changes"),
     BotCommand(command="plugins", description="List and disable plugins"),
     BotCommand(command="reminders", description="List and cancel reminders"),
+    BotCommand(command="t3", description="View T3 sign-in, machines and audit history"),
     BotCommand(command="tasks", description="List and cancel desktop tasks"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
     BotCommand(command="import", description="Bring memories from another assistant"),
@@ -543,3 +544,10 @@ async def import_memory(app: App, message: Message, text: str) -> tuple[str, str
             response = memory_import.summary(service, parsed)
             event = response
     return response, event
+
+
+async def show_t3(app: App) -> None:
+    if app.t3 is None:
+        await app.bot.send_message(app.owner_id, "T3 bridge off.")
+    else:
+        await app.t3.show()

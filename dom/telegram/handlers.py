@@ -23,6 +23,7 @@ from dom.dispatch import Dispatcher
 from dom.desktop import files as desktop_files
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 from dom.desktop.worker import DesktopWorker
+from dom.t3.tools import Bridge
 from dom.home import Home
 from dom.jev import JevClient
 from dom.llm import ChatClient
@@ -62,6 +63,7 @@ class App:
     search_client: SearchClient | None = None
     sandbox: LocalSandbox | RemoteSandbox | None = None
     desktop_worker: DesktopWorker | None = field(init=False, default=None)
+    t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
     proposals: Proposals = field(init=False)
     stickers: Stickers = field(init=False)
@@ -79,6 +81,8 @@ class App:
         self.stickers = Stickers(self.home, self.bot, lambda: self.dispatch.now())
         self.memory_import = MemoryImport(self)
         presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
+        if self.config.t3.enabled:
+            self.t3 = Bridge(self)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
         if self.sandbox is not None:
             self.desktop_worker = DesktopWorker(self, self.sandbox)
@@ -212,6 +216,10 @@ async def handle_message(app: App, message: Message) -> None:
         if owner_dm:
             await owner.show_plugins(app)
             await owner.record_event(app, f"{_person(msg.sender_name)} ran /plugins")
+        return
+    if command == "/t3":
+        if owner_dm:
+            await owner.show_t3(app)
         return
     if command == "/tasks":
         if owner_dm:
@@ -470,6 +478,12 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         return
     owner_id = app.owner_id
     if owner_id is None or query.from_user.id != owner_id:
+        return
+    if action in {"t3send", "t3cancel", "t3reconnect"}:
+        if (app.t3 is not None and not query.from_user.is_bot and query.message is not None
+                and query.message.chat.id == owner_id and query.message.chat.type == "private"):
+            await _toast(app, query)
+            await app.t3.callback(owner_id, action, raw_chat_id)
         return
     if action == "desktop":
         if (
