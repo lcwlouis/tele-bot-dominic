@@ -31,7 +31,8 @@ permissions and backup policy.
 
 The code enforces these scopes when it builds prompts and exposes tools. The
 dashboard is for the owner. Protect a published dashboard with Cloudflare
-Access and keep local bearer-token testing on loopback.
+Access. In that deployment, dashboard requests and responses pass through
+Cloudflare. Keep local bearer-token testing on loopback.
 
 ## What leaves the host
 
@@ -43,9 +44,9 @@ Access and keep local bearer-token testing on loopback.
   update. An external provider may therefore receive owner DM content.
 - **Media provider** receives supported attachments for transcription or
   description, and screenshots when the desktop worker requests a description.
-- **Web search** submits the query to OpenRouter web search. A query drafted in
-  the owner DM can contain private context. Remove `[models.search]` to
-  disable this tool.
+- **Web search** submits the query to `models.search.base_url` (OpenRouter by
+  default). A query drafted in the owner DM can contain private context.
+  Remove `[models.search]` to disable this tool.
 - **Jev** can receive recent chat context for triage and candidate facts for
   import classification. The outbound leak check sends proposed text and a
   bounded selection of headings, names, numbers and other terms from owner notes

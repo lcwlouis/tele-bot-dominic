@@ -90,7 +90,7 @@ class Config(BaseModel):
 
     home: Path
     owner_id: int | None = Field(None, description="Telegram user ID recorded after a successful /claim.")
-    timezone: str = Field("Asia/Singapore", description="IANA timezone for presence and daily jobs. Init writes the machine timezone or the supplied --timezone.")
+    timezone: str = Field("UTC", description="IANA timezone for presence and daily jobs. Init writes the machine timezone or the supplied --timezone.")
     models: dict[str, ModelEndpoint] = {}
     desktop_mode: Literal["local", "remote", "off"] = Field("off", description="Desktop mode. Use off to disable it, local for Docker, or remote for a separate sandbox host.")
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)

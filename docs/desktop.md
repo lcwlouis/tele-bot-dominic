@@ -94,7 +94,7 @@ host.
 Run the firewall unit on the Docker host before requesting a desktop task.
 The firewall unit runs in the system manager, while `dom install-service` uses
 the user manager. In local mode Dom checks the rules before each container start.
-The rules use the iptables backend with `-w`.
+The rules use the iptables backend with `-w`. Docker’s native nftables backend is not supported.
 
 ## Documents
 
