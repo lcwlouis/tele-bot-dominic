@@ -31,7 +31,7 @@ def test_exact_arguments(monkeypatch, network):
     if network:
         expected += ["--share-net"]
     expected += [
-        "--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
+        "--unshare-cgroup", "--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
         "--ro-bind", "/usr", "/usr", "--ro-bind", "/lib", "/lib",
         "--ro-bind", "/lib64", "/lib64", "--ro-bind", "/bin", "/bin",
         "--ro-bind", "/etc/alternatives", "/etc/alternatives",
@@ -41,7 +41,7 @@ def test_exact_arguments(monkeypatch, network):
     expected += [
         "--ro-bind", str(prefix), str(prefix), "--ro-bind", "/sample/convert", "/plugin",
         "--size", "8388608", "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev", "--chdir", "/plugin",
-        "--disable-userns", "--seccomp", "3", "--",
+        "--disable-userns", "--assert-userns-disabled", "--cap-drop", "ALL", "--seccomp", "3", "--",
         "/usr/bin/prlimit", "--as=67108864", "--cpu=10", "--fsize=1048576", "--nofile=32", "--core=0",
         "--", str(executable),
         "-I", "-S", "-c", BOOTSTRAP,
