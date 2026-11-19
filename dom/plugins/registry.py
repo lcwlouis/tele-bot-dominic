@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import re
+import shutil
+import tomllib
 from dataclasses import asdict
 from difflib import unified_diff
 from pathlib import Path
@@ -17,6 +19,7 @@ from dom.store import Store
 
 log = logging.getLogger(__name__)
 _HASH = re.compile(r"[0-9a-f]{64}")
+DRAFT_PREFIX = ".draft-"  # staging folders made by _write; never plugins
 
 
 class PluginRegistry:
@@ -36,7 +39,7 @@ class PluginRegistry:
             log.warning("Could not scan plugins: %s", type(error).__name__)
             return found
         for path in paths:
-            if not path.is_dir() and not path.is_symlink():
+            if path.name.startswith(DRAFT_PREFIX) or (not path.is_dir() and not path.is_symlink()):
                 continue
             try:
                 plugin = read_plugin(path)
@@ -67,6 +70,34 @@ class PluginRegistry:
                 if previous.exists():
                     previous.rename(target)
                 raise
+
+    def _clean_drafts(self) -> None:
+        try:
+            parent = self.home._regular_path("plugins")
+            leftovers = sorted(parent.glob(DRAFT_PREFIX + "*")) if parent.is_dir() else []
+        except (OSError, ValueError, RuntimeError) as error:
+            log.warning("Could not clean plugin drafts: %s", type(error).__name__)
+            return
+        for path in leftovers:
+            try:
+                if path.is_symlink() or not path.is_dir():
+                    path.unlink()
+                    continue
+                # A crash between the two renames in _write leaves the old version here. Put it back.
+                previous = path / "previous"
+                if previous.is_dir() and not previous.is_symlink():
+                    name = tomllib.loads((previous / "plugin.toml").read_text(encoding="utf-8")).get("name")
+                    validate_name(name)
+                    if not (parent / name).exists():
+                        previous.rename(parent / name)
+                shutil.rmtree(path)
+            except (OSError, ValueError, UnicodeError):
+                log.warning("Could not clean plugin draft %r", path.name)
+
+    async def cleanup_drafts(self) -> None:
+        """Remove staging folders a crashed draft left behind. Run once at startup."""
+        async with self.lock:
+            await asyncio.to_thread(self._clean_drafts)
 
     async def draft(self, plugin: Plugin) -> None:
         async with self.lock:

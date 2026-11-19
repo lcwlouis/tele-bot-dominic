@@ -166,3 +166,55 @@ def test_line_and_paragraph_separators_count_as_invisible(separator):
         })
     with pytest.raises(ValueError):
         Manifest.parse(MANIFEST.replace("Convert units", f"Convert{separator}units"))
+
+
+async def test_drafts_are_skipped_silently_and_cleaned_up_at_startup(tmp_path, caplog):
+    folder = write_plugin(tmp_path)
+    leftover = folder.parent / ".draft-abc123" / "draft"
+    leftover.mkdir(parents=True)
+    (leftover / "main.py").write_text("print('half written')\n")
+    (folder.parent / ".draft-file").write_text("junk")
+    (folder.parent / ".draft-link").symlink_to(tmp_path, target_is_directory=True)
+    store = Store(tmp_path, owner_id=111)
+    try:
+        registry = PluginRegistry(Home(tmp_path), store)
+        with caplog.at_level("WARNING"):
+            assert set(await registry.scan()) == {"convert"}
+        assert "Skipping" not in caplog.text
+        await registry.cleanup_drafts()
+        assert [path.name for path in folder.parent.iterdir()] == ["convert"]
+        assert (tmp_path / "plugins" / "convert" / "main.py").exists() and tmp_path.is_dir()
+    finally:
+        store.close()
+
+
+async def test_cleanup_restores_a_plugin_whose_swap_was_interrupted(tmp_path):
+    folder = write_plugin(tmp_path)
+    previous = folder.parent / ".draft-crash" / "previous"
+    previous.parent.mkdir()
+    folder.rename(previous)
+    store = Store(tmp_path, owner_id=111)
+    try:
+        await PluginRegistry(Home(tmp_path), store).cleanup_drafts()
+        assert (folder / "main.py").read_text() == "print('hello')\n"
+        assert not previous.parent.exists()
+    finally:
+        store.close()
+
+
+async def test_disabled_plugin_returns_to_pending_when_its_files_change(tmp_path):
+    folder = write_plugin(tmp_path)
+    store = Store(tmp_path, owner_id=111)
+    try:
+        registry = PluginRegistry(Home(tmp_path), store)
+        await registry.scan()
+        row, = await store.list_plugins()
+        assert await store.set_plugin_status("convert", row["hash"], "disabled")
+        await registry.scan()
+        assert (await store.list_plugins())[0]["status"] == "disabled"
+        (folder / "main.py").write_text("print('changed')\n")
+        await registry.scan()
+        changed, = await store.list_plugins()
+        assert changed["status"] == "pending" and changed["hash"] != row["hash"]
+    finally:
+        store.close()

@@ -139,6 +139,7 @@ async def run(home: Path) -> None:
                 search_client=search_client(config, http, usage), sandbox=sandbox,
             )
             await app.stickers.refresh()
+            await app.plugins.cleanup_drafts()
             if app.desktop_worker is not None:
                 await app.desktop_worker.recover()
             app.dispatch.jobs.register("habits", habits.due, partial(habits.run, app))
