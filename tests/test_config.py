@@ -21,7 +21,7 @@ def test_defaults_when_minimal_toml(tmp_path):
     assert cfg.owner_id is None
     assert cfg.desktop_mode == "off"
     assert cfg.window_size == 80
-    assert cfg.timezone == "Asia/Singapore"
+    assert cfg.timezone == "UTC"
     assert cfg.models["chat"].model == "some/model"
     assert cfg.home == tmp_path
 

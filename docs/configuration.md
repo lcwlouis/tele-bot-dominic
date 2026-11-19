@@ -15,7 +15,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `owner_id` | Unset | Telegram user ID recorded after a successful /claim. |
-| `timezone` | `"Asia/Singapore"` | IANA timezone for presence and daily jobs. Init writes the machine timezone or the supplied --timezone. |
+| `timezone` | `"UTC"` | IANA timezone for presence and daily jobs. Init writes the machine timezone or the supplied --timezone. |
 | `window_size` | `80` | Maximum recent messages in a chat's model window. |
 | `daily_spend_cap_usd` | `1.0` | Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap. |
 | `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups when supported by Telegram. |
