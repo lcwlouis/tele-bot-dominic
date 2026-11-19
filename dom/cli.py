@@ -1,15 +1,18 @@
-"""`python -m dom` command line: init, run."""
+"""The Dom command line."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
+import sqlite3
+import tarfile
 from pathlib import Path
 
 import httpx
 from aiogram import Bot, Dispatcher
 
+from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
 from dom.home import Home, init_home
@@ -146,11 +149,30 @@ def main(argv: list[str] | None = None) -> int:
     imp.add_argument("old_workspace", type=Path)
     imp.add_argument("home", type=Path)
     imp.add_argument("--owner-id", type=int, required=True)
+    backup_cmd = sub.add_parser("backup", help="archive a home and its SQLite state")
+    backup_cmd.add_argument("home", type=Path)
+    backup_cmd.add_argument("--keep", type=int, default=7)
+    backup_cmd.add_argument("--to", type=Path)
+    restore_cmd = sub.add_parser("restore", help="restore an archive into an empty home")
+    restore_cmd.add_argument("archive", type=Path)
+    restore_cmd.add_argument("home", type=Path)
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init(args.home, getattr(args, "timezone", None))
     if args.command == "import-v2":
         return cmd_import(args.old_workspace, args.home, args.owner_id)
+    if args.command in ("backup", "restore"):
+        try:
+            if args.command == "backup":
+                archive = backup(args.home, keep=args.keep, destination=args.to)
+                print(f"{archive} ({archive.stat().st_size} bytes)")
+            else:
+                restore(args.archive, args.home)
+                print(f"Restored {args.home}")
+        except (OSError, EOFError, ValueError, sqlite3.Error, tarfile.TarError) as exc:
+            print(f"{args.command.capitalize()} failed: {exc}")
+            return 1
+        return 0
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     asyncio.run(run(args.home))
     return 0
