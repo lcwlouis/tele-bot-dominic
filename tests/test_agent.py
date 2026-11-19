@@ -78,7 +78,7 @@ async def test_tool_call_then_final_actions(env):
     assert json.loads(second[-1]["content"])["ok"] is True
     assert second[-2]["tool_calls"][0]["id"] == "c1"
     assert script.requests[0]["model"] == "test/model"
-    assert {t["function"]["name"] for t in script.requests[0]["tools"]} == {"memory", "search_history"}
+    assert {t["function"]["name"] for t in script.requests[0]["tools"]} == {"memory", "search_history", "extend_online"}
     assert script.last_headers["authorization"] == "Bearer k"
 
 

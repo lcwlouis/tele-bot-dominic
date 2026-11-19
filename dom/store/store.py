@@ -579,7 +579,9 @@ class Store:
             if chat is not None:
                 dom_saw_original = (
                     dom_saw_original
-                    or (not chat["is_offline"] and not chat["is_sleeping"])
+                    or (
+                        dom_was_online_and_read is None and not chat["is_offline"] and not chat["is_sleeping"]
+                    )
                     or (chat["last_read_msg_id"] is not None and msg_id <= chat["last_read_msg_id"])
                 )
 
@@ -653,16 +655,32 @@ class Store:
 
     # ---- reading ----------------------------------------------------------
 
-    async def get_recent_chat_window(self, chat_id: str, limit: int = 35) -> list[StoredMessage]:
-        return await self._run(self._get_recent_chat_window, str(chat_id), limit)
+    async def get_unread(self, chat_id: int | str) -> tuple[int, StoredMessage | None]:
+        return await self._run(self._get_unread, str(chat_id))
 
-    def _get_recent_chat_window(self, chat_id: str, limit: int) -> list[StoredMessage]:
+    def _get_unread(self, chat_id: str) -> tuple[int, StoredMessage | None]:
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        row = self._conn.execute(
+            f"SELECT {_MESSAGE_COLUMNS}, COUNT(*) OVER () AS unread_count FROM messages "
+            "WHERE chat_id = ? AND is_deleted = 0 AND role = 'user' "
+            "AND msg_id > COALESCE((SELECT last_read_msg_id FROM chats WHERE chat_id = ?), 0)"
+            f"{hide} ORDER BY msg_id DESC LIMIT 1",
+            (chat_id, chat_id),
+        ).fetchone()
+        return (row["unread_count"], _row_to_message(row)) if row is not None else (0, None)
+
+    async def get_recent_chat_window(
+        self, chat_id: int | str, limit: int = 35, *, through_id: int | None = None,
+    ) -> list[StoredMessage]:
+        return await self._run(self._get_recent_chat_window, str(chat_id), limit, through_id)
+
+    def _get_recent_chat_window(self, chat_id: str, limit: int, through_id: int | None) -> list[StoredMessage]:
         # Rows labelled private (e.g. from a legacy import) never enter another chat's window.
         hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
         rows = self._conn.execute(
             f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND is_deleted = 0{hide} "
-            "ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
-            (chat_id, max(0, limit)),
+            "AND (? IS NULL OR id <= ?) ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
+            (chat_id, through_id, through_id, max(0, limit)),
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]
 

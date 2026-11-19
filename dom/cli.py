@@ -14,6 +14,7 @@ from dom.claim import write_claim_code
 from dom.config import Config, load_config
 from dom.home import Home, init_home
 from dom.importer import import_v2
+from dom.jev import JevClient
 from dom.llm import ChatClient
 from dom.store import Store
 from dom.telegram import executor
@@ -84,7 +85,13 @@ async def run(home: Path) -> None:
         me = await bot.get_me()
         async with httpx.AsyncClient() as http:
             client = ChatClient(config.models["chat"], model_api_key(config), http)
-            app = App(config=config, home=Home(home), store=store, client=client, bot=bot, bot_username=me.username or "")
+            triage = config.models["triage"]
+            triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
+            jev = JevClient(http, triage_key, triage.model) if triage_key else None
+            app = App(
+                config=config, home=Home(home), store=store, client=client,
+                bot=bot, bot_username=me.username or "", jev=jev,
+            )
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
             if config.owner_id is None:
@@ -92,10 +99,14 @@ async def run(home: Path) -> None:
                     "No owner yet: send /claim <code> to @%s (the code is in %s).", me.username, home / ".claim"
                 )
             # aiogram stops on SIGINT/SIGTERM; it waits a bounded time for running handlers.
-            await dispatcher.start_polling(
-                bot, allowed_updates=ALLOWED_UPDATES,
-                tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
-            )
+            app.dispatch.start()
+            try:
+                await dispatcher.start_polling(
+                    bot, allowed_updates=ALLOWED_UPDATES,
+                    tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
+                )
+            finally:
+                await app.dispatch.close()
     finally:
         await executor.cancel_pending_deletions()
         store.close()

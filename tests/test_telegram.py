@@ -13,13 +13,14 @@ from aiogram.types import (
     PhotoSize,
     User,
 )
-from tghelpers import BOT_USER, FRIEND, GROUP, NOW, OWNER, FakeBot, no_sleep, tg
+from tghelpers import BOT_USER, FRIEND, GROUP, NOW, OWNER, FakeBot, drain_dispatch, no_sleep, tg
 
 from dom.actions import Actions, Bubble
 from dom.config import Config, ModelEndpoint
 from dom.home import Home
 from dom.llm import ChatClient
 from dom.models import IncomingMessage
+from dom.presence import parse_habits
 from dom.store import Store
 from dom.telegram import executor, handlers
 from dom.telegram.convert import to_incoming
@@ -98,47 +99,36 @@ async def test_decide_by_status(make_app):
     assert await decide(app.store, inc, OWNER) == "drop"
 
 
-async def test_owner_dm_and_approved_friend_dm_always_run_a_turn(make_app):
+async def go_online(app, chat_id):
+    await app.dispatch.presence.go_online(chat_id, parse_habits(""))
+
+
+async def test_online_owner_and_approved_friend_dm_run_a_turn(make_app):
     app = make_app()
+    await go_online(app, OWNER)
     await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="hi dom"))
+    await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 1
     assert [c[2] for c in app.bot.of("send", OWNER)] == ["hey"]
     await approve(app, FRIEND)
+    await go_online(app, FRIEND)
     await handlers.handle_message(app, tg(chat_id=FRIEND, text="yo"))
+    await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 2
     assert [c[2] for c in app.bot.of("send", FRIEND)] == ["hey"]
     window = await app.store.get_recent_chat_window(FRIEND)
     assert [m.role for m in window] == ["user", "assistant"]
-    # the conversation is in the model request
     assert "yo" in app.script.requests[1]["messages"][-1]["content"]
 
 
-async def test_group_turn_only_on_mention_or_reply(make_app):
+async def test_online_group_considers_messages_without_mentions(make_app):
     app = make_app()
     await approve(app, GROUP)
-    dom_message = tg(sender=999, text="earlier dom line", msg_id=50)
-    dom_message = dom_message.model_copy(update={"from_user": BOT_USER})
-    quiet = [
-        tg(msg_id=1, text="hello all"),
-        tg(msg_id=2, text="@dombotty not me"),
-        tg(msg_id=3, text="mail me at a@dombot.com"),
-        tg(msg_id=4, text="/help@otherbot"),
-        tg(msg_id=5, text="reply to a human", reply_to=tg(msg_id=40, text="x")),
-    ]
-    for m in quiet:
-        await handlers.handle_message(app, m)
-    assert app.script.requests == []
-    loud = [
-        tg(msg_id=10, text="hey @DomBot what do you think"),
-        tg(msg_id=11, text="replying to dom", reply_to=dom_message),
-        tg(msg_id=12, text="/help"),
-        tg(msg_id=13, text="/help@dombot"),
-    ]
-    for m in loud:
-        await handlers.handle_message(app, m)
-    assert len(app.script.requests) == 4
-    assert len(app.bot.of("send", GROUP)) == 4
-    assert len(await app.store.get_recent_chat_window(GROUP, 100)) == len(quiet) + len(loud) + 4
+    await go_online(app, GROUP)
+    await handlers.handle_message(app, tg(text="hello all"))
+    await drain_dispatch(app.dispatch)
+    assert len(app.script.requests) == len(app.bot.of("send", GROUP)) == 1
+    assert "hello all" in app.script.requests[0]["messages"][-1]["content"]
 
 
 async def test_owner_in_group_never_leaks_private_files(make_app, tmp_path):
@@ -146,10 +136,14 @@ async def test_owner_in_group_never_leaks_private_files(make_app, tmp_path):
     (tmp_path / "private" / "NOTES.md").write_text("OWNER-ONLY-SECRET")
     app = make_app()
     await approve(app, GROUP)
+    await go_online(app, GROUP)
     await handlers.handle_message(app, tg(sender=OWNER, text="@dombot what do you know about me?"))
+    await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 1
     assert "OWNER-ONLY-SECRET" not in json.dumps(app.script.requests[0])
+    await go_online(app, OWNER)
     await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="hi", msg_id=2))
+    await drain_dispatch(app.dispatch)
     assert "OWNER-ONLY-SECRET" in json.dumps(app.script.requests[1])
 
 
@@ -216,8 +210,11 @@ async def test_model_failure_does_not_crash_handler(make_app):
     def boom(request):
         return httpx.Response(401)
 
-    app.client.http = httpx.AsyncClient(transport=httpx.MockTransport(boom))
-    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="hi"))
+    await go_online(app, OWNER)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(boom)) as http:
+        app.client.http = http
+        await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="hi"))
+        await drain_dispatch(app.dispatch)
     assert app.bot.of("send") == []
 
 
@@ -280,11 +277,12 @@ async def test_executor_react_and_no_response(store):
 async def test_turn_rechecks_authorization_after_waiting_for_lock(make_app):
     app = make_app()
     await approve(app, GROUP)
+    await go_online(app, GROUP)
     async with app.locks[GROUP]:
-        task = asyncio.create_task(handlers.handle_message(app, tg(text="@dombot hello")))
-        await asyncio.sleep(0.05)  # decided "process", now waiting for the turn lock
+        await handlers.handle_message(app, tg(text="@dombot hello"))
+        await asyncio.sleep(0)  # recorded and dispatched, now waiting for the turn lock
         await app.store.set_chat_auth_status(str(GROUP), "ignored")
-    await task
+    await drain_dispatch(app.dispatch)
     assert app.script.requests == []
     assert app.bot.of("send", GROUP) == []
 
@@ -442,7 +440,9 @@ def test_convert_anonymous_admin_uses_sender_chat():
 async def test_anonymous_admin_message_is_not_dropped_as_bot(make_app):
     app = make_app()
     await approve(app, GROUP)
+    await go_online(app, GROUP)
     await handlers.handle_message(app, anonymous_admin())
+    await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 1
     assert [m.sender_user_id for m in await app.store.get_recent_chat_window(GROUP)][0] == GROUP
 
@@ -470,6 +470,8 @@ async def test_executor_sends_typing_and_bubbles_into_the_topic(store):
 async def test_turn_replies_in_the_incoming_topic(make_app):
     app = make_app()
     await approve(app, GROUP)
+    await go_online(app, GROUP)
     await handlers.handle_message(app, topic_message())
+    await drain_dispatch(app.dispatch)
     assert app.bot.of("send", GROUP)[0][3]["message_thread_id"] == 77
     assert app.bot.of("action", GROUP)[0][3]["message_thread_id"] == 77

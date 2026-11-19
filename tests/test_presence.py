@@ -1,33 +1,10 @@
-from datetime import datetime, time, timedelta, timezone
+from datetime import time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from dom.presence import Presence, parse_habits
-from tghelpers import GROUP
-
-
-class Clock:
-    def __init__(self, at=datetime(2026, 1, 1, 12, tzinfo=timezone.utc)):
-        self.at = at
-
-    def __call__(self):
-        return self.at
-
-    def advance(self, **delta):
-        self.at += timedelta(**delta)
-
-
-class FixedRandom:
-    def __init__(self):
-        self.draws = []
-
-    def triangular(self, lo, hi, mode):
-        self.draws.append((lo, hi, mode))
-        return (lo + hi) / 2
-
-    def uniform(self, lo, hi):
-        return (lo + hi) / 2
+from tghelpers import GROUP, Clock, FixedRandom
 
 
 @pytest.fixture

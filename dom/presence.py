@@ -156,3 +156,14 @@ class Presence:
 
     async def wake(self, chat_id, habits: Habits, minutes: float = 30) -> datetime:
         return await self._set_online(chat_id, self.now() + timedelta(minutes=minutes), override=True)
+
+    async def sleep(self, chat_id, habits: Habits) -> datetime:
+        now = self.now().astimezone(self.tz)
+        end = datetime.combine(now.date(), habits.sleep_end, self.tz)
+        if end <= now:
+            end += timedelta(days=1)
+        await self.store.set_presence(
+            chat_id, is_sleeping=True, sleep_until=end.isoformat(),
+            is_offline=False, offline_until=None, online_until=None,
+        )
+        return end

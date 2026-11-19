@@ -1,7 +1,8 @@
 """Shared helpers for the Telegram-facing tests: a fake bot, a scripted model, aiogram message builders."""
 
+import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -65,3 +66,31 @@ def tg(chat_id=GROUP, sender=FRIEND, text="hello", msg_id=1, chat_type=None, rep
         from_user=User(id=sender, is_bot=False, first_name="Fran", username="fran"),
         text=text, reply_to_message=reply_to, **kw,
     )
+
+
+class Clock:
+    def __init__(self, at=datetime(2026, 1, 1, 12, tzinfo=timezone.utc)):
+        self.at = at
+
+    def __call__(self):
+        return self.at
+
+    def advance(self, **delta):
+        self.at += timedelta(**delta)
+
+
+class FixedRandom:
+    def __init__(self):
+        self.draws = []
+
+    def triangular(self, lo, hi, mode):
+        self.draws.append((lo, hi, mode))
+        return (lo + hi) / 2
+
+    def uniform(self, lo, hi):
+        return (lo + hi) / 2
+
+
+async def drain_dispatch(dispatch):
+    while dispatch._tasks:
+        await asyncio.gather(*list(dispatch._tasks), return_exceptions=True)

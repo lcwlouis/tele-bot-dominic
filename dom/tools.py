@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from dom.home import Home
 from dom.models import Scope
+from dom.presence import Presence
 from dom.store import Store
 
 ALL_SCOPES: set[Scope] = {"owner_dm", "friend_dm", "group"}
@@ -18,10 +19,11 @@ ALL_SCOPES: set[Scope] = {"owner_dm", "friend_dm", "group"}
 class TurnCtx:
     scope: Scope
     chat_id: int
-    sender_id: int
+    sender_id: int | None
     home: Home
     store: Store
     owner_id: int | None
+    presence: Presence | None = None
 
 
 @dataclass(frozen=True)
@@ -137,5 +139,28 @@ SEARCH_HISTORY_TOOL = Tool(
 )
 
 
+async def _extend_online(args: dict, ctx: TurnCtx) -> str:
+    minutes = args.get("minutes")
+    if type(minutes) not in (int, float) or not 0 < minutes <= 30:
+        return "error: minutes must be greater than 0 and at most 30"
+    if ctx.presence is None:
+        return "error: presence is unavailable"
+    until = await ctx.presence.extend_online(ctx.chat_id, minutes)
+    return json.dumps({"online_until": until.isoformat()})
+
+
+EXTEND_ONLINE_TOOL = Tool(
+    name="extend_online",
+    description="Add up to 30 minutes to this chat's online session when you want to stay longer.",
+    schema={
+        "type": "object",
+        "properties": {"minutes": {"type": "number", "exclusiveMinimum": 0, "maximum": 30}},
+        "required": ["minutes"],
+    },
+    handler=_extend_online,
+    scopes=set(ALL_SCOPES),
+)
+
+
 def core_tools() -> list[Tool]:
-    return [MEMORY_TOOL, SEARCH_HISTORY_TOOL]
+    return [MEMORY_TOOL, SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL]

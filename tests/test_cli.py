@@ -9,7 +9,7 @@ from dom.config import load_config
 from dom.home import init_home
 from dom.telegram import handlers
 
-from tghelpers import OWNER, tg
+from tghelpers import OWNER, drain_dispatch, tg
 
 CODE = "AB12CD34"
 
@@ -102,8 +102,10 @@ async def test_claim_flow_makes_sender_owner_and_approves_dm(make_app, tmp_path)
     assert len(app.bot.of("send", OWNER)) == 1
     assert (await app.store.get_chat_auth_status(OWNER))["authorization_status"] == "approved"
     assert app.script.requests == []  # the claim itself is not a chat turn
-    # the owner can now talk to Dom
-    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="hello", msg_id=2))
+    # The newly claimed owner can wake Dom and talk to him.
+    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="/wake", msg_id=2))
+    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="hello", msg_id=3))
+    await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 1
 
 
