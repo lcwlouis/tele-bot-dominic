@@ -27,7 +27,12 @@ build-backend = "setuptools.build_meta"
 include = ["dom*"]
 
 [tool.setuptools.package-data]
-dom = ["store/migrations/*.sql"]
+dom = [
+    "store/migrations/*.sql",
+    "starter_home/*",
+    "starter_home/.env.example",  # dotfiles are not matched by *
+    "starter_home/*/*",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
