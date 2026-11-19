@@ -49,7 +49,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             self.assertEqual(migrate_database(db), TARGET_VERSION)
-            self.assertEqual(TARGET_VERSION, 6)
+            self.assertEqual(TARGET_VERSION, 7)
             self.assertEqual(list(Path(d).glob("*.bak")), [])
             conn = sqlite3.connect(db)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
@@ -73,7 +73,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
             conn.close()
 
-            self.assertEqual(migrate_database(db), 6)
+            self.assertEqual(migrate_database(db), 7)
 
             bak = Path(d) / "state.db.v2.bak"
             self.assertTrue(bak.exists())
@@ -94,8 +94,8 @@ class MigrationTests(unittest.TestCase):
             conn.execute("ALTER TABLE messages ADD COLUMN sender_user_id INTEGER")
             conn.commit()
             conn.close()
-            self.assertEqual(migrate_database(db), 6)
-            self.assertEqual(migrate_database(db), 6)  # no-op rerun
+            self.assertEqual(migrate_database(db), 7)
+            self.assertEqual(migrate_database(db), 7)  # no-op rerun
 
     def test_v3_upgrade_cleans_duplicates_and_owner_dm_is_approved(self):
         with tempfile.TemporaryDirectory() as d:
@@ -118,7 +118,7 @@ class MigrationTests(unittest.TestCase):
                 )
                 conn.execute("UPDATE messages SET is_deleted = 1 WHERE id IN (4, 5)")
 
-            self.assertEqual(migrate_database(db), 6)
+            self.assertEqual(migrate_database(db), 7)
             self.assertTrue(db.with_name("state.db.v3.bak").exists())
             with sqlite3.connect(db) as conn:
                 self.assertEqual(conn.execute("SELECT id, is_deleted FROM messages ORDER BY id").fetchall(), [
@@ -138,7 +138,7 @@ class MigrationTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_v4_db_upgrades_to_6_preserving_rows(self):
+    def test_v4_db_upgrades_to_7_preserving_rows(self):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             with sqlite3.connect(db) as conn:
@@ -155,7 +155,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
             store = Store(Path(d), owner_id=OWNER_ID)
             try:
-                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 7)
                 chat = store._conn.execute("SELECT * FROM chats WHERE chat_id = '-100'").fetchone()
                 self.assertEqual(
                     (chat["authorization_status"], chat["title"], chat["traits_json"], chat["bot_depth"],

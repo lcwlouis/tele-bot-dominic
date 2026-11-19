@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import httpx
 
+from dom.usage import UsageRecorder, check_model_allowed
+
 DEFAULT_BASE_URL = "https://openrouter.ai/api/alpha"  # [models.triage].base_url in the starter config
 
 
@@ -12,11 +14,17 @@ class JevUnavailable(Exception):
 
 
 class JevClient:
-    def __init__(self, http: httpx.AsyncClient, api_key: str, model: str, base_url: str = DEFAULT_BASE_URL):
+    def __init__(
+        self, http: httpx.AsyncClient, api_key: str, model: str, base_url: str = DEFAULT_BASE_URL,
+        *, usage: UsageRecorder | None = None,
+    ):
         self.http, self.api_key, self.model = http, api_key, model
+        self.usage = usage
+        self.host = httpx.URL(base_url).host
         self.url = f"{base_url.rstrip('/')}/decisions"
 
     async def decide(self, state: str, questions: dict) -> dict[str, dict | None]:
+        await check_model_allowed()
         try:
             response = await self.http.post(
                 self.url,
@@ -24,6 +32,8 @@ class JevClient:
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=8,
             )
+            if self.usage is not None:
+                await self.usage.record_response(response, "triage", self.model, self.host)
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:

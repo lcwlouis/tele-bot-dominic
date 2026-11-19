@@ -13,12 +13,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from dom.agent import unfence
 from dom.home import PrivateAccessError, limit_for
 from dom.models import Scope
-from dom.telegram import gate
+from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -108,6 +109,10 @@ class MemoryPass:
         """Read what is new in the chat and update its notes. False when there was nothing to do (no new
         messages, or the chat is not approved); True when the model was asked. A model failure raises and
         leaves the cursor, so the same messages are offered again next time."""
+        async with self.app.locks[chat_id]:
+            return await self._run(chat_id)
+
+    async def _run(self, chat_id: int) -> bool:
         app, store = self.app, self.app.store
         batch = await store.get_memory_batch(chat_id, BATCH_SIZE)
         messages = [m for m in batch if m.role != "event"]
@@ -156,9 +161,12 @@ class MemoryPass:
 
     async def _ask(self, chat_id: int, request: list[dict]) -> str | None:
         """One model request, unless the chat has stopped being approved since the pass began."""
-        if await gate.decide_chat(self.app.store, chat_id, self.app.owner_id) != "process":
+        try:
+            with model_request("memory", chat_id, partial(self.app.dispatch.model_allowed, chat_id)):
+                await check_model_allowed()
+                message = await self.app.client.complete(request, [])
+        except ModelCallSkipped:
             return None
-        message = await self.app.client.complete(request, [])
         return message.get("content") or ""
 
     def _offered(self, scope: Scope, chat_id: int, messages: list) -> dict[str, str]:

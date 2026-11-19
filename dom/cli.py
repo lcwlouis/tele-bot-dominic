@@ -20,6 +20,7 @@ from dom.media import MediaDescriber
 from dom.store import Store
 from dom.telegram import executor, owner
 from dom.telegram.handlers import App, build_router
+from dom.usage import UsageRecorder
 
 SHUTDOWN_DRAIN_SECONDS = 10
 ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"]
@@ -37,12 +38,14 @@ def model_api_key(config: Config, name: str = "chat") -> str | None:
     return require_secret(config, endpoint.api_key_env) if endpoint.api_key_env else None
 
 
-def chat_client(config: Config, http: httpx.AsyncClient) -> FallbackClient:
+def chat_client(
+    config: Config, http: httpx.AsyncClient, usage: UsageRecorder | None = None,
+) -> FallbackClient:
     """The chat model, with `[models.chat_fallback]` (if configured) used when it is down."""
-    primary = ChatClient(config.models["chat"], model_api_key(config), http)
+    primary = ChatClient(config.models["chat"], model_api_key(config), http, usage=usage)
     fallback = None
     if "chat_fallback" in config.models:
-        fallback = ChatClient(config.models["chat_fallback"], model_api_key(config, "chat_fallback"), http)
+        fallback = ChatClient(config.models["chat_fallback"], model_api_key(config, "chat_fallback"), http, usage=usage)
     return FallbackClient(primary, fallback)
 
 
@@ -94,14 +97,15 @@ async def run(home: Path) -> None:
     try:
         me = await bot.get_me()
         async with httpx.AsyncClient() as http:
-            client = chat_client(config, http)
+            usage = UsageRecorder(store)
+            client = chat_client(config, http, usage)
             triage = config.models["triage"]
             triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
-            jev = JevClient(http, triage_key, triage.model, triage.base_url) if triage_key else None
+            jev = JevClient(http, triage_key, triage.model, triage.base_url, usage=usage) if triage_key else None
             media = config.models["media"]
             media_key = config.secret(media.api_key_env) if media.api_key_env else None
             media_describer = (
-                MediaDescriber(ChatClient(media, media_key, http), bot) if media_key or not media.api_key_env else None
+                MediaDescriber(ChatClient(media, media_key, http, usage=usage), bot) if media_key or not media.api_key_env else None
             )
             app = App(
                 config=config, home=Home(home), store=store, client=client,

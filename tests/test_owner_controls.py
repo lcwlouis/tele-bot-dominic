@@ -183,7 +183,11 @@ async def test_status_lists_approved_chats_with_buttons_and_a_footer(two_approve
     assert [r[0] for r in body] == ["your DM", "Book Club", "DM with Fran"]  # owner, then newest
     assert "The Group" not in text  # pending chats are not listed
     assert body[2][3] == "1" and all(r[1].endswith(("asleep", "offline", "online")) for r in body)
-    assert lines[-1] == "Pending approval: 1 · Chat model: m · Triage model: n/a"
+    assert lines[-3:] == [
+        "Pending approval: 1 · Chat model: m · Triage model: n/a",
+        "Today: 0 calls · $0.00",
+        "Last reply: —",
+    ]
     assert buttons(markup) == [
         [("☀️ your DM", f"wake:{OWNER}"), ("🌙 Sleep", f"sleep:{OWNER}")],  # DMs have no Leave button
         [("☀️ Book Club", f"wake:{FRIEND_GROUP}"), ("🌙 Sleep", f"sleep:{FRIEND_GROUP}"),
