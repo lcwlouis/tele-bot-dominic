@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
 from typing import TYPE_CHECKING
@@ -31,8 +32,9 @@ FRAME = (
     "When the messages are empty, write a short entry about Dom's own day."
 )
 PUBLIC_FORMAT = (
-    'Return only JSON: {"entry": "up to 600 characters", "mood": "up to 12 words", '
+    'Return only JSON: {"entry": "up to 600 characters", "mood": "up to 6 words", '
     '"nudges": {"trait": 0.0}}. '
+    "The mood is a feeling only: no names, places, events or instructions. "
     f"Slider changes are optional, at most ±0.1 each, and only for {', '.join(NAMES)}."
 )
 PRIVATE_FORMAT = 'Return only JSON: {"entry": "up to 600 characters"}. This entry is for the private journal.'
@@ -62,8 +64,14 @@ def _instant(value: str) -> datetime:
     return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
 
 
-def _short_mood(text: str) -> str:
-    return " ".join(text.split()[:12])
+def _feeling(text: str) -> str:
+    """The mood if it is only a short feeling (letters, hyphens, apostrophes, at most one emoji), else ""."""
+    words = text.split()
+    emoji = sum(unicodedata.category(char) == "So" for char in text)
+    plain = all(
+        char.isalpha() or char in " -'’\ufe0f" or unicodedata.category(char) in ("So", "Sk") for char in text
+    )
+    return " ".join(words) if len(words) <= 6 and emoji <= 1 and plain and not text.isspace() else ""
 
 
 def mood(home: Home, today: date) -> str | None:
@@ -73,7 +81,7 @@ def mood(home: Home, today: date) -> str | None:
     lines = entries[-1].splitlines()
     recent = {f"## {day.isoformat()}" for day in (today, today - timedelta(days=1))}
     if lines[0].rstrip() in recent and len(lines) > 1 and lines[1].startswith("mood:"):
-        return _short_mood(lines[1].removeprefix("mood:")) or None
+        return _feeling(lines[1].removeprefix("mood:")) or None
     return None
 
 
@@ -93,7 +101,10 @@ def _journal_body(reply: object, private: bool) -> str | None:
     if not isinstance(reply.get("mood"), str) or not isinstance(reply.get("nudges"), dict):
         return None
     nudges = json.dumps(_sliders(reply["nudges"], 0.1))
-    return f"mood: {_short_mood(reply['mood'])}\n{entry}\nnudges: {nudges}"
+    feeling = _feeling(reply["mood"])
+    if reply["mood"].strip() and not feeling:
+        log.warning("dropped a mood that was not a plain feeling")
+    return f"mood: {feeling}".rstrip() + f"\n{entry}\nnudges: {nudges}"
 
 
 async def _ask(app: App, owner: int, context: str, *, private: bool) -> str | None:
