@@ -128,6 +128,7 @@ async def run(home: Path) -> None:
                 bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id, media_describer=media_describer,
                 search_client=search_client(config, http, usage),
             )
+            await app.stickers.refresh()
             app.dispatch.jobs.register("habits", habits.due, partial(habits.run, app))
             app.dispatch.jobs.register("reflection", reflection.due, partial(reflection.run, app))
             dispatcher = Dispatcher()

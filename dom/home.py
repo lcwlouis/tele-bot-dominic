@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from tempfile import NamedTemporaryFile
@@ -145,6 +146,9 @@ class Home:
                 pending.replace(path)
             finally:
                 pending.unlink(missing_ok=True)
+
+    def write_sticker_sets(self, names: list[str]) -> None:
+        self.scoped(allow_private=False)._write_regular("stickers.toml", f"sets = {json.dumps(names)}\n")
 
     def replace_soul(self, old: str, new: str) -> bool:
         home = self.scoped(allow_private=False)

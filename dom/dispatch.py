@@ -243,6 +243,7 @@ class Dispatcher:
             await self.sleep(TICK_SECONDS)
 
     async def _background_jobs(self) -> None:
+        await self.app.stickers.refresh()
         await self.jobs.tick()
         await self.openers.maybe(self.now())
 
@@ -477,10 +478,13 @@ class Dispatcher:
         try:
             await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
-                thread_id=live.thread_id if live else None,
+                thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
             )
         finally:
-            if newest.is_bot and newest.sender_user_id is not None and actions.bubbles and not actions.no_response:
+            if (
+                newest.is_bot and newest.sender_user_id is not None and not actions.no_response
+                and (actions.bubbles or actions.sticker in app.stickers.by_emoji)
+            ):
                 now = self.now()
                 self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}
                 self._bot_replies[(chat_id, newest.sender_user_id)] = now
@@ -547,6 +551,8 @@ class Dispatcher:
         if scope == "owner_dm" and chat_id == app.owner_id and newest is not None:
             if casual := await self.reminders.casual_note():
                 note += f"\n{casual}"
+        if not final_bot_turn and (sticker_note := app.stickers.turn_note()):
+            note += f"\n{sticker_note}"
         if extra_note:
             note += f"\n{extra_note}"
         if final_bot_turn:

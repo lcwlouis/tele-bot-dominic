@@ -34,6 +34,7 @@ OWNER_COMMANDS = [
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
     BotCommand(command="proposals", description="Review pending changes"),
     BotCommand(command="reminders", description="List and cancel reminders"),
+    BotCommand(command="stickers", description="Add or remove a sticker set"),
 ]
 
 MAX_MESSAGE = 4096  # Telegram's limit for a message's text
@@ -298,3 +299,15 @@ async def show_reminders(app: App) -> None:
         await app.bot.send_message(
             app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
+
+
+async def edit_stickers(app: App, args: list[str]) -> None:
+    if len(args) != 2 or args[0] not in ("add", "remove"):
+        await app.bot.send_message(app.owner_id, "Use /stickers add <set_name> or /stickers remove <set_name>.")
+        return
+    try:
+        result = await app.stickers.change(*args)
+    except (OSError, ValueError) as error:
+        result = str(error) if isinstance(error, ValueError) else "Could not update stickers.toml."
+    await app.store.record_owner_event(result)
+    await app.bot.send_message(app.owner_id, result)

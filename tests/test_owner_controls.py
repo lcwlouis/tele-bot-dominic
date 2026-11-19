@@ -98,6 +98,7 @@ def test_owner_commands():
         ("preset", "Change Dom's persona in a chat"),
         ("proposals", "Review pending changes"),
         ("reminders", "List and cancel reminders"),
+        ("stickers", "Add or remove a sticker set"),
     ]
 
 
