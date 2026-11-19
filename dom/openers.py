@@ -80,6 +80,8 @@ class Openers:
                 now - _timestamp(latest[1]) < QUIET_PERIOD or str(latest[0]) == await store.kv_get(LAST_MESSAGE)
             ):
                 return
+            if (await store.get_unread(owner))[0] > 0:  # the owner wrote and Dom has not answered yet
+                return
             if self.rng.random() >= MINUTE_CHANCE:
                 return
             await store.kv_set(LAST_ATTEMPT, now.isoformat())
