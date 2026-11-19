@@ -298,6 +298,17 @@ class Dispatcher:
     async def turn_allowed(self, chat_id: int, scope: Scope) -> bool:
         return (scope != "owner_dm" or chat_id == self.app.owner_id) and await self.model_allowed(chat_id)
 
+    async def desktop_pause(self, chat_id: int, started_at: str) -> str | None:
+        """Why the desktop worker must stop before its next model call, or None. Desktop spend counts toward the daily cap."""
+        if not await self.turn_allowed(chat_id, "owner_dm"):
+            return "model calls are not allowed"
+        if await self.usage.over_cap(self.app.config, self.app.bot):
+            return "paused by today's spend cap"
+        cap = self.app.config.desktop.task_cost_cap_usd
+        if cap and await self.app.store.usage_cost("desktop", chat_id, started_at) >= cap:
+            return f"task cost cap of ${cap:.2f} reached"
+        return None
+
     async def override(self, chat_id: int, command: str) -> bool:
         """The owner's /wake or /sleep. False if the chat is unknown or not approved; that lookup never
         creates a chat row."""

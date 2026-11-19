@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
     from dom.telegram.handlers import App
 
-from dom.usage import check_model_allowed, model_request
+from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
 log = logging.getLogger(__name__)
 WORKER_SYSTEM_PROMPT = (
@@ -38,6 +38,7 @@ ACTIVE = ("queued", "running", "waiting_owner")
 class Progress:
     steps: int = 0
     note: str = ""  # the model's own latest progress text, never tool output
+    paused: str = ""  # why the next model call was refused
 
 
 class DesktopWorker:
@@ -156,8 +157,10 @@ class DesktopWorker:
                     result, files, draft = await self._work(row, progress)
                 finally:
                     await self._clear_inbox()
-        except (TimeoutError, SandboxError, ValueError) as exc:
+        except (TimeoutError, SandboxError, ValueError, ModelCallSkipped) as exc:
             error = "desktop task time limit reached" if isinstance(exc, TimeoutError) else str(exc)
+            if isinstance(exc, ModelCallSkipped):
+                error = progress.paused or "model calls are not allowed"
             row = await store.update_desktop_task(
                 task_id, chat_id, ("running", "waiting_owner"), "failed",
                 result=progress.note or f"Stopped after {progress.steps} steps: {error}"[:500], error=error[:500],
@@ -215,7 +218,11 @@ class DesktopWorker:
         steps = 0
         proposed = False
         draft = None
-        allowed = partial(self.app.dispatch.turn_allowed, chat_id, "owner_dm")
+
+        async def allowed() -> bool:
+            progress.paused = await self.app.dispatch.desktop_pause(chat_id, row["started_at"]) or ""
+            return not progress.paused
+
         with model_request("desktop", chat_id, allowed):
             while steps < self.max_steps:
                 async with asyncio.timeout_at(deadline):
