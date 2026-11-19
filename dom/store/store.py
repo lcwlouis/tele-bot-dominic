@@ -332,6 +332,20 @@ class Store:
             )
             return self._read_chat_auth(conn, chat_id)
 
+    async def claim_approval_prompt(self, chat_id: int | str) -> bool:
+        """Atomically mark the owner prompt as sent. True for exactly one caller per pending chat."""
+        return await self._run(self._claim_approval_prompt, str(chat_id))
+
+    def _claim_approval_prompt(self, chat_id: str) -> bool:
+        with self._tx() as conn:
+            self._ensure_chat(conn, chat_id)
+            cur = conn.execute(
+                "UPDATE chats SET approval_prompt_sent = 1, updated_at = ? WHERE chat_id = ? "
+                "AND approval_prompt_sent = 0 AND authorization_status = 'pending_approval'",
+                (_now(), chat_id),
+            )
+            return cur.rowcount == 1
+
     async def list_chats(self, status: str | None = None) -> list[dict[str, Any]]:
         return await self._run(self._list_chats, status)
 

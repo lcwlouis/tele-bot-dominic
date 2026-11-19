@@ -470,6 +470,16 @@ class IdentityTests(StoreTestCase):
         self.assertEqual((await self.store.resolve_person(222, None, "Alan R")).person_key, "handle_alan")
 
 
+class ApprovalPromptTests(StoreTestCase):
+    async def test_claim_approval_prompt_succeeds_once_per_pending_chat(self):
+        results = await asyncio.gather(*(self.store.claim_approval_prompt("-100") for _ in range(5)))
+        self.assertEqual(sorted(results), [False] * 4 + [True])
+        await self.store.set_chat_auth_status("-100", "pending_approval", approval_prompt_sent=False)
+        self.assertTrue(await self.store.claim_approval_prompt("-100"))
+        # the owner's own DM is approved from the start and never needs a prompt
+        self.assertFalse(await self.store.claim_approval_prompt(OWNER_ID))
+
+
 class ScopeTests(StoreTestCase):
     def test_scope_for_owner_private_vs_group(self):
         self.assertEqual(self.store.scope_for(OWNER_ID, "private"), "owner_dm")
