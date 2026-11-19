@@ -1,7 +1,10 @@
 <section class="panel" id="briefs">
   <header><h2>Briefs</h2></header>
   {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>
-  {% elif not context.rows %}<p class="fog">No core-change briefs yet.</p>{% endif %}
+  {% elif not context.rows %}
+  <p class="fog">No core-change briefs yet.</p>
+  <p class="fog">When Dom thinks his own code should change, he writes a brief here for a coding agent.</p>
+  {% endif %}
   {% for brief, blocks in context.rows %}
   <article class="chat">
     <details>

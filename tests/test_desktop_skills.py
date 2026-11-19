@@ -84,7 +84,7 @@ async def test_dashboard_skill_edit_shows_full_text_and_diff_then_applies(make_a
     ) as client:
         auth = {"Authorization": f"Bearer {TOKEN}"}
         page = await client.get("/proposals?kind=skill", headers=auth)
-        assert "Skill · desktop" in page.text
+        assert "Skill proposed after a desktop task" in page.text
         assert "<del>- Use the old tool." in page.text
         assert "<ins>+ Use the new tool." in page.text
         assert "&lt;example&gt;" in page.text

@@ -34,4 +34,9 @@
     <span><i class="online-key"></i>Online today</span>
     <span><i class="message-key"></i>Messages per hour</span>
   </div>
+  <dl class="today" aria-label="Today">
+    {% for label, value in dial.today %}
+    <div><dt>{{ label }}</dt><dd class="num">{{ value }}</dd></div>
+    {% endfor %}
+  </dl>
 </section>

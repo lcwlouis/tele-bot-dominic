@@ -1,7 +1,7 @@
 <section class="panel turns" id="turns">
   <header><h2>Turn log</h2><span class="fog">Last 200</span></header>
   {% if context.choices %}
-  <form class="filters" action="/turns" hx-get="/turns" hx-target="#turns" hx-swap="outerHTML">
+  <form class="filters" action="/turns" hx-get="/turns" hx-trigger="change" hx-target="#turns" hx-swap="outerHTML">
     <label>Chat
       <select name="chat">
         <option value="">All chats</option>
@@ -10,7 +10,7 @@
         {% endfor %}
       </select>
     </label>
-    <button class="quiet">Filter</button>
+    <noscript><button class="quiet">Filter</button></noscript>
   </form>
   {% endif %}
   {% if not context.rows %}<p class="fog">No turns yet{% if context.chat %} for this chat{% endif %}. Dom replies when someone messages him.</p>{% endif %}

@@ -1,3 +1,4 @@
+import re
 from datetime import time, timedelta
 from unittest.mock import AsyncMock
 
@@ -70,7 +71,7 @@ async def test_dashboard_pages_and_day_dial(make_app, browser):
         assert all(label in index.text for label in ("Waiting for you", "Chats", "Usage", "Turn log"))
         assert 'id="dial"' in index.text and "Online in Book Club" in index.text and "until 12:35" in index.text
         assert "23:00 to 07:00" in index.text
-        assert index.text.count('class="online-arc"') == 2
+        assert index.text.count('class="online-arc"') == 1  # the 5-minute owner mark reaches the group's session
         assert 'data-hour="11"' in index.text and 'data-count="2"' in index.text
         assert "/static/dashboard.css" in index.text and "/static/htmx.min.js" in index.text
         assert "<style" not in index.text and " style=" not in index.text
@@ -159,3 +160,155 @@ async def test_agent_and_dispatch_write_turn_and_daily_retention(make_app):
         await app.store.record_turn(now - timedelta(days=age), OWNER, "owner_dm", 0, [], "", False, 0, "Stayed quiet")
     await app.dispatch.jobs.tick()
     assert len(await app.store.recent_turns()) == 2
+
+
+def online_arcs(html):
+    return re.findall(r'<path d="([^"]+)" class="online-arc"', html)
+
+
+def today_rows(html):
+    section = re.search(r'<dl class="today"[^>]*>(.*?)</dl>', html, re.S).group(1)
+    return dict(re.findall(r"<dt>(.*?)</dt>\s*<dd[^>]*>(.*?)</dd>", section, re.S))
+
+
+def test_online_arcs_have_a_minimum_length_and_merge():
+    from dom.web.pages import MIN_ARC_HOURS, _online_arcs
+
+    assert MIN_ARC_HOURS == 0.25
+    assert _online_arcs([(12, 12.05)]) == [[12, 12.25]]
+    assert _online_arcs([(12, 13)]) == [[12, 13]]
+    assert _online_arcs([(23.95, 24)]) == [[23.75, 24]]  # the day's end keeps the mark inside the dial
+    assert _online_arcs([(12, 12.05), (12.1, 12.5)]) == [[12, 12.5]]  # the extended mark reaches the next one
+    assert _online_arcs([(15, 15.05), (9, 9.05)]) == [[9, 9.25], [15, 15.25]]
+    assert _online_arcs([]) == []
+
+
+async def test_a_three_minute_wake_is_drawn_as_a_fifteen_minute_arc(make_app, browser):
+    from dom.web.pages import _arc
+
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    habits = read_habits(app.home)
+    await app.dispatch.presence.wake(GROUP, habits)
+    app.dispatch.now.advance(minutes=3)
+    await app.dispatch.presence.sleep(GROUP, habits)
+    async with browser(app) as client:
+        arcs = online_arcs((await client.get("/")).text)
+    assert arcs == [_arc(12, 12.25)]
+    assert arcs != [_arc(12, 12.05)]
+
+
+@pytest.mark.parametrize("kind,source,label", [
+    ("soul_edit", "reflection", "Soul edit, suggested in reflection"),
+    ("soul_edit", "dashboard", "Soul edit, asked for in the dashboard"),
+    ("memory_fact", "import:chatgpt", "Memory imported from ChatGPT"),
+    ("memory_fact", "import:muse", "Memory imported from Muse"),
+    ("skill", "desktop", "Skill proposed after a desktop task"),
+    ("plugin", "draft_plugin", "Plugin draft"),
+])
+def test_proposal_labels_are_sentences(kind, source, label):
+    from dom.web.pages import _proposal_label
+
+    assert _proposal_label(kind, source) == label
+    assert "\u00b7" not in label
+
+
+async def test_proposal_cards_use_sentence_labels(make_app, browser):
+    app = make_app()
+    app.home._write_regular("SOUL.md", "One old line")
+    await app.proposals.create("soul_edit", "A change", {"old": "One old line", "new": "A new line"}, "reflection")
+    await app.proposals.create("memory_fact", "Likes tea", {"file": "USER.md", "text": "Likes tea"}, "import:chatgpt", notify=False)
+    async with browser(app) as client:
+        html = (await client.get("/proposals")).text
+    assert "Soul edit, suggested in reflection" in html
+    assert "\u00b7" not in html
+
+
+async def test_today_list_reads_usage_turns_and_reminders(make_app, browser):
+    app = make_app()
+    now = app.dispatch.now()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    async with browser(app) as client:
+        empty = today_rows((await client.get("/")).text)
+        assert empty == {
+            "Turns today": "0", "Replies sent": "0", "Spend today": "$0.00", "Next reminder": "No reminders",
+        }
+        await app.store.record_usage(now.isoformat(), "chat", "example-model", "example.org", GROUP, 2, 3, 0.8, 0)
+        await app.store.record_usage((now - timedelta(days=1)).isoformat(), "chat", "m", "example.org", GROUP, 2, 3, 5, 0)
+        for outcome in ("Replied in 2 bubbles", "Replied privately", "Stayed quiet", "Reacted \U0001f923"):
+            await app.store.record_turn(now, GROUP, "group", 1, [], "m", False, 5, outcome)
+        await app.store.record_turn(now - timedelta(days=1), GROUP, "group", 1, [], "m", False, 5, "Replied in 1 bubble")
+        await app.dispatch.reminders.create("2026-01-01T18:30:00", "Water the plants")
+        await app.dispatch.reminders.create("2026-01-01T15:00:00", "Call the dentist")
+        rows = today_rows((await client.get("/")).text)
+    assert rows == {
+        "Turns today": "4", "Replies sent": "2", "Spend today": "$0.80", "Next reminder": "15:00 Call the dentist",
+    }
+
+
+async def test_a_reminder_on_another_day_names_the_day(make_app, browser):
+    app = make_app()
+    await app.dispatch.reminders.create("2026-01-03T09:00:00", "Renew the pass")
+    async with browser(app) as client:
+        assert today_rows((await client.get("/")).text)["Next reminder"] == "Sat 09:00 Renew the pass"
+
+
+async def test_forms_apply_on_change_and_keep_a_no_script_button(make_app, browser):
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    app.home.write_preset("classic", "---\ntitle: Classic\n---\n")
+    app.home._write_regular("SOUL.md", "One old line")
+    await app.proposals.create("soul_edit", "A change", {"old": "One old line", "new": "y"}, "reflection", notify=False)
+    async with browser(app) as client:
+        chats = (await client.get("/chats")).text
+        proposals = (await client.get("/proposals")).text
+        turns = (await client.get("/turns")).text
+    preset = re.search(r'<form class="inline-form" method="post" action="/chats/[^"]+/preset".*?</form>', chats, re.S).group(0)
+    assert 'hx-trigger="change"' in preset
+    assert re.search(r'<label class="sr-only" for="preset-\d+">', preset)
+    assert re.search(r'<select name="preset" id="preset-\d+"', preset)
+    assert "<noscript><button" in preset and preset.count("<button") == 1
+    for html in (proposals, turns):
+        form = re.search(r'<form class="filters".*?</form>', html, re.S).group(0)
+        assert 'hx-trigger="change"' in form
+        assert re.search(r"<noscript>\s*<button[^>]*>Filter</button>\s*</noscript>", form)
+        assert form.count("<button") == 1
+
+
+async def test_unread_zero_is_fog_and_other_counts_are_not(make_app, browser):
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    await app.store.set_chat_auth_status(FRIEND, "approved", title="Reader")
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(FRIEND), role="user", text="Hi", msg_id=1, sender_user_id=FRIEND,
+        created_at=app.dispatch.now().isoformat(), visibility_scope=app.store.visibility_for(FRIEND),
+    ))
+    async with browser(app) as client:
+        counts = re.findall(r'<span class="(unread num[^"]*)" aria-label="(\d+) unread"', (await client.get("/chats")).text)
+        css = (await client.get("/static/dashboard.css")).text
+    assert ("unread num", "1") in counts
+    assert all(cls == "unread num zero" for cls, count in counts if count == "0") and len(counts) > 1
+    assert ".chat .unread.zero { color: var(--fog); }" in css
+
+
+async def test_empty_plugin_and_brief_pages_say_what_to_do(make_app, browser):
+    app = make_app()
+    async with browser(app) as client:
+        plugins = (await client.get("/plugins")).text
+        briefs = (await client.get("/briefs")).text
+    assert "No plugins are installed." in plugins
+    assert "Ask Dom in your DM to write a plugin for something he does often." in plugins
+    assert "You'll review the code here before it runs." in plugins
+    assert "No core-change briefs yet." in briefs
+    assert "When Dom thinks his own code should change, he writes a brief here for a coding agent." in briefs
+
+
+def test_every_interactive_element_keeps_the_arc_focus_ring():
+    from pathlib import Path
+
+    import dom.web
+
+    css = (Path(dom.web.__file__).parent / "static" / "dashboard.css").read_text()
+    assert ":focus-visible { outline: 2px solid var(--arc); outline-offset: 2px; }" in css
+    assert not re.search(r"outline:\s*(none|0)\b", css)
+    assert "prefers-reduced-motion: reduce" in css

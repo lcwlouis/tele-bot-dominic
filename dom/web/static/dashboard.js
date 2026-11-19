@@ -64,3 +64,5 @@ document.addEventListener("click", async (event) => {
         status.textContent = "Copy the selected Markdown.";
     }
 });
+
+document.querySelector(".rail [aria-current]")?.scrollIntoView({ inline: "center", block: "nearest" });

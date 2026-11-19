@@ -4,7 +4,7 @@
   <header><h2>Waiting for you</h2>{% if context.count %}<span class="count num" aria-label="{{ context.count }} proposals">{{ context.count }}</span>{% endif %}</header>
   {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
   {% if context.sources %}
-  <form class="filters" action="/proposals" hx-get="/proposals" hx-target="#proposals" hx-swap="outerHTML">
+  <form class="filters" action="/proposals" hx-get="/proposals" hx-trigger="change" hx-target="#proposals" hx-swap="outerHTML">
     <label>Kind
       <select name="kind">
         <option value="">All kinds</option>
@@ -22,7 +22,7 @@
         {% endfor %}
       </select>
     </label>
-    <button class="quiet">Filter</button>
+    <noscript><button class="quiet">Filter</button></noscript>
   </form>
   {% endif %}
   {% if not context.cards %}<p class="fog">Nothing is waiting for you.</p>{% endif %}
@@ -44,7 +44,7 @@
       </div>
     </form>
     {% else %}
-    <span class="kind">{{ {"soul_edit": "Soul edit", "skill": "Skill", "plugin": "Plugin", "memory_fact": "Memory fact"}[card.kind] }} · {{ card.source }}</span>
+    <span class="kind">{{ card.label }}</span>
     <p>{{ card.title }}</p>
     {% if card.kind == "soul_edit" %}
     {{ diff(card.body) }}
@@ -64,7 +64,7 @@
     <p>{{ card.body.description }}</p>
     {% if card.body.network %}<p class="kind">This plugin can reach the internet</p>{% endif %}
     <div class="actions"><a href="{{ card.review_path }}">Review code</a></div>
-    {% else %}<p>{{ card.body.file }} · {{ card.body.text }}</p>{% endif %}
+    {% else %}<p>{{ card.body.file }}: {{ card.body.text }}</p>{% endif %}
     {% if card.kind != "plugin" %}
     <div class="actions" hx-target="#proposals" hx-swap="outerHTML">
       <button class="primary" hx-post="/proposals/{{ card.id }}/approve?{{ query }}">Approve</button>
