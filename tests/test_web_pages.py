@@ -253,7 +253,7 @@ async def test_a_reminder_on_another_day_names_the_day(make_app, browser):
         assert today_rows((await client.get("/")).text)["Next reminder"] == "Sat 09:00 Renew the pass"
 
 
-async def test_forms_apply_on_change_and_keep_a_no_script_button(make_app, browser):
+async def test_forms_apply_on_change_and_only_get_filters_have_no_script_buttons(make_app, browser):
     app = make_app()
     await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
     app.home.write_preset("classic", "---\ntitle: Classic\n---\n")
@@ -265,9 +265,11 @@ async def test_forms_apply_on_change_and_keep_a_no_script_button(make_app, brows
         turns = (await client.get("/turns")).text
     preset = re.search(r'<form class="inline-form" method="post" action="/chats/[^"]+/preset".*?</form>', chats, re.S).group(0)
     assert 'hx-trigger="change"' in preset
-    assert re.search(r'<label class="sr-only" for="preset-\d+">', preset)
+    assert re.search(
+        r'<label class="sr-only" for="preset-\d+">Preset for .+ \(changes on selection\)</label>', preset,
+    )
     assert re.search(r'<select name="preset" id="preset-\d+"', preset)
-    assert "<noscript><button" in preset and preset.count("<button") == 1
+    assert "<noscript>" not in preset and "<button" not in preset
     for html in (proposals, turns):
         form = re.search(r'<form class="filters".*?</form>', html, re.S).group(0)
         assert 'hx-trigger="change"' in form
