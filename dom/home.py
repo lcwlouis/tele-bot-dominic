@@ -23,6 +23,8 @@ LIMITS: dict[str, int] = {
     "private/USER.md": 1375,
     "private/NOTES.md": 2200,
 }
+MAX_SOUL = 6000  # characters in SOUL.md after an approved edit
+MAX_SOUL_EDIT = 2000  # characters in the old or the new text of one soul edit
 # Writable through memory_write but not size-bounded (never loaded into chat prompts).
 UNBOUNDED = {"memory/JOURNAL.md"}
 _MEMORY_WRITE_LOCK = Lock()
@@ -150,14 +152,19 @@ class Home:
     def write_sticker_sets(self, names: list[str]) -> None:
         self.scoped(allow_private=False)._write_regular("stickers.toml", f"sets = {json.dumps(names)}\n")
 
-    def replace_soul(self, old: str, new: str) -> bool:
-        home = self.scoped(allow_private=False)
-        current = home.read("SOUL.md")
+    def edited_soul(self, old: str, new: str) -> str | None:
+        """SOUL.md with `old` replaced by `new`, or None unless `old` occurs in it exactly once."""
+        current = self.scoped(allow_private=False).read("SOUL.md")
         first = current.find(old) if old else -1
         if first == -1 or current.find(old, first + 1) != -1:
-            return False
-        home._write_regular("SOUL.md", current[:first] + new + current[first + len(old):])
-        return True
+            return None
+        return current[:first] + new + current[first + len(old):]
+
+    def replace_soul(self, old: str, new: str) -> None:
+        edited = self.edited_soul(old, new)
+        if edited is None:
+            raise ValueError("SOUL.md must contain the old text exactly once")
+        self.scoped(allow_private=False)._write_regular("SOUL.md", edited)
 
     def journal_entries(self, *, private: bool = False) -> list[str]:
         return _split_journal(self.read(_journal_path(private)))[1]
