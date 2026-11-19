@@ -164,6 +164,9 @@ async def handle_message(app: App, message: Message) -> None:
     if not should_respond(app, message, msg):
         return
     async with app.locks[msg.chat_id]:
+        # The owner may have decided while this turn waited for the lock.
+        if await gate.decide(app.store, msg, app.owner_id) != "process":
+            return
         try:
             await _run_chat_turn(app, msg)
         except Exception:  # one failed turn must not stop the bot
@@ -191,7 +194,10 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         return
     if action not in _DECISIONS:
         return
-    chat = await app.store.set_chat_auth_status(str(chat_id), _DECISIONS[action])
+    chat = await app.store.resolve_pending_chat(str(chat_id), _DECISIONS[action])
+    if chat is None:
+        await app.bot.answer_callback_query(query.id, text="already handled")
+        return
     label = "Approved" if action == "approve" else "Ignored"
     await app.bot.answer_callback_query(query.id, text=label)
     if query.message is not None:
