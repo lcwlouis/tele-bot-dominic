@@ -194,3 +194,18 @@ def test_legacy_owner_found_from_private_memory_when_no_state_json(src, home):
     with pytest.raises(ValueError, match="legacy owner"):
         import_v2(src, home, FRIEND)
     assert not home.exists()
+
+
+def test_symlinks_in_source_are_skipped_and_reported(src, home, tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text("SECRET OUTSIDE")
+    (src / "memory" / "people" / "uid_333_eve.md").symlink_to(outside)
+    (src / "memory" / "MEMORY.md").unlink()
+    (src / "memory" / "MEMORY.md").symlink_to(outside)
+    (src / "identity" / "presets" / "evil.md").symlink_to(outside)
+    report = import_v2(src, home, OWNER)
+    assert "SECRET OUTSIDE" not in "".join(p.read_text() for p in home.rglob("*") if p.is_file() and p.suffix in {".md", ".jsonl"})
+    assert not any(p.is_symlink() for p in home.rglob("*"))
+    assert any("uid_333_eve.md" in item for item in report.skipped)
+    assert any("MEMORY.md" in item for item in report.skipped)
+    assert not (home / "legacy" / "presets" / "evil.md").exists()

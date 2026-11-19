@@ -53,9 +53,17 @@ class Home:
         pure = PurePosixPath(rel)
         if not rel or pure.is_absolute() or ".." in pure.parts or "\\" in rel:
             raise ValueError(f"invalid path: {rel!r}")
-        if pure.parts[0] == "private" and not self.allow_private:
+        # Judge the real location: a symlink must not smuggle private/ content (or anything
+        # outside the home) through a public-looking name.
+        root = self.root.resolve()
+        real = root.joinpath(*pure.parts).resolve()
+        try:
+            inside = real.relative_to(root)
+        except ValueError:
+            raise ValueError(f"{rel} points outside the home") from None
+        if (pure.parts[0] == "private" or inside.parts[:1] == ("private",)) and not self.allow_private:
             raise PrivateAccessError(f"{rel} is not available in this scope")
-        return self.root.joinpath(*pure.parts)
+        return real
 
     def read(self, rel: str) -> str:
         path = self._resolve(rel)
@@ -75,6 +83,8 @@ class Home:
         limit = limit_for(rel)
         if limit is None and rel not in UNBOUNDED:
             return WriteResult(False, "", f"{rel} is not a writable memory file")
+        if path != self.root.resolve().joinpath(*PurePosixPath(rel).parts):
+            return WriteResult(False, "", f"{rel} is a link; memory files must be regular files")
         current = path.read_text() if path.is_file() else ""
 
         if op == "add":

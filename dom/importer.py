@@ -64,6 +64,25 @@ def _legacy_owner_ids(src: Path) -> set[str]:
     return set(re.findall(r"uid_(\d+)_", memory.read_text())) if memory.is_file() else set()
 
 
+def _skip_links(src: Path, report: ImportReport):
+    """copytree ignore callback: leave symlinks out of a copied folder and report them."""
+    def ignore(folder: str, names: list[str]) -> list[str]:
+        links = [n for n in names if (Path(folder) / n).is_symlink()]
+        report.skipped += [f"{(Path(folder) / n).relative_to(src)} (symlink)" for n in links]
+        return links
+    return ignore
+
+
+def _regular(src: Path, path: Path, report: ImportReport) -> bool:
+    """True for a regular file reached without any symlink. A symlink is skipped and reported."""
+    if not path.exists() and not path.is_symlink():
+        return False
+    if path.resolve() != src.resolve() / path.relative_to(src):
+        report.skipped.append(f"{path.relative_to(src)} (symlink)")
+        return False
+    return path.is_file()
+
+
 def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
     src, home = Path(src), Path(home)
     if (home / "config.toml").is_file() and load_config(home).owner_id not in (None, owner_id):
@@ -87,11 +106,14 @@ def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
         path.write_text(text)
         report.imported.append(rel)
 
-    def copy(source: Path, rel: str) -> None:
+    def copy(source: Path, rel: str) -> bool:
+        if not _regular(src, source, report):
+            return False
         put(rel, source.read_text())
+        return True
 
     for name in ("MEMORY.md", "JOURNAL.md"):
-        if (src / "memory" / name).is_file():
+        if (src / "memory" / name).exists():
             copy(src / "memory" / name, f"memory/{name}")
 
     # people profiles, and the old profile paths recorded in the database
@@ -103,14 +125,15 @@ def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
             report.skipped.append(f"memory/people/{profile.name}")
             continue
         rel, handle_only = destination
-        copy(profile, rel)
+        if not copy(profile, rel):
+            continue
         path_remap[f"memory/people/{profile.name}"] = rel
         if handle_only:
             report.unresolved.append(rel)
 
     # the owner's private notes: admin memory first, then the owner DM's chat context
     private_notes = []
-    if (src / "admin" / "PRIVATE_MEMORY.md").is_file():
+    if _regular(src, src / "admin" / "PRIVATE_MEMORY.md", report):
         private_notes.append((src / "admin" / "PRIVATE_MEMORY.md").read_text().strip())
 
     chat_traits: dict[str, dict] = {}
@@ -118,15 +141,15 @@ def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
     for chat_dir in sorted(p for p in chats_dir.iterdir() if p.is_dir()) if chats_dir.is_dir() else []:
         chat_id = chat_dir.name
         context = chat_dir / "CONTEXT.md"
-        if context.is_file():
+        if _regular(src, context, report):
             if chat_id == str(owner_id):
                 private_notes.append(context.read_text().strip())
             else:
                 copy(context, f"memory/chats/{chat_id}.md")
-        if (chat_dir / "transcript.jsonl").is_file():
+        if (chat_dir / "transcript.jsonl").exists():
             copy(chat_dir / "transcript.jsonl", f"transcripts/{chat_id}.jsonl")
         traits_file = chat_dir / "TRAITS.json"
-        if traits_file.is_file():
+        if _regular(src, traits_file, report):
             try:
                 traits = json.loads(traits_file.read_text())
             except ValueError:
@@ -144,17 +167,20 @@ def import_v2(src: Path, home: Path, owner_id: int) -> ImportReport:
             source = base / name
             if not source.exists() or f"legacy/{name}" in report.legacy:
                 continue
+            if source.is_symlink():
+                report.skipped.append(f"{source.relative_to(src)} (symlink)")
+                continue
             target = home / "legacy" / name
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
-                shutil.copytree(source, target, dirs_exist_ok=True)
+                shutil.copytree(source, target, dirs_exist_ok=True, ignore=_skip_links(src, report))
             else:
                 shutil.copyfile(source, target)
             report.legacy.append(f"legacy/{name}")
 
     # database: plain file copies (never open the source), then migrate the copy
     for suffix in ("", "-wal"):
-        if (src / f"state.db{suffix}").is_file():
+        if _regular(src, src / f"state.db{suffix}", report):
             shutil.copyfile(src / f"state.db{suffix}", home / f"state.db{suffix}")
             if suffix == "":
                 report.imported.append("state.db")
