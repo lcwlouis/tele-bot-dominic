@@ -30,6 +30,12 @@ class Stickers:
         self._loaded: dict[str, list[tuple[str, str]]] = {}
         self._lock = asyncio.Lock()
 
+    def names(self) -> list[str]:
+        try:
+            return self._names()
+        except (OSError, ValueError):
+            return []
+
     def _names(self) -> list[str]:
         sets = tomllib.loads(self.home.read("stickers.toml")).get("sets", [])
         if not isinstance(sets, list) or any(not isinstance(name, str) or not SET_NAME.fullmatch(name) for name in sets):

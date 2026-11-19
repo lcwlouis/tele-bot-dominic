@@ -1,0 +1,61 @@
+<section class="panel chats-panel" id="chats">
+  <header><h2>Chats</h2><span class="fog">{{ context.rows|length }} approved, {{ context.pending }} waiting</span></header>
+  {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
+  {% if not context.rows %}<p class="fog">Dom doesn't know any chats yet.</p>{% endif %}
+  <ul class="chats">
+    {% for chat in context.rows %}
+    <li class="chat{% if chat.id == context.woke %} woke{% endif %}">
+      <svg class="glyph {{ chat.state }}" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 12a8 8 0 0 1 16 0"/>
+        {% if chat.state == "asleep" %}<circle cx="12" cy="12" r="2"/>{% endif %}
+      </svg>
+      <div class="who">{{ chat.title }}
+        {% if chat.scope == "owner_dm" %}<span class="fog">Owner DM</span>{% endif %}
+        {% if chat.scope == "friend_dm" %}<span class="fog">Friend DM</span>{% endif %}
+      </div>
+      <div class="meta">
+        {{ chat.preset.title if chat.preset else "No preset" }}, {{ chat.state }}{% if chat.when %} until {{ chat.when }}{% endif %}
+        {% if chat.traits %}
+        <details><summary>Traits</summary>
+          <dl class="kinds">
+            {% for name, value in chat.traits|dictsort %}
+            <dt>{{ name|capitalize }}</dt><dd class="num">{{ "%.0f"|format(value * 100) }}%</dd>
+            {% endfor %}
+          </dl>
+        </details>
+        {% endif %}
+      </div>
+      <span class="unread num{% if not chat.unread %} zero{% endif %}" aria-label="{{ chat.unread }} unread">{{ chat.unread }}</span>
+      <div class="actions" hx-target="#chats" hx-swap="outerHTML">
+        {% if chat.state == "online" %}
+        <button class="quiet" hx-post="/chats/{{ chat.id }}/sleep">Send to sleep</button>
+        {% else %}
+        <button class="primary" hx-post="/chats/{{ chat.id }}/wake">Wake Dom</button>
+        {% endif %}
+        {% if chat.scope == "group" %}
+        <button class="link-danger" hx-post="/chats/{{ chat.id }}/leave"
+          hx-confirm="Leave {{ chat.title }}? Friends will see Dom leave.">Leave group</button>
+        {% endif %}
+        <form class="inline-form" hx-post="/chats/{{ chat.id }}/preset">
+          <select name="preset" aria-label="Preset for {{ chat.title }}">
+            <option value=""{% if not chat.preset %} selected{% endif %}>None</option>
+            {% for preset in context.presets %}
+            <option value="{{ preset.name }}"{% if chat.preset and chat.preset.name == preset.name %} selected{% endif %}>{{ preset.title }}</option>
+            {% endfor %}
+          </select>
+          <button class="quiet">Set preset</button>
+        </form>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  <details class="stickers" {% if context.message and context.message.startswith("Sticker") %}open{% endif %}>
+    <summary>Sticker sets</summary>
+    {% if context.stickers %}<p>{{ context.stickers|join(", ") }}</p>{% endif %}
+    <form class="inline-form" hx-post="/stickers" hx-target="#chats" hx-swap="outerHTML">
+      <label>Set name <input type="text" name="name" required maxlength="64"></label>
+      <button class="quiet" name="action" value="add">Add</button>
+      <button class="link-danger" name="action" value="remove">Remove</button>
+    </form>
+  </details>
+</section>

@@ -80,7 +80,10 @@ async def test_import_prompts_and_reply_creates_private_proposals_with_one_summa
     assert len(await events(app)) == 2
     assert (await events(app))[-1]["text"] == expected
     pending = await app.proposals.pending()
-    assert [(row["source"], json.loads(row["body_json"])) for row in pending] == [
+    bodies = [json.loads(row["body_json"]) for row in pending]
+    batches = {body.pop("import_batch") for body in bodies}
+    assert len(batches) == 1 and len(next(iter(batches))) == 32
+    assert [(row["source"], body) for row, body in zip(pending, bodies)] == [
         ("import:chatgpt", {"file": "USER.md", "text": "Owns a kettle"}),
         ("import:chatgpt", {"file": "USER.md", "text": "Likes book clubs"}),
     ]

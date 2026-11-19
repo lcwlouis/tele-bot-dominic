@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -57,7 +58,7 @@ async def test_access_jwt_validation_and_key_rotation(tmp_path, access_keys):
     def header(signing_key=key, kid="first", **overrides):
         return {"Cf-Access-Jwt-Assertion": jwt.encode(claims | overrides, signing_key, "RS256", headers={"kid": kid})}
 
-    web = create_app(None, Auth(config, jwks))
+    web = create_app(SimpleNamespace(owner_id=None), Auth(config, jwks))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
         assert (await client.get("/", headers=header())).status_code == 200
         for invalid in (
@@ -75,7 +76,7 @@ async def test_dev_token_and_security_headers(tmp_path, monkeypatch):
 
     monkeypatch.setenv("DOM_TEST_TOKEN", "test-token")
     config = Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"})
-    web = create_app(None, Auth(config))
+    web = create_app(SimpleNamespace(owner_id=None), Auth(config))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
         for header, expected in (("Bearer incorrect", 403), ("Bearer test-token", 200)):
             response = await client.get("/", headers={"Authorization": header})
@@ -111,7 +112,7 @@ async def test_post_requires_htmx_and_same_origin(tmp_path, monkeypatch):
 
     monkeypatch.setenv("DOM_TEST_TOKEN", "test-token")
     config = Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"})
-    web = create_app(None, Auth(config))
+    web = create_app(SimpleNamespace(owner_id=None), Auth(config))
 
     @web.api_route("/action", methods=["POST", "PUT"])
     async def action():

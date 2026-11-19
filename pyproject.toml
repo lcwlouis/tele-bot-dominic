@@ -36,6 +36,9 @@ dom = [
     "starter_home/*",
     "starter_home/.env.example",  # dotfiles are not matched by *
     "starter_home/*/*",
+    "web/templates/*.html",
+    "web/static/*",
+    "web/static/fonts/*",
 ]
 
 [tool.pytest.ini_options]

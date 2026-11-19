@@ -1,0 +1,34 @@
+<section class="panel turns" id="turns">
+  <header><h2>Turn log</h2><span class="fog">Last 200</span></header>
+  {% if context.choices %}
+  <form class="filters" action="/turns" hx-get="/turns" hx-target="#turns" hx-swap="outerHTML">
+    <label>Chat
+      <select name="chat">
+        <option value="">All chats</option>
+        {% for id, title in context.choices %}
+        <option value="{{ id }}"{% if context.chat == id %} selected{% endif %}>{{ title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="quiet">Filter</button>
+  </form>
+  {% endif %}
+  {% if not context.rows %}<p class="fog">No turns yet{% if context.chat %} for this chat{% endif %}. Dom replies when someone messages him.</p>{% endif %}
+  <ol class="log">
+    {% for turn in context.rows %}
+    <li>
+      <time datetime="{{ turn.at }}" title="{{ turn.time.strftime('%Y-%m-%d %H:%M %Z') }}">{{ turn.time.strftime('%H:%M') }}</time>
+      <span class="{{ 'held' if turn.outcome.startswith('Held back') or turn.outcome == 'Turn failed' else 'what' }}">{{ turn.title }} · {{ turn.outcome }}</span>
+      <div class="chips">
+        {% for step in turn.steps %}
+        <span>{{ "Search" if step == "web_search" else step|replace("_", " ")|capitalize }}</span>
+        {% endfor %}
+        {% if turn.model %}<span>{{ turn.model }}</span>{% endif %}
+        {% if turn.fallback %}<span class="fallback">Fallback</span>{% endif %}
+        <span class="num">{{ turn.calls }} {{ "call" if turn.calls == 1 else "calls" }}</span>
+        <span class="num">{{ turn.duration_ms }} ms</span>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+</section>

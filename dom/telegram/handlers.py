@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from dom.claim import try_claim
@@ -30,7 +30,6 @@ from dom.proposals import Proposals
 from dom.stickers import Stickers
 from dom.store import Store
 from dom.search import SearchClient
-from dom.traits import load_preset
 from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
 
@@ -76,14 +75,6 @@ class App:
 
 
 # ---- owner events ------------------------------------------------------------------
-
-async def _owner_event(app: App, text: str) -> None:
-    """Note an owner command or button press in the owner's DM history. Never lets a failure reach the owner."""
-    try:
-        await app.store.record_owner_event(text)
-    except Exception:
-        log.exception("could not record an owner event")
-
 
 def _person(name: str) -> str:
     return " ".join(name.split()) or "The owner"
@@ -173,33 +164,33 @@ async def handle_message(app: App, message: Message) -> None:
     if command == "/import":
         if owner_dm:
             response, event = await owner.import_memory(app, message, msg.text)
-            await _owner_event(app, event)
+            await owner.record_event(app, event)
             await app.bot.send_message(msg.chat_id, response)
         return
     if owner_dm:
         who = _person(msg.sender_name)
         if command == "/pending":
             await gate.resend_pending(app.bot, app.store, app.owner_id)
-            await _owner_event(app, f"{who} ran /pending: {await owner.pending_summary(app)}")
+            await owner.record_event(app, f"{who} ran /pending: {await owner.pending_summary(app)}")
             return
         if command == "/status":
             await owner.send_view(app.bot, msg.chat_id, await owner.render_status(app))
-            await _owner_event(app, f"{who} ran /status: {await owner.status_summary(app)}")
+            await owner.record_event(app, f"{who} ran /status: {await owner.status_summary(app)}")
             return
         if command == "/chats":
             await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app))
-            await _owner_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
+            await owner.record_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
             return
         if command == "/stickers":
             await owner.edit_stickers(app, msg.text.split()[1:])
             return
         if command == "/reminders":
             await owner.show_reminders(app)
-            await _owner_event(app, f"{who} ran /reminders")
+            await owner.record_event(app, f"{who} ran /reminders")
             return
         if command == "/proposals":
             await owner.show_proposals(app)
-            await _owner_event(app, f"{who} ran /proposals")
+            await owner.record_event(app, f"{who} ran /proposals")
             return
         if command == "/preset":
             await owner.show_presets(app)
@@ -211,14 +202,13 @@ async def handle_message(app: App, message: Message) -> None:
             except ValueError:
                 return
             if len(parts) <= 2:
-                if not await app.dispatch.override(target, command):
+                result = await owner.override_chat(app, target, command, who)
+                if result is None:
                     await app.bot.send_message(msg.chat_id, "unknown chat")
-                else:
-                    if command == "/wake" and await app.dispatch.spend_paused(target):
-                        await app.bot.send_message(msg.chat_id, await _spend_paused_notice(app, target))
-                    elif len(parts) == 1:
-                        await app.bot.send_message(msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
-                    await _owner_event(app, await _override_event(app, who, command, target))
+                elif result.spend_paused:
+                    await app.bot.send_message(msg.chat_id, result.message)
+                elif len(parts) == 1:
+                    await app.bot.send_message(msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
             return
     async with app.ingest_locks[msg.chat_id]:
         decision = await gate.decide(app.store, msg, app.owner_id)
@@ -260,20 +250,6 @@ _DECISIONS = {"approve": "approved", "ignore": "ignored"}
 _OVERRIDES = {"wake": "/wake", "sleep": "/sleep"}
 
 
-async def _chat_title(app: App, chat_id: int) -> str:
-    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), {"chat_id": str(chat_id), "title": ""})
-    return owner.display_title(chat, app.owner_id)
-
-
-async def _spend_paused_notice(app: App, chat_id: int) -> str:
-    return f"Dom is up in {await _chat_title(app, chat_id)}, but friends' chats are paused by today's spend cap"
-
-
-async def _override_event(app: App, who: str, command: str, chat_id: int) -> str:
-    title = await _chat_title(app, chat_id)
-    return f"{who} woke Dom in {title}" if command == "/wake" else f"{who} sent Dom to sleep in {title}"
-
-
 async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> None:
     try:
         await app.bot.answer_callback_query(query.id, text=text)
@@ -308,34 +284,10 @@ async def _handle_override(app: App, query: CallbackQuery, action: str, raw_chat
     except ValueError:
         await _toast(app, query, "unknown chat")
         return
-    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), None)
-    if chat is None or not await app.dispatch.override(chat_id, _OVERRIDES[action]):
-        await _toast(app, query, "unknown chat")
-        return
-    title = owner.display_title(chat, app.owner_id)
-    if action == "wake" and await app.dispatch.spend_paused(chat_id):
-        await _toast(app, query, await _spend_paused_notice(app, chat_id))
-    else:
-        await _toast(app, query, f"Dom is up in {title}" if action == "wake" else f"Dom is asleep in {title}")
-    await _owner_event(app, await _override_event(app, _person(query.from_user.full_name), _OVERRIDES[action], chat_id))
-    await _refresh_status(app, query)
-
-
-_LEAVABLE = ("approved", "pending_approval", "ignored")
-
-
-async def _leavable_chat(app: App, raw_chat_id: str) -> dict | None:
-    """A known group Dom could still be in. Read-only: never creates a row."""
-    try:
-        chat_id = int(raw_chat_id)
-    except ValueError:
-        return None
-    if chat_id >= 0:
-        return None
-    return next(
-        (c for c in await app.store.list_chats() if c["chat_id"] == str(chat_id) and c["authorization_status"] in _LEAVABLE),
-        None,
-    )
+    result = await owner.override_chat(app, chat_id, _OVERRIDES[action], _person(query.from_user.full_name))
+    await _toast(app, query, result.message if result else "unknown chat")
+    if result is not None:
+        await _refresh_status(app, query)
 
 
 async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id: str) -> None:
@@ -347,36 +299,31 @@ async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id
     if action == "status":
         await _toast(app, query)
         if raw_chat_id == "refresh":
-            await _owner_event(app, f"{who} refreshed the /status list")
+            await owner.record_event(app, f"{who} refreshed the /status list")
             await _refresh_status(app, query)
         return
-    chat = await _leavable_chat(app, raw_chat_id)
+    try:
+        chat_id = int(raw_chat_id)
+    except ValueError:
+        await _toast(app, query, "unknown chat")
+        return
+    if action == "leaveyes":
+        result, left = await owner.leave_chat(app, chat_id, who)
+        await _toast(app, query, result)
+        if left:
+            await _refresh_status(app, query)
+        return
+    chat = await owner.leavable_chat(app, chat_id)
     if chat is None:
         await _toast(app, query, "unknown chat")
         return
     title = owner.display_title(chat, app.owner_id)
-    if action == "leave":
-        await _toast(app, query)
-        await _owner_event(app, f"{who} tapped Leave on {title} (asked to confirm)")
-        await _replace_with_prompt(app, query, f"Leave {title}? Friends will see Dom leave.", InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Yes, leave", callback_data=f"leaveyes:{chat['chat_id']}"),
-            InlineKeyboardButton(text="Cancel", callback_data="status:refresh"),
-        ]]))
-        return
-    try:
-        await app.bot.leave_chat(int(chat["chat_id"]))
-        result = f"Dom left {title}"
-    except (TelegramBadRequest, TelegramForbiddenError):  # Telegram says Dom is not in that chat (any more)
-        result = f"Dom wasn't in {title} anymore"
-    except Exception as error:
-        log.exception("could not leave chat %s", chat["chat_id"])
-        await _toast(app, query, f"Couldn't leave: {(getattr(error, 'message', '') or str(error) or type(error).__name__)[:100]}")
-        await _owner_event(app, f"{who} tapped Leave on {title}: Dom couldn't leave")
-        return
-    await app.store.set_chat_auth_status(chat["chat_id"], "left")
-    await _owner_event(app, f"{who} tapped Leave on {title}: {result}")
-    await _toast(app, query, result)
-    await _refresh_status(app, query)
+    await _toast(app, query)
+    await owner.record_event(app, f"{who} tapped Leave on {title} (asked to confirm)")
+    await _replace_with_prompt(app, query, f"Leave {title}? Friends will see Dom leave.", InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Yes, leave", callback_data=f"leaveyes:{chat['chat_id']}"),
+        InlineKeyboardButton(text="Cancel", callback_data="status:refresh"),
+    ]]))
 
 
 async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str) -> None:
@@ -397,14 +344,10 @@ async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str)
         await owner.choose_preset(app, chat)
         return
 
-    preset = load_preset(app.home, name) if name else None
-    if (name and preset is None) or not await app.store.set_chat_preset(raw_id, name):
+    text = await owner.set_preset(app, chat, name)
+    if text is None:
         await _toast(app, query, "preset or chat unavailable")
         return
-    title = owner.display_title(chat, owner_id)
-    label = preset.title if preset else "None"
-    text = f"Preset for {title}: {label}"
-    await _owner_event(app, text)
     await _toast(app, query)
     await app.bot.send_message(owner_id, text)
 
@@ -433,13 +376,13 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
     elif action == "page":
         await _toast(app, query)
         await owner.show_proposals(app, proposal_id)
-        await _owner_event(app, "Paged through pending proposals")
+        await owner.record_event(app, "Paged through pending proposals")
     elif action == "show":
         row = next((row for row in await app.proposals.pending() if row["id"] == proposal_id), None)
         await _toast(app, query, None if row else "already handled")
         if row:
             await app.proposals.send(row)
-            await _owner_event(app, f"Viewed proposal #{proposal_id}")
+            await owner.record_event(app, f"Viewed proposal #{proposal_id}")
 
 
 async def handle_callback(app: App, query: CallbackQuery) -> None:
@@ -477,7 +420,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         await app.bot.answer_callback_query(query.id, text="already handled")
         return
     label = "Approved" if action == "approve" else "Ignored"
-    await _owner_event(app, f"{_person(query.from_user.full_name)} {label.lower()} {owner.display_title(chat, owner_id)}")
+    await owner.record_event(app, f"{_person(query.from_user.full_name)} {label.lower()} {owner.display_title(chat, owner_id)}")
     await app.bot.answer_callback_query(query.id, text=label)
     if query.message is not None:
         await app.bot.edit_message_text(
@@ -488,7 +431,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
 async def _note_removed(app: App, update: ChatMemberUpdated, owner_id: int) -> None:
     """Dom is no longer in a group it knew: stop listening to it and tell the owner once."""
     chat = next((c for c in await app.store.list_chats() if c["chat_id"] == str(update.chat.id)), None)
-    if chat is None or chat["authorization_status"] not in _LEAVABLE:  # unknown, already left, or blocked
+    if chat is None or chat["authorization_status"] not in owner.LEAVABLE:  # unknown, already left, or blocked
         return
     await app.store.set_chat_auth_status(chat["chat_id"], "left")
     title = update.chat.title or chat["title"] or chat["chat_id"]

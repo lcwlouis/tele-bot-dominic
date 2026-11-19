@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"historyEnabled":false,"selfRequestsOnly":true}'>
+  <title>Dom</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body hx-history="false">
+<div class="shell">
+  <nav class="rail" aria-label="Sections">
+    <a class="name" href="/">Dom</a>
+    {% if active != "setup" %}
+      {% for id, route, label in [
+        ("now", "/", "Now"), ("proposals", "/proposals", "Waiting for you"), ("chats", "/chats", "Chats"),
+        ("usage", "/usage", "Usage"), ("turns", "/turns", "Turn log"),
+      ] %}
+      <a href="{{ route }}"{% if active == id %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    {% endif %}
+  </nav>
+  <main{% if active != "now" %} class="single"{% endif %}>
+    {% if active == "setup" %}
+      <section class="panel"><h2>Claim Dom in Telegram</h2><p>Once Dom knows his owner, reload the dashboard.</p></section>
+    {% endif %}
+    {% if active == "now" %}{% include "dial.html" %}{% endif %}
+    {% if active in ("now", "proposals") %}{% with context = proposals %}{% include "proposals.html" %}{% endwith %}{% endif %}
+    {% if active in ("now", "chats") %}{% with context = chats %}{% include "chats.html" %}{% endwith %}{% endif %}
+    {% if active in ("now", "usage") %}{% with context = usage %}{% include "usage.html" %}{% endwith %}{% endif %}
+    {% if active in ("now", "turns") %}{% with context = turns %}{% include "turns.html" %}{% endwith %}{% endif %}
+  </main>
+</div>
+</body>
+</html>

@@ -140,7 +140,7 @@ class Presence:
         if sleep_end:
             if not row["is_sleeping"] or sleep != sleep_end:
                 await self.store.set_presence(
-                    chat_id, is_sleeping=True, sleep_until=sleep_end.isoformat(),
+                    chat_id, observed_at=now, is_sleeping=True, sleep_until=sleep_end.isoformat(),
                     is_offline=False, offline_until=None, online_until=None,
                 )
                 if online:
@@ -181,12 +181,16 @@ class Presence:
     async def go_online(self, chat_id, habits: Habits, minutes: float | None = None) -> datetime:
         if minutes is None:
             minutes = self.session_minutes(habits)
-        self._session_start[chat_id] = self.now()
-        return await self._set_online(chat_id, self.now() + timedelta(minutes=minutes))
+        now = self.now()
+        self._session_start[chat_id] = now
+        return await self._set_online(chat_id, now + timedelta(minutes=minutes), start_session=True)
 
-    async def _set_online(self, chat_id, until: datetime, override: bool = False) -> datetime:
+    async def _set_online(
+        self, chat_id, until: datetime, override: bool = False, *, start_session: bool = False,
+    ) -> datetime:
         await self.store.set_presence(
-            chat_id, is_sleeping=False, sleep_until=until.isoformat() if override else None,
+            chat_id, observed_at=self.now(), start_session=start_session,
+            is_sleeping=False, sleep_until=until.isoformat() if override else None,
             is_offline=False, offline_until=None, online_until=until.isoformat(),
         )
         return until
@@ -198,7 +202,7 @@ class Presence:
         lo, hi = habits.offline_minutes
         until = since + timedelta(minutes=self.rng.triangular(lo, hi, lo + 0.2 * (hi - lo)))
         await self.store.set_presence(
-            chat_id, is_sleeping=False, sleep_until=None, is_offline=True,
+            chat_id, observed_at=since, is_sleeping=False, sleep_until=None, is_offline=True,
             offline_until=until.isoformat(), online_until=None,
         )
         self._session_ended(chat_id)
@@ -220,8 +224,9 @@ class Presence:
         return await self._set_online(chat_id, max(until, online), override=owner_wake)
 
     async def wake(self, chat_id, habits: Habits, minutes: float = 30) -> datetime:
-        self._session_start[chat_id] = self.now()
-        return await self._set_online(chat_id, self.now() + timedelta(minutes=minutes), override=True)
+        now = self.now()
+        self._session_start[chat_id] = now
+        return await self._set_online(chat_id, now + timedelta(minutes=minutes), override=True, start_session=True)
 
     async def sleep(self, chat_id, habits: Habits) -> datetime:
         now = self.now().astimezone(self.tz)
@@ -231,7 +236,7 @@ class Presence:
         end = min(end, now + MAX_SLEEP_COMMAND)
         was_online = (await self.store.get_presence(chat_id))["online_until"] is not None
         await self.store.set_presence(
-            chat_id, is_sleeping=True, sleep_until=end.isoformat(),
+            chat_id, observed_at=now, is_sleeping=True, sleep_until=end.isoformat(),
             is_offline=False, offline_until=None, online_until=None,
         )
         if was_online:
