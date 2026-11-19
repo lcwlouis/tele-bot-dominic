@@ -376,6 +376,18 @@ class Store:
             )
             return self._read_chat_auth(conn, chat_id)
 
+    async def set_chat_title(self, chat_id: int | str, title: str) -> None:
+        """Keep a known chat's title current (titles change, and imported chats arrive without one).
+        Never creates a row."""
+        if title:
+            await self._run(self._set_chat_title, str(chat_id), title)
+
+    def _set_chat_title(self, chat_id: str, title: str) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE chats SET title = ? WHERE chat_id = ? AND title IS NOT ?", (title, chat_id, title)
+            )
+
     async def note_pending_chat(self, chat_id: str, title: str, invited_by: str) -> None:
         """Remember who asked and what the chat is called. Never touches the authorization status."""
         await self._run(self._note_pending_chat, str(chat_id), title, invited_by)
