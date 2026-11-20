@@ -36,6 +36,12 @@ def blob(messages):
     return "\n".join(m["content"] for m in messages)
 
 
+def test_chat_prompt_lists_every_reaction_telegram_allows():
+    from dom.actions import REACTIONS
+
+    assert " ".join(REACTIONS) in FRAME
+
+
 def test_owner_in_group_gets_no_private(home):
     msgs = build(home, scope="group", participants=[111])
     text = blob(msgs)

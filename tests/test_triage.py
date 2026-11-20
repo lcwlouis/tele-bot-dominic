@@ -153,3 +153,10 @@ async def test_decisions_url_is_built_from_the_triage_base_url(tmp_path):
         "https://openrouter.ai/api/alpha/decisions", "https://jev.test/alpha/decisions",
         "https://openrouter.ai/api/alpha/decisions",
     ]
+
+
+def test_every_emoji_jev_may_pick_is_an_allowed_reaction():
+    from dom.actions import REACTIONS
+    from dom.triage import _EMOJI_CRITERIA
+
+    assert set(_EMOJI_CRITERIA) <= set(REACTIONS)

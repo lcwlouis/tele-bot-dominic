@@ -37,7 +37,7 @@ async def test_remind_tool_offered_and_runs_only_in_owner_dm(make_app, chat_id, 
         await deliver(app, tg(chat_id, sender))
     first, second = turn_requests(app)
     assert ("remind" in [tool["function"]["name"] for tool in first["tools"]]) == (chat_id == OWNER)
-    result = second["messages"][-1]["content"]
+    result = second["messages"][-2]["content"]  # a format reminder follows the tool result
     if chat_id == OWNER:
         assert json.loads(result)["id"] == 1
         assert "reminder" in (await events(app))[0]["text"].lower()

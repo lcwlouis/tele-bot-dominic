@@ -53,7 +53,7 @@ async def test_load_sets_caches_each_emoji_and_refreshes_changes(make_app):
 async def test_caps_sets_stickers_per_set_and_unique_emoji_in_turn_note(make_app):
     app = make_app()
     names = [f"example_{index}_by_examplebot" for index in range(11)]
-    emoji = [chr(0x1F300 + i) for i in range(41)]
+    emoji = [chr(0x1F680 + i) for i in range(41)]  # none of them is an allowed reaction, so none is in the prompt prefix
     sets = {name: [(emoji[i % 41], f"file-{name}-{i}") for i in range(121)] for name in names}
     requested = sticker_bot(app, sets)
     put(app.home, "stickers.toml", f"sets = {json.dumps(names)}")

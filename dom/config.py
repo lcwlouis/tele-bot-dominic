@@ -30,6 +30,18 @@ class OpenersConfig(BaseModel):
     max_per_day: int = Field(2, ge=0, description="Maximum number of openers per day in the configured timezone.")
 
 
+class PresenceConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    seen_reaction: bool = Field(
+        True,
+        description=(
+            "While a DM is online, react 👀 to the newest message Dom read when he answers with nothing (never in groups). "
+            "It stands in for a read receipt and is never sent while he is asleep or offline."
+        ),
+    )
+
+
 class WebConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -202,6 +214,7 @@ class Config(BaseModel):
     window_size: int = Field(80, description="Maximum recent messages in a chat's model window.")
     daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap.")
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
+    presence: PresenceConfig = Field(default_factory=PresenceConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     t3: T3Config = Field(default_factory=T3Config)
     update: UpdateConfig = Field(default_factory=UpdateConfig)

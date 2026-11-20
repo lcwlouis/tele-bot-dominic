@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from random import choice
 from typing import Awaitable, Callable
 
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import (
     BufferedInputFile, EphemeralMessageParameters, LinkPreviewOptions, ReactionTypeEmoji, ReplyParameters,
 )
@@ -93,10 +93,7 @@ async def perform(
             sent_ids.append(sent.message_id)
         return sent_ids
     if actions.react and trigger_msg_id is not None:
-        try:
-            await bot.set_message_reaction(chat_id, trigger_msg_id, reaction=[ReactionTypeEmoji(emoji=actions.react)])
-        except (TelegramAPIError, ValidationError):  # the model may pick an emoji Telegram does not allow
-            log.warning("reaction %r rejected in chat %s", actions.react, chat_id)
+        await react(bot, chat_id, trigger_msg_id, actions.react)
 
     sent_ids: list[int] = []
     for bubble in actions.bubbles:
@@ -172,6 +169,20 @@ async def _send_media(
     if on_sent is not None:
         await on_sent(sent.message_id)
     return sent.message_id
+
+
+async def react(bot, chat_id: int, msg_id: int, emoji: str) -> bool | None:
+    """React to a message: True when sent, False when Telegram refuses it (e.g. the chat has reactions
+    turned off), None when it failed for another reason, such as the network."""
+    try:
+        await bot.set_message_reaction(chat_id, msg_id, reaction=[ReactionTypeEmoji(emoji=emoji)])
+    except (TelegramBadRequest, ValidationError):
+        log.warning("reaction %r rejected in chat %s", emoji, chat_id)
+        return False
+    except TelegramAPIError as error:
+        log.warning("reaction %r failed in chat %s (%s)", emoji, chat_id, type(error).__name__)
+        return None
+    return True
 
 
 async def send_files(bot, store: Store, chat_id: int, files: Sequence[SendFile]) -> None:
