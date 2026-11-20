@@ -9,6 +9,7 @@ from aiogram.types import User
 from dom.plugins import dom_plugin, runner, surfaces
 from dom.plugins.manifest import RESERVED_COMMANDS, Manifest
 from dom.plugins.runner import PluginBusy, PluginError
+from dom.presence import read_habits
 from dom.telegram import handlers
 from dom.telegram.owner import OWNER_COMMANDS
 from test_owner_events import press
@@ -252,6 +253,48 @@ async def test_group_commands_have_a_per_chat_cooldown(make_app, browser, monkey
     await command(app, "/weather", msg_id=53)
     await command(app, "/weather", msg_id=54)  # the owner's DM has no cooldown
     assert len(calls) == 4
+
+
+def asleep(app):
+    app.dispatch.now.at = app.dispatch.now.at.replace(hour=2)  # inside the default sleep window
+
+
+async def test_asleep_dom_ignores_plugin_commands_outside_the_owner_dm(make_app, browser, monkeypatch):
+    app = make_app()
+    manifest = SURFACES.replace('description = "Weather right now"', 'description = "W"\nscopes = ["group", "friend_dm"]')
+    await approve(app, browser, manifest=manifest, monkeypatch=monkeypatch)
+    calls = fake_runner(app, monkeypatch)
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Club")
+    await app.store.set_chat_auth_status(FRIEND, "approved", title="Fran")
+    asleep(app)
+    sent = len(app.bot.calls)
+    await command(app, "/weather", chat=GROUP, sender=FRIEND, msg_id=70)
+    await command(app, "/weather", chat=FRIEND, sender=FRIEND, msg_id=71)
+    assert calls == [] and len(app.bot.calls) == sent
+    assert await app.store.has_message(GROUP, 70)  # kept like any message, for when he wakes up
+
+
+async def test_asleep_dom_runs_an_owner_command_then_grumbles_in_character(make_app, browser, monkeypatch):
+    app = make_app()
+    await approve(app, browser, monkeypatch=monkeypatch)
+    calls = fake_runner(app, monkeypatch)
+    asleep(app)
+    app.script.contents[:] = [json.dumps({"bubbles": [{"text": "u woke me up for the weather??"}]})]
+    before = len(app.bot.of("send", OWNER))
+    await command(app, "/weather", msg_id=72)
+    assert calls == [{"command": "weather", "args": "", "scope": "owner_dm"}]
+    assert [call[2] for call in app.bot.of("send", OWNER)[before:]] == ["sunny", "u woke me up for the weather??"]
+    note = app.script.requests[-1]["messages"][-1]["content"]
+    assert "/weather" in note and "asleep" in note and "sunny" not in note  # plugin output never reaches the model
+    assert (await app.dispatch.presence.state(OWNER, read_habits(app.home)))[0] == "asleep"
+
+
+async def test_awake_owner_command_gets_no_grumble(make_app, browser, monkeypatch):
+    app = make_app()
+    await approve(app, browser, monkeypatch=monkeypatch)
+    fake_runner(app, monkeypatch)
+    await command(app, "/weather", msg_id=73)
+    assert app.script.requests == []
 
 
 async def test_long_replies_are_cut_and_long_arguments_refused(make_app, browser, monkeypatch):

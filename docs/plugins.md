@@ -62,8 +62,12 @@ declared names. A plugin can declare up to ten commands and five panels.
   previews. Neither the command nor the reply is added to chat history, so a
   plugin's output never becomes part of Dom's prompt.
 - A command runs only in a chat whose scope it declares, in an approved chat,
-  for a human sender. Messages from bots and channels never trigger one. Like
-  core commands, plugin commands answer whether Dom is online, asleep or offline.
+  for a human sender. Messages from bots and channels never trigger one.
+- While Dom is asleep, a command in a group or friend DM does not run: it is an
+  ordinary message he sees when he wakes. In the owner's DM it runs, and then Dom
+  adds one line in his own voice about being woken (grumpy if it could have
+  waited). That line is composed from the command's name and arguments only,
+  never the plugin's output, and he goes back to sleep.
 - Core commands win. Names such as `status`, `claim`, `desktop`, `update`,
   `start` and `help` are reserved. Two plugins cannot declare the same command:
   a draft that would collide is refused, and if two approved plugins on disk
