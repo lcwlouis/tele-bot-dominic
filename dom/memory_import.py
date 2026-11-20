@@ -24,7 +24,7 @@ SERVICES = ("chatgpt", "claude", "muse")
 MAX_FACTS = 300
 MAX_FACT_LENGTH = 300
 MAX_DOCUMENT_BYTES = 1024 * 1024
-_DOCUMENT_LIMIT_ERROR = "Import documents must be 1 MB or smaller."
+DOCUMENT_LIMIT_ERROR = "Import documents must be 1 MB or smaller."
 _BULLET = re.compile(r"\s*-[ \t]+(?:\[[^\]\r\n]+\](?:[ \t]+|$))?(.*)")
 
 
@@ -95,15 +95,28 @@ class _DocumentTooLarge(ValueError):
 class _LimitedBuffer(BytesIO):
     def write(self, data: bytes) -> int:
         if self.tell() + len(data) > MAX_DOCUMENT_BYTES:
-            raise _DocumentTooLarge(_DOCUMENT_LIMIT_ERROR)
+            raise _DocumentTooLarge(DOCUMENT_LIMIT_ERROR)
         return super().write(data)
 
 
-async def download_text(bot, document: Document) -> str:
-    if document.file_size is not None and document.file_size > MAX_DOCUMENT_BYTES:
-        raise ValueError(_DOCUMENT_LIMIT_ERROR)
-    if PurePath(document.file_name or "").suffix.lower() not in (".txt", ".md"):
+def validate_document_meta(filename: str | None, size: int | None = None) -> None:
+    if size is not None and size > MAX_DOCUMENT_BYTES:
+        raise ValueError(DOCUMENT_LIMIT_ERROR)
+    if PurePath(filename or "").suffix.lower() not in (".txt", ".md"):
         raise ValueError("Send a .txt or .md document for the import.")
+
+
+def decode_document(data: bytes) -> str:
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise ValueError(DOCUMENT_LIMIT_ERROR)
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError("The import document must contain UTF-8 text.") from None
+
+
+async def download_text(bot, document: Document) -> str:
+    validate_document_meta(document.file_name, document.file_size)
     with _LimitedBuffer() as destination:
         try:
             await bot.download(document, destination=destination)
@@ -111,10 +124,7 @@ async def download_text(bot, document: Document) -> str:
             raise
         except Exception:
             raise ValueError("Could not download the import document.") from None
-        try:
-            return destination.getvalue().decode("utf-8-sig")
-        except UnicodeDecodeError:
-            raise ValueError("The import document must contain UTF-8 text.") from None
+        return decode_document(destination.getvalue())
 
 
 class MemoryImport:

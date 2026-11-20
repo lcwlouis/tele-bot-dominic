@@ -201,8 +201,19 @@ body { color-scheme: dark; }
 .filters label { font-size: var(--t-sm); }
 .notice { margin-bottom: var(--s4); color: var(--ink); }
 summary { cursor: pointer; }
-.stickers { border-top: 1px solid var(--seam); padding-top: var(--s3); margin-top: var(--s3); }
-.stickers form { margin-top: var(--s2); }
+.stickers, .memory-import { border-top: 1px solid var(--seam); padding-top: var(--s3); margin-top: var(--s3); }
+.stickers form, .memory-import form, .memory-import p { margin-top: var(--s2); }
+.traits { margin-top: var(--s1); }
+.traits-list { display: grid; gap: var(--s2); margin: var(--s2) 0 var(--s3); }
+.trait-row { display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s3); align-items: center; }
+.trait-row input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--arc); }
+.trait-custom { color: var(--arc); }
+.trait-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+input[type="file"] { color: var(--ink); font: inherit; font-size: var(--t-sm); max-width: 100%; }
+input[type="file"]::file-selector-button {
+  background: transparent; color: var(--ink); border: 1px solid var(--seam); border-radius: 6px;
+  padding: 8px 12px; font: 700 var(--t-sm)/1 var(--body); cursor: pointer; margin-right: var(--s2);
+}
 .panel { overflow-wrap: anywhere; }
 
 @media (min-width: 960px) {
