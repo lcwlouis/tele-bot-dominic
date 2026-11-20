@@ -207,6 +207,26 @@ async def test_a_remote_host_checks_memory_through_the_sandbox_api(tmp_path):
             await remote.ensure_running()
 
 
+async def test_a_remote_start_is_admitted_under_the_host_start_lock():
+    commands = []
+
+    def reply(request):
+        if request.url.path == "/v1/bash/exec":
+            commands.append(request.url.path)
+            return httpx.Response(200, json={"success": True, "data": {"exit_code": 0, "stdout": "20000\n"}})
+        return httpx.Response(200, json={"success": True, "data": None})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        host = Host(DesktopHost(name="studio", mode="remote", url="https://example.org", min_free_memory_mb=1024))
+        remote = RemoteSandbox("https://example.org", "key", http=http, isolation_confirmed=True, name="studio", host=host)
+        async with host.start_lock:  # another start on this host is in progress
+            start = asyncio.create_task(remote.ensure_running())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not start.done() and commands == [] and remote.status() == "starting"
+        assert await start is remote.client and remote.status() == "ready" and len(commands) == 1
+
+
 # ---- the fleet: named containers, routed tasks, per-container state ------------------------------------
 
 from contextlib import nullcontext
@@ -576,3 +596,26 @@ async def test_two_tasks_run_end_to_end_on_two_real_sandboxes(make_app, tmp_path
         assert (rows[first]["status"], rows[second]["status"]) == ("done", "done")
         await fleet.close()
         assert docker.running == set()
+
+
+async def test_every_configured_host_has_a_lane_from_the_start(make_app):
+    app = make_app()
+    studio = DesktopHost(name="studio", mode="remote", url="https://example.org", remote_isolation_confirmed=True)
+    fleet = fleet_for(app, DesktopHost(name="pi", mode="local"), studio)
+    assert list(fleet.lanes) == ["default", "studio"]
+    assert [c.name for c in fleet.containers()] == ["default", "studio"]
+    assert all(box.status() == "stopped" for box in fleet.boxes.values())  # nothing is started eagerly
+    await fleet._drop_idle()
+    assert list(fleet.lanes) == ["default", "studio"]  # idle host lanes are kept
+
+    fleet.boxes["default"]._status = "error"
+    assert fleet.available()  # the healthy host still offers desktop tasks
+    fleet.boxes["studio"]._status = "error"
+    assert not fleet.available()
+
+
+async def test_a_remote_first_host_is_the_default_and_the_only_lane(make_app):
+    app = make_app()
+    studio = DesktopHost(name="studio", mode="remote", url="https://example.org", remote_isolation_confirmed=True)
+    fleet = fleet_for(app, studio)
+    assert list(fleet.lanes) == ["studio"] and fleet.default == "studio"

@@ -51,6 +51,10 @@ class DeployError(Exception):
     """A deploy cannot start, with a message for the owner."""
 
 
+class DeployBusy(DeployError):
+    """Another deploy holds the lock. It owns the saved state, so this one must not touch it."""
+
+
 def release_tag(tag: object) -> tuple[int, int, int]:
     """The version numbers of a release tag; anything but exactly `vX.Y.Z` is refused."""
     match = TAG.fullmatch(tag) if isinstance(tag, str) else None
@@ -226,7 +230,7 @@ def deploy_lock(layout: Layout) -> Iterator[None]:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise DeployError("Another deploy is already running.") from None
+            raise DeployBusy("Another deploy is already running.") from None
         yield
 
 
@@ -364,11 +368,14 @@ def deploy(
     release_tag(tag)
     try:
         with deploy_lock(layout):
-            result = _deploy(layout, Path(home), repo_url, tag, expect, sync, backup, systemctl,
-                             health_seconds, sleep, monotonic, notify)
-    except DeployError as exc:
-        result = Result(False, str(exc))
-    write_state(home, {"status": "done", "ok": result.ok, "tag": tag, "message": result.message})
+            try:
+                result = _deploy(layout, Path(home), repo_url, tag, expect, sync, backup, systemctl,
+                                 health_seconds, sleep, monotonic, notify)
+            except DeployError as exc:
+                result = Result(False, str(exc))
+            write_state(home, {"status": "done", "ok": result.ok, "tag": tag, "message": result.message})
+    except DeployBusy as exc:
+        result = Result(False, str(exc))  # the deploy that holds the lock reports; this one saves nothing
     (log.info if result.ok else log.error)("%s", result.message)
     return result
 

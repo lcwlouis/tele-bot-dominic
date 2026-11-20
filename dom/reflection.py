@@ -52,8 +52,13 @@ PRIVATE_FORMAT = 'Return only JSON: {"entry": "up to 600 characters"}. This entr
 
 
 def due(local: datetime, habits: Habits) -> bool:
-    threshold = datetime.combine(local.date(), habits.sleep_start) - timedelta(hours=1)
-    return local.time() >= threshold.time()
+    """True in the hour before Dom's sleep starts. When that hour opens the evening before (sleep starts
+    before 01:00), only the part up to midnight counts: the daily job is keyed by local date, so the part
+    after midnight would be a second run for the next date and push that date's real one out."""
+    now = local.hour * 60 + local.minute
+    start = habits.sleep_start.hour * 60 + habits.sleep_start.minute
+    opens = start - 60
+    return now >= opens + 24 * 60 if opens < 0 else opens <= now < start
 
 
 def _read(home: Home, rel: str) -> str:

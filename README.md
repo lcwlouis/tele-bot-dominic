@@ -9,5 +9,9 @@ private chat. The owner dashboard, desktop sandbox and plugins are optional.
 - [Privacy and data storage](docs/privacy.md)
 - [Writing plugins](docs/plugins.md)
 - [Raspberry Pi deployment and backups](docs/deploy-pi.md)
+- [Serve the dashboard through a Cloudflare tunnel](docs/deploy-dashboard.md)
+- [Desktop network](docs/desktop.md)
+- [GIFs](docs/gifs.md)
+- [T3 Code bridge](docs/t3-bridge.md)
 
 [MIT licence](LICENSE)
