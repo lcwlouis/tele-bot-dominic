@@ -576,3 +576,26 @@ async def test_two_tasks_run_end_to_end_on_two_real_sandboxes(make_app, tmp_path
         assert (rows[first]["status"], rows[second]["status"]) == ("done", "done")
         await fleet.close()
         assert docker.running == set()
+
+
+async def test_every_configured_host_has_a_lane_from_the_start(make_app):
+    app = make_app()
+    studio = DesktopHost(name="studio", mode="remote", url="https://example.org", remote_isolation_confirmed=True)
+    fleet = fleet_for(app, DesktopHost(name="pi", mode="local"), studio)
+    assert list(fleet.lanes) == ["default", "studio"]
+    assert [c.name for c in fleet.containers()] == ["default", "studio"]
+    assert all(box.status() == "stopped" for box in fleet.boxes.values())  # nothing is started eagerly
+    await fleet._drop_idle()
+    assert list(fleet.lanes) == ["default", "studio"]  # idle host lanes are kept
+
+    fleet.boxes["default"]._status = "error"
+    assert fleet.available()  # the healthy host still offers desktop tasks
+    fleet.boxes["studio"]._status = "error"
+    assert not fleet.available()
+
+
+async def test_a_remote_first_host_is_the_default_and_the_only_lane(make_app):
+    app = make_app()
+    studio = DesktopHost(name="studio", mode="remote", url="https://example.org", remote_isolation_confirmed=True)
+    fleet = fleet_for(app, studio)
+    assert list(fleet.lanes) == ["studio"] and fleet.default == "studio"

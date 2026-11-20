@@ -43,7 +43,7 @@ class DesktopFleet:
     """Routes desktop tasks to named containers.
 
     `default` is the container that existed before there could be several. A remote host is one
-    container, named after the host. Any other name is a container on the local host, created on first use
+    container, named after the host; the default and each remote host have a lane from the start. Any other name is a container on the local host, created on first use
     and forgotten once it is stopped and has no task (its browser profile stays on disk, so logins last)."""
 
     def __init__(
@@ -57,8 +57,14 @@ class DesktopFleet:
         self.lanes: dict[str, Lane] = {}
         first = self.hosts[0].config if self.hosts else None
         self.default = first.name if first is not None and first.mode == "remote" else DEFAULT
-        if self.hosts:
-            self.lane(self.default)
+        # The default container and every remote host (a remote host is one container) exist from the start, so
+        # they are visible and usable without a first use. Starting any of them stays lazy.
+        self.permanent = (
+            [self.default, *(h.config.name for h in self.hosts if h.config.mode == "remote" and h.config.name != self.default)]
+            if self.hosts else []
+        )
+        for name in self.permanent:
+            self.lane(name)
 
     def _build(self, host: Host, name: str) -> LocalSandbox | RemoteSandbox:
         config, settings = self.app.config, host.config
@@ -92,12 +98,12 @@ class DesktopFleet:
         return self.lanes[name]
 
     def containers(self) -> list[Lane]:
-        """The containers worth showing: the default one, and every other that is running or has a task."""
-        return [lane for name, lane in self.lanes.items() if name == self.default or not lane.idle()]
+        """The containers worth showing: the default one and each remote host, and every other that is running or has a task."""
+        return [lane for name, lane in self.lanes.items() if name in self.permanent or not lane.idle()]
 
     async def _drop_idle(self) -> None:
         for name, lane in list(self.lanes.items()):
-            if name != self.default and lane.idle():
+            if name not in self.permanent and lane.idle():
                 del self.lanes[name]
                 lane.host.sandboxes.pop(name, None)
                 if (close := getattr(lane.sandbox, "close", None)) is not None:

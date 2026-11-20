@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Every configured desktop host has a container from the start: remote hosts show on the Desktop page, home tile and capabilities (and open at `/desktop?container=<name>`) before first use, and `start_desktop_task` stays offered while any host is usable. Starting containers is still on demand.
 - `dom doctor` warns about misspelt keys in every config table (now including `[presence]`, `[t3]` and `[update]`, derived from the config model) and fails when a remote desktop host's `api_key_env` secret is not set.
 - Approving a skill proposal re-checks it against private notes as well as credentials, since the notes may have changed since the proposal.
 - Fix the daily reflection running in the daytime when the learned sleep start is between 01:00 and 06:59: it now runs only in the hour before sleep starts.
