@@ -207,3 +207,39 @@ def test_probe_notices_a_filter_that_allows_everything(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_seccomp", lambda network, machine=None: allow_all)
     reason = PluginRunner(home=tmp_path)._probe()
     assert reason.startswith("offline probe:") and "fork allowed" in reason
+
+
+SURFACE_MANIFEST = MANIFEST + """[[commands]]
+name = "echo"
+description = "Echo the text"
+[[panels]]
+id = "summary"
+title = "Summary"
+"""
+# "\x40" is "@": the public-data check reads a decorator inside a string as a Telegram handle.
+SURFACE_MAIN = """import os
+from _dom import command, panel, run
+
+\x40command
+def echo(text, scope):
+    return f"{text}|{scope}|{sorted(os.environ)}"
+
+\x40panel
+def summary():
+    return {"title": "Week", "items": [["home visible", os.path.exists(%r)]]}
+
+run()
+"""
+
+
+def test_commands_and_panels_run_in_the_same_sandbox(tmp_path):
+    home = tmp_path / "home"
+    folder = write_plugin(home, SURFACE_MANIFEST)
+    (folder / "main.py").write_text(SURFACE_MAIN % str(home))
+    plugin = read_plugin(folder)
+    runner = PluginRunner(home=home)
+    assert runner.self_test()
+    request = {"command": "echo", "args": "hi there", "scope": "group"}
+    assert runner.run_request(folder, request, plugin.manifest, approved_hash=plugin.hash) == "hi there|group|['PATH']"
+    panel = runner.run_request(folder, {"panel": "summary"}, plugin.manifest, approved_hash=plugin.hash)
+    assert panel == {"title": "Week", "items": [["home visible", False]]}

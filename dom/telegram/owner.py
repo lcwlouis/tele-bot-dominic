@@ -21,6 +21,7 @@ from aiogram.types import (
 )
 
 from dom import memory_import, proposals
+from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE
 from dom.traits import GLOBAL_PRESET_KEY, global_preset_name, load_preset
 
@@ -103,16 +104,25 @@ def _short(title: str, limit: int = 20) -> str:
     return title if len(title) <= limit else title[: limit - 1] + "…"
 
 
-async def publish_menu(bot, owner_id: int) -> None:
-    """Show the owner the command menu and everyone else none. A failure is logged, never raised."""
+async def publish_menu(bot, owner_id: int, extra: list[BotCommand] | None = None) -> None:
+    """Show the owner the command menu (core, then approved plugin commands) and everyone else none.
+
+    A failure is logged, never raised.
+    """
+    commands = OWNER_COMMANDS + (extra or [])[:surfaces.MAX_MENU - len(OWNER_COMMANDS)]
     try:
-        await bot.set_my_commands(OWNER_COMMANDS, scope=BotCommandScopeChat(chat_id=owner_id))
+        await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=owner_id))
     except Exception:
         log.exception("could not set the owner's command menu")
     try:
         await bot.delete_my_commands(scope=BotCommandScopeDefault())
     except Exception:
         log.exception("could not clear the default command menu")
+
+
+async def refresh_menu(app: App) -> None:
+    if app.owner_id is not None:
+        await publish_menu(app.bot, app.owner_id, await surfaces.menu_commands(app))
 
 
 def display_title(chat: dict, owner_id: int | None) -> str:

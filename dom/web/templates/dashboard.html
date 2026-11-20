@@ -35,6 +35,7 @@
     {% if active == "plugins" %}{% with context = plugins %}{% include "plugins.html" %}{% endwith %}{% endif %}
     {% if active == "briefs" %}{% with context = briefs %}{% include "briefs.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "turns") %}{% with context = turns %}{% include "turns.html" %}{% endwith %}{% endif %}
+    {% if active == "now" and plugin_panels %}<section class="panel" id="plugin-panels"><header><h2>From plugins</h2></header>{% with panels = plugin_panels %}{% include "plugin_panels.html" %}{% endwith %}</section>{% endif %}
   </main>
 </div>
 </body>

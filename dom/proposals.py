@@ -70,10 +70,13 @@ def summary(row: dict) -> str:
         return "\n\n".join(filter(None, (heading, changes, body["new"])))
     if row["kind"] == "plugin":
         tools = [f"{tool['name']} ({', '.join(tool['scopes']) or 'no scopes'})" for tool in body["tools"]]
+        commands = [f"/{command['name']} ({', '.join(command['scopes'])})" for command in body.get("commands", [])]
+        panels = [f"{panel['id']} ({panel['title']})" for panel in body.get("panels", [])]
         files = [f"{path} ({size} bytes)" for path, size in body["files"].items()]
         network = NETWORK_NOTICE if body["network"] else "Network off"
         return "\n".join([
-            heading, body["description"], f"Tools: {', '.join(tools)}", network,
+            heading, body["description"], f"Tools: {', '.join(tools) or 'none'}",
+            f"Commands: {', '.join(commands) or 'none'}", f"Panels: {', '.join(panels) or 'none'}", network,
             f"Files: {', '.join(files)}", f"Hash: {body['hash'][:12]}",
         ])
     if row["kind"] == "memory_fact":
@@ -135,6 +138,8 @@ class Proposals:
         return {
             "name": name, "description": description, "hash": plugin.hash, "network": plugin.manifest.network,
             "tools": [{"name": tool.name, "scopes": tool.scopes} for tool in plugin.manifest.tools],
+            "commands": [{"name": c.name, "scopes": c.scopes} for c in plugin.manifest.commands],
+            "panels": [{"id": panel.id, "title": panel.title} for panel in plugin.manifest.panels],
             "files": {path: len(data) for path, data in sorted(plugin.files.items())},
         }
 
