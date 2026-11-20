@@ -516,3 +516,19 @@ async def test_plugin_panels_stay_after_approve_and_vanish_with_disable(make_app
         assert 'hx-post="/plugin-panels/convert/summary"' in approved.text
         disabled = await client.post(f"{route}/disable", headers=POST_HEADERS)
         assert disabled.status_code == 200 and 'hx-post="/plugin-panels/' not in disabled.text
+
+
+async def test_checking_whether_dom_is_asleep_never_writes_presence(make_app, browser, monkeypatch):
+    app = make_app()
+    await approve(app, browser, monkeypatch=monkeypatch)
+    fake_runner(app, monkeypatch)
+    asleep(app)
+    app.script.contents[:] = [json.dumps({"bubbles": [{"text": "zzz"}]})]
+    written = []
+
+    async def record(*args, **kwargs):
+        written.append((args, kwargs))
+
+    monkeypatch.setattr(app.store, "set_presence", record)
+    await command(app, "/weather", msg_id=74)
+    assert written == []  # command handling holds no chat lock, so it must not write the presence row
