@@ -638,7 +638,7 @@ class Dispatcher:
         )
         async with app.locks[chat_id]:
             try:
-                sliders, _ = await for_chat(app.home, app.store, chat_id)
+                sliders, _ = await for_chat(app.home, app.store, chat_id, self.now())
                 with model_request("chat", chat_id, partial(self.model_allowed, chat_id)):
                     await check_model_allowed()
                     reply = await app.client.complete(report_messages(app.home, sliders, note), [], once=True)
@@ -671,7 +671,7 @@ class Dispatcher:
                 "Tell your friend in your own words."
             )
             try:
-                sliders, _ = await for_chat(app.home, app.store, chat_id)
+                sliders, _ = await for_chat(app.home, app.store, chat_id, self.now())
                 messages = report_messages(app.home, sliders, note)
                 # The report is one more call of the task: it counts toward the task's ceiling and the daily
                 # cap, and is skipped (the plain report goes out instead) once either is reached.
@@ -759,7 +759,7 @@ class Dispatcher:
         sender_id = newest.sender_user_id if newest else None
         if sender_id is not None:
             participants.append(sender_id)
-        sliders, preset = await for_chat(app.home, app.store, chat_id)
+        sliders, preset = await for_chat(app.home, app.store, chat_id, self.now())
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
             sliders=sliders, preset=preset,
