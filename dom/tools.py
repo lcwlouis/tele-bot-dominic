@@ -240,10 +240,16 @@ SKILL_VIEW_TOOL = Tool(
 )
 
 
+SKILL_PENDING_LIMIT = 3
+
+
 async def _skill_manage(args: dict, ctx: TurnCtx) -> str:
     if ctx.app is None:
         return "error: skills can only be proposed during a chat turn"
     skill = {key: args.get(key) for key in ("name", "description", "body")}
+    waiting = sum(row["kind"] == "skill" for row in await ctx.app.proposals.pending())
+    if waiting >= SKILL_PENDING_LIMIT:  # any chat can prompt a proposal; don't let one flood the owner's DM
+        return f"error: {waiting} skill proposals already wait for the owner; try again after they decide"
     try:
         proposal_id = await ctx.app.proposals.create("skill", f"Skill: {skill['name']}", skill, "chat")
     except (OSError, ValueError) as error:

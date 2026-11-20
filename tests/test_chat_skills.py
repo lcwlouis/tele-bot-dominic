@@ -4,7 +4,7 @@ import pytest
 
 from dom.prompt import build_messages
 from dom.skills import skill_view
-from dom.tools import SKILL_MANAGE_TOOL, SKILL_VIEW_TOOL, SKILLS_LIST_TOOL, TurnCtx, enabled_tools
+from dom.tools import SKILL_MANAGE_TOOL, SKILL_PENDING_LIMIT, SKILL_VIEW_TOOL, SKILLS_LIST_TOOL, TurnCtx, enabled_tools
 from test_owner_events import press
 from test_usage import deliver, online
 from tghelpers import FRIEND, GROUP, OWNER, tg
@@ -80,6 +80,17 @@ async def test_manage_creates_a_proposal_the_owner_must_approve(make_app, scope,
     assert BODY in app.bot.of("send", OWNER)[-1][2]
     await press(app, f"prop:yes:{proposal['id']}")
     assert skill_view(app.home, "report") == BODY
+
+
+async def test_manage_caps_skill_proposals_waiting_for_the_owner(make_app):
+    app = make_app()
+    group = ctx(app, "group", GROUP, FRIEND)
+    for n in range(SKILL_PENDING_LIMIT):
+        args = {"name": f"step-{n}", "description": "A procedure", "body": BODY}
+        assert "id" in json.loads(await SKILL_MANAGE_TOOL.handler(args, group))
+    extra = {"name": "one-more", "description": "A procedure", "body": BODY}
+    assert (await SKILL_MANAGE_TOOL.handler(extra, group)).startswith("error:")
+    assert len(await app.proposals.pending()) == SKILL_PENDING_LIMIT
 
 
 async def test_manage_update_shows_a_diff_against_the_approved_text(make_app):
