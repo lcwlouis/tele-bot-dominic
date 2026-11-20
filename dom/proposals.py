@@ -98,7 +98,7 @@ class Proposals:
                 raise ValueError(problem)
         elif kind == "skill":
             skill = Skill(body.get("name"), body.get("description"), body.get("body"))
-            self._check_skill_secrets(skill)
+            check_local_private_text(self.app.config, self.app.home, [skill.name, skill.description, skill.body])
             body = {
                 "name": skill.name, "description": skill.description, "body": skill.body,
                 "old": skill_text(self.app.home, skill.name), "new": skill.render(),
