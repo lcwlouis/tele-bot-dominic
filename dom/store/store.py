@@ -47,6 +47,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (12, "0011_plugins.sql"),
     (13, "0012_t3_audit.sql"),
     (14, "0013_lan_address_proposals.sql"),
+    (15, "0014_desktop_containers.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1139,25 +1140,31 @@ class Store:
 
     # ---- desktop tasks -----------------------------------------------------
 
-    async def enqueue_desktop_task(self, chat_id: int, brief: str) -> int | None:
+    async def enqueue_desktop_task(self, chat_id: int, brief: str, container: str = "default") -> int | None:
+        """Queue a task on a container; None if that container already has an active task."""
         def enqueue() -> int | None:
             if chat_id != self.owner_id:
                 return None
             row = self._conn.execute(
-                "INSERT INTO desktop_tasks (chat_id, brief, status, created_at) VALUES (?, ?, 'queued', ?) "
-                "ON CONFLICT DO NOTHING RETURNING id", (chat_id, brief, _now()),
+                "INSERT INTO desktop_tasks (chat_id, brief, status, created_at, container) VALUES (?, ?, 'queued', ?, ?) "
+                "ON CONFLICT DO NOTHING RETURNING id", (chat_id, brief, _now(), container),
             ).fetchone()
             return row["id"] if row else None
 
         return await self._run(enqueue)
 
-    async def desktop_tasks(self, chat_id: int, *, active: bool = False) -> list[dict[str, Any]]:
+    async def desktop_tasks(
+        self, chat_id: int, *, active: bool = False, container: str | None = None,
+    ) -> list[dict[str, Any]]:
         def select() -> list[dict[str, Any]]:
             if chat_id != self.owner_id:
                 return []
             condition = "AND status IN ('queued', 'running', 'waiting_owner')" if active else ""
+            if container is not None:
+                condition += " AND container = ?"
             return [dict(row) for row in self._conn.execute(
-                f"SELECT * FROM desktop_tasks WHERE chat_id = ? {condition} ORDER BY id DESC LIMIT 10", (chat_id,),
+                f"SELECT * FROM desktop_tasks WHERE chat_id = ? {condition} ORDER BY id DESC LIMIT 10",
+                (chat_id, *([container] if container is not None else [])),
             )]
 
         return await self._run(select)

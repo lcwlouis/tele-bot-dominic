@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Live view</title>
+  <title>Live view{% if container %} · {{ container }}{% endif %}</title>
   <link rel="stylesheet" href="/static/desktop-viewer.css">
   <script type="module" src="/static/desktop-viewer.js"></script>
 </head>
 <body>
-  <div id="status">Connecting</div>
+  <div id="status">{% if container %}{{ container }} · {% endif %}<span id="state">Connecting</span></div>
   <div id="screen"></div>
 </body>
 </html>

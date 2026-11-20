@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from dom.config import Config, DesktopConfig, ModelEndpoint, OpenersConfig, T3Config, UpdateConfig, WebConfig
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, T3Config, UpdateConfig, WebConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +25,8 @@ def test_configuration_reference_has_every_toml_key():
     ):
         for name in model.model_fields:
             assert f"| `{section}.{name}` |" in doc
+    for name in DesktopHost.model_fields:
+        assert f"| `desktop.hosts[].{name}` |" in doc
     assert "| `desktop.mode` | `\"off\"` |" in doc
     assert "| `owner_id` | Unset |" in doc
     assert "| `models.chat_fallback` | Optional" in doc

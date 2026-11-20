@@ -68,21 +68,36 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `desktop.mode` | `"off"` | Desktop mode. Use off to disable it, local for Docker, or remote for a separate sandbox host. |
-| `desktop.image` | `"ghcr.io/agent-infra/sandbox:latest"` | Pre-pulled local sandbox image. |
+| `desktop.image` | `"ghcr.io/agent-infra/sandbox:latest"` | Pre-pulled local sandbox image, used by every local container. |
 | `desktop.url` | `""` | Sandbox API base URL in remote mode. |
 | `desktop.api_key_env` | `"SANDBOX_API_KEY"` | Secret variable for the remote sandbox API key. Local mode generates a key. |
 | `desktop.start_timeout_seconds` | `180` | Seconds for the local sandbox API and browser to become ready. |
-| `desktop.idle_minutes` | `10` | Idle minutes before the local desktop stops. |
-| `desktop.profile_dir` | `""` | Local browser profile outside the instance home. Empty uses the sibling desktop-profile directory. |
-| `desktop.network` | `"dom-desktop"` | Docker bridge name for local isolation. |
+| `desktop.idle_minutes` | `10` | Idle minutes before a local desktop container stops. Each container has its own timer. |
+| `desktop.profile_dir` | `""` | Local browser profile outside the instance home. Empty uses the sibling desktop-profile directory. A container named x keeps its profile in the same directory name plus -x. |
+| `desktop.network` | `"dom-desktop"` | Docker bridge name for local isolation. Every local container joins it. |
 | `desktop.subnet` | `"172.30.0.0/24"` | IPv4 CIDR of the desktop bridge. Choose a subnet separate from your LAN and other bridges. |
-| `desktop.port` | `18080` | Loopback host port for the local sandbox API. |
+| `desktop.port` | `18080` | Loopback host port for the default local container. Further containers take the next free ports. |
 | `desktop.task_cost_cap_usd` | `0.5` | Per-desktop-task USD limit. Zero disables this limit. |
 | `desktop.lan_probes` | `[]` | LAN targets local mode must prove it cannot reach, as IPv4:port or <name>.local:port (resolved on every check). Required in local mode. |
 | `desktop.probe_image` | `"alpine:3.22"` | Pre-pulled image used for local isolation probes. |
 | `desktop.probe_control` | `"1.1.1.1:443"` | Public IPv4:port target that the local isolation probe must reach. |
 | `desktop.remote_isolation_confirmed` | `false` | Set after verifying the remote desktop cannot reach your LAN or Dom host. |
 | `desktop.fallback_usd_per_1k_tokens` | `0.002` | USD per 1,000 tokens when a desktop call reports no cost. Used for the task limit only. |
+| `desktop.hosts` | `[]` | Desktop hosts, as [[desktop.hosts]] tables. Empty means one host built from desktop.mode and the keys above. |
+
+### Desktop hosts
+
+Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers on this machine (list at most one). A remote host is one sandbox API and counts as one container, named after the host. Without any `[[desktop.hosts]]`, `desktop.mode` and the keys above describe a single host named `default`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `desktop.hosts[].name` | Required | Host name: lowercase letters, digits and hyphens. A remote host's name is also its container's name. |
+| `desktop.hosts[].mode` | Required | local runs Docker containers on this machine. remote connects to one sandbox API. |
+| `desktop.hosts[].url` | `""` | Sandbox API base URL of a remote host. |
+| `desktop.hosts[].api_key_env` | `"SANDBOX_API_KEY"` | Secret variable for a remote host's sandbox API key. |
+| `desktop.hosts[].remote_isolation_confirmed` | `false` | Set after verifying the remote host cannot reach your LAN or Dom host. |
+| `desktop.hosts[].max_containers` | `1` | Most containers that may run at once on a local host. A remote host runs one. |
+| `desktop.hosts[].min_free_memory_mb` | Unset | Memory the host must still have free after a container's own limit. Dom refuses to start a container that would breach it. Unset means 512 for a local host and 0 (unchecked) for a remote one. |
 
 ## Openers
 

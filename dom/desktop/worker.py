@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -14,6 +15,7 @@ from dom.actions import SendFile
 from dom.agent import _well_formed
 from dom.desktop import tools
 from dom.desktop.client import SandboxClient, SandboxError, url_host
+from dom.desktop.sandbox import DEFAULT
 from dom.desktop.files import (
     OUTBOX_DIR, bind_inbox, discard_bound, download_results, drop_stale, inbox_dir, safe_filename, upload_inbox,
 )
@@ -48,10 +50,13 @@ class Progress:
 class DesktopWorker:
     def __init__(
         self, app: App, sandbox: LocalSandbox | RemoteSandbox, *,
-        max_steps: int = 30, work_seconds: float = 600, handoff_seconds: float = 900,
+        max_steps: int = 30, work_seconds: float = 600, handoff_seconds: float = 900, container: str = DEFAULT,
     ):
+        """One container's worker: it runs one task at a time on `sandbox`. DesktopFleet holds one per container."""
         self.app = app
         self.sandbox = sandbox
+        self.container = container
+        self._where = "" if container == DEFAULT else f" in {container}"
         self.max_steps = max_steps
         self.work_seconds = work_seconds
         self.handoff_seconds = handoff_seconds
@@ -70,21 +75,34 @@ class DesktopWorker:
     def available(self) -> bool:
         return self.sandbox.status() in ("stopped", "starting", "ready")
 
-    async def enqueue(self, chat_id: int, brief: str) -> int:
+    def busy(self) -> bool:
+        """A task is queued or running here, or the container is being stopped after a cancel."""
+        return bool(self._stopping) or (self._job is not None and not self._job.done())
+
+    async def enqueue(
+        self, chat_id: int, brief: str, container: str | None = None, *,
+        admit: Callable[[], Awaitable[str | None]] | None = None,
+    ) -> int:
+        """Queue a task on this container. `admit` returns why the container may not start now (host full,
+        too little memory), or None; it runs once nothing else stands in the way."""
         if chat_id != self.app.owner_id:
             raise ValueError("desktop tasks are available only in the owner's DM")
         if not isinstance(brief, str) or not brief.strip() or len(brief) > 2000:
             raise ValueError("a task brief must be 1 to 2,000 characters")
+        if container not in (None, self.container):
+            raise ValueError(f"this worker runs the {self.container} container")
         async with self.control:
             if self._job is not None and not self._job.done():
-                raise ValueError("I'm already on something")
+                raise ValueError(f"I'm already on something{self._where}")
             if self._stopping:
                 raise ValueError("I'm shutting down the desktop; try again in a moment")
             if not self.available():
                 raise ValueError("desktop is unavailable")
-            task_id = await self.app.store.enqueue_desktop_task(chat_id, brief.strip())
+            if admit is not None and (reason := await admit()):
+                raise ValueError(reason)
+            task_id = await self.app.store.enqueue_desktop_task(chat_id, brief.strip(), self.container)
             if task_id is None:
-                raise ValueError("I'm already on something")
+                raise ValueError(f"I'm already on something{self._where}")
             try:
                 bind_inbox(self.app.home.root, task_id)
             except (OSError, ValueError) as exc:
@@ -98,15 +116,19 @@ class DesktopWorker:
         from contextvars import Context
         self._job = asyncio.create_task(self._run(task_id, chat_id), context=Context())
 
-    async def recover(self) -> None:
+    async def recover(self, rows: list[dict] | None = None) -> None:
+        """Stop a container a previous process left, then restart this container's queued tasks and fail the
+        ones that were in flight. `rows` are its active tasks; DesktopFleet passes them after it has dropped
+        the staged documents no queued task owns (this worker only knows its own tasks)."""
         if (stop := getattr(self.sandbox, "stop", None)) is not None:
             try:
                 await stop()  # a container left by a previous process has no owner and no known API key
             except SandboxError as exc:
                 log.warning("could not stop a stray desktop container (%s)", exc)
         chat_id = self.app.owner_id
-        rows = await self.app.store.desktop_tasks(chat_id, active=True) if chat_id is not None else []
-        drop_stale(self.app.home.root, {row["id"] for row in rows if row["status"] == "queued"})
+        if rows is None:
+            rows = await self.app.store.desktop_tasks(chat_id, active=True, container=self.container) if chat_id is not None else []
+            drop_stale(self.app.home.root, {row["id"] for row in rows if row["status"] == "queued"})
         if chat_id is None:
             return
         async with self.control:
@@ -343,7 +365,8 @@ class DesktopWorker:
             screenshot = await client.screenshot()
             return await self.app.media_describer.describe_desktop(screenshot) or "No screenshot description."
         if name == "save_screenshot":
-            path = f"{OUTBOX_DIR}/{PurePosixPath(safe_filename(args.get('name'))).stem or 'screenshot'}.png"
+            stem = PurePosixPath(safe_filename(args.get("name"))).stem or "screenshot"
+            path = f"{OUTBOX_DIR}/{'' if self.container == DEFAULT else self.container + '-'}{stem}.png"
             await client.upload_file(path, await client.screenshot())
             return {"path": path}
         return await tools.invoke(client, name, args)
@@ -370,7 +393,7 @@ class DesktopWorker:
                 )
                 if row is None:
                     raise asyncio.CancelledError
-                await self.app.dispatch.desktop_handoff(task_id, steps, chat_id, reason, host, observed)
+                await self.app.dispatch.desktop_handoff(task_id, steps, chat_id, reason, host, observed, self.container)
                 await done.wait()
         except TimeoutError:
             raise SandboxError("owner handoff timed out") from None

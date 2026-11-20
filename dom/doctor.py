@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from dom.backup import ARCHIVE_NAME
-from dom.config import Config, DesktopConfig, ModelEndpoint, OpenersConfig, WebConfig, validate_config
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, WebConfig, validate_config
 from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
 from dom.home import LIMITS, MAX_SOUL, Home
 from dom.jev import JevClient, JevUnavailable
@@ -130,39 +130,47 @@ def _disk(home: Path) -> Check:
 
 def _desktop(config: Config) -> Check:
     settings = config.desktop
-    if config.desktop_mode == "off":
+    hosts = config.desktop_hosts
+    if not hosts:
         return Check("ok", "desktop", "Disabled.")
-    if config.desktop_mode == "remote":
-        if not valid_remote_url(settings.url):
-            return Check("fail", "desktop", "Set [desktop] url to the remote HTTP(S) URL.")
-        if not settings.remote_isolation_confirmed:
-            return Check("fail", "desktop", "Verify LAN isolation, then set [desktop] remote_isolation_confirmed = true.")
-        return Check("ok", "desktop", "Remote URL and isolation confirmation are set.")
-
     problems = []
-    if not shutil.which("docker"):
-        problems.append("Install Docker or turn off local desktop mode.")
-    if not settings.lan_probes:
-        problems.append("Set [desktop] lan_probes to LAN ipv4:port or <name>.local:port targets.")
-    try:
-        ipaddress.IPv4Network(settings.subnet)
-    except ValueError:
-        problems.append("Set [desktop] subnet to a valid IPv4 network in CIDR notation.")
-    try:
-        desktop_profile_path(config)
-    except (OSError, RuntimeError):
-        problems.append("Set [desktop] profile_dir to a directory outside and separate from DOM_HOME.")
-    if not all(value.strip() for value in (settings.network, settings.image, settings.probe_image)):
-        problems.append("Set [desktop] network, image and probe_image to nonempty names.")
+    for host in (host for host in hosts if host.mode == "remote"):
+        where = "[desktop] " if not settings.hosts else f"desktop host {host.name}'s "
+        if not valid_remote_url(host.url):
+            problems.append(f"Set {where}url to the remote HTTP(S) URL.")
+        elif not host.remote_isolation_confirmed:
+            problems.append(f"Verify LAN isolation, then set {where}remote_isolation_confirmed = true.")
+    if any(host.mode == "local" for host in hosts):
+        if not shutil.which("docker"):
+            problems.append("Install Docker or turn off local desktop mode.")
+        if not settings.lan_probes:
+            problems.append("Set [desktop] lan_probes to LAN ipv4:port or <name>.local:port targets.")
+        try:
+            ipaddress.IPv4Network(settings.subnet)
+        except ValueError:
+            problems.append("Set [desktop] subnet to a valid IPv4 network in CIDR notation.")
+        try:
+            desktop_profile_path(config)
+        except (OSError, RuntimeError):
+            problems.append("Set [desktop] profile_dir to a directory outside and separate from DOM_HOME.")
+        if not all(value.strip() for value in (settings.network, settings.image, settings.probe_image)):
+            problems.append("Set [desktop] network, image and probe_image to nonempty names.")
     if problems:
         return Check("fail", "desktop", " ".join(problems))
-    return Check("ok", "desktop", "Local settings and Docker executable are present.")
+    kinds = {host.mode for host in hosts}
+    if kinds == {"remote"}:
+        return Check("ok", "desktop", "Remote URL and isolation confirmation are set.")
+    return Check("ok", "desktop", "Local settings and Docker executable are present." if kinds == {"local"} else "Local and remote hosts are set up.")
 
 
 def _unknown_config_keys(raw: dict) -> list[str]:
     tables = [
         ("", raw, Config.model_fields.keys() - {"home", "desktop_mode"}),
         ("desktop.", raw.get("desktop", {}), DesktopConfig.model_fields.keys() | {"mode"}),
+        *(
+            (f"desktop.hosts[{index}].", host, DesktopHost.model_fields.keys())
+            for index, host in enumerate(raw.get("desktop", {}).get("hosts", []) if isinstance(raw.get("desktop"), dict) else [])
+        ),
         ("openers.", raw.get("openers", {}), OpenersConfig.model_fields.keys()),
         ("web.", raw.get("web", {}), WebConfig.model_fields.keys()),
     ]
@@ -175,7 +183,10 @@ def _unknown_config_keys(raw: dict) -> list[str]:
 
 
 def _has_misplaced_api_key(config: Config) -> bool:
-    names = (config.desktop.api_key_env, *(endpoint.api_key_env for endpoint in config.models.values()))
+    names = (
+        config.desktop.api_key_env, *(host.api_key_env for host in config.desktop_hosts),
+        *(endpoint.api_key_env for endpoint in config.models.values()),
+    )
     return any(
         len(name) > 64
         or any(char.islower() for char in name)

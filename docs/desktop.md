@@ -126,6 +126,68 @@ The firewall unit runs in the system manager, while `dom install-service` uses
 the user manager. In local mode Dom checks the rules before each container start.
 The firewall commands use `iptables -w`.
 
+## Several containers
+
+Dom can run more than one desktop container, for example one per project, so a
+login or a long task in one does not block the others. `start_desktop_task` takes an
+optional container name (lowercase letters, digits and hyphens, up to 24). Without
+one the task runs on `default`, the container that existed before. Each container has
+its own task slot, Docker name (`dom-desktop` for `default`, `dom-desktop-<name>`
+otherwise), loopback port (the next free one from `[desktop] port`), browser profile
+(`desktop-profile`, then `desktop-profile-<name>`, so logins last per container) and
+idle timer. A named container is created on first use and forgotten once it is stopped
+with no task; its profile stays on disk.
+
+Hosts are the machines that run containers. With no `[[desktop.hosts]]` table, the
+`[desktop] mode` settings are one host named `default`, so existing configs work
+unchanged. To set limits or add machines, list hosts:
+
+```toml
+[desktop]
+lan_probes = ["192.0.2.1:443"]
+
+[[desktop.hosts]]
+name = "pi"
+mode = "local"          # Docker on this machine; at most one local host
+max_containers = 1      # the Pi's default
+min_free_memory_mb = 512  # kept free besides the container's own 1600 MB limit
+
+[[desktop.hosts]]
+name = "studio"
+mode = "remote"         # one sandbox API Dom connects to; the container is named "studio"
+url = "https://studio.example.org"
+remote_isolation_confirmed = true
+min_free_memory_mb = 16384
+```
+
+A remote host is one container because Dom cannot start containers there; add a host
+entry per sandbox. The first listed host runs `default`.
+
+**Resource checks.** Starts on a host are serialized. Before starting a container Dom
+checks, and refuses with a message that says why instead of starting:
+
+- the host already holds `max_containers` containers that are running, starting or
+  have a task queued (the refusal names them);
+- free memory is below the container's 1600 MB limit plus `min_free_memory_mb`. A local
+  host reads `MemAvailable` from `/proc/meminfo`. A remote host reads it through the
+  sandbox's shell (`/proc/meminfo` inside the sandbox), which shows the machine's memory
+  on Linux hosts but the Docker VM's on Docker Desktop. If the figure cannot be read and
+  a floor is set, Dom refuses. A remote floor of `0` (the default) is not checked.
+
+A refusal is not a failure: the container stays stopped, the task is not queued and the
+reason goes back to the model and the dashboard. Idle containers stop on their own
+`[desktop] idle_minutes` timer, which frees their slot.
+
+**Isolation.** Every local container joins the same `[desktop] network` bridge, so the
+firewall rules above cover all of them, and Dom runs the LAN probe before **every**
+container start, not once. Containers on that bridge can reach each other (not your
+LAN); each has its own random API key.
+
+**Dashboard.** The Desktop page lists every container with its host, state and task.
+`/desktop?container=<name>` shows one; the live viewer and the Open Desktop button in a
+handoff message carry the name. Handoff and report messages, `/tasks` and `/status` name
+a non-default container, and screenshot files are prefixed with it.
+
 ## Documents
 
 Send a document to the owner DM with the caption `/desktop` (or `/desktop@<botname>`)
@@ -158,7 +220,7 @@ your model really costs, so the ceiling errs towards stopping.
 
 Set `[web].public_url` in `config.toml` to the HTTPS base URL of the
 authenticated dashboard. Dom uses it for the Open Desktop button in the owner's
-handoff message. On the Desktop page, use the live view and tap Done when the
+handoff message (it adds `?container=<name>` for a container other than `default`). On the Desktop page, use the live view and tap Done when the
 computer is ready for Dom to continue.
 
 The handoff message names the site the browser was on and when Dom looked, for
