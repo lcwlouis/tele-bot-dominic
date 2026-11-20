@@ -53,6 +53,7 @@ OWNER_COMMANDS = [
 ]
 
 PROPOSALS_PER_PAGE = 10
+BULK_KINDS = ("memory_fact", "skill", "lan_address")  # what "Approve all" applies; the rest keep their own button
 MAX_MESSAGE = 4096  # Telegram's limit for a message's text
 MAX_BUTTONS = 100  # Telegram's limit for one keyboard
 MAX_MEMBER_LOOKUPS = 30  # get_chat_member_count calls per /chats, 0.2 s apart
@@ -514,16 +515,17 @@ async def show_proposals(app: App, page: int = 1) -> None:
 
 
 async def approve_proposal_page(app: App, first: int, last: int) -> str:
-    """Approve the memory facts on one page. A soul edit changes who Dom is, so it keeps its own Approve button."""
+    """Approve the memory facts, skills and LAN address changes on one page, each through its own decision path and
+    validation. A soul edit changes who Dom is and a plugin runs code, so each keeps its own Approve button."""
     rows = [row for row in await app.proposals.pending() if first <= row["id"] <= last]
     if not rows or len(rows) > PROPOSALS_PER_PAGE:
         return "already handled"
-    facts = [row for row in rows if row["kind"] == "memory_fact"]
+    bulk = [row for row in rows if row["kind"] in BULK_KINDS]
     souls = sum(row["kind"] == "soul_edit" for row in rows)
     held = (" 1 soul edit needs its own Approve." if souls == 1 else f" {souls} soul edits need their own Approve.") if souls else ""
     if any(row["kind"] == "plugin" for row in rows):
         held += " Plugins need their own review and approval."
-    results = [await app.proposals.decide(row["id"], True) for row in facts]
+    results = [await app.proposals.decide(row["id"], True) for row in bulk]
     approved = results.count("Approved")
     errors = [result for result in results if result not in ("Approved", "already handled")]
     if not approved and not errors:

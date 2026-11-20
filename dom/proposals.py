@@ -123,6 +123,7 @@ class Proposals:
                 body = {
                     "old": str(ipaddress.IPv4Address(body.get("old"))), "new": str(ipaddress.IPv4Address(body.get("new"))),
                     "places": [str(place) for place in body.get("places", [])], "name": str(body.get("name") or ""),
+                    "macs": [str(mac) for mac in body.get("macs", [])],
                 }
             except ValueError:
                 raise ValueError("a LAN address change needs old and new IPv4 addresses") from None

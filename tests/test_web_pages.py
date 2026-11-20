@@ -483,3 +483,19 @@ async def test_pending_chat_approvals_list_and_share_owner_decision_function(mak
     event_texts = [m.text for m in events if m.role == "event"]
     assert any("approved Book Club" in text for text in event_texts)
     assert any("ignored DM with Fran" in text for text in event_texts)
+
+
+async def test_lan_address_proposal_has_a_filter_and_a_card(make_app, browser):
+    app = make_app()
+    await app.proposals.create(
+        "lan_address", "LAN address change: 192.0.2.10 → 192.0.2.11",
+        {"old": "192.0.2.10", "new": "192.0.2.11", "places": ["models.lab.base_url", "desktop.hosts.pi.url"],
+         "name": "model.local", "macs": ["02:00:00:00:00:01"]}, "devices",
+    )
+    async with browser(app) as client:
+        page = (await client.get("/proposals")).text
+        assert 'value="lan_address"' in page
+        card = (await client.get("/proposals?kind=lan_address")).text
+    for text in ("192.0.2.10", "192.0.2.11", "model.local", "02:00:00:00:00:01", "models.lab.base_url, desktop.hosts.pi.url"):
+        assert text in card
+    assert "<p>: </p>" not in card and "LAN address change" in card
