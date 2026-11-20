@@ -25,6 +25,8 @@ _TOOLS = {
     "press": ("Press a browser key.", {"key": _STRING}),
     "scroll": ("Scroll the current page.", {"direction": {"type": "string", "enum": ["up", "down", "left", "right"]}}),
     "look": ("Describe a screenshot. Use only when the text tools cannot show what you need.", {}),
+    "save_screenshot": ("Save a screenshot of the browser as a PNG in the sandbox and return its path, "
+                        "so finish can send it to the owner.", {"name": _STRING}),
     "run_python": ("Run a Python script in the sandbox and return its output and exit code.", {"code": _STRING}),
     "run_shell": ("Run a shell command inside the sandbox.", {"command": _STRING}),
     "read_file": ("Read a text file inside the sandbox.", {"path": _STRING}),

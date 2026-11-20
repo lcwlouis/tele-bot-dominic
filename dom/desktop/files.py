@@ -16,6 +16,7 @@ MAX_FILE_BYTES = 20_000_000
 MAX_RESULT_FILES = 5
 MAX_INBOX_FILES = 5
 MAX_INBOX_BYTES = 50_000_000
+OUTBOX_DIR = "/home/gem/outbox"
 log = logging.getLogger(__name__)
 
 
