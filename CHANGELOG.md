@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Fix the turn note cutting Dom's tool list mid-word in the owner DM: it now lists every enabled tool by name, and drops whole names with "+N more" only when they would not fit.
 - Dashboard: show a Desktop tile on the home view with each container's host, state, truncated task brief, live viewer link and host limits, polling every 4 seconds when enabled.
 - Dashboard: edit each chat's sliders and reset them to default.
 - Dashboard: upload a `.txt` or `.md` export through the same import as `/import`; adds `python-multipart`.
