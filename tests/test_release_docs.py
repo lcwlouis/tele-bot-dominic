@@ -39,6 +39,12 @@ def test_readme_links_to_the_release_guides():
         assert (ROOT / f"docs/{guide}.md").is_file()
 
 
+def test_readme_links_to_every_guide():
+    readme = (ROOT / "README.md").read_text()
+    for guide in sorted((ROOT / "docs").glob("*.md")):
+        assert f"](docs/{guide.name})" in readme, guide.name
+
+
 def test_changelog_has_unreleased_then_the_first_release():
     headings = [line for line in (ROOT / "CHANGELOG.md").read_text().splitlines() if line.startswith("## ")]
     assert headings[:2] == ["## [Unreleased]", "## [0.7.0] - 2026-11-19"]
