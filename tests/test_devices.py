@@ -179,3 +179,47 @@ def test_a_device_name_that_is_not_utf8_does_not_break_discovery():
     script = "import sys; sys.stdout.buffer.write(b'=;eth0;IPv4;caf\\xe9 tv;_http._tcp;local\\n')"
     output = devices._command(subprocess.run, [sys.executable, "-c", script], "missing")
     assert output is not None and output.startswith("=;eth0;IPv4;caf")
+
+
+DESKTOP_CONFIG = (
+    f'[desktop]\nurl = "http://{OLD}:8080"\nlan_probes = ["{OLD}:443"]\n'
+    f'[[desktop.hosts]]\nname = "pi"\nmode = "remote"\nurl = "http://{OLD}:9000"\n'
+    f'[[desktop.hosts]]\nname = "box"\nmode = "remote"\nurl = "http://{OTHER}:9000"\n'
+)
+
+
+def test_host_places_cover_desktop_urls_and_every_host_url():
+    import tomllib
+
+    from dom.config import host_places
+
+    places = host_places(tomllib.loads(DESKTOP_CONFIG))
+    assert places[OLD] == ["desktop.url", "desktop.hosts.pi.url", "desktop.lan_probes"]
+    assert places[OTHER] == ["desktop.hosts.box.url"]
+
+
+def test_replace_host_moves_desktop_urls_and_leaves_local_names_alone(tmp_path):
+    config = DESKTOP_CONFIG + f'[models.chat]\nbase_url = "http://{OLD}{LOCAL}:1/v1"\nmodel = "m"\n'
+    config += '[web]\nbind = "127.0.0.1"\n'
+    (tmp_path / "config.toml").write_text(config)
+    replace_host(tmp_path, OLD, NEW)
+    text = (tmp_path / "config.toml").read_text()
+    assert text == config.replace(f"{OLD}{LOCAL}", "@keep@").replace(OLD, NEW).replace("@keep@", f"{OLD}{LOCAL}")
+
+
+def test_desktop_check_accepts_a_local_name_and_probes_every_address(tmp_path):
+    from dom.config import Config
+
+    seen = []
+
+    def run(args, **kwargs):
+        seen.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    config = Config(home=tmp_path, desktop_mode="local")
+    network.check(config, HOST, 8080, run=run, resolve=lambda host: [OLD, NEW] if host == HOST else [])
+    assert seen[0][-2:] == [f"{OLD}:8080", f"{NEW}:8080"]
+    with pytest.raises(ValueError, match="could not resolve"):
+        network.check(config, HOST, 8080, run=run, resolve=lambda host: [])
+    with pytest.raises(ValueError):
+        network.check(config, "not-an-address", run=run)
