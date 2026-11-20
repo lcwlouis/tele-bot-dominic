@@ -238,10 +238,8 @@ class Proposals:
 
     def _check_skill_secrets(self, skill: Skill) -> None:
         config = self.app.config
-        names = {"TELEGRAM_BOT_TOKEN", config.desktop.api_key_env, config.web.dev_token_env}
-        names.update(model.api_key_env for model in config.models.values())
         content = f"{skill.name}\n{skill.description}\n{skill.body}"
-        for name in filter(None, names):
+        for name in config.secret_names():
             if (secret := config.secret(name)) and len(secret) >= 8 and secret in content:
                 raise ValueError("Public skills cannot include an instance credential.")
 
