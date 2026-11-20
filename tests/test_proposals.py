@@ -219,3 +219,16 @@ async def test_bulk_approval_applies_skills_and_lan_changes_through_their_own_ch
     assert app.home.scoped(allow_private=True).read("private/USER.md") == "- Prefers tea"
     assert [row["id"] for row in await app.proposals.pending()] == [stale]
     assert lan != skill
+
+
+async def test_skill_approval_refuses_private_notes_added_after_the_proposal(make_app):
+    from dom.skills import skill_view
+
+    app = make_app()
+    proposal = await app.proposals.create(
+        "skill", "Tea", {"name": "tea", "description": "Brew tea", "body": "Steep the leaves for four minutes."}, "example",
+    )
+    put(app.home, "private/NOTES.md", "- Steep the leaves for four minutes.")
+    assert "private notes" in await app.proposals.decide(proposal, True)
+    assert skill_view(app.home, "tea") is None
+    assert [row["id"] for row in await app.proposals.pending()] == [proposal]

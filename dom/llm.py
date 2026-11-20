@@ -76,27 +76,25 @@ class FallbackClient:
         self.last_fallback_at: datetime | None = None
 
     async def complete(self, messages: list[dict], tools: list[dict], *, once: bool = False) -> dict:
-        if once:
-            return await self.primary.complete(messages, tools, once=True)
         try:
-            reply = await self.primary.complete(messages, tools)
+            reply = await self.primary.complete(messages, tools, once=once)
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
             status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
             if self.fallback is None or (status is not None and not _retryable(status)):
                 raise
             log.warning("chat model %s failed (%s); using fallback %s",
                         self.primary.endpoint.model, status or type(exc).__name__, self.fallback.endpoint.model)
-            return await self.complete_on_fallback(messages, tools)
+            return await self.complete_on_fallback(messages, tools, once=once)
         if request_kind("chat") == "chat":
             self.last_model = self.primary.endpoint.model
         return reply
 
-    async def complete_on_fallback(self, messages: list[dict], tools: list[dict]) -> dict:
+    async def complete_on_fallback(self, messages: list[dict], tools: list[dict], *, once: bool = False) -> dict:
         """Ask the fallback model directly, e.g. when the primary is up but keeps answering unusably."""
         fallback = self.fallback
         if fallback is None:
             raise RuntimeError("no fallback model is configured")
-        reply = await fallback.complete(messages, tools, fallback=True)
+        reply = await fallback.complete(messages, tools, fallback=True, once=once)
         if request_kind("chat") == "chat":
             self.last_model = fallback.endpoint.model
             self.last_fallback_at = fallback.usage.now() if fallback.usage is not None else datetime.now(timezone.utc)

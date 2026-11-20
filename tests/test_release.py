@@ -230,6 +230,16 @@ def test_one_deploy_at_a_time(repo, layout):
                 pass
 
 
+def test_a_refused_second_deploy_leaves_the_running_deploys_state_alone(repo, layout):
+    lay, home = layout
+    running = {"status": "pending", "tag": "v0.10.0"}
+    with release.deploy_lock(lay):
+        release.write_state(home, running)
+        result, events = run_deploy(lay, home, repo, FakeSystemd(lay, home))
+    assert not result.ok and "already running" in result.message and events == []
+    assert release.read_state(home) == running
+
+
 def test_launch_runs_the_deploy_in_its_own_transient_unit(layout, monkeypatch):
     lay, home = layout
     commands = []

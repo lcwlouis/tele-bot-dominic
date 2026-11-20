@@ -102,8 +102,12 @@ async def test_critical_fallback_on_model_failure_timeout_or_silence(make_app, m
             await asyncio.Event().wait()
         return httpx.Response(200, json={"choices": [{"message": {"content": '{"no_response": true}'}}]})
 
-    async def forbidden(request):
-        pytest.fail("Critical delivery gets one model attempt")
+    fallback_attempts = 0
+
+    async def failing_fallback(request):
+        nonlocal fallback_attempts
+        fallback_attempts += 1
+        return httpx.Response(503)
 
     from dom import reminders
 
@@ -111,11 +115,13 @@ async def test_critical_fallback_on_model_failure_timeout_or_silence(make_app, m
     monkeypatch.setattr(reminders, "MODEL_TIMEOUT", 0.05)
     async with (
         httpx.AsyncClient(transport=httpx.MockTransport(model)) as primary,
-        httpx.AsyncClient(transport=httpx.MockTransport(forbidden)) as fallback,
+        httpx.AsyncClient(transport=httpx.MockTransport(failing_fallback)) as fallback,
     ):
         app.client = FallbackClient(chat(primary, app), chat(fallback, app))
         await app.dispatch.tick()
+    # one attempt per endpoint, and the fallback only after a primary failure (not a timeout or silence)
     assert attempts == 1
+    assert fallback_attempts == (1 if outcome == "failure" else 0)
     assert [call[2] for call in app.bot.of("send", OWNER)] == ["⏰ Check the kettle"]
     assert await app.dispatch.reminders.active() == []
 

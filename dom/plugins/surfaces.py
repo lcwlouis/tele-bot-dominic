@@ -72,7 +72,8 @@ async def handle_command(app: App, message: Message, msg: IncomingMessage, comma
         return False
     plugin, declared = entry
     habits = read_habits(app.home)
-    asleep = (await app.dispatch.presence.state(msg.chat_id, habits))[0] == "asleep"
+    # peek, not state: this runs outside the chat lock, so it must not write the presence row
+    asleep = app.dispatch.presence.peek(await app.store.get_presence(msg.chat_id), habits)[0] == "asleep"
     if asleep and scope != "owner_dm":
         return False  # asleep: an ordinary message he sees when he wakes, not a command he answers
     if scope != "owner_dm":

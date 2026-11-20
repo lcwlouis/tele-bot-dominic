@@ -6,6 +6,13 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- A second `dom deploy` refused because one is already running no longer overwrites the running deploy's saved state, so the post-restart report is not lost.
+- T3 bridge: thread lookup accepts the numeric paging cursor the live T3 server returns, instead of failing with "Invalid T3 cursor."
+- Every configured desktop host has a container from the start: remote hosts show on the Desktop page, home tile and capabilities (and open at `/desktop?container=<name>`) before first use, and `start_desktop_task` stays offered while any host is usable. Starting containers is still on demand.
+- `dom doctor` warns about misspelt keys in every config table (now including `[presence]`, `[t3]` and `[update]`, derived from the config model) and fails when a remote desktop host's `api_key_env` secret is not set.
+- Approving a skill proposal re-checks it against private notes as well as credentials, since the notes may have changed since the proposal.
+- Fix the daily reflection running in the daytime when the learned sleep start is between 01:00 and 06:59: it now runs only in the hour before sleep starts.
+- Single-attempt model calls (dashboard soul chat, reminder phrasing, desktop task reports, the asleep plugin grumble) now fall back to the fallback model, with one call, when the home endpoint is down.
 - Public skills and plugin inputs are now screened against every configured credential, derived from the config (every `*_env` setting, including `KLIPY_API_KEY` and each `[[desktop.hosts]]` `api_key_env`).
 - Dashboard: plugin panels no longer disappear from the Plugins page after approving, rejecting or disabling a plugin.
 - Dashboard: `lan_address` proposals have a kind filter and a card (old → new address, where it is used, device name and MAC); Telegram "Approve all on this page" also applies skills and LAN address changes, each through its own checks.

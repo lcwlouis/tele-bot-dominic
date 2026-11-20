@@ -17,13 +17,14 @@ import tomllib
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args, get_origin
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from pydantic import BaseModel
 
 from dom.backup import ARCHIVE_NAME
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, WebConfig, validate_config
+from dom.config import Config, DesktopConfig, ModelEndpoint, validate_config
 from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
 from dom.home import LIMITS, MAX_SOUL, Home
 from dom.jev import JevClient, JevUnavailable
@@ -163,23 +164,38 @@ def _desktop(config: Config) -> Check:
     return Check("ok", "desktop", "Local settings and Docker executable are present." if kinds == {"local"} else "Local and remote hosts are set up.")
 
 
+# Config fields that are not TOML keys, and TOML keys that Config reads into another field.
+NOT_CONFIG_KEYS = {Config: {"home", "desktop_mode"}}
+SHORTHAND_KEYS = {DesktopConfig: {"mode"}}
+
+
 def _unknown_config_keys(raw: dict) -> list[str]:
-    tables = [
-        ("", raw, Config.model_fields.keys() - {"home", "desktop_mode"}),
-        ("desktop.", raw.get("desktop", {}), DesktopConfig.model_fields.keys() | {"mode"}),
-        *(
-            (f"desktop.hosts[{index}].", host, DesktopHost.model_fields.keys())
-            for index, host in enumerate(raw.get("desktop", {}).get("hosts", []) if isinstance(raw.get("desktop"), dict) else [])
-        ),
-        ("openers.", raw.get("openers", {}), OpenersConfig.model_fields.keys()),
-        ("web.", raw.get("web", {}), WebConfig.model_fields.keys()),
-    ]
-    models = raw.get("models", {})
-    if isinstance(models, dict):
-        tables.extend(
-            (f"models.{name}.", table, ModelEndpoint.model_fields.keys()) for name, table in models.items()
-        )
-    return sorted(prefix + key for prefix, table, known in tables if isinstance(table, dict) for key in table.keys() - known)
+    """Keys in config.toml that the Config model does not define, in every table it nests, so a section added
+    to the model is covered without touching this."""
+    unknown: list[str] = []
+
+    def submodel(annotation: object) -> type[BaseModel] | None:
+        return annotation if isinstance(annotation, type) and issubclass(annotation, BaseModel) else None
+
+    def walk(prefix: str, table: object, model: type[BaseModel]) -> None:
+        if not isinstance(table, dict):
+            return
+        known = model.model_fields.keys() - NOT_CONFIG_KEYS.get(model, set()) | SHORTHAND_KEYS.get(model, set())
+        unknown.extend(prefix + key for key in table.keys() - known)
+        for name, field in model.model_fields.items():
+            value, annotation = table.get(name), field.annotation
+            args = get_args(annotation)
+            if nested := submodel(annotation):
+                walk(f"{prefix}{name}.", value, nested)
+            elif get_origin(annotation) is list and (nested := submodel(args[0])) and isinstance(value, list):
+                for index, item in enumerate(value):
+                    walk(f"{prefix}{name}[{index}].", item, nested)
+            elif get_origin(annotation) is dict and (nested := submodel(args[1])) and isinstance(value, dict):
+                for key, item in value.items():
+                    walk(f"{prefix}{name}.{key}.", item, nested)
+
+    walk("", raw, Config)
+    return sorted(unknown)
 
 
 def _has_misplaced_api_key(config: Config) -> bool:
@@ -196,7 +212,11 @@ def _has_misplaced_api_key(config: Config) -> bool:
 
 
 def _secrets(config: Config) -> Check:
-    names = {BOT_TOKEN_ENV, *(endpoint.api_key_env for endpoint in config.models.values() if endpoint.api_key_env)}
+    names = {
+        BOT_TOKEN_ENV,
+        *(endpoint.api_key_env for endpoint in config.models.values() if endpoint.api_key_env),
+        *(host.api_key_env for host in config.desktop_hosts if host.mode == "remote"),
+    }
     try:
         missing = sorted(name for name in names if not (config.secret(name) or "").strip())
     except (OSError, ValueError):
