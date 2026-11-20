@@ -227,10 +227,12 @@ class SelfWork:
             self._recovered = True
             for row in await store.self_tasks("running"):  # a previous process stopped mid-task
                 await store.update_self_task(row["id"], ("running",), "failed", error="Dom restarted")
-        if self.busy() or not self.active():
+        if self.busy():
             return
         now = self.app.dispatch.now()
-        await store.expire_self_tasks(now - EXPIRY)
+        await store.expire_self_tasks(now - EXPIRY)  # also while switched off, so stale plans do not linger
+        if not self.active():
+            return
         due = [row for row in await store.self_tasks("planned") if datetime.fromisoformat(row["not_before"]) <= now]
         if not due or await self.wait_reason() is not None:
             return
