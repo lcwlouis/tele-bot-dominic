@@ -265,6 +265,10 @@ class Dispatcher:
         await self.app.stickers.refresh()
         await self.jobs.tick()
         await self.openers.maybe(self.now())
+        try:
+            await self.app.self_work.tick()
+        except Exception:
+            log.exception("could not check self-directed work")
 
     async def _poll_chats(self) -> list[asyncio.Task]:
         if self.app.owner_id is None:

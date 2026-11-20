@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import re
+import shlex
 from typing import Any
 from urllib.parse import urlsplit
 from xml.sax.saxutils import escape
 
-from dom.desktop.client import SandboxClient
+from dom.desktop.client import SandboxClient, url_host
 
 from dom.desktop.files import MAX_RESULT_FILES
 from dom.skills import BODY_LIMIT, DESCRIPTION_LIMIT, NAME_LIMIT
@@ -48,6 +51,53 @@ _METHODS = {
     "click": "click", "fill": "fill", "press": "press_key", "scroll": "scroll",
     "run_python": "run_python", "run_shell": "bash", "read_file": "read_file", "write_file": "write_file",
 }
+
+
+NAMES = tuple(_TOOLS)
+BROWSER = ("browse", "read_page", "list_elements", "click", "fill", "press", "scroll", "look", "save_screenshot")
+# What a self-directed task (W13) may plan to use. No handoff (no logins), no skills, no skill proposals.
+OWN = (*BROWSER, "run_python", "run_shell", "read_file", "write_file")
+SEARCH_TEXT_LIMIT = 120
+_BLANK = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/")
+_SITE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
+_PRIVATE_SUFFIXES = (
+    ".local", ".lan", ".home", ".internal", ".intranet", ".corp", ".arpa", ".localhost", ".test", ".invalid",
+)
+_LOGIN_WORDS = ("pass", "login", "user", "email", "card", "otp")
+
+
+def site(value: object) -> str | None:
+    """A planned site as a lowercase public hostname, or None. IP literals and LAN-style names are refused."""
+    if not isinstance(value, str):
+        return None
+    host = value.strip().lower().removeprefix("www.").rstrip(".")
+    if not _SITE.fullmatch(host) or host.endswith(_PRIVATE_SUFFIXES):
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    return None
+
+
+def on_plan(host: str | None, sites: tuple[str, ...]) -> bool:
+    """Whether `host` is one of the plan's sites or a subdomain of one."""
+    return bool(host) and any(host == entry or host.endswith("." + entry) for entry in sites)
+
+
+def on_plan_url(url: object, sites: tuple[str, ...]) -> bool:
+    return url in _BLANK or on_plan(url_host(url), sites)
+
+
+def search_text(selector: str, text: str) -> bool:
+    """A self-directed task may type only short search text, never into a login-looking field."""
+    return len(text) <= SEARCH_TEXT_LIMIT and not any(word in selector.lower() for word in _LOGIN_WORDS)
+
+
+def offline(command: str) -> str:
+    """Run `command` in its own network namespace with no interfaces up: it has no network at all.
+    If the sandbox cannot create the namespace, the command fails instead of running online."""
+    return "unshare --net --map-root-user -- sh -c " + shlex.quote(command)
 
 
 def schemas() -> list[dict]:

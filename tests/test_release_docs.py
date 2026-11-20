@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, T3Config, UpdateConfig, WebConfig
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, SelfWorkConfig, T3Config, UpdateConfig, WebConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,12 +16,12 @@ def test_configuration_reference_matches_generator():
 
 def test_configuration_reference_has_every_toml_key():
     doc = (ROOT / "docs/configuration.md").read_text()
-    root = Config.model_fields.keys() - {"home", "models", "desktop_mode", "desktop", "openers", "presence", "web", "t3", "update"}
+    root = Config.model_fields.keys() - {"home", "models", "desktop_mode", "desktop", "openers", "presence", "self_work", "web", "t3", "update"}
     for name in root:
         assert f"| `{name}` |" in doc
     for section, model in (
         ("desktop", DesktopConfig), ("models.<name>", ModelEndpoint),
-        ("web", WebConfig), ("openers", OpenersConfig), ("presence", PresenceConfig), ("t3", T3Config), ("update", UpdateConfig),
+        ("web", WebConfig), ("openers", OpenersConfig), ("presence", PresenceConfig), ("self_work", SelfWorkConfig), ("t3", T3Config), ("update", UpdateConfig),
     ):
         for name in model.model_fields:
             assert f"| `{section}.{name}` |" in doc
