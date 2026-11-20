@@ -6,6 +6,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 from dom.home import Home, PrivateAccessError
 from dom.models import Scope
+from dom.skills import prompt_block
 from dom.traits import Preset, normalise
 
 FRAME = """\
@@ -69,6 +70,8 @@ def build_messages(
 
     prefix = [FRAME, f'<file path="SOUL.md">\n{soul_body.strip()}\n</file>']
     prefix += [_file(home, "memory/MEMORY.md"), _file(home, "memory/HABITS.md")]
+    if skills := prompt_block(home):  # changes only when the owner approves a skill, like memory
+        prefix.append(skills)
 
     persona = ["Personality sliders (0 to 1): " + ", ".join(f"{k}={v}" for k, v in sliders.items())]
     if preset is not None:

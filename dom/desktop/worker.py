@@ -17,7 +17,7 @@ from dom.desktop.client import SandboxClient, SandboxError, url_host
 from dom.desktop.files import (
     OUTBOX_DIR, bind_inbox, discard_bound, download_results, drop_stale, inbox_dir, safe_filename, upload_inbox,
 )
-from dom.skills import Skill, skill_view, skills_list
+from dom.skills import Skill, skills_list, view_text
 
 if TYPE_CHECKING:
     from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
@@ -336,10 +336,7 @@ class DesktopWorker:
 
     async def _tool(self, client: SandboxClient, name: str, args: dict) -> object:
         if name == "skill_view":
-            try:
-                return skill_view(self.app.home, args["name"]) or "Skill not found."
-            except (OSError, ValueError):
-                return "Skill unavailable."
+            return view_text(self.app.home, args["name"])
         if name == "look":
             if self.app.media_describer is None:
                 return "Screenshot description is unavailable."
