@@ -1,5 +1,6 @@
 """Real-sandbox checks. They need Linux and bubblewrap, and run on the Pi."""
 
+import ast
 import json
 import socket
 import struct
@@ -240,6 +241,8 @@ def test_commands_and_panels_run_in_the_same_sandbox(tmp_path):
     runner = PluginRunner(home=home)
     assert runner.self_test()
     request = {"command": "echo", "args": "hi there", "scope": "group"}
-    assert runner.run_request(folder, request, plugin.manifest, approved_hash=plugin.hash) == "hi there|group|['PATH']"
+    text, scope, env = runner.run_request(folder, request, plugin.manifest, approved_hash=plugin.hash).split("|")
+    # --clearenv leaves only PATH; bwrap sets PWD and Python's C-locale coercion sets LC_CTYPE. Nothing from the host.
+    assert (text, scope) == ("hi there", "group") and set(ast.literal_eval(env)) <= {"PATH", "PWD", "LC_CTYPE"}
     panel = runner.run_request(folder, {"panel": "summary"}, plugin.manifest, approved_hash=plugin.hash)
     assert panel == {"title": "Week", "items": [["home visible", False]]}
