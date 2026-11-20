@@ -1,5 +1,5 @@
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -304,3 +304,21 @@ async def test_private_chat_content_is_bounded_newest_first(make_app):
     assert "MSG-59" in excerpt and "MSG-00" not in excerpt
     assert excerpt.index("MSG-59") < excerpt.index("MSG-58")
     assert excerpt.endswith("</message>")
+
+
+@pytest.mark.parametrize(
+    ("sleep", "due_at", "not_due_at"),
+    [
+        ("sleep: 23:30-07:30", [(22, 30), (23, 0), (23, 29)], [(12, 0), (22, 29), (23, 30), (0, 10), (3, 0)]),
+        # the hour before 00:30 starts the evening before; the part after midnight belongs to the next date
+        ("sleep: 00:30-07:30", [(23, 30), (23, 59)], [(12, 0), (23, 29), (0, 10), (0, 30), (3, 0)]),
+        ("sleep: 02:00-09:00", [(1, 0), (1, 59)], [(0, 59), (2, 0), (7, 0), (12, 0), (23, 30)]),
+    ],
+)
+def test_due_only_in_the_hour_before_sleep(sleep, due_at, not_due_at):
+    from dom import reflection
+
+    habits = parse_habits(sleep)
+    base = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    assert all(reflection.due(base.replace(hour=h, minute=m), habits) for h, m in due_at)
+    assert not any(reflection.due(base.replace(hour=h, minute=m), habits) for h, m in not_due_at)
