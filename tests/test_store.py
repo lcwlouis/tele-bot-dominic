@@ -49,7 +49,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             self.assertEqual(migrate_database(db), TARGET_VERSION)
-            self.assertEqual(TARGET_VERSION, 13)
+            self.assertEqual(TARGET_VERSION, 14)
             self.assertEqual(list(Path(d).glob("*.bak")), [])
             conn = sqlite3.connect(db)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
@@ -155,7 +155,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
             store = Store(Path(d), owner_id=OWNER_ID)
             try:
-                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 13)
+                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 14)
                 chat = store._conn.execute("SELECT * FROM chats WHERE chat_id = '-100'").fetchone()
                 self.assertEqual(
                     (chat["authorization_status"], chat["title"], chat["traits_json"], chat["bot_depth"],
@@ -498,3 +498,41 @@ class ScopeTests(StoreTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_desktop_tasks_are_limited_per_container(tmp_path):
+    import asyncio
+
+    async def scenario():
+        store = Store(tmp_path, owner_id=7)
+        first = await store.enqueue_desktop_task(7, "one")
+        assert first is not None and await store.enqueue_desktop_task(7, "again") is None  # the default container is busy
+        other = await store.enqueue_desktop_task(7, "two", "shop")
+        assert other is not None and await store.enqueue_desktop_task(7, "twice", "shop") is None
+        assert {row["container"] for row in await store.desktop_tasks(7, active=True)} == {"default", "shop"}
+        assert [row["id"] for row in await store.desktop_tasks(7, active=True, container="shop")] == [other]
+        await store.update_desktop_task(first, 7, ("queued",), "cancelled")
+        assert await store.enqueue_desktop_task(7, "free again") is not None
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_migration_keeps_existing_desktop_tasks_on_the_default_container(tmp_path):
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(db)
+    for version, name in MIGRATIONS_BEFORE_CONTAINERS():
+        conn.executescript((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
+    conn.execute("INSERT INTO desktop_tasks (chat_id, brief, status, created_at) VALUES (7, 'old', 'running', 't')")
+    conn.commit()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+    conn.close()
+    assert migrate_database(db) == TARGET_VERSION
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT container, status FROM desktop_tasks").fetchall() == [("default", "running")]
+    conn.close()
+
+
+def MIGRATIONS_BEFORE_CONTAINERS():
+    from dom.store.store import MIGRATIONS
+    return [(v, f) for v, f in MIGRATIONS if v <= 13]

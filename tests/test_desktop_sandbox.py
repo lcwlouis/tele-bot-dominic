@@ -248,6 +248,7 @@ async def test_missing_image_is_an_error(tmp_path):
 
 
 async def test_remote_health_check(make_app, tmp_path):
+    from test_desktop_worker import adopt
     app = make_app()
     app.config = Config(home=tmp_path, desktop_mode="remote")
     seen = []
@@ -259,6 +260,7 @@ async def test_remote_health_check(make_app, tmp_path):
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
         app.sandbox = RemoteSandbox("https://example.org", "fake", http=http, isolation_confirmed=True)
+        adopt(app, DesktopWorker(app, app.sandbox))
         assert "desktop: available (starts on use)" in describe(app, "owner_dm")
         await app.sandbox.ensure_running()
         assert "desktop: ready" in describe(app, "owner_dm")
@@ -530,10 +532,13 @@ async def test_remote_start_requires_the_operator_to_confirm_isolation(tmp_path)
 
 
 def test_configured_remote_sandbox_follows_the_config_flag(tmp_path):
-    from dom.desktop.sandbox import configured_sandbox
+    from types import SimpleNamespace
+
+    from dom.desktop.fleet import DesktopFleet
 
     def sandbox(**settings):
-        return configured_sandbox(Config(home=tmp_path, desktop_mode="remote", desktop=DesktopConfig(url="https://example.org", **settings)))
+        config = Config(home=tmp_path, desktop_mode="remote", desktop=DesktopConfig(url="https://example.org", **settings))
+        return DesktopFleet(SimpleNamespace(config=config)).lane().sandbox
 
     assert sandbox()._isolation_confirmed is False
     assert sandbox(remote_isolation_confirmed=True)._isolation_confirmed is True
@@ -618,7 +623,7 @@ async def test_discard_is_quiet_when_there_is_no_container(tmp_path, caplog):
 
 
 async def test_cancelling_a_task_stops_and_removes_the_running_container(make_app, tmp_path):
-    from test_desktop_worker import Model, task_row, wait_status
+    from test_desktop_worker import Model, adopt, task_row, wait_status
 
     app = make_app()
     docker = FakeDocker()
@@ -633,7 +638,7 @@ async def test_cancelling_a_task_stops_and_removes_the_running_container(make_ap
     )) as http:
         sandbox = app.sandbox = LocalSandbox(local_config(tmp_path), run=docker, http=http)
         app.client = Model(blocked, {"content": "invalid"})
-        app.desktop_worker = worker = DesktopWorker(app, sandbox)
+        worker = adopt(app, DesktopWorker(app, sandbox))
         app.config = app.config.model_copy(update={"desktop_mode": "local"})
         task_id = await worker.enqueue(OWNER, "Example")
         await asyncio.wait_for(entered.wait(), 2)
@@ -646,7 +651,7 @@ async def test_cancelling_a_task_stops_and_removes_the_running_container(make_ap
 
 
 async def test_cancel_releases_the_worker_lock_while_it_waits_for_the_sandbox(make_app):
-    from test_desktop_worker import Model, Sandbox, task_row, wait_task
+    from test_desktop_worker import Model, Sandbox, adopt, task_row, wait_task
 
     app = make_app()
     entered, release = asyncio.Event(), asyncio.Event()
@@ -664,7 +669,7 @@ async def test_cancel_releases_the_worker_lock_while_it_waits_for_the_sandbox(ma
 
     sandbox = app.sandbox = Slow()
     app.client = Model(blocked, {"content": "invalid"}, {"content": "invalid"})
-    app.desktop_worker = worker = DesktopWorker(app, sandbox)
+    worker = adopt(app, DesktopWorker(app, sandbox))
     app.config = app.config.model_copy(update={"desktop_mode": "local"})
     task_id = await worker.enqueue(OWNER, "Example")
     await asyncio.sleep(0.01)

@@ -59,12 +59,23 @@ class Sandbox:
         return self.url
 
 
+def adopt(app, worker):
+    """Make `worker` the default container's worker of the app's fleet, as production builds it."""
+    from dom.desktop.fleet import DesktopFleet
+
+    if app.config.desktop_mode == "off":
+        app.config = app.config.model_copy(update={"desktop_mode": "local"})
+    fleet = DesktopFleet(app, sandbox_factory=lambda host, name: worker.sandbox)
+    fleet.lanes[fleet.default].worker = worker
+    app.desktop_worker = fleet
+    return worker
+
+
 async def worker_for(app, *replies, **options):
     app.sandbox = Sandbox()
     app.client = Model(*replies)
     app.config = app.config.model_copy(update={"desktop_mode": "local"})
-    app.desktop_worker = DesktopWorker(app, app.sandbox, **options)
-    return app.desktop_worker
+    return adopt(app, DesktopWorker(app, app.sandbox, **options))
 
 
 async def task_row(app, task_id):

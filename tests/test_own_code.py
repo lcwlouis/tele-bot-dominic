@@ -151,7 +151,8 @@ async def test_tool_reads_this_installation_for_every_action(make_app):
     assert "dom/tools.py" in await call(app, {"action": "list"})
     assert "def resolve" in await call(app, {"action": "read", "path": "dom/_version.py"})
     assert "dom/own_code.py:" in await call(app, {"action": "search", "query": "READ_LIMIT"})
-    assert "## [0.7.0] - 2026-11-19" in await call(app, {"action": "changelog"})
+    # The changelog reads newest sections first up to a size limit, so a long Unreleased list can push 0.7.0 out.
+    assert "## [Unreleased]" in await call(app, {"action": "changelog"})
 
 
 async def test_tool_reports_bad_arguments(make_app):

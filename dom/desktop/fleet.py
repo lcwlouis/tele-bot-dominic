@@ -1,0 +1,184 @@
+"""Named desktop containers. Each has its own sandbox and worker; the hosts limit how many run at once."""
+
+from __future__ import annotations
+
+import logging
+import re
+from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from dom.config import HOST_NAME
+from dom.desktop.client import SandboxError
+from dom.desktop.files import drop_stale
+from dom.desktop.sandbox import DEFAULT, Host, LocalSandbox, RemoteSandbox, read_free_memory_mb
+from dom.desktop.worker import ACTIVE, DesktopWorker
+
+if TYPE_CHECKING:
+    from dom.telegram.handlers import App
+
+log = logging.getLogger(__name__)
+NAME = re.compile(HOST_NAME)
+NAME_RULE = "a container name is up to 24 lowercase letters, digits and hyphens, starting with a letter or digit"
+
+
+@dataclass
+class Lane:
+    """One container: where it runs, the sandbox that starts and stops it, and the worker that runs its tasks."""
+
+    name: str
+    host: Host
+    sandbox: LocalSandbox | RemoteSandbox
+    worker: DesktopWorker
+
+    def status(self) -> str:
+        return self.sandbox.status()
+
+    def idle(self) -> bool:
+        return not self.worker.busy() and self.status() in ("stopped", "error")
+
+
+class DesktopFleet:
+    """Routes desktop tasks to named containers.
+
+    `default` is the container that existed before there could be several. A remote host is one
+    container, named after the host. Any other name is a container on the local host, created on first use
+    and forgotten once it is stopped and has no task (its browser profile stays on disk, so logins last)."""
+
+    def __init__(
+        self, app: App, *, free_memory: Callable[[], int | None] = read_free_memory_mb,
+        sandbox_factory: Callable[[Host, str], LocalSandbox | RemoteSandbox] | None = None, **worker_options,
+    ):
+        self.app = app
+        self.hosts = [Host(config, free_memory=free_memory) for config in app.config.desktop_hosts]
+        self._factory = sandbox_factory or self._build
+        self._options = worker_options
+        self.lanes: dict[str, Lane] = {}
+        first = self.hosts[0].config if self.hosts else None
+        self.default = first.name if first is not None and first.mode == "remote" else DEFAULT
+        if self.hosts:
+            self.lane(self.default)
+
+    def _build(self, host: Host, name: str) -> LocalSandbox | RemoteSandbox:
+        config, settings = self.app.config, host.config
+        if settings.mode == "local":
+            return LocalSandbox(config, name=name, host=host)
+        return RemoteSandbox(
+            settings.url, config.secret(settings.api_key_env),
+            isolation_confirmed=settings.remote_isolation_confirmed, name=name, host=host,
+        )
+
+    def _resolve(self, name: str | None) -> tuple[str, Host]:
+        if name is None or name == DEFAULT:
+            name = self.default
+        if not isinstance(name, str):
+            raise ValueError(NAME_RULE)
+        for host in self.hosts:
+            if host.config.mode == "remote" and host.config.name == name:
+                return name, host
+        if not NAME.fullmatch(name):
+            raise ValueError(NAME_RULE)
+        for host in self.hosts:
+            if host.config.mode == "local":
+                return name, host
+        raise ValueError(f"no local host is configured, so the only container is {self.default}")
+
+    def lane(self, name: str | None = None) -> Lane:
+        name, host = self._resolve(name)
+        if name not in self.lanes:
+            sandbox = self._factory(host, name)
+            self.lanes[name] = Lane(name, host, sandbox, DesktopWorker(self.app, sandbox, container=name, **self._options))
+        return self.lanes[name]
+
+    def containers(self) -> list[Lane]:
+        """The containers worth showing: the default one, and every other that is running or has a task."""
+        return [lane for name, lane in self.lanes.items() if name == self.default or not lane.idle()]
+
+    async def _drop_idle(self) -> None:
+        for name, lane in list(self.lanes.items()):
+            if name != self.default and lane.idle():
+                del self.lanes[name]
+                lane.host.sandboxes.pop(name, None)
+                if (close := getattr(lane.sandbox, "close", None)) is not None:
+                    await close()
+
+    def available(self) -> bool:
+        return any(lane.worker.available() for lane in self.lanes.values())
+
+    async def _refusal(self, lane: Lane) -> str | None:
+        if lane.status() == "ready":
+            return None  # it already holds its slot
+        busy = [other.name for other in self.lanes.values() if other.host is lane.host and other is not lane and other.worker.busy()]
+        return await lane.host.refusal(lane.sandbox, busy=busy, memory=lane.host.config.mode == "local")
+
+    async def enqueue(self, chat_id: int, brief: str, container: str | None = None) -> int:
+        await self._drop_idle()
+        lane = self.lane(container)
+        try:
+            return await lane.worker.enqueue(chat_id, brief, admit=lambda: self._refusal(lane))
+        finally:
+            await self._drop_idle()
+
+    async def _lane_of(self, chat_id: int, task_id: int) -> Lane | None:
+        for row in await self.app.store.desktop_tasks(chat_id, active=True):
+            if row["id"] == task_id:
+                return self.lanes.get(row["container"])
+        return None
+
+    async def cancel(self, chat_id: int, task_id: int) -> bool:
+        lane = await self._lane_of(chat_id, task_id)
+        if lane is None:
+            return False
+        try:
+            return await lane.worker.cancel(chat_id, task_id)
+        finally:
+            await self._drop_idle()
+
+    async def resume(self, chat_id: int, task_id: int, steps: int) -> bool:
+        lane = await self._lane_of(chat_id, task_id)
+        return lane is not None and await lane.worker.resume(chat_id, task_id, steps)
+
+    async def recover(self) -> None:
+        """After a restart: remove every container the last process left, restart queued tasks, fail the rest."""
+        store, chat_id = self.app.store, self.app.owner_id
+        rows = await store.desktop_tasks(chat_id, active=True) if chat_id is not None else []
+        drop_stale(self.app.home.root, {row["id"] for row in rows if row["status"] == "queued"})
+        by_container: dict[str, list[dict]] = defaultdict(list)
+        for row in rows:
+            by_container[row["container"]].append(row)
+        for name in {*self.lanes, *by_container, *await self._leftovers()}:
+            try:
+                lane = self.lane(name)
+            except ValueError as exc:
+                for row in by_container.get(name, []):
+                    failed = await store.update_desktop_task(row["id"], chat_id, ACTIVE, "failed", error=str(exc))
+                    if failed:
+                        await self._report(failed)
+                continue
+            await lane.worker.recover(by_container.get(name, []))
+        await self._drop_idle()
+
+    async def _leftovers(self) -> list[str]:
+        local = next((lane.sandbox for lane in self.lanes.values() if hasattr(lane.sandbox, "existing_names")), None)
+        if local is None:
+            return []
+        try:
+            return await local.existing_names()
+        except SandboxError as exc:
+            log.warning("could not list desktop containers left by a previous process (%s)", exc)
+            return []
+
+    async def _report(self, row: dict) -> None:
+        try:
+            await self.app.dispatch.report_desktop_task(row)
+        except Exception as exc:
+            log.warning("could not report desktop task %s (%s)", row["id"], type(exc).__name__)
+
+    async def close(self) -> None:
+        lanes = list(self.lanes.values())
+        for lane in lanes:
+            await lane.worker.close()
+        for lane in lanes:
+            if (close := getattr(lane.sandbox, "close", None)) is not None:
+                await close()

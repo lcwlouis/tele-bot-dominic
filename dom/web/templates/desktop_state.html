@@ -1,6 +1,21 @@
-<div id="desktop-state" data-status="{{ context.status }}" hx-get="/desktop/state" hx-trigger="every 4s"
+<div id="desktop-state" data-status="{{ context.status }}" hx-get="/desktop/state{{ context.q }}" hx-trigger="every 4s"
   hx-swap="outerHTML" hx-sync="this:drop">
-  <p class="{{ 'desktop-ready' if context.status == 'ready' else 'fog' }}">Computer {{ context.status }}</p>
+  {% if context.containers|length > 1 %}
+  <table>
+    <thead><tr><th scope="col">Container</th><th scope="col">Host</th><th scope="col">State</th><th scope="col">Task</th></tr></thead>
+    <tbody>
+      {% for c in context.containers %}
+      <tr{% if c.selected %} aria-current="true"{% endif %}>
+        <th scope="row"><a href="/desktop{{ c.q }}">{{ c.name }}</a></th>
+        <td>{{ c.host }}</td>
+        <td>{{ c.status }}</td>
+        <td>{% if c.task %}#{{ c.task.id }} · {{ c.task.status|replace("_", " ") }}{% else %}<span class="fog">none</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <p class="{{ 'desktop-ready' if context.status == 'ready' else 'fog' }}">{% if context.containers|length > 1 %}<strong>{{ context.container }}</strong> · {% endif %}Computer {{ context.status }}</p>
   {% if context.error %}<p class="notice">{{ context.error }}</p>{% endif %}
   {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
   {% if context.task %}
@@ -19,10 +34,10 @@
   {% endif %}
   <div class="actions" hx-target="#desktop-state" hx-swap="outerHTML" hx-sync="#desktop-state:replace">
     {% if context.status in ("stopped", "error") %}
-    <button class="primary" hx-post="/desktop/computer/start">{{ "Start computer" if context["local"] else "Connect to computer" }}</button>
+    <button class="primary" hx-post="/desktop/computer/start{{ context.q }}">{{ "Start computer" if context["local"] else "Connect to computer" }}</button>
     {% endif %}
     {% if context["local"] and context.status in ("ready", "error") and not context.task %}
-    <button class="quiet" hx-post="/desktop/computer/stop">Stop computer</button>
+    <button class="quiet" hx-post="/desktop/computer/stop{{ context.q }}">Stop computer</button>
     {% endif %}
   </div>
 </div>

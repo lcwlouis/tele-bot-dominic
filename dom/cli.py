@@ -19,7 +19,6 @@ from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
 from dom.desktop import network as desktop_network
-from dom.desktop.sandbox import configured_sandbox
 from dom.home import Home, init_home
 from dom.importer import import_v2
 from dom.jev import JevClient
@@ -121,7 +120,7 @@ async def run(home: Path) -> None:
         raise SystemExit(f"{home / 'config.toml'} needs a [models.chat] section.")
     bot = Bot(token=require_secret(config, "TELEGRAM_BOT_TOKEN"))
     store = Store(home, config.owner_id)
-    sandbox = configured_sandbox(config)
+    app = None
     try:
         me = await bot.get_me()
         async with httpx.AsyncClient() as http:
@@ -138,7 +137,7 @@ async def run(home: Path) -> None:
             app = App(
                 config=config, home=Home(home), store=store, client=client,
                 bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id, media_describer=media_describer,
-                search_client=search_client(config, http, usage), sandbox=sandbox,
+                search_client=search_client(config, http, usage),
             )
             await app.stickers.refresh()
             await app.plugins.cleanup_drafts()
@@ -167,8 +166,8 @@ async def run(home: Path) -> None:
                         await app.desktop_worker.close()
                     await app.dispatch.close()
     finally:
-        if sandbox is not None:
-            await sandbox.close()
+        if app is not None and app.desktop_worker is not None:
+            await app.desktop_worker.close()
         await executor.cancel_pending_deletions()
         store.close()
         await bot.session.close()
