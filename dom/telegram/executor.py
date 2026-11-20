@@ -22,8 +22,20 @@ from dom.models import StoredMessage
 from dom.store import Store
 
 log = logging.getLogger("dom.executor")
-MAX_TYPING_SECONDS = 8
+MAX_TYPING_SECONDS = 20  # typing time keeps scaling with length up to this; at 8 characters a second that is 160
+TYPING_REFRESH_SECONDS = 4  # Telegram's typing indicator lapses after about 5 seconds
 _background: set[asyncio.Task] = set()  # keeps scheduled deletions alive until they run
+
+
+async def _type_for(bot, chat_id: int, seconds: float, thread_id: int | None, sleep) -> None:
+    """Show "typing" for `seconds`, sending the indicator again before Telegram lets it lapse."""
+    while True:
+        await bot.send_chat_action(chat_id, "typing", message_thread_id=thread_id)
+        if seconds <= TYPING_REFRESH_SECONDS:
+            await sleep(seconds)
+            return
+        await sleep(TYPING_REFRESH_SECONDS)
+        seconds -= TYPING_REFRESH_SECONDS
 
 
 async def _delete_later(bot, store: Store, chat_id: int, message_id: int, delay: float, sleep) -> None:
@@ -97,8 +109,7 @@ async def perform(
 
     sent_ids: list[int] = []
     for bubble in actions.bubbles:
-        await bot.send_chat_action(chat_id, "typing", message_thread_id=thread_id)
-        await sleep(min(len(bubble.text) / typing_cps, MAX_TYPING_SECONDS))
+        await _type_for(bot, chat_id, min(len(bubble.text) / typing_cps, MAX_TYPING_SECONDS), thread_id, sleep)
         reply = (
             ReplyParameters(message_id=bubble.reply_to, allow_sending_without_reply=True)
             if bubble.reply_to is not None
