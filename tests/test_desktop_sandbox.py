@@ -191,6 +191,25 @@ async def test_local_start_retries_the_api_then_the_browser(tmp_path):
         await sandbox.close()
 
 
+async def test_local_start_clears_a_stale_chromium_profile_lock(tmp_path):
+    # An unclean stop leaves Chromium's lock behind, naming the old container; the next browser refuses to start.
+    profile = tmp_path / "desktop-profile"
+    profile.mkdir()
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        (profile / name).symlink_to(f"old-container-{name}")
+    (profile / "Default").mkdir()
+
+    def reply(request):
+        assert not any(profile.glob("Singleton*"))
+        return httpx.Response(200, json={"success": True, "data": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        sandbox = LocalSandbox(local_config(tmp_path), run=FakeDocker(), http=http)
+        await sandbox.ensure_running()
+        await sandbox.close()
+    assert sorted(path.name for path in profile.iterdir()) == ["Default"]
+
+
 @pytest.mark.parametrize(("paths", "message"), [
     (["/v1/sandbox"], "API not healthy"),
     (["/v1/sandbox", "/v1/browser/tabs"], "browser did not start"),

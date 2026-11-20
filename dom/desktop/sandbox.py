@@ -251,6 +251,10 @@ class LocalSandbox:
             await self._remove_container(running.strip() == b"true")
         profile = desktop_profile_path(self.config)
         profile.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # No container uses the profile now. A lock left by an unclean stop names the old
+        # container, and Chromium would refuse the profile until it is gone.
+        for lock in profile.glob("Singleton*"):
+            lock.unlink(missing_ok=True)
         key = secrets.token_urlsafe(32)
         code, _ = await self._docker_to_completion(
             "run", "-d", "--name", CONTAINER, "--pull=never", "--network", settings.network,
