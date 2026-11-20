@@ -12,6 +12,7 @@
         <option value="skill"{% if context.kind == "skill" %} selected{% endif %}>Skill</option>
         <option value="plugin"{% if context.kind == "plugin" %} selected{% endif %}>Plugin</option>
         <option value="memory_fact"{% if context.kind == "memory_fact" %} selected{% endif %}>Memory fact</option>
+        <option value="lan_address"{% if context.kind == "lan_address" %} selected{% endif %}>LAN address</option>
         <option value="chat_approval"{% if context.kind == "chat_approval" %} selected{% endif %}>Chat approval</option>
       </select>
     </label>
@@ -76,6 +77,11 @@
     <p>{{ card.body.description }}</p>
     {% if card.body.network %}<p class="kind">This plugin can reach the internet</p>{% endif %}
     <div class="actions"><a href="{{ card.review_path }}">Review code</a></div>
+    {% elif card.kind == "lan_address" %}
+    <p><code>{{ card.body.old }}</code> → <code>{{ card.body.new }}</code>{% if card.body.name %} ({{ card.body.name }}){% endif %}</p>
+    {% if card.body.places %}<p>Used in {{ card.body.places|join(", ") }}.</p>{% endif %}
+    {% if card.body.macs %}<p class="fog">Device {{ card.body.macs|join(", ") }}</p>{% endif %}
+    <p class="fog">Dom uses the new address after his next restart.</p>
     {% else %}<p>{{ card.body.file }}: {{ card.body.text }}</p>{% endif %}
     {% if card.kind != "plugin" %}
     <div class="actions" hx-target="#proposals" hx-swap="outerHTML">

@@ -250,6 +250,8 @@ def _proposal_label(kind: str, source: str) -> str:
         return f"Memory imported from {IMPORT_SERVICES.get(service, service)}" if service else "Memory fact"
     if kind == "skill":
         return "Skill proposed after a desktop task" if source == "desktop" else "Skill proposal"
+    if kind == "lan_address":
+        return "LAN address change"
     return "Plugin draft" if kind == "plugin" else kind.replace("_", " ").capitalize()
 
 

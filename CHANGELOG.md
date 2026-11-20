@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Dashboard: `lan_address` proposals have a kind filter and a card (old → new address, where it is used, device name and MAC); Telegram "Approve all on this page" also applies skills and LAN address changes, each through its own checks.
 - find_devices and approved address changes also cover `[desktop] url` and every `[[desktop.hosts]]` url; `dom desktop-check` accepts `<name>.local` as well as an IPv4 address.
 - Normal reminders are phrased in Dom's own voice like critical ones, falling back to the stored text if the model fails; casual ones still fold into conversation.
 - Fix the turn note cutting Dom's tool list mid-word in the owner DM: it now lists every enabled tool by name, and drops whole names with "+N more" only when they would not fit.

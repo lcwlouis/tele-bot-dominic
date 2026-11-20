@@ -197,3 +197,25 @@ async def test_reflection_proposal_event_never_carries_the_model_written_reason(
     (proposal,) = await app.proposals.pending()
     assert [event["text"] for event in await events(app)] == [f"Dom proposed a soul edit (#{proposal['id']})"]
     assert "A gentler voice" in app.bot.of("send", OWNER)[0][2]  # the owner still reads the reason in the DM
+
+
+async def test_bulk_approval_applies_skills_and_lan_changes_through_their_own_checks(make_app):
+    app = make_app()
+    old, new = "192.0.2.10", "192.0.2.11"
+    path = app.home.root / "config.toml"
+    path.write_text(f'[models.lab]\nbase_url = "http://{old}:8080/v1"\nmodel = "m"\n')
+    lan = await app.proposals.create("lan_address", "moved", {"old": old, "new": new, "places": ["models.lab.base_url"]}, "devices")
+    stale = await app.proposals.create("lan_address", "gone", {"old": "192.0.2.50", "new": "192.0.2.51", "places": []}, "devices")
+    skill = await app.proposals.create("skill", "Tea", {"name": "tea", "description": "Brew tea", "body": "Steep."}, "example")
+    await app.proposals.create("memory_fact", "Prefers tea", {"file": "USER.md", "text": "Prefers tea"}, "example")
+    await handlers.handle_message(app, tg(OWNER, OWNER, "/proposals"))
+    bulk = next(
+        b.callback_data for row in app.bot.of("send", OWNER)[-1][3]["reply_markup"].inline_keyboard
+        for b in row if b.text == "Approve all on this page"
+    )
+    await press(app, bulk)
+    assert app.bot.of("answer")[-1][2].startswith("Approved 3. 1 still pending.")
+    assert new in path.read_text() and old not in path.read_text()
+    assert app.home.scoped(allow_private=True).read("private/USER.md") == "- Prefers tea"
+    assert [row["id"] for row in await app.proposals.pending()] == [stale]
+    assert lan != skill
