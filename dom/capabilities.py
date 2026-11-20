@@ -46,10 +46,7 @@ def describe(app: App, scope: Scope, offered: list[Tool] | None = None) -> str:
         offered = core_tools(app.search_client)
         if app.desktop_worker is not None and app.desktop_worker.available():
             offered.insert(0, START_DESKTOP_TASK)
-    tools = "; ".join(
-        f"{tool.name} ({tool.description.split('. ', 1)[0].rstrip('.')})"
-        for tool in offered if scope in tool.scopes
-    )
+    names = [tool.name for tool in offered if scope in tool.scopes]
     media = ", photos, GIFs, video, voice" if app.media_describer is not None else ""
     t3_status = ""
     if scope == "owner_dm":
@@ -63,4 +60,15 @@ def describe(app: App, scope: Scope, offered: list[Tool] | None = None) -> str:
         f"\nunderstands: text{media}\ndesktop: {desktop_status(app, scope)}{t3_status}\n"
         "cannot see read receipts, see deleted messages, or read chats he isn't in"
     )
-    return f"tools: {tools or 'none'}"[:600 - len(rest)] + rest
+    return _tool_line(names, 600 - len(rest)) + rest
+
+
+def _tool_line(names: list[str], budget: int) -> str:
+    """`tools: a, b, c` within `budget` characters. Whole names only; the model has each tool's schema already."""
+    if not names:
+        return "tools: none"
+    for shown in range(len(names), 0, -1):
+        line = "tools: " + ", ".join(names[:shown]) + (f" (+{len(names) - shown} more)" if shown < len(names) else "")
+        if len(line) <= budget:
+            return line
+    return f"tools: {len(names)} offered"
