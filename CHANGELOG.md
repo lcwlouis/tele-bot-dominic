@@ -20,8 +20,11 @@ named `vX.Y.Z`.
 - Run more than one desktop container. `start_desktop_task` takes an optional container name (letters, digits, hyphens); each container has its own task slot, browser profile, port and idle timer, and the default container behaves as before. Desktop hosts are a list (`[[desktop.hosts]]`, each with `max_containers` and `min_free_memory_mb`); the single `[desktop] mode` config still works as one host named `default`.
 - Refuse, with the numbers, to start a container past a host's limit or that would leave it below its free-memory floor (local: `MemAvailable`; remote: read through the sandbox's shell). The Pi allows one container and keeps 512 MB free besides the container's 1600 MB.
 - Handoff links, task reports, screenshot file names, the live viewer and the dashboard Desktop page name the container; the page lists every container with its host, state and task. `self_inspect` reports `desktop_hosts` with limits and containers.
-- Migration `0013` adds `desktop_tasks.container` and makes the one-active-task limit per container.
+- Migration `0014` adds `desktop_tasks.container` and makes the one-active-task limit per container.
 - Add a pinned, loopback-only T3 Code systemd user service with a 600 MiB memory limit.
+- T3 Code bridge (owner DM): Dom signs in to a T3 Code server over MCP with Supervised links and can read coding threads (`coding_overview`, `coding_search`, `coding_thread`). `coding_send` stages a message that is sent only after the owner confirms it with a button.
+- Every bridge call is audited in a `t3_audit` table; `/t3` shows the sign-in, linked machines and audit history, with a Reconnect button.
+- Desktop: `screenshot` saves the screen as a file Dom can send; a stale Chromium profile lock is cleared before the browser starts.
 - Document Raspberry Pi desktop startup timings, the Chromium seccomp profile and the desktop connectivity check.
 - Wait for the local sandbox API and browser within a configurable 180-second startup deadline, with a distinct error for each stage.
 - Disable Jupyter for faster local desktop startup and run Python scripts through the sandbox Bash API.
