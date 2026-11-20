@@ -208,7 +208,7 @@ class Reminders:
             if actions and not actions.no_response and actions.bubbles:
                 return "\n".join(bubble.text for bubble in actions.bubbles)
         except Exception as error:  # the stored reminder still goes out if the model path fails
-            log.warning("critical reminder model unavailable (%s)", type(error).__name__)
+            log.warning("reminder model unavailable (%s)", type(error).__name__)
         return None
 
     async def _deliver(self, owner: int, row: dict, late: bool) -> None:
@@ -216,7 +216,7 @@ class Reminders:
         delivery = self._deliveries.setdefault(row["id"], _Delivery())
         try:
             if not delivery.chunks:
-                styled = await self._in_character(owner, row["text"]) if row["importance"] == "critical" else None
+                styled = await self._in_character(owner, row["text"])
                 text = _carry(styled, row["text"])
                 if late:
                     text += " (late)"
