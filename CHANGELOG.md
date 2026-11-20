@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- New "Auto" mode for Everywhere presets: in the nightly reflection Dom picks the next day's preset from his mood and journal (never the assistant preset), with a reason, from his wake-up; a failed or invalid pick falls back to a weighted random one. He may switch once more a day with the `switch_vibe` tool when a conversation calls for it. Chat pins still win, `/preset` and the dashboard can set Auto or lock a preset, the Chats panel shows today's vibe and reason, and `self_inspect` and the prompt tell Dom which preset he picked ([docs/configuration.md](docs/presets.md)).
 - A second `dom deploy` refused because one is already running no longer overwrites the running deploy's saved state, so the post-restart report is not lost.
 - T3 bridge: thread lookup accepts the numeric paging cursor the live T3 server returns, instead of failing with "Invalid T3 cursor."
 - Every configured desktop host has a container from the start: remote hosts show on the Desktop page, home tile and capabilities (and open at `/desktop?container=<name>`) before first use, and `start_desktop_task` stays offered while any host is usable. Starting containers is still on demand.

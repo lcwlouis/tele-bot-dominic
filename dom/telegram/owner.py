@@ -28,7 +28,7 @@ from dom import memory_import, proposals, release, traits
 from dom._version import VERSION
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE
-from dom.traits import GLOBAL_PRESET_KEY, global_preset_name, load_preset
+from dom.traits import AUTO, GLOBAL_PRESET_KEY, ensure_pick, load_preset, vibe
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -262,11 +262,15 @@ async def decide_pending_chat(app: App, chat_id: int, decision: str, who: str) -
 
 
 async def set_global_preset(app: App, name: str, who: str) -> str | None:
-    preset = load_preset(app.home, name) if name else None
-    if name and preset is None:
+    """Lock one preset everywhere, clear it, or hand the choice to Dom with `auto` (he needs a preset to pick from)."""
+    preset = load_preset(app.home, name) if name and name != AUTO else None
+    if name and name != AUTO and preset is None:
+        return None
+    if name == AUTO and not await ensure_pick(app.home, app.store, app.dispatch.now()):
         return None
     await app.store.kv_set(GLOBAL_PRESET_KEY, name)
-    message = f"{who} set Dom's preset everywhere to {preset.title if preset else 'None'}"
+    label = "Auto (Dom picks)" if name == AUTO else preset.title if preset else "None"
+    message = f"{who} set Dom's preset everywhere to {label}"
     await record_event(app, message)
     return message
 
@@ -427,9 +431,9 @@ async def _preset_buttons(app: App, text: str, choices: list[tuple[str, str]]) -
 
 
 async def show_presets(app: App) -> None:
-    everywhere = await global_preset_name(app.store)
-    shared = load_preset(app.home, everywhere) if everywhere else None
-    choices = [(f"Everywhere · {_short(shared.title, 30) if shared else 'None'}", "preset:all")]
+    shared = await vibe(app.home, app.store, app.dispatch.now())
+    label = _short(shared.preset.title, 30) if shared.preset else "None"
+    choices = [(f"Everywhere · {'Auto: ' if shared.mode == 'auto' else ''}{label}", "preset:all")]
     for chat in await app.store.list_chats("approved"):
         preset = load_preset(app.home, chat["preset"]) if chat["preset"] else None
         title = display_title(chat, app.owner_id)
@@ -446,6 +450,8 @@ async def choose_preset(app: App, chat: dict | None) -> None:
         data = prefix + name
         if len(data.encode("utf-8")) <= 64 and (preset := load_preset(app.home, name)) is not None:
             choices.append((_short(preset.title, 64), data))
+    if chat is None:
+        choices.append(("Auto (Dom picks daily)", prefix + AUTO))
     choices.append(("None", prefix))
     where = display_title(chat, app.owner_id) if chat else "every chat"
     await _preset_buttons(app, f"Choose a preset for {where}.", choices)

@@ -78,6 +78,8 @@ def build_messages(
     persona = ["Personality sliders (0 to 1): " + ", ".join(f"{k}={v}" for k, v in sliders.items())]
     if preset is not None:
         persona.append(f"<preset name={quoteattr(preset.name)}>{escape(preset.overlay)}</preset>")
+        if preset.picked:
+            persona.append(f"You chose this preset yourself as today's vibe: {escape(preset.picked)}")
 
     notes = []
     if scope == "owner_dm":

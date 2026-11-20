@@ -12,6 +12,7 @@ private chat. The owner dashboard, desktop sandbox and plugins are optional.
 - [Serve the dashboard through a Cloudflare tunnel](docs/deploy-dashboard.md)
 - [Desktop network](docs/desktop.md)
 - [GIFs](docs/gifs.md)
+- [Presets and Dom's daily vibe](docs/presets.md)
 - [T3 Code bridge](docs/t3-bridge.md)
 
 [MIT licence](LICENSE)
