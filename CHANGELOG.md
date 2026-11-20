@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- `dom doctor` warns about misspelt keys in every config table (now including `[presence]`, `[t3]` and `[update]`, derived from the config model) and fails when a remote desktop host's `api_key_env` secret is not set.
 - Approving a skill proposal re-checks it against private notes as well as credentials, since the notes may have changed since the proposal.
 - Fix the daily reflection running in the daytime when the learned sleep start is between 01:00 and 06:59: it now runs only in the hour before sleep starts.
 - Single-attempt model calls (dashboard soul chat, reminder phrasing, desktop task reports, the asleep plugin grumble) now fall back to the fallback model, with one call, when the home endpoint is down.
