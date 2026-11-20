@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Normal reminders are phrased in Dom's own voice like critical ones, falling back to the stored text if the model fails; casual ones still fold into conversation.
 - Fix the turn note cutting Dom's tool list mid-word in the owner DM: it now lists every enabled tool by name, and drops whole names with "+N more" only when they would not fit.
 - Dashboard: show a Desktop tile on the home view with each container's host, state, truncated task brief, live viewer link and host limits, polling every 4 seconds when enabled.
 - Dashboard: edit each chat's sliders and reset them to default.
