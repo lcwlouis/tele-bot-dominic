@@ -367,3 +367,118 @@ async def test_everywhere_preset_select_sits_above_the_chats_and_sets_the_global
 
         await client.post(f"/chats/{GROUP}/preset", headers=POST_HEADERS, data={"preset": ""})
         assert (await app.store.list_chats("approved"))[0]["preset"] == ""
+
+
+async def test_chats_sliders_edit_validate_and_reset_to_default(make_app, browser):
+    from dom import traits
+
+    app = make_app()
+    app.home._write_regular("SOUL.md", "---\ntraits:\n  humor: 0.5\n  empathy: 0.5\n---\n")
+    app.home.write_preset("calm", "---\ntitle: Calm\ntraits:\n  humor: 0.3\n---\n")
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    await app.store.set_chat_auth_status(FRIEND, "pending_approval", title="Stranger")
+
+    async with browser(app) as client:
+        chats = (await client.get("/chats")).text
+        for name in traits.NAMES:
+            assert f'name="{name}"' in chats
+            assert f'id="trait-{GROUP}-{name}"' in chats
+        assert f'action="/chats/{GROUP}/traits"' in chats
+        assert f'hx-post="/chats/{GROUP}/traits/reset"' in chats
+        assert "Reset to default" in chats
+
+        # CSRF / htmx protection on slider endpoints
+        assert (await client.post(f"/chats/{GROUP}/traits", data={"humor": "0.8"})).status_code in (401, 403)
+        assert (await client.post(f"/chats/{GROUP}/traits/reset")).status_code in (401, 403)
+
+        # Out-of-range and alias inputs go through traits validation (clamped to [0.05, 0.95])
+        response = await client.post(
+            f"/chats/{GROUP}/traits", headers=POST_HEADERS, data={"humor": "1.8", "sarcasm_level": "-1"},
+        )
+        assert response.status_code == 200
+        assert '<details class="traits" open>' in response.text
+        assert "Traits for Book Club:" in response.text
+        sliders, _ = await traits.for_chat(app.home, app.store, GROUP)
+        assert sliders["humor"] == 0.95 and sliders["sarcasm"] == 0.05 and sliders["empathy"] == 0.5
+
+        # Editing one slider preserves existing overrides without pinning untouched traits
+        await client.post(f"/chats/{GROUP}/traits", headers=POST_HEADERS, data={"emoji": "0.8"})
+        await client.post(f"/chats/{GROUP}/preset", headers=POST_HEADERS, data={"preset": "calm"})
+        sliders, _ = await traits.for_chat(app.home, app.store, GROUP)
+        assert sliders["humor"] == 0.95 and sliders["emoji"] == 0.8 and sliders["sarcasm"] == 0.05
+
+        # Invalid values or unapproved/unknown chats change nothing
+        before = await app.store.get_chat_personality(GROUP)
+        for bad in ({"humor": "nan"}, {"humor": "nope"}, {"unknown": "0.5"}, {"humor": "0.7", "empathy": "bad"}):
+            resp = await client.post(f"/chats/{GROUP}/traits", headers=POST_HEADERS, data=bad)
+            assert resp.status_code == 200 and "unavailable" in resp.text.lower()
+            assert await app.store.get_chat_personality(GROUP) == before
+        for other in (FRIEND, -999999):
+            resp = await client.post(f"/chats/{other}/traits", headers=POST_HEADERS, data={"humor": "0.7"})
+            assert resp.status_code == 200 and "unavailable" in resp.text.lower()
+
+        # Reset to default clears per-chat overrides and restores preset/soul defaults
+        reset = await client.post(f"/chats/{GROUP}/traits/reset", headers=POST_HEADERS)
+        assert reset.status_code == 200 and '<details class="traits" open>' in reset.text
+        assert "reset to default" in reset.text.lower()
+        assert await app.store.get_chat_personality(GROUP) == ("calm", "{}")
+        sliders, _ = await traits.for_chat(app.home, app.store, GROUP)
+        assert sliders == {"humor": 0.3, "empathy": 0.5}
+        events = await app.store.get_recent_chat_window(OWNER)
+        assert any(m.role == "event" and "Traits for Book Club" in m.text for m in events)
+
+
+async def test_pending_chat_approvals_list_and_share_owner_decision_function(make_app, browser, monkeypatch):
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "pending_approval", title="Book Club", invited_by_handle="@inviter")
+    await app.store.set_chat_auth_status(FRIEND, "pending_approval", title="Fran", invited_by_handle="@newbie")
+    decide = AsyncMock(wraps=owner.decide_pending_chat)
+    monkeypatch.setattr(owner, "decide_pending_chat", decide)
+
+    async with browser(app) as client:
+        index = (await client.get("/")).text
+        proposals = (await client.get("/proposals")).text
+        for html in (index, proposals):
+            assert "Group approval" in html and "Book Club" in html and "Invited by @inviter" in html
+            assert "Stranger DM approval" in html and "DM with Fran" in html and "From @newbie" in html
+            assert f'hx-post="/proposals/chat/{GROUP}/approve' in html
+            assert f'hx-post="/proposals/chat/{GROUP}/ignore' in html
+            assert f'hx-post="/proposals/chat/{FRIEND}/approve' in html
+            assert f'hx-post="/proposals/chat/{FRIEND}/ignore' in html
+        assert "Nothing is waiting for you." not in proposals
+        assert 'aria-label="2 proposals"' in proposals
+
+        # Filtering by kind includes or excludes pending chats properly
+        app.home._write_regular("SOUL.md", "One old line")
+        await app.proposals.create("soul_edit", "A change", {"old": "One old line", "new": "A new line"}, "reflection", notify=False)
+        only_soul = (await client.get("/proposals?kind=soul_edit")).text
+        assert "A change" in only_soul and "Group approval" not in only_soul
+        only_chats = (await client.get("/proposals?kind=chat_approval")).text
+        assert "Group approval" in only_chats and "A change" not in only_chats
+
+        # CSRF / htmx protection
+        assert (await client.post(f"/proposals/chat/{GROUP}/approve")).status_code in (401, 403)
+
+        # Approve group through dashboard
+        approved = await client.post(f"/proposals/chat/{GROUP}/approve", headers=POST_HEADERS)
+        assert approved.status_code == 200
+        assert approved.headers.get("X-Dom-Decided") == "true"
+        assert "Approved: Book Club" in approved.text
+        assert "Book Club" not in approved.text.split("Approved: Book Club", 1)[1]
+        assert await app.store.is_chat_approved(GROUP)
+        assert decide.await_count == 1
+
+        # Re-deciding the same chat reports Already handled without setting X-Dom-Decided
+        stale = await client.post(f"/proposals/chat/{GROUP}/ignore", headers=POST_HEADERS)
+        assert stale.status_code == 200 and "Already handled." in stale.text
+        assert "X-Dom-Decided" not in stale.headers
+        assert await app.store.is_chat_approved(GROUP)
+
+    # Telegram owner-DM button uses the exact same decision function
+    await handle_callback(app, callback(app, OWNER, f"ignore:{FRIEND}"))
+    assert decide.await_count == 3
+    assert (await app.store.get_chat_auth_status(FRIEND))["authorization_status"] == "ignored"
+    events = await app.store.get_recent_chat_window(OWNER)
+    event_texts = [m.text for m in events if m.role == "event"]
+    assert any("approved Book Club" in text for text in event_texts)
+    assert any("ignored DM with Fran" in text for text in event_texts)

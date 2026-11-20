@@ -7,6 +7,7 @@ import json
 import logging
 import math
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from datetime import datetime, time, timedelta
 from functools import partial
 from pathlib import Path
@@ -17,8 +18,10 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from starlette.datastructures import FormData, UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
 
-from dom import proposals, traits
+from dom import memory_import, proposals, traits
 from dom.agent import unfence
 from dom.briefs import list_briefs, markdown_blocks
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
@@ -81,6 +84,29 @@ async def form(request: Request, *, max_bytes: int = 8192) -> dict[str, list[str
         raise HTTPException(400, "Invalid form.") from None
 
 
+async def _bounded_stream(request: Request, max_bytes: int) -> AsyncIterator[bytes]:
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(413, "The upload is too large.")
+        yield chunk
+
+
+async def multipart_form(request: Request, *, max_bytes: int) -> FormData:
+    """Read one multipart upload with Starlette's parser, stopping at max_bytes of body whatever the headers say."""
+    if request.headers.get("Content-Type", "").partition(";")[0].strip().lower() != "multipart/form-data":
+        raise HTTPException(415, "Expected a form.")
+    declared = request.headers.get("Content-Length", "")
+    if declared.isdecimal() and int(declared) > max_bytes:
+        raise HTTPException(413, "The upload is too large.")
+    parser = MultiPartParser(request.headers, _bounded_stream(request, max_bytes), max_files=1, max_fields=4, max_part_size=1024)
+    try:
+        return await parser.parse()
+    except MultiPartException:
+        raise HTTPException(400, "Invalid form.") from None
+
+
 def _title(chat: dict, owner_id: int | None) -> str:
     title = owner.display_title(chat, owner_id)
     return "Your DM" if chat["chat_id"] == str(owner_id) else title
@@ -94,12 +120,15 @@ async def _chats(app: App) -> dict:
         chat_id = int(row["chat_id"])
         sliders, preset = await traits.for_chat(app.home, app.store, chat_id)
         unread, _ = await app.store.get_unread(chat_id)
-        own, _ = await app.store.get_chat_personality(chat_id)
+        own, raw_traits = await app.store.get_chat_personality(chat_id)
+        own_traits = traits.normalise(traits.decode(raw_traits))
         chats.append({
             "id": chat_id, "title": _title(row, app.owner_id), "state": state, "until": until,
             "when": until.astimezone(tz).strftime("%H:%M") if until else "",
             "scope": app.store.scope_for(chat_id, "group" if chat_id < 0 else "private"),
-            "unread": unread, "traits": sliders, "preset": preset, "own_preset": own,
+            "unread": unread, "traits": sliders, "own_traits": own_traits,
+            "sliders": [(name, sliders.get(name, 0.5), name in own_traits) for name in traits.NAMES],
+            "preset": preset, "own_preset": own,
         })
     presets = [preset for name in app.home.preset_names() if (preset := traits.load_preset(app.home, name))]
     pending = await app.store.list_pending_chats()
@@ -242,8 +271,21 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
             imports[key]["facts"].append(row)
         else:
             cards.append(row)
+    pending_chats = []
+    if (not kind or kind == "chat_approval") and not source:
+        for chat in await app.store.list_pending_chats():
+            chat_id = int(chat["chat_id"])
+            is_group = chat_id < 0
+            who = chat.get("invited_by_handle") or ""
+            pending_chats.append({
+                "id": chat_id,
+                "label": "Group approval" if is_group else "Stranger DM approval",
+                "title": owner.display_title(chat, app.owner_id),
+                "detail": (f"Invited by {who}" if is_group else f"From {who}") if who else "",
+            })
+    count = len(pending_chats) + sum(len(card["facts"]) if "facts" in card else 1 for card in cards)
     return {
-        "cards": cards, "count": sum(len(card["facts"]) if "facts" in card else 1 for card in cards),
+        "cards": cards, "pending_chats": pending_chats, "count": count,
         "kind": kind, "source": source, "sources": sorted({row["source"] for row in rows}),
     }
 
@@ -328,23 +370,43 @@ async def set_everywhere_preset(request: Request):
     return render("chats.html", context=await _chats(app) | {"message": message})
 
 
+@router.post("/chats/{chat_id}/traits/reset", response_class=HTMLResponse)
+async def reset_chat_traits(request: Request, chat_id: int):
+    app = owner_app(request)
+    chat = await owner.approved_chat(app, chat_id)
+    message = await owner.reset_traits(app, chat) if chat is not None else None
+    return render("chats.html", context=await _chats(app) | {
+        "message": message or "Traits or chat unavailable.", "open_traits": chat_id,
+    })
+
+
 @router.post("/chats/{chat_id}/{action}", response_class=HTMLResponse)
-async def chat_action(request: Request, chat_id: int, action: Literal["wake", "sleep", "leave", "preset"]):
+async def chat_action(request: Request, chat_id: int, action: Literal["wake", "sleep", "leave", "preset", "traits"]):
     app = owner_app(request)
     wake = None
+    open_traits = None
     if action == "leave":
         message, _ = await owner.leave_chat(app, chat_id, WHO)
     elif action == "preset":
-        chat = next((c for c in await app.store.list_chats("approved") if c["chat_id"] == str(chat_id)), None)
+        chat = await owner.approved_chat(app, chat_id)
         name = (await form(request)).get("preset", [""])[0]
         message = await owner.set_preset(app, chat, name) if chat is not None else None
         message = message or "Preset or chat unavailable."
+    elif action == "traits":
+        chat = await owner.approved_chat(app, chat_id)
+        data = await form(request)
+        raw = {key: values[0] for key, values in data.items() if values}
+        message = await owner.set_traits(app, chat, raw) if chat is not None else None
+        message = message or "Traits or chat unavailable."
+        open_traits = chat_id
     else:
         result = await owner.override_chat(app, chat_id, f"/{action}", WHO)
         message = result.message if result else "Unknown chat."
         if action == "wake" and result:
             wake = chat_id
-    return render("chats.html", context=await _chats(app) | {"message": message, "woke": wake})
+    return render("chats.html", context=await _chats(app) | {
+        "message": message, "woke": wake, "open_traits": open_traits,
+    })
 
 
 @router.post("/stickers", response_class=HTMLResponse)
@@ -361,6 +423,19 @@ async def edit_stickers(request: Request):
 @router.get("/proposals", response_class=HTMLResponse)
 async def proposals_page(request: Request, kind: str = "", source: str = ""):
     return panel(request, "proposals", **await _proposals(owner_app(request), kind, source))
+
+
+@router.post("/proposals/chat/{chat_id}/{decision}", response_class=HTMLResponse)
+async def decide_pending_chat(
+    request: Request, chat_id: int, decision: Literal["approve", "ignore"], kind: str = "", source: str = "",
+):
+    app = owner_app(request)
+    chat, label = await owner.decide_pending_chat(app, chat_id, decision, WHO)
+    message = f"{label}: {owner.display_title(chat, app.owner_id)}" if chat is not None else "Already handled."
+    response = render("proposals.html", context=await _proposals(app, kind, source) | {"message": message})
+    if chat is not None:
+        response.headers["X-Dom-Decided"] = "true"
+    return response
 
 
 @router.post("/proposals/{proposal_id:int}/{decision}", response_class=HTMLResponse)
@@ -514,6 +589,7 @@ async def _memory(app: App, file: str = MEMORY, *, soul_chat: bool = False) -> d
         "sections": sections, "file": file, "label": labels[file], "readonly": file == HABITS,
         "limit": MAX_SOUL if file == SOUL else limit_for(file), "soul_chat": soul_chat,
         "content": content, "version": content_version(content),
+        "import_services": IMPORT_SERVICES,
     }
 
 
@@ -592,4 +668,42 @@ async def soul_chat(request: Request):
     await owner.record_event(app, f"Dom proposed a soul edit (#{proposal_id}) from the dashboard")
     return render("memory.html", context=context | {
         "request_text": text, "edit": edit, "proposal_id": proposal_id,
+    })
+
+
+IMPORT_FORM_OVERHEAD = 16 * 1024  # multipart boundaries and the service field around the file
+
+
+@router.post("/memory/import", response_class=HTMLResponse)
+async def import_memories(request: Request):
+    """The dashboard's /import: the same MemoryImport.run and the same document limits as Telegram."""
+    app = owner_app(request)
+    context = await _memory(app, MEMORY) | {"import_open": True}
+    service = ""
+    try:
+        try:
+            data = await multipart_form(request, max_bytes=memory_import.MAX_DOCUMENT_BYTES + IMPORT_FORM_OVERHEAD)
+        except HTTPException as exc:
+            if exc.status_code != 413:
+                raise
+            raise ValueError(memory_import.DOCUMENT_LIMIT_ERROR) from None
+        try:
+            service = str(data.get("service") or "").strip().lower()
+            upload = data.get("file")
+            if service not in memory_import.SERVICES:
+                raise ValueError("Choose ChatGPT, Claude or Muse.")
+            if not isinstance(upload, UploadFile):
+                raise ValueError("Send a .txt or .md document for the import.")
+            memory_import.validate_document_meta(upload.filename, upload.size)
+            text = memory_import.decode_document(await upload.read(memory_import.MAX_DOCUMENT_BYTES + 1))
+        finally:
+            await data.close()
+        parsed = await app.memory_import.run(service, text)
+    except (OSError, ValueError) as exc:
+        error = str(exc) if isinstance(exc, ValueError) else "Could not read the import or existing notes."
+        return render("memory.html", context=context | {"import_service": service, "import_error": error})
+    message = memory_import.summary(service, parsed)
+    await owner.record_event(app, message)
+    return render("memory.html", context=context | {
+        "import_service": service, "import_message": message, "import_count": len(parsed.facts),
     })

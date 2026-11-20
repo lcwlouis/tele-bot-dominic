@@ -74,4 +74,27 @@
     </form>
     {% endif %}
   </div>
+  <details class="memory-import"{% if context.import_open %} open{% endif %}>
+    <summary>Import memories</summary>
+    <p class="fog">Upload a .txt or .md export from another assistant. Facts go to Waiting for you for review.</p>
+    {% if context.import_error %}<p class="error" role="alert">{{ context.import_error }}</p>{% endif %}
+    {% if context.import_message %}
+    <p class="notice" role="status">{{ context.import_message }}</p>
+    {% if context.import_count %}<p><a href="/proposals?kind=memory_fact" class="quiet button-link">Review proposals</a></p>{% endif %}
+    {% endif %}
+    <form class="inline-form" method="post" action="/memory/import" enctype="multipart/form-data"
+      hx-post="/memory/import" hx-encoding="multipart/form-data" hx-target="#memory" hx-swap="outerHTML">
+      <label>Service
+        <select name="service" required>
+          {% for key, name in context.import_services.items() %}
+          <option value="{{ key }}"{% if context.import_service == key %} selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Export file (.txt or .md)
+        <input type="file" name="file" accept=".txt,.md,text/plain,text/markdown" required>
+      </label>
+      <button class="primary">Import</button>
+    </form>
+  </details>
 </section>

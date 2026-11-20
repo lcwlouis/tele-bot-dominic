@@ -1,9 +1,11 @@
 import hashlib
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, limit_for
+from dom.memory_import import MAX_DOCUMENT_BYTES
 
 from test_web_auth import POST_HEADERS
 from test_web_pages import browser  # noqa: F401 (shared authenticated ASGI fixture)
@@ -105,3 +107,86 @@ async def test_soul_chat_calls_once_and_never_writes_soul(make_app, browser, new
             assert any(event.role == "event" for event in await app.store.get_recent_chat_window(OWNER))
         else:
             assert proposals == [] and "at most" in response.text
+
+
+async def test_memory_import_upload_uses_shared_pipeline_and_limits(make_app, browser, monkeypatch):
+    app = make_app()
+    private = app.home.scoped(allow_private=True)
+    private._write_regular("private/USER.md", "- Prefers tea\n")
+    run_import = AsyncMock(wraps=app.memory_import.run)
+    monkeypatch.setattr(app.memory_import, "run", run_import)
+
+    async with browser(app) as client:
+        page = await client.get("/memory")
+        assert 'action="/memory/import"' in page.text
+        assert 'hx-encoding="multipart/form-data"' in page.text
+        assert all(label in page.text for label in ("ChatGPT", "Claude", "Muse"))
+
+        # CSRF / htmx and Content-Type checks
+        assert (await client.post(
+            "/memory/import", data={"service": "chatgpt"},
+            files={"file": ("export.md", b"- Likes coffee\n", "text/markdown")},
+        )).status_code in (401, 403)
+        assert (await client.post(
+            "/memory/import", headers=POST_HEADERS, data={"service": "chatgpt"},
+        )).status_code == 415
+
+        # Valid UTF-8 BOM .md upload runs MemoryImport.run and records an owner event
+        payload = b"\xef\xbb\xbf- Prefers tea\n- [home] Owns a kettle\n- Likes book clubs\n"
+        response = await client.post(
+            "/memory/import", headers=POST_HEADERS, data={"service": "claude"},
+            files={"file": ("export.md", payload, "text/markdown")},
+        )
+        assert response.status_code == 200
+        run_import.assert_awaited_once_with("claude", "- Prefers tea\n- [home] Owns a kettle\n- Likes book clubs\n")
+        assert "Imported 2 facts from claude. Skipped 1 duplicate." in response.text
+        assert '/proposals?kind=memory_fact' in response.text
+        pending = await app.proposals.pending()
+        assert [(row["source"], json.loads(row["body_json"])["text"]) for row in pending] == [
+            ("import:claude", "Owns a kettle"),
+            ("import:claude", "Likes book clubs"),
+        ]
+        events = await app.store.get_recent_chat_window(OWNER)
+        assert any(m.role == "event" and "Imported 2 facts from claude" in m.text for m in events)
+
+        # Rejects wrong extension, non-UTF-8, unsupported service, and >1 MB file
+        for bad_service, name, raw, expected in (
+            ("siri", "export.md", b"- Fact\n", "ChatGPT, Claude or Muse"),
+            ("muse", "export.json", b"- Fact\n", ".txt or .md"),
+            ("muse", "export.txt", b"\xff\xfe- Fact\n", "UTF-8"),
+            ("muse", "export.txt", b"x" * (MAX_DOCUMENT_BYTES + 1), "1 MB"),
+            ("muse", "export.txt", b"x" * (MAX_DOCUMENT_BYTES * 2), "1 MB"),  # refused from its declared length
+        ):
+            bad = await client.post(
+                "/memory/import", headers=POST_HEADERS, data={"service": bad_service},
+                files={"file": (name, raw, "application/octet-stream")},
+            )
+            assert bad.status_code == 200 and expected in bad.text
+        assert len(await app.proposals.pending()) == 2
+
+
+async def test_memory_import_stops_reading_an_oversized_upload(make_app, browser):
+    app = make_app()
+    boundary = "domtestboundary"
+    head = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="service"\r\n\r\nchatgpt\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="big.txt"\r\n'
+        "Content-Type: text/plain\r\n\r\n"
+    ).encode()
+    chunk, sent = b"a" * 65536, 0
+
+    async def body():  # no Content-Length: the cap must hold while the body streams in
+        nonlocal sent
+        yield head
+        for _ in range(40):  # about 2.6 MB
+            sent += 1
+            yield chunk
+        yield f"\r\n--{boundary}--\r\n".encode()
+
+    async with browser(app) as client:
+        response = await client.post(
+            "/memory/import", headers=POST_HEADERS | {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            content=body(),
+        )
+    assert response.status_code == 200 and "1 MB or smaller" in response.text
+    assert sent <= 17 and await app.proposals.pending() == []
