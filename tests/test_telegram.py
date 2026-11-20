@@ -317,14 +317,28 @@ async def test_executor_typing_scales_with_length(store):
 
     actions = Actions(bubbles=[Bubble(text="a" * 16), Bubble(text="b" * 400, reply_to=9)])
     ids = await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep)
-    assert sleeps == [2.0, 8]
-    assert [c[0] for c in bot.calls] == ["action", "send", "action", "send"]
+    assert sleeps == [2.0] + [4] * 5  # 400 characters would take 50 s; typing stops scaling at 20 s
+    assert [c[0] for c in bot.calls] == ["action", "send"] + ["action"] * 5 + ["send"]
     assert bot.calls[0][2] == "typing"
     assert bot.calls[1][3].get("reply_parameters") is None
-    assert bot.calls[3][3]["reply_parameters"].message_id == 9
+    assert bot.calls[7][3]["reply_parameters"].message_id == 9
     assert ids == [5001, 5002]
     window = await store.get_recent_chat_window(GROUP)
     assert [(m.msg_id, m.role, m.is_bot) for m in window] == [(5001, "assistant", True), (5002, "assistant", True)]
+
+
+async def test_executor_keeps_typing_alive_and_scales_up_to_the_cap(store):
+    bot, sleeps = FakeBot(), []
+
+    async def sleep(s):
+        sleeps.append(s)
+
+    actions = Actions(bubbles=[Bubble(text="a" * 100), Bubble(text="b" * 4000)])
+    await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep)
+    assert sleeps == [4, 4, 4, 0.5] + [4] * 5  # 12.5 s, then the 20 s cap
+    assert sum(sleeps[4:]) == executor.MAX_TYPING_SECONDS
+    assert [c[0] for c in bot.calls] == ["action"] * 4 + ["send"] + ["action"] * 5 + ["send"]
+    assert all(c[2] == "typing" for c in bot.calls if c[0] == "action")
 
 
 async def test_executor_schedules_delete_after(store):
