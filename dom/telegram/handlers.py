@@ -314,8 +314,6 @@ async def handle_edited_message(app: App, message: Message) -> None:
 
 # ---- owner decisions -----------------------------------------------------------------
 
-_DECISIONS = {"approve": "approved", "ignore": "ignored"}
-
 
 _OVERRIDES = {"wake": "/wake", "sleep": "/sleep"}
 
@@ -415,7 +413,7 @@ async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str)
         if text:
             await app.bot.send_message(owner_id, text)
         return
-    chat = next((c for c in await app.store.list_chats("approved") if c["chat_id"] == raw_id), None)
+    chat = await owner.approved_chat(app, raw_id)
     if chat is None:
         await _toast(app, query, "unknown chat")
         return
@@ -523,16 +521,11 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         chat_id = int(raw_chat_id)
     except ValueError:
         return
-    if action not in _DECISIONS:
+    if action not in owner.PENDING_DECISIONS:
         return
-    chat = await app.store.resolve_pending_chat(str(chat_id), _DECISIONS[action])
-    if chat is None:
-        await app.bot.answer_callback_query(query.id, text="already handled")
-        return
-    label = "Approved" if action == "approve" else "Ignored"
-    await owner.record_event(app, f"{_person(query.from_user.full_name)} {label.lower()} {owner.display_title(chat, owner_id)}")
+    chat, label = await owner.decide_pending_chat(app, chat_id, action, _person(query.from_user.full_name))
     await app.bot.answer_callback_query(query.id, text=label)
-    if query.message is not None:
+    if chat is not None and query.message is not None:
         await app.bot.edit_message_text(
             f"{label}: {chat['title'] or chat_id}", chat_id=query.message.chat.id, message_id=query.message.message_id
         )

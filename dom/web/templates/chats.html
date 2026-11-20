@@ -1,5 +1,5 @@
 <section class="panel chats-panel" id="chats">
-  <header><h2>Chats</h2><span class="fog">{{ context.rows|length }} approved, {{ context.pending }} waiting</span></header>
+  <header><h2>Chats</h2><span class="fog">{{ context.rows|length }} approved, {% if context.pending %}<a href="/proposals">{{ context.pending }} waiting</a>{% else %}0 waiting{% endif %}</span></header>
   {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
   {% if not context.rows %}<p class="fog">Dom doesn't know any chats yet.</p>{% endif %}
   <form class="inline-form" method="post" action="/chats/all/preset" hx-post="/chats/all/preset" hx-trigger="change" hx-target="#chats" hx-swap="outerHTML">
@@ -24,15 +24,20 @@
       </div>
       <div class="meta">
         {{ chat.preset.title if chat.preset else "No preset" }}, {{ chat.state }}{% if chat.when %} until {{ chat.when }}{% endif %}
-        {% if chat.traits %}
-        <details><summary>Traits</summary>
-          <dl class="kinds">
-            {% for name, value in chat.traits|dictsort %}
-            <dt>{{ name|capitalize }}</dt><dd class="num">{{ "%.0f"|format(value * 100) }}%</dd>
+        <details class="traits"{% if context.open_traits == chat.id %} open{% endif %}><summary>Traits</summary>
+          <div class="traits-list">
+            {% for name, value, custom in chat.sliders %}
+            <form class="trait-row" method="post" action="/chats/{{ chat.id }}/traits" hx-post="/chats/{{ chat.id }}/traits" hx-trigger="change" hx-target="#chats" hx-swap="outerHTML">
+              <label for="trait-{{ chat.id }}-{{ name }}">{{ name|capitalize }}{% if custom %} <span class="trait-custom">(custom)</span>{% endif %}</label>
+              <span class="num">{{ "%.0f"|format(value * 100) }}%</span>
+              <input type="range" id="trait-{{ chat.id }}-{{ name }}" name="{{ name }}" min="0.05" max="0.95" step="0.01" value="{{ '%.2f'|format(value) }}">
+            </form>
             {% endfor %}
-          </dl>
+          </div>
+          <div class="trait-actions">
+            <button type="button" class="quiet" hx-post="/chats/{{ chat.id }}/traits/reset" hx-target="#chats" hx-swap="outerHTML">Reset to default</button>
+          </div>
         </details>
-        {% endif %}
       </div>
       <span class="unread num{% if not chat.unread %} zero{% endif %}" aria-label="{{ chat.unread }} unread">{{ chat.unread }}</span>
       <div class="actions" hx-target="#chats" hx-swap="outerHTML">

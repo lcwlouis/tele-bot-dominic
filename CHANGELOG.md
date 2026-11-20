@@ -6,6 +6,9 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Dashboard: edit each chat's sliders and reset them to default.
+- Dashboard: upload a `.txt` or `.md` export through the same import as `/import`; adds `python-multipart`.
+- Dashboard: approve or ignore pending groups and stranger DMs.
 - Skills work in chat: `skills_list`, `skill_view` and `skill_manage` (a proposal the owner approves) in every chat, with each skill's name and description in the prompt.
 - Add a pinned, loopback-only T3 Code systemd user service with a 600 MiB memory limit.
 - Document Raspberry Pi desktop startup timings, the Chromium seccomp profile and the desktop connectivity check.
