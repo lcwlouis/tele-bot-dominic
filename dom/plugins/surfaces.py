@@ -20,6 +20,7 @@ from dom.guard import check_local_private_text
 from dom.models import IncomingMessage
 from dom.plugins.manifest import PanelManifest, Plugin
 from dom.plugins.runner import PluginBusy, PluginError, PluginsUnavailable
+from dom.presence import read_habits
 from dom.skills import _visible
 from dom.telegram import gate
 
@@ -70,14 +71,21 @@ async def handle_command(app: App, message: Message, msg: IncomingMessage, comma
     if entry is None or await gate.decide(app.store, msg, app.owner_id) != "process":
         return False
     plugin, declared = entry
+    habits = read_habits(app.home)
+    asleep = (await app.dispatch.presence.state(msg.chat_id, habits))[0] == "asleep"
+    if asleep and scope != "owner_dm":
+        return False  # asleep: an ordinary message he sees when he wakes, not a command he answers
     if scope != "owner_dm":
         last = app.plugin_command_times.get(msg.chat_id)
         if last is not None and monotonic() - last < COMMAND_COOLDOWN_SECONDS:
             return True  # silently dropped: a busy group must not turn Dom into a spam relay
         app.plugin_command_times[msg.chat_id] = monotonic()
-    text = await _run_command(app, plugin, declared.name, _arguments(msg.text), scope)
+    args = _arguments(msg.text)
+    text = await _run_command(app, plugin, declared.name, args, scope)
     if text:
         await _reply(app, msg.chat_id, text)
+    if asleep:  # the owner woke him for this
+        await app.dispatch.grumble_after_command(msg.chat_id, declared.name, args)
     log.info("plugin command /%s (%s) ran in a %s chat", name, plugin.manifest.name, scope)
     return True
 

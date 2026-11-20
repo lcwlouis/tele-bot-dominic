@@ -624,6 +624,35 @@ class Dispatcher:
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
 
+    async def grumble_after_command(self, chat_id: int, name: str, args: str) -> None:
+        """The owner woke Dom with a plugin command. Its result is already sent; add one in-character line.
+
+        Only the voice is used (no notes or history), and the plugin's output never reaches the model."""
+        app = self.app
+        asked = f"/{name} {args[:200]}".strip()
+        note = (
+            f"You were asleep. Your friend just woke you up to run {asked}, one of your plugin commands; "
+            "its result has already been sent to them. React in one short line in your own voice: grumpy if it "
+            "looks like something that could have waited until morning, fine if it seems to matter. "
+            "Then you go back to sleep."
+        )
+        async with app.locks[chat_id]:
+            try:
+                sliders, _ = await for_chat(app.home, app.store, chat_id)
+                with model_request("chat", chat_id, partial(self.model_allowed, chat_id)):
+                    await check_model_allowed()
+                    reply = await app.client.complete(report_messages(app.home, sliders, note), [], once=True)
+                actions = parse_actions(reply.get("content"))
+            except Exception as exc:
+                log.warning("could not compose a grumble after /%s (%s)", name, type(exc).__name__)
+                return
+            if actions is None or actions.no_response or not actions.bubbles:
+                return
+            await executor.perform(
+                app.bot, app.store, chat_id, None, Actions(bubbles=[Bubble(text=actions.bubbles[0].text)]),
+                sleep=app.sleep, link_previews=False,
+            )
+
     async def report_desktop_task(self, row: dict, files: tuple[SendFile, ...] = ()) -> None:
         app = self.app
         chat_id, task_id = row["chat_id"], row["id"]

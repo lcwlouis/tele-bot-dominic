@@ -11,7 +11,7 @@ named `vX.Y.Z`.
 - Dashboard: approve or ignore pending groups and stranger DMs.
 - `gif` action: a KLIPY search result sent as an animation; set `KLIPY_API_KEY` ([docs/gifs.md](docs/gifs.md)).
 - Skills work in chat: `skills_list`, `skill_view` and `skill_manage` (a proposal the owner approves) in every chat, with each skill's name and description in the prompt.
-- Plugins can add Telegram slash commands and dashboard panels; declared surfaces are reviewed and re-approved like code (`docs/plugins.md`).
+- Plugins can add Telegram slash commands and dashboard panels; declared surfaces are reviewed and re-approved like code (`docs/plugins.md`); while Dom is asleep they only run in the owner's DM, and he grumbles about being woken.
 - `/update` (owner DM): shows the newest `vX.Y.Z` release tag of `[update] repo_url` with its changelog section and, on confirmation, deploys it in a detached `dom-update` unit. Dom reports the outcome after the restart.
 - `dom deploy <home> vX.Y.Z` stages a tag, runs `uv sync --frozen --no-dev`, backs up, repoints `app` and restarts `dom.service`; if the new release is not ready within 120 seconds it rolls back to the previous one. After a successful deploy only the current and previous release folders are kept.
 - `find_devices` (owner DM, read-only): LAN devices with names and addresses from mDNS and the neighbour table. A configured LAN host that moved becomes a config-change proposal (`lan_address`) for the owner to approve.
