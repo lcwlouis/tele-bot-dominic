@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -23,6 +24,7 @@ from dom.presence import Habits, Presence
 from dom.search import SearchClient
 from dom.skills import BODY_LIMIT, DESCRIPTION_LIMIT, NAME_LIMIT, skills_list, view_text
 from dom.store import Store
+from dom.traits import AUTO, clean_reason, global_preset_name
 from dom.usage import ModelCallSkipped, model_request
 
 if TYPE_CHECKING:
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from dom.reminders import Reminders
     from dom.telegram.handlers import App
 
+log = logging.getLogger(__name__)
 ALL_SCOPES: set[Scope] = {"owner_dm", "friend_dm", "group"}
 
 
@@ -334,15 +337,51 @@ WRITE_BRIEF_TOOL = Tool(
 )
 
 
+async def _switch_vibe(args: dict, ctx: TurnCtx) -> str:
+    from dom.traits import SwitchRefused, switch_vibe
+
+    app = ctx.app
+    if app is None:
+        return "error: switching your vibe is unavailable"
+    try:
+        chosen = await switch_vibe(
+            app.home, app.store, ctx.chat_id, args.get("preset"), args.get("reason"), app.dispatch.now(),
+        )
+    except SwitchRefused as error:
+        return f"error: {error}"
+    reason = clean_reason(args.get("reason"))
+    log.info("Dom switched his vibe to %s in chat %s: %s", chosen.name, ctx.chat_id, reason)
+    await app.store.record_owner_event(f"Dom switched his vibe to {chosen.title}: {reason}")
+    return json.dumps({"preset": chosen.name, "applies": "from your next reply"})
+
+
+SWITCH_VIBE_TOOL = Tool(
+    name="switch_vibe",
+    description=(
+        "Change your own vibe (preset) for the rest of today. Use it at most once a day, only when this conversation "
+        "clearly calls for a different vibe than the one you woke up with, and give a short reason. "
+        "It does not work in a chat that has its own preset."
+    ),
+    schema={
+        "type": "object",
+        "properties": {"preset": {"type": "string"}, "reason": {"type": "string", "maxLength": 160}},
+        "required": ["preset", "reason"],
+    },
+    handler=_switch_vibe,
+    scopes=set(ALL_SCOPES),
+)
+
+
 async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
     from dom.capabilities import desktop_hosts, desktop_status
     from dom.plugins.manifest import SCOPES
-    from dom.traits import global_preset_name
+    from dom.traits import vibe
 
     app = ctx.app
     if app is None or not ctx.is_owner_dm():
         return "error: self_inspect is available only in the owner's DM"
     enabled = {scope: [tool.name for tool in await enabled_tools(app, scope)] for scope in SCOPES}
+    today = await vibe(app.home, app.store, app.dispatch.now())
     return json.dumps({
         "version": VERSION,
         "repository": app.config.update.repo_url,
@@ -359,6 +398,12 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
         "last_errors": await app.store.recent_turn_errors(),
         "preset": {
             "everywhere": await global_preset_name(app.store),
+            "today": {
+                "mode": today.mode,  # auto: you pick; locked: the owner chose
+                "preset": today.preset.name if today.preset else None,
+                "your_reason": today.reason or None,
+                "how": today.source or None,
+            },
             "chats_with_own": [
                 {"title": row["title"] or row["chat_id"], "preset": row["preset"]}
                 for row in await app.store.list_chats("approved") if row["preset"]
@@ -430,4 +475,6 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
 
         tools.extend(TOOLS)
     tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL, FIND_DEVICES_TOOL))
+    if await global_preset_name(app.store) == AUTO:
+        tools.append(SWITCH_VIBE_TOOL)
     return [tool for tool in tools if scope in tool.scopes] + await offered(app, scope)

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+import random
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import TYPE_CHECKING
 
@@ -17,6 +19,14 @@ log = logging.getLogger(__name__)
 NAMES = ("sarcasm", "playfulness", "humor", "formality", "empathy", "enthusiasm", "slang", "emoji")
 MAX_OVERLAY = 800
 GLOBAL_PRESET_KEY = "preset:global"
+# Everywhere can be "auto": Dom picks his own preset each day. The picks are kept as JSON in the kv store.
+AUTO = "auto"
+AUTO_PICKS_KEY = "preset:auto"
+ASSISTANT = "assistant"  # task-driven, never a vibe
+MAX_REASON = 160
+# Odds for the random fallback: the base preset most often, a joke preset rarely, any other preset in between.
+RANDOM_WEIGHTS = {"classic": 6.0, "fboy": 1.0}
+DEFAULT_WEIGHT = 3.0
 
 
 def numeric(value: object) -> float | None:
@@ -73,6 +83,7 @@ class Preset:
     description: str
     traits: dict[str, float]
     overlay: str
+    picked: str = ""  # why Dom picked it himself today; empty when somebody set it
 
 
 def load_preset(home: Home, name: str) -> Preset | None:
@@ -93,14 +104,24 @@ def load_preset(home: Home, name: str) -> Preset | None:
     )
 
 
-async def for_chat(home: Home, store: Store, chat_id: int) -> tuple[dict[str, float], Preset | None]:
+@dataclass(frozen=True)
+class Vibe:
+    """The preset used everywhere right now and who chose it: `auto` (Dom), `locked` (the owner) or `none`."""
+
+    mode: str
+    preset: Preset | None = None
+    reason: str = ""
+    source: str = ""  # auto only: "reflection", "random" or "switch"
+    since: datetime | None = None
+
+
+async def for_chat(home: Home, store: Store, chat_id: int, now: datetime | None = None) -> tuple[dict[str, float], Preset | None]:
     meta, _ = home.scoped(allow_private=False).soul()
     sliders = normalise(meta.get("traits", {}))
     drift = decode(await store.kv_get("traits:drift"))
     sliders = normalise({name: value + (numeric(drift.get(name)) or 0) for name, value in sliders.items()})
     name, overrides = await store.get_chat_personality(chat_id)
-    everywhere = await global_preset_name(store)
-    shared = load_preset(home, everywhere) if everywhere else None
+    shared = (await vibe(home, store, now)).preset
     own = load_preset(home, name) if name else None
     for layer in (shared, own):
         if layer is not None:
@@ -116,3 +137,111 @@ async def global_preset_name(store: Store) -> str:
 async def effective(home: Home, store: Store, chat_id: int) -> dict[str, float]:
     sliders, _ = await for_chat(home, store, chat_id)
     return sliders
+
+
+# ---- Dom's own daily pick (`auto`) --------------------------------------------------------------
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def vibe_choices(home: Home) -> list[Preset]:
+    """The presets Dom may pick for himself: every installed one that loads, except the assistant preset."""
+    return [
+        preset for name in home.preset_names()
+        if name not in (ASSISTANT, AUTO) and (preset := load_preset(home, name)) is not None
+    ]
+
+
+def random_choice(choices: list[Preset], rng: random.Random | None = None) -> Preset | None:
+    weights = [RANDOM_WEIGHTS.get(preset.name, DEFAULT_WEIGHT) for preset in choices]
+    return (rng or random).choices(choices, weights)[0] if choices else None
+
+
+def clean_reason(value: object) -> str:
+    return " ".join(value.split())[:MAX_REASON] if isinstance(value, str) else ""
+
+
+async def _picks(store: Store) -> list[dict]:
+    """Stored picks, oldest first: {"name", "reason", "source", "since"} with `since` as a datetime."""
+    try:
+        raw = json.loads(await store.kv_get(AUTO_PICKS_KEY) or "[]")
+    except ValueError:
+        return []
+    picks = []
+    for item in raw if isinstance(raw, list) else []:
+        try:
+            since = datetime.fromisoformat(item["since"])
+            ok = isinstance(item["name"], str) and isinstance(item["reason"], str) and isinstance(item["source"], str)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ok:
+            picks.append({**item, "since": since if since.tzinfo else since.replace(tzinfo=timezone.utc)})
+    return sorted(picks, key=lambda pick: pick["since"])
+
+
+def _in_force(picks: list[dict], now: datetime) -> dict | None:
+    return next((pick for pick in reversed(picks) if pick["since"] <= now), None)
+
+
+async def record_pick(
+    store: Store, preset: Preset, reason: str, source: str, *, since: datetime | None = None, now: datetime | None = None,
+) -> None:
+    """Remember a pick that takes effect at `since` (default: now). Picks older than the one in force are dropped."""
+    now = now or _utc_now()
+    picks = await _picks(store)
+    picks.append({"name": preset.name, "reason": clean_reason(reason), "source": source, "since": since or now})
+    picks.sort(key=lambda pick: pick["since"])
+    keep = picks.index(_in_force(picks, now) or picks[0])
+    await store.kv_set(AUTO_PICKS_KEY, json.dumps([{**pick, "since": pick["since"].isoformat()} for pick in picks[keep:]]))
+
+
+async def ensure_pick(home: Home, store: Store, now: datetime | None = None) -> bool:
+    """When Everywhere becomes `auto` with no pick from the last day, pick at random now. False if nothing can be picked."""
+    now = now or _utc_now()
+    current = _in_force(await _picks(store), now)
+    if current is not None and now - current["since"] < timedelta(days=1) and load_preset(home, current["name"]):
+        return True
+    chosen = random_choice(vibe_choices(home))
+    if chosen is None:
+        return False
+    await record_pick(store, chosen, "Chosen at random.", "random", now=now)
+    return True
+
+
+async def vibe(home: Home, store: Store, now: datetime | None = None) -> Vibe:
+    name = await global_preset_name(store)
+    if name != AUTO:
+        return Vibe("locked" if name else "none", load_preset(home, name) if name else None)
+    pick = _in_force(await _picks(store), now or _utc_now())
+    if pick is None:
+        return Vibe("auto")
+    preset = load_preset(home, pick["name"])
+    if preset is not None:
+        preset = replace(preset, picked=pick["reason"] or "your own pick")
+    return Vibe("auto", preset, pick["reason"], pick["source"], pick["since"])
+
+
+class SwitchRefused(ValueError):
+    """Why Dom cannot change his vibe right now, in words he can act on."""
+
+
+async def switch_vibe(home: Home, store: Store, chat_id: int, name: object, reason: object, now: datetime) -> Preset:
+    """Dom's one extra switch of the day. Only in `auto`, only in a chat without its own preset, once per pick."""
+    current = await vibe(home, store, now)
+    if current.mode != "auto":
+        raise SwitchRefused("the owner has fixed your preset, so you cannot switch")
+    if (await store.get_chat_personality(chat_id))[0]:
+        raise SwitchRefused("this chat has its own preset, so switching would change nothing here")
+    if current.source == "switch":
+        raise SwitchRefused("you already switched today; wait for tomorrow's pick")
+    reason = clean_reason(reason)
+    if not reason:
+        raise SwitchRefused("give a short reason")
+    chosen = next((preset for preset in vibe_choices(home) if preset.name == name), None)
+    if chosen is None:
+        raise SwitchRefused(f"choose one of: {', '.join(preset.name for preset in vibe_choices(home))}")
+    if current.preset is not None and current.preset.name == chosen.name:
+        raise SwitchRefused("that is already your vibe")
+    await record_pick(store, chosen, reason, "switch", now=now)
+    return chosen

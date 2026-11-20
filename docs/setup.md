@@ -95,7 +95,7 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/chats` | Lists groups and DMs Dom knows about. |
 | `/pending` | Resends pending chat approval prompts. |
 | `/wake [chat_id]`, `/sleep [chat_id]` | Changes presence in the owner DM or a specified approved chat. |
-| `/preset` | Changes the persona preset for one chat, or for every chat with the "Everywhere" button. A chat's own preset wins. |
+| `/preset` | Changes the persona preset for one chat, or for every chat with the "Everywhere" button, which can also be Auto so Dom picks his own daily vibe ([presets](presets.md)). A chat's own preset wins. |
 | `/proposals` | Shows pending changes for review. |
 | `/reminders` | Lists and cancels reminders. |
 | `/stickers` | Adds and removes sticker sets. |
