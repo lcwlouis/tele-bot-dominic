@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import keyword
 import os
 import re
 import stat
@@ -23,6 +24,14 @@ SCOPES = ("owner_dm", "friend_dm", "group")
 NETWORK_NOTICE = "This plugin can reach the internet and your local network"
 _NAME = re.compile(r"[a-z][a-z0-9_]{1,31}")
 _TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]+")
+_SURFACE_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")  # Telegram's command rule, also used for panel ids
+MAX_COMMANDS = 10
+MAX_PANELS = 5
+# Core slash commands, Telegram conventions and names core code reserves. Plugins may never use these.
+RESERVED_COMMANDS = frozenset({
+    "start", "help", "settings", "claim", "desktop", "update", "status", "wake", "sleep", "pending", "chats",
+    "preset", "proposals", "plugins", "reminders", "t3", "tasks", "stickers", "import", "cancel", "stop",
+})
 
 
 def validate_name(name: object) -> None:
@@ -55,6 +64,19 @@ class ToolManifest:
 
 
 @dataclass(frozen=True)
+class CommandManifest:
+    name: str
+    description: str
+    scopes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PanelManifest:
+    id: str
+    title: str
+
+
+@dataclass(frozen=True)
 class Manifest:
     name: str
     description: str
@@ -63,6 +85,8 @@ class Manifest:
     network: bool
     timeout_seconds: int
     memory_mb: int
+    commands: tuple[CommandManifest, ...] = ()
+    panels: tuple[PanelManifest, ...] = ()
 
     @classmethod
     def parse(cls, text: str) -> Manifest:
@@ -73,9 +97,9 @@ class Manifest:
         validate_name(name)
         description = _label(data.get("description"), "Description", 200)
         version = _label(data.get("version"), "Version", MAX_BYTES)
-        tools = data.get("tools")
-        if not isinstance(tools, list) or not tools:
-            raise ValueError("Manifest must declare at least one tool.")
+        tools = data.get("tools", [])
+        if not isinstance(tools, list):
+            raise ValueError("tools must be a list of [[tools]] tables.")
         parsed = []
         for tool in tools:
             if not isinstance(tool, dict):
@@ -106,11 +130,59 @@ class Manifest:
             raise ValueError("network must be a boolean.")
         if any(set(tool) & {"network", "timeout_seconds", "memory_mb"} for tool in tools):
             raise ValueError("Set network, timeout_seconds and memory_mb before the tools tables.")
+        commands, panels = _commands(data.get("commands", [])), _panels(data.get("panels", []))
+        if not (parsed or commands or panels):
+            raise ValueError("Manifest must declare at least one tool, command or panel.")
         # A network plugin reaches the local network too, so only the owner may trigger it.
-        if network and any(tool.scopes != ("owner_dm",) for tool in parsed):
-            raise ValueError('A plugin with network access can only offer tools in the "owner_dm" scope.')
+        if network and any(item.scopes != ("owner_dm",) for item in (*parsed, *commands)):
+            raise ValueError('A plugin with network access can only offer tools and commands in the "owner_dm" scope.')
         return cls(name, description, version, tuple(parsed), network,
-                   _integer(data, "timeout_seconds", 10, 1, 30), _integer(data, "memory_mb", 64, 16, 256))
+                   _integer(data, "timeout_seconds", 10, 1, 30), _integer(data, "memory_mb", 64, 16, 256),
+                   commands, panels)
+
+
+def _surface_name(value: object, field: str) -> str:
+    if not isinstance(value, str) or not _SURFACE_NAME.fullmatch(value) or keyword.iskeyword(value):
+        raise ValueError(f"{field} must match [a-z][a-z0-9_]{{0,31}} and not be a Python keyword.")
+    return value
+
+
+def _tables(value: object, field: str, keys: set[str], maximum: int) -> list[dict]:
+    if not isinstance(value, list) or not all(isinstance(table, dict) for table in value):
+        raise ValueError(f"{field} must be a list of [[{field}]] tables.")
+    if len(value) > maximum:
+        raise ValueError(f"A plugin can declare at most {maximum} {field}.")
+    for table in value:
+        if extra := set(table) - keys:
+            # Keys written after a [[...]] header belong to that table, so this also catches misplaced settings.
+            raise ValueError(f"Unknown {field} keys: {', '.join(sorted(extra))}. Top-level settings go first.")
+    return value
+
+
+def _commands(value: object) -> tuple[CommandManifest, ...]:
+    parsed: list[CommandManifest] = []
+    for table in _tables(value, "commands", {"name", "description", "scopes"}, MAX_COMMANDS):
+        name = _surface_name(table.get("name"), "Command name")
+        if name in RESERVED_COMMANDS:
+            raise ValueError(f"/{name} is a core command.")
+        if any(previous.name == name for previous in parsed):
+            raise ValueError(f"duplicate command /{name}.")
+        scopes = table.get("scopes", ["owner_dm"])
+        if not isinstance(scopes, list) or not scopes or any(scope not in SCOPES for scope in scopes):
+            raise ValueError("Command scopes must be a non-empty list of supported chat scopes.")
+        description = _label(table.get("description"), "Command description", 100)
+        parsed.append(CommandManifest(name, description, tuple(dict.fromkeys(scopes))))
+    return tuple(parsed)
+
+
+def _panels(value: object) -> tuple[PanelManifest, ...]:
+    parsed: list[PanelManifest] = []
+    for table in _tables(value, "panels", {"id", "title"}, MAX_PANELS):
+        panel_id = _surface_name(table.get("id"), "Panel id")
+        if any(previous.id == panel_id for previous in parsed):
+            raise ValueError(f"duplicate panel {panel_id}.")
+        parsed.append(PanelManifest(panel_id, _label(table.get("title"), "Panel title", 80)))
+    return tuple(parsed)
 
 
 @dataclass(frozen=True)

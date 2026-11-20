@@ -1,0 +1,22 @@
+name = "units"                 # [a-z][a-z0-9_]{1,31}, same as the folder
+description = "Convert units"  # up to 200 characters
+version = "1"
+# Optional, and they must come before any [[...]] table:
+# network = false              # true allows outgoing internet connections
+# timeout_seconds = 10         # 1 to 30, wall time and CPU time
+# memory_mb = 64               # 16 to 256
+
+[[tools]]
+name = "length"
+description = "Convert a length between units"
+parameters = {type = "object", properties = {value = {type = "number"}, unit = {type = "string"}}}
+scopes = ["owner_dm"]          # where Dom may call it: owner_dm, friend_dm, group
+
+[[commands]]
+name = "km"                    # typed as /km; [a-z][a-z0-9_]{0,31}
+description = "Convert miles to kilometres"  # shown in the owner's / menu, up to 100 characters
+scopes = ["owner_dm", "group"] # default ["owner_dm"]
+
+[[panels]]
+id = "summary"                 # [a-z][a-z0-9_]{0,31}
+title = "Unit conversions"     # up to 80 characters

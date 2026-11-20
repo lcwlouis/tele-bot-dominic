@@ -33,6 +33,7 @@ from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
 from dom.proposals import Proposals
 from dom.plugins.registry import PluginRegistry
+from dom.plugins import surfaces
 from dom.plugins.runner import PluginRunner
 from dom.gifs import GifSearch
 from dom.stickers import Stickers
@@ -72,12 +73,13 @@ class App:
     memory_import: MemoryImport = field(init=False)
     plugins: PluginRegistry = field(init=False)
     plugin_runner: PluginRunner = field(init=False)
+    plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
 
     def __post_init__(self) -> None:
         def now() -> datetime:
             return datetime.now(timezone.utc)
 
-        self.plugins = PluginRegistry(self.home, self.store)
+        self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self))
         self.plugin_runner = PluginRunner(home=self.home.root)
         self.proposals = Proposals(self)
         self.stickers = Stickers(self.home, self.bot, lambda: self.dispatch.now())
@@ -152,7 +154,7 @@ async def _handle_claim(app: App, msg: IncomingMessage, code: str) -> None:
         await app.store.set_owner(msg.sender_id)
         app.config = load_config(app.config.home)
         await app.bot.send_message(msg.chat_id, "Done: you are my owner now. Other chats will ask you before I talk in them.")
-        await owner.publish_menu(app.bot, msg.sender_id)
+        await owner.refresh_menu(app)
     elif msg.chat_type == "private":
         await app.bot.send_message(msg.chat_id, "That code did not work.")
 
@@ -277,6 +279,9 @@ async def handle_message(app: App, message: Message) -> None:
                 elif len(parts) == 1:
                     await app.bot.send_message(msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
             return
+    # Core commands are handled above, so an approved plugin can never shadow one.
+    if command is not None and await surfaces.handle_command(app, message, msg, command):
+        return
     async with app.ingest_locks[msg.chat_id]:
         decision = await gate.decide(app.store, msg, app.owner_id)
         if decision == "drop":

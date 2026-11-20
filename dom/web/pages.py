@@ -25,6 +25,7 @@ from dom import memory_import, proposals, traits
 from dom.agent import unfence
 from dom.briefs import list_briefs, markdown_blocks
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
+from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE
 from dom.presence import read_habits
 from dom.skills import skill_diff
@@ -354,6 +355,7 @@ async def index(request: Request):
     return render(
         "dashboard.html", active="now", dial=await _dial(app, chats["rows"]), chats=chats,
         proposals=await _proposals(app), usage=await _usage(app), memory=await _memory(app), turns=await _turns(app),
+        plugin_panels=await _plugin_panels(app),
     )
 
 
@@ -479,9 +481,26 @@ async def decide_import(request: Request, proposal_id: int, kind: str = "", sour
     return response
 
 
+async def _plugin_panels(app: App) -> list[tuple[str, object]]:
+    return [(plugin.manifest.name, declared) for plugin, declared in await app.plugins.panel_entries()]
+
+
 @router.get("/plugins", response_class=HTMLResponse)
 async def plugins_page(request: Request):
-    return panel(request, "plugins", rows=await owner_app(request).plugins.listing())
+    app = owner_app(request)
+    return panel(request, "plugins", rows=await app.plugins.listing(), panels=await _plugin_panels(app))
+
+
+@router.post("/plugin-panels/{name}/{panel_id}", response_class=HTMLResponse)
+async def plugin_panel(request: Request, name: str, panel_id: str):
+    """Run one approved panel. POST, so the dashboard's same-origin htmx check guards every plugin run."""
+    app = owner_app(request)
+    found = await surfaces.find_panel(app, name, panel_id)
+    if found is None:
+        raise HTTPException(404)
+    plugin, declared = found
+    data, error = await surfaces.run_panel(app, plugin, declared)
+    return render("plugin_panel.html", name=plugin.manifest.name, panel=declared, data=data, error=error)
 
 
 @router.get("/plugins/{name}/{digest}", response_class=HTMLResponse)

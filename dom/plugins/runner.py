@@ -99,7 +99,8 @@ class PluginBusy(PluginError):
     """Another plugin is running; the caller may retry."""
 
 
-def parse_output(data: bytes) -> str:
+def parse_output(data: bytes, *, structured: bool = False) -> str | dict:
+    """The plugin's result: text for tools and commands, a JSON object for panels (validated by the caller)."""
     if len(data) > MAX_OUTPUT:
         raise PluginError("Plugin output exceeded 16 KB.")
     if not data.endswith(b"\n") or b"\n" in data[:-1]:
@@ -109,7 +110,9 @@ def parse_output(data: bytes) -> str:
     except (ValueError, RecursionError):
         raise PluginError("Invalid plugin protocol response.") from None
     if isinstance(result, dict) and result.get("ok") is True and set(result) == {"ok", "result"}:
-        if isinstance(result["result"], str):
+        if structured and isinstance(result["result"], dict):
+            return result["result"]
+        if not structured and isinstance(result["result"], str):
             return result["result"].encode("utf-8", "replace").decode("utf-8")
     if isinstance(result, dict) and result.get("ok") is False and set(result) == {"ok", "error"}:
         if isinstance(result["error"], str):
@@ -117,7 +120,7 @@ def parse_output(data: bytes) -> str:
     raise PluginError("Invalid plugin protocol response.")
 
 
-def exchange(process: subprocess.Popen, request: bytes, timeout: int) -> str:
+def exchange(process: subprocess.Popen, request: bytes, timeout: int, *, structured: bool = False) -> str | dict:
     """Bound both pipe I/O and exit time, without buffering unlimited output."""
     output = bytearray()
     sent = 0
@@ -150,7 +153,7 @@ def exchange(process: subprocess.Popen, request: bytes, timeout: int) -> str:
                             raise PluginError("Plugin output exceeded 16 KB.")
         if process.wait(timeout=max(0, deadline - monotonic())) != 0:
             raise PluginError("Plugin process failed.")
-        return parse_output(output)
+        return parse_output(bytes(output), structured=structured)
     except subprocess.TimeoutExpired:
         raise PluginError("Plugin timed out.") from None
     finally:
@@ -327,6 +330,10 @@ class PluginRunner:
             return self._execute(read_plugin(folder), (payload + "\n").encode(), network)
 
     def run(self, plugin_dir: Path, tool: str, args: dict, manifest: Manifest, *, approved_hash: str) -> str:
+        return self.run_request(plugin_dir, {"tool": tool, "args": args}, manifest, approved_hash=approved_hash)
+
+    def run_request(self, plugin_dir: Path, request: dict, manifest: Manifest, *, approved_hash: str) -> str | dict:
+        """Send one request: {"tool", "args"}, {"command", "args", "scope"} or {"panel"}. Panels return an object."""
         if not self.self_test():
             raise PluginsUnavailable("Plugins are unavailable because the sandbox could not be verified.")
         if not _PROCESS.acquire(blocking=False):
@@ -336,8 +343,10 @@ class PluginRunner:
                 snapshot = read_plugin(plugin_dir)
                 if snapshot.manifest != manifest or snapshot.hash != approved_hash:
                     raise PluginError("Plugin changed since approval.")
-                request = json.dumps({"tool": tool, "args": args}, allow_nan=False) + "\n"
-                return self._execute_locked(snapshot, request.encode("utf-8"), manifest.network)
+                line = json.dumps(request, allow_nan=False) + "\n"
+                return self._execute_locked(
+                    snapshot, line.encode("utf-8"), manifest.network, structured="panel" in request,
+                )
             except OSError:
                 raise PluginError("Could not start or read the plugin.") from None
         finally:
@@ -347,7 +356,7 @@ class PluginRunner:
         with _PROCESS:
             return self._execute_locked(snapshot, request, network)
 
-    def _execute_locked(self, snapshot: Plugin, request: bytes, network: bool) -> str:
+    def _execute_locked(self, snapshot: Plugin, request: bytes, network: bool, *, structured: bool = False) -> str | dict:
         # Materialize only the bytes we hashed. Edits to the live plugin cannot change this bind.
         with TemporaryDirectory(prefix="dom-plugin-") as directory, TemporaryFile() as sandbox_filter, \
                 TemporaryFile() as errors:
@@ -367,7 +376,7 @@ class PluginRunner:
                 env={}, start_new_session=True, pass_fds=(sandbox_filter.fileno(),),
             )
             try:
-                return exchange(process, request, snapshot.manifest.timeout_seconds)
+                return exchange(process, request, snapshot.manifest.timeout_seconds, structured=structured)
             except PluginError as error:
                 errors.seek(0)
                 detail = errors.read(500).decode("utf-8", "replace").strip()

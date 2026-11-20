@@ -98,6 +98,12 @@ main > * { min-width: 0; }
 .diff { font: 0.875rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; background: var(--hull); padding: var(--s3); white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff del { color: var(--signal); text-decoration: line-through; }
 .diff ins { color: var(--arc); text-decoration: none; }
+.plugin-text { white-space: pre-line; overflow-wrap: anywhere; }
+.plugin-panels dl { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: var(--s1) var(--s3); margin: 0; }
+.plugin-panels dt { color: var(--fog); }
+.plugin-panels dd { margin: 0; overflow-wrap: anywhere; }
+.plugin-panels table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: var(--t-sm); }
+.plugin-panels th, .plugin-panels td { text-align: left; padding: var(--s1) var(--s3); border-bottom: 1px solid var(--seam); overflow-wrap: anywhere; }
 .facts { list-style: none; margin: 0 0 var(--s3); padding: 0; display: grid; gap: var(--s2); }
 .facts label { display: flex; gap: var(--s3); align-items: flex-start; }
 .facts input { accent-color: var(--arc); margin-top: 5px; }
