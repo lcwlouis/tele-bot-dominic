@@ -47,6 +47,9 @@ Cloudflare. Keep local bearer-token testing on loopback.
 - **Web search** submits the query to `models.search.base_url` (OpenRouter by
   default). A query drafted in the owner DM can contain private context.
   Remove `[models.search]` to disable this tool.
+- **KLIPY** (GIF search, only with `KLIPY_API_KEY`) receives the short search query Dom wrote, from the Dom
+  host. It sees no chat, user or owner identifier. Outside the owner DM the query goes through the outbound
+  leak check when that is on. Telegram then fetches the chosen file from KLIPY. See [GIFs](gifs.md).
 - **Jev** can receive recent chat context for triage and candidate facts for
   import classification. The outbound leak check sends proposed text and a
   bounded selection of headings, names, numbers and other terms from owner notes

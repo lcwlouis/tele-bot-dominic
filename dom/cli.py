@@ -21,6 +21,7 @@ from dom.config import Config, load_config
 from dom.desktop import network as desktop_network
 from dom.desktop.sandbox import configured_sandbox
 from dom.home import Home, init_home
+from dom.gifs import GifSearch
 from dom.importer import import_v2
 from dom.jev import JevClient
 from dom.llm import ChatClient, FallbackClient
@@ -70,6 +71,11 @@ def search_client(
         return None
     key = config.secret(endpoint.api_key_env)
     return SearchClient(endpoint, key, http, usage=usage) if key else None
+
+
+def gif_search(config: Config, http: httpx.AsyncClient) -> GifSearch | None:
+    key = config.secret("KLIPY_API_KEY")
+    return GifSearch(key, http) if key else None
 
 
 def cmd_init(home: Path, timezone: str | None = None) -> int:
@@ -138,7 +144,7 @@ async def run(home: Path) -> None:
             app = App(
                 config=config, home=Home(home), store=store, client=client,
                 bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id, media_describer=media_describer,
-                search_client=search_client(config, http, usage), sandbox=sandbox,
+                search_client=search_client(config, http, usage), gifs=gif_search(config, http), sandbox=sandbox,
             )
             await app.stickers.refresh()
             await app.plugins.cleanup_drafts()
@@ -276,5 +282,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # its request lines would put the KLIPY key in the log
     asyncio.run(run(args.home))
     return 0
