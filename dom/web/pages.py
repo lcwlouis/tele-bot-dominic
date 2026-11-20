@@ -541,7 +541,9 @@ async def plugin_reviewed(request: Request, name: str, digest: str):
 async def plugin_action(request: Request, name: str, digest: str, decision: Literal["approve", "reject", "disable"]):
     app = owner_app(request)
     message = await app.plugins.decide(name, digest, decision)
-    response = render("plugins.html", context={"rows": await app.plugins.listing(), "message": message})
+    response = render("plugins.html", context={
+        "rows": await app.plugins.listing(), "panels": await _plugin_panels(app), "message": message,
+    })
     if message not in ("Approved", "Rejected", "Disabled", "already handled"):
         response.status_code = 409
     return response
