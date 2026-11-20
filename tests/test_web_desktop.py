@@ -328,3 +328,153 @@ async def test_the_viewer_socket_relays_to_the_chosen_container(make_app, monkey
     assert len(urls) == 1
     assert (await open_socket(b"container=default"))["type"] == "websocket.accept"
     assert urls[-1][0] == "wss://main.example.org/websockify"
+
+
+# ---- home page desktop tile (W12) ----------------------------------------------------------------------
+
+from unittest.mock import AsyncMock
+
+
+async def test_home_desktop_tile_when_off_shows_muted_line_without_polling(make_app, monkeypatch):
+    app = make_app()
+    web = dashboard(app, monkeypatch)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        assert (await client.get("/desktop/tile")).status_code == 403
+        home = (await client.get("/", headers=auth)).text
+        assert 'id="desktop-tile"' in home
+        assert "Desktop is off." in home
+        assert 'hx-get="/desktop/tile"' not in home
+        assert 'hx-trigger="every 4s"' not in home
+        assert 'href="/desktop?container=' not in home
+        tile = await client.get("/desktop/tile", headers=auth)
+        assert tile.status_code == 200
+        assert "<!doctype html>" not in tile.text.lower()
+        assert "Desktop is off." in tile.text
+
+
+async def test_home_desktop_tile_shows_containers_states_briefs_links_and_host_limits(make_app, monkeypatch):
+    app = make_app()
+    app.config = app.config.model_copy(update={
+        "desktop_mode": "local",
+        "desktop": DesktopConfig(hosts=[
+            DesktopHost(name="pi", mode="local", max_containers=2, min_free_memory_mb=512),
+            DesktopHost(
+                name="studio", mode="remote", url="https://studio.example.org",
+                remote_isolation_confirmed=True, min_free_memory_mb=16384,
+            ),
+        ]),
+    })
+    computers = {
+        "default": Computer("https://main.example.org", "ready"),
+        "booting": Computer("https://boot.example.org", "starting"),
+        "full": Computer("https://full.example.org", "stopped"),
+        "studio": Computer("https://studio.example.org", "ready"),
+    }
+    computers["full"].error = "host pi already runs its limit of 2 desktop containers (default, booting)"
+    fleet = DesktopFleet(app, sandbox_factory=lambda host, name: computers[name])
+    for name in ("booting", "full", "studio"):
+        fleet.lane(name)
+    app.desktop_worker = fleet
+
+    long_brief = "Check the <quarterly> report and export the summary table from every regional tab into a single spreadsheet for review"
+    await app.store.enqueue_desktop_task(OWNER, long_brief, "default")
+    handoff_id = await app.store.enqueue_desktop_task(OWNER, "Sign in to the supplier portal", "studio")
+    await app.store.update_desktop_task(handoff_id, OWNER, ("queued",), "waiting_owner", error="Sign in required")
+
+    web = dashboard(app, monkeypatch)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        home = (await client.get("/", headers=auth)).text
+        assert "<style" not in home and " style=" not in home
+        assert 'id="desktop-tile"' in home
+        assert 'hx-get="/desktop/tile"' in home
+        assert 'hx-trigger="every 4s"' in home
+        assert 'hx-swap="outerHTML"' in home
+        assert 'hx-sync="this:drop"' in home
+
+        tile = (await client.get("/desktop/tile", headers=auth)).text
+        assert "<!doctype html>" not in tile.lower()
+        assert "\u00b7" not in tile
+        for html in (home, tile):
+            # Container names and hosts
+            assert "default" in html and "booting" in html and "full" in html and "studio" in html
+            assert "pi" in html
+            # States
+            assert "running" in html
+            assert "starting" in html
+            assert "waiting for you" in html
+            assert "refused" in html
+            # Truncated and autoescaped brief (full untruncated brief not dumped raw)
+            assert "&lt;quarterly&gt;" in html
+            assert "<quarterly>" not in html
+            assert long_brief not in html
+            assert "…" in html
+            assert "Sign in to the supplier portal" in html
+            # Open links to the viewer
+            assert 'href="/desktop"' in html
+            assert 'href="/desktop?container=booting"' in html
+            assert 'href="/desktop?container=full"' in html
+            assert 'href="/desktop?container=studio"' in html
+            assert "Open" in html
+            # Host limits in small text
+            assert "pi:" in html and "2/2" in html and "512 MB" in html
+            assert "studio:" in html and "1/1" in html and "16 GB" in html
+
+        # State change reflected on next htmx poll
+        computers["booting"].state = "stopped"
+        computers["booting"].error = None
+        computers["default"].state = "stopped"
+        polled = (await client.get("/desktop/tile", headers=auth)).text
+        assert "off" in polled
+        assert "0/2" in polled
+
+
+async def test_home_and_desktop_pages_share_one_state_function(make_app, monkeypatch):
+    from dom.web import desktop as web_desktop
+
+    app = make_app()
+    two_containers(app)
+    spy = AsyncMock(wraps=web_desktop.desktop_context)
+    monkeypatch.setattr(web_desktop, "desktop_context", spy)
+
+    web = dashboard(app, monkeypatch)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        assert (await client.get("/", headers=auth)).status_code == 200
+        assert (await client.get("/desktop", headers=auth)).status_code == 200
+        assert (await client.get("/desktop/state", headers=auth)).status_code == 200
+        assert (await client.get("/desktop/tile", headers=auth)).status_code == 200
+    assert spy.await_count == 4
+
+
+async def test_home_desktop_tile_handles_zero_floor_multiline_brief_error_and_unclaimed(make_app, monkeypatch):
+    app = make_app()
+    app.config = app.config.model_copy(update={
+        "desktop_mode": "remote",
+        "desktop": DesktopConfig(hosts=[
+            DesktopHost(
+                name="studio", mode="remote", url="https://studio.example.org",
+                remote_isolation_confirmed=True, min_free_memory_mb=0,
+            ),
+        ]),
+    })
+    computer = Computer("https://studio.example.org", "error")
+    computer.error = "remote health check failed"
+    fleet = DesktopFleet(app, sandbox_factory=lambda host, name: computer)
+    app.desktop_worker = fleet
+    web = dashboard(app, monkeypatch)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        tile = (await client.get("/desktop/tile", headers=auth)).text
+        assert "error" in tile and "remote health check failed" in tile
+        assert "studio:" in tile and "0/1" in tile and "free floor" not in tile
+
+        computer.state = "ready"
+        computer.error = None
+        await app.store.enqueue_desktop_task(OWNER, "Line one\n\n  Line two", "studio")
+        tile = (await client.get("/desktop/tile", headers=auth)).text
+        assert "Line one Line two" in tile
+
+        monkeypatch.setattr(app.store, "owner_id", None)
+        assert (await client.get("/desktop/tile", headers=auth)).status_code == 409

@@ -29,6 +29,30 @@ def _query(name: str, default: str) -> str:
     return "" if name == default else "?" + urlencode({"container": name})
 
 
+def _truncate(text: str, limit: int = 80) -> str:
+    compact = " ".join(text.split())
+    return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
+
+
+def _memory_label(mb: int) -> str:
+    return f"{mb // 1024} GB" if mb >= 1024 and mb % 1024 == 0 else f"{mb:,} MB"
+
+
+def _display_state(status: str, task: dict | None, error: str | None) -> tuple[str, str]:
+    """Map raw sandbox status, active task and error to the tile's state label and visual tone."""
+    if task is not None and task.get("status") == "waiting_owner":
+        return "waiting for you", "waiting"
+    if status == "starting":
+        return "starting", "starting"
+    if status == "ready":
+        return "running", "running"
+    if status == "stopped" and error:
+        return "refused", "refused"
+    if status == "error":
+        return "error", "error"
+    return "off", "off"
+
+
 def _lane(app, name: str | None):
     """The container a request names (the default one without a name), or None when the desktop is off."""
     fleet = app.desktop_worker
@@ -42,41 +66,87 @@ def _lane(app, name: str | None):
 
 async def _context(app, lane, message: str = "") -> dict:
     if lane is None:
-        return {"status": "off", "task": None, "handoff_host": None, "local": False, "message": message, "error": None,
-                "container": None, "q": "", "containers": []}
+        return {
+            "enabled": False,
+            "status": "off", "task": None, "handoff_host": None, "local": False, "message": message, "error": None,
+            "container": None, "q": "", "containers": [], "hosts": [],
+        }
     fleet = app.desktop_worker
     sandbox, status = lane.sandbox, lane.status()
     tasks = {task["container"]: task for task in await app.store.desktop_tasks(app.owner_id, active=True)}
-    shown = fleet.containers()
-    if lane not in shown:
-        shown.append(lane)
+    shown = list(fleet.containers())
+    for other in fleet.lanes.values():
+        if other not in shown and (
+            other is lane
+            or other.name in tasks
+            or (other.status() in ("error", "stopped") and getattr(other.sandbox, "error", None))
+        ):
+            shown.append(other)
+    containers = []
+    for other in shown:
+        other_status = other.status()
+        other_task = tasks.get(other.name)
+        other_error = getattr(other.sandbox, "error", None) if other_status in ("error", "stopped") else None
+        state_label, state_tone = _display_state(other_status, other_task, other_error)
+        brief = _truncate(other_task["brief"]) if other_task and other_task.get("brief") else ""
+        containers.append({
+            "name": other.name,
+            "host": other.host.config.name,
+            "status": other_status,
+            "state": state_label,
+            "tone": state_tone,
+            "task": other_task,
+            "brief": brief,
+            "error": other_error,
+            "detail": brief or (_truncate(other_error) if other_error else ""),
+            "selected": other is lane,
+            "q": _query(other.name, fleet.default),
+        })
+    hosts = [{
+        "name": host.config.name,
+        "mode": host.config.mode,
+        "running": sum(1 for item in fleet.lanes.values() if item.host is host and item.status() in ("starting", "ready")),
+        "max_containers": host.config.max_containers,
+        "memory_floor_mb": host.config.memory_floor_mb,
+        "memory_floor": _memory_label(host.config.memory_floor_mb) if host.config.memory_floor_mb else "",
+    } for host in fleet.hosts]
     return {
+        "enabled": True,
         "status": status,
         "task": tasks.get(lane.name),
         "handoff_host": lane.worker.handoff_host,
         "local": isinstance(sandbox, LocalSandbox),
         # A refused start leaves the container stopped with the reason in `error`.
-        "error": sandbox.error if status in ("error", "stopped") else None,
+        "error": getattr(sandbox, "error", None) if status in ("error", "stopped") else None,
         "message": message,
         "container": lane.name,
         "q": _query(lane.name, fleet.default),
-        "containers": [{
-            "name": other.name, "host": other.host.config.name, "status": other.status(),
-            "task": tasks.get(other.name), "selected": other is lane, "q": _query(other.name, fleet.default),
-        } for other in shown],
+        "containers": containers,
+        "hosts": hosts,
     }
+
+
+async def desktop_context(app, container: str = "", message: str = "") -> dict:
+    """Compute the desktop state shared by the Desktop page, its state partial and the home tile."""
+    return await _context(app, _lane(app, container), message)
 
 
 @router.get("")
 async def desktop(request: Request, container: str = ""):
     app = owner_app(request)
-    return panel(request, "desktop", **await _context(app, _lane(app, container)))
+    return panel(request, "desktop", **await desktop_context(app, container))
 
 
 @router.get("/state")
 async def desktop_state(request: Request, container: str = ""):
     app = owner_app(request)
-    return render("desktop_state.html", context=await _context(app, _lane(app, container)))
+    return render("desktop_state.html", context=await desktop_context(app, container))
+
+
+@router.get("/tile")
+async def desktop_tile(request: Request):
+    app = owner_app(request)
+    return render("desktop_tile.html", context=await desktop_context(app))
 
 
 async def _change_computer(app, sandbox, action: str) -> str:
