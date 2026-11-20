@@ -1,6 +1,6 @@
 # Dom core — design
 
-Status: phases 1–2 live on the Pi · 2026-11-19 · replaces the uncommitted V2 attempt on `feat/v2-modernisation`
+Status: phases 1–8 live on the Pi; v0.8.0 in progress (`docs/superpowers/plans/2026-11-20-v0.8.0-drift-zero.md`) · first written 2026-11-19, updated 2026-11-21 · replaces the uncommitted V2 attempt on `feat/v2-modernisation`
 
 **Phases 3–7 are revised in `docs/superpowers/plans/2026-11-19-roadmap-phases-3-7.md`.** Where the two disagree, the roadmap wins.
 
@@ -51,7 +51,7 @@ side services: scheduler (reminders, heartbeat/daydream), web UI (FastAPI),
 **Models**, all through OpenAI-compatible endpoints:
 - Main chat model: any OpenAI-compatible endpoint in `[models.chat]`, with an optional `[models.chat_fallback]` used when the first is down. The author's instance uses the homelab model `default`, falling back to `deepseek/deepseek-v4.1-flash-1017` on OpenRouter.
 - A chat model may lack vision (the homelab one does). Anything visual goes through the media model.
-- Media: `qwen/qwen3.8-omni-flash` for images, GIFs, video and voice.
+- Media: a model in `[models.media]` for images, GIFs, video and voice. It must work under the instance's OpenRouter zero-data-retention setting.
 - Triage: TypeSafe Jev via `POST /api/alpha/decisions` with `~typesafe/jev-latest`. This is not a chat model.
 
 When Jev is down, the main model decides through a `no_response` action. The system never pretends to be Jev.
@@ -233,7 +233,7 @@ Media is transcribed or described once by the media model when it arrives. The d
   - **normal** fires within ±5 min, while he's awake
   - **casual** is folded into the next natural conversation
 - **Heartbeat** jobs: reflection or daydream, habit learning, and memory-import review.
-- Jobs live in `scheduled_jobs` (salvaged schema) and are created only through `remind` or the system.
+- Reminders live in the `reminders` table and are created only through `remind`. Heartbeat jobs record their last run in `kv`. The salvaged `scheduled_jobs` table is unused.
 
 ## 11. Memory import
 
@@ -245,7 +245,7 @@ Media is transcribed or described once by the media model when it arrives. The d
 ## 12. Web UI
 
 - FastAPI serves a small single-page UI.
-- Auth: Cloudflare Access in front, plus a local session token. It binds to localhost.
+- Auth: Cloudflare Access in front; Dom checks the Access JWT on every request. It binds to the Docker bridge address that the tunnel container reaches, never a LAN address. A dev token exists for local testing only.
 - Pages:
   - chats and their presence state
   - approvals: groups, plugins, soul edits, imports
