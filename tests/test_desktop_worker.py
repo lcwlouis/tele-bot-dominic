@@ -8,7 +8,7 @@ import pytest
 from aiogram.types import CallbackQuery, User
 
 from dom.config import DesktopConfig, WebConfig
-from dom.desktop.worker import WORKER_SYSTEM_PROMPT, DesktopWorker
+from dom.desktop.worker import REPOSITORY_NOTE, WORKER_SYSTEM_PROMPT, DesktopWorker
 from dom.llm import ChatClient
 from dom.store.store import StoredMessage
 from dom.telegram.handlers import handle_callback, handle_message
@@ -158,7 +158,9 @@ async def test_worker_prompt_uses_only_brief_and_capped_untrusted_results(make_a
     await wait_task(worker)
     assert (await task_row(app, task_id))["status"] == "done"
     first, second, report = app.client.requests
-    assert first[0] == [{"role": "system", "content": WORKER_SYSTEM_PROMPT}, {"role": "user", "content": "Do the task"}]
+    system = WORKER_SYSTEM_PROMPT + REPOSITORY_NOTE.format(url=app.config.update.repo_url)
+    assert first[0] == [{"role": "system", "content": system}, {"role": "user", "content": "Do the task"}]
+    assert "git clone" in system and app.config.update.repo_url in system and "never push" in system
     for marker in ("PRIVATE-MARKER", "MEMORY-MARKER", "DM-MARKER", "EVENT-MARKER"):
         assert marker not in str(second)
     tool_result = second[0][-1]["content"]
