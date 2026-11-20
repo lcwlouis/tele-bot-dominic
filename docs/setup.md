@@ -96,6 +96,14 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/import` | Starts an owner-reviewed memory import. |
 | `/tasks` | Lists and cancels desktop tasks. |
 | `/plugins` | Lists and disables plugins. |
+| `/update` | Shows the newest `vX.Y.Z` release with its changelog and deploys it on your confirmation (see [Deploy on a Raspberry Pi](deploy-pi.md#update-to-a-new-release)). |
+
+In the owner DM Dom can also look for devices on your home network (`find_devices`:
+mDNS and the neighbour table, nothing is scanned; mDNS needs `avahi-utils`). If a
+LAN host from `config.toml` (a model `base_url` or a desktop `lan_probes` entry)
+moved to a new address, he proposes the change for you to approve in `/proposals`;
+it applies after Dom restarts. A host given as a `<name>.local` name follows the
+device by itself.
 
 ## Optional dashboard
 

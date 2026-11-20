@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 from datetime import timedelta, timezone
@@ -10,6 +11,7 @@ from urllib.parse import urlsplit
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from dom.config import replace_host
 from dom.guard import check_local_private_text
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, validate_plugin
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
@@ -76,6 +78,12 @@ def summary(row: dict) -> str:
             heading, body["description"], f"Tools: {', '.join(tools)}", network,
             f"Files: {', '.join(files)}", f"Hash: {body['hash'][:12]}",
         ])
+    if row["kind"] == "lan_address":
+        name = f" ({body['name']})" if body.get("name") else ""
+        return (
+            f"{heading}\n{body['old']} → {body['new']}{name} in {', '.join(body['places'])}.\n"
+            "Dom uses the new address after his next restart."
+        )
     if row["kind"] == "memory_fact":
         if row["title"] == body["text"]:
             return f"#{row['id']} {body['file']}: {body['text']}"
@@ -107,6 +115,14 @@ class Proposals:
             text, file = body.get("text"), body.get("file")
             if not isinstance(text, str) or not text.strip() or not isinstance(file, str) or file not in MEMORY_FILES:
                 raise ValueError("a memory fact needs a memory filename and text")
+        elif kind == "lan_address":
+            try:
+                body = {
+                    "old": str(ipaddress.IPv4Address(body.get("old"))), "new": str(ipaddress.IPv4Address(body.get("new"))),
+                    "places": [str(place) for place in body.get("places", [])], "name": str(body.get("name") or ""),
+                }
+            except ValueError:
+                raise ValueError("a LAN address change needs old and new IPv4 addresses") from None
         else:
             raise ValueError("unknown proposal kind")
         at = self.app.dispatch.now().astimezone(timezone.utc).isoformat()
@@ -241,6 +257,12 @@ class Proposals:
                 skill = Skill(body["name"], body["description"], body["body"])
                 self._check_skill_secrets(skill)
                 write_skill(self.app.home, skill, body["old"])
+            except ValueError as error:
+                raise Refused(str(error)) from None
+            return
+        if kind == "lan_address":
+            try:
+                replace_host(self.app.home.root, body["old"], body["new"])
             except ValueError as error:
                 raise Refused(str(error)) from None
             return

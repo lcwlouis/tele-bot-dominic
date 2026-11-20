@@ -143,7 +143,7 @@ def _desktop(config: Config) -> Check:
     if not shutil.which("docker"):
         problems.append("Install Docker or turn off local desktop mode.")
     if not settings.lan_probes:
-        problems.append("Set [desktop] lan_probes to LAN IPv4 addresses and ports.")
+        problems.append("Set [desktop] lan_probes to LAN ipv4:port or <name>.local:port targets.")
     try:
         ipaddress.IPv4Network(settings.subnet)
     except ValueError:

@@ -40,7 +40,7 @@ subnet = "172.30.0.0/24"
 port = 18080
 task_cost_cap_usd = 0.5  # a desktop task stops once its model calls cost this much; 0 turns it off
 fallback_usd_per_1k_tokens = 0.002  # prices desktop calls whose provider reports no cost, for task_cost_cap_usd only; keep it conservative
-lan_probes = []  # LAN "ipv4:port" targets (IP literals, no names) the sandbox must not reach, e.g. ["192.0.2.1:443"]; required in local mode
+lan_probes = []  # LAN "ipv4:port" or "<name>.local:port" targets the sandbox must not reach, e.g. ["192.0.2.1:443"]; names resolve on every check; required in local mode
 probe_image = "alpine:3.22"  # image of the isolation probe; pull it first, probes never pull
 probe_control = "1.1.1.1:443"  # public "ipv4:port" the probe container must reach, or the probe cannot prove isolation
 remote_isolation_confirmed = false  # remote mode only: set true once you have checked the remote host blocks your LAN
@@ -65,3 +65,6 @@ port = 39731
 # base_url defaults to the loopback origin at the configured port.
 version = "0.1.10"
 node = "~/.local/node/bin/node"
+
+[update]
+repo_url = "https://github.com/lcwlouis/tele-friend-bot.git"  # /update offers this repository's vX.Y.Z tags

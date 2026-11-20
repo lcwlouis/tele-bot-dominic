@@ -6,6 +6,10 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- `/update` (owner DM): shows the newest `vX.Y.Z` release tag of `[update] repo_url` with its changelog section and, on confirmation, deploys it in a detached `dom-update` unit. Dom reports the outcome after the restart.
+- `dom deploy <home> vX.Y.Z` stages a tag, runs `uv sync --frozen --no-dev`, backs up, repoints `app` and restarts `dom.service`; if the new release is not ready within 120 seconds it rolls back to the previous one. After a successful deploy only the current and previous release folders are kept.
+- `find_devices` (owner DM, read-only): LAN devices with names and addresses from mDNS and the neighbour table. A configured LAN host that moved becomes a config-change proposal (`lan_address`) for the owner to approve.
+- `[desktop] lan_probes` accepts `<name>.local:port`; the names are resolved on the Docker host before every firewall probe and an unresolvable name fails closed.
 - Add a pinned, loopback-only T3 Code systemd user service with a 600 MiB memory limit.
 - Document Raspberry Pi desktop startup timings, the Chromium seccomp profile and the desktop connectivity check.
 - Wait for the local sandbox API and browser within a configurable 180-second startup deadline, with a distinct error for each stage.
