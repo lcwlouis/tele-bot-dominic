@@ -202,6 +202,9 @@ class UpdateConfig(BaseModel):
         return url
 
 
+KNOWN_SECRETS = ("TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY")
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -233,6 +236,25 @@ class Config(BaseModel):
             name="default", mode=self.desktop_mode, url=self.desktop.url, api_key_env=self.desktop.api_key_env,
             remote_isolation_confirmed=self.desktop.remote_isolation_confirmed,
         )]
+
+    def secret_names(self) -> set[str]:
+        """Every environment variable that holds an instance credential: the keys named by any `*_env` setting
+        (so a new one is covered as soon as it exists) and the fixed names Dom reads."""
+        names = set(KNOWN_SECRETS)
+
+        def walk(value: object) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if isinstance(key, str) and key.endswith("_env") and isinstance(item, str) and item:
+                        names.add(item)
+                    else:
+                        walk(item)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(self.model_dump(mode="python"))
+        return names
 
     def secret(self, name: str) -> str | None:
         """Read a secret from ``home/.env`` first, then the process environment."""
