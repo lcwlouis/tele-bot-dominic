@@ -20,7 +20,7 @@ from aiogram.types import (
     Message,
 )
 
-from dom import memory_import, proposals
+from dom import memory_import, proposals, traits
 from dom.plugins.manifest import NETWORK_NOTICE
 from dom.traits import GLOBAL_PRESET_KEY, global_preset_name, load_preset
 
@@ -191,6 +191,10 @@ async def leave_chat(app: App, chat_id: int, who: str) -> tuple[str, bool]:
         return result, True
 
 
+async def approved_chat(app: App, chat_id: int | str) -> dict | None:
+    return next((c for c in await app.store.list_chats("approved") if c["chat_id"] == str(chat_id)), None)
+
+
 async def set_preset(app: App, chat: dict, name: str) -> str | None:
     preset = load_preset(app.home, name) if name else None
     if (name and preset is None) or not await app.store.set_chat_preset(chat["chat_id"], name):
@@ -200,6 +204,44 @@ async def set_preset(app: App, chat: dict, name: str) -> str | None:
     message = f"Preset for {title}: {label}"
     await record_event(app, message)
     return message
+
+
+async def set_traits(app: App, chat: dict, raw: dict[str, object]) -> str | None:
+    """Save per-chat slider overrides the same way set_preset saves a preset: validated, then logged as an event."""
+    cleaned = traits.validate_overrides(raw)
+    if cleaned is None:
+        return None
+    _, existing = await app.store.get_chat_personality(chat["chat_id"])
+    if not await app.store.set_chat_traits(chat["chat_id"], traits.normalise(traits.decode(existing)) | cleaned):
+        return None
+    summary = ", ".join(f"{name} {round(value * 100)}%" for name, value in cleaned.items())
+    message = f"Traits for {display_title(chat, app.owner_id)}: {summary}"
+    await record_event(app, message)
+    return message
+
+
+async def reset_traits(app: App, chat: dict) -> str | None:
+    if not await app.store.set_chat_traits(chat["chat_id"], {}):
+        return None
+    message = f"Traits for {display_title(chat, app.owner_id)}: reset to default"
+    await record_event(app, message)
+    return message
+
+
+PENDING_DECISIONS = {"approve": "approved", "ignore": "ignored"}
+
+
+async def decide_pending_chat(app: App, chat_id: int, decision: str, who: str) -> tuple[dict | None, str]:
+    """Approve or ignore a pending group or stranger DM and record an owner event."""
+    status = PENDING_DECISIONS.get(decision)
+    if status is None or app.owner_id is None:
+        raise ValueError("Choose approve or ignore.")
+    chat = await app.store.resolve_pending_chat(str(chat_id), status)
+    if chat is None:
+        return None, "already handled"
+    label = "Approved" if decision == "approve" else "Ignored"
+    await record_event(app, f"{who} {label.lower()} {display_title(chat, app.owner_id)}")
+    return chat, label
 
 
 async def set_global_preset(app: App, name: str, who: str) -> str | None:

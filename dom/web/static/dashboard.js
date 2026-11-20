@@ -17,6 +17,13 @@ document.addEventListener("htmx:beforeSwap", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+    if (event.target.matches('.trait-row input[type="range"]')) {
+        const readout = event.target.closest(".trait-row")?.querySelector(".num");
+        if (readout) {
+            readout.textContent = `${Math.round(Number(event.target.value) * 100)}%`;
+        }
+        return;
+    }
     if (event.target.id !== "memory-text") {
         return;
     }

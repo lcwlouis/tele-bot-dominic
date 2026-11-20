@@ -11,6 +11,7 @@ dependencies = [
     "jinja2",
     "pydantic>=2.11",
     "PyJWT[crypto]",
+    "python-multipart>=0.0.34",
     "uvicorn>=0.30",
     "websockets>=15",
 ]

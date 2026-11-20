@@ -29,19 +29,33 @@ def numeric(value: object) -> float | None:
     return number if isfinite(number) else None
 
 
+def _name(key: object) -> str | None:
+    """The canonical slider name for a front matter or form key, or None when it names no slider."""
+    if not isinstance(key, str):
+        return None
+    name = key.removesuffix("_level")
+    name = "slang" if name == "singlish" else name
+    return name if name in NAMES else None
+
+
 def normalise(raw: dict) -> dict[str, float]:
     if not isinstance(raw, dict):
         return {}
     result = {}
     for key, value in raw.items():
-        if not isinstance(key, str):
-            continue
-        name = key.removesuffix("_level")
-        name = "slang" if name == "singlish" else name
         number = numeric(value)
-        if name in NAMES and number is not None:
+        if (name := _name(key)) is not None and number is not None:
             result[name] = min(0.95, max(0.05, number))
     return result
+
+
+def validate_overrides(raw: dict) -> dict[str, float] | None:
+    """Per-chat slider edits from the dashboard: normalise them, or None when any key or value is not a slider."""
+    if not isinstance(raw, dict) or not raw:
+        return None
+    if any(_name(key) is None or numeric(value) is None for key, value in raw.items()):
+        return None
+    return normalise(raw)
 
 
 def decode(raw: str | None) -> dict:

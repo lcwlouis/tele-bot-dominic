@@ -504,6 +504,15 @@ class Store:
             (preset, _now(), chat_id),
         ).rowcount == 1
 
+    async def set_chat_traits(self, chat_id: int | str, traits: dict[str, float]) -> bool:
+        return await self._run(self._set_chat_traits, str(chat_id), traits)
+
+    def _set_chat_traits(self, chat_id: str, traits: dict[str, float]) -> bool:
+        return self._conn.execute(
+            "UPDATE chats SET traits_json = ?, updated_at = ? WHERE chat_id = ? AND authorization_status = 'approved'",
+            (json.dumps(traits), _now(), chat_id),
+        ).rowcount == 1
+
     async def list_approved_chats(self) -> list[dict[str, Any]]:
         """Read-only (never creates a row): every approved chat with its presence columns, when it last
         saw a message and, for private chats, the other person's name. The owner's DM always comes first."""
