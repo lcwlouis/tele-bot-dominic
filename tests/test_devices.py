@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 
 import pytest
 
@@ -171,3 +172,10 @@ def test_replace_host_refuses_when_the_address_is_used_elsewhere(tmp_path):
         replace_host(tmp_path, OLD, NEW)
     with pytest.raises(ValueError, match="no longer"):
         replace_host(tmp_path, OTHER, NEW)
+
+
+def test_a_device_name_that_is_not_utf8_does_not_break_discovery():
+    # Seen live: a LAN device advertised an mDNS name with bytes that are not valid UTF-8.
+    script = "import sys; sys.stdout.buffer.write(b'=;eth0;IPv4;caf\\xe9 tv;_http._tcp;local\\n')"
+    output = devices._command(subprocess.run, [sys.executable, "-c", script], "missing")
+    assert output is not None and output.startswith("=;eth0;IPv4;caf")
