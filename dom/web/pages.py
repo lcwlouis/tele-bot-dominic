@@ -348,12 +348,15 @@ async def _turns(app: App, chat: str = "") -> dict:
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    from dom.web import desktop as web_desktop
+
     app = request.app.state.dom
     if app.owner_id is None:
         return render("dashboard.html", active="setup")
     chats = await _chats(app)
     return render(
         "dashboard.html", active="now", dial=await _dial(app, chats["rows"]), chats=chats,
+        desktop=await web_desktop.desktop_context(app),
         proposals=await _proposals(app), usage=await _usage(app), memory=await _memory(app), turns=await _turns(app),
         plugin_panels=await _plugin_panels(app),
     )

@@ -29,6 +29,7 @@
     {% if active == "now" %}{% include "dial.html" %}{% endif %}
     {% if active in ("now", "proposals") %}{% with context = proposals %}{% include "proposals.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "chats") %}{% with context = chats %}{% include "chats.html" %}{% endwith %}{% endif %}
+    {% if active == "now" %}{% with context = desktop %}{% include "desktop_tile.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "usage") %}{% with context = usage %}{% include "usage.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "memory") %}{% with context = memory %}{% include "memory.html" %}{% endwith %}{% endif %}
     {% if active == "desktop" %}{% with context = desktop %}{% include "desktop.html" %}{% endwith %}{% endif %}
