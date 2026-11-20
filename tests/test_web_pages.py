@@ -69,7 +69,8 @@ async def test_dashboard_pages_and_day_dial(make_app, browser):
     async with browser(app) as client:
         index = await client.get("/")
         assert index.status_code == 200
-        assert all(label in index.text for label in ("Waiting for you", "Chats", "Usage", "Turn log"))
+        assert all(label in index.text for label in ("Waiting for you", "Chats", "Desktop", "Usage", "Turn log"))
+        assert 'id="desktop-tile"' in index.text and "Desktop is off." in index.text
         assert 'id="dial"' in index.text and "Online in Book Club" in index.text and "until 12:35" in index.text
         assert "23:00 to 07:00" in index.text
         assert index.text.count('class="online-arc"') == 1  # the 5-minute owner mark reaches the group's session
