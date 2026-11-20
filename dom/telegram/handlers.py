@@ -34,6 +34,7 @@ from dom.presence import Presence
 from dom.proposals import Proposals
 from dom.plugins.registry import PluginRegistry
 from dom.plugins.runner import PluginRunner
+from dom.gifs import GifSearch
 from dom.stickers import Stickers
 from dom.store import Store
 from dom.search import SearchClient
@@ -61,6 +62,7 @@ class App:
     bot_id: int | None = None
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | None = None
+    gifs: GifSearch | None = None
     sandbox: LocalSandbox | RemoteSandbox | None = None
     desktop_worker: DesktopWorker | None = field(init=False, default=None)
     t3: Bridge | None = field(init=False, default=None)

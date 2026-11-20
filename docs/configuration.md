@@ -59,6 +59,10 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | `models.search.model` | `"deepseek/deepseek-v4.1-flash-1017"` | Provider model ID. |
 | `models.search.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 
+## Optional secrets
+
+`KLIPY_API_KEY` turns on GIF sending. Without it Dom does not offer the `gif` action. See [GIFs](gifs.md).
+
 ## Desktop
 
 | Key | Default | Meaning |

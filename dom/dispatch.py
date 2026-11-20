@@ -22,6 +22,7 @@ from dom import guard, turn_log
 from dom.actions import Actions, Bubble, SendFile
 from dom.agent import parse_actions, run_turn
 from dom.desktop.tools import untrusted
+from dom.gifs import GIF_NOTE
 from dom.capabilities import describe
 from dom.jev import JevClient, JevUnavailable
 from dom.jobs import DailyJobs
@@ -523,20 +524,22 @@ class Dispatcher:
             sent = await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
                 thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
-                ephemeral_recipient=recipient,
+                gifs=app.gifs, ephemeral_recipient=recipient,
             )
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
             elif sent:
                 bubbles = len(actions.bubbles)
                 label = "bubble" if bubbles == 1 else "bubbles"
-                turn_log.outcome(f"Replied in {bubbles} {label}" if bubbles else "Sent a sticker")
+                turn_log.outcome(
+                    f"Replied in {bubbles} {label}" if bubbles else "Sent a sticker" if actions.sticker else "Sent a GIF"
+                )
             elif actions.react and not actions.no_response:
                 turn_log.outcome(f"Reacted {actions.react[:16]}")
         finally:
             if (
                 newest.is_bot and newest.sender_user_id is not None and not actions.no_response
-                and (actions.bubbles or actions.sticker in app.stickers.by_emoji)
+                and (actions.bubbles or actions.sticker in app.stickers.by_emoji or (actions.gif and app.gifs))
             ):
                 now = self.now()
                 self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}
@@ -546,9 +549,12 @@ class Dispatcher:
         self, chat_id: int, scope: Scope, actions: Actions, title: str,
     ) -> bool:
         app = self.app
-        if self.jev is None or scope == "owner_dm" or not app.config.leak_check or actions.no_response or not actions.bubbles:
+        if (
+            self.jev is None or scope == "owner_dm" or not app.config.leak_check or actions.no_response
+            or not (actions.bubbles or actions.gif)
+        ):
             return False
-        text = "\n".join(bubble.text for bubble in actions.bubbles)
+        text = "\n".join([bubble.text for bubble in actions.bubbles] + ([actions.gif] if actions.gif else []))
         try:
             with model_request("guard", chat_id, partial(self.model_allowed, chat_id)):
                 await check_model_allowed()
@@ -682,6 +688,8 @@ class Dispatcher:
             )
         if not final_bot_turn and (sticker_note := app.stickers.turn_note()):
             note += f"\n{sticker_note}"
+        if not final_bot_turn and app.gifs is not None:
+            note += f"\n{GIF_NOTE}"
         if scope == "owner_dm" and newest is not None and newest.media_json:
             inbox_name = json.loads(newest.media_json).get("desktop_inbox")
             if inbox_name:

@@ -98,7 +98,7 @@ class Openers:
             actions = await dispatch._compose_turn(
                 owner, "owner_dm", None, None, window, until, 0, False, habits, extra_note=NOTE,
             )
-        if actions.no_response or not (actions.bubbles or actions.sticker in app.stickers.by_emoji):
+        if actions.no_response or not (actions.bubbles or actions.sticker in app.stickers.by_emoji or (actions.gif and app.gifs)):
             return
 
         async with app.locks[owner]:
@@ -128,7 +128,7 @@ class Openers:
 
             sent_ids = await executor.perform(
                 app.bot, store, owner, None, actions, sleep=app.sleep, now=dispatch.now, on_sent=on_sent,
-                stickers=app.stickers.by_emoji,
+                stickers=app.stickers.by_emoji, gifs=app.gifs,
             )
             if sent_ids:
                 turn_log.outcome("Texted first")
