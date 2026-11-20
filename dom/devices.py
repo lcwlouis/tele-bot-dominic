@@ -62,7 +62,8 @@ def _ipv4(value: str) -> bool:
 
 def _command(run, args: list[str], missing: str) -> str | None:
     try:
-        result = run(args, capture_output=True, text=True, timeout=TIMEOUT)
+        # Device names come from the network: undecodable bytes are replaced, never fatal.
+        result = run(args, capture_output=True, text=True, errors="replace", timeout=TIMEOUT)
     except FileNotFoundError:
         raise LookupError(missing) from None
     except subprocess.TimeoutExpired:
