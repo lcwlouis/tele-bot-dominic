@@ -12,7 +12,7 @@ from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, Opener
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
     "chat_fallback": ("Optional", "Backup chat endpoint when the primary is unavailable."),
-    "triage": ("Built in", "Jev Decisions endpoint for triage, memory classification and leak checks."),
+    "triage": ("Built in", "Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, and the `dom doctor --online` probe."),
     "media": ("Built in", "Attachment descriptions, transcriptions and desktop screenshot descriptions."),
     "search": ("Optional", "OpenRouter web search. If the table is present, omitted fields use the starter search settings."),
 }
