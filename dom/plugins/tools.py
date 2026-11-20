@@ -38,9 +38,15 @@ async def _draft(args: dict, ctx: TurnCtx) -> str:
 DRAFT_PLUGIN_TOOL = Tool(
     name="draft_plugin",
     description=(
-        "Draft a Python tool for owner review. Provide plugin.toml separately and include main.py in files. "
+        "Draft a Python plugin for owner review. Provide plugin.toml separately and include main.py in files. "
         "Use only public information. Never include private notes, chat history, memory, or credentials. "
-        "The tool receives only explicitly supplied arguments and returns one JSON line."
+        "plugin.toml has name, description, version (optional network, timeout_seconds, memory_mb first), then "
+        "[[tools]] (name, description, parameters JSON schema, scopes), [[commands]] (name, description, scopes; "
+        "a Telegram /name, default scope owner_dm) and [[panels]] (id, title; a dashboard panel). "
+        "main.py: from _dom import tool, command, panel, run, then decorate functions named as declared: "
+        "tool def name(**args) -> str; command def name(text, scope) -> str (plain text, gets only the text "
+        'after /name); panel def id() -> dict with only "title", "paragraphs" [str], "items" [[key, value]] and '
+        '"table" {"columns": [...], "rows": [[...]]}; no HTML; end with run(). Stdlib only, offline unless network = true.'
     ),
     schema={
         "type": "object",
@@ -91,8 +97,6 @@ async def _held_by_leak_check(app: App, ctx: TurnCtx, plugin: Plugin, args: dict
 
 
 def _tool(app: App, plugin: Plugin, tool: ToolManifest) -> Tool:
-    name = plugin.manifest.name
-
     async def call(args: dict, ctx: TurnCtx) -> str:
         if ctx.scope not in tool.scopes:
             return "error: tool not available here"
@@ -111,10 +115,9 @@ def _tool(app: App, plugin: Plugin, tool: ToolManifest) -> Tool:
                 return "error: plugin call skipped"
             # The registry lock covers only the approval check. The runner pins the hash again and refuses
             # to queue behind another plugin, so a slow plugin never stalls approvals or scans.
-            async with app.plugins.lock:
-                if not any(p.manifest.name == name and p.hash == plugin.hash for p in await app.plugins._approved()):
-                    return "error: plugin changed or is no longer approved"
-                folder = app.home.scoped(allow_private=False)._regular_path(f"plugins/{name}")
+            folder = await app.plugins.approved_folder(plugin)
+            if folder is None:
+                return "error: plugin changed or is no longer approved"
             result = await asyncio.to_thread(
                 app.plugin_runner.run, folder, tool.name, args, plugin.manifest, approved_hash=plugin.hash,
             )

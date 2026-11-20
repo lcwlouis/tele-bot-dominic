@@ -11,6 +11,7 @@ named `vX.Y.Z`.
 - Dashboard: approve or ignore pending groups and stranger DMs.
 - `gif` action: a KLIPY search result sent as an animation; set `KLIPY_API_KEY` ([docs/gifs.md](docs/gifs.md)).
 - Skills work in chat: `skills_list`, `skill_view` and `skill_manage` (a proposal the owner approves) in every chat, with each skill's name and description in the prompt.
+- Plugins can add Telegram slash commands and dashboard panels; declared surfaces are reviewed and re-approved like code (`docs/plugins.md`).
 - Add a pinned, loopback-only T3 Code systemd user service with a 600 MiB memory limit.
 - Document Raspberry Pi desktop startup timings, the Chromium seccomp profile and the desktop connectivity check.
 - Wait for the local sandbox API and browser within a configurable 180-second startup deadline, with a distinct error for each stage.

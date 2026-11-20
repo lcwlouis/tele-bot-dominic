@@ -10,11 +10,14 @@ import shutil
 import tomllib
 from dataclasses import asdict
 from difflib import unified_diff
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from dom.home import Home
-from dom.plugins.manifest import Plugin, ToolManifest, read_plugin, validate_name
+from dom.plugins.manifest import (
+    CommandManifest, Manifest, PanelManifest, Plugin, ToolManifest, read_plugin, validate_name,
+)
 from dom.store import Store
 
 log = logging.getLogger(__name__)
@@ -22,11 +25,17 @@ _HASH = re.compile(r"[0-9a-f]{64}")
 DRAFT_PREFIX = ".draft-"  # staging folders made by _write; never plugins
 
 
+def _surfaces(manifest: Manifest) -> tuple:
+    """What a plugin offers and where: anything here changing is shown to the owner as a surface change."""
+    return manifest.tools, manifest.commands, manifest.panels, manifest.network
+
+
 class PluginRegistry:
-    def __init__(self, home: Home, store: Store):
+    def __init__(self, home: Home, store: Store, on_change: Callable[[], Awaitable[None]] | None = None):
         self.home = home.scoped(allow_private=False)
         self.store = store
         self.lock = asyncio.Lock()
+        self.on_change = on_change  # called after the owner approves, rejects or disables a plugin
 
     def _read_all(self) -> dict[str, Plugin]:
         found = {}
@@ -105,6 +114,13 @@ class PluginRegistry:
             rows = await self.store.list_plugins()
             if any(row["name"] == name and row["status"] == "approved" and row["hash"] == plugin.hash for row in rows):
                 raise ValueError("This plugin version is already approved.")
+            # A disabled plugin keeps its files but gives up its command names.
+            live = {row["name"] for row in rows if row["status"] in ("approved", "pending") and row["name"] != name}
+            mine = {command.name for command in plugin.manifest.commands}
+            for other in (await asyncio.to_thread(self._read_all)).values():
+                taken = mine & {command.name for command in other.manifest.commands}
+                if other.manifest.name in live and taken:
+                    raise ValueError(f"/{min(taken)} is already a command of plugin {other.manifest.name}.")
             await asyncio.to_thread(self._write, plugin)
             await self.store.stage_plugins([(name, plugin.hash, json.dumps(asdict(plugin.manifest)))])
             await self.store.set_plugin_status(name, plugin.hash, "pending")
@@ -160,7 +176,16 @@ class PluginRegistry:
                 changes = list(unified_diff(previous.splitlines(), text.splitlines(), lineterm=""))[2:] if old else []
                 documents.append({"path": path, "text": text, "changes": changes, "removed": path not in current})
             reviewed = await self.store.kv_get(f"plugin-reviewed:{name}:{digest}") is not None
-            return {"plugin": plugin, "status": row["status"], "documents": documents, "reviewed": reviewed}
+            surfaces_changed = False
+            if "plugin.toml" in old:
+                try:
+                    surfaces_changed = _surfaces(Manifest.parse(old["plugin.toml"])) != _surfaces(plugin.manifest)
+                except (ValueError, tomllib.TOMLDecodeError):
+                    surfaces_changed = True
+            return {
+                "plugin": plugin, "status": row["status"], "documents": documents, "reviewed": reviewed,
+                "surfaces_changed": surfaces_changed,
+            }
 
     async def mark_reviewed(self, name: str, digest: str) -> None:
         key = f"plugin-reviewed:{name}:{digest}"
@@ -170,6 +195,15 @@ class PluginRegistry:
                 await self.store.record_owner_event(f"Reviewed plugin {name} ({digest[:12]}) code on the dashboard")
 
     async def decide(self, name: str, digest: str, decision: str) -> str:
+        label = await self._decide(name, digest, decision)
+        if label in ("Approved", "Rejected", "Disabled") and self.on_change is not None:
+            try:
+                await self.on_change()
+            except Exception:
+                log.exception("could not update after a plugin decision")
+        return label
+
+    async def _decide(self, name: str, digest: str, decision: str) -> str:
         async with self.lock:
             found = await self._scan()
             if decision != "disable" and (name not in found or found[name].hash != digest):
@@ -205,3 +239,24 @@ class PluginRegistry:
             }}
             for plugin, tool in await self.entries(scope)
         ]
+
+    async def approved_folder(self, plugin: Plugin) -> Path | None:
+        """The plugin's folder if exactly this version is still approved. The runner pins the hash again."""
+        async with self.lock:
+            if not any(p.manifest.name == plugin.manifest.name and p.hash == plugin.hash for p in await self._approved()):
+                return None
+            return self.home._regular_path(f"plugins/{plugin.manifest.name}")
+
+    async def command_entries(self, scope: str) -> list[tuple[Plugin, CommandManifest]]:
+        """Approved commands offered in `scope`. A name two approved plugins declare is offered by neither."""
+        unique: dict[str, tuple[Plugin, CommandManifest]] = {}
+        collisions = set()
+        for plugin in await self.approved():
+            for command in plugin.manifest.commands:
+                if command.name in unique:
+                    collisions.add(command.name)
+                unique[command.name] = (plugin, command)
+        return [entry for name, entry in unique.items() if name not in collisions and scope in entry[1].scopes]
+
+    async def panel_entries(self) -> list[tuple[Plugin, PanelManifest]]:
+        return [(plugin, panel) for plugin in await self.approved() for panel in plugin.manifest.panels]

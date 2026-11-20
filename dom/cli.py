@@ -155,7 +155,7 @@ async def run(home: Path) -> None:
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
             if config.owner_id is not None:
-                await owner.publish_menu(bot, config.owner_id)
+                await owner.refresh_menu(app)
             else:
                 logging.getLogger("dom").warning(
                     "No owner yet: send /claim <code> to @%s (the code is in %s).", me.username, home / ".claim"

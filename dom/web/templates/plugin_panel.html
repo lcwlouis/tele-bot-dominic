@@ -1,0 +1,26 @@
+{# A plugin panel: only data the schema allows, every value autoescaped. Plugins never supply markup. #}
+<article class="proposal" id="panel-{{ name }}-{{ panel.id }}">
+  <h3>{{ data.title if data and data.title else panel.title }}</h3>
+  <p class="fog">From plugin {{ name }}</p>
+  {% if error %}
+  <p class="notice" role="status">{{ error }}</p>
+  {% else %}
+  {% for text in data.paragraphs %}<p class="plugin-text">{{ text }}</p>{% endfor %}
+  {% if data.pairs %}
+  <dl>
+    {% for key, value in data.pairs %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}
+  </dl>
+  {% endif %}
+  {% if data.columns %}
+  <table>
+    <thead><tr>{% for column in data.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in data.rows %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
+  <div class="actions">
+    <button hx-post="/plugin-panels/{{ name }}/{{ panel.id }}" hx-target="#panel-{{ name }}-{{ panel.id }}" hx-swap="outerHTML">Refresh</button>
+  </div>
+</article>

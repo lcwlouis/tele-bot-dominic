@@ -201,7 +201,7 @@ Media is transcribed or described once by the media model when it arrives. The d
    - Dom drafts a plugin into `plugins/staging/`.
    - The owner gets the full code in DM, chunked, plus a diff on updates. Only the owner's button press in their DM activates it.
    - Plugins run in a subprocess with an empty environment (no secrets) and talk over JSON-lines on stdio.
-   - A plugin can add tools only. Telegram and UI extension points come later, when there is a real need.
+   - A plugin can add tools, Telegram slash commands and dashboard panels (owner decision E11, 2026-11-20). Commands reply with plain text; panels return structured data that Dom renders with its own templates. Plugins never ship HTML or JavaScript.
 3. **Core code:**
    - Dom writes an issue-style brief.
    - The owner forwards it to a coding agent (T3 Code with Claude, Codex or Antigravity), which opens a PR.

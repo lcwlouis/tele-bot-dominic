@@ -60,13 +60,19 @@ Cloudflare. Keep local bearer-token testing on loopback.
 
 ## Plugins and desktop
 
-A plugin receives the arguments Dom passes to the tool. It runs in a separate
-Bubblewrap process with a cleared environment, a bounded scratch filesystem
-and restricted system calls. Dom requires owner approval of the code version
-and probes isolation before offering plugin tools. Plugins are offline by
-default. A network-enabled plugin can send the arguments it receives to
-external services. Dom screens arguments for known secrets and verbatim owner
-notes and can run the Jev leak check for network plugin calls.
+A plugin tool receives the arguments Dom passes to it. A plugin slash command
+receives only the text typed after the command and the chat's scope (owner DM,
+friend DM or group), never the chat ID, the sender or chat history. A dashboard
+panel receives nothing. Command replies are sent as plain text and are not added
+to chat history. Panels return data that Dom renders with its own template.
+Every plugin call runs in a separate Bubblewrap process with a cleared
+environment, a bounded scratch filesystem and restricted system calls. Dom
+requires owner approval of the code version and probes isolation before running
+a plugin. Plugins are offline by default. A network-enabled plugin can send what
+it receives to external services, and its commands work only in the owner DM.
+Dom screens tool arguments and command text for known secrets and verbatim owner
+notes, and can run the Jev leak check for network plugin tool calls. See
+[Writing plugins](plugins.md) for the limits.
 
 The desktop is owner-only. Its separate worker receives the task brief,
 applicable skills, and sandbox results. The brief can contain information

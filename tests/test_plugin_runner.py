@@ -156,7 +156,7 @@ def test_unsupported_host_reports_why(monkeypatch, tmp_path):
 def test_probe_checks_offline_then_online(monkeypatch, tmp_path):
     calls = []
 
-    def execute(self, snapshot, request, network):
+    def execute(self, snapshot, request, network, structured=False):
         calls.append((snapshot.manifest.network, network, json.loads(request)["args"]["network"]))
         return "ok"
 
@@ -175,7 +175,7 @@ def test_run_only_passes_requested_arguments_and_revalidates_pin(monkeypatch, tm
     calls = []
     monkeypatch.setattr(PluginRunner, "self_test", lambda self: True)
 
-    def execute(self, snapshot, request, net):
+    def execute(self, snapshot, request, net, structured=False):
         calls.append((snapshot.hash, json.loads(request), net))
         return "converted"
 
@@ -192,7 +192,7 @@ def test_the_approved_hash_and_home_are_required(monkeypatch, tmp_path):
     folder = write_plugin(tmp_path, MANIFEST.replace('version = "1"', 'version = "1"\nnetwork = true'))
     plugin = read_plugin(folder)
     monkeypatch.setattr(PluginRunner, "self_test", lambda self: True)
-    monkeypatch.setattr(PluginRunner, "_execute_locked", lambda self, snapshot, request, net: str(net))
+    monkeypatch.setattr(PluginRunner, "_execute_locked", lambda self, snapshot, request, net, structured=False: str(net))
     instance = PluginRunner(home=tmp_path)
     with pytest.raises(TypeError):
         instance.run(folder, "length", {}, plugin.manifest)
