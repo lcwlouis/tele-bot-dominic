@@ -148,6 +148,13 @@ mv -Tf "$root/app.next" "$root/app"
 systemctl --user start dom.service
 ```
 
+Rollbacks rely on every migration staying readable and writable by the previous
+release: add tables, columns and indexes, or rebuild a table with the same columns
+(for example to widen a `CHECK`), but never remove or rename anything the previous
+release uses. The previous release skips versions it does not know and runs on the
+migrated database. A release that breaks this rule must say so in its changelog,
+and is rolled back by restore.
+
 If the newer code migrated the database to an incompatible version, move the
 current instance home aside and use the old release's
 `dom restore <archive> <home>` to restore the pre-update archive before starting
