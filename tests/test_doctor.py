@@ -170,6 +170,7 @@ def test_remote_desktop_configuration_needs_isolation_confirmation(home, capsys)
     change_config(home, 'url = ""', 'url = "https://desktop.example.org"')
     assert main(["doctor", str(home)]) == 1
     assert "remote_isolation_confirmed" in capsys.readouterr().out
+    (home / ".env").write_text((home / ".env").read_text() + "SANDBOX_API_KEY=test-sandbox-secret\n")
     change_config(home, "remote_isolation_confirmed = false", "remote_isolation_confirmed = true")
     assert main(["doctor", str(home)]) == 0
     assert "ok desktop:" in capsys.readouterr().out
@@ -350,3 +351,35 @@ def test_doctor_stops_after_one_line_when_home_is_missing(tmp_path, capsys):
         "fail home: Instance home does not exist or is not a directory.",
     ]
     assert not missing.exists()
+
+
+def test_doctor_warns_about_unknown_keys_in_every_config_table(home, capsys):
+    change_config(home, "[web]\n", '[web]\nenabeld = true\n')
+    change_config(home, "[t3]\n", '[t3]\nprot = 1\n')
+    change_config(home, "[update]\n", '[update]\nrepo_ulr = "unknown-value"\n')
+    path = home / "config.toml"
+    path.write_text(path.read_text() + "\n[presence]\nseen_reactoin = true\n")
+    assert main(["doctor", str(home)]) == 0
+    out = capsys.readouterr().out
+    for key in ("presence.seen_reactoin", "t3.prot", "update.repo_ulr", "web.enabeld"):
+        assert key in out
+    assert "unknown-value" not in out
+
+
+def test_doctor_requires_each_remote_desktop_hosts_api_key(home, capsys, monkeypatch):
+    monkeypatch.delenv("BOX_SANDBOX_KEY", raising=False)
+    change_config(home, 'mode = "off"', 'mode = "local"')
+    path = home / "config.toml"
+    path.write_text(path.read_text() + """
+[[desktop.hosts]]
+name = "box"
+mode = "remote"
+url = "https://sandbox.example.org"
+api_key_env = "BOX_SANDBOX_KEY"
+remote_isolation_confirmed = true
+""")
+    main(["doctor", str(home)])
+    assert "fail secrets: Set in .env or the environment: BOX_SANDBOX_KEY." in capsys.readouterr().out
+    (home / ".env").write_text((home / ".env").read_text() + "BOX_SANDBOX_KEY=test-box-secret\n")
+    main(["doctor", str(home)])
+    assert "ok secrets:" in capsys.readouterr().out
