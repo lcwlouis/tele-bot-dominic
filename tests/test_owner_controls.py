@@ -103,6 +103,7 @@ def test_owner_commands():
         ("tasks", "List and cancel desktop tasks"),
         ("stickers", "Add or remove a sticker set"),
         ("import", "Bring memories from another assistant"),
+        ("update", "Check for and install a new release"),
     ]
 
 

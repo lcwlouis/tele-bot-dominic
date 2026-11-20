@@ -11,6 +11,7 @@ import pytest
 from dom.capabilities import describe
 from dom.config import Config, DesktopConfig, load_config
 from dom.desktop.client import SandboxClient, SandboxError, url_host
+from dom.desktop import network
 from dom.desktop.network import PROBE_SCRIPT as PROBE
 from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 from dom.desktop.tools import RESULT_LIMIT, invoke, untrusted
@@ -500,6 +501,21 @@ async def test_probe_targets_come_from_config(tmp_path):
     sandbox = LocalSandbox(config, run=docker)
     await start_failing(sandbox)
     assert docker.probes() == [probe_call(config, ["192.0.2.9:80", f"{GATEWAY}:8080", f"{GATEWAY}:22"])]
+    await sandbox.close()
+
+
+async def test_local_name_probes_resolve_on_the_host_and_fail_closed(tmp_path, monkeypatch):
+    host = "nas" + ".local"
+    answers = {host: ["192.0.2.7", "192.0.2.8"]}
+    monkeypatch.setattr(network, "resolve_ipv4", lambda name: answers.get(name, []))
+    docker = FakeDocker(probe=7)
+    config = local_config(tmp_path, lan_probes=[f"{host}:80"])
+    sandbox = LocalSandbox(config, run=docker)
+    await start_failing(sandbox)
+    assert docker.probes() == [probe_call(config, ["192.0.2.7:80", "192.0.2.8:80", f"{GATEWAY}:8080", f"{GATEWAY}:22"])]
+    answers.clear()
+    assert "resolve" in await start_failing(sandbox)
+    assert len(docker.probes()) == 1  # no probe runs without the name's addresses
     await sandbox.close()
 
 

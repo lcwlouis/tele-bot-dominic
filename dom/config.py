@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import ipaddress
 import os
 import re
@@ -9,6 +10,7 @@ import tomllib
 from importlib import resources
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -56,7 +58,7 @@ class DesktopConfig(BaseModel):
     subnet: str = Field("172.30.0.0/24", description="IPv4 CIDR of the desktop bridge. Choose a subnet separate from your LAN and other bridges.")
     port: int = Field(18080, ge=1, le=65535, description="Loopback host port for the local sandbox API.")
     task_cost_cap_usd: float = Field(0.5, ge=0, allow_inf_nan=False, description="Per-desktop-task USD limit. Zero disables this limit.")
-    lan_probes: list[str] = Field([], description="LAN IPv4:port targets local mode must prove it cannot reach. Required in local mode.")
+    lan_probes: list[str] = Field([], description="LAN targets local mode must prove it cannot reach, as IPv4:port or <name>.local:port (resolved on every check). Required in local mode.")
     probe_image: str = Field("alpine:3.22", description="Pre-pulled image used for local isolation probes.")
     probe_control: str = Field("1.1.1.1:443", description="Public IPv4:port target that the local isolation probe must reach.")
     remote_isolation_confirmed: bool = Field(False, description="Set after verifying the remote desktop cannot reach your LAN or Dom host.")
@@ -66,7 +68,11 @@ class DesktopConfig(BaseModel):
     @classmethod
     def _probe_targets(cls, targets: list[str]) -> list[str]:
         for target in targets:
-            _ipv4_target(target)
+            host, _, _ = target.rpartition(":")
+            if mdns_name(host):
+                _port(target)
+            else:
+                _ipv4_target(target)
         return targets
 
     @field_validator("probe_control")
@@ -77,14 +83,32 @@ class DesktopConfig(BaseModel):
         return target
 
 
+_MDNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
+
+
+def mdns_name(host: str) -> bool:
+    """A multicast DNS host name such as `<name>.local`: the LAN resolves it, so the address may change."""
+    labels = host.split(".")
+    return (
+        len(host) <= 253 and len(labels) >= 2 and labels[-1].lower() == "local"
+        and all(label.isascii() and _MDNS_LABEL.fullmatch(label) for label in labels[:-1])
+    )
+
+
+def _port(target: str) -> int:
+    port = target.rpartition(":")[2]
+    if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
+        raise ValueError("probe targets must look like ipv4:port or <name>.local:port")
+    return int(port)
+
+
 def _ipv4_target(target: str) -> ipaddress.IPv4Address:
     host, _, port = target.rpartition(":")
     try:
         address = ipaddress.IPv4Address(host)
     except ValueError:
-        raise ValueError("probe targets must look like ipv4:port (an IPv4 literal, not a name)") from None
-    if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
-        raise ValueError("probe targets must look like ipv4:port")
+        raise ValueError("probe targets must look like ipv4:port or <name>.local:port") from None
+    _port(target)
     return address
 
 
@@ -105,6 +129,23 @@ class T3Config(BaseModel):
     node: str = Field("~/.local/node/bin/node", description="Path to the user-local Node.js executable.")
 
 
+REPO_URL = "https://github.com/lcwlouis/tele-friend-bot.git"
+
+
+class UpdateConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    repo_url: str = Field(REPO_URL, description="Public Git repository whose vX.Y.Z tags /update offers and deploys (https).")
+
+    @field_validator("repo_url")
+    @classmethod
+    def _repo(cls, url: str) -> str:
+        # https only (file:// for local mirrors): no ssh prompts, no git transports that run commands.
+        if not re.fullmatch(r"(?:https://[^\s/@]+|file://)/[^\s]+", url):
+            raise ValueError("update.repo_url must be an https:// (or file://) Git URL")
+        return url
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -119,6 +160,7 @@ class Config(BaseModel):
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     t3: T3Config = Field(default_factory=T3Config)
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups when supported by Telegram.")
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_threshold: float = Field(1.2, ge=0, le=3, description="Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call.")
@@ -190,8 +232,62 @@ def save_owner(home: Path, owner_id: int) -> None:
     new_text = root + rest
     if tomllib.loads(new_text).get("owner_id") != owner_id:
         raise ValueError("could not set owner_id in config.toml")
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(new_text)
-    os.replace(temp, path)
+    _replace_file(path, new_text)
     if tomllib.loads(path.read_text()).get("owner_id") != owner_id:
         raise ValueError("owner_id was not saved to config.toml")
+
+
+def _replace_file(path: Path, text: str) -> None:
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(text)
+    os.replace(temp, path)
+
+
+def host_places(raw: dict) -> dict[str, list[str]]:
+    """Each host named by a model base_url or a desktop LAN probe, with the keys that name it."""
+    places: dict[str, list[str]] = {}
+    for name, endpoint in (raw.get("models") or {}).items():
+        url = endpoint.get("base_url") if isinstance(endpoint, dict) else None
+        host = urlsplit(url).hostname if isinstance(url, str) else None
+        if host:
+            places.setdefault(host, []).append(f"models.{name}.base_url")
+    for target in (raw.get("desktop") or {}).get("lan_probes") or []:
+        if isinstance(target, str) and ":" in target:
+            places.setdefault(target.rpartition(":")[0], []).append("desktop.lan_probes")
+    return {host: list(dict.fromkeys(keys)) for host, keys in places.items()}
+
+
+def _moved(raw: dict, old: str, new: str) -> dict:
+    """`raw` with IPv4 host `old` replaced by `new` in model base URLs and LAN probes."""
+    raw = copy.deepcopy(raw)
+    for endpoint in (raw.get("models") or {}).values():
+        url = endpoint.get("base_url") if isinstance(endpoint, dict) else None
+        if isinstance(url, str) and urlsplit(url).hostname == old:
+            parts = urlsplit(url)
+            endpoint["base_url"] = urlunsplit(parts._replace(netloc=parts.netloc.replace(old, new, 1)))
+    desktop = raw.get("desktop") or {}
+    if isinstance(desktop.get("lan_probes"), list):
+        desktop["lan_probes"] = [
+            f"{new}:{target.rpartition(':')[2]}" if isinstance(target, str) and target.rpartition(":")[0] == old
+            else target for target in desktop["lan_probes"]
+        ]
+    return raw
+
+
+def replace_host(home: Path, old: str, new: str) -> None:
+    """Move a LAN host from one IPv4 address to another in config.toml, leaving every other line as it was.
+
+    The edited text must parse to exactly the expected change, or nothing is written.
+    """
+    old, new = str(ipaddress.IPv4Address(old)), str(ipaddress.IPv4Address(new))
+    path = home / "config.toml"
+    text = path.read_text()
+    raw = tomllib.loads(text)
+    expected = _moved(raw, old, new)
+    if expected == raw:
+        raise ValueError(f"config.toml no longer uses {old}")
+    new_text = re.sub(rf"(?<![\w.]){re.escape(old)}(?![\w]|\.[0-9])", new, text)
+    if tomllib.loads(new_text) != expected:
+        raise ValueError(f"config.toml uses {old} somewhere else too; change it by hand")
+    validate_config(home, expected)
+    _replace_file(path, new_text)

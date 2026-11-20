@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import doctor, habits, reflection, service
+from dom import doctor, habits, reflection, release, service
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -164,6 +164,11 @@ async def run(home: Path) -> None:
             async with serving(app, auth):
                 app.dispatch.start()
                 try:
+                    release.mark_ready(home)  # a deploy in progress waits for this before it keeps the release
+                except OSError:
+                    logging.getLogger("dom").warning("could not write the ready marker for deploys")
+                owner.watch_update(app)
+                try:
                     await dispatcher.start_polling(
                         bot, allowed_updates=ALLOWED_UPDATES,
                         tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
@@ -209,6 +214,14 @@ def main(argv: list[str] | None = None) -> int:
     t3_cmd = sub.add_parser("t3-service", help="install the pinned T3 Code systemd user service")
     t3_cmd.add_argument("home", type=Path)
     t3_cmd.add_argument("--yes", action="store_true", help="write and enable the service")
+    deploy_cmd = sub.add_parser(
+        "deploy", help="deploy a vX.Y.Z release tag: stage, back up, switch, check health, roll back on failure",
+    )
+    deploy_cmd.add_argument("home", type=Path)
+    deploy_cmd.add_argument("tag", help="release tag, exactly vX.Y.Z")
+    deploy_cmd.add_argument("--root", type=Path, help="folder holding app and releases (default: this release's)")
+    deploy_cmd.add_argument("--expect", help="refuse unless the tag is still this commit")
+    deploy_cmd.add_argument("--health-seconds", type=float, default=release.HEALTH_SECONDS)
     restore_cmd = sub.add_parser("restore", help="restore an archive into an empty home")
     restore_cmd.add_argument("archive", type=Path)
     restore_cmd.add_argument("home", type=Path)
@@ -242,6 +255,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "doctor":
         return doctor.run(args.home, online=args.online)
+    if args.command == "deploy":
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+        try:
+            release.release_tag(args.tag)
+            layout = release.Layout(args.root.resolve()) if args.root else release.Layout.installed()
+            repo_url = load_config(args.home).update.repo_url
+        except (release.DeployError, OSError, ValueError) as exc:
+            print(f"deploy refused: {exc}")
+            return 1
+        result = release.deploy(
+            layout, args.home.resolve(), repo_url, args.tag, expect=args.expect, health_seconds=args.health_seconds,
+        )
+        print(result.message)
+        return 0 if result.ok else 1
     if args.command == "install-service":
         try:
             return service.install(args.home, yes=args.yes, force=args.force)

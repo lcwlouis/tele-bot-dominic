@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from dom.models import StoredMessage
-from dom.store.store import MIGRATIONS_DIR, TARGET_VERSION, Store, migrate_database
+from dom.store.store import MIGRATIONS, MIGRATIONS_DIR, TARGET_VERSION, Store, migrate_database
 
 OWNER_ID = 111
 ADMIN_USER_ID = str(OWNER_ID)
@@ -45,11 +45,33 @@ class StoreTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class MigrationTests(unittest.TestCase):
+    def test_lan_address_proposals_migration_keeps_existing_proposals(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "state.db"
+            conn = sqlite3.connect(db, isolation_level=None)
+            for _, filename in [(version, name) for version, name in MIGRATIONS if version <= 13]:
+                conn.executescript((MIGRATIONS_DIR / filename).read_text())
+            conn.execute(
+                "INSERT INTO proposals (kind, title, body_json, status, created_at, source) "
+                "VALUES ('skill', 'kept', '{}', 'pending', 't', 'chat')"
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("INSERT INTO proposals (kind, title, body_json, created_at, source) "
+                             "VALUES ('lan_address', 'x', '{}', 't', 'x')")
+            conn.close()
+            self.assertEqual(migrate_database(db), 14)
+            conn = sqlite3.connect(db)
+            self.assertEqual(conn.execute("SELECT kind, title, status FROM proposals").fetchall(),
+                             [("skill", "kept", "pending")])
+            conn.execute("INSERT INTO proposals (kind, title, body_json, created_at, source) "
+                         "VALUES ('lan_address', 'x', '{}', 't', 'x')")
+            conn.close()
+
     def test_fresh_db_reaches_target_without_backup(self):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             self.assertEqual(migrate_database(db), TARGET_VERSION)
-            self.assertEqual(TARGET_VERSION, 13)
+            self.assertEqual(TARGET_VERSION, 14)
             self.assertEqual(list(Path(d).glob("*.bak")), [])
             conn = sqlite3.connect(db)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
@@ -155,7 +177,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
             store = Store(Path(d), owner_id=OWNER_ID)
             try:
-                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 13)
+                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 14)
                 chat = store._conn.execute("SELECT * FROM chats WHERE chat_id = '-100'").fetchone()
                 self.assertEqual(
                     (chat["authorization_status"], chat["title"], chat["traits_json"], chat["bot_depth"],

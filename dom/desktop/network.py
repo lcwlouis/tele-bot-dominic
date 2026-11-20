@@ -5,9 +5,11 @@ from __future__ import annotations
 import ipaddress
 import json
 import shlex
+import socket
 import subprocess
+from collections.abc import Callable
 
-from dom.config import Config
+from dom.config import Config, mdns_name
 
 LAN_RANGES = (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
@@ -128,6 +130,32 @@ for result in "$dir"/*; do
   [ "$(cat "$result")" = 1 ] || exit 7
 done
 """
+
+
+def resolve_ipv4(host: str) -> list[str]:
+    """Every IPv4 address the host's resolver (mDNS included, through nss-mdns) gives for `host`."""
+    try:
+        answers = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        return []
+    return sorted({answer[4][0] for answer in answers}, key=ipaddress.IPv4Address)
+
+
+def lan_targets(probes: list[str], resolve: Callable[[str], list[str]] | None = None) -> list[str]:
+    """Probe targets as IPv4 literals. A `.local` name becomes one target per address it resolves to
+    right now; the probe container cannot resolve mDNS itself. An unresolvable name fails closed."""
+    resolve = resolve or resolve_ipv4
+    targets = []
+    for probe in probes:
+        host, _, port = probe.rpartition(":")
+        if not mdns_name(host):
+            targets.append(probe)
+            continue
+        addresses = resolve(host)
+        if not addresses:
+            raise ValueError(f"could not resolve lan_probes host {host}")
+        targets += [f"{address}:{port}" for address in addresses]
+    return targets
 
 
 def probe_command(config: Config, *targets: str) -> list[str]:

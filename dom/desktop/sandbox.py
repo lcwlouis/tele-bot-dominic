@@ -224,7 +224,11 @@ class LocalSandbox:
             raise SandboxError("desktop network missing or not the configured IPv4 bridge — run dom desktop-setup") from None
         if (await self._docker("image", "inspect", settings.probe_image))[0]:
             raise SandboxError(f"probe image not present: docker pull {settings.probe_image}")
-        targets = [*settings.lan_probes, f"{gateway}:{self.config.web.port}", f"{gateway}:22"]
+        try:
+            probes = await asyncio.to_thread(network.lan_targets, settings.lan_probes)
+        except ValueError as exc:
+            raise SandboxError(f"could not verify the desktop firewall: {exc}") from None
+        targets = [*probes, f"{gateway}:{self.config.web.port}", f"{gateway}:22"]
         code, _ = await self._docker(*network.probe_command(self.config, *targets)[1:])
         if code == network.PROBE_REACHABLE:
             if self.alert is not None and not self._alerted:

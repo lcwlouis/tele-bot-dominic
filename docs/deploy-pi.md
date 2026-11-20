@@ -8,6 +8,7 @@ moving the database, notes or secrets.
 ~/dom/
   app -> releases/<tag>
   releases/<tag>/
+  repo.git/        cache of the release tags (created by dom deploy)
   instance/
   backups/
 ```
@@ -49,10 +50,11 @@ a clean `main` that has passed CI. It needs Git 2.32 or later and the
 plus the commit, such as `v0.7.0-3-g1a2b3c4`. Only a history with no tag at all
 reports the bare commit.
 
-## Stage a release
+## Stage the first release
 
-Clone the repository into a separate checkout, then run these commands from it.
-Choose a release tag. For an update, fetch tags first with `git fetch --tags`.
+For the first install, clone the repository into a separate checkout, then run
+these commands from it. Choose a release tag. Later updates use `dom deploy` or
+`/update` instead (see below).
 
 ```sh
 root=~/dom
@@ -94,30 +96,63 @@ The bot service uses `MemoryHigh=500M`, `MemoryMax=700M`, `Restart=on-failure`,
 Pi's local time, with idle I/O scheduling. The backup command keeps the latest
 seven archives in `~/dom/backups`. Archives include `.env` and private data.
 
-## Switch releases and roll back
+## Update to a new release
 
-After staging the new release, record the current symlink target, stop the bot
-and take a backup using the old release. Continue after the backup succeeds.
+`dom deploy` does the whole update. In Telegram, `/update` (owner DM only) runs
+the same command for you: it shows the newest release newer than the running
+one, with its changelog section, and deploys it when you press the button.
+Releases come from `[update] repo_url` (the public repository by default). Only
+tags that are exactly `vX.Y.Z` are offered or deployed, never branches, other
+refs or pre-release tags.
 
 ```sh
 cd "$root/app"
-previous=$(readlink "$root/app")
-systemctl --user stop dom.service
-.venv/bin/python -m dom backup "$root/instance"
-ln -s "releases/$tag" "$root/app.next"
-mv -Tf "$root/app.next" "$root/app"
-systemctl --user start dom.service
-cd "$root/app"
-.venv/bin/python -m dom doctor "$root/instance"
+.venv/bin/python -m dom deploy "$root/instance" vX.Y.Z
 ```
 
-Keep the old release and the pre-update backup until the new release is verified.
-For a rollback, stop Dom and use the same `ln -s` and `mv -Tf` steps with
-`"$previous"` as the target. If the newer code migrated the database to an
-incompatible version, move the current instance home aside and use the old
-release's `dom restore <archive> <home>` to restore the pre-update archive
-before starting the old service. Preserve the moved home for recovery of data
-written after the update. Keep the bot stopped during the restore.
+The steps, in order:
+
+1. Fetch the release tags into `~/dom/repo.git` and check that the tag exists
+   (and, for `/update`, still points at the commit you were shown).
+2. Unpack the tag into `releases/vX.Y.Z` with `git archive` and run
+   `uv sync --frozen --no-dev` there. Dom keeps running meanwhile. If this
+   fails, nothing else changes.
+3. Stop `dom.service` and run `dom backup` on the instance home. If the backup
+   fails, the current release starts again and the update stops.
+4. Repoint `app` to the new release (a new symlink renamed over the old one)
+   and start `dom.service`.
+5. Wait up to 120 seconds (`--health-seconds`) for the new process to report
+   ready and stay up for 10 seconds. On success, delete every release folder
+   except the new one and the previous one.
+6. Otherwise repoint `app` to the previous release and start it again. If that
+   also fails, Dom messages you through the Bot API directly.
+
+The outcome is saved in the instance home (`update-state.json`) and the Dom
+process that comes up sends it to you in Telegram. `uv` is looked up on `PATH`
+and then in `~/.local/bin`. Only one deploy runs at a time.
+
+`/update` runs the deploy in a transient user unit named `dom-update`, so it
+keeps running while `dom.service` restarts. Read its log with
+`journalctl --user -u dom-update`. The first `/update` needs a release that
+already has the command, so deploy that one with `dom deploy` by hand.
+
+### Roll back by hand
+
+To go back to the previous release, stop Dom and repoint `app`, using the
+folder name `dom deploy` reported as kept:
+
+```sh
+systemctl --user stop dom.service
+ln -s "releases/<previous>" "$root/app.next"
+mv -Tf "$root/app.next" "$root/app"
+systemctl --user start dom.service
+```
+
+If the newer code migrated the database to an incompatible version, move the
+current instance home aside and use the old release's
+`dom restore <archive> <home>` to restore the pre-update archive before starting
+the old service. Preserve the moved home for recovery of data written after the
+update. Keep the bot stopped during the restore.
 
 ## Keep logs across reboots
 

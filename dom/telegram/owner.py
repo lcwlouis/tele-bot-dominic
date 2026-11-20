@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import hmac
 import json
 import logging
+import secrets
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -20,7 +24,8 @@ from aiogram.types import (
     Message,
 )
 
-from dom import memory_import, proposals, traits
+from dom import memory_import, proposals, release, traits
+from dom._version import VERSION
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE
 from dom.traits import GLOBAL_PRESET_KEY, global_preset_name, load_preset
@@ -44,6 +49,7 @@ OWNER_COMMANDS = [
     BotCommand(command="tasks", description="List and cancel desktop tasks"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
     BotCommand(command="import", description="Bring memories from another assistant"),
+    BotCommand(command="update", description="Check for and install a new release"),
 ]
 
 PROPOSALS_PER_PAGE = 10
@@ -603,3 +609,75 @@ async def show_t3(app: App) -> None:
         await app.bot.send_message(app.owner_id, "T3 bridge off.")
     else:
         await app.t3.show()
+
+
+# ---- /update -----------------------------------------------------------------------
+
+UPDATE_OFFER_KEY = "update:offer"
+_update_reports: set[asyncio.Task] = set()
+
+
+async def offer_update(app: App) -> None:
+    """Show the newest release newer than this one, with its changelog and a one-time confirm button."""
+    url = app.config.update.repo_url
+    try:
+        layout = release.Layout.installed()
+        offer = await asyncio.to_thread(release.check, layout, url, VERSION)
+    except release.DeployError as error:
+        await app.bot.send_message(app.owner_id, str(error))
+        return
+    except (OSError, subprocess.SubprocessError):
+        log.warning("could not check %s for releases", url, exc_info=True)
+        await app.bot.send_message(app.owner_id, f"Could not check {url} for releases.")
+        return
+    if offer is None:
+        await app.store.kv_set(UPDATE_OFFER_KEY, "")
+        await app.bot.send_message(app.owner_id, f"Dom is up to date ({VERSION}).")
+        return
+    nonce = secrets.token_hex(8)
+    await app.store.kv_set(UPDATE_OFFER_KEY, json.dumps({"nonce": nonce, "tag": offer.tag, "commit": offer.commit}))
+    text = f"{offer.tag} is available (running {VERSION}).\n\n{offer.notes}"[:MAX_MESSAGE]
+    markup = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"Update to {offer.tag}", callback_data=f"update:go:{nonce}"),
+        InlineKeyboardButton(text="Not now", callback_data=f"update:no:{nonce}"),
+    ]])
+    await app.bot.send_message(app.owner_id, text, reply_markup=markup)
+
+
+async def decide_update(app: App, decision: str, nonce: str) -> str:
+    """Use the offer at most once: deploy it on "go", drop it on "no". Returns the button toast."""
+    async with app.locks[UPDATE_OFFER_KEY]:
+        raw = await app.store.kv_get(UPDATE_OFFER_KEY)
+        offer = json.loads(raw) if raw else None
+        if not offer or not hmac.compare_digest(offer["nonce"], nonce):
+            return "already handled"
+        await app.store.kv_set(UPDATE_OFFER_KEY, "")
+    if decision != "go":
+        return "Not now"
+    chosen = release.Release(offer["tag"], offer["commit"], "")
+    try:
+        layout = release.Layout.installed()
+        await asyncio.to_thread(release.launch, layout, app.home.root, chosen)
+    except release.DeployError as error:
+        await app.bot.send_message(app.owner_id, str(error))
+        return "Not started"
+    await record_event(app, f"Started the update to {chosen.tag}")
+    await app.bot.send_message(
+        app.owner_id, f"Updating to {chosen.tag}. Dom restarts on the way and reports back here when it is done.",
+    )
+    watch_update(app)
+    return f"Updating to {chosen.tag}"
+
+
+def watch_update(app: App) -> None:
+    """If a deploy is in progress or finished unreported, send its outcome to the owner when it is done."""
+    if app.owner_id is None or release.read_state(app.home.root) is None or _update_reports:
+        return
+
+    async def send(text: str) -> None:
+        await app.bot.send_message(app.owner_id, text)
+        await record_event(app, text[:250])
+
+    task = asyncio.create_task(release.deliver_result(app.home.root, send, sleep=asyncio.sleep))
+    _update_reports.add(task)
+    task.add_done_callback(_update_reports.discard)
