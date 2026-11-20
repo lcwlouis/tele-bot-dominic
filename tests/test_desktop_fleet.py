@@ -605,7 +605,7 @@ async def test_every_configured_host_has_a_lane_from_the_start(make_app):
     assert list(fleet.lanes) == ["default", "studio"]
     assert [c.name for c in fleet.containers()] == ["default", "studio"]
     assert all(box.status() == "stopped" for box in fleet.boxes.values())  # nothing is started eagerly
-    await fleet._drop_idle()
+    await fleet.drop_idle()
     assert list(fleet.lanes) == ["default", "studio"]  # idle host lanes are kept
 
     fleet.boxes["default"]._status = "error"

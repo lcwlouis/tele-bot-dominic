@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import time
 from collections.abc import Awaitable, Callable, Collection
 from contextlib import contextmanager, nullcontext
@@ -443,6 +444,21 @@ class LocalSandbox:
     async def stop(self) -> None:
         async with self._lock:
             await self._stop()
+
+    async def reset_profile(self) -> None:
+        """Stop this container and delete its browser profile, so its next start has no logins or history.
+        Used before every self-directed task; the default container's profile (the owner's logins) is never reset."""
+        if self.name == DEFAULT:
+            raise SandboxError("the default desktop's profile is never reset")
+        async with self._lock:
+            await self._stop()
+            profile = desktop_profile_path(self.config, self.name)
+            try:
+                await asyncio.to_thread(shutil.rmtree, profile)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise SandboxError("could not empty the desktop profile") from exc
 
     async def _stop(self) -> None:
         if self._status == "off":

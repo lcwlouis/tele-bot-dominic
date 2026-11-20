@@ -227,3 +227,68 @@ The handoff message names the site the browser was on and when Dom looked, for
 example "browser was on login.example.org at 14:05" in the configured timezone.
 If the sandbox marks no tab as active it says "an unknown site". Treat the host as
 a hint: check the live view before you enter anything.
+
+## Self-directed work
+
+With `[self_work] enabled = true` (the default) and a local desktop host, Dom may
+plan up to three small tasks of his own during his nightly daydream, in the hour
+before he sleeps: research a topic on a few named public sites, or practise a skill
+in the sandbox. Each task records its goal, why, the tools it will use, the sites it
+will open, and a time and step budget. Set `enabled = false` to turn it off; see
+[Configuration](configuration.md#self-directed-work) for the delay and budget limits.
+
+**You see the plan first.** Dom sends one message to your DM listing the tasks, each
+with a Cancel button, and the dashboard's **Own work** page (and the home view,
+while anything is planned or running) shows the same plan with Cancel buttons. A
+task starts no sooner than `delay_hours` after the announcement, and only while Dom
+is awake and idle: your DM is not asleep, no chat is online or mid-reply, and no
+desktop task is running. A task that has not started within a day expires, and the
+next night's plan replaces any leftovers. Results, with any screenshots, appear on
+the Own work page; your DM gets one short summary. Self-directed tasks never message
+anyone else.
+
+**What is enforced in code, not just asked for in the prompt:**
+
+- Tasks run only in a local desktop container named `self-work`, never on the Dom
+  host and never on a remote host. Its browser profile is deleted before every task,
+  so there are no logins to use, and the worker has no `handoff` tool, so it cannot
+  ask for one. The default container's profile (your logins) is never touched.
+- The worker gets only the desktop tools the plan named. Plugins, the T3 bridge,
+  skills, skill proposals and core-change briefs are not available to it.
+- The browser may open only the plan's sites (and their subdomains). A page that
+  leaves them, by a click or a redirect, is closed; if it cannot be closed, the task
+  stops. `fill` takes only short search text, never into a login-looking field.
+- `run_shell` and `run_python` run in their own network namespace with no network
+  (`unshare --net`). If the sandbox cannot create one, the command fails rather than
+  running online.
+- The step and time budgets stop the task when exceeded.
+
+### Network guard
+
+Before every self-directed task, right after the fresh container starts and before
+any page loads, Dom checks the network **from inside that container** through its
+own shell. The check must show that:
+
+- the public `probe_control` address connects,
+- every `lan_probes` service, the Docker host's own LAN address and the container's
+  gateway (on port 22 and the dashboard port) time out, and
+- no sampled private address (the first address of each private, shared and
+  link-local range) answers.
+
+If any of this fails, or the check cannot run, the task is refused, nothing else
+runs, and Dom tells you why in your DM. The result of the last check is stored and
+`dom doctor` reports it under "self-directed work". Owner-requested desktop tasks are
+unchanged.
+
+The blocking rules are the same `DOM-DESKTOP` firewall the local desktop already
+needs. Dom runs unprivileged and cannot install it; install it once as root and
+reapply it at boot (see [Reapply at boot](#reapply-at-boot)):
+
+```sh
+sudo /path/to/dom desktop-setup /path/to/dom-home --yes
+dom doctor /path/to/dom-home
+```
+
+The planning call sends the public soul, the last few public journal entries and
+the goals of earlier self-directed tasks to the chat model. Nothing from `private/`
+is used, and the worker's brief holds only the plan.

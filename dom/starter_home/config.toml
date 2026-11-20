@@ -49,6 +49,10 @@ remote_isolation_confirmed = false  # remote mode only: set true once you have c
 enabled = true
 max_per_day = 2
 
+[self_work]
+enabled = true  # Dom plans up to three small tasks of his own at night; they run only in a local desktop behind a verified LAN guard
+delay_hours = 3  # announced in your DM and on the dashboard this long before any of them may start; cancel any there
+
 [web]
 enabled = false
 bind = "127.0.0.1"

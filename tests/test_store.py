@@ -71,7 +71,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             self.assertEqual(migrate_database(db), TARGET_VERSION)
-            self.assertEqual(TARGET_VERSION, 15)
+            self.assertEqual(TARGET_VERSION, 16)
             self.assertEqual(list(Path(d).glob("*.bak")), [])
             conn = sqlite3.connect(db)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
@@ -79,7 +79,26 @@ class MigrationTests(unittest.TestCase):
             names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
             self.assertTrue({"chats", "people_identities", "scheduled_jobs", "messages", "messages_fts",
                              "messages_ai", "messages_ad", "messages_au", "pending_turns",
-                             "idx_messages_chat_msg_unique"} <= names)
+                             "idx_messages_chat_msg_unique", "self_tasks"} <= names)
+            conn.close()
+
+    def test_self_work_migration_keeps_the_previous_schema_usable(self):
+        """0015 only adds a table: a database at version 15 gains self_tasks and keeps its rows."""
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "state.db"
+            conn = sqlite3.connect(db)
+            for _, filename in MIGRATIONS[:-1]:
+                conn.executescript((MIGRATIONS_DIR / filename).read_text())
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 15)
+            before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+            conn.execute("INSERT INTO desktop_tasks (chat_id, brief, status, created_at) VALUES (1, 'b', 'done', 't')")
+            conn.commit()
+            conn.close()
+            self.assertEqual(migrate_database(db), 16)
+            conn = sqlite3.connect(db)
+            after = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+            self.assertEqual(after - before, {"self_tasks", "idx_self_tasks_status"})
+            self.assertEqual(conn.execute("SELECT brief FROM desktop_tasks").fetchall(), [("b",)])
             conn.close()
 
     def test_existing_v2_db_is_backed_up_and_data_preserved(self):

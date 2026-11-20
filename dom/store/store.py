@@ -48,6 +48,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (13, "0012_t3_audit.sql"),
     (14, "0013_lan_address_proposals.sql"),
     (15, "0014_desktop_containers.sql"),
+    (16, "0015_self_work.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1191,6 +1192,56 @@ class Store:
             return dict(row) if row else None
 
         return await self._run(update)
+
+    # ---- self-directed tasks (W13) ----------------------------------------
+
+    async def add_self_tasks(self, tasks: list[dict[str, Any]], announced_at: datetime, not_before: datetime) -> list[dict[str, Any]]:
+        """Record a new plan. Tasks of an earlier plan that never started expire: one plan is live at a time."""
+        def add() -> list[dict[str, Any]]:
+            with self._tx() as conn:
+                conn.execute(
+                    "UPDATE self_tasks SET status = 'expired', finished_at = ? WHERE status = 'planned'", (_now(),),
+                )
+                return [dict(conn.execute(
+                    "INSERT INTO self_tasks (goal, why, tools_json, sites_json, minutes, steps_budget, announced_at, not_before) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+                    (task["goal"], task["why"], json.dumps(task["tools"]), json.dumps(task["sites"]), task["minutes"],
+                     task["steps"], announced_at.isoformat(), not_before.isoformat()),
+                ).fetchone()) for task in tasks]
+
+        return await self._run(add)
+
+    async def self_tasks(self, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        return await self._run(lambda: [dict(row) for row in self._conn.execute(
+            "SELECT * FROM self_tasks WHERE (? IS NULL OR status = ?) ORDER BY id DESC LIMIT ?", (status, status, limit),
+        )])
+
+    async def update_self_task(
+        self, task_id: int, expected: tuple[str, ...], status: str, *, steps: int | None = None,
+        result: str | None = None, error: str | None = None, files: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Move a task from one of `expected` to `status`; None if it was not in one of them."""
+        def update() -> dict[str, Any] | None:
+            now = _now()
+            placeholders = ", ".join("?" for _ in expected)
+            row = self._conn.execute(
+                "UPDATE self_tasks SET status = ?, steps = coalesce(?, steps), result = coalesce(?, result), "
+                "error = coalesce(?, error), files_json = coalesce(?, files_json), "
+                "started_at = CASE WHEN ? = 'running' THEN coalesce(started_at, ?) ELSE started_at END, "
+                "finished_at = CASE WHEN ? NOT IN ('planned', 'running') THEN ? ELSE finished_at END "
+                f"WHERE id = ? AND status IN ({placeholders}) RETURNING *",
+                (status, steps, result, error, None if files is None else json.dumps(files), status, now, status, now,
+                 task_id, *expected),
+            ).fetchone()
+            return dict(row) if row else None
+
+        return await self._run(update)
+
+    async def expire_self_tasks(self, announced_before: datetime) -> None:
+        await self._run(lambda: self._conn.execute(
+            "UPDATE self_tasks SET status = 'expired', finished_at = ? WHERE status = 'planned' AND announced_at < ?",
+            (_now(), announced_before.isoformat()),
+        ))
 
     # ---- plugins ---------------------------------------------------------
 

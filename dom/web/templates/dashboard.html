@@ -16,7 +16,7 @@
     {% if active != "setup" %}
       {% for id, route, label in [
         ("now", "/", "Now"), ("proposals", "/proposals", "Waiting for you"), ("chats", "/chats", "Chats"),
-        ("usage", "/usage", "Usage"), ("desktop", "/desktop", "Desktop"), ("plugins", "/plugins", "Plugins"), ("briefs", "/briefs", "Briefs"), ("memory", "/memory", "Memory"), ("turns", "/turns", "Turn log"),
+        ("usage", "/usage", "Usage"), ("desktop", "/desktop", "Desktop"), ("plugins", "/plugins", "Plugins"), ("own_work", "/own-work", "Own work"), ("briefs", "/briefs", "Briefs"), ("memory", "/memory", "Memory"), ("turns", "/turns", "Turn log"),
       ] %}
       <a href="{{ route }}"{% if active == id %} aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
@@ -34,6 +34,7 @@
     {% if active in ("now", "memory") %}{% with context = memory %}{% include "memory.html" %}{% endwith %}{% endif %}
     {% if active == "desktop" %}{% with context = desktop %}{% include "desktop.html" %}{% endwith %}{% endif %}
     {% if active == "plugins" %}{% with context = plugins %}{% include "plugins.html" %}{% endwith %}{% endif %}
+    {% if active == "own_work" or (active == "now" and own_work.upcoming) %}{% with context = own_work %}{% include "own_work.html" %}{% endwith %}{% endif %}
     {% if active == "briefs" %}{% with context = briefs %}{% include "briefs.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "turns") %}{% with context = turns %}{% include "turns.html" %}{% endwith %}{% endif %}
     {% if active == "now" and plugin_panels %}<section class="panel" id="plugin-panels"><header><h2>From plugins</h2></header>{% with panels = plugin_panels %}{% include "plugin_panels.html" %}{% endwith %}</section>{% endif %}

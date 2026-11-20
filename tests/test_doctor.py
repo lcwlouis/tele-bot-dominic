@@ -383,3 +383,32 @@ remote_isolation_confirmed = true
     (home / ".env").write_text((home / ".env").read_text() + "BOX_SANDBOX_KEY=test-box-secret\n")
     main(["doctor", str(home)])
     assert "ok secrets:" in capsys.readouterr().out
+
+
+def test_self_directed_work_reports_the_last_guard_verification(home, monkeypatch, capsys):
+    main(["doctor", str(home)])
+    assert "ok self-directed work: Inactive" in capsys.readouterr().out  # desktop is off in the starter config
+    change_config(home, 'mode = "off"', 'mode = "local"')
+    change_config(home, "lan_probes = []", 'lan_probes = ["192.0.2.1:443"]')
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/bin/" + name)
+    main(["doctor", str(home)])
+    out = capsys.readouterr().out
+    assert "warn self-directed work: Network guard not verified yet" in out and "dom desktop-setup" in out
+
+    def record(ok, detail):
+        with sqlite3.connect(home / "state.db") as db:
+            db.execute(
+                "INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('self_work:guard', ?, 't')",
+                (json.dumps({"ok": ok, "at": "2026-01-01T12:00:00+00:00", "detail": detail}),),
+            )
+
+    record(False, "the sandbox can reach 192.0.2.1:443 on the local network")
+    main(["doctor", str(home)])
+    out = capsys.readouterr().out
+    assert "warn self-directed work: Network guard NOT verified" in out and "192.0.2.1:443" in out
+    record(True, "verified")
+    assert main(["doctor", str(home)]) == 0
+    assert "ok self-directed work: Network guard verified from inside the sandbox" in capsys.readouterr().out
+    change_config(home, "[self_work]\nenabled = true", "[self_work]\nenabled = false")
+    main(["doctor", str(home)])
+    assert "ok self-directed work: Off." in capsys.readouterr().out

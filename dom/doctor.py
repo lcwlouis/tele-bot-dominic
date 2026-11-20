@@ -29,6 +29,7 @@ from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
 from dom.home import LIMITS, MAX_SOUL, Home
 from dom.jev import JevClient, JevUnavailable
 from dom.plugins.runner import PluginRunner
+from dom.selfwork import GUARD_KEY
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.store.store import TARGET_VERSION
 from dom.web.auth import Auth
@@ -167,6 +168,28 @@ def _desktop(config: Config) -> Check:
 # Config fields that are not TOML keys, and TOML keys that Config reads into another field.
 NOT_CONFIG_KEYS = {Config: {"home", "desktop_mode"}}
 SHORTHAND_KEYS = {DesktopConfig: {"mode"}}
+
+
+def _self_work(config: Config, home: Path) -> Check:
+    """Whether self-directed work (W13) can run: a local desktop host, and the network guard Dom last verified
+    from inside the sandbox. Dom checks the guard before every task; this reports the last result."""
+    if not config.self_work.enabled:
+        return Check("ok", "self-directed work", "Off.")
+    if not any(host.mode == "local" for host in config.desktop_hosts):
+        return Check("ok", "self-directed work", "Inactive: it runs only on a local desktop host.")
+    hint = "Install the desktop firewall with sudo dom desktop-setup <home> --yes (see docs/desktop.md)."
+    try:
+        with closing(sqlite3.connect(f"{(home / 'state.db').as_uri()}?mode=ro", uri=True, timeout=2)) as db:
+            row = db.execute("SELECT value FROM kv WHERE key = ?", (GUARD_KEY,)).fetchone()
+        guard = json.loads(row[0]) if row else None
+        ok, at, detail = guard["ok"], guard["at"], guard["detail"]
+    except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+        guard = None
+    if guard is None:
+        return Check("warn", "self-directed work", f"Network guard not verified yet; Dom checks it before each task. {hint}")
+    if ok is not True:
+        return Check("warn", "self-directed work", f"Network guard NOT verified at {at}: {detail}. Tasks are refused. {hint}")
+    return Check("ok", "self-directed work", f"Network guard verified from inside the sandbox at {at}.")
 
 
 def _unknown_config_keys(raw: dict) -> list[str]:
@@ -421,6 +444,8 @@ def run(home: Path, *, online: bool = False) -> int:
         checks.extend(_config_checks(config))
     notes = Home(home, allow_private=True)
     checks.extend((_soul(notes), _memory(notes), _database(home), _backups(home), _disk(home)))
+    if config is not None:
+        checks.append(_self_work(config, home))
     runner = PluginRunner(home=home)
     if bwrap_available(runner):
         checks.append(Check("ok", "bwrap", "Bubblewrap is available."))

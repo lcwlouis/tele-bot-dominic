@@ -38,6 +38,7 @@ from dom.gifs import GifSearch
 from dom.stickers import Stickers
 from dom.store import Store
 from dom.search import SearchClient
+from dom.selfwork import SelfWork
 from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
 
@@ -71,6 +72,7 @@ class App:
     memory_import: MemoryImport = field(init=False)
     plugins: PluginRegistry = field(init=False)
     plugin_runner: PluginRunner = field(init=False)
+    self_work: SelfWork = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
 
     def __post_init__(self) -> None:
@@ -86,6 +88,7 @@ class App:
         if self.config.t3.enabled:
             self.t3 = Bridge(self)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
+        self.self_work = SelfWork(self)
         if self.config.desktop_hosts:
             self.desktop_worker = DesktopFleet(self)
 
@@ -508,6 +511,15 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             elif decision == "done" and (steps := _item_id(raw_steps)) is not None:
                 changed = await app.desktop_worker.resume(owner_id, task_id, steps)
                 await _toast(app, query, "Resumed" if changed else "already handled")
+        return
+    if action == "own":
+        decision, _, raw_id = raw_chat_id.partition(":")
+        if (
+            not query.from_user.is_bot and query.message is not None and query.message.chat.id == owner_id
+            and query.message.chat.type == "private" and decision == "cancel" and (item_id := _item_id(raw_id)) is not None
+        ):
+            changed = await app.self_work.cancel(item_id)
+            await _toast(app, query, "Cancelled" if changed else "already handled")
         return
     if action in ("prop", "plugin"):
         if (

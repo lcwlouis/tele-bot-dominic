@@ -16,12 +16,12 @@ from urllib.parse import parse_qs, urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
-from dom import memory_import, proposals, traits
+from dom import memory_import, proposals, selfwork, traits
 from dom.agent import unfence
 from dom.briefs import list_briefs, markdown_blocks
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
@@ -360,7 +360,7 @@ async def index(request: Request):
         "dashboard.html", active="now", dial=await _dial(app, chats["rows"]), chats=chats,
         desktop=await web_desktop.desktop_context(app),
         proposals=await _proposals(app), usage=await _usage(app), memory=await _memory(app), turns=await _turns(app),
-        plugin_panels=await _plugin_panels(app),
+        plugin_panels=await _plugin_panels(app), own_work=await _own_work(app),
     )
 
 
@@ -547,6 +547,55 @@ async def plugin_action(request: Request, name: str, digest: str, decision: Lite
     if message not in ("Approved", "Rejected", "Disabled", "already handled"):
         response.status_code = 409
     return response
+
+
+async def _own_work(app: App, message: str = "") -> dict:
+    """Self-directed work (W13): the planned, running and finished tasks, and the network guard's last check."""
+    tz = ZoneInfo(app.config.timezone)
+
+    def local(stamp: str | None) -> str:
+        return f"{datetime.fromisoformat(stamp).astimezone(tz):%a %d %b %H:%M}" if stamp else ""
+
+    rows = [{
+        **row, "tools": json.loads(row["tools_json"]), "sites": json.loads(row["sites_json"]),
+        "files": json.loads(row["files_json"]), "not_before_local": local(row["not_before"]),
+        "announced_local": local(row["announced_at"]), "finished_local": local(row["finished_at"]),
+    } for row in await app.store.self_tasks()]
+    guard = None
+    if raw := await app.store.kv_get(selfwork.GUARD_KEY):
+        try:
+            guard = json.loads(raw)
+            guard["at_local"] = local(guard["at"])
+        except (ValueError, KeyError, TypeError):
+            guard = None
+    return {
+        "rows": rows, "guard": guard, "message": message, "settings": app.config.self_work,
+        "active": app.self_work.active(), "upcoming": any(row["status"] in ("planned", "running") for row in rows),
+    }
+
+
+@router.get("/own-work", response_class=HTMLResponse)
+async def own_work_page(request: Request):
+    return panel(request, "own_work", **await _own_work(owner_app(request)))
+
+
+@router.post("/own-work/{task_id:int}/cancel", response_class=HTMLResponse)
+async def cancel_own_work(request: Request, task_id: int):
+    app = owner_app(request)
+    message = f"Cancelled task #{task_id}." if await app.self_work.cancel(task_id) else f"Task #{task_id} had already finished."
+    return render("own_work.html", context=await _own_work(app, message))
+
+
+@router.get("/own-work/{task_id:int}/files/{name}")
+async def own_work_file(request: Request, task_id: int, name: str):
+    app = owner_app(request)
+    if not selfwork.FILE_NAME.fullmatch(name):
+        raise HTTPException(404)
+    try:
+        data = await asyncio.to_thread((selfwork.task_files(app.home.root, task_id) / name).read_bytes)
+    except OSError:
+        raise HTTPException(404) from None
+    return Response(data, media_type="image/png")
 
 
 @router.get("/briefs", response_class=HTMLResponse)
