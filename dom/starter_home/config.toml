@@ -46,7 +46,7 @@ probe_control = "1.1.1.1:443"  # public "ipv4:port" the probe container must rea
 remote_isolation_confirmed = false  # remote mode only: set true once you have checked the remote host blocks your LAN
 
 [openers]
-enabled = true
+enabled = false  # set true to let Dom start conversations in the owner's DM
 max_per_day = 2
 
 [web]

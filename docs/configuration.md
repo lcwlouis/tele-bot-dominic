@@ -103,7 +103,7 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `openers.enabled` | `true` | Allow Dom to start conversations in the owner's DM. |
+| `openers.enabled` | `false` | Allow Dom to start conversations in the owner's DM. |
 | `openers.max_per_day` | `2` | Maximum number of openers per day in the configured timezone. |
 
 ## Presence
