@@ -51,6 +51,12 @@ search endpoints keep their own settings and credentials. To disable web search,
 remove `[models.search]`. See the [configuration reference](configuration.md)
 for the optional chat fallback and all defaults.
 
+## Optional: GIFs
+
+Dom can send reaction GIFs when `KLIPY_API_KEY` is set in `.env`. Without it the
+`gif` action is not offered and `self_inspect` reports GIFs as off. See
+[GIFs](gifs.md) for how to get a key.
+
 ## Check, run and claim
 
 From the app directory, check the instance. Resolve failures before continuing.

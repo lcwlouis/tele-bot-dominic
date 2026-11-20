@@ -100,8 +100,8 @@ async def test_self_inspect_shape_and_owner_only_tools(make_app):
     await app.store.record_turn(now, GROUP, "group", 1, [], "m", False, 22, "Replied")
     found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))
     assert found.keys() == {
-        "version", "changelog_latest", "tools", "approved_plugins", "plugin_sandbox_failure", "desktop", "models",
-        "last_errors", "preset",
+        "version", "changelog_latest", "tools", "approved_plugins", "plugin_sandbox_failure", "desktop", "gifs",
+        "models", "last_errors", "preset",
     }
     assert found["preset"] == {"everywhere": "", "chats_with_own": []}
     assert found["plugin_sandbox_failure"] is None
