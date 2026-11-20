@@ -8,7 +8,8 @@ from dom.config import WebConfig
 from dom.desktop.client import SandboxClient
 from dom.web.app import create_app
 from dom.web.auth import Auth
-from test_desktop_worker import call, wait_status, wait_task, worker_for
+from dom.desktop.worker import DesktopWorker
+from test_desktop_worker import adopt, call, wait_status, wait_task, worker_for
 from test_web_auth import ORIGIN, POST_HEADERS, TOKEN, access_keys, assertion
 from tghelpers import OWNER
 
@@ -71,7 +72,7 @@ async def test_websocket_auth_origin_and_relay(make_app, access_keys, monkeypatc
         return {"keys": [jwk]}
 
     app.config = app.config.model_copy(update={"web": WebConfig(access_team="example-team", access_aud="example-audience")})
-    app.sandbox = FakeSandbox()
+    adopt(app, DesktopWorker(app, FakeSandbox()))
     web = create_app(app, Auth(app.config, keys))
     calls = []
 
@@ -196,7 +197,7 @@ async def test_start_does_not_hold_the_worker_lock_while_the_computer_boots(make
 
 async def test_runtime_error_in_the_websocket_relay_closes_cleanly(make_app, monkeypatch):
     app = make_app()
-    app.sandbox = FakeSandbox()
+    adopt(app, DesktopWorker(app, FakeSandbox()))
     web = dashboard(app, monkeypatch)
 
     @asynccontextmanager
@@ -221,3 +222,109 @@ async def test_runtime_error_in_the_websocket_relay_closes_cleanly(make_app, mon
         await web(scope, incoming.get, outgoing.put)
     sent = [await outgoing.get() for _ in range(outgoing.qsize())]
     assert sent[-1]["type"] == "websocket.close" and sent[-1]["code"] == 1011
+
+
+# ---- several containers ---------------------------------------------------------------------------------
+
+from dom.config import DesktopConfig, DesktopHost
+from dom.desktop.fleet import DesktopFleet
+
+
+class Computer(FakeSandbox):
+    error = None
+
+    def __init__(self, url, state="ready"):
+        self.client = SandboxClient(url, "key-" + url, None)
+        self.state = state
+        self.started = 0
+
+    def status(self):
+        return self.state
+
+    async def ensure_running(self):
+        self.started += 1
+        self.state = "ready"
+        return self.client
+
+
+def two_containers(app):
+    app.config = app.config.model_copy(update={
+        "desktop_mode": "local",
+        "desktop": DesktopConfig(hosts=[DesktopHost(name="pi", mode="local", max_containers=2)]),
+    })
+    computers = {"default": Computer("https://main.example.org"), "shop": Computer("https://shop.example.org", "stopped")}
+    fleet = DesktopFleet(app, sandbox_factory=lambda host, name: computers[name])
+    fleet.lane("shop")
+    app.desktop_worker = fleet
+    return fleet, computers
+
+
+async def test_the_page_lists_every_container_and_shows_the_chosen_one(make_app, monkeypatch):
+    app = make_app()
+    fleet, computers = two_containers(app)
+    computers["shop"].state = "ready"
+    task = await app.store.enqueue_desktop_task(OWNER, "read the shop manuals", "shop")
+    web = dashboard(app, monkeypatch)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        main = (await client.get("/desktop", headers=auth)).text
+        assert "Computer ready" in main and "No task running" in main and "read the shop manuals" not in main
+        assert 'href="/desktop?container=shop"' in main and ">shop<" in main and "pi" in main
+        shop = (await client.get("/desktop?container=shop", headers=auth)).text
+        assert f"Task #{task}" in shop and "read the shop manuals" in shop
+        assert 'hx-get="/desktop/state?container=shop"' in shop
+        assert 'data-src="/desktop/vnc/index.html?container=shop"' in shop
+        assert "<strong>shop</strong> · Computer ready" in shop
+        assert (await client.get("/desktop?container=nope", headers=auth)).status_code == 404
+        assert (await client.get("/desktop?container=Bad Name", headers=auth)).status_code == 404
+        viewer = await client.get("/desktop/vnc/index.html?container=shop", headers=auth)
+        assert "shop" in viewer.text and "<script>" not in viewer.text.replace('<script type="module" src', "")
+
+
+async def test_start_and_done_act_on_the_chosen_container(make_app, monkeypatch):
+    app = make_app()
+    fleet, computers = two_containers(app)
+    web = dashboard(app, monkeypatch)
+    headers = {"Authorization": f"Bearer {TOKEN}"} | POST_HEADERS
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        assert (await client.post("/desktop/computer/start?container=shop", headers=headers)).status_code == 200
+        assert (computers["shop"].started, computers["default"].started) == (1, 0)
+        assert (await client.post("/desktop/computer/start?container=nope", headers=headers)).status_code == 404
+
+
+async def test_the_viewer_socket_relays_to_the_chosen_container(make_app, monkeypatch):
+    app = make_app()
+    fleet, computers = two_containers(app)
+    computers["shop"].state = "ready"
+    web = dashboard(app, monkeypatch)
+    urls = []
+
+    @asynccontextmanager
+    async def connect(url, *, additional_headers, **kwargs):
+        urls.append((url, additional_headers))
+        yield FakeUpstream()
+
+    monkeypatch.setattr("dom.web.desktop.connect_upstream", connect)
+
+    async def open_socket(query):
+        incoming, outgoing = asyncio.Queue(), asyncio.Queue()
+        scope = {
+            "type": "websocket", "scheme": "ws", "path": "/desktop/vnc/websockify", "root_path": "",
+            "query_string": query, "subprotocols": ["binary"], "headers": [
+                (b"authorization", f"Bearer {TOKEN}".encode()),
+                (b"origin", b"http://dashboard.example.org"), (b"host", b"dashboard.example.org"),
+            ],
+        }
+        await incoming.put({"type": "websocket.connect"})
+        session = asyncio.create_task(web(scope, incoming.get, outgoing.put))
+        first = await asyncio.wait_for(outgoing.get(), 2)
+        await incoming.put({"type": "websocket.disconnect", "code": 1000})
+        await asyncio.wait_for(session, 2)
+        return first
+
+    assert (await open_socket(b"container=shop"))["type"] == "websocket.accept"
+    assert urls == [("wss://shop.example.org/websockify", computers["shop"].client.auth_headers())]
+    assert (await open_socket(b"container=nope"))["type"] == "websocket.close"  # unknown: nothing is relayed
+    assert len(urls) == 1
+    assert (await open_socket(b"container=default"))["type"] == "websocket.accept"
+    assert urls[-1][0] == "wss://main.example.org/websockify"

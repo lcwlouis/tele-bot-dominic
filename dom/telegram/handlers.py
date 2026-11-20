@@ -21,8 +21,7 @@ from dom.claim import try_claim
 from dom.config import Config, load_config
 from dom.dispatch import Dispatcher
 from dom.desktop import files as desktop_files
-from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
-from dom.desktop.worker import DesktopWorker
+from dom.desktop.fleet import DesktopFleet
 from dom.t3.tools import Bridge
 from dom.home import Home
 from dom.jev import JevClient
@@ -61,8 +60,7 @@ class App:
     bot_id: int | None = None
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | None = None
-    sandbox: LocalSandbox | RemoteSandbox | None = None
-    desktop_worker: DesktopWorker | None = field(init=False, default=None)
+    desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
     proposals: Proposals = field(init=False)
@@ -84,8 +82,8 @@ class App:
         if self.config.t3.enabled:
             self.t3 = Bridge(self)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
-        if self.sandbox is not None:
-            self.desktop_worker = DesktopWorker(self, self.sandbox)
+        if self.config.desktop_hosts:
+            self.desktop_worker = DesktopFleet(self)
 
     @property
     def owner_id(self) -> int | None:

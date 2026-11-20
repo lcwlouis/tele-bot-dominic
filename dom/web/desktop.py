@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Literal
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket
@@ -23,28 +24,59 @@ VNC_SOCKET = VNC_PATH + "websockify"
 _FRAME_LIMIT = 16 * 1024 * 1024
 
 
-async def _context(app, message: str = "") -> dict:
-    sandbox = app.sandbox
-    status = sandbox.status() if sandbox is not None else "off"
-    tasks = await app.store.desktop_tasks(app.owner_id, active=True)
+def _query(name: str, default: str) -> str:
+    """The query string that selects a container on the page; the default container needs none."""
+    return "" if name == default else "?" + urlencode({"container": name})
+
+
+def _lane(app, name: str | None):
+    """The container a request names (the default one without a name), or None when the desktop is off."""
+    fleet = app.desktop_worker
+    if fleet is None:
+        return None
+    lane = fleet.lanes.get(name or fleet.default)
+    if lane is None:
+        raise HTTPException(404, "No such container.")
+    return lane
+
+
+async def _context(app, lane, message: str = "") -> dict:
+    if lane is None:
+        return {"status": "off", "task": None, "handoff_host": None, "local": False, "message": message, "error": None,
+                "container": None, "q": "", "containers": []}
+    fleet = app.desktop_worker
+    sandbox, status = lane.sandbox, lane.status()
+    tasks = {task["container"]: task for task in await app.store.desktop_tasks(app.owner_id, active=True)}
+    shown = fleet.containers()
+    if lane not in shown:
+        shown.append(lane)
     return {
         "status": status,
-        "task": tasks[0] if tasks else None,
-        "handoff_host": app.desktop_worker.handoff_host if app.desktop_worker is not None else None,
+        "task": tasks.get(lane.name),
+        "handoff_host": lane.worker.handoff_host,
         "local": isinstance(sandbox, LocalSandbox),
+        # A refused start leaves the container stopped with the reason in `error`.
+        "error": sandbox.error if status in ("error", "stopped") else None,
         "message": message,
-        "error": sandbox.error if status == "error" else None,
+        "container": lane.name,
+        "q": _query(lane.name, fleet.default),
+        "containers": [{
+            "name": other.name, "host": other.host.config.name, "status": other.status(),
+            "task": tasks.get(other.name), "selected": other is lane, "q": _query(other.name, fleet.default),
+        } for other in shown],
     }
 
 
 @router.get("")
-async def desktop(request: Request):
-    return panel(request, "desktop", **await _context(owner_app(request)))
+async def desktop(request: Request, container: str = ""):
+    app = owner_app(request)
+    return panel(request, "desktop", **await _context(app, _lane(app, container)))
 
 
 @router.get("/state")
-async def desktop_state(request: Request):
-    return render("desktop_state.html", context=await _context(owner_app(request)))
+async def desktop_state(request: Request, container: str = ""):
+    app = owner_app(request)
+    return render("desktop_state.html", context=await _context(app, _lane(app, container)))
 
 
 async def _change_computer(app, sandbox, action: str) -> str:
@@ -58,11 +90,12 @@ async def _change_computer(app, sandbox, action: str) -> str:
 
 
 @router.post("/computer/{action}")
-async def computer_action(request: Request, action: Literal["start", "stop"]):
+async def computer_action(request: Request, action: Literal["start", "stop"], container: str = ""):
     app = owner_app(request)
-    sandbox, worker = app.sandbox, app.desktop_worker
-    if sandbox is None or worker is None:
+    lane = _lane(app, container)
+    if lane is None:
         raise HTTPException(409, "The desktop is off.")
+    sandbox, worker = lane.sandbox, lane.worker
     if action == "start":
         # Booting takes a while; the worker's lock must stay free for cancel and resume meanwhile.
         message = await _change_computer(app, sandbox, action)
@@ -70,11 +103,11 @@ async def computer_action(request: Request, action: Literal["start", "stop"]):
         if not isinstance(sandbox, LocalSandbox):
             raise HTTPException(409, "Manage the remote computer on its host.")
         async with worker.control:
-            if await app.store.desktop_tasks(app.owner_id, active=True):
+            if await app.store.desktop_tasks(app.owner_id, active=True, container=lane.name):
                 message = "Cancel the current task before stopping the computer."
             else:
                 message = await _change_computer(app, sandbox, action)
-    return render("desktop_state.html", context=await _context(app, message))
+    return render("desktop_state.html", context=await _context(app, lane, message))
 
 
 @router.post("/tasks/{task_id:int}/{steps:int}/done")
@@ -84,14 +117,17 @@ async def desktop_done(request: Request, task_id: int, steps: int):
         raise HTTPException(409, "The desktop is off.")
     resumed = await app.desktop_worker.resume(app.owner_id, task_id, steps)
     message = "Task resumed." if resumed else "The handoff has already ended."
-    return render("desktop_state.html", context=await _context(app, message))
+    # The task id says which container; show that one.
+    task = next((row for row in await app.store.desktop_tasks(app.owner_id) if row["id"] == task_id), None)
+    lane = app.desktop_worker.lanes.get(task["container"]) if task is not None else None
+    return render("desktop_state.html", context=await _context(app, lane or _lane(app, ""), message))
 
 
 @router.get("/vnc/index.html")
-async def vnc_viewer(request: Request):
+async def vnc_viewer(request: Request, container: str = ""):
     # The page and its noVNC scripts are Dom's own files; only the websocket reaches the sandbox.
-    owner_app(request)
-    return render("desktop_viewer.html")
+    lane = _lane(owner_app(request), container)
+    return render("desktop_viewer.html", container=lane.name if lane is not None else "")
 
 
 class NoRedirectConnection(connect):
@@ -132,8 +168,13 @@ async def vnc_websocket(websocket: WebSocket):
     ):
         await websocket.close(code=1008)
         return
-    sandbox = app.sandbox
-    if sandbox is None or sandbox.status() != "ready" or sandbox.client is None:
+    fleet = app.desktop_worker
+    lane = fleet.lanes.get(websocket.query_params.get("container") or fleet.default) if fleet is not None else None
+    if lane is None:
+        await websocket.close(code=1008)
+        return
+    sandbox = lane.sandbox
+    if sandbox.status() != "ready" or sandbox.client is None:
         await websocket.close(code=1013)
         return
     client = sandbox.client

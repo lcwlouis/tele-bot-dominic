@@ -2,7 +2,7 @@
   <header><h2>Desktop</h2></header>
   {% include "desktop_state.html" %}
   <iframe id="desktop-live" class="desktop-live" title="Live view"
-    data-src="/desktop/vnc/index.html"
-    {% if context.status == "ready" %}src="/desktop/vnc/index.html"{% else %}hidden{% endif %}>
+    data-src="/desktop/vnc/index.html{{ context.q }}"
+    {% if context.status == "ready" %}src="/desktop/vnc/index.html{{ context.q }}"{% else %}hidden{% endif %}>
   </iframe>
 </section>
