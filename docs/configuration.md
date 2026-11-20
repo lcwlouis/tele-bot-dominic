@@ -106,6 +106,12 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | `openers.enabled` | `true` | Allow Dom to start conversations in the owner's DM. |
 | `openers.max_per_day` | `2` | Maximum number of openers per day in the configured timezone. |
 
+## Presence
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `presence.seen_reaction` | `true` | While a DM is online, react 👀 to the newest message Dom read when he answers with nothing (never in groups). It stands in for a read receipt and is never sent while he is asleep or offline. |
+
 ## Web
 
 | Key | Default | Meaning |

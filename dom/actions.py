@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# The emoji Telegram accepts as a bot reaction (Bot API, ReactionTypeEmoji). A test keeps this in
+# step with the list in aiogram's documentation of that type.
+REACTIONS = (
+    "❤", "👍", "👎", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "💩", "🙏", "👌",
+    "🕊", "🤡", "🥱", "🥴", "😍", "🐳", "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓",
+    "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈", "😇", "😨", "🤝", "✍", "🤗", "🫡",
+    "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊", "😎", "👾", "🤷‍♂", "🤷", "🤷‍♀",
+    "😡",
+)
+SEEN = "👀"
 
 
 class Bubble(BaseModel):
@@ -24,6 +35,15 @@ class Actions(BaseModel):
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     gif: str | None = Field(default=None, min_length=1, max_length=50, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list, max_length=6)
+
+    @field_validator("react", mode="before")
+    @classmethod
+    def _allowed_reaction(cls, value: object) -> str | None:
+        """Telegram rejects any other emoji, so it becomes no reaction rather than a failed API call."""
+        if not isinstance(value, str):
+            return None
+        emoji = value.strip().replace("️", "")  # models write "❤️"; Telegram lists "❤"
+        return emoji if emoji in REACTIONS else None
 
 
 @dataclass(frozen=True)

@@ -26,6 +26,11 @@ named `vX.Y.Z`.
 - Disable Jupyter for faster local desktop startup and run Python scripts through the sandbox Bash API.
 - Ship a Docker seccomp profile that lets Chromium start its namespace sandbox on the Raspberry Pi.
 - `/preset` and the dashboard Chats panel can set one preset for every chat ("Everywhere"); a chat's own preset still wins, and a chat can go back to "Same as everywhere". `self_inspect` reports it.
+- Fix replies lost after a tool call: the home-lab model usually answered in prose once it had read tool results. Dom now repeats the answer format after every tool result, accepts a JSON answer wrapped in prose or a fence, and asks for a bad final answer once more without tools.
+- Never drop a reply silently: when the retry also fails, the fallback model writes the final answer; if that fails too, Dom logs a warning with the turn's trace and, in the owner's DM, says it could not put a reply together.
+- Reactions are limited to the emoji Telegram allows for bots. The prompt lists them, and any other emoji becomes no reaction instead of a rejected API call.
+- The journal's daily mood comes from a fixed list of feelings and is never blank.
+- New "seen" reaction: while a DM is online (never in groups), when Dom reads a batch and answers with nothing, he reacts 👀 to its newest message. It is never sent while he is asleep or offline, at most once per batch, and skipped in chats that refuse reactions. Turn it off with `presence.seen_reaction = false` in `config.toml`.
 
 ## [0.7.0] - 2026-11-19
 

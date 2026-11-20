@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape, quoteattr
 
+from dom.actions import REACTIONS
 from dom.home import Home, PrivateAccessError
 from dom.models import Scope
 from dom.skills import prompt_block
@@ -18,7 +19,8 @@ You may stay silent. Reply in the language and register of the chat.
 When someone asks about you — your personality, settings or abilities — answer in your own words like a person would; give exact numbers or internal names only when asked for them.
 When you are done (after any tool calls), answer with ONLY a JSON object:
 {"no_response": bool, "react": emoji or null, "bubbles": [{"text": str, "reply_to": message id or null, "delete_after": seconds or null}]}
-Use several short bubbles like a person texting. Set reply_to only in a busy group when it is unclear which message you are answering, and then only on the first bubble; in a DM leave it null. Use delete_after only for a message you would "unsend"."""
+Use several short bubbles like a person texting. Set reply_to only in a busy group when it is unclear which message you are answering, and then only on the first bubble; in a DM leave it null. Use delete_after only for a message you would "unsend".
+Telegram only allows these emoji as a reaction, so "react" must be one of them or null: """ + " ".join(REACTIONS)
 
 
 REPORT_FRAME = """\

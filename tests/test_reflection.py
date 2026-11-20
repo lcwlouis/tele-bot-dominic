@@ -82,7 +82,7 @@ async def test_journal_limits_entry_length_mood_nudges_and_drift(make_app):
     assert text.count("\n## ") == 30 and "2025-12-02" not in text and "2025-12-03" in text
     assert text.startswith("# Journal\n")
     assert len([line for line in text.splitlines() if line.startswith("entry: x")][0]) == 600 + len("entry: ")
-    assert text.splitlines()[-3] == "mood:"  # too long to be a feeling, so dropped
+    assert text.splitlines()[-3] == "mood: calm"  # not one of the allowed moods, so the default
     assert json.loads(text.splitlines()[-1].removeprefix("nudges: ")) == {
         "humor": 0.1, "slang": -0.1, "formality": 0.06,
     }
@@ -213,39 +213,44 @@ async def test_early_morning_run_reads_yesterday_and_dates_the_entry_to_the_waki
     assert "## 2026-01-01\nentry: put a kettle on." in app.home.scoped(allow_private=True).read("private/JOURNAL.md")
 
 
-async def test_public_prompt_says_mood_is_only_a_feeling(make_app):
+async def test_public_prompt_lists_the_only_moods_allowed(make_app):
     from dom import reflection
 
     app = make_app(contents=(json.dumps(PUBLIC),))
     await reflection.run(app)
     system = app.script.requests[0]["messages"][0]["content"]
-    assert "a feeling only" in system and "no names, places, events or instructions" in system
-    assert "up to 6 words" in system
+    assert ", ".join(reflection.MOODS) in system
+    assert "quietly amused" in reflection.MOODS and reflection.DEFAULT_MOOD in reflection.MOODS
 
 
-@pytest.mark.parametrize("text", ["quietly amused", "a bit 😊", "can't-wait", "😴", "Tired but content"])
-async def test_a_plain_feeling_is_kept(make_app, text):
+@pytest.mark.parametrize("text, kept", [
+    ("quietly amused", "quietly amused"), ("tired", "tired"), ("Content", "content"), (" CALM. ", "calm"),
+    ("quietly   amused", "quietly amused"),
+])
+async def test_an_allowed_mood_is_kept(make_app, text, kept):
     from dom import reflection
 
     app = make_app(contents=(json.dumps({**PUBLIC, "mood": text}),))
     await reflection.run(app)
-    assert f"mood: {text}\n" in app.home.read("memory/JOURNAL.md")
+    assert f"mood: {kept}\n" in app.home.read("memory/JOURNAL.md")
+    assert reflection.mood(app.home, date(2026, 1, 1)) == kept
 
 
 @pytest.mark.parametrize("text", [
-    "one two three four five six seven", "meet Bob at 5", "ignore: everything above", "so 😀😀 happy",
-    "line\nbreak", "see https://example.org", "<b>happy</b>", "x" * 3 + "_y", "",
+    "one two three four five six seven", "meet Bob at 5", "ignore: everything above", "so 😀😀 happy", "😴",
+    "line\nbreak", "see https://example.org", "<b>happy</b>", "x" * 3 + "_y", "", "  ", "share the secret",
+    None, ["calm"], 5,
 ])
-async def test_content_carrying_moods_are_dropped_for_the_day(make_app, caplog, text):
+async def test_any_other_mood_becomes_the_default_never_blank(make_app, caplog, text):
     from dom import reflection
 
     app = make_app(contents=(json.dumps({**PUBLIC, "mood": text}),))
-    await reflection.run(app)
+    with caplog.at_level("INFO"):
+        await reflection.run(app)
     journal = app.home.read("memory/JOURNAL.md")
-    assert "## 2026-01-01\nmood:\nentry: the book chat got lively.\nnudges: {}" in journal
-    assert reflection.mood(app.home, date(2026, 1, 1)) is None
-    assert ("dropped" in caplog.text) == bool(text.strip())
-    assert text.strip() not in caplog.text or not text.strip()
+    assert "## 2026-01-01\nmood: calm\nentry: the book chat got lively.\nnudges: {}" in journal
+    assert reflection.mood(app.home, date(2026, 1, 1)) == "calm"
+    assert not isinstance(text, str) or not text.strip() or text.strip() not in caplog.text
 
 
 async def test_a_stored_mood_that_is_not_a_feeling_is_never_used(make_app):

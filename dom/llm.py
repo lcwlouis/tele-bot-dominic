@@ -86,13 +86,18 @@ class FallbackClient:
                 raise
             log.warning("chat model %s failed (%s); using fallback %s",
                         self.primary.endpoint.model, status or type(exc).__name__, self.fallback.endpoint.model)
-            reply = await self.fallback.complete(messages, tools, fallback=True)
-            if request_kind("chat") == "chat":
-                self.last_model = self.fallback.endpoint.model
-                self.last_fallback_at = (
-                    self.fallback.usage.now() if self.fallback.usage is not None else datetime.now(timezone.utc)
-                )
-        else:
-            if request_kind("chat") == "chat":
-                self.last_model = self.primary.endpoint.model
+            return await self.complete_on_fallback(messages, tools)
+        if request_kind("chat") == "chat":
+            self.last_model = self.primary.endpoint.model
+        return reply
+
+    async def complete_on_fallback(self, messages: list[dict], tools: list[dict]) -> dict:
+        """Ask the fallback model directly, e.g. when the primary is up but keeps answering unusably."""
+        fallback = self.fallback
+        if fallback is None:
+            raise RuntimeError("no fallback model is configured")
+        reply = await fallback.complete(messages, tools, fallback=True)
+        if request_kind("chat") == "chat":
+            self.last_model = fallback.endpoint.model
+            self.last_fallback_at = fallback.usage.now() if fallback.usage is not None else datetime.now(timezone.utc)
         return reply

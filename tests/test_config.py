@@ -21,9 +21,15 @@ def test_defaults_when_minimal_toml(tmp_path):
     assert cfg.owner_id is None
     assert cfg.desktop_mode == "off"
     assert cfg.window_size == 80
+    assert cfg.presence.seen_reaction is True
     assert cfg.timezone == "UTC"
     assert cfg.models["chat"].model == "some/model"
     assert cfg.home == tmp_path
+
+
+def test_seen_reaction_can_be_switched_off(tmp_path):
+    write(tmp_path, MINIMAL + "\n[presence]\nseen_reaction = false\n")
+    assert load_config(tmp_path).presence.seen_reaction is False
 
 
 def test_secret_prefers_dotenv_over_environ(tmp_path, monkeypatch):
