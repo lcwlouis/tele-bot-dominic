@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import timedelta
 
 import httpx
@@ -7,10 +8,12 @@ from aiogram.types import PhotoSize
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.methods import SendMessage
 
-from dom.dispatch import Dispatcher
+from dom.actions import Actions
+from dom.config import PresenceConfig
+from dom.dispatch import NO_ANSWER_NOTICE, Dispatcher
 from dom.jev import JevUnavailable
 from dom.models import StoredMessage
-from dom.presence import Presence, parse_habits
+from dom.presence import Presence, parse_habits, read_habits
 from dom.telegram.handlers import handle_message
 from tghelpers import FRIEND, GROUP, OWNER, Clock, FixedRandom, drain_dispatch, no_sleep, tg, turn_requests
 
@@ -175,7 +178,8 @@ async def test_online_ignore_confident_no_model_call(setup_dispatch):
     assert len(jev.calls) == 1
     assert jev.calls[0][0].count("<msg ") == 15
     assert 'id="6"' in jev.calls[0][0] and 'id="5"' not in jev.calls[0][0]
-    assert not app.script.requests and not app.bot.calls
+    assert not app.script.requests
+    assert [call[:3] for call in app.bot.calls] == [("react", GROUP, 20)]  # only the seen reaction
 
 
 async def test_online_react_sets_reaction(setup_dispatch):
@@ -183,7 +187,7 @@ async def test_online_react_sets_reaction(setup_dispatch):
     await dispatch.presence.go_online(GROUP, parse_habits(""))
     await deliver(app, 42)
     assert not app.script.requests
-    _, chat_id, msg_id, reaction = app.bot.of("react")[0]
+    (_, chat_id, msg_id, reaction), = app.bot.of("react")  # the chosen reaction only, no seen reaction on top
     assert (chat_id, msg_id, reaction[0].emoji) == (GROUP, 42, "👍")
 
 
@@ -474,3 +478,129 @@ async def test_media_check_failure_does_not_stop_the_message_being_dispatched(se
     await handle_message(app, photo)
     await drain_dispatch(dispatch)
     assert len(app.script.requests) == 1
+
+
+# ---- a turn that ends in silence ---------------------------------------------------------------
+
+QUIET = json.dumps({"no_response": True})
+
+
+def seen(app):
+    return [(call[2], call[3][0].emoji) for call in app.bot.of("react")]
+
+
+async def online_with(setup_dispatch, *replies, chat_id=GROUP, jev=None, sleep=no_sleep):
+    app, dispatch, clock = await setup_dispatch(jev, chat_id=chat_id, sleep=sleep)
+    app.script.contents[:] = list(replies)
+    await dispatch.presence.go_online(chat_id, parse_habits(""))
+    return app, dispatch, clock
+
+
+async def test_online_turn_that_stays_quiet_marks_the_newest_message_seen(setup_dispatch):
+    app, _, _ = await online_with(setup_dispatch, QUIET)
+    await deliver(app, 42)
+    assert seen(app) == [(42, "👀")]
+    assert not app.bot.of("send")
+
+
+async def test_triage_ignore_marks_the_newest_message_seen_without_a_model_call(setup_dispatch):
+    app, _, _ = await online_with(setup_dispatch, jev=FakeJev("ignore", confidence=0.9))
+    await deliver(app, 7)
+    assert seen(app) == [(7, "👀")]
+    assert not app.script.requests
+
+
+async def test_a_reply_needs_no_seen_reaction(setup_dispatch):
+    app, _, _ = await online_with(setup_dispatch)  # the scripted model answers "hey"
+    await deliver(app, 3)
+    assert [call[2] for call in app.bot.of("send")] == ["hey"] and not app.bot.of("react")
+
+
+async def test_a_chosen_reaction_needs_no_seen_reaction(setup_dispatch):
+    app, _, _ = await online_with(setup_dispatch, json.dumps({"react": "🔥"}))
+    await deliver(app, 3)
+    assert seen(app) == [(3, "🔥")]
+
+
+async def test_an_unsupported_chosen_reaction_leaves_the_message_seen_not_unanswered(setup_dispatch):
+    app, _, _ = await online_with(setup_dispatch, json.dumps({"react": "😏"}))
+    await deliver(app, 3)
+    assert seen(app) == [(3, "👀")]
+
+
+async def test_offline_and_asleep_chats_get_no_seen_reaction(setup_dispatch):
+    app, _, clock = await setup_dispatch()
+    await deliver(app, 1)  # offline
+    clock.at = clock.at.replace(hour=2)
+    await deliver(app, 2)  # asleep
+    assert not app.bot.calls and not app.script.requests
+
+
+async def test_the_switch_turns_the_seen_reaction_off(setup_dispatch):
+    app, _, _ = await online_with(setup_dispatch, QUIET)
+    app.config = app.config.model_copy(update={"presence": PresenceConfig(seen_reaction=False)})
+    await deliver(app, 3)
+    assert not app.bot.calls
+
+
+async def test_a_batch_gets_one_seen_reaction_on_its_newest_message(setup_dispatch):
+    ready = asyncio.Event()
+
+    async def sleep(_):
+        await ready.wait()
+
+    app, _, _ = await online_with(setup_dispatch, QUIET, sleep=sleep)
+    for msg_id in range(1, 6):
+        await handle_message(app, tg(msg_id=msg_id))
+    ready.set()
+    await drain_dispatch(app.dispatch)
+    assert seen(app) == [(5, "👀")]
+
+
+async def test_a_chat_that_rejects_reactions_is_not_asked_again(setup_dispatch):
+    app, _, _ = await online_with(setup_dispatch, QUIET, QUIET)
+    attempts = []
+
+    async def refuse(chat_id, message_id, reaction=None, **kw):
+        attempts.append(message_id)
+        raise telegram_error(TelegramBadRequest, "Bad Request: REACTION_INVALID")
+
+    app.bot.set_message_reaction = refuse
+    await deliver(app, 1)
+    await deliver(app, 2)
+    assert attempts == [1]
+    assert len(turn_requests(app)) == 2  # both turns still ran
+
+
+async def test_a_message_from_another_bot_is_not_marked_seen(setup_dispatch):
+    app, dispatch, _ = await setup_dispatch()
+    other_bot = StoredMessage(
+        chat_id=str(GROUP), msg_id=9, is_bot=True, sender_user_id=777, visibility_scope=f"chat:{GROUP}",
+        text="beep", created_at="2026-01-01T12:00:00+00:00",
+    )
+    await dispatch._mark_seen(GROUP, other_bot)
+    assert not app.bot.calls
+
+
+# ---- a reply that could not be produced is never silent ----------------------------------------
+
+async def test_the_owner_is_told_when_no_model_could_answer(setup_dispatch, caplog):
+    app, _, _ = await online_with(setup_dispatch, "prose", "more prose", chat_id=OWNER)
+    with caplog.at_level("WARNING", logger="dom.agent"):
+        await deliver(app, 5, chat_id=OWNER, sender=OWNER)
+    assert [call[2] for call in app.bot.of("send", OWNER)] == [NO_ANSWER_NOTICE]
+    assert not app.bot.of("react")
+    assert "no usable final answer" in caplog.text and "[malformed malformed]" in caplog.text
+
+
+async def test_a_friend_is_not_sent_the_notice_but_the_message_is_marked_seen(setup_dispatch):
+    app, _, _ = await online_with(setup_dispatch, "prose", "more prose", chat_id=FRIEND)
+    await deliver(app, 5, chat_id=FRIEND, sender=FRIEND)
+    assert not app.bot.of("send") and seen(app) == [(5, "👀")]
+
+
+async def test_a_proactive_turn_that_cannot_answer_stays_quiet(setup_dispatch):
+    app, dispatch, _ = await online_with(setup_dispatch, "prose", "more prose", chat_id=OWNER)
+    until = dispatch.now() + timedelta(minutes=5)
+    actions = await dispatch._compose_turn(OWNER, "owner_dm", None, None, [], until, 0, False, read_habits(app.home))
+    assert actions == Actions(no_response=True)

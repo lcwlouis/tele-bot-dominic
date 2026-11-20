@@ -91,10 +91,7 @@ async def perform(
             sent_ids.append(sent.message_id)
         return sent_ids
     if actions.react and trigger_msg_id is not None:
-        try:
-            await bot.set_message_reaction(chat_id, trigger_msg_id, reaction=[ReactionTypeEmoji(emoji=actions.react)])
-        except (TelegramAPIError, ValidationError):  # the model may pick an emoji Telegram does not allow
-            log.warning("reaction %r rejected in chat %s", actions.react, chat_id)
+        await react(bot, chat_id, trigger_msg_id, actions.react)
 
     sent_ids: list[int] = []
     for bubble in actions.bubbles:
@@ -149,6 +146,16 @@ async def perform(
         if on_sent is not None:
             await on_sent(sent.message_id)
     return sent_ids
+
+
+async def react(bot, chat_id: int, msg_id: int, emoji: str) -> bool:
+    """React to a message; False when Telegram refuses (e.g. the chat has reactions turned off)."""
+    try:
+        await bot.set_message_reaction(chat_id, msg_id, reaction=[ReactionTypeEmoji(emoji=emoji)])
+    except (TelegramAPIError, ValidationError):
+        log.warning("reaction %r rejected in chat %s", emoji, chat_id)
+        return False
+    return True
 
 
 async def send_files(bot, store: Store, chat_id: int, files: Sequence[SendFile]) -> None:

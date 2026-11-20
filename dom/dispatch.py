@@ -19,8 +19,8 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from dom import guard, turn_log
-from dom.actions import Actions, Bubble, SendFile
-from dom.agent import parse_actions, run_turn
+from dom.actions import SEEN, Actions, Bubble, SendFile
+from dom.agent import NoFinalAnswer, parse_actions, run_turn
 from dom.desktop.tools import untrusted
 from dom.capabilities import describe
 from dom.jev import JevClient, JevUnavailable
@@ -61,6 +61,7 @@ _CHAT_GONE = re.compile(r"chat not found|kicked|not a member", re.IGNORECASE)
 MEMORY_PASS_INTERVAL = timedelta(minutes=5)  # per chat
 MEMORY_PASS_MARGIN = 5  # start a pass this many messages before unprocessed ones scroll out of the chat window
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
+NO_ANSWER_NOTICE = "Sorry, I couldn't put a reply together just now. Could you send that again?"
 
 
 class Dispatcher:
@@ -92,6 +93,7 @@ class Dispatcher:
         self._memory_running: set[int] = set()
         self._memory_last: dict[int, datetime] = {}  # when the chat's last pass finished
         self._memory_slot = asyncio.Semaphore(1)  # one pass at a time across chats
+        self._reactions_off: set[int] = set()  # chats where Telegram refused a reaction; not asked again
         presence.on_session_end = self.request_memory_pass
 
     def notify(self, msg: IncomingMessage) -> None:
@@ -462,6 +464,7 @@ class Dispatcher:
                 pass
             else:
                 if triage.confident and triage.action == "ignore":
+                    await self._mark_seen(chat_id, newest)
                     await store.mark_chat_read(chat_id, newest.msg_id)
                     return
                 if triage.confident and triage.action == "react" and triage.emoji:
@@ -480,9 +483,11 @@ class Dispatcher:
         if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
             return
         with model_request("chat", chat_id, partial(self.model_allowed, chat_id)):
-            await self._run_turn(
+            answered = await self._run_turn(
                 chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
             )
+        if not answered:
+            await self._mark_seen(chat_id, newest)
         await store.mark_chat_read(chat_id, newest.msg_id)
         # Notes only need to catch what is about to leave Dom's view; the session-end pass covers the rest.
         if await store.count_new_for_memory(chat_id) >= max(1, self.app.config.window_size - MEMORY_PASS_MARGIN):
@@ -507,17 +512,30 @@ class Dispatcher:
             return owner
         return None
 
+    async def _mark_seen(self, chat_id: int, newest: StoredMessage) -> None:
+        """Stand in for a read receipt: react 👀 to the newest message Dom read when he has nothing to say."""
+        if (
+            not self.app.config.presence.seen_reaction or chat_id in self._reactions_off
+            or newest.is_bot or newest.msg_id is None
+        ):
+            return
+        if await executor.react(self.app.bot, chat_id, newest.msg_id, SEEN):
+            turn_log.outcome(f"Marked seen {SEEN}")
+        else:
+            self._reactions_off.add(chat_id)
+
     async def _run_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
-    ) -> None:
+    ) -> bool:
+        """Run one turn and send its result; True when it said or reacted something in the chat."""
         app = self.app
         actions = await self._compose_turn(
             chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
         )
         if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
             turn_log.outcome("Held back: possible leak")
-            return
+            return False
         recipient = self._ephemeral_recipient(scope, newest)
         try:
             sent = await executor.perform(
@@ -533,6 +551,7 @@ class Dispatcher:
                 turn_log.outcome(f"Replied in {bubbles} {label}" if bubbles else "Sent a sticker")
             elif actions.react and not actions.no_response:
                 turn_log.outcome(f"Reacted {actions.react[:16]}")
+            return bool(sent) or bool(actions.react and not actions.no_response)
         finally:
             if (
                 newest.is_bot and newest.sender_user_id is not None and not actions.no_response
@@ -710,6 +729,10 @@ class Dispatcher:
             actions = await run_turn(app.client, messages, tools, ctx)
         except ModelCallSkipped:
             raise
+        except NoFinalAnswer:  # run_turn has logged why; the owner is told, others see nothing worse than silence
+            turn_log.step("no answer")
+            owner_waiting = scope == "owner_dm" and newest is not None
+            actions = Actions(bubbles=[Bubble(text=NO_ANSWER_NOTICE)]) if owner_waiting else Actions(no_response=True)
         except Exception:
             if not final_bot_turn:
                 raise

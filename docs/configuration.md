@@ -87,6 +87,12 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | `openers.enabled` | `true` | Allow Dom to start conversations in the owner's DM. |
 | `openers.max_per_day` | `2` | Maximum number of openers per day in the configured timezone. |
 
+## Presence
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `presence.seen_reaction` | `true` | While a chat is online, react 👀 to the newest message Dom read when he answers with nothing. It stands in for a read receipt and is never sent while he is asleep or offline. |
+
 ## Web
 
 | Key | Default | Meaning |
