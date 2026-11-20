@@ -7,13 +7,16 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from dom.actions import SendFile
 from dom.agent import _well_formed
 from dom.desktop import tools
 from dom.desktop.client import SandboxClient, SandboxError, url_host
-from dom.desktop.files import bind_inbox, discard_bound, download_results, drop_stale, inbox_dir, upload_inbox
+from dom.desktop.files import (
+    OUTBOX_DIR, bind_inbox, discard_bound, download_results, drop_stale, inbox_dir, safe_filename, upload_inbox,
+)
 from dom.skills import Skill, skill_view, skills_list
 
 if TYPE_CHECKING:
@@ -29,7 +32,8 @@ WORKER_SYSTEM_PROMPT = (
     "Never enter or expose secrets. Stop and call handoff at a login, captcha, or payment so the owner can take over. "
     "Use text first and look only when text fails. Approved skills are references for the current brief. "
     "After successful work, you may call propose_skill once with a reusable procedure. Use placeholders "
-    "and omit personal data and secrets. Call finish with a concise result."
+    "and omit personal data and secrets. Call finish with a concise result. To show the owner a page, save_screenshot and pass its path in finish files; "
+    "save other results as files in /home/gem/outbox and pass those paths too."
 )
 ACTIVE = ("queued", "running", "waiting_owner")
 
@@ -341,6 +345,10 @@ class DesktopWorker:
                 return "Screenshot description is unavailable."
             screenshot = await client.screenshot()
             return await self.app.media_describer.describe_desktop(screenshot) or "No screenshot description."
+        if name == "save_screenshot":
+            path = f"{OUTBOX_DIR}/{PurePosixPath(safe_filename(args.get('name'))).stem or 'screenshot'}.png"
+            await client.upload_file(path, await client.screenshot())
+            return {"path": path}
         return await tools.invoke(client, name, args)
 
     @staticmethod

@@ -467,3 +467,25 @@ async def test_handoff_time_is_shown_in_local_time(make_app):
     app.dispatch.presence.tz = ZoneInfo("Asia/Singapore")
     await app.dispatch.desktop_handoff(1, 2, OWNER, "Sign in", "example.org", datetime(2026, 1, 1, 6, 5, tzinfo=timezone.utc))
     assert app.bot.of("send", OWNER)[0][2].startswith("Dom needs you to log in (browser was on example.org at 14:05): Sign in")
+
+
+async def test_save_screenshot_puts_a_png_where_finish_can_send_it(make_app):
+    app = make_app()
+    worker = await worker_for(
+        app, call("save_screenshot", name="../Front page!"), call("finish", result="ok"), {"content": "x"},
+    )
+    uploads = []
+
+    async def screenshot():
+        return b"\x89PNG fake"
+
+    async def upload_file(path, content):
+        uploads.append((path, content))
+
+    worker.sandbox.screenshot = screenshot
+    worker.sandbox.upload_file = upload_file
+    await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    assert uploads == [("/home/gem/outbox/Front_page.png", b"\x89PNG fake")]
+    tool_result = next(m for m in app.client.requests[1][0] if m.get("role") == "tool")
+    assert "/home/gem/outbox/Front_page.png" in tool_result["content"]
