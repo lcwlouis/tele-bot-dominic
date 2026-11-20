@@ -7,12 +7,14 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from difflib import unified_diff
+from xml.sax.saxutils import escape
 
 from dom.home import Home
 
 NAME_LIMIT = 64
 DESCRIPTION_LIMIT = 200
 BODY_LIMIT = 4000
+PROMPT_LIMIT = 30  # skills named in the prompt; skills_list shows the rest
 _NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 _READ_LIMIT = 4 * (BODY_LIMIT + DESCRIPTION_LIMIT + NAME_LIMIT) + 300
 
@@ -121,6 +123,25 @@ def skills_list(home: Home) -> list[dict[str, str]]:
 def skill_view(home: Home, name: str) -> str | None:
     text = skill_text(home, name)
     return _parse(name, text).body if text else None
+
+
+def view_text(home: Home, name: str) -> str:
+    """A skill's body for a tool result, or why there is none. Chat and desktop tools both return this."""
+    try:
+        return skill_view(home, name) or "Skill not found."
+    except (OSError, ValueError):
+        return "Skill unavailable."
+
+
+def prompt_block(home: Home) -> str:
+    """Name and description of each approved skill for the stable prompt prefix; empty when there are none."""
+    listed = skills_list(home)
+    if not listed:
+        return ""
+    lines = [f"- {skill['name']}: {escape(skill['description'])}" for skill in listed[:PROMPT_LIMIT]]
+    if len(listed) > PROMPT_LIMIT:
+        lines.append(f"({len(listed) - PROMPT_LIMIT} more: call skills_list)")
+    return "<skills>\nApproved procedures. Call skill_view(name) to read one when it applies.\n" + "\n".join(lines) + "\n</skills>"
 
 
 def write_skill(home: Home, skill: Skill, expected: str) -> None:
