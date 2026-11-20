@@ -6,11 +6,18 @@
     <label for="preset-all">Everywhere <span class="fog">(a chat's own preset wins)</span></label>
     <select name="preset" id="preset-all">
       <option value=""{% if not context.everywhere %} selected{% endif %}>None</option>
+      <option value="auto"{% if context.everywhere == "auto" %} selected{% endif %}>Auto (Dom picks daily)</option>
       {% for preset in context.presets %}
       <option value="{{ preset.name }}"{% if context.everywhere == preset.name %} selected{% endif %}>{{ preset.title }}</option>
       {% endfor %}
     </select>
   </form>
+  {% set vibe = context.vibe %}
+  <p class="fog" id="vibe-status">
+    {% if vibe.mode == "auto" %}Auto: Dom's vibe today is {{ vibe.preset.title if vibe.preset else "his usual self" }}{% if vibe.source == "switch" %} (switched mid-day){% endif %}{% if vibe.reason %}: {{ vibe.reason }}{% endif %}
+    {% elif vibe.mode == "locked" %}Locked to {{ vibe.preset.title if vibe.preset else context.everywhere }}.
+    {% else %}No preset everywhere.{% endif %}
+  </p>
   <ul class="chats">
     {% for chat in context.rows %}
     <li class="chat{% if chat.id == context.woke %} woke{% endif %}">

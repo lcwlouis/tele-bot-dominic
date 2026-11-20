@@ -149,7 +149,9 @@ async def test_preset_everywhere_flow(make_app):
     await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, text="/preset"))
     await handlers.handle_callback(app, callback(app, OWNER, "preset:all"))
     markup = app.bot.of("send", OWNER)[-1][3]["reply_markup"]
-    assert buttons(markup) == [[("Classic", "presetset:all:classic")], [("None", "presetset:all:")]]
+    assert buttons(markup) == [
+        [("Classic", "presetset:all:classic")], [("Auto (Dom picks daily)", "presetset:all:auto")], [("None", "presetset:all:")],
+    ]
 
     data = "presetset:all:classic"
     await handlers.handle_callback(app, callback(app, FRIEND, data))

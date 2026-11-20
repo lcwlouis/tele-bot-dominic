@@ -119,7 +119,7 @@ async def _chats(app: App) -> dict:
     chats = []
     for row, (state, until) in zip(rows, app.dispatch.peek_presence(rows)):
         chat_id = int(row["chat_id"])
-        sliders, preset = await traits.for_chat(app.home, app.store, chat_id)
+        sliders, preset = await traits.for_chat(app.home, app.store, chat_id, app.dispatch.now())
         unread, _ = await app.store.get_unread(chat_id)
         own, raw_traits = await app.store.get_chat_personality(chat_id)
         own_traits = traits.normalise(traits.decode(raw_traits))
@@ -135,6 +135,7 @@ async def _chats(app: App) -> dict:
     pending = await app.store.list_pending_chats()
     return {
         "rows": chats, "presets": presets, "everywhere": await traits.global_preset_name(app.store), "pending": len(pending),
+        "vibe": await traits.vibe(app.home, app.store, app.dispatch.now()),
         "stickers": app.stickers.names(),
     }
 
