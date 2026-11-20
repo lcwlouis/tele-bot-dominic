@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Plugins can add Telegram slash commands and dashboard panels; declared surfaces are reviewed and re-approved like code (`docs/plugins.md`).
 - Add a pinned, loopback-only T3 Code systemd user service with a 600 MiB memory limit.
 - Document Raspberry Pi desktop startup timings, the Chromium seccomp profile and the desktop connectivity check.
 - Wait for the local sandbox API and browser within a configurable 180-second startup deadline, with a distinct error for each stage.

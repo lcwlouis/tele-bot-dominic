@@ -11,8 +11,21 @@
       <p>{{ manifest.description }} · {{ review.status }}</p>
       <p class="fog">SHA-256 <span class="num">{{ review.plugin.hash }}</span></p>
       {% if manifest.network %}<p class="kind">{{ NETWORK_NOTICE }}</p>{% endif %}
+      {% if review.surfaces_changed %}<p class="kind">Declared commands, panels, tools or network access changed since the approved version.</p>{% endif %}
+      <h4>Tools</h4>
       {% for tool in manifest.tools %}
       <p>{{ tool.name }} · {{ tool.scopes | join(", ") or "No scopes" }}</p>
+      {% else %}<p class="fog">None</p>
+      {% endfor %}
+      <h4>Telegram commands</h4>
+      {% for command in manifest.commands %}
+      <p>/{{ command.name }} · {{ command.description }} · {{ command.scopes | join(", ") }}</p>
+      {% else %}<p class="fog">None</p>
+      {% endfor %}
+      <h4>Dashboard panels</h4>
+      {% for panel in manifest.panels %}
+      <p>{{ panel.id }} · {{ panel.title }}</p>
+      {% else %}<p class="fog">None</p>
       {% endfor %}
       {% for file in review.documents %}
       <h4>{{ file.path }}{% if file.removed %} · Removed{% endif %}</h4>
@@ -55,5 +68,6 @@
       </div>
     </article>
     {% endfor %}
+    {% if context.panels %}{% with panels = context.panels %}{% include "plugin_panels.html" %}{% endwith %}{% endif %}
   {% endif %}
 </section>
