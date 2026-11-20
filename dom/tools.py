@@ -21,6 +21,7 @@ from dom.home import Home
 from dom.models import Scope
 from dom.presence import Habits, Presence
 from dom.search import SearchClient
+from dom.skills import BODY_LIMIT, DESCRIPTION_LIMIT, NAME_LIMIT, skills_list, view_text
 from dom.store import Store
 from dom.usage import ModelCallSkipped, model_request
 
@@ -211,8 +212,68 @@ START_DESKTOP_TASK = Tool(
 )
 
 
+# ---- skills: public procedures, shared with the desktop worker through dom/skills.py ------------
+
+async def _skills_list(args: dict, ctx: TurnCtx) -> str:
+    return json.dumps(skills_list(ctx.home), ensure_ascii=False)
+
+
+SKILLS_LIST_TOOL = Tool(
+    name="skills_list",
+    description="List approved skills. Each has a name and description; read one with skill_view.",
+    schema={"type": "object", "properties": {}, "additionalProperties": False},
+    handler=_skills_list,
+    scopes=set(ALL_SCOPES),
+)
+
+
+async def _skill_view(args: dict, ctx: TurnCtx) -> str:
+    return view_text(ctx.home, args.get("name"))
+
+
+SKILL_VIEW_TOOL = Tool(
+    name="skill_view",
+    description="Read an approved skill. Use it when a skill's description fits what you are doing.",
+    schema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+    handler=_skill_view,
+    scopes=set(ALL_SCOPES),
+)
+
+
+async def _skill_manage(args: dict, ctx: TurnCtx) -> str:
+    if ctx.app is None:
+        return "error: skills can only be proposed during a chat turn"
+    skill = {key: args.get(key) for key in ("name", "description", "body")}
+    try:
+        proposal_id = await ctx.app.proposals.create("skill", f"Skill: {skill['name']}", skill, "chat")
+    except (OSError, ValueError) as error:
+        return f"error: {error}"
+    return json.dumps({"id": proposal_id, "status": "waiting for the owner's approval"})
+
+
+SKILL_MANAGE_TOOL = Tool(
+    name="skill_manage",
+    description=(
+        "Propose a skill for the owner to approve. Reuse an existing name to propose a change to it. "
+        "Nothing changes until they approve. Skills are public: write a reusable procedure using only public "
+        "information, never private notes, chat history, memory or credentials."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "maxLength": NAME_LIMIT},
+            "description": {"type": "string", "maxLength": DESCRIPTION_LIMIT},
+            "body": {"type": "string", "maxLength": BODY_LIMIT},
+        },
+        "required": ["name", "description", "body"],
+    },
+    handler=_skill_manage,
+    scopes=set(ALL_SCOPES),
+)
+
+
 def core_tools(search: SearchClient | None = None, desktop: DesktopWorker | None = None) -> list[Tool]:
-    tools = [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL, REMIND_TOOL]
+    tools = [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL, REMIND_TOOL, SKILLS_LIST_TOOL, SKILL_VIEW_TOOL, SKILL_MANAGE_TOOL]
     if search is not None:
         tools.append(_web_search_tool(search))
     if desktop is not None and desktop.available():
