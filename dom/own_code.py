@@ -120,6 +120,11 @@ def _sections(base: Path) -> list[tuple[str, str]]:
         text = _text(path) if path.is_file() and not path.is_symlink() else ""
     except (OSError, ValueError):
         return []
+    return changelog_sections(text)
+
+
+def changelog_sections(text: str) -> list[tuple[str, str]]:
+    """(title, text) for each `## ` section of a changelog's text, in file order."""
     chunks = re.split(r"(?m)^(?=## )", text)
     return [(chunk.splitlines()[0][3:].strip(), chunk.rstrip() + "\n") for chunk in chunks if chunk.startswith("## ")]
 

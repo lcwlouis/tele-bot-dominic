@@ -264,6 +264,10 @@ async def handle_message(app: App, message: Message) -> None:
         if command == "/preset":
             await owner.show_presets(app)
             return
+        if command == "/update":
+            await owner.offer_update(app)
+            await owner.record_event(app, f"{who} ran /update")
+            return
         if command in ("/wake", "/sleep"):
             parts = msg.text.split()
             try:
@@ -517,6 +521,16 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             await _handle_proposal(app, query, raw_chat_id)
         elif raw_chat_id.startswith("disable:"):
             await _toast(app, query, await owner.disable_plugin(app, raw_chat_id.removeprefix("disable:")))
+        return
+    if action == "update":
+        if (
+            query.from_user.is_bot or query.message is None or query.message.chat.id != owner_id
+            or query.message.chat.type != "private"
+        ):
+            return
+        decision, _, nonce = raw_chat_id.partition(":")
+        if decision in ("go", "no"):
+            await _toast(app, query, await owner.decide_update(app, decision, nonce))
         return
     if action == "rem":
         decision, _, raw_id = raw_chat_id.partition(":")
