@@ -21,7 +21,7 @@ With no key nothing changes: the action is not offered to the model and `self_in
 Checked on 2026-11-20 against the providers' own documentation.
 
 - **Tenor is gone.** Google closed new Tenor API keys on 2026-01-13 and shut the API down on
-  2026-06-30 ([coverage](https://gigazine.net/gsc_news/en/20260701-tenor-api-discontinuation/)).
+  2026-06-30 (reported by GIGAZINE, July 2026).
 - **GIPHY** has a free beta key (100 calls an hour) and a `rating` filter, but its
   [endpoint docs](https://developers.giphy.com/docs/api/endpoint) say the search call must be made from
   the client side and the query must be the user's own words. Both rule out a bot that writes the query.
@@ -42,7 +42,7 @@ Checked on 2026-11-20 against the providers' own documentation.
 - Dom sends the fixed `customer_id=dom`, never a chat, user or owner identifier. The API key is part of
   KLIPY's request URL, so Dom lowers the `httpx` log level to keep it out of the logs.
 - KLIPY's [integration requirements](https://docs.klipy.com/integration-requirements) say that server-side
-  requests, proxying and caching need prior approval from KLIPY (developers@klipy.com), and that results
+  requests, proxying and caching need prior approval from KLIPY (contact address in those requirements), and that results
   should not be re-ordered or filtered by the integrator. Dom searches from the server and picks one
   result, so **the owner should ask KLIPY for approval before relying on this beyond testing**. Dom does
   not show KLIPY branding in Telegram; ask KLIPY whether that is acceptable for a private bot.
