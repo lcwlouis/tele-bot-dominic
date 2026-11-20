@@ -14,12 +14,31 @@ if TYPE_CHECKING:
 def desktop_status(app: App, scope: Scope) -> str:
     if scope != "owner_dm" or app.config.desktop_mode == "off":
         return "off"
-    if app.sandbox is None:
+    fleet = app.desktop_worker
+    if fleet is None:
         return "unavailable (desktop is not configured)"
-    status = app.sandbox.status()
+    main = fleet.lane(fleet.default).sandbox
+    status = main.status()
     if status == "error":
-        return f"unavailable ({app.sandbox.error})"
-    return {"stopped": "available (starts on use)", "starting": "available (starting)"}.get(status, status)
+        return f"unavailable ({main.error})"
+    text = {"stopped": "available (starts on use)", "starting": "available (starting)"}.get(status, status)
+    others = [f"{lane.name} {lane.status()}" for lane in fleet.containers() if lane.name != fleet.default]
+    return text + (f"; other containers: {', '.join(others)}" if others else "")
+
+
+def desktop_hosts(app: App) -> list[dict]:
+    """Each desktop host with its limits and the containers it holds, for self_inspect."""
+    fleet = app.desktop_worker
+    if fleet is None:
+        return []
+    return [{
+        "name": host.config.name, "mode": host.config.mode,
+        "max_containers": host.config.max_containers, "min_free_memory_mb": host.config.memory_floor_mb,
+        "containers": [
+            {"name": lane.name, "state": lane.status(), **({"error": lane.sandbox.error} if lane.sandbox.error else {})}
+            for lane in fleet.containers() if lane.host is host
+        ],
+    } for host in fleet.hosts]
 
 
 def describe(app: App, scope: Scope, offered: list[Tool] | None = None) -> str:

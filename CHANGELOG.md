@@ -16,6 +16,10 @@ named `vX.Y.Z`.
 - `dom deploy <home> vX.Y.Z` stages a tag, runs `uv sync --frozen --no-dev`, backs up, repoints `app` and restarts `dom.service`; if the new release is not ready within 120 seconds it rolls back to the previous one. After a successful deploy only the current and previous release folders are kept.
 - `find_devices` (owner DM, read-only): LAN devices with names and addresses from mDNS and the neighbour table. A configured LAN host that moved becomes a config-change proposal (`lan_address`) for the owner to approve.
 - `[desktop] lan_probes` accepts `<name>.local:port`; the names are resolved on the Docker host before every firewall probe and an unresolvable name fails closed.
+- Run more than one desktop container. `start_desktop_task` takes an optional container name (letters, digits, hyphens); each container has its own task slot, browser profile, port and idle timer, and the default container behaves as before. Desktop hosts are a list (`[[desktop.hosts]]`, each with `max_containers` and `min_free_memory_mb`); the single `[desktop] mode` config still works as one host named `default`.
+- Refuse, with the numbers, to start a container past a host's limit or that would leave it below its free-memory floor (local: `MemAvailable`; remote: read through the sandbox's shell). The Pi allows one container and keeps 512 MB free besides the container's 1600 MB.
+- Handoff links, task reports, screenshot file names, the live viewer and the dashboard Desktop page name the container; the page lists every container with its host, state and task. `self_inspect` reports `desktop_hosts` with limits and containers.
+- Migration `0013` adds `desktop_tasks.container` and makes the one-active-task limit per container.
 - Add a pinned, loopback-only T3 Code systemd user service with a 600 MiB memory limit.
 - Document Raspberry Pi desktop startup timings, the Chromium seccomp profile and the desktop connectivity check.
 - Wait for the local sandbox API and browser within a configurable 180-second startup deadline, with a distinct error for each stage.

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ModelEndpoint(BaseModel):
@@ -43,26 +43,70 @@ class WebConfig(BaseModel):
     public_url: str = Field("", description="HTTPS dashboard base URL for links in desktop handoff messages.")
 
 
+HOST_NAME = r"^[a-z0-9][a-z0-9-]{0,23}$"
+LOCAL_MEMORY_FLOOR_MB = 512  # what a local host keeps free, besides the container's own limit, unless set
+
+
+class DesktopHost(BaseModel):
+    """A machine that runs desktop containers. A local host is this machine's Docker; a remote host is one
+    sandbox API that Dom connects to (it cannot start containers there)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(pattern=HOST_NAME, description="Host name: lowercase letters, digits and hyphens. A remote host's name is also its container's name.")
+    mode: Literal["local", "remote"] = Field(description="local runs Docker containers on this machine. remote connects to one sandbox API.")
+    url: str = Field("", description="Sandbox API base URL of a remote host.")
+    api_key_env: str = Field("SANDBOX_API_KEY", description="Secret variable for a remote host's sandbox API key.")
+    remote_isolation_confirmed: bool = Field(False, description="Set after verifying the remote host cannot reach your LAN or Dom host.")
+    max_containers: int = Field(1, ge=1, description="Most containers that may run at once on a local host. A remote host runs one.")
+    min_free_memory_mb: int | None = Field(
+        None, ge=0,
+        description="Memory the host must still have free after a container's own limit. Dom refuses to start a container that would breach it. Unset means 512 for a local host and 0 (unchecked) for a remote one.",
+    )
+
+    @model_validator(mode="after")
+    def _limits(self) -> DesktopHost:
+        if self.mode == "remote" and self.max_containers != 1:
+            raise ValueError("a remote host runs one container; list another host for more")
+        return self
+
+    @property
+    def memory_floor_mb(self) -> int:
+        if self.min_free_memory_mb is not None:
+            return self.min_free_memory_mb
+        return LOCAL_MEMORY_FLOOR_MB if self.mode == "local" else 0
+
+
 class DesktopConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    image: str = Field("ghcr.io/agent-infra/sandbox:latest", description="Pre-pulled local sandbox image.")
+    image: str = Field("ghcr.io/agent-infra/sandbox:latest", description="Pre-pulled local sandbox image, used by every local container.")
     url: str = Field("", description="Sandbox API base URL in remote mode.")
     api_key_env: str = Field("SANDBOX_API_KEY", description="Secret variable for the remote sandbox API key. Local mode generates a key.")
     start_timeout_seconds: float = Field(
         180, gt=0, allow_inf_nan=False, description="Seconds for the local sandbox API and browser to become ready.",
     )
-    idle_minutes: float = Field(10, gt=0, allow_inf_nan=False, description="Idle minutes before the local desktop stops.")
-    profile_dir: str = Field("", description="Local browser profile outside the instance home. Empty uses the sibling desktop-profile directory.")
-    network: str = Field("dom-desktop", description="Docker bridge name for local isolation.")
+    idle_minutes: float = Field(10, gt=0, allow_inf_nan=False, description="Idle minutes before a local desktop container stops. Each container has its own timer.")
+    profile_dir: str = Field("", description="Local browser profile outside the instance home. Empty uses the sibling desktop-profile directory. A container named x keeps its profile in the same directory name plus -x.")
+    network: str = Field("dom-desktop", description="Docker bridge name for local isolation. Every local container joins it.")
     subnet: str = Field("172.30.0.0/24", description="IPv4 CIDR of the desktop bridge. Choose a subnet separate from your LAN and other bridges.")
-    port: int = Field(18080, ge=1, le=65535, description="Loopback host port for the local sandbox API.")
+    port: int = Field(18080, ge=1, le=65535, description="Loopback host port for the default local container. Further containers take the next free ports.")
     task_cost_cap_usd: float = Field(0.5, ge=0, allow_inf_nan=False, description="Per-desktop-task USD limit. Zero disables this limit.")
     lan_probes: list[str] = Field([], description="LAN targets local mode must prove it cannot reach, as IPv4:port or <name>.local:port (resolved on every check). Required in local mode.")
     probe_image: str = Field("alpine:3.22", description="Pre-pulled image used for local isolation probes.")
     probe_control: str = Field("1.1.1.1:443", description="Public IPv4:port target that the local isolation probe must reach.")
     remote_isolation_confirmed: bool = Field(False, description="Set after verifying the remote desktop cannot reach your LAN or Dom host.")
     fallback_usd_per_1k_tokens: float = Field(0.002, ge=0, allow_inf_nan=False, description="USD per 1,000 tokens when a desktop call reports no cost. Used for the task limit only.")
+    hosts: list[DesktopHost] = Field([], description="Desktop hosts, as [[desktop.hosts]] tables. Empty means one host built from desktop.mode and the keys above.")
+
+    @field_validator("hosts")
+    @classmethod
+    def _hosts(cls, hosts: list[DesktopHost]) -> list[DesktopHost]:
+        if len({host.name for host in hosts}) != len(hosts):
+            raise ValueError("desktop host names must be unique")
+        if sum(host.mode == "local" for host in hosts) > 1:
+            raise ValueError("list at most one local host: Docker runs on this machine")
+        return hosts
 
     @field_validator("lan_probes")
     @classmethod
@@ -165,6 +209,18 @@ class Config(BaseModel):
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_threshold: float = Field(1.2, ge=0, le=3, description="Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call.")
 
+    @property
+    def desktop_hosts(self) -> list[DesktopHost]:
+        """The hosts Dom may use: the [[desktop.hosts]] tables, or one host made from the single-desktop keys."""
+        if self.desktop_mode == "off":
+            return []
+        if self.desktop.hosts:
+            return list(self.desktop.hosts)
+        return [DesktopHost(
+            name="default", mode=self.desktop_mode, url=self.desktop.url, api_key_env=self.desktop.api_key_env,
+            remote_isolation_confirmed=self.desktop.remote_isolation_confirmed,
+        )]
+
     def secret(self, name: str) -> str | None:
         """Read a secret from ``home/.env`` first, then the process environment."""
         return _read_dotenv(self.home / ".env").get(name) or os.environ.get(name)
@@ -199,12 +255,13 @@ def validate_config(home: Path, raw: dict) -> Config:
     models.update(raw.get("models", {}))
     if "search" in models:
         models["search"] = {**defaults["search"], **models["search"]}
-    return Config.model_validate({
-        **raw,
-        "home": home,
-        "models": models,
-        "desktop_mode": raw.get("desktop", {}).get("mode", Config.model_fields["desktop_mode"].default),
-    })
+    desktop = raw.get("desktop", {})
+    mode = desktop.get("mode")
+    if mode is None:
+        hosts = [host.get("mode") for host in desktop.get("hosts", []) if isinstance(host, dict)]
+        # Listing hosts turns the desktop on; the mode key can still switch it off.
+        mode = ("local" if "local" in hosts else "remote") if hosts else Config.model_fields["desktop_mode"].default
+    return Config.model_validate({**raw, "home": home, "models": models, "desktop_mode": mode})
 
 
 _OWNER_LINE = re.compile(r"^\s*owner_id\s*=.*$", re.MULTILINE)

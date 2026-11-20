@@ -294,11 +294,19 @@ async def pending_summary(app: App) -> str:
     return f"{len(pending)} waiting ({_one_line([display_title(c, app.owner_id) for c in pending])})"
 
 
+def _container_tag(task: dict) -> str:
+    """Name a task's container unless it is the default one."""
+    return "" if task.get("container", "default") == "default" else f" on {task['container']}"
+
+
 async def show_tasks(app: App) -> None:
     if app.owner_id is None:
         return
     rows = await app.store.desktop_tasks(app.owner_id)
-    lines = [f"#{row['id']} · {row['status'].replace('_', ' ')} · {_short(' '.join(row['brief'].split()), 120)}" for row in rows]
+    lines = [
+        f"#{row['id']} · {row['status'].replace('_', ' ')}{_container_tag(row)} · {_short(' '.join(row['brief'].split()), 120)}"
+        for row in rows
+    ]
     buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"desktop:cancel:{row['id']}")]
                for row in rows if row["status"] in ("queued", "running", "waiting_owner")]
     await app.bot.send_message(
@@ -327,9 +335,8 @@ async def render_status(app: App) -> View:
         fallback = f" (fallback at {fallback_at.astimezone(tz):%H:%M})"
     footer += f"\nToday: {count} calls · ${spent:.2f}\nLast reply: {model or '—'}{fallback}"
     current = await app.store.desktop_tasks(app.owner_id, active=True) if app.owner_id is not None else []
-    if current:
-        task = current[0]
-        footer += f"\nDesktop task #{task['id']} · {task['status'].replace('_', ' ')} · {task['steps']} steps"
+    for task in current:
+        footer += f"\nDesktop task #{task['id']}{_container_tag(task)} · {task['status'].replace('_', ' ')} · {task['steps']} steps"
 
 
     table, plain, buttons, used, button_count = [], [], [], len(footer) * 2 + 160, 0  # room for the footer, heading, table head and "more" line

@@ -93,3 +93,62 @@ def test_daily_spend_cap_default_and_override(tmp_path):
     assert load_config(tmp_path).daily_spend_cap_usd == 1.0
     write(tmp_path, "daily_spend_cap_usd = 0\n" + MINIMAL)
     assert load_config(tmp_path).daily_spend_cap_usd == 0
+
+
+def test_legacy_single_desktop_becomes_one_host(tmp_path):
+    write(tmp_path, MINIMAL + '\n[desktop]\nmode = "local"\nlan_probes = ["192.0.2.1:443"]\n')
+    (host,) = load_config(tmp_path).desktop_hosts
+    assert (host.name, host.mode, host.max_containers, host.memory_floor_mb) == ("default", "local", 1, 512)
+
+    write(tmp_path, MINIMAL + '\n[desktop]\nmode = "remote"\nurl = "https://sandbox.example.test"\n'
+                              'remote_isolation_confirmed = true\n')
+    (host,) = load_config(tmp_path).desktop_hosts
+    assert (host.name, host.mode, host.url, host.remote_isolation_confirmed, host.memory_floor_mb) == (
+        "default", "remote", "https://sandbox.example.test", True, 0,
+    )
+
+    write(tmp_path, MINIMAL)
+    assert load_config(tmp_path).desktop_hosts == []
+
+
+def test_desktop_hosts_table(tmp_path):
+    write(tmp_path, MINIMAL + """
+[desktop]
+lan_probes = ["192.0.2.1:443"]
+
+[[desktop.hosts]]
+name = "pi"
+mode = "local"
+max_containers = 2
+min_free_memory_mb = 900
+
+[[desktop.hosts]]
+name = "studio"
+mode = "remote"
+url = "https://studio.example.test"
+min_free_memory_mb = 16384
+""")
+    config = load_config(tmp_path)
+    assert config.desktop_mode == "local"  # hosts alone switch the desktop on
+    assert [(h.name, h.mode, h.max_containers, h.memory_floor_mb) for h in config.desktop_hosts] == [
+        ("pi", "local", 2, 900), ("studio", "remote", 1, 16384),
+    ]
+
+
+@pytest.mark.parametrize("hosts, message", [
+    ('[[desktop.hosts]]\nname = "Pi"\nmode = "local"\n', "name"),
+    ('[[desktop.hosts]]\nname = "a"\nmode = "local"\n[[desktop.hosts]]\nname = "a"\nmode = "local"\n', "unique"),
+    ('[[desktop.hosts]]\nname = "a"\nmode = "local"\n[[desktop.hosts]]\nname = "b"\nmode = "local"\n', "one local"),
+    ('[[desktop.hosts]]\nname = "a"\nmode = "remote"\nmax_containers = 2\n', "one container"),
+    ('[[desktop.hosts]]\nname = "a"\nmode = "local"\nmax_containers = 0\n', "max_containers"),
+])
+def test_invalid_desktop_hosts_rejected(tmp_path, hosts, message):
+    write(tmp_path, MINIMAL + "\n[desktop]\n" + hosts)
+    with pytest.raises(ValidationError, match=message):
+        load_config(tmp_path)
+
+
+def test_mode_off_disables_listed_hosts(tmp_path):
+    write(tmp_path, MINIMAL + '\n[desktop]\nmode = "off"\n[[desktop.hosts]]\nname = "pi"\nmode = "local"\n')
+    config = load_config(tmp_path)
+    assert config.desktop_mode == "off" and config.desktop_hosts == []

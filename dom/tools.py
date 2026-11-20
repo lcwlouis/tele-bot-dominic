@@ -26,7 +26,7 @@ from dom.store import Store
 from dom.usage import ModelCallSkipped, model_request
 
 if TYPE_CHECKING:
-    from dom.desktop.worker import DesktopWorker
+    from dom.desktop.fleet import DesktopFleet
     from dom.reminders import Reminders
     from dom.telegram.handlers import App
 
@@ -45,7 +45,7 @@ class TurnCtx:
     habits: Habits | None = None
     model_allowed: Callable[[], Awaitable[bool]] | None = None
     reminders: Reminders | None = None
-    desktop: DesktopWorker | None = None
+    desktop: DesktopFleet | None = None
     app: App | None = None
     t3_notes: list[str] = field(default_factory=list)
 
@@ -194,7 +194,7 @@ async def _start_desktop_task(args: dict, ctx: TurnCtx) -> str:
     if ctx.scope != "owner_dm" or ctx.chat_id != ctx.owner_id or ctx.desktop is None:
         return "error: desktop tasks are available only in the owner's DM"
     try:
-        task_id = await ctx.desktop.enqueue(ctx.chat_id, args.get("brief"))
+        task_id = await ctx.desktop.enqueue(ctx.chat_id, args.get("brief"), args.get("container"))
     except ValueError as exc:
         return str(exc)
     return json.dumps({"id": task_id})
@@ -205,9 +205,15 @@ START_DESKTOP_TASK = Tool(
     description=(
         "Start work on the desktop in the background. Reply in character right away (e.g. 'give me a few min'); "
         "do not wait. Write a self-contained brief using only what the owner explicitly provided for this task. "
-        "Never include secrets, private notes, conversation history, owner events, or memory files."
+        "Never include secrets, private notes, conversation history, owner events, or memory files. "
+        "Give a container name (lowercase letters, digits, hyphens) to keep a project's work and logins on its own "
+        "desktop; leave it out for the main one. Each container runs one task at a time, and a host refuses "
+        "(with a reason) when it is full or short of memory."
     ),
-    schema={"type": "object", "properties": {"brief": {"type": "string", "maxLength": 2000}}, "required": ["brief"]},
+    schema={"type": "object", "properties": {
+        "brief": {"type": "string", "maxLength": 2000},
+        "container": {"type": "string", "maxLength": 24},
+    }, "required": ["brief"]},
     handler=_start_desktop_task, scopes={"owner_dm"},
 )
 
@@ -278,7 +284,7 @@ SKILL_MANAGE_TOOL = Tool(
 )
 
 
-def core_tools(search: SearchClient | None = None, desktop: DesktopWorker | None = None) -> list[Tool]:
+def core_tools(search: SearchClient | None = None, desktop: DesktopFleet | None = None) -> list[Tool]:
     tools = [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL, REMIND_TOOL, SKILLS_LIST_TOOL, SKILL_VIEW_TOOL, SKILL_MANAGE_TOOL]
     if search is not None:
         tools.append(_web_search_tool(search))
@@ -329,7 +335,7 @@ WRITE_BRIEF_TOOL = Tool(
 
 
 async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
-    from dom.capabilities import desktop_status
+    from dom.capabilities import desktop_hosts, desktop_status
     from dom.plugins.manifest import SCOPES
     from dom.traits import global_preset_name
 
@@ -347,6 +353,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
         "plugin_sandbox_failure": app.plugin_runner.last_failure,
         "desktop": desktop_status(app, "owner_dm"),
         "gifs": "on" if app.gifs is not None else "off (set KLIPY_API_KEY in .env to turn them on)",
+        "desktop_hosts": desktop_hosts(app),
         "models": {kind: endpoint.model for kind, endpoint in app.config.models.items()},
         "last_errors": await app.store.recent_turn_errors(),
         "preset": {

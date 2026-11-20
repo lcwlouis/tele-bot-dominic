@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, ModelEndpoint, OpenersConfig, T3Config, UpdateConfig, WebConfig, starter_config
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, T3Config, UpdateConfig, WebConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -76,6 +76,11 @@ def render() -> str:
              Config.model_fields["desktop_mode"].description),
             *fields(DesktopConfig, "desktop."),
         ]),
+        "### Desktop hosts",
+        "Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers on this machine "
+        "(list at most one). A remote host is one sandbox API and counts as one container, named after the host. "
+        "Without any `[[desktop.hosts]]`, `desktop.mode` and the keys above describe a single host named `default`.",
+        table(fields(DesktopHost, "desktop.hosts[].")),
         "## Openers",
         table(fields(OpenersConfig, "openers.")),
         "## Web",

@@ -8,20 +8,22 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Literal
 
 import httpx
 
-from dom.config import Config
+from dom.config import Config, DesktopHost
 from dom.desktop import network
 from dom.desktop.client import SandboxClient, SandboxError
 
 Status = Literal["off", "stopped", "starting", "ready", "error"]
 log = logging.getLogger(__name__)
+DEFAULT = "default"  # the name of the container that existed before there could be more than one
 CONTAINER = "dom-desktop"
+CONTAINER_MEMORY_MB = 1600  # the --memory limit of a local container
 SECCOMP_PROFILE = Path(__file__).resolve().with_name("seccomp-chromium.json")
 LAN_REACHABLE = "LAN reachable from the sandbox — run dom desktop-setup"
 REMOTE_UNCONFIRMED = (
@@ -37,19 +39,102 @@ def valid_remote_url(value: str) -> bool:
     return url.scheme in ("http", "https") and bool(url.host)
 
 
-def desktop_profile_path(config: Config) -> Path:
+def container_name(name: str) -> str:
+    """The Docker name of a desktop container: the original name for the default one, a suffix for the rest."""
+    return CONTAINER if name == DEFAULT else f"{CONTAINER}-{name}"
+
+
+def desktop_profile_path(config: Config, name: str = DEFAULT) -> Path:
+    """Where a container keeps its browser profile (and so its logins), outside DOM_HOME."""
     home = config.home.resolve()
     setting = config.desktop.profile_dir
     profile = (home / setting if setting else home.parent / "desktop-profile").resolve()
+    if name != DEFAULT:
+        profile = profile.with_name(f"{profile.name}-{name}")
     if profile.is_relative_to(home) or home.is_relative_to(profile):
         raise SandboxError("desktop profile must be outside DOM_HOME")
     return profile
 
 
+class Refused(SandboxError):
+    """A container was not started because its host is full or short of memory. Nothing is broken: try later."""
+
+
+def read_free_memory_mb(meminfo: str = "/proc/meminfo") -> int | None:
+    """This machine's available memory (MemAvailable), or None where /proc/meminfo is unavailable."""
+    try:
+        for line in Path(meminfo).read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+class Host:
+    """A machine that runs desktop containers, with the limits that protect it.
+
+    Starts on one host are serialized by `start_lock`, so two containers cannot both pass the check for
+    the last free slot, and each memory reading sees the container that started before it."""
+
+    def __init__(self, config: DesktopHost, *, free_memory: Callable[[], int | None] = read_free_memory_mb):
+        self.config = config
+        self.free_memory = free_memory
+        self.sandboxes: dict[str, LocalSandbox | RemoteSandbox] = {}
+        self.start_lock = asyncio.Lock()
+
+    def register(self, sandbox: LocalSandbox | RemoteSandbox) -> None:
+        self.sandboxes[sandbox.name] = sandbox
+
+    def running(self, besides: str, busy: Collection[str] = ()) -> list[str]:
+        """Containers that hold a slot: started or starting, or with a task queued for them."""
+        names = {name for name, other in self.sandboxes.items() if other.status() in ("starting", "ready")}
+        return sorted((names | set(busy)) - {besides})
+
+    async def refusal(self, sandbox: LocalSandbox | RemoteSandbox, *, busy: Collection[str] = (), memory: bool = True) -> str | None:
+        """Why `sandbox` may not start now, or None. `memory=False` skips a reading that would cost a request."""
+        settings = self.config
+        holding = self.running(sandbox.name, busy)
+        if len(holding) >= settings.max_containers:
+            return (
+                f"host {settings.name} already runs its limit of {settings.max_containers} desktop "
+                f"container{'s' if settings.max_containers != 1 else ''} ({', '.join(holding)}); "
+                "wait for one to finish, or raise max_containers"
+            )
+        floor = settings.memory_floor_mb
+        if floor and memory:
+            free = await sandbox.free_memory_mb()
+            if free is None:
+                return f"could not read free memory on host {settings.name}, so no container was started"
+            need = sandbox.memory_mb + floor
+            if free < need:
+                return (
+                    f"not enough free memory on host {settings.name}: {free} MB free, {need} MB needed "
+                    f"({sandbox.memory_mb} MB for the container plus the {floor} MB floor)"
+                )
+        return None
+
+    async def admit(self, sandbox: LocalSandbox | RemoteSandbox) -> None:
+        if reason := await self.refusal(sandbox):
+            raise Refused(reason)
+
+    def claim_port(self, name: str, base: int) -> int:
+        taken = {other.port for other in self.sandboxes.values() if other.name != name and other.status() != "stopped"}
+        return next(port for port in range(base, 65536) if port not in taken)
+
+
 class RemoteSandbox:
+    memory_mb = 0  # Dom does not start this sandbox, so it does not know its limit
+    port = None
+
     def __init__(
         self, url: str, api_key: str | None, *, http: httpx.AsyncClient | None = None, isolation_confirmed: bool = False,
+        name: str = DEFAULT, host: Host | None = None,
     ):
+        self.name = name
+        self.host = host
+        if host is not None:
+            host.register(self)
         self._isolation_confirmed = isolation_confirmed
         self._http = http or httpx.AsyncClient(trust_env=False)
         self._owns_http = http is None
@@ -86,10 +171,27 @@ class RemoteSandbox:
             except asyncio.CancelledError:
                 self._status = "ready" if self.client else "stopped"
                 raise
+            if self.host is not None:
+                try:
+                    await self.host.admit(self)
+                except Refused as exc:
+                    self.client = None
+                    self._status = "stopped"
+                    self.error = str(exc)
+                    raise SandboxError(self.error) from None
             self.client = self._remote
             self._status = "ready"
             self.error = None
             return self.client
+
+    async def free_memory_mb(self) -> int | None:
+        """The remote machine's MemAvailable, read through the sandbox's own shell."""
+        try:
+            result = await self._remote.bash("awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo")
+            text = result.get("stdout") if isinstance(result, dict) and result.get("exit_code") == 0 else None
+            return int(str(text).strip())
+        except (SandboxError, ValueError):
+            return None
 
     def touch(self) -> None:
         pass
@@ -103,8 +205,19 @@ class RemoteSandbox:
 
 
 class LocalSandbox:
-    def __init__(self, config: Config, run=asyncio.create_subprocess_exec, *, http=None, clock=time.monotonic):
+    memory_mb = CONTAINER_MEMORY_MB
+
+    def __init__(
+        self, config: Config, run=asyncio.create_subprocess_exec, *, http=None, clock=time.monotonic,
+        name: str = DEFAULT, host: Host | None = None,
+    ):
         self.config = config
+        self.name = name
+        self.container = container_name(name)
+        self.port = config.desktop.port
+        self.host = host
+        if host is not None:
+            host.register(self)
         self._run = run
         self._http = http or httpx.AsyncClient(trust_env=False)
         self._owns_http = http is None
@@ -161,11 +274,11 @@ class LocalSandbox:
         """Best effort: nothing else owns the container, so stop and remove it whatever state it is in.
         Failures are logged; the result says whether the container is gone."""
         try:
-            if (await self._docker("container", "inspect", "--format", "{{.State.Running}}", CONTAINER))[0]:
+            if (await self._docker("container", "inspect", "--format", "{{.State.Running}}", self.container))[0]:
                 return True  # no such container
             gone = True
             for verb in ("stop", "rm"):
-                if (await self._docker(verb, CONTAINER))[0]:
+                if (await self._docker(verb, self.container))[0]:
                     log.warning("could not %s the desktop container", verb)
                     gone = False
             return gone
@@ -174,9 +287,9 @@ class LocalSandbox:
             return False
 
     async def _remove_container(self, running: bool) -> None:
-        if running and (await self._docker("stop", CONTAINER))[0]:
+        if running and (await self._docker("stop", self.container))[0]:
             raise SandboxError("could not stop the desktop container")
-        if (await self._docker("rm", CONTAINER))[0]:
+        if (await self._docker("rm", self.container))[0]:
             raise SandboxError("could not remove the desktop container")
 
     async def ensure_running(self) -> SandboxClient:
@@ -189,7 +302,16 @@ class LocalSandbox:
             self._status = "starting"
             self.error = None
             try:
-                await self._start()
+                if self.host is None:
+                    await self._start()
+                else:
+                    async with self.host.start_lock:
+                        await self.host.admit(self)
+                        await self._start()
+            except Refused as exc:
+                self._status = "stopped"  # nothing is wrong with this container; the host is full
+                self.error = str(exc)
+                raise SandboxError(self.error) from None
             except (SandboxError, OSError) as exc:
                 self._status = "error"
                 self.error = str(exc) if isinstance(exc, SandboxError) else "could not prepare desktop profile"
@@ -206,6 +328,22 @@ class LocalSandbox:
                 self._idle_task = asyncio.create_task(self._watch_idle())
             assert self.client is not None
             return self.client
+
+    async def free_memory_mb(self) -> int | None:
+        return self.host.free_memory() if self.host is not None else None
+
+    async def existing_names(self) -> list[str]:
+        """Names of the desktop containers Docker has now, running or not, as Dom's container names."""
+        code, output = await self._docker("ps", "-a", "--filter", f"name=^{CONTAINER}", "--format", "{{.Names}}")
+        if code:
+            raise SandboxError("could not list desktop containers")
+        names = []
+        for line in output.decode(errors="replace").split():
+            if line == CONTAINER:
+                names.append(DEFAULT)
+            elif line.startswith(CONTAINER + "-"):
+                names.append(line.removeprefix(CONTAINER + "-"))
+        return names
 
     async def _verify_firewall(self) -> None:
         """Fail closed, on every start: the sandbox starts only after a throwaway container on the
@@ -249,20 +387,23 @@ class LocalSandbox:
         if (await self._docker("image", "inspect", settings.image))[0]:
             raise SandboxError("image not present")
         await self._verify_firewall()
-        exists, running = await self._docker("container", "inspect", "--format", "{{.State.Running}}", CONTAINER)
+        exists, running = await self._docker("container", "inspect", "--format", "{{.State.Running}}", self.container)
         if exists == 0:
             # A previous Dom process may have exited with its key still in memory.
             await self._remove_container(running.strip() == b"true")
-        profile = desktop_profile_path(self.config)
+        profile = desktop_profile_path(self.config, self.name)
         profile.mkdir(mode=0o700, parents=True, exist_ok=True)
         # No container uses the profile now. A lock left by an unclean stop names the old
         # container, and Chromium would refuse the profile until it is gone.
         for lock in profile.glob("Singleton*"):
             lock.unlink(missing_ok=True)
         key = secrets.token_urlsafe(32)
+        if self.host is not None:
+            self.port = self.host.claim_port(self.name, settings.port)
         code, _ = await self._docker_to_completion(
-            "run", "-d", "--name", CONTAINER, "--pull=never", "--network", settings.network,
-            "-p", f"127.0.0.1:{settings.port}:8080", "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
+            "run", "-d", "--name", self.container, "--pull=never", "--network", settings.network,
+            "-p", f"127.0.0.1:{self.port}:8080", "--shm-size", "1g",
+            "--memory", f"{CONTAINER_MEMORY_MB}m", "--memory-swap", f"{CONTAINER_MEMORY_MB}m", "--pids-limit", "512",
             "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
             "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
             "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true", "-e", "DISABLE_JUPYTER=true",
@@ -271,7 +412,7 @@ class LocalSandbox:
         )
         if code:
             raise SandboxError("could not start the desktop container")
-        client = SandboxClient(f"http://127.0.0.1:{settings.port}", key, self._http)
+        client = SandboxClient(f"http://127.0.0.1:{self.port}", key, self._http)
         failure = "API not healthy"
         try:
             async with asyncio.timeout(settings.start_timeout_seconds):
@@ -301,7 +442,7 @@ class LocalSandbox:
         if self._status == "off":
             return
         try:
-            exists, running = await self._docker("container", "inspect", "--format", "{{.State.Running}}", CONTAINER)
+            exists, running = await self._docker("container", "inspect", "--format", "{{.State.Running}}", self.container)
             if exists == 0:
                 await self._remove_container(running.strip() == b"true")
         except SandboxError as exc:
@@ -336,14 +477,3 @@ class LocalSandbox:
             self._status = "stopped"
         if self._owns_http:
             await self._http.aclose()
-
-
-def configured_sandbox(config: Config) -> LocalSandbox | RemoteSandbox | None:
-    if config.desktop_mode == "local":
-        return LocalSandbox(config)
-    if config.desktop_mode == "remote":
-        return RemoteSandbox(
-            config.desktop.url, config.secret(config.desktop.api_key_env),
-            isolation_confirmed=config.desktop.remote_isolation_confirmed,
-        )
-    return None

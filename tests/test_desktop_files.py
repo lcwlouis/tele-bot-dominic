@@ -8,7 +8,7 @@ from dom.desktop.files import bind_inbox, download_results, safe_filename, stage
 from dom.desktop.worker import DesktopWorker
 from dom.home import Home
 from dom.telegram.handlers import handle_message
-from test_desktop_worker import Sandbox, call, task_row, wait_task, worker_for
+from test_desktop_worker import Sandbox, adopt, call, task_row, wait_task, worker_for
 from test_usage import online
 from tghelpers import FRIEND, GROUP, OWNER, drain_dispatch, tg
 
@@ -164,7 +164,7 @@ async def test_only_owner_dm_documents_are_staged_and_noted(make_app, monkeypatc
     app = make_app()
     app.home = Home(app.home.root / 'home')
     app.sandbox = Sandbox()
-    app.desktop_worker = DesktopWorker(app, app.sandbox)
+    adopt(app, DesktopWorker(app, app.sandbox))
     app.config = app.config.model_copy(update={"desktop_mode": "remote"})
     downloaded = []
 
@@ -193,7 +193,7 @@ async def test_intake_checks_declared_and_actual_size(make_app, monkeypatch):
     app = make_app()
     app.home = Home(app.home.root / 'home')
     app.sandbox = Sandbox()
-    app.desktop_worker = DesktopWorker(app, app.sandbox)
+    adopt(app, DesktopWorker(app, app.sandbox))
     app.config = app.config.model_copy(update={"desktop_mode": "local"})
     monkeypatch.setattr("dom.desktop.files.MAX_FILE_BYTES", 3)
     downloads = []
@@ -222,7 +222,7 @@ async def test_documents_without_a_desktop_caption_are_just_chat(make_app, monke
     app = make_app()
     app.home = Home(app.home.root / 'home')
     app.sandbox = Sandbox()
-    app.desktop_worker = DesktopWorker(app, app.sandbox)
+    adopt(app, DesktopWorker(app, app.sandbox))
     app.config = app.config.model_copy(update={"desktop_mode": "local"})
     downloads = []
 
@@ -242,7 +242,7 @@ async def test_the_exact_desktop_command_stages_the_document(make_app, monkeypat
     app = make_app()
     app.home = Home(app.home.root / 'home')
     app.sandbox = Sandbox()
-    app.desktop_worker = DesktopWorker(app, app.sandbox)
+    adopt(app, DesktopWorker(app, app.sandbox))
     app.config = app.config.model_copy(update={"desktop_mode": "local"})
     downloads = []
 
@@ -277,7 +277,7 @@ async def test_full_inbox_replies_and_does_not_stage(make_app, monkeypatch):
     app = make_app()
     app.home = Home(app.home.root / 'home')
     app.sandbox = Sandbox()
-    app.desktop_worker = DesktopWorker(app, app.sandbox)
+    adopt(app, DesktopWorker(app, app.sandbox))
     app.config = app.config.model_copy(update={"desktop_mode": "local"})
     for number in range(5):
         stage_inbox(app.home.root, f"{number}.txt", b"x")
