@@ -345,6 +345,7 @@ OWN_CODE_TOOL = Tool(
 
 
 async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
+    from dom.devices import FIND_DEVICES_TOOL
     from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 
     tools = core_tools(app.search_client, app.desktop_worker)
@@ -352,5 +353,5 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
         from dom.t3.tools import TOOLS
 
         tools.extend(TOOLS)
-    tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL))
+    tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL, FIND_DEVICES_TOOL))
     return [tool for tool in tools if scope in tool.scopes] + await offered(app, scope)

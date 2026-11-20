@@ -74,7 +74,7 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | `desktop.subnet` | `"172.30.0.0/24"` | IPv4 CIDR of the desktop bridge. Choose a subnet separate from your LAN and other bridges. |
 | `desktop.port` | `18080` | Loopback host port for the local sandbox API. |
 | `desktop.task_cost_cap_usd` | `0.5` | Per-desktop-task USD limit. Zero disables this limit. |
-| `desktop.lan_probes` | `[]` | LAN IPv4:port targets local mode must prove it cannot reach. Required in local mode. |
+| `desktop.lan_probes` | `[]` | LAN targets local mode must prove it cannot reach, as IPv4:port or <name>.local:port (resolved on every check). Required in local mode. |
 | `desktop.probe_image` | `"alpine:3.22"` | Pre-pulled image used for local isolation probes. |
 | `desktop.probe_control` | `"1.1.1.1:443"` | Public IPv4:port target that the local isolation probe must reach. |
 | `desktop.remote_isolation_confirmed` | `false` | Set after verifying the remote desktop cannot reach your LAN or Dom host. |
@@ -111,5 +111,13 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | `t3.node` | `"~/.local/node/bin/node"` | Path to the user-local Node.js executable. |
 
 See the [T3 Code bridge guide](t3-bridge.md) for service setup and CLI compatibility.
+
+## Update
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `update.repo_url` | `"https://github.com/lcwlouis/tele-friend-bot.git"` | Public Git repository whose vX.Y.Z tags /update offers and deploys (https). |
+
+See [Deploy on a Raspberry Pi](deploy-pi.md) for how `/update` and `dom deploy` switch releases.
 
 See the [setup guide](setup.md) for examples and [Privacy](privacy.md) for how Dom uses the configured services.

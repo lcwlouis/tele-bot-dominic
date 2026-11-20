@@ -106,9 +106,13 @@ it does not, the probe container had no working networking and its timeouts prov
 nothing, so the result is "could not verify" and Dom refuses to start (fail
 closed).
 
-`lan_probes` and `probe_control` are IPv4 literals with ports, for example
-`lan_probes = ["192.0.2.1:443"]`; DNS names are rejected when the config loads. In
-local mode an empty `lan_probes` also refuses to start.
+`probe_control` is an IPv4 literal with a port. Each `lan_probes` entry is an IPv4
+literal or an mDNS `<name>.local` host name with a port, for example
+`lan_probes = ["192.0.2.1:443"]`; other DNS names are rejected when the config loads.
+The probe container cannot resolve mDNS, so Dom resolves each `.local` name on the
+Docker host before every probe and checks every IPv4 address it returns. A name that
+does not resolve fails closed. The firewall rules block the private ranges whatever
+the names resolve to. In local mode an empty `lan_probes` also refuses to start.
 
 ## Remote mode
 
