@@ -303,6 +303,12 @@ async def test_unstarted_tasks_expire_after_a_day_and_restart_fails_running_ones
     assert (await status(app, other["id"]))["status"] == "failed"
     assert (await status(app, other["id"]))["error"] == "Dom restarted"
 
+    off = self_app(make_app, enabled=False)
+    [stale] = await planned(off, PRACTICE)
+    off.dispatch.now.advance(hours=21)
+    await off.self_work.tick()
+    assert (await status(off, stale["id"]))["status"] == "expired" and off.client.requests == []
+
 
 # ---- the run: tools, sites, budgets, results ------------------------------------------------------------
 
