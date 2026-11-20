@@ -236,13 +236,6 @@ class Proposals:
         await app.store.record_owner_event(f"{status.capitalize()} proposal #{proposal_id}")
         return status.capitalize()
 
-    def _check_skill_secrets(self, skill: Skill) -> None:
-        config = self.app.config
-        content = f"{skill.name}\n{skill.description}\n{skill.body}"
-        for name in config.secret_names():
-            if (secret := config.secret(name)) and len(secret) >= 8 and secret in content:
-                raise ValueError("Public skills cannot include an instance credential.")
-
     def _apply(self, kind: str, body: dict) -> None:
         if kind == "soul_edit":
             if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
@@ -259,7 +252,7 @@ class Proposals:
         if kind == "skill":
             try:
                 skill = Skill(body["name"], body["description"], body["body"])
-                self._check_skill_secrets(skill)
+                check_local_private_text(self.app.config, self.app.home, [skill.name, skill.description, skill.body])
                 write_skill(self.app.home, skill, body["old"])
             except ValueError as error:
                 raise Refused(str(error)) from None
