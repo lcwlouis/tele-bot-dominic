@@ -345,6 +345,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
     enabled = {scope: [tool.name for tool in await enabled_tools(app, scope)] for scope in SCOPES}
     return json.dumps({
         "version": VERSION,
+        "repository": app.config.update.repo_url,
         "changelog_latest": own_code.latest_release(own_code.installed_base()),
         "tools": enabled,
         "approved_plugins": [
@@ -369,7 +370,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
 SELF_INSPECT_TOOL = Tool(
     name="self_inspect",
     description=(
-        "Read Dom's version, newest changelog entry, available tools by chat scope, approved plugins, desktop status, whether GIFs are on, "
+        "Read Dom's version, public repository URL, newest changelog entry, available tools by chat scope, approved plugins, desktop status, whether GIFs are on, "
         "models, the preset used everywhere with the chats that override it, and recent errors. "
         "When someone asks about you, answer in your own words like a person would; "
         "give exact numbers or internal names only when asked for them."

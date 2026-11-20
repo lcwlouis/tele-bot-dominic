@@ -126,6 +126,13 @@ The firewall unit runs in the system manager, while `dom install-service` uses
 the user manager. In local mode Dom checks the rules before each container start.
 The firewall commands use `iptables -w`.
 
+## Reading Dom's own code
+
+The desktop worker knows the public repository URL (`[update] repo_url`, shown by
+`self_inspect`) and may `git clone` it inside the sandbox to read code and history. It is
+read-only: the worker never pushes, never commits to it and uses no credentials. The clone
+needs the sandbox image to include `git`.
+
 ## Several containers
 
 Dom can run more than one desktop container, for example one per project, so a

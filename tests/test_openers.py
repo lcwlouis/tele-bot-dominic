@@ -29,9 +29,19 @@ async def record(app, msg_id, *, chat_id=OWNER, role="user", minutes_ago=60):
 
 
 def always_try(app):
+    from dom.config import OpenersConfig
+
+    app.config = app.config.model_copy(update={"openers": OpenersConfig(enabled=True)})  # off by default
     openers = app.dispatch.openers
     openers.rng = Draw(0)
     return openers, app.dispatch.now
+
+
+def test_openers_are_off_by_default_and_in_the_starter_config():
+    from dom.config import OpenersConfig, starter_config
+
+    assert OpenersConfig().enabled is False
+    assert starter_config()["openers"]["enabled"] is False
 
 
 @pytest.mark.parametrize("reason", ["disabled", "blocked", "sleep", "spacing", "activity", "random", "unanswered"])

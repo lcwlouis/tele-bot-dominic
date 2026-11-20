@@ -166,3 +166,12 @@ async def test_self_inspect_reports_version_and_latest_release(make_app):
     found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))
     assert found["version"] and found["changelog_latest"]["title"] == "[0.7.0] - 2026-11-19"
     assert len(found["changelog_latest"]["highlights"]) == 3
+
+
+async def test_self_inspect_reports_the_public_repository_url(make_app):
+    from dom.config import REPO_URL, UpdateConfig
+
+    app = make_app()
+    assert json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))["repository"] == REPO_URL
+    app.config = app.config.model_copy(update={"update": UpdateConfig(repo_url="https://example.test/fork.git")})
+    assert json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))["repository"] == "https://example.test/fork.git"
