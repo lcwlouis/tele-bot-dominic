@@ -132,7 +132,7 @@ async def _propose(app: App, old: str, device: Device, places: list[str]) -> str
     name = next((name for name in sorted(device.names) if mdns_name(name)), "")
     proposal_id = await app.proposals.create(
         "lan_address", f"LAN address change: {old} → {device.address}",
-        {"old": old, "new": device.address, "places": places, "name": name}, SOURCE,
+        {"old": old, "new": device.address, "places": places, "name": name, "macs": sorted(device.macs)}, SOURCE,
     )
     return f"moved to {device.address}; proposed the config change as #{proposal_id} for the owner's approval"
 

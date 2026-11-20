@@ -229,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_cmd.add_argument("--yes", action="store_true", help="apply the network and firewall changes")
     check_cmd = sub.add_parser("desktop-check", help="check connectivity from the desktop network")
     check_cmd.add_argument("home", type=Path)
-    check_cmd.add_argument("lan_address", help="IPv4 address of a known reachable LAN service")
+    check_cmd.add_argument("lan_address", help="IPv4 address or <name>.local of a known reachable LAN service")
     check_cmd.add_argument("--lan-port", type=int, default=443)
     check_cmd.add_argument("--public-address", default=None, help="override [desktop] probe_control (port 443)")
     args = parser.parse_args(argv)

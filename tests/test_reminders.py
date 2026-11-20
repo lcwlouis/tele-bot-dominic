@@ -136,13 +136,24 @@ async def test_normal_fires_near_due_when_awake_or_late_after_sleep(make_app, as
         clock.at = clock.at.replace(hour=7, minute=30)
         await app.dispatch.tick()
     assert [call[2] for call in app.bot.of("send", OWNER)] == [
-        "⏰ Check the kettle (late)" if asleep else "⏰ Check the kettle",
+        "hey\n⏰ Check the kettle (late)" if asleep else "hey\n⏰ Check the kettle",
     ]
-    assert not app.script.requests
+    assert len(app.script.requests) == 1
+    assert "Check the kettle" in app.script.requests[0]["messages"][-1]["content"]
+
+
+async def test_normal_styling_falls_back_to_the_stored_text(make_app):
+    app = make_app()
+    await add(app)
+    app.client = chat(httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(503))), app)
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    assert [call[2] for call in app.bot.of("send", OWNER)] == ["⏰ Check the kettle"]
+    assert await app.dispatch.reminders.active() == []
 
 
 async def test_startup_delivers_missed_normal_and_critical_even_asleep(make_app):
-    app = make_app(contents=('{"no_response":true}',))
+    app = make_app(contents=('{"no_response":true}',) * 2)
     clock = app.dispatch.now
     clock.at = clock.at.replace(hour=2)
     for importance in ("critical", "normal", "casual"):
@@ -299,7 +310,7 @@ async def test_chunks_already_sent_are_not_resent_on_retry(make_app):
     await app.dispatch.tick()
     sent = [call[2] for call in app.bot.of("send", OWNER)]
     assert len(attempts) == 6 and len(sent) == 5
-    assert "".join(sent) == f"⏰ {text}"
+    assert "".join(sent) == f"hey\n⏰ {text}"
     assert await app.dispatch.reminders.active() == []
 
 

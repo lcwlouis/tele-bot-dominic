@@ -250,6 +250,8 @@ def _proposal_label(kind: str, source: str) -> str:
         return f"Memory imported from {IMPORT_SERVICES.get(service, service)}" if service else "Memory fact"
     if kind == "skill":
         return "Skill proposed after a desktop task" if source == "desktop" else "Skill proposal"
+    if kind == "lan_address":
+        return "LAN address change"
     return "Plugin draft" if kind == "plugin" else kind.replace("_", " ").capitalize()
 
 
@@ -539,7 +541,9 @@ async def plugin_reviewed(request: Request, name: str, digest: str):
 async def plugin_action(request: Request, name: str, digest: str, decision: Literal["approve", "reject", "disable"]):
     app = owner_app(request)
     message = await app.plugins.decide(name, digest, decision)
-    response = render("plugins.html", context={"rows": await app.plugins.listing(), "message": message})
+    response = render("plugins.html", context={
+        "rows": await app.plugins.listing(), "panels": await _plugin_panels(app), "message": message,
+    })
     if message not in ("Approved", "Rejected", "Disabled", "already handled"):
         response.status_code = 409
     return response

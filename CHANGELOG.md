@@ -6,6 +6,12 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Public skills and plugin inputs are now screened against every configured credential, derived from the config (every `*_env` setting, including `KLIPY_API_KEY` and each `[[desktop.hosts]]` `api_key_env`).
+- Dashboard: plugin panels no longer disappear from the Plugins page after approving, rejecting or disabling a plugin.
+- Dashboard: `lan_address` proposals have a kind filter and a card (old → new address, where it is used, device name and MAC); Telegram "Approve all on this page" also applies skills and LAN address changes, each through its own checks.
+- find_devices and approved address changes also cover `[desktop] url` and every `[[desktop.hosts]]` url; `dom desktop-check` accepts `<name>.local` as well as an IPv4 address.
+- Normal reminders are phrased in Dom's own voice like critical ones, falling back to the stored text if the model fails; casual ones still fold into conversation.
+- Fix the turn note cutting Dom's tool list mid-word in the owner DM: it now lists every enabled tool by name, and drops whole names with "+N more" only when they would not fit.
 - Dashboard: show a Desktop tile on the home view with each container's host, state, truncated task brief, live viewer link and host limits, polling every 4 seconds when enabled.
 - Dashboard: edit each chat's sliders and reset them to default.
 - Dashboard: upload a `.txt` or `.md` export through the same import as `/import`; adds `python-multipart`.
