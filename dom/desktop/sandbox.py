@@ -171,7 +171,10 @@ class RemoteSandbox:
             except asyncio.CancelledError:
                 self._status = "ready" if self.client else "stopped"
                 raise
-            if self.host is not None:
+            if self.host is None:
+                return self._ready()
+            # Admission and taking the slot happen together under the host's lock, as for a local start.
+            async with self.host.start_lock:
                 try:
                     await self.host.admit(self)
                 except Refused as exc:
@@ -179,10 +182,13 @@ class RemoteSandbox:
                     self._status = "stopped"
                     self.error = str(exc)
                     raise SandboxError(self.error) from None
-            self.client = self._remote
-            self._status = "ready"
-            self.error = None
-            return self.client
+                return self._ready()
+
+    def _ready(self) -> SandboxClient:
+        self.client = self._remote
+        self._status = "ready"
+        self.error = None
+        return self.client
 
     async def free_memory_mb(self) -> int | None:
         """The remote machine's MemAvailable, read through the sandbox's own shell."""
