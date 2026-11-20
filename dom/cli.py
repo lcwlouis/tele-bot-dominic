@@ -151,6 +151,8 @@ async def run(home: Path) -> None:
                 await app.desktop_worker.recover()
             app.dispatch.jobs.register("habits", habits.due, partial(habits.run, app))
             app.dispatch.jobs.register("reflection", reflection.due, partial(reflection.run, app))
+            # Self-directed work is planned in the same nightly window, after the reflection (the daydream).
+            app.dispatch.jobs.register("self-work", reflection.due, app.self_work.plan)
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
             if config.owner_id is not None:
@@ -173,6 +175,7 @@ async def run(home: Path) -> None:
                         tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
                     )
                 finally:
+                    await app.self_work.close()
                     if app.desktop_worker is not None:
                         await app.desktop_worker.close()
                     await app.dispatch.close()

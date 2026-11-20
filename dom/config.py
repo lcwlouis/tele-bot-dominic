@@ -30,6 +30,21 @@ class OpenersConfig(BaseModel):
     max_per_day: int = Field(2, ge=0, description="Maximum number of openers per day in the configured timezone.")
 
 
+class SelfWorkConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(
+        True,
+        description=(
+            "Let Dom plan up to three small tasks of his own in his nightly daydream and run them in a local desktop "
+            "container once a verified network guard blocks the LAN. Inert without a local desktop host."
+        ),
+    )
+    delay_hours: float = Field(3, ge=0, le=48, allow_inf_nan=False, description="Hours after the plan is announced before a task may start.")
+    max_minutes: int = Field(20, ge=1, le=60, description="Largest working-time budget, in minutes, that one task may plan.")
+    max_steps: int = Field(25, ge=1, le=60, description="Largest step budget (tool calls and model turns) that one task may plan.")
+
+
 class PresenceConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -218,6 +233,7 @@ class Config(BaseModel):
     daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap.")
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
+    self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     t3: T3Config = Field(default_factory=T3Config)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
