@@ -259,6 +259,25 @@ async def test_select_bounds_pagination(make_app, cycle, pages):
     assert note
 
 
+async def test_select_accepts_an_integer_cursor_and_passes_it_back_unchanged(make_app):
+    class IntegerCursorGateway(Gateway):
+        cursors = []
+
+        def call(self, tool, args):
+            self.cursors.append(args.get("cursor"))
+            if "cursor" in args:
+                return {"threads": []}
+            return {**super().call(tool, args), "nextCursor": 25}
+
+    app = make_app()
+    bridge = Bridge(app)
+    bridge.client = IntegerCursorGateway()
+    _, thread, note = await bridge.select_thread(bridge.client.environments(), "Fixture thread")
+    assert thread["title"] == "Fixture thread" and not note
+    assert bridge.client.cursors == [None, 25]
+    assert isinstance(bridge.client.cursors[1], int)
+
+
 async def test_thread_read_ambiguity_and_failure(make_app):
     from dom.t3.client import T3Unavailable
 

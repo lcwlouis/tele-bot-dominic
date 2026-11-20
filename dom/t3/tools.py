@@ -125,7 +125,7 @@ class Bridge:
             matches = [(row["threadId"], row) for row in page["threads"]
                        if key in (row["title"].casefold(), row["threadId"].casefold())]
             cursor = page.get("nextCursor")
-            if cursor is not None and not isinstance(cursor, str):
+            if cursor is not None and (isinstance(cursor, bool) or not isinstance(cursor, (str, int))):
                 raise ValueError("Invalid T3 cursor.")
             return matches, cursor
         try:
