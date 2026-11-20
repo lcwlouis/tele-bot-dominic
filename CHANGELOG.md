@@ -6,6 +6,9 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Typing time now keeps scaling with a bubble's length up to 20 seconds (it capped at 8), and the "typing" indicator is re-sent every 4 seconds during a long wait so it does not lapse.
+- Openers (Dom texting first in the owner's DM) are off by default: `[openers] enabled` now defaults to `false`, in the starter config too. An instance that sets it keeps its setting.
+- `self_inspect` reports the public repository URL (`[update] repo_url`) with the running version, and the desktop worker is told it may `git clone` that repository in the sandbox to read code and history, read-only: no push, no commits, no credentials.
 - A second `dom deploy` refused because one is already running no longer overwrites the running deploy's saved state, so the post-restart report is not lost.
 - T3 bridge: thread lookup accepts the numeric paging cursor the live T3 server returns, instead of failing with "Invalid T3 cursor."
 - Every configured desktop host has a container from the start: remote hosts show on the Desktop page, home tile and capabilities (and open at `/desktop?container=<name>`) before first use, and `start_desktop_task` stays offered while any host is usable. Starting containers is still on demand.

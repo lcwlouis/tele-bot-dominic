@@ -26,7 +26,7 @@ class ModelEndpoint(BaseModel):
 class OpenersConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    enabled: bool = Field(True, description="Allow Dom to start conversations in the owner's DM.")
+    enabled: bool = Field(False, description="Allow Dom to start conversations in the owner's DM.")
     max_per_day: int = Field(2, ge=0, description="Maximum number of openers per day in the configured timezone.")
 
 

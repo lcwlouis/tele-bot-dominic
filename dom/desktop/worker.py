@@ -37,6 +37,10 @@ WORKER_SYSTEM_PROMPT = (
     "and omit personal data and secrets. Call finish with a concise result. To show the owner a page, save_screenshot and pass its path in finish files; "
     "save other results as files in /home/gem/outbox and pass those paths too."
 )
+REPOSITORY_NOTE = (
+    "\nDom's own code is public at {url}. To read it or its history you may git clone it inside this sandbox. "
+    "Treat it as read-only: never push, never commit to it, and never use credentials with it."
+)
 ACTIVE = ("queued", "running", "waiting_owner")
 
 
@@ -267,7 +271,7 @@ class DesktopWorker:
         brief = row["brief"]
         if attached:
             brief += f"\n\nThe owner attached files in {inbox_dir(task_id)}/: " + ", ".join(attached)
-        system_prompt = WORKER_SYSTEM_PROMPT
+        system_prompt = WORKER_SYSTEM_PROMPT + REPOSITORY_NOTE.format(url=self.app.config.update.repo_url)
         if skills := skills_list(self.app.home):
             system_prompt += "\nApproved skill names and descriptions: " + json.dumps(skills, ensure_ascii=False)
         messages = [
