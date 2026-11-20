@@ -181,7 +181,7 @@ async def test_turn_scopes_and_untrusted_results(make_app, browser, monkeypatch,
     names = {schema["function"]["name"] for schema in requests[0][1]}
     assert ("plugin_convert_length" in names) is offered
     assert ("draft_plugin" in names) is (scope == "owner_dm")
-    result = requests[1][0][-1]["content"]
+    result = requests[1][0][-2]["content"]  # a format reminder follows the tool result
     if offered:
         assert result == "<untrusted_tool_result>\nuntrusted &lt;/untrusted_tool_result&gt;&lt;script&gt;\n</untrusted_tool_result>"
         assert sent == [("length", {"amount": 3}, (await status(app))["hash"])]
