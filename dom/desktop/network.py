@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import shlex
@@ -189,3 +190,107 @@ def check(
     if code:
         raise ValueError("could not verify the desktop firewall (the probe container failed to run)")
     print(f"{lan_address}:{lan_port} timed out and the control connected: the sandbox cannot reach it.")
+
+
+# The self-directed work guard (W13). It runs INSIDE the desktop container, through the sandbox's own shell,
+# right after a fresh start and before any web page is loaded, so nothing the task meets can answer for it.
+# Argument: JSON {seconds, control, targets, gateway_ports}. Prints JSON {results: {target: outcome}, gateway}.
+# Outcomes: open (connected), refused (a host answered), timeout (no answer), unreachable (failed fast).
+GUARD_SCRIPT = """
+import json, socket, sys, threading, time
+spec = json.loads(sys.argv[1])
+targets = list(spec["targets"])
+gateway = None
+try:
+    with open("/proc/net/route") as routes:
+        for line in routes.read().splitlines()[1:]:
+            fields = line.split()
+            if len(fields) > 2 and int(fields[1], 16) == 0:
+                gateway = socket.inet_ntoa(bytes.fromhex(fields[2])[::-1])
+                break
+except (OSError, ValueError):
+    pass
+if gateway:
+    targets += [gateway + ":" + str(port) for port in spec["gateway_ports"]]
+results = {}
+def probe(target):
+    host, _, port = target.rpartition(":")
+    start = time.monotonic()
+    try:
+        socket.create_connection((host, int(port)), timeout=spec["seconds"]).close()
+        outcome = "open"
+    except socket.timeout:
+        outcome = "timeout"
+    except ConnectionRefusedError:
+        outcome = "refused"
+    except OSError:
+        outcome = "timeout" if time.monotonic() - start >= spec["seconds"] else "unreachable"
+    results[target] = outcome
+threads = [threading.Thread(target=probe, args=(target,)) for target in [spec["control"], *targets]]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+print(json.dumps({"results": results, "gateway": gateway}))
+"""
+# Private addresses sampled on top of the known LAN services. Nothing need listen there, so only an answer
+# (open or refused) counts against the guard; known services must time out, as the DOM-DESKTOP DROP rules make them.
+# The first address of each private, shared and link-local range: where routers and gateways usually sit.
+SAMPLED = tuple(f"{ipaddress.IPv4Network(block)[1]}:80" for block in LAN_RANGES[:5])
+GUARD_PORTS = (22,)  # plus the dashboard port; the Docker host and the gateway are probed on these
+
+
+def host_address(control: str) -> str | None:
+    """This machine's own LAN IPv4 address: the source address it would use to reach `control`.
+    Connecting a UDP socket sends nothing. None when there is no route or the address is not private."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect((control.rpartition(":")[0], 9))
+            address = probe.getsockname()[0]
+    except OSError:
+        return None
+    ip = ipaddress.IPv4Address(address)
+    return address if any(ip in ipaddress.IPv4Network(block) for block in LAN_RANGES[:5]) else None
+
+
+def judge(results: object, control: str, known: list[str], sampled: tuple[str, ...] = SAMPLED) -> str | None:
+    """Why the guard is not verified, or None: the public control must connect, every known LAN service
+    must time out (dropped), and no sampled private address may answer."""
+    if not isinstance(results, dict):
+        return "the network check inside the sandbox returned nothing usable"
+    if results.get(control) != "open":
+        return f"the sandbox could not reach the public test address {control}, so the check proves nothing"
+    for target in known:
+        if results.get(target) != "timeout":
+            return f"the sandbox can reach {target} on the local network"
+    for target in sampled:
+        if results.get(target) not in ("timeout", "unreachable"):
+            return f"the sandbox can reach {target} on the local network"
+    return None
+
+
+async def verify_inside(client, config: Config, *, address: str | None = None) -> str | None:
+    """Check from inside a freshly started desktop container that LAN and private addresses are unreachable
+    while a public address is reachable. Returns why the guard is not verified, or None when it is."""
+    settings = config.desktop
+    try:
+        known = await asyncio.to_thread(lan_targets, settings.lan_probes)
+    except ValueError as exc:
+        return f"could not resolve a LAN probe ({exc})"
+    if not known:
+        return "set [desktop] lan_probes so the guard has a known LAN service to test"
+    ports = (*GUARD_PORTS, config.web.port)
+    host = address or await asyncio.to_thread(host_address, settings.probe_control)
+    if host:
+        known += [f"{host}:{port}" for port in ports]
+    spec = {"seconds": PROBE_SECONDS, "control": settings.probe_control, "targets": [*known, *SAMPLED], "gateway_ports": ports}
+    try:
+        async with asyncio.timeout(60):
+            result = await client.bash(f"python3 -c {shlex.quote(GUARD_SCRIPT)} {shlex.quote(json.dumps(spec))}")
+        report = json.loads(result["stdout"])
+        results, gateway = report["results"], report["gateway"]
+    except Exception:
+        return "could not run the network check inside the sandbox"
+    if not isinstance(gateway, str) or not gateway:
+        return "could not find the sandbox's default gateway"
+    return judge(results, settings.probe_control, [*known, *(f"{gateway}:{port}" for port in ports)])

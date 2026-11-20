@@ -112,6 +112,17 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | --- | --- | --- |
 | `presence.seen_reaction` | `true` | While a DM is online, react 👀 to the newest message Dom read when he answers with nothing (never in groups). It stands in for a read receipt and is never sent while he is asleep or offline. |
 
+## Self-directed work
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `self_work.enabled` | `true` | Let Dom plan up to three small tasks of his own in his nightly daydream and run them in a local desktop container once a verified network guard blocks the LAN. Inert without a local desktop host. |
+| `self_work.delay_hours` | `3` | Hours after the plan is announced before a task may start. |
+| `self_work.max_minutes` | `20` | Largest working-time budget, in minutes, that one task may plan. |
+| `self_work.max_steps` | `25` | Largest step budget (tool calls and model turns) that one task may plan. |
+
+See [Self-directed work](desktop.md#self-directed-work) for the network guard it needs and what it may do.
+
 ## Web
 
 | Key | Default | Meaning |

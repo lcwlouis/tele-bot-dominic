@@ -1,0 +1,43 @@
+<section class="panel" id="own-work">
+  <header><h2>Own work</h2></header>
+  {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
+  {% if not context.settings.enabled %}
+  <p class="fog">Self-directed work is off (<code>[self_work] enabled = false</code>).</p>
+  {% elif not context.active %}
+  <p class="fog">Self-directed work needs a local desktop host. Nothing is planned until one is configured.</p>
+  {% else %}
+  <p class="fog">Dom plans up to three small tasks in his nightly daydream. Each starts no sooner than
+    {{ context.settings.delay_hours | round(1) }} hours after it is announced, only while he is awake and free,
+    and only in the sandbox once the network guard is verified.</p>
+  {% endif %}
+  {% if context.guard %}
+  <p class="{{ '' if context.guard.ok else 'notice' }}">Network guard:
+    {% if context.guard.ok %}verified from inside the sandbox{% else %}not verified ({{ context.guard.detail }}){% endif %}
+    <span class="fog">{{ context.guard.at_local }}</span></p>
+  {% elif context.active %}
+  <p class="fog">Network guard: not checked yet. Dom checks it from inside the sandbox before each task.</p>
+  {% endif %}
+  {% if not context.rows %}<p class="fog">No tasks planned yet.</p>{% endif %}
+  {% for task in context.rows %}
+  <article class="chat">
+    <h3>#{{ task.id }} {{ task.goal }} <span class="fog">{{ task.status }}</span></h3>
+    <p>Why: {{ task.why }}</p>
+    <ul class="fog">
+      <li>Uses: {{ task.tools | join(", ") }}</li>
+      <li>Sites: {{ task.sites | join(", ") if task.sites else "none, offline" }}</li>
+      <li>Budget: up to {{ task.minutes }} min and {{ task.steps_budget }} steps{% if task.steps %}; used {{ task.steps }} steps{% endif %}</li>
+      <li>Announced {{ task.announced_local }}{% if task.status == "planned" %}; starts after {{ task.not_before_local }}{% endif %}{% if task.finished_local %}; ended {{ task.finished_local }}{% endif %}</li>
+    </ul>
+    {% if task.result %}<p>{{ task.result }}</p>{% endif %}
+    {% if task.error %}<p class="notice">{{ task.error }}</p>{% endif %}
+    {% for name in task.files %}
+    <a href="/own-work/{{ task.id }}/files/{{ name }}"><img src="/own-work/{{ task.id }}/files/{{ name }}" alt="Screenshot {{ name }} from task #{{ task.id }}" class="own-shot" loading="lazy"></a>
+    {% endfor %}
+    {% if task.status in ("planned", "running") %}
+    <div class="actions">
+      <button class="link-danger" hx-post="/own-work/{{ task.id }}/cancel" hx-target="#own-work" hx-swap="outerHTML">Cancel #{{ task.id }}</button>
+    </div>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>

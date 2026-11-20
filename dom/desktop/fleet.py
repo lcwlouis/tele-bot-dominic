@@ -101,13 +101,25 @@ class DesktopFleet:
         """The containers worth showing: the default one and each remote host, and every other that is running or has a task."""
         return [lane for name, lane in self.lanes.items() if name in self.permanent or not lane.idle()]
 
-    async def _drop_idle(self) -> None:
+    async def drop_idle(self) -> None:
         for name, lane in list(self.lanes.items()):
             if name not in self.permanent and lane.idle():
                 del self.lanes[name]
                 lane.host.sandboxes.pop(name, None)
                 if (close := getattr(lane.sandbox, "close", None)) is not None:
                     await close()
+
+    async def own_lane(self, name: str) -> tuple[Lane | None, str | None]:
+        """The local container for a self-directed task, and why it may not start now (None when it may).
+        A missing or remote lane is no lane: self-directed work runs only in a local container."""
+        await self.drop_idle()
+        try:
+            lane = self.lane(name)
+        except ValueError:
+            lane = None
+        if lane is None or lane.host.config.mode != "local":
+            return None, "self-directed work needs a local desktop host"
+        return lane, await self._refusal(lane)
 
     def available(self) -> bool:
         return any(lane.worker.available() for lane in self.lanes.values())
@@ -119,12 +131,12 @@ class DesktopFleet:
         return await lane.host.refusal(lane.sandbox, busy=busy, memory=lane.host.config.mode == "local")
 
     async def enqueue(self, chat_id: int, brief: str, container: str | None = None) -> int:
-        await self._drop_idle()
+        await self.drop_idle()
         lane = self.lane(container)
         try:
             return await lane.worker.enqueue(chat_id, brief, admit=lambda: self._refusal(lane))
         finally:
-            await self._drop_idle()
+            await self.drop_idle()
 
     async def _lane_of(self, chat_id: int, task_id: int) -> Lane | None:
         for row in await self.app.store.desktop_tasks(chat_id, active=True):
@@ -139,7 +151,7 @@ class DesktopFleet:
         try:
             return await lane.worker.cancel(chat_id, task_id)
         finally:
-            await self._drop_idle()
+            await self.drop_idle()
 
     async def resume(self, chat_id: int, task_id: int, steps: int) -> bool:
         lane = await self._lane_of(chat_id, task_id)
@@ -163,7 +175,7 @@ class DesktopFleet:
                         await self._report(failed)
                 continue
             await lane.worker.recover(by_container.get(name, []))
-        await self._drop_idle()
+        await self.drop_idle()
 
     async def _leftovers(self) -> list[str]:
         local = next((lane.sandbox for lane in self.lanes.values() if hasattr(lane.sandbox, "existing_names")), None)
