@@ -202,6 +202,9 @@ class UpdateConfig(BaseModel):
         return url
 
 
+KNOWN_SECRETS = ("TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY")
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -233,6 +236,25 @@ class Config(BaseModel):
             name="default", mode=self.desktop_mode, url=self.desktop.url, api_key_env=self.desktop.api_key_env,
             remote_isolation_confirmed=self.desktop.remote_isolation_confirmed,
         )]
+
+    def secret_names(self) -> set[str]:
+        """Every environment variable that holds an instance credential: the keys named by any `*_env` setting
+        (so a new one is covered as soon as it exists) and the fixed names Dom reads."""
+        names = set(KNOWN_SECRETS)
+
+        def walk(value: object) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if isinstance(key, str) and key.endswith("_env") and isinstance(item, str) and item:
+                        names.add(item)
+                    else:
+                        walk(item)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(self.model_dump(mode="python"))
+        return names
 
     def secret(self, name: str) -> str | None:
         """Read a secret from ``home/.env`` first, then the process environment."""
@@ -313,14 +335,29 @@ def _replace_file(path: Path, text: str) -> None:
     os.replace(temp, path)
 
 
-def host_places(raw: dict) -> dict[str, list[str]]:
-    """Each host named by a model base_url or a desktop LAN probe, with the keys that name it."""
-    places: dict[str, list[str]] = {}
+def _url_hosts(raw: dict):
+    """Each URL-valued key that names a host, as (key path, table, field): model base URLs and desktop sandbox URLs."""
     for name, endpoint in (raw.get("models") or {}).items():
-        url = endpoint.get("base_url") if isinstance(endpoint, dict) else None
-        host = urlsplit(url).hostname if isinstance(url, str) else None
+        if isinstance(endpoint, dict) and isinstance(endpoint.get("base_url"), str):
+            yield f"models.{name}.base_url", endpoint, "base_url"
+    desktop = raw.get("desktop") or {}
+    if isinstance(desktop.get("url"), str):
+        yield "desktop.url", desktop, "url"
+    for number, host in enumerate(desktop.get("hosts") or []):
+        if isinstance(host, dict) and isinstance(host.get("url"), str):
+            yield f"desktop.hosts.{host.get('name', number)}.url", host, "url"
+
+
+def host_places(raw: dict) -> dict[str, list[str]]:
+    """Each host named by a model or desktop URL or a desktop LAN probe, with the keys that name it."""
+    places: dict[str, list[str]] = {}
+    for key, table, field in _url_hosts(raw):
+        try:
+            host = urlsplit(table[field]).hostname
+        except ValueError:
+            host = None
         if host:
-            places.setdefault(host, []).append(f"models.{name}.base_url")
+            places.setdefault(host, []).append(key)
     for target in (raw.get("desktop") or {}).get("lan_probes") or []:
         if isinstance(target, str) and ":" in target:
             places.setdefault(target.rpartition(":")[0], []).append("desktop.lan_probes")
@@ -328,13 +365,12 @@ def host_places(raw: dict) -> dict[str, list[str]]:
 
 
 def _moved(raw: dict, old: str, new: str) -> dict:
-    """`raw` with IPv4 host `old` replaced by `new` in model base URLs and LAN probes."""
+    """`raw` with IPv4 host `old` replaced by `new` in model and desktop URLs and LAN probes."""
     raw = copy.deepcopy(raw)
-    for endpoint in (raw.get("models") or {}).values():
-        url = endpoint.get("base_url") if isinstance(endpoint, dict) else None
-        if isinstance(url, str) and urlsplit(url).hostname == old:
-            parts = urlsplit(url)
-            endpoint["base_url"] = urlunsplit(parts._replace(netloc=parts.netloc.replace(old, new, 1)))
+    for _, table, field in _url_hosts(raw):
+        parts = urlsplit(table[field])
+        if parts.hostname == old:
+            table[field] = urlunsplit(parts._replace(netloc=parts.netloc.replace(old, new, 1)))
     desktop = raw.get("desktop") or {}
     if isinstance(desktop.get("lan_probes"), list):
         desktop["lan_probes"] = [
@@ -356,7 +392,7 @@ def replace_host(home: Path, old: str, new: str) -> None:
     expected = _moved(raw, old, new)
     if expected == raw:
         raise ValueError(f"config.toml no longer uses {old}")
-    new_text = re.sub(rf"(?<![\w.]){re.escape(old)}(?![\w]|\.[0-9])", new, text)
+    new_text = re.sub(rf"(?<![\w.-]){re.escape(old)}(?![\w-]|\.\w)", new, text)
     if tomllib.loads(new_text) != expected:
         raise ValueError(f"config.toml uses {old} somewhere else too; change it by hand")
     validate_config(home, expected)

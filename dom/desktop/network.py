@@ -168,20 +168,24 @@ def probe_command(config: Config, *targets: str) -> list[str]:
 
 
 def check(
-    config: Config, lan_address: str, lan_port: int = 443, public_address: str | None = None, *, run=subprocess.run,
+    config: Config, lan_address: str, lan_port: int = 443, public_address: str | None = None, *,
+    run=subprocess.run, resolve: Callable[[str], list[str]] | None = None,
 ) -> None:
-    lan = ipaddress.IPv4Address(lan_address)
+    """Prove the desktop network cannot reach a known LAN service, given by IPv4 address or `<name>.local`."""
+    if not mdns_name(lan_address):
+        lan_address = str(ipaddress.IPv4Address(lan_address))
     if not 1 <= lan_port <= 65535:
         raise ValueError("provide a valid LAN port")
     if public_address is not None:
         config = config.model_copy(update={"desktop": config.desktop.model_copy(update={
             "probe_control": f"{ipaddress.IPv4Address(public_address)}:443",
         })})
-    code = run(probe_command(config, f"{lan}:{lan_port}")).returncode
+    targets = lan_targets([f"{lan_address}:{lan_port}"], resolve)
+    code = run(probe_command(config, *targets)).returncode
     if code == PROBE_REACHABLE:
-        raise ValueError(f"the desktop network can reach {lan}:{lan_port}; run dom desktop-setup")
+        raise ValueError(f"the desktop network can reach {lan_address}:{lan_port}; run dom desktop-setup")
     if code == PROBE_NO_CONTROL:
         raise ValueError("the probe could not reach its control address, so the result proves nothing")
     if code:
         raise ValueError("could not verify the desktop firewall (the probe container failed to run)")
-    print(f"{lan}:{lan_port} timed out and the control connected: the sandbox cannot reach it.")
+    print(f"{lan_address}:{lan_port} timed out and the control connected: the sandbox cannot reach it.")

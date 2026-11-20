@@ -186,3 +186,23 @@ def test_eval_report_passes_or_fails_at_the_given_threshold(eval_script, capsys)
     output = capsys.readouterr().out
     assert "At threshold 2 | precision 1.000 | recall 0.500" in output and "Best threshold 1.2" in output
     assert report(list(zip(cases, [3, 1.2, 1.3, 0])), 1.2) == 1
+
+
+@pytest.mark.parametrize("variable", ["KLIPY_API_KEY", "PI_SANDBOX_KEY", "BOX_SANDBOX_KEY", "WORK_MODEL_KEY"])
+def test_every_configured_secret_is_screened_out_of_public_text(make_app, monkeypatch, variable):
+    from dom.config import DesktopConfig, DesktopHost, ModelEndpoint
+    from dom.guard import check_local_private_text
+
+    app = make_app()
+    config = app.config.model_copy(update={
+        "models": {**app.config.models, "work": ModelEndpoint(base_url="https://llm.test/v1", model="m", api_key_env="WORK_MODEL_KEY")},
+        "desktop": DesktopConfig(hosts=[
+            DesktopHost(name="pi", mode="remote", url="http://192.0.2.5:9000", api_key_env="PI_SANDBOX_KEY"),
+            DesktopHost(name="box", mode="remote", url="http://192.0.2.6:9000", api_key_env="BOX_SANDBOX_KEY"),
+        ]),
+    })
+    assert {"KLIPY_API_KEY", "PI_SANDBOX_KEY", "BOX_SANDBOX_KEY", "WORK_MODEL_KEY"} <= config.secret_names()
+    monkeypatch.setenv(variable, "fake-secret-value-123")
+    with pytest.raises(ValueError, match="credential"):
+        check_local_private_text(config, app.home, ["Use fake-secret-value-123 here."])
+    check_local_private_text(config, app.home, ["Nothing secret here."])

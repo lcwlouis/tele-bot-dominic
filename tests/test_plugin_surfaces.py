@@ -503,3 +503,16 @@ def test_the_starter_plugin_is_valid(monkeypatch):
     assert dom_plugin._commands["km"]("3", "group") == "3.0 mi is 4.83 km"
     assert dom_plugin._commands["km"]("far", "owner_dm") == "Usage: /km <miles>"
     assert surfaces.validate_panel(dom_plugin._panels["summary"]()).rows[0] == ("Half", "21.1", "13.1")
+
+
+async def test_plugin_panels_stay_after_approve_and_vanish_with_disable(make_app, browser, monkeypatch):
+    app = make_app()
+    await draft(app, manifest=SURFACES)
+    monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
+    route = review_path(await status(app))
+    async with browser(app) as client:
+        await review_code(client, route)
+        approved = await client.post(f"{route}/approve", headers=POST_HEADERS)
+        assert 'hx-post="/plugin-panels/convert/summary"' in approved.text
+        disabled = await client.post(f"{route}/disable", headers=POST_HEADERS)
+        assert disabled.status_code == 200 and 'hx-post="/plugin-panels/' not in disabled.text
