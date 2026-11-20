@@ -22,6 +22,7 @@ class Actions(BaseModel):
     private: bool = Field(default=False, strict=True)
     react: str | None = None
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
+    gif: str | None = Field(default=None, min_length=1, max_length=50, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list, max_length=6)
 
 

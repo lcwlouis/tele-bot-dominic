@@ -17,6 +17,7 @@ from aiogram.types import (
 from pydantic import ValidationError
 
 from dom.actions import Actions, SendFile
+from dom.gifs import GifSearch
 from dom.models import StoredMessage
 from dom.store import Store
 
@@ -65,11 +66,12 @@ async def perform(
     now: Callable[[], datetime] | None = None,
     on_sent: Callable[[int], Awaitable[None]] | None = None,
     stickers: Mapping[str, Sequence[str]] | None = None,
+    gifs: GifSearch | None = None,
     ephemeral_recipient: int | None = None,
     link_previews: bool = True,
     record: bool = True,
 ) -> list[int]:
-    """Send the bubbles, reaction and sticker; returns the sent message ids. no_response does nothing at all."""
+    """Send the bubbles, reaction, sticker and GIF; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
         return []
     if actions.private and chat_id < 0:
@@ -133,22 +135,43 @@ async def perform(
         choices = (stickers or {}).get(actions.sticker)
         if not choices:
             log.warning("unknown sticker emoji %r in chat %s", actions.sticker, chat_id)
-            return sent_ids
+        elif (sticker_id := await _send_media(
+            bot.send_sticker(chat_id, choice(choices), message_thread_id=thread_id),
+            store, chat_id, "sticker", {"kind": "sticker", "emoji": actions.sticker}, now, on_sent,
+        )) is not None:
+            sent_ids.append(sticker_id)
+    if actions.gif and gifs is not None:
         try:
-            sent = await bot.send_sticker(chat_id, choice(choices), message_thread_id=thread_id)
-        except TelegramAPIError:
-            log.warning("sticker send failed in chat %s", chat_id)
-            return sent_ids
-        await store.record_new_message(StoredMessage(
-            chat_id=str(chat_id), msg_id=sent.message_id, is_bot=True, role="assistant",
-            visibility_scope=store.visibility_for(chat_id), text="[sticker]",
-            media_json=json.dumps({"kind": "sticker", "emoji": actions.sticker}),
-            created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
-        ))
-        sent_ids.append(sent.message_id)
-        if on_sent is not None:
-            await on_sent(sent.message_id)
+            url = await gifs.find(actions.gif)
+        except Exception:
+            log.exception("gif search crashed in chat %s", chat_id)
+            url = None
+        if url and (gif_id := await _send_media(
+            bot.send_animation(chat_id, url, message_thread_id=thread_id),
+            store, chat_id, "gif", {"kind": "gif", "query": actions.gif}, now, on_sent,
+        )) is not None:
+            sent_ids.append(gif_id)
     return sent_ids
+
+
+async def _send_media(
+    sending: Awaitable, store: Store, chat_id: int, kind: str, media: dict,
+    now: Callable[[], datetime] | None, on_sent: Callable[[int], Awaitable[None]] | None,
+) -> int | None:
+    """Await one media send and record it; a Telegram refusal is logged and means nothing was sent."""
+    try:
+        sent = await sending
+    except TelegramAPIError:
+        log.warning("%s send failed in chat %s", kind, chat_id)
+        return None
+    await store.record_new_message(StoredMessage(
+        chat_id=str(chat_id), msg_id=sent.message_id, is_bot=True, role="assistant",
+        visibility_scope=store.visibility_for(chat_id), text=f"[{kind}]", media_json=json.dumps(media),
+        created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
+    ))
+    if on_sent is not None:
+        await on_sent(sent.message_id)
+    return sent.message_id
 
 
 async def send_files(bot, store: Store, chat_id: int, files: Sequence[SendFile]) -> None:

@@ -346,6 +346,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
         ],
         "plugin_sandbox_failure": app.plugin_runner.last_failure,
         "desktop": desktop_status(app, "owner_dm"),
+        "gifs": "on" if app.gifs is not None else "off (set KLIPY_API_KEY in .env to turn them on)",
         "models": {kind: endpoint.model for kind, endpoint in app.config.models.items()},
         "last_errors": await app.store.recent_turn_errors(),
         "preset": {
@@ -361,7 +362,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
 SELF_INSPECT_TOOL = Tool(
     name="self_inspect",
     description=(
-        "Read Dom's version, newest changelog entry, available tools by chat scope, approved plugins, desktop status, "
+        "Read Dom's version, newest changelog entry, available tools by chat scope, approved plugins, desktop status, whether GIFs are on, "
         "models, the preset used everywhere with the chats that override it, and recent errors. "
         "When someone asks about you, answer in your own words like a person would; "
         "give exact numbers or internal names only when asked for them."

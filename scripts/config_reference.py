@@ -68,6 +68,8 @@ def render() -> str:
             for role, settings in starter_config()["models"].items()
             for key, value in settings.items()
         ),
+        "## Optional secrets",
+        "`KLIPY_API_KEY` turns on GIF sending. Without it Dom does not offer the `gif` action. See [GIFs](gifs.md).",
         "## Desktop",
         table([
             ("desktop.mode", literal(Config.model_fields["desktop_mode"].default),
