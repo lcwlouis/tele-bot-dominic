@@ -60,3 +60,46 @@ async def test_no_fallback_configured_raises():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(httpx.ConnectError):
             await FallbackClient(_client(handler, http, "home"), None).complete([], [])
+
+
+async def test_once_falls_back_with_a_single_call_each():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.host)
+        if request.url.host == "home":
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, json=OK)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = FallbackClient(_client(handler, http, "home"), _client(handler, http, "cloud"))
+        assert (await client.complete([], [], once=True))["content"] == "hi"
+    assert calls == ["home", "cloud"]
+
+
+async def test_once_does_not_retry_the_fallback_either():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.host)
+        return httpx.Response(503, json=OK)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = FallbackClient(_client(handler, http, "home"), _client(handler, http, "cloud"))
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.complete([], [], once=True)
+    assert calls == ["home", "cloud"]
+
+
+async def test_once_400_is_raised_without_fallback():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.host)
+        return httpx.Response(400, json={"error": "bad"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = FallbackClient(_client(handler, http, "home"), _client(handler, http, "cloud"))
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.complete([], [], once=True)
+    assert calls == ["home"]

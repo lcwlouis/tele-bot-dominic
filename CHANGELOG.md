@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Single-attempt model calls (dashboard soul chat, reminder phrasing, desktop task reports, the asleep plugin grumble) now fall back to the fallback model, with one call, when the home endpoint is down.
 - Public skills and plugin inputs are now screened against every configured credential, derived from the config (every `*_env` setting, including `KLIPY_API_KEY` and each `[[desktop.hosts]]` `api_key_env`).
 - Dashboard: plugin panels no longer disappear from the Plugins page after approving, rejecting or disabling a plugin.
 - Dashboard: `lan_address` proposals have a kind filter and a card (old → new address, where it is used, device name and MAC); Telegram "Approve all on this page" also applies skills and LAN address changes, each through its own checks.
