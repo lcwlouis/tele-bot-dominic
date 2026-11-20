@@ -53,13 +53,24 @@ running service, reinstall its unit and restart `t3.service`.
 
 ## Link or unlink a machine
 
+A headless server starts with linked environments switched off. Turn the Labs
+switch on before linking: with `t3.service` stopped, write
+`{"linkedEnvironmentsEnabled": true}` to `~/.t3-dom/userdata/settings.json`, then
+start the service again. Linking needs a single-use pairing code from the other
+machine; keep its scopes narrow:
+
+```sh
+# on the other machine
+t3 pair --scope orchestration:read --scope orchestration:operate --ttl 10m --label "Dom"
+```
+
 Run the link command on the Pi as the service user, using the other machine's
 T3 Connect address. Approve the request on that machine in T3 Code under
 **Settings → Sharing & access**. Use `approval-required` (Supervised) so Dom can
 pass on messages you confirm, or `read-only` if you only want him to read.
 
 ```sh
-t3_dom environment link --base-dir "$HOME/.t3-dom" --access approval-required '<environment-url>'
+t3_dom environment link --base-dir "$HOME/.t3-dom" --access approval-required --pairing-code '<code>' '<environment-url>'
 t3_dom environment list --base-dir "$HOME/.t3-dom" --json
 ```
 
