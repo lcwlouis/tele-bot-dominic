@@ -6,13 +6,14 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 
 from pydantic import ValidationError
 
 from dom import turn_log
 from dom.actions import Actions
 from dom.llm import ChatClient, FallbackClient
+from dom.salvage import Salvaged
 from dom.tools import Tool, TurnCtx
 from dom.usage import ModelCallSkipped
 
@@ -29,6 +30,7 @@ FINAL_REQUEST = (
     "and nothing else."
 )
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+Rescue = Callable[[str | None], Awaitable[Salvaged | None]]  # plain prose in, bubbles out (dom.salvage), or None
 
 
 log = logging.getLogger("dom.agent")
@@ -158,12 +160,14 @@ async def run_turn(
     tools: list[Tool],
     ctx: TurnCtx,
     max_steps: int = 6,
+    rescue: Rescue | None = None,
 ) -> Actions:
     """Run one turn. Dom never sends raw model text: only valid actions leave this function.
 
     A reply that is not valid actions (or a turn that runs out of steps) is asked again once without
     tools, then put to the fallback model; if that fails too, NoFinalAnswer is raised so the caller can
-    tell a lost reply from a chosen silence."""
+    tell a lost reply from a chosen silence. Before that, plain prose that Jev judges a finished message is
+    sent as it is (`rescue`), which saves the second model call."""
     offered = {t.name: t for t in tools if ctx.scope in t.scopes}
     schemas = [t.openai_schema() for t in offered.values()]
     log.info("prompt chat=%s %s", ctx.chat_id, prompt_fingerprint(messages, schemas))
@@ -195,6 +199,14 @@ async def run_turn(
             continue
         if not calls and (actions := parse_actions(reply.get("content"))) is not None:
             return succeed(actions)
+        if not calls and rescue is not None and (saved := await rescue(reply.get("content"))) is not None:
+            trace.append("salvaged")
+            turn_log.step("salvaged")
+            log.info(
+                "salvaged prose reply in chat %s: %d bubbles, jev confidence %.2f",
+                ctx.chat_id, len(saved.actions.bubbles), saved.confidence,
+            )
+            return succeed(saved.actions)
         trace.append("malformed")
         turn_log.step("malformed")
         log.info("malformed reply in chat %s: %s", ctx.chat_id, malformed_shape(reply))
