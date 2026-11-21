@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Desktop tasks on a model on the owner's own network (a home-lab vLLM) are no longer stopped by the $0.50 task ceiling: calls to a private, loopback or `.local` endpoint count as free, so such a task is bounded by its step budget. The log-in card's Done button turns into "✅ Resumed" or "Task ended" however the task moved on (Done on the dashboard or in Telegram, a cancel, a timeout or a restart).
 - Desktop live view works on a phone: the page fits the screen, and a "Type into the desktop" field below it brings up the phone's keyboard and sends what is typed as keystrokes, with Enter, Tab and Backspace buttons. Its Password mode makes it a password field a password manager can fill; the text is cleared after sending, and noVNC's logging stays at "warn" so keystrokes never reach the browser console.
 - A /proposals or /reminders list card is rebuilt from the database after each tap, so two quick taps no longer bring back the first row's buttons, and "Approve all on this page" goes once nothing on the page is pending. A bare `/import` sends the export prompt as its own code block, so one tap copies it with its line breaks.
 - Dashboard: plugin panels and Own work on the Now page span the full width (they were squeezed into one of twelve columns); the Turn log chat filter lists only chats Dom is in, plus any in the turns shown; and deciding a proposal anywhere (dashboard, Plugins page or expiry) also turns its Telegram card's buttons into the outcome.

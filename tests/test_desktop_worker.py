@@ -417,6 +417,27 @@ async def test_a_provider_that_omits_cost_is_estimated_from_tokens_for_the_ceili
     assert await app.dispatch.usage.over_cap(app.config, app.bot) is False
 
 
+async def test_calls_to_a_model_on_the_owners_own_network_are_free_for_the_ceiling(make_app):
+    # Task #1 on the Pi: 18 calls to the home-lab vLLM, 250k tokens at the fallback price, hit the $0.50 ceiling.
+    from dom.config import ModelEndpoint
+    from dom.usage import local_hosts
+
+    app = make_app()
+    models = {
+        "chat": ModelEndpoint(base_url="http://192.0.2.24:8080/v1", model="default"),
+        "chat_fallback": ModelEndpoint(base_url="https://openrouter.ai/api/v1", model="x"),
+        "media": ModelEndpoint(base_url="http://studio.local:9000/v1", model="y"),
+    }
+    app.config = app.config.model_copy(update={"models": models})
+    assert local_hosts(app.config) == ("192.0.2.24", "studio.local")
+    started = "2026-01-01T00:00:00+00:00"
+    now = datetime.now(timezone.utc).isoformat()
+    await app.store.record_usage(now, "desktop", "default", "192.0.2.24", OWNER, 240000, 5000, 0, 0)
+    assert await app.dispatch.desktop_pause(OWNER, started) is None
+    await app.store.record_usage(now, "desktop", "x", "openrouter.ai", OWNER, 200000, 50000, 0, 1)  # unpriced, remote
+    assert await app.dispatch.desktop_pause(OWNER, started) == "task cost cap of $0.50 reached"
+
+
 def test_fallback_price_default_and_validation():
     assert DesktopConfig().fallback_usd_per_1k_tokens == 0.002
     with pytest.raises(ValueError):
@@ -502,3 +523,16 @@ async def test_save_screenshot_puts_a_png_where_finish_can_send_it(make_app):
     assert uploads == [("/home/gem/outbox/Front_page.png", b"\x89PNG fake")]
     tool_result = next(m for m in app.client.requests[1][0] if m.get("role") == "tool")
     assert "/home/gem/outbox/Front_page.png" in tool_result["content"]
+
+
+async def test_the_log_in_card_drops_its_done_button_once_the_task_moves_on(make_app):
+    # Done on the dashboard resumed task #1, but the Telegram card kept a Done button to tap.
+    app = make_app()
+    await app.dispatch.desktop_handoff(7, 3, OWNER, "log in to the site")
+    card = app.bot._next_id
+    await app.dispatch.settle_handoff_card(7, "✅ Resumed")
+    _, chat_id, message_id, markup = app.bot.of("markup")[-1]
+    assert (chat_id, message_id) == (OWNER, card)
+    assert [[(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard] == [[("✅ Resumed", "noop")]]
+    await app.dispatch.settle_handoff_card(7, "Task ended")  # settled once only
+    assert len(app.bot.of("markup")) == 1
