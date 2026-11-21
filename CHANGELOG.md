@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- A /proposals or /reminders list card is rebuilt from the database after each tap, so two quick taps no longer bring back the first row's buttons, and "Approve all on this page" goes once nothing on the page is pending. A bare `/import` sends the export prompt as its own code block, so one tap copies it with its line breaks.
 - Dashboard: plugin panels and Own work on the Now page span the full width (they were squeezed into one of twelve columns); the Turn log chat filter lists only chats Dom is in, plus any in the turns shown; and deciding a proposal anywhere (dashboard, Plugins page or expiry) also turns its Telegram card's buttons into the outcome.
 - Plugins: `draft_plugin` now tells Dom that every call starts fresh (no files, history or settings survive), that `version` is a short string and that the description must match `plugin.toml`. A plugin command or panel that fails records an event in the owner's DM with only its name and the kind of failure (never its output), so Dom knows on his next turn and can offer a fix, and a failure from trying to save a file says so.
 - Telegram cards show what was done: after Approve or Reject on a proposal, or Cancel on a reminder, that button row turns into "✅ Approved", "❌ Rejected" or "Cancelled #N" (a button that does nothing), so a stale button cannot be tapped again; other reminders on a /reminders list keep their buttons.
