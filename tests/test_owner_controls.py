@@ -198,10 +198,10 @@ async def test_status_lists_approved_chats_with_buttons_and_a_footer(two_approve
         "Last reply: —",
     ]
     assert buttons(markup) == [
-        [("☀️ your DM", f"wake:{OWNER}"), ("🌙 Sleep", f"sleep:{OWNER}")],  # DMs have no Leave button
-        [("☀️ Book Club", f"wake:{FRIEND_GROUP}"), ("🌙 Sleep", f"sleep:{FRIEND_GROUP}"),
+        [("☀️ Wake your DM", f"wake:{OWNER}"), ("🌙 Sleep", f"sleep:{OWNER}")],  # DMs have no Leave button
+        [("☀️ Wake Book Club", f"wake:{FRIEND_GROUP}"), ("🌙 Sleep", f"sleep:{FRIEND_GROUP}"),
          ("🚪 Leave", f"leave:{FRIEND_GROUP}")],
-        [("☀️ DM with Fran", f"wake:{FRIEND}"), ("🌙 Sleep", f"sleep:{FRIEND}")],
+        [("☀️ Wake DM with Fran", f"wake:{FRIEND}"), ("🌙 Sleep", f"sleep:{FRIEND}")],
     ]
     assert app.script.requests == []
 
@@ -269,7 +269,7 @@ async def test_status_falls_back_to_plain_text_when_rich_messages_are_refused(tw
     (_, chat_id, text, kw), = app.bot.of("send")
     assert chat_id == OWNER and text.startswith("Dom's chats\n")
     assert any("Book Club: " in l and "unread" in l for l in text.splitlines())
-    assert buttons(kw["reply_markup"])[1][0] == ("☀️ Book Club", f"wake:{FRIEND_GROUP}")
+    assert buttons(kw["reply_markup"])[1][0] == ("☀️ Wake Book Club", f"wake:{FRIEND_GROUP}")
     assert sum("rich" in r.getMessage().lower() for r in caplog.records) == 1  # logged once
 
 
@@ -285,7 +285,7 @@ async def test_wake_and_sleep_buttons_change_presence_and_refresh_the_status(two
     text, markup = only_replacement(app)
     row = next(r for r in rows_of(text) if r[0] == "DM with Fran")
     assert row[1].endswith("online") and row[2] == "12:30"
-    assert buttons(markup)[0][0] == ("☀️ your DM", f"wake:{OWNER}")
+    assert buttons(markup)[0][0] == ("☀️ Wake your DM", f"wake:{OWNER}")
     assert await app.dispatch.presence.is_online(FRIEND, app.dispatch._habits())
 
     app.bot.calls.clear()

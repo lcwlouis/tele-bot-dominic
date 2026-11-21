@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- `/status`: the per-chat wake button reads "☀️ Wake <chat>" instead of just "☀️ <chat>", so it is clear what it does.
 - Ephemeral group replies: a `"private": true` written inside the bubbles (where the home-lab model puts it) now makes the whole answer private instead of failing validation three times and leaving the owner with no answer; the turn note shows the exact shape. A malformed final answer's correction now says what was wrong by shape only (keys and error kinds, never text), so the retry can fix it instead of repeating it.
 - Logins on the desktop go through the handoff: `start_desktop_task` tells Dom to have the worker call `handoff` at a login page (the owner logs in on the live view and taps Done) and never to ask for a password or code in chat, and the worker is told to call `handoff` instead of finishing when the brief needs a login it is not past. Image results (`.png`, `.jpg`, `.jpeg`, `.webp` up to 10 MB) are sent as photos that open inline; one Telegram refuses as a photo (too many pixels, a very long page) goes as a file.
 - A desktop task that runs out of steps gets one last call, offering only `finish`, to say what it found, how far it got and what is left; the owner hears that instead of a bare "Stopped after 30 steps". A reply whose bubbles are bare strings (`["…"]` instead of `[{"text": "…"}]`) is read as those texts instead of being dropped, so a desktop report in Dom's voice no longer falls back to plain text for that, and an unusable report logs its shape.
