@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, time, timedelta
 from unittest.mock import AsyncMock
@@ -63,7 +64,10 @@ async def test_dashboard_pages_and_day_dial(make_app, browser):
     await app.store.record_usage(
         (now - timedelta(days=1)).isoformat(), "search", "search-model", "example.org", GROUP, 2, 3, 0.1, 0,
     )
-    await app.store.record_turn(now, GROUP, "group", 2, ["web_search", "final"], "example-model", True, 250, "Replied")
+    await app.store.record_turn(
+        now, GROUP, "group", 2, ["web_search", "final", "model@1204", "web_search@1893", "typing@4210"],
+        "example-model", True, 250, "Replied",
+    )
     await app.store.record_turn(now, OWNER, "owner_dm", 1, ["final"], "example-model", False, 50, "Stayed quiet")
 
     async with browser(app) as client:
@@ -89,6 +93,7 @@ async def test_dashboard_pages_and_day_dial(make_app, browser):
         assert "$0.80" in usage and "$0.10" in usage and "search-model" in usage and 'class="fallback-mark"' in usage
         turns = (await client.get(f"/turns?chat={GROUP}")).text
         assert "Replied" in turns and "Stayed quiet" not in turns and "Search" in turns and "Fallback" in turns
+        assert all(chip in turns for chip in ("Model 1.2 s", "Search 1.9 s", "Typing 4.2 s")) and "@" not in turns
         assert (await client.get("/static/htmx.min.js")).status_code == 200
 
 
@@ -156,7 +161,9 @@ async def test_agent_and_dispatch_write_turn_and_daily_retention(make_app):
     row = rows[0]
     assert row["chat_id"] == str(GROUP)
     assert row["scope"] == "group" and row["calls"] == 1 and row["model"] == "m"
-    assert row["trace"] == '["final"]' and row["fallback"] == 0
+    trace = json.loads(row["trace"])
+    assert trace[0] == "final" and [item.partition("@")[0] for item in trace[1:]] == ["model", "typing"]
+    assert row["fallback"] == 0
     assert row["outcome"] == "Replied in 1 bubble" and row["duration_ms"] >= 0
     for age in (30, 31):
         await app.store.record_turn(now - timedelta(days=age), OWNER, "owner_dm", 0, [], "", False, 0, "Stayed quiet")

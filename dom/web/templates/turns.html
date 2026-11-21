@@ -23,6 +23,7 @@
         {% for step in turn.steps %}
         <span>{{ "Search" if step == "web_search" else step|replace("_", " ")|capitalize }}</span>
         {% endfor %}
+        {% for item in turn.timing %}<span class="num">{{ item }}</span>{% endfor %}
         {% if turn.model %}<span>{{ turn.model }}</span>{% endif %}
         {% if turn.fallback %}<span class="fallback">Fallback</span>{% endif %}
         <span class="num">{{ turn.calls }} {{ "call" if turn.calls == 1 else "calls" }}</span>

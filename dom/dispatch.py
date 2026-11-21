@@ -34,6 +34,7 @@ from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import build_messages, report_messages
 from dom.reflection import mood
 from dom.reminders import Reminders
+from dom.store.store import window_chunk
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, enabled_tools
 from dom.traits import for_chat
@@ -61,7 +62,7 @@ BOT_DEDUP_WINDOW = timedelta(seconds=60)
 MAX_TURN_FAILURES = 3  # consecutive failures after which a chat's unread messages are given up on
 _CHAT_GONE = re.compile(r"chat not found|kicked|not a member", re.IGNORECASE)
 MEMORY_PASS_INTERVAL = timedelta(minutes=5)  # per chat
-MEMORY_PASS_MARGIN = 5  # start a pass this many messages before unprocessed ones scroll out of the chat window
+MEMORY_PASS_MARGIN = 5  # start a pass this many messages before the window's next trim
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 NO_ANSWER_NOTICE = "Sorry, I couldn't put a reply together just now. Could you send that again?"
 
@@ -496,11 +497,24 @@ class Dispatcher:
             await self._mark_seen(chat_id, newest)
         await store.mark_chat_read(chat_id, newest.msg_id)
         # Notes only need to catch what is about to leave Dom's view; the session-end pass covers the rest.
-        if await store.count_new_for_memory(chat_id) >= max(1, self.app.config.window_size - MEMORY_PASS_MARGIN):
+        if await self._memory_due(chat_id):
             self.request_memory_pass(chat_id)
 
+    async def _memory_due(self, chat_id: int) -> bool:
+        """True when the window is about to trim and some message it will drop has not been through a pass yet.
+        The pass then rewrites notes just before the window start moves, so both invalidate the model's prompt
+        cache in the same turn instead of at different times."""
+        store, size = self.app.store, self.app.config.window_size
+        if size < TRIAGE_WINDOW:  # too short to trim in chunks: it slides, so watch the unprocessed count
+            return await store.count_new_for_memory(chat_id) >= max(1, size - MEMORY_PASS_MARGIN)
+        window = await store.get_chat_window(chat_id, size)
+        if len(window) < size - MEMORY_PASS_MARGIN:
+            return False
+        cursor = await store.get_memory_cursor(chat_id)
+        return any(m.role != "event" and m.msg_id is not None and m.msg_id > cursor for m in window[:window_chunk(size)])
+
     async def _window(self, chat_id: int, newest: StoredMessage) -> list[StoredMessage]:
-        return await self.app.store.get_recent_chat_window(
+        return await self.app.store.get_chat_window(
             chat_id, max(TRIAGE_WINDOW, self.app.config.window_size), through_id=newest.id,
         )
 
@@ -546,11 +560,12 @@ class Dispatcher:
             return False
         recipient = self._ephemeral_recipient(scope, newest)
         try:
-            sent = await executor.perform(
-                app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
-                thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
-                gifs=app.gifs, ephemeral_recipient=recipient,
-            )
+            with turn_log.timed("typing"):  # the typing delays and the sending
+                sent = await executor.perform(
+                    app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
+                    thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
+                    gifs=app.gifs, ephemeral_recipient=recipient,
+                )
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
             elif sent:

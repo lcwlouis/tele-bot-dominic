@@ -54,7 +54,10 @@ class ChatClient:
         for delay in (None,) if once else (*RETRY_BACKOFF, None):
             await check_model_allowed()
             turn_log.attempt(self.endpoint.model, request_kind("chat"), fallback=fallback)
-            response = await self.http.post(url, json=body, headers=headers, timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS))
+            with turn_log.timed("fallback_model" if fallback else "model"):
+                response = await self.http.post(
+                    url, json=body, headers=headers, timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS),
+                )
             if self.usage is not None:
                 await self.usage.record_response(response, "chat", self.endpoint.model, self.host, fallback=fallback)
             if delay is None or not _retryable(response.status_code):

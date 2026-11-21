@@ -68,6 +68,20 @@ _MESSAGE_COLUMNS = (
 )
 
 
+def window_chunk(size: int) -> int:
+    """How many of the oldest messages one trim drops from a full chat window of `size` messages: the window
+    then holds about 60% of `size` and refills before the next trim."""
+    return max(1, size - size * 3 // 5)
+
+
+def window_start(total: int, size: int) -> int:
+    """Where a chat window of at most `size` messages starts, among the chat's `total` messages. It moves only in
+    whole chunks, so the start (and the prompt text that follows it) stays put between trims, and it depends on
+    nothing but the message count: every turn, and every restart, computes the same start."""
+    excess = total - size
+    return 0 if excess <= 0 else -(-excess // window_chunk(size)) * window_chunk(size)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -973,15 +987,33 @@ class Store:
     ) -> list[StoredMessage]:
         return await self._run(self._get_recent_chat_window, str(chat_id), limit, through_id)
 
-    def _get_recent_chat_window(self, chat_id: str, limit: int, through_id: int | None) -> list[StoredMessage]:
+    def _window_where(self, chat_id: str, through_id: int | None) -> tuple[str, tuple]:
         # Rows labelled private (e.g. from a legacy import) never enter another chat's window.
         hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        return (
+            f"chat_id = ? AND is_deleted = 0{hide} AND (? IS NULL OR role != 'user' OR id <= ?)",
+            (chat_id, through_id, through_id),
+        )
+
+    def _get_recent_chat_window(self, chat_id: str, limit: int, through_id: int | None) -> list[StoredMessage]:
+        where, args = self._window_where(chat_id, through_id)
         rows = self._conn.execute(
-            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND is_deleted = 0{hide} "
-            "AND (? IS NULL OR role != 'user' OR id <= ?) ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
-            (chat_id, through_id, through_id, max(0, limit)),
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
+            (*args, max(0, limit)),
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]
+
+    async def get_chat_window(
+        self, chat_id: int | str, size: int, *, through_id: int | None = None,
+    ) -> list[StoredMessage]:
+        """The window the model reads: up to `size` messages that end at the newest, trimmed in chunks rather than
+        one message at a time (see `window_start`), so it stays the same text until the next trim."""
+        return await self._run(self._get_chat_window, str(chat_id), size, through_id)
+
+    def _get_chat_window(self, chat_id: str, size: int, through_id: int | None) -> list[StoredMessage]:
+        where, args = self._window_where(chat_id, through_id)
+        total = self._conn.execute(f"SELECT COUNT(*) FROM messages WHERE {where}", args).fetchone()[0]
+        return self._get_recent_chat_window(chat_id, total - window_start(total, size), through_id)
 
     format_chat_window_xml = staticmethod(format_chat_window_xml)
 
