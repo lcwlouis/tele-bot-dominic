@@ -796,3 +796,23 @@ def test_the_worker_reports_only_what_the_pages_said():
     for prompt in (OWN_SYSTEM_PROMPT, WRAP_UP):
         assert "never add facts from your own memory" in prompt.lower()
     assert "read_page" in OWN_SYSTEM_PROMPT
+
+
+async def test_out_of_steps_with_a_report_ends_done_as_partial_with_its_files(make_app):
+    """Live run 2026-11-22: a task that read what it came for but used its last step ended "failed"."""
+    app = self_app(
+        make_app,
+        call("save_screenshot", name="pools"), call("read_page"),
+        call("finish", result="Tide pools hold anemones.", files=[f"/home/gem/outbox/{CONTAINER}-pools.png"]),
+    )
+    [row] = await planned(app, TASK)
+    await app.store._run(lambda: app.store._conn.execute("UPDATE self_tasks SET steps_budget = 2 WHERE id = ?", (row["id"],)))
+    await run_next(app)
+    done = await status(app, row["id"])
+    assert done["status"] == "done" and done["steps"] == 2
+    assert done["result"] == "Tide pools hold anemones."
+    assert done["error"] == selfwork.PARTIAL
+    assert json.loads(done["files_json"]) == [f"{CONTAINER}-pools.png"]
+    [summary] = [c[2] for c in app.bot.calls if c[0] == "send"]
+    assert summary.startswith(f"Finished part of my own task #{row['id']}")
+    assert "ran out of steps" in summary and "Tide pools hold anemones." in summary

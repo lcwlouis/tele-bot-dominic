@@ -80,6 +80,8 @@ class Progress:
     steps: int = 0
     note: str = ""  # the model's own latest progress text, never tool output
     paused: str = ""  # why the next model call was refused
+    wrapped: bool = False  # out of steps, the wrap-up call still gave a finish report
+    files: tuple[SendFile, ...] = ()  # files that wrap-up finish named
 
 
 @dataclass
@@ -476,7 +478,9 @@ class DesktopWorker:
             if calls and _well_formed(calls):
                 name, args = tools.arguments(calls[0]["function"])
                 if name == "finish" and (note := client.redact(args["result"]).strip()[:tools.RESULT_LIMIT]):
-                    progress.note = note
+                    progress.note, progress.wrapped = note, True
+                    async with asyncio.timeout_at(run.deadline):
+                        progress.files = tuple(await download_results(client, args.get("files", [])))
         except Exception as exc:  # TimeoutError, a skipped call or a bad answer: the bare step count stands
             log.info("desktop task %s wrap-up gave nothing (%s)", run.task_id, type(exc).__name__)
 

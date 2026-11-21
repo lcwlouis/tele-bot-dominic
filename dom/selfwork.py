@@ -52,6 +52,7 @@ MAX_SITES = 4
 READING = ("browse", "read_page", "list_elements", "scroll", "look", "save_screenshot")
 MIN_STEPS = 10  # a live 4-step task ran out before it read a single page
 EXPIRY = timedelta(hours=24)
+PARTIAL = "Partial: it ran out of steps before it finished."
 GUARD_KEY = "self_work:guard"  # JSON {ok, at, detail}: the last guard verification, read by `dom doctor`
 FILES_DIR = "self-work"  # under DOM_HOME: self-work/<task id>/<screenshot>.png
 FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.png")
@@ -356,6 +357,10 @@ class SelfWork:
                 error = progress.paused or "paused by today's spend cap"
             if "step limit" in error:
                 error = "step budget reached"
+            if error == "step budget reached" and progress.wrapped:  # out of steps, but it reported what it found
+                saved = await asyncio.to_thread(self._save_files, task_id, progress.files)
+                await self._finish(task_id, "done", result=progress.note, error=PARTIAL, files=saved, steps=progress.steps)
+                return
             await self._finish(task_id, "failed", result=progress.note or None, error=error[:500], steps=progress.steps)
         except asyncio.CancelledError:
             if self._running == task_id:
@@ -393,8 +398,9 @@ class SelfWork:
         if row["status"] == "done":
             # The result is the worker's account of web pages: say so, and keep its links off Telegram.
             summary = _text(LINK.sub("[link removed]", row["result"] or ""), SUMMARY_LIMIT)
+            done = f"Finished part of {task}: it ran out of steps" if row["error"] == PARTIAL else f"Finished {task}"
             text = (
-                f"Finished {task}. Summary of web content (not checked by me, links removed): {summary}\n"
+                f"{done}. Summary of web content (not checked by me, links removed): {summary}\n"
                 "The full result" + (" and screenshots are" if json.loads(row["files_json"]) else " is") + " on the dashboard."
             )
         elif row["status"] == "refused":

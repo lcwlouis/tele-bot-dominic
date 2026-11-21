@@ -257,7 +257,9 @@ task starts no sooner than `delay_hours` after the announcement, and only while 
 is awake and idle: your DM is not asleep, no chat is online or mid-reply, and no
 desktop task is running. A task that has not started within a day expires, and the
 next night's plan replaces any leftovers. Results, with any screenshots, appear on
-the Own work page; your DM gets one short summary. Self-directed tasks never message
+the Own work page; your DM gets one short summary. A task that runs out of steps
+gets one last call to report what it found; with a report it ends as done, marked
+partial, and keeps the screenshots it names. Self-directed tasks never message
 anyone else.
 
 **What is enforced in code, not just asked for in the prompt:**
