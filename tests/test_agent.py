@@ -403,6 +403,13 @@ async def test_the_correction_is_asked_without_tools(env):
     assert "tools" in script.requests[0] and "tools" not in script.requests[1]
 
 
+async def test_the_correction_says_what_was_wrong_by_shape(env):
+    script = Script(reply(content='{"bubbles": [{"text": "hi", "colour": "red"}]}'), reply(content=json.dumps(FINAL)))
+    await run_turn(make_client(script), ASKED, core_tools(), ctx_for(env))
+    correction = script.requests[1]["messages"][-1]["content"]
+    assert "bubbles.0.colour:extra_forbidden" in correction and "hi" not in correction.split("What was wrong")[1]
+
+
 async def test_a_tool_call_in_the_correction_is_not_run(env):
     ran = []
 

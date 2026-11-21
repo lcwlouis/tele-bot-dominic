@@ -208,7 +208,8 @@ async def run_turn(
         reply = None
 
     # Ask again without tools: with them offered the model may call one more instead of answering.
-    request = CORRECTION if reply is not None else FINAL_REQUEST
+    # The shape of what was wrong (keys and error kinds, never text) lets the model fix that instead of repeating it.
+    request = f"{CORRECTION} What was wrong: {malformed_shape(reply)}." if reply is not None else FINAL_REQUEST
     retry = await client.complete([*messages, {"role": "user", "content": request}], [])
     if (actions := _final(retry)) is not None:
         return succeed(actions)

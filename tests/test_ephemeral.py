@@ -30,6 +30,17 @@ def test_private_action_is_a_boolean():
         Actions(private="yes")
 
 
+def test_private_written_inside_the_bubbles_makes_the_whole_answer_private():
+    # Live test 13: the model wrote {"bubbles": [{"text": ..., "private": true}, ...]} three times in a row and the
+    # owner got nothing, because Bubble forbids extra keys.
+    from dom.agent import parse_actions
+
+    actions = parse_actions('{"bubbles": [{"text": "one", "private": true}, {"text": "two", "private": false}]}')
+    assert actions.private is True and [b.text for b in actions.bubbles] == ["one", "two"]
+    assert parse_actions('{"bubbles": [{"text": "one", "private": false}]}').private is False
+    assert parse_actions('{"bubbles": [{"text": "one", "private": "yes"}]}').private is False
+
+
 @pytest.mark.parametrize("chat_id,sender,enabled,offered", [
     (GROUP, OWNER, True, True),
     (GROUP, FRIEND, True, False),

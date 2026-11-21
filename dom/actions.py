@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # The emoji Telegram accepts as a bot reaction (Bot API, ReactionTypeEmoji). A test keeps this in
 # step with the list in aiogram's documentation of that type.
@@ -38,6 +38,20 @@ class Actions(BaseModel):
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     gif: str | None = Field(default=None, min_length=1, max_length=50, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list, max_length=MAX_BUBBLES)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _private_in_bubbles(cls, data: object) -> object:
+        """Models put "private": true inside each bubble instead of next to them. Privacy covers the whole answer, so
+        any bubble marked private makes all of it private; the key is then dropped from the bubbles."""
+        if not isinstance(data, dict) or not isinstance(data.get("bubbles"), list):
+            return data
+        bubbles = data["bubbles"]
+        if not any(isinstance(b, dict) and "private" in b for b in bubbles):
+            return data
+        marked = any(isinstance(b, dict) and b.get("private") is True for b in bubbles)
+        cleaned = [{k: v for k, v in b.items() if k != "private"} if isinstance(b, dict) else b for b in bubbles]
+        return {**data, "bubbles": cleaned, **({"private": True} if marked else {})}
 
     @field_validator("bubbles", mode="before")
     @classmethod
