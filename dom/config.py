@@ -200,7 +200,7 @@ class T3Config(BaseModel):
     node: str = Field("~/.local/node/bin/node", description="Path to the user-local Node.js executable.")
 
 
-REPO_URL = "https://github.com/lcwlouis/tele-friend-bot.git"
+REPO_URL = "https://github.com/lcwlouis/tele-bot-dominic.git"
 
 
 class UpdateConfig(BaseModel):

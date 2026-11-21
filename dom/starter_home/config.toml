@@ -72,4 +72,4 @@ version = "0.1.10"
 node = "~/.local/node/bin/node"
 
 [update]
-repo_url = "https://github.com/lcwlouis/tele-friend-bot.git"  # /update offers this repository's vX.Y.Z tags
+repo_url = "https://github.com/lcwlouis/tele-bot-dominic.git"  # /update offers this repository's vX.Y.Z tags

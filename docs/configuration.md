@@ -154,7 +154,7 @@ See the [T3 Code bridge guide](t3-bridge.md) for service setup and CLI compatibi
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `update.repo_url` | `"https://github.com/lcwlouis/tele-friend-bot.git"` | Public Git repository whose vX.Y.Z tags /update offers and deploys (https). |
+| `update.repo_url` | `"https://github.com/lcwlouis/tele-bot-dominic.git"` | Public Git repository whose vX.Y.Z tags /update offers and deploys (https). |
 
 See [Deploy on a Raspberry Pi](deploy-pi.md) for how `/update` and `dom deploy` switch releases.
 
