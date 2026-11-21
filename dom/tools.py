@@ -143,7 +143,11 @@ async def _remind(args: dict, ctx: TurnCtx) -> str:
 
 REMIND_TOOL = Tool(
     name="remind",
-    description="Schedule a reminder for the owner. Give an ISO-8601 date and time in the configured timezone or with an offset.",
+    description=(
+        "Schedule a reminder for the owner, only when they ask for one or agree to your offer of one; never as a "
+        "placeholder, a test or a note to yourself. Give an ISO-8601 date and time in the configured timezone or "
+        "with an offset."
+    ),
     schema={
         "type": "object",
         "properties": {
@@ -252,11 +256,29 @@ SKILL_VIEW_TOOL = Tool(
 SKILL_PENDING_LIMIT = 3
 
 
+def _key(name: object) -> str:
+    return name.strip().lower() if isinstance(name, str) else ""
+
+
+def _skill_name(row: dict) -> str:
+    try:
+        return _key(json.loads(row["body_json"]).get("name"))
+    except (ValueError, AttributeError):
+        return ""
+
+
 async def _skill_manage(args: dict, ctx: TurnCtx) -> str:
     if ctx.app is None:
         return "error: skills can only be proposed during a chat turn"
     skill = {key: args.get(key) for key in ("name", "description", "body")}
-    waiting = sum(row["kind"] == "skill" for row in await ctx.app.proposals.pending())
+    pending = [row for row in await ctx.app.proposals.pending() if row["kind"] == "skill"]
+    same = next((row for row in pending if _skill_name(row) == _key(skill["name"])), None)
+    if same is not None:  # one card per skill in the owner's DM; a revision waits for their decision
+        return (
+            f"error: proposal #{same['id']} for this skill already waits for the owner; tell them what you would "
+            "change, and propose the revision after they decide"
+        )
+    waiting = len(pending)
     if waiting >= SKILL_PENDING_LIMIT:  # any chat can prompt a proposal; don't let one flood the owner's DM
         return f"error: {waiting} skill proposals already wait for the owner; try again after they decide"
     try:
@@ -270,8 +292,9 @@ SKILL_MANAGE_TOOL = Tool(
     name="skill_manage",
     description=(
         "Propose a skill for the owner to approve. Reuse an existing name to propose a change to it. "
-        "Nothing changes until they approve. Skills are public: write a reusable procedure using only public "
-        "information, never private notes, chat history, memory or credentials."
+        "Nothing changes until they approve. Skills are public and used in every chat: write a reusable procedure "
+        "anyone could follow, with no names or personal details of anyone, and never private notes, chat history, "
+        "memory or credentials."
     ),
     schema={
         "type": "object",
