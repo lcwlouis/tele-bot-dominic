@@ -165,3 +165,14 @@ async def test_self_inspect_and_the_dashboard_show_task_mode(make_app, browser):
         assert "if the chat goes quiet" in text and "Assistant, " in text
     found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))["preset"]["task_mode"]
     assert found["on"] and found["reason"] == "plan <b>the</b> move"
+
+
+async def test_switch_vibe_is_refused_in_the_chat_that_is_in_task_mode(make_app):
+    app = make_app()
+    install(app)
+    await approve(app, OWNER)
+    await pick_vibe(app)
+    await go(app)
+    refusal = await SWITCH_VIBE_TOOL.handler({"preset": "fboy", "reason": "bored"}, ctx(app))
+    assert "task mode" in refusal  # refused, so the day's one switch is not spent
+    assert (await vibe(app.home, app.store, app.dispatch.now())).source == "reflection"
