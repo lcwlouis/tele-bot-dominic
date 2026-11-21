@@ -82,6 +82,19 @@ async def test_manage_creates_a_proposal_the_owner_must_approve(make_app, scope,
     assert skill_view(app.home, "report") == BODY
 
 
+async def test_a_second_proposal_for_the_same_skill_waits_for_the_owner_to_decide_on_the_first(make_app):
+    # Turn 54 on the Pi proposed sunday-routine-plan twice and the owner got two cards.
+    app = make_app()
+    owner = ctx(app, "owner_dm", OWNER, OWNER)
+    args = {"name": "report", "description": "Summarise a web table", "body": BODY}
+    first = json.loads(await SKILL_MANAGE_TOOL.handler(args, owner))
+    again = await SKILL_MANAGE_TOOL.handler({**args, "name": " Report ", "body": BODY + " Revised."}, owner)
+    assert again.startswith(f"error: proposal #{first['id']} for this skill already waits")
+    assert [row["id"] for row in await app.proposals.pending()] == [first["id"]]
+    await press(app, f"prop:no:{first['id']}")
+    assert "id" in json.loads(await SKILL_MANAGE_TOOL.handler(args, owner))  # after the decision a revision is fine
+
+
 async def test_manage_caps_skill_proposals_waiting_for_the_owner(make_app):
     app = make_app()
     group = ctx(app, "group", GROUP, FRIEND)
