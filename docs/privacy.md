@@ -12,7 +12,10 @@ separate notes about people and chats. Owner preferences, personal notes and the
 private journal live in `private/`. Keep personal information out of `SOUL.md`
 and other shared notes. A memory import keeps no copy of the uploaded text: each
 fact becomes a proposal, and only the facts the owner approves are added to
-`private/USER.md`. Nothing from an import goes to `memory/`.
+`private/USER.md`. Nothing from an import goes to `memory/`. This holds for an
+export sent with `/import` or as an attached file. An export pasted into the
+owner DM as an ordinary message, to reply to with `/import` later, is stored as
+chat history like any other DM message.
 
 The backup command makes an archive of the instance home and a consistent
 SQLite snapshot. Archives include credentials and private data. Keep the

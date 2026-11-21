@@ -96,8 +96,8 @@ accepts `--base-dir DIR` to select a local T3 Code instance.
 
 Links report remote reachability. Thread commands use the local server and
 reject remote selectors such as `--environment` and `--environment-id`.
-Project discovery and selecting a linked machine for a read or send are
-required before the owner-DM bridge can be enabled. T3 Code documents a
+The CLI has no project discovery and cannot select a linked machine, so the
+owner-DM bridge does both through T3 Code's MCP interface instead. T3 Code documents a
 separate [MCP interface for outside agents](https://github.com/pingdotgg/t3code/blob/v0.1.10/docs/user/outside-agents.md).
 
 ## Sign in

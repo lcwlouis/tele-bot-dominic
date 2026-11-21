@@ -141,7 +141,7 @@ handoff needs the authenticated dashboard URL in `[web].public_url`.
 Install Bubblewrap on a Linux host that supports unprivileged user namespaces
 and check `dom doctor` for a passing sandbox self-test. Ask Dom in the owner DM
 to draft a plugin, or place a plugin with `plugin.toml` and `main.py` under
-`<home>/plugins/<name>/`. Review the code in the owner DM and approve the exact
-version before Dom can use its tools, slash commands or dashboard panels. Network
+`<home>/plugins/<name>/`. Review the code on the dashboard's Plugins page, then
+approve the exact version there or from the card in the owner DM before Dom can use its tools, slash commands or dashboard panels. Network
 access is an explicit per-plugin permission. Use `/plugins` to inspect or disable
 installed plugins. See [Writing plugins](plugins.md) for the format and limits.
