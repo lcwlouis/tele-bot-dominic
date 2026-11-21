@@ -91,6 +91,28 @@ async def _tell_owner_held_back(store: Store, chat_id: int) -> None:
         log.exception("could not record the held-back private reply")
 
 
+async def _private_reply_to_dm(bot, store: Store, chat_id: int, texts: list[str], reason: str) -> list[int]:
+    """Telegram refused an owner-only bubble in the group (it allows them only from a group admin). Sending it there
+    in public would leak what was meant for the owner alone, so it goes to the owner's DM instead, with why. It stays
+    out of the DM's history, like a desktop report, and an event tells Dom it was moved."""
+    owner = store.owner_id
+    title = str(chat_id)
+    with suppress(Exception):
+        title = (await store.get_chat_auth_status(chat_id))["title"] or title
+    why = "Telegram lets me send those only when I'm a group admin" if "ADMIN" in reason.upper() else "Telegram refused it"
+    try:
+        sent = await bot.send_message(
+            owner, f"My private reply in {title} (it couldn't go there: {why}):\n\n" + "\n\n".join(texts),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
+        await store.record_owner_event(f"Sent a private reply for {title} to the owner's DM: {why}")
+        return [sent.message_id]
+    except Exception:
+        log.exception("could not move a refused private reply to the owner's DM")
+        await _tell_owner_held_back(store, chat_id)
+        return []
+
+
 async def perform(
     bot,
     store: Store,
@@ -126,9 +148,10 @@ async def perform(
                 sent = await bot.send_message(
                     chat_id, bubble.text, message_thread_id=thread_id, ephemeral_message_parameters=parameters,
                 )
-            except TelegramAPIError:
-                log.warning("ephemeral send failed in chat %s", chat_id)
-                break
+            except TelegramAPIError as error:
+                log.warning("ephemeral send failed in chat %s: %s", chat_id, error.message)
+                rest = actions.bubbles[len(sent_ids):]
+                return sent_ids + await _private_reply_to_dm(bot, store, chat_id, [b.text for b in rest], error.message)
             sent_ids.append(sent.message_id)
         return sent_ids
     if actions.react and trigger_msg_id is not None:
