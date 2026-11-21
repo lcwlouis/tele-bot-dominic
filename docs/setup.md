@@ -107,7 +107,7 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 
 In the owner DM Dom can also look for devices on your home network (`find_devices`:
 mDNS and the neighbour table, nothing is scanned; mDNS needs `avahi-utils`). If a
-LAN host from `config.toml` (a model `base_url` or a desktop `lan_probes` entry)
+LAN host from `config.toml` (a model `base_url`, a desktop `url` or a desktop `lan_probes` entry)
 moved to a new address, he proposes the change for you to approve in `/proposals`;
 it applies after Dom restarts. A host given as a `<name>.local` name follows the
 device by itself.
