@@ -352,7 +352,7 @@ async def render_status(app: App) -> View:
         line = f"{_ICONS[state]} {title}: {state}{when} · {unread} unread"
         cells = [_cell(title), f"{_ICONS[state]} {state}", f"{until.astimezone(tz):%H:%M}" if until else "—", str(unread)]
         row = [
-            InlineKeyboardButton(text=f"☀️ {_short(title)}", callback_data=f"wake:{chat['chat_id']}"),
+            InlineKeyboardButton(text=f"☀️ Wake {_short(title)}", callback_data=f"wake:{chat['chat_id']}"),
             InlineKeyboardButton(text="🌙 Sleep", callback_data=f"sleep:{chat['chat_id']}"),
         ]
         if _is_group(chat):
