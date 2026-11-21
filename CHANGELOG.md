@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- The Usage page draws the Desktop bar and its legend swatch in their own colour instead of black.
 - A chat approval button tapped after a restart (Telegram calls the tap too old to answer) still approves or ignores the chat and updates the card, instead of failing before either.
 - `/update` looks for releases at the repository's new address, `https://github.com/lcwlouis/tele-bot-dominic.git` (the old name still redirects). An instance whose `config.toml` sets `update.repo_url` to the old address keeps working through the redirect; change it when convenient.
 - Dashboard: on the Now page the Turn log scrolls inside its panel (at most about 28 lines high) instead of stretching the page; the Turn log page still shows all of it.
