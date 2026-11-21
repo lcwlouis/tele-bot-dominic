@@ -229,10 +229,22 @@ class Config(BaseModel):
     models: dict[str, ModelEndpoint] = {}
     desktop_mode: Literal["local", "remote", "off"] = Field("off", description="Desktop mode. Use off to disable it, local for Docker, or remote for a separate sandbox host.")
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
+    window_budget_tokens: int = Field(
+        32000, ge=2000, description="Prompt size at which a chat's window is trimmed. The window grows without sliding "
+        "until the chat's prompt (system prefix, notes and messages, as the model reports it) reaches this, so the "
+        "model host's prompt cache keeps hitting; then one trim drops the oldest messages down to "
+        "`window_keep_tokens`. The default is about 3.5 times Dom's usual prompt (9k tokens), so a trim comes every "
+        "few hundred messages, and far below the 262k context of the home model: a bigger budget keeps more history "
+        "and trims less often, but every cache miss (after a trim or a note change) then recomputes a longer prompt, "
+        "and long prompts answer worse.",
+    )
+    window_keep_tokens: int = Field(
+        20000, ge=1000, description="Prompt size a trim brings the window down to (about; messages are estimated at "
+        "one token per three bytes). It must be below `window_budget_tokens`; the gap sets how many messages go in one trim.",
+    )
     window_size: int = Field(
-        80, description="Maximum recent messages in a chat's model window. It trims in chunks, down to about 60% "
-        "(80 to 49), so its start stays fixed between trims and the model host's prompt cache keeps hitting; "
-        "the memory pass runs just before a trim. Under 15 it slides instead.",
+        500, ge=10, description="Safety bound on the messages in one chat's window, for chats of very short messages: "
+        "past it a trim also happens, down to 60% of it. Not the normal trigger.",
     )
     daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap.")
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
@@ -244,6 +256,12 @@ class Config(BaseModel):
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups when supported by Telegram.")
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_threshold: float = Field(1.2, ge=0, le=3, description="Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call.")
+
+    @model_validator(mode="after")
+    def _window_marks(self) -> Config:
+        if self.window_keep_tokens >= self.window_budget_tokens:
+            raise ValueError("window_keep_tokens must be below window_budget_tokens")
+        return self
 
     @property
     def desktop_hosts(self) -> list[DesktopHost]:

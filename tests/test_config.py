@@ -20,7 +20,7 @@ def test_defaults_when_minimal_toml(tmp_path):
     cfg = load_config(tmp_path)
     assert cfg.owner_id is None
     assert cfg.desktop_mode == "off"
-    assert cfg.window_size == 80
+    assert (cfg.window_budget_tokens, cfg.window_keep_tokens, cfg.window_size) == (32000, 20000, 500)
     assert cfg.presence.seen_reaction is True
     assert cfg.timezone == "UTC"
     assert cfg.models["chat"].model == "some/model"

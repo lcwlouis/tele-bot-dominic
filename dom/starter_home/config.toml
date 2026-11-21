@@ -1,7 +1,8 @@
 # Dom instance config. No secrets here: those go in .env.
 # owner_id is written by the bot when you send /claim <code>.
 timezone = "UTC"
-window_size = 80
+window_budget_tokens = 32000  # trim a chat's window when its prompt reaches this ...
+window_keep_tokens = 20000  # ... down to about this
 daily_spend_cap_usd = 1.0  # 0 disables the cap
 leak_check = true  # needs the triage (Jev) model; skipped without it
 leak_threshold = 1.2

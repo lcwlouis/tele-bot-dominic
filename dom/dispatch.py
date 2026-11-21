@@ -19,6 +19,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from dom import guard, turn_log
+from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
 from dom.agent import NoFinalAnswer, parse_actions, run_turn
 from dom.desktop.sandbox import DEFAULT
@@ -34,7 +35,6 @@ from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import build_messages, report_messages
 from dom.reflection import mood
 from dom.reminders import Reminders
-from dom.store.store import window_chunk
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, enabled_tools
 from dom.traits import for_chat, keep_task_mode, task_mode
@@ -62,7 +62,6 @@ BOT_DEDUP_WINDOW = timedelta(seconds=60)
 MAX_TURN_FAILURES = 3  # consecutive failures after which a chat's unread messages are given up on
 _CHAT_GONE = re.compile(r"chat not found|kicked|not a member", re.IGNORECASE)
 MEMORY_PASS_INTERVAL = timedelta(minutes=5)  # per chat
-MEMORY_PASS_MARGIN = 5  # start a pass this many messages before the window's next trim
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 NO_ANSWER_NOTICE = "Sorry, I couldn't put a reply together just now. Could you send that again?"
 
@@ -496,27 +495,16 @@ class Dispatcher:
         if not answered:
             await self._mark_seen(chat_id, newest)
         await store.mark_chat_read(chat_id, newest.msg_id)
-        # Notes only need to catch what is about to leave Dom's view; the session-end pass covers the rest.
-        if await self._memory_due(chat_id):
-            self.request_memory_pass(chat_id)
 
-    async def _memory_due(self, chat_id: int) -> bool:
-        """True when the window is about to trim and some message it will drop has not been through a pass yet.
-        The pass then rewrites notes just before the window start moves, so both invalidate the model's prompt
-        cache in the same turn instead of at different times."""
-        store, size = self.app.store, self.app.config.window_size
-        if size < TRIAGE_WINDOW:  # too short to trim in chunks: it slides, so watch the unprocessed count
-            return await store.count_new_for_memory(chat_id) >= max(1, size - MEMORY_PASS_MARGIN)
-        window = await store.get_chat_window(chat_id, size)
-        if len(window) < size - MEMORY_PASS_MARGIN:
-            return False
-        cursor = await store.get_memory_cursor(chat_id)
-        return any(m.role != "event" and m.msg_id is not None and m.msg_id > cursor for m in window[:window_chunk(size)])
-
-    async def _window(self, chat_id: int, newest: StoredMessage) -> list[StoredMessage]:
-        return await self.app.store.get_chat_window(
-            chat_id, max(TRIAGE_WINDOW, self.app.config.window_size), through_id=newest.id,
+    async def _window(self, chat_id: int, newest: StoredMessage | None = None) -> list[StoredMessage]:
+        """The messages for this turn's prompt (see dom.window). A trim that would drop notes-unread messages waits
+        for a memory pass, so the pass and the trim reach the prompt cache in the same turn."""
+        window = await chat_window.load(
+            self.app.store, chat_id, self.app.config, through_id=newest.id if newest is not None else None,
         )
+        if window.blocked:
+            self.request_memory_pass(chat_id)
+        return window.rows
 
     def _triage_xml(self, chat_id: int, window: list[StoredMessage]) -> str:
         chat = [m for m in window if m.role != "event"]  # events are the owner's commands, not chat content for Jev
@@ -721,6 +709,15 @@ class Dispatcher:
                 await app.store.record_owner_event(f"Dom reported desktop task #{task_id}")
             await executor.send_files(app.bot, app.store, chat_id, files)
 
+    async def _measure_prompt(self, chat_id: int, window: list[StoredMessage], usage_mark: int) -> None:
+        """Learn the real size of the prompt just sent, from the first model call's reported input tokens."""
+        try:
+            await chat_window.measure(
+                self.app.store, chat_id, window, await self.app.store.first_chat_input_tokens(chat_id, usage_mark),
+            )
+        except Exception:
+            log.exception("could not measure the prompt in chat %s", chat_id)
+
     async def _compose_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage | None, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
@@ -779,8 +776,6 @@ class Dispatcher:
             note += f"\n{extra_note}"
         if final_bot_turn:
             note += f"\n{BOT_EXIT_NOTE}"
-        window_size = app.config.window_size
-        window = window[-window_size:] if window_size > 0 else []
         participants = [m.sender_user_id for m in window if m.role == "user" and m.sender_user_id is not None]
         sender_id = newest.sender_user_id if newest else None
         if sender_id is not None:
@@ -795,6 +790,7 @@ class Dispatcher:
             model_allowed=partial(self.turn_allowed, chat_id, scope), reminders=self.reminders,
             desktop=app.desktop_worker, app=app,
         )
+        usage_mark = await app.store.last_usage_id()
         try:
             actions = await run_turn(app.client, messages, tools, ctx)
         except ModelCallSkipped:
@@ -809,6 +805,7 @@ class Dispatcher:
             log.exception("model could not compose the bot exit in chat %s", chat_id)
             actions = Actions(no_response=True)
         finally:
+            await self._measure_prompt(chat_id, window, usage_mark)
             if ctx.t3_notes:
                 try:
                     note = "; ".join(dict.fromkeys(ctx.t3_notes))

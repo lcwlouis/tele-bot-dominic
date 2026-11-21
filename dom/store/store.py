@@ -68,20 +68,6 @@ _MESSAGE_COLUMNS = (
 )
 
 
-def window_chunk(size: int) -> int:
-    """How many of the oldest messages one trim drops from a full chat window of `size` messages: the window
-    then holds about 60% of `size` and refills before the next trim."""
-    return max(1, size - size * 3 // 5)
-
-
-def window_start(total: int, size: int) -> int:
-    """Where a chat window of at most `size` messages starts, among the chat's `total` messages. It moves only in
-    whole chunks, so the start (and the prompt text that follows it) stays put between trims, and it depends on
-    nothing but the message count: every turn, and every restart, computes the same start."""
-    excess = total - size
-    return 0 if excess <= 0 else -(-excess // window_chunk(size)) * window_chunk(size)
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1003,17 +989,25 @@ class Store:
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]
 
-    async def get_chat_window(
-        self, chat_id: int | str, size: int, *, through_id: int | None = None,
+    async def get_window_from(
+        self, chat_id: int | str, start: tuple[int, str] | None, limit: int, *, through_id: int | None = None,
     ) -> list[StoredMessage]:
-        """The window the model reads: up to `size` messages that end at the newest, trimmed in chunks rather than
-        one message at a time (see `window_start`), so it stays the same text until the next trim."""
-        return await self._run(self._get_chat_window, str(chat_id), size, through_id)
+        """The messages of a chat from `start` (a message's row id and created_at, which stay valid even if that
+        row is later deleted or edited) up to the newest, oldest first; at most the newest `limit` of them."""
+        return await self._run(self._get_window_from, str(chat_id), start, limit, through_id)
 
-    def _get_chat_window(self, chat_id: str, size: int, through_id: int | None) -> list[StoredMessage]:
+    def _get_window_from(
+        self, chat_id: str, start: tuple[int, str] | None, limit: int, through_id: int | None,
+    ) -> list[StoredMessage]:
         where, args = self._window_where(chat_id, through_id)
-        total = self._conn.execute(f"SELECT COUNT(*) FROM messages WHERE {where}", args).fetchone()[0]
-        return self._get_recent_chat_window(chat_id, total - window_start(total, size), through_id)
+        if start is not None:
+            where += " AND (julianday(created_at), id) >= (julianday(?), ?)"
+            args += (start[1], start[0])
+        rows = self._conn.execute(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
+            (*args, max(0, limit)),
+        ).fetchall()
+        return [_row_to_message(r) for r in reversed(rows)]
 
     format_chat_window_xml = staticmethod(format_chat_window_xml)
 
@@ -1456,6 +1450,18 @@ class Store:
             "INSERT INTO usage (at, kind, model, endpoint_host, chat_id, input_tokens, output_tokens, cost_usd, fallback) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (at, kind, model, host, chat_id, input_tokens, output_tokens, cost_usd, fallback),
+        )
+
+    async def last_usage_id(self) -> int:
+        return await self._run(lambda: self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM usage").fetchone()[0])
+
+    async def first_chat_input_tokens(self, chat_id: int, after_usage_id: int) -> int:
+        """The prompt size the model reported for the first chat call in this chat after that usage row; 0 if none."""
+        return await self._run(
+            lambda: (self._conn.execute(
+                "SELECT input_tokens FROM usage WHERE id > ? AND chat_id = ? AND kind = 'chat' ORDER BY id LIMIT 1",
+                (after_usage_id, chat_id),
+            ).fetchone() or (0,))[0]
         )
 
     async def usage_totals(self, start: str, end: str) -> tuple[int, float]:
