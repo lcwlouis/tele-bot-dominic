@@ -16,7 +16,9 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | --- | --- | --- |
 | `owner_id` | Unset | Telegram user ID recorded after a successful /claim. |
 | `timezone` | `"UTC"` | IANA timezone for presence and daily jobs. Init writes the machine timezone or the supplied --timezone. |
-| `window_size` | `80` | Maximum recent messages in a chat's model window. It trims in chunks, down to about 60% (80 to 49), so its start stays fixed between trims and the model host's prompt cache keeps hitting; the memory pass runs just before a trim. Under 15 it slides instead. |
+| `window_budget_tokens` | `32000` | Prompt size at which a chat's window is trimmed. The window grows without sliding until the chat's prompt (system prefix, notes and messages, as the model reports it) reaches this, so the model host's prompt cache keeps hitting; then one trim drops the oldest messages down to `window_keep_tokens`. The default is about 3.5 times Dom's usual prompt (9k tokens), so a trim comes every few hundred messages, and far below the 262k context of the home model: a bigger budget keeps more history and trims less often, but every cache miss (after a trim or a note change) then recomputes a longer prompt, and long prompts answer worse. |
+| `window_keep_tokens` | `20000` | Prompt size a trim brings the window down to (about; messages are estimated at one token per three bytes). It must be below `window_budget_tokens`; the gap sets how many messages go in one trim. |
+| `window_size` | `500` | Safety bound on the messages in one chat's window, for chats of very short messages: past it a trim also happens, down to 60% of it. Not the normal trigger. |
 | `daily_spend_cap_usd` | `1.0` | Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap. |
 | `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups when supported by Telegram. |
 | `leak_check` | `true` | Use Jev to screen eligible outbound text and network plugin calls for private information. |

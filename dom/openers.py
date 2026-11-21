@@ -87,7 +87,7 @@ class Openers:
             if self.rng.random() >= MINUTE_CHANCE:
                 return
             await store.kv_set(LAST_ATTEMPT, now.isoformat())
-            window = await store.get_chat_window(owner, app.config.window_size)
+            window = await dispatch._window(owner)
             minutes = None  # a session is only started once Dom really texts
             if state != "online" or until is None:
                 minutes = dispatch.presence.session_minutes(habits)

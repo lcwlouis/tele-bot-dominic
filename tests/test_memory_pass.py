@@ -485,12 +485,18 @@ async def test_a_pass_runs_when_the_owner_sends_dom_to_sleep(make_app, tmp_path)
     assert files(tmp_path, "memory/MEMORY.md") == "- fact"
 
 
+def tiny_window(app):
+    """A 3,000-token budget with the prompt's fixed part measured at 100 tokens: ~20 of these messages reach it."""
+    app.config = app.config.model_copy(update={"window_budget_tokens": 3000, "window_keep_tokens": 1800})
+    return app.store.kv_set(f"window:{GROUP}", json.dumps({"fixed": 100}))
+
+
 async def test_messages_about_to_leave_the_window_trigger_a_pass(make_app, tmp_path):
-    # window_size 80 - margin 5 = 75 unprocessed messages
     app = make_app(contents=(FINAL, ops(add("MEMORY.md", "fact"))))
+    await tiny_window(app)
     await approve(app, GROUP)
-    for msg_id in range(1, 76):
-        await put(app, GROUP, msg_id, f"message {msg_id}")
+    for msg_id in range(1, 26):
+        await put(app, GROUP, msg_id, f"message {msg_id} " + "x" * 300)
     await app.dispatch.presence.wake(GROUP, parse_habits(""))
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
@@ -499,11 +505,12 @@ async def test_messages_about_to_leave_the_window_trigger_a_pass(make_app, tmp_p
     assert files(tmp_path, "memory/MEMORY.md") == "- fact"
 
 
-async def test_just_under_the_threshold_does_not_trigger_a_pass(make_app):
+async def test_just_under_the_budget_does_not_trigger_a_pass(make_app):
     app = make_app(contents=(FINAL,))
+    await tiny_window(app)
     await approve(app, GROUP)
-    for msg_id in range(1, 74):  # 73 + Dom's one reply = 74: one short of window_size 80 - margin 5
-        await put(app, GROUP, msg_id, f"message {msg_id}")
+    for msg_id in range(1, 19):  # 18 x ~136 tokens + 100 stays under 3,000
+        await put(app, GROUP, msg_id, f"message {msg_id} " + "x" * 300)
     await app.dispatch.presence.wake(GROUP, parse_habits(""))
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
