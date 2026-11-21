@@ -229,7 +229,11 @@ class Config(BaseModel):
     models: dict[str, ModelEndpoint] = {}
     desktop_mode: Literal["local", "remote", "off"] = Field("off", description="Desktop mode. Use off to disable it, local for Docker, or remote for a separate sandbox host.")
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
-    window_size: int = Field(80, description="Maximum recent messages in a chat's model window.")
+    window_size: int = Field(
+        80, description="Maximum recent messages in a chat's model window. It trims in chunks, down to about 60% "
+        "(80 to 49), so its start stays fixed between trims and the model host's prompt cache keeps hitting; "
+        "the memory pass runs just before a trim. Under 15 it slides instead.",
+    )
     daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap.")
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)

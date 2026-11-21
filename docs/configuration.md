@@ -16,7 +16,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | --- | --- | --- |
 | `owner_id` | Unset | Telegram user ID recorded after a successful /claim. |
 | `timezone` | `"UTC"` | IANA timezone for presence and daily jobs. Init writes the machine timezone or the supplied --timezone. |
-| `window_size` | `80` | Maximum recent messages in a chat's model window. |
+| `window_size` | `80` | Maximum recent messages in a chat's model window. It trims in chunks, down to about 60% (80 to 49), so its start stays fixed between trims and the model host's prompt cache keeps hitting; the memory pass runs just before a trim. Under 15 it slides instead. |
 | `daily_spend_cap_usd` | `1.0` | Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap. |
 | `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups when supported by Telegram. |
 | `leak_check` | `true` | Use Jev to screen eligible outbound text and network plugin calls for private information. |

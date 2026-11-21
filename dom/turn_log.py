@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from time import monotonic
@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class TurnTrace:
     steps: list[str] = field(default_factory=list)
+    timings: list[str] = field(default_factory=list)  # "<what>@<milliseconds>", in the order the steps ran
     calls: int = 0
     model: str = ""
     fallback: bool = False
@@ -35,6 +36,19 @@ _current: ContextVar[TurnTrace | None] = ContextVar("turn_trace", default=None)
 def step(name: str) -> None:
     if (trace := _current.get()) is not None:
         trace.steps.append(name)
+
+
+@contextmanager
+def timed(what: str):
+    """Record how long the block took, as one more entry of the turn's trace ("model@2713"). Steps never contain
+    "@", so the trace stays a list of strings and needs no migration."""
+    trace = _current.get()
+    start = monotonic()
+    try:
+        yield
+    finally:
+        if trace is not None:
+            trace.timings.append(f"{what}@{round((monotonic() - start) * 1000)}")
 
 
 def attempt(model: str, kind: str, *, fallback: bool = False) -> None:
@@ -70,7 +84,7 @@ async def capture(store: Store, at: datetime, chat_id: int, scope: Scope):
         if trace.steps or trace.calls:
             try:
                 await store.record_turn(
-                    at, chat_id, scope, trace.calls, trace.steps, trace.model, trace.fallback,
+                    at, chat_id, scope, trace.calls, [*trace.steps, *trace.timings], trace.model, trace.fallback,
                     round((monotonic() - start) * 1000), trace.outcome or "Stayed quiet",
                 )
             except Exception:

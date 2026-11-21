@@ -333,6 +333,13 @@ async def _usage(app: App) -> dict:
     }
 
 
+def _timing(item: str) -> str:
+    """A trace entry "web_search@1893" as "Search 1.9 s" (the dashboard's compact timing chip)."""
+    what, _, ms = item.rpartition("@")
+    label = "Search" if what == "web_search" else what.replace("_", " ").capitalize()
+    return f"{label} {int(ms) / 1000:.1f} s"
+
+
 async def _turns(app: App, chat: str = "") -> dict:
     tz = ZoneInfo(app.config.timezone)
     known = {row["chat_id"]: row for row in await app.store.list_chats()}
@@ -343,7 +350,9 @@ async def _turns(app: App, chat: str = "") -> dict:
         known.setdefault(key, {"chat_id": key, "title": ""})
         row["time"] = datetime.fromisoformat(row["at"]).astimezone(tz)
         row["title"] = _title(known[key], app.owner_id)
-        row["steps"] = json.loads(row["trace"])
+        trace = json.loads(row["trace"])
+        row["steps"] = [item for item in trace if "@" not in item]
+        row["timing"] = [_timing(item) for item in trace if "@" in item]
     return {
         "rows": rows, "chat": chat, "choices": [(key, _title(row, app.owner_id)) for key, row in known.items()],
     }

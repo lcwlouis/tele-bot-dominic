@@ -101,7 +101,8 @@ async def _run_tool_call(call: dict, offered: dict[str, Tool], ctx: TurnCtx) -> 
         args = json.loads(function.get("arguments") or "{}")
         if not isinstance(args, dict):
             raise ValueError("arguments must be an object")
-        return await tool.handler(args, ctx)
+        with turn_log.timed(tool.name):
+            return await tool.handler(args, ctx)
     except Exception as exc:  # a failing tool is reported to the model, not fatal to the turn
         return f"error: {exc}"
 
