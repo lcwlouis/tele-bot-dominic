@@ -239,9 +239,9 @@ a hint: check the live view before you enter anything.
 
 With `[self_work] enabled = true` (the default) and a local desktop host, Dom may
 plan up to three small tasks of his own during his nightly daydream, in the hour
-before he sleeps: research a topic on a few named public sites, or practise a skill
-in the sandbox. Each task records its goal, why, the tools it will use, the sites it
-will open, and a time and step budget. Set `enabled = false` to turn it off; see
+before he sleeps: research a topic by reading up to four named public sites in the
+browser, keeping notes in files if he likes. Each task records its goal, why, the
+tools it will use, the sites it will open, and a time and step budget. Set `enabled = false` to turn it off; see
 [Configuration](configuration.md#self-directed-work) for the delay and budget limits.
 
 **You see the plan first.** Dom sends one message to your DM listing the tasks, each
@@ -265,31 +265,35 @@ anyone else.
 - Containers share the desktop bridge, so a self-directed task starts only while
   every other local container is stopped, and no other container may start while it
   runs (cancel it on the Own work page to free the desktop).
-- The worker gets only the desktop tools the plan named. Plugins, the T3 bridge,
-  skills, skill proposals and core-change briefs are not available to it.
-- Planned sites are public hostnames: no IP addresses, LAN names or public suffixes
-  shared by unrelated owners (`co.uk`, `github.io` and the like). The browser may open
+- The worker gets only the desktop tools the plan named, from the browser tools,
+  `read_file`, `write_file` and `finish`. There is no shell and no Python: those run
+  as the same user, with the same files and screen as the browser, so they could
+  drive it past every rule below. Plugins, the T3 bridge, skills, skill proposals and
+  core-change briefs are not available either.
+- A task names at most four sites, shown in full in the DM and on the dashboard. They
+  are public hostnames: no IP addresses, LAN names or public suffixes shared by
+  unrelated owners (`co.uk`, `me.uk`, `eu.org`, `github.io`, `blogspot.*` and the like). The browser may open
   only those sites and their subdomains, on ports 80 and 443, and only through URLs
   that browsers and Dom read the same way (no `\`, `@`, `%` or whitespace in the
   address part). A page that leaves the plan, by a click or a redirect, is closed; if
   it cannot be closed, the task stops.
-- The only form is a search: `fill` takes up to 120 characters in a field that looks
-  like a search box, and never in a login-looking one. `press` takes scrolling keys and
-  Escape, and Enter only right after a search was typed. `click` takes links only, or
-  a button right after a search was typed; an element Dom cannot tell apart from a
-  button or form control is refused.
+- The only form is a search. `fill` takes up to 120 characters through one simple
+  selector (no lists, pseudo-classes or combinators) that reads as a search field and
+  not a login field, and only on a page whose element list shows a search box.
+  `press` takes scrolling keys and Escape, and Enter only right after a search was
+  typed. `click` takes only the index of an element that the page's element list,
+  read just before the click, shows as a link to a web address; never a selector,
+  a button or a `javascript:` link. A link click may still run the page's own
+  JavaScript; with an empty profile and no logins that is accepted as low impact.
 - `read_file` and `write_file` work only under `/tmp` and `/home/gem/outbox`, after
-  resolving `..` and symlinks.
-- `run_shell` and `run_python` run through `/usr/bin/unshare --net --map-root-user --
-  /bin/sh -c`, in their own network namespace with no network. If the sandbox cannot
-  create one, the command fails rather than running online. A task whose commands
-  change a shell startup file (`~/.bashrc`, `~/.profile` and the like) is stopped,
-  so no later shell can define commands that stand in for the wrapper.
+  resolving `..` and symlinks. Only a path that already reads as under those folders
+  is resolved, quoted, by the sandbox.
 - The step and time budgets stop the task when exceeded.
 - The plan runs only once its announcement reached your DM. If the message cannot be
-  sent, the tasks are refused. The summary Dom sends you when a task finishes is
-  labelled as a summary of web content and has its links removed; the full result is
-  on the dashboard.
+  sent, the tasks are refused. If another container starts just before a task does,
+  the task goes back to waiting (and still expires after a day). The summary Dom
+  sends you when a task finishes is labelled as a summary of web content and has its
+  links and user mentions removed; the full result is on the dashboard.
 
 ### Network guard
 
@@ -301,8 +305,7 @@ own shell. The check must show that:
 - every `lan_probes` service, the Docker host's own LAN address and the container's
   gateway (on port 22 and the dashboard port) time out,
 - no sampled private address (the first address of each private, shared and
-  link-local range) answers, and
-- a connect to `probe_control` under the exact offline wrapper fails.
+  link-local range) answers.
 
 A timeout counts as proof only for a target that answers from the Docker host itself:
 a switched-off `lan_probes` device times out whether or not the firewall is there. Every

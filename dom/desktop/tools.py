@@ -5,7 +5,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
-import shlex
 from typing import Any
 from urllib.parse import urlsplit
 from xml.sax.saxutils import escape
@@ -55,8 +54,9 @@ _METHODS = {
 
 NAMES = tuple(_TOOLS)
 BROWSER = ("browse", "read_page", "list_elements", "click", "fill", "press", "scroll", "look", "save_screenshot")
-# What a self-directed task (W13) may plan to use. No handoff (no logins), no skills, no skill proposals.
-OWN = (*BROWSER, "run_python", "run_shell", "read_file", "write_file")
+# What a self-directed task (W13) may plan to use. No handoff (no logins), no skills, no skill proposals, and no
+# shell or Python: those would share the user, files and X display with the browser and could drive it directly.
+OWN = (*BROWSER, "read_file", "write_file")
 SEARCH_TEXT_LIMIT = 120
 _BLANK = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/")
 _SITE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
@@ -66,18 +66,31 @@ _PRIVATE_SUFFIXES = (
 # Public suffixes a planned site may not be, because unrelated owners share them (a plan naming one would allow
 # every tenant). A small built-in list rather than a Public Suffix List dependency: a plan names a few sites, and
 # anything missed here still faces the LAN guard. Country second levels (co.uk, com.au, ne.jp...) are matched by
-# _CC_SECOND_LEVEL; the list holds the common multi-tenant hosting suffixes.
+# _CC_SECOND_LEVEL, a few provider patterns by _SHARED_PATTERNS; the list holds the rest.
 _SHARED_SUFFIXES = frozenset((
     "github.io", "gitlab.io", "pages.dev", "workers.dev", "r2.dev", "vercel.app", "netlify.app", "web.app",
-    "firebaseapp.com", "herokuapp.com", "appspot.com", "blogspot.com", "wordpress.com", "tumblr.com",
-    "substack.com", "medium.com", "azurewebsites.net", "cloudfront.net", "amazonaws.com", "s3.amazonaws.com",
-    "fly.dev", "onrender.com", "glitch.me", "replit.app", "repl.co", "surge.sh", "ngrok.io", "ngrok-free.app",
-    "trycloudflare.com", "duckdns.org", "no-ip.org", "ddns.net", "dyndns.org", "myshopify.com", "wixsite.com",
-    "weebly.com", "neocities.org", "codeberg.page", "translate.goog", "sourceforge.io", "readthedocs.io",
+    "firebaseapp.com", "herokuapp.com", "appspot.com", "wordpress.com", "tumblr.com",
+    "substack.com", "medium.com", "azurewebsites.net", "cloudfront.net", "amazonaws.com", "cloudapp.net",
+    "azureedge.net", "elasticbeanstalk.com", "fly.dev", "onrender.com", "glitch.me", "replit.app", "repl.co",
+    "surge.sh", "ngrok.io", "ngrok-free.app", "trycloudflare.com", "duckdns.org", "no-ip.org", "ddns.net",
+    "dyndns.org", "myshopify.com", "wixsite.com", "weebly.com", "neocities.org", "codeberg.page", "translate.goog",
+    "sourceforge.io", "readthedocs.io", "pythonanywhere.com",
+    # CentralNic and similar second levels sold to the public.
+    "eu.org", "uk.com", "us.com", "eu.com", "gb.com", "gb.net", "uk.net", "de.com", "jpn.com", "cn.com", "sa.com",
+    "za.com", "br.com", "ru.com", "kr.com", "qc.com", "us.org",
+    # Government and school second levels whose first label would also be a normal word.
+    "go.jp", "go.kr", "go.th", "go.id", "go.ke", "go.tz", "go.ug", "go.cr", "go.ci",
 ))
-_CC_SECOND_LEVEL = re.compile(r"(co|com|net|org|gov|edu|ac|or|ne|go|gob|mil|nic|ltd|plc|sch)\.[a-z]{2}")
+_CC_SECOND_LEVEL = re.compile(r"(co|com|net|org|gov|edu|ac|or|ne|gob|mil|nic|ltd|plc|sch|me|ed|lg|gr|ad)\.[a-z]{2}")
+_SHARED_PATTERNS = re.compile(
+    r"s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com|[a-z0-9-]+\.(?:compute|elb)\.amazonaws\.com"
+    r"|blogspot\.[a-z]{2,3}(?:\.[a-z]{2})?"
+)
 _LOGIN_WORDS = ("pass", "login", "user", "email", "card", "otp")
 _SEARCH_FIELD = re.compile(r"search|\bq\b|query", re.IGNORECASE)
+# One compound selector: an optional tag, then ids, classes and attribute tests. No `,`, `(`, `:`, spaces or
+# combinators, so it cannot name a second element as well.
+_SIMPLE_SELECTOR = re.compile(r"[a-z]*(?:#[\w-]+|\.[\w-]+|\[[\w-]+(?:[~|^$*]?=(?:\"[\w-]*\"|'[\w-]*'|[\w-]*))?\])*", re.IGNORECASE)
 WEB_PORTS = (80, 443)
 # Keys a self-directed task may press: scrolling and closing things. Enter only right after a search fill.
 SAFE_KEYS = frozenset(("PageDown", "PageUp", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"))
@@ -94,7 +107,7 @@ def site(value: object) -> str | None:
     host = value.strip().lower().removeprefix("www.").rstrip(".")
     if not _SITE.fullmatch(host) or host.endswith(_PRIVATE_SUFFIXES):
         return None
-    if host in _SHARED_SUFFIXES or _CC_SECOND_LEVEL.fullmatch(host):
+    if host in _SHARED_SUFFIXES or _CC_SECOND_LEVEL.fullmatch(host) or _SHARED_PATTERNS.fullmatch(host):
         return None
     try:
         ipaddress.ip_address(host)
@@ -133,35 +146,45 @@ def on_plan_url(url: object, sites: tuple[str, ...]) -> bool:
 
 
 def search_text(selector: str, text: str) -> bool:
-    """A self-directed task may type only short text into a search field, never into a login-looking one."""
+    """A self-directed task may type only short text, through one simple selector (no lists, pseudo-classes or
+    combinators) that reads as a search field and not as a login field."""
     lowered = selector.lower()
     return (
-        len(text) <= SEARCH_TEXT_LIMIT and bool(_SEARCH_FIELD.search(selector))
-        and not any(word in lowered for word in _LOGIN_WORDS)
+        len(text) <= SEARCH_TEXT_LIMIT and bool(_SIMPLE_SELECTOR.fullmatch(selector))
+        and bool(_SEARCH_FIELD.search(selector)) and not any(word in lowered for word in _LOGIN_WORDS)
     )
 
 
-def link_selector(selector: str) -> bool:
-    """Whether a CSS selector's last compound names a link (`a`, `a.title`, `nav > a[href]`)."""
-    last = re.split(r"[\s>+~]+", selector.strip())[-1] if selector.strip() else ""
-    return bool(re.fullmatch(r"a(?:[.#\[:].*)?", last))
+def _field(element: dict, key: str) -> str:
+    value = element.get(key)
+    return value.lower() if isinstance(value, str) else ""
+
+
+def search_box(element: object) -> bool:
+    """Whether an element from the browser's element list is a search box: a text or search input that says so
+    by its role, type or placeholder."""
+    if not isinstance(element, dict) or _field(element, "tag") != "input" or _field(element, "type") not in ("", "search", "text"):
+        return False
+    return _field(element, "role") == "searchbox" or _field(element, "type") == "search" or bool(
+        _SEARCH_FIELD.search(_field(element, "placeholder")),
+    )
 
 
 def link_element(element: object) -> bool:
-    """Whether an element from the browser's element list is plainly a link. Anything it cannot tell is not."""
+    """Whether an element from the browser's element list (fields tag, role, type, href) is plainly a link to a
+    web page. Anything it cannot tell is not."""
     if not isinstance(element, dict):
         return False
-    tag = next((element[key] for key in ("tag", "tag_name", "tagName") if isinstance(element.get(key), str)), "")
-    role = element.get("role") if isinstance(element.get("role"), str) else ""
-    kind = element.get("type") if isinstance(element.get("type"), str) else ""
-    return (tag.lower() == "a" or role.lower() == "link") and kind.lower() not in ("submit", "button", "image", "reset")
+    href = _field(element, "href")
+    is_link = _field(element, "tag") == "a" or _field(element, "role") == "link"
+    plain = _field(element, "type") not in ("submit", "button", "image", "reset")
+    # A web address or a relative one; never javascript:, data: or another scheme.
+    web = href.startswith(("http://", "https://", "/", "#", "?"))
+    return is_link and plain and web
 
 
-def offline(command: str) -> str:
-    """Run `command` in its own network namespace with no interfaces up: it has no network at all. Absolute
-    paths, so no command found earlier in PATH stands in for them; /bin/sh -c reads no startup files. If the
-    sandbox cannot create the namespace, the command fails instead of running online."""
-    return "/usr/bin/unshare --net --map-root-user -- /bin/sh -c " + shlex.quote(command)
+def under_own_roots(path: str) -> bool:
+    return any(path == root or path.startswith(root + "/") for root in OWN_FILE_ROOTS)
 
 
 def schemas() -> list[dict]:

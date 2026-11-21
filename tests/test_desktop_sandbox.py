@@ -927,3 +927,23 @@ def test_self_work_and_other_local_containers_never_run_together(tmp_path):
     assert "Dom's own task is using the desktop" in asyncio.run(host.refusal(default))
     own._status = "stopped"
     assert asyncio.run(host.refusal(default)) is None and asyncio.run(host.refusal(own)) is None
+
+
+async def test_a_start_the_host_refuses_raises_refused(tmp_path):
+    """Callers can tell "the host is full" (try later) from a broken desktop."""
+    from dom.config import DesktopHost
+    from dom.desktop.sandbox import Host, Refused
+
+    class Busy:
+        name, memory_mb = "other", 0
+
+        def status(self):
+            return "ready"
+
+    host = Host(DesktopHost(name="local", mode="local", max_containers=1, min_free_memory_mb=0))
+    host.register(Busy())
+    sandbox = LocalSandbox(local_config(tmp_path), run=FakeDocker(), host=host)
+    with pytest.raises(Refused):
+        await sandbox.ensure_running()
+    assert sandbox.status() == "stopped"
+    await sandbox.close()

@@ -330,7 +330,7 @@ class LocalSandbox:
             except Refused as exc:
                 self._status = "stopped"  # nothing is wrong with this container; the host is full
                 self.error = str(exc)
-                raise SandboxError(self.error) from None
+                raise Refused(self.error) from None
             except (SandboxError, OSError) as exc:
                 self._status = "error"
                 self.error = str(exc) if isinstance(exc, SandboxError) else "could not prepare desktop profile"
