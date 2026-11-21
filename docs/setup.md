@@ -101,6 +101,7 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/stickers` | Adds and removes sticker sets. |
 | `/import` | Starts an owner-reviewed memory import. |
 | `/tasks` | Lists and cancels desktop tasks. |
+| `/t3` | Shows T3 Code sign-in, linked machines and audit history ([T3 Code bridge](t3-bridge.md)). |
 | `/plugins` | Lists and disables plugins. |
 | `/update` | Shows the newest `vX.Y.Z` release with its changelog and deploys it on your confirmation (see [Deploy on a Raspberry Pi](deploy-pi.md#update-to-a-new-release)). |
 

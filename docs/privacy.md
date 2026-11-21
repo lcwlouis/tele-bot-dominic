@@ -8,10 +8,11 @@ messages, jobs, usage and approvals. `transcripts/` holds per-chat JSON Lines
 records. Protect both the database and the transcripts as conversation data.
 
 General notes, habits and the public-safe journal live in `memory/`, with
-separate notes about people and chats. Owner preferences, personal notes, the
-private journal and raw memory imports live in `private/`. Keep personal
-information out of `SOUL.md` and other shared notes. Review an import before
-making any of its facts shareable.
+separate notes about people and chats. Owner preferences, personal notes and the
+private journal live in `private/`. Keep personal information out of `SOUL.md`
+and other shared notes. A memory import keeps no copy of the uploaded text: each
+fact becomes a proposal, and only the facts the owner approves are added to
+`private/USER.md`. Nothing from an import goes to `memory/`.
 
 The backup command makes an archive of the instance home and a consistent
 SQLite snapshot. Archives include credentials and private data. Keep the
@@ -50,13 +51,17 @@ Cloudflare. Keep local bearer-token testing on loopback.
 - **KLIPY** (GIF search, only with `KLIPY_API_KEY`) receives the short search query Dom wrote, from the Dom
   host. It sees no chat, user or owner identifier. Outside the owner DM the query goes through the outbound
   leak check when that is on. Telegram then fetches the chosen file from KLIPY. See [GIFs](gifs.md).
-- **Jev** can receive recent chat context for triage and candidate facts for
-  import classification. The outbound leak check sends proposed text and a
+- **Jev** can receive recent chat context for triage. The outbound leak check sends proposed text and a
   bounded selection of headings, names, numbers and other terms from owner notes
   to the configured Jev endpoint. At or above the configured threshold Dom holds
   back the text and alerts the owner. If Jev cannot score the text, Dom may send
   it and record that the check was unavailable. `leak_check = false` turns off
   this additional check. The chat-scope boundary still applies.
+
+- **Private group replies.** A reply Dom marks private in a group is shown only
+  to the owner there. Where Telegram refuses that (Dom is not a group admin), it
+  goes to the owner's DM instead, and the group's history records only that the
+  owner was answered privately, never the answer.
 
 ## Plugins and desktop
 
@@ -82,3 +87,23 @@ before starting. Remote desktop isolation depends on the operator's firewall
 configuration. A browser login stays in the persistent sandbox profile, and
 pages and screenshots may pass through the desktop tools and configured
 models while a task is running.
+
+Self-directed work (on by default, local desktop only) lets Dom plan up to three
+small research tasks of his own, each reading up to four named public sites in a
+separate `self-work` container. The owner's DM gets the plan before any task
+starts, and one short summary after it. Planning uses `SOUL.md` and the public
+journal; a task itself gets only its plan, nothing from private notes or chats,
+and it never messages anyone else. See
+[Self-directed work](desktop.md#self-directed-work).
+
+## Home network and T3 Code
+
+In the owner DM, `find_devices` reads the Dom host's mDNS answers and neighbour
+table to find devices on the home network. Nothing is scanned. The list it finds
+reaches the chat model like any tool result. A moved LAN address becomes a proposal for the owner.
+
+The T3 Code bridge (off by default, owner DM only) lets the owner inspect
+projects and coding activity on linked machines through a T3 Code service on the
+Dom host. Thread text it reads is treated as untrusted. A message goes to a
+thread only after the owner taps to confirm the destination and the exact text.
+See [T3 Code bridge](t3-bridge.md).

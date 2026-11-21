@@ -119,7 +119,7 @@ Things that leave `SOUL.md`:
 - Layer 2: in non-owner chats, Jev scores each outgoing message for private leakage. The state it sees is the headings and key terms of `private/`. Above the threshold, the message is dropped and the owner is told.
 - This replaces the regex DLP.
 
-**Ephemeral replies (Bot API 10.2+).** When the owner asks something assistant-ish inside a group, Dom can answer with an ephemeral message only the owner sees.
+**Ephemeral replies (Bot API 10.2+).** When the owner asks something assistant-ish inside a group, Dom can answer with an ephemeral message only the owner sees. (E32: Telegram sends these only from a group admin; where Dom is not one, the reply goes to the owner's DM with the reason, and the group history records only that the owner was answered privately.)
 
 ## 6. Presence
 
@@ -181,7 +181,7 @@ Edits are handled, including edits made while Dom was offline.
 | Tool | Scope |
 |---|---|
 | `web_search` | all |
-| ~~`memory`~~ replaced by the background memory pass (`dom/memory_pass.py`): after an online session ends, or when unprocessed messages are about to leave the chat window (window size − 5), one model call turns new messages into add / replace / remove ops on the scope's note files, limits enforced; `private/` files in `owner_dm` only. Replies never write notes. | all scopes |
+| ~~`memory`~~ replaced by the background memory pass (`dom/memory_pass.py`): after an online session ends, or when unprocessed messages are about to leave the chat window (since W17: when a trim would drop messages the pass has not read, the trim waits for the pass), one model call turns new messages into add / replace / remove ops on the scope's note files, limits enforced; `private/` files in `owner_dm` only. Replies never write notes. | all scopes |
 | `search_history` | FTS over the current chat; the owner can search all chats |
 | `skills_list` / `skill_view` / `skill_manage` | all |
 | `remind` | owner, plus whitelisted friends |
@@ -198,7 +198,7 @@ Media is transcribed or described once by the media model when it arrives. The d
    - Reflection may *propose* `SOUL.md` edits. The owner approves them in DM or in the UI.
 2. **Plugins:**
    - Dom drafts a plugin into `plugins/staging/`.
-   - The owner gets the full code in DM, chunked, plus a diff on updates. Only the owner activates it: a button in their DM, or the dashboard's approvals (owner-only, behind Cloudflare Access), which the phase 6 plan added and the owner accepted.
+   - The owner reviews the full code, plus a diff on updates, on the dashboard's Plugins page (roadmap phase 6; the DM card links there). Only the owner activates it: a button in their DM, or the dashboard's approvals (owner-only, behind Cloudflare Access), which the phase 6 plan added and the owner accepted.
    - Plugins run in a subprocess with an empty environment (no secrets) and talk over JSON-lines on stdio.
    - A plugin can add tools, Telegram slash commands and dashboard panels (owner decision E11, 2026-11-20). Commands reply with plain text; panels return structured data that Dom renders with its own templates. Plugins never ship HTML or JavaScript.
 3. **Core code:**
@@ -289,7 +289,7 @@ Each phase ends with a demo on a real test bot, not mocks.
 
 ## 15. Pi cleanup
 
-Done on 2026-11-19: read-only look, backup, old pilot stopped (not removed), persistent logs, per-minute health log, Dom as a systemd user service. Still open: remove old containers and images, DHCP reservation, swap check.
+Done on 2026-11-19: read-only look, backup, old pilot stopped (not removed), persistent logs, per-minute health log, Dom as a systemd user service. Still open: DHCP reservation, swap check. (Old containers and images removed 2026-11-21, E31.)
 
 Original list:
 
