@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Dom knows whether he is an admin of a group (kept from Telegram's membership updates, else asked once per group). Where he is not, the turn note tells him a private answer goes to the owner's DM, and it goes there directly instead of after a refused in-group send.
 - After a private reply in a group (shown to the owner, or moved to the owner's DM), the group's history gets an event saying the owner was answered privately, without the answer. Dom no longer thinks the owner is still unanswered and repeats the take publicly.
 - Ephemeral group replies need Dom to be a group admin (Telegram answers `BOT_NOT_ADMIN` otherwise). A private reply Telegram refuses now goes to the owner's DM with a line saying why, instead of being lost, and the log names Telegram's reason. It is never sent publicly in the group.
 - `/status`: the per-chat wake button reads "☀️ Wake <chat>" instead of just "☀️ <chat>", so it is clear what it does.
