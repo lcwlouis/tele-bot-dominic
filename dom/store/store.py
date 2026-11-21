@@ -1359,6 +1359,15 @@ class Store:
             dict(row) for row in self._conn.execute("SELECT * FROM proposals WHERE status = 'pending' ORDER BY id")
         ])
 
+    async def proposal_statuses(self, ids: list[int]) -> dict[int, str]:
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        return await self._run(lambda: {
+            row["id"]: row["status"]
+            for row in self._conn.execute(f"SELECT id, status FROM proposals WHERE id IN ({marks})", ids)
+        })
+
     async def has_recent_proposal(self, kind: str, source: str, since: str) -> bool:
         return await self._run(lambda: self._conn.execute(
             "SELECT 1 FROM proposals WHERE kind = ? AND source = ? AND created_at > ? LIMIT 1",

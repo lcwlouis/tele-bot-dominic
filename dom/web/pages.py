@@ -345,7 +345,8 @@ def _timing(item: str) -> str:
 async def _turns(app: App, chat: str = "") -> dict:
     tz = ZoneInfo(app.config.timezone)
     known = {row["chat_id"]: row for row in await app.store.list_chats()}
-    known.update({row["chat_id"]: row for row in await app.store.list_approved_chats()})
+    approved = {row["chat_id"]: row for row in await app.store.list_approved_chats()}
+    known.update(approved)
     rows = await app.store.recent_turns(chat or None)
     for row in rows:
         key = row["chat_id"]
@@ -355,8 +356,12 @@ async def _turns(app: App, chat: str = "") -> dict:
         trace = json.loads(row["trace"])
         row["steps"] = [item for item in trace if "@" not in item]
         row["timing"] = [_timing(item) for item in trace if "@" in item]
+    # The filter offers chats Dom is in, plus any that appear in the turns shown; a chat he left long ago does not
+    # clutter it.
+    offered = {*approved, *(row["chat_id"] for row in rows), chat}
     return {
-        "rows": rows, "chat": chat, "choices": [(key, _title(row, app.owner_id)) for key, row in known.items()],
+        "rows": rows, "chat": chat,
+        "choices": [(key, _title(row, app.owner_id)) for key, row in known.items() if key in offered],
     }
 
 
@@ -553,6 +558,7 @@ async def plugin_reviewed(request: Request, name: str, digest: str):
 async def plugin_action(request: Request, name: str, digest: str, decision: Literal["approve", "reject", "disable"]):
     app = owner_app(request)
     message = await app.plugins.decide(name, digest, decision)
+    await app.proposals.settle_cards()  # the plugin's Telegram card, if any, stops offering Approve
     response = render("plugins.html", context={
         "rows": await app.plugins.listing(), "panels": await _plugin_panels(app), "message": message,
     })
