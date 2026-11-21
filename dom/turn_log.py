@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
@@ -75,6 +76,9 @@ async def capture(store: Store, at: datetime, chat_id: int, scope: Scope):
         yield
     except ModelCallSkipped:
         trace.outcome = "Paused"
+        raise
+    except asyncio.CancelledError:  # a restart or shutdown mid-turn; the unread messages are picked up again after it
+        trace.outcome = "Interrupted"
         raise
     except Exception:
         trace.outcome = "Turn failed"

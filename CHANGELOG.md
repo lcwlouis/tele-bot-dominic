@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- The turn log records a turn cut off by a restart or shutdown as "Interrupted" instead of "Stayed quiet"; its unread messages are answered after the restart as before.
 - Dom shows "typing" while he works out a reply (the model calls and any tools), not only while he types it, so a slow answer no longer looks like a crash; that time counts towards the reply's typing. One reply now types for at most 30 seconds in all (each bubble still up to 20), then each later bubble follows a 1-second pause, so a long task-mode answer no longer arrives minutes after it was written. The dashboard puts a separator before a chat's "Task mode:" line.
 - A reply with more than 6 bubbles (a long itinerary, say) is no longer dropped as malformed: the extra bubbles join the 6th, and the reply format now tells the model the limit. A malformed reply is logged by its shape only (which fields failed and how long it was, never its text).
 - `task_mode` takes `action` = `start` or `end` instead of `active` true or false: with the boolean the home model often sent "end" for a planning request. A tool call that returns an error now adds a "<tool> refused" step to the turn log and its reason to the journal, and `task_mode` is described as never for small talk or a one-word reply.

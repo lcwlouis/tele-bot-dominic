@@ -271,3 +271,24 @@ async def test_a_full_turn_records_model_and_typing_time(make_app):
     await drain_dispatch(app.dispatch)
     [row] = await app.store.recent_turns()
     assert [item.rpartition("@")[0] for item in json.loads(row["trace"]) if "@" in item] == ["model", "typing"]
+
+
+async def test_a_turn_cut_off_by_a_restart_is_logged_as_interrupted_not_quiet(make_app):
+    import asyncio
+
+    app = make_app()
+    started = asyncio.Event()
+
+    async def turn():
+        async with turn_log.capture(app.store, datetime(2026, 1, 1, tzinfo=timezone.utc), GROUP, "group"):
+            turn_log.step("triage")
+            started.set()
+            await asyncio.sleep(10)
+
+    task = asyncio.create_task(turn())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    [row] = await app.store.recent_turns()
+    assert row["outcome"] == "Interrupted"
