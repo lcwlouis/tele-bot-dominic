@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Assistant mode for important tasks (W16): in the owner's DM only, Dom can call the new `task_mode` tool to wear the `assistant` preset for planning, research or admin, saying so in character, and return to his vibe when he calls it off or after 30 quiet minutes. A preset pinned on the DM still wins; it does not use the once-a-day `switch_vibe` and does not change the day's Auto pick. The Chats panel and `self_inspect` show it ([docs/presets.md](docs/presets.md#task-mode-owner-dm-only)).
 - Cache-friendly prompt (W17): the chat window now trims in chunks (80 messages drop to 49 and refill) instead of sliding by one message every turn, so its start, and the prompt text after the cached prefix, stays the same between trims. The start depends only on the chat's message count, so it is the same on every turn and after a restart. The memory pass now runs just before a trim (when a message about to leave has not been read yet) instead of near the unprocessed-message count, so notes and window start change together; Dom's openers use the same window.
 - The turn log records how long each step took: triage, each model call, each tool and the typing and sending, as `name@milliseconds` entries in the existing `turns.trace` (no migration). The dashboard's Turn log shows them as small chips ("Model 2.7 s", "Typing 4.2 s").
 - Dashboard: the per-chat "Traits" section is now labelled "Personality sliders … tap to edit" and shows how many sliders differ for that chat, so the slider editor is easier to find.

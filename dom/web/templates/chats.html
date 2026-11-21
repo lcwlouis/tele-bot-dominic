@@ -31,6 +31,7 @@
       </div>
       <div class="meta">
         {{ chat.preset.title if chat.preset else "No preset" }}, {{ chat.state }}{% if chat.when %} until {{ chat.when }}{% endif %}
+        {% if chat.task %}<span class="fog" id="task-mode">Task mode: {{ chat.task.reason }} (ends at {{ chat.task_until }} if the chat goes quiet)</span>{% endif %}
         <details class="traits"{% if context.open_traits == chat.id %} open{% endif %}><summary>Personality sliders{% set changed = chat.sliders|selectattr(2)|list|length %}{% if changed %} ({{ changed }} changed for this chat){% endif %}: tap to edit</summary>
           <div class="traits-list">
             {% for name, value, custom in chat.sliders %}

@@ -123,6 +123,7 @@ async def _chats(app: App) -> dict:
         unread, _ = await app.store.get_unread(chat_id)
         own, raw_traits = await app.store.get_chat_personality(chat_id)
         own_traits = traits.normalise(traits.decode(raw_traits))
+        task = await traits.task_mode(app.store, chat_id, app.dispatch.now())
         chats.append({
             "id": chat_id, "title": _title(row, app.owner_id), "state": state, "until": until,
             "when": until.astimezone(tz).strftime("%H:%M") if until else "",
@@ -130,6 +131,7 @@ async def _chats(app: App) -> dict:
             "unread": unread, "traits": sliders, "own_traits": own_traits,
             "sliders": [(name, sliders.get(name, 0.5), name in own_traits) for name in traits.NAMES],
             "preset": preset, "own_preset": own,
+            "task": task, "task_until": task.until.astimezone(tz).strftime("%H:%M") if task else "",
         })
     presets = [preset for name in app.home.preset_names() if (preset := traits.load_preset(app.home, name))]
     pending = await app.store.list_pending_chats()

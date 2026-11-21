@@ -37,7 +37,7 @@ from dom.reminders import Reminders
 from dom.store.store import window_chunk
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, enabled_tools
-from dom.traits import for_chat
+from dom.traits import for_chat, keep_task_mode, task_mode
 from dom.triage import persona_card, triage_offline, triage_online, triage_urgency
 from dom.usage import ModelCallSkipped, Usage, check_model_allowed, model_request
 
@@ -748,6 +748,13 @@ class Dispatcher:
             )
         if current_mood := mood(app.home, now.date()):
             note += f"\nmood: {escape(current_mood)}"
+        if scope == "owner_dm" and (task := await task_mode(app.store, chat_id, self.now())) is not None:
+            note += (
+                f"\ntask mode: on since {task.since.astimezone(self.presence.tz):%H:%M} for: {escape(task.reason)}. You are "
+                "using the assistant preset until you call task_mode with active=false or your friend goes quiet."
+            )
+            if newest is not None:  # the owner is still here, so the quiet period starts again
+                await keep_task_mode(app.store, task, self.now())
         if away_count:
             note += "\nyou just came online"
         casual_ids: list[int] = []

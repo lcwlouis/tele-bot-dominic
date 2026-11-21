@@ -23,6 +23,10 @@ GLOBAL_PRESET_KEY = "preset:global"
 AUTO = "auto"
 AUTO_PICKS_KEY = "preset:auto"
 ASSISTANT = "assistant"  # task-driven, never a vibe
+# Task mode: in the owner's DM Dom wears the assistant preset for an important task. It is one kv entry that expires
+# after a quiet stretch, kept apart from the daily pick so it never touches `switch_vibe` or the pick.
+TASK_KEY = "preset:task"
+TASK_QUIET = timedelta(minutes=30)
 MAX_REASON = 160
 # Odds for the random fallback: the base preset most often, a joke preset rarely, any other preset in between.
 RANDOM_WEIGHTS = {"classic": 6.0, "fboy": 1.0}
@@ -123,6 +127,8 @@ async def for_chat(home: Home, store: Store, chat_id: int, now: datetime | None 
     name, overrides = await store.get_chat_personality(chat_id)
     shared = (await vibe(home, store, now)).preset
     own = load_preset(home, name) if name else None
+    if not name and await task_mode(store, chat_id, now) is not None:  # a pinned preset always wins
+        shared = load_preset(home, ASSISTANT) or shared
     for layer in (shared, own):
         if layer is not None:
             sliders.update(layer.traits)
@@ -245,3 +251,67 @@ async def switch_vibe(home: Home, store: Store, chat_id: int, name: object, reas
         raise SwitchRefused("that is already your vibe")
     await record_pick(store, chosen, reason, "switch", now=now)
     return chosen
+
+
+# ---- task mode (assistant preset for an important task, owner DM only) -------------------------
+
+@dataclass(frozen=True)
+class TaskMode:
+    reason: str
+    since: datetime
+    until: datetime  # moves forward while the owner keeps talking
+
+
+class TaskRefused(ValueError):
+    """Why Dom cannot go into task mode, in words he can act on."""
+
+
+def _aware(moment: datetime) -> datetime:
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+async def task_mode(store: Store, chat_id: int, now: datetime | None = None) -> TaskMode | None:
+    """The task mode in force right now in this chat. Only the owner's DM can be in it, whatever the stored state."""
+    if store.scope_for(chat_id, "private") != "owner_dm":
+        return None
+    raw = decode(await store.kv_get(TASK_KEY))
+    try:
+        task = TaskMode(str(raw["reason"]), _aware(datetime.fromisoformat(raw["since"])), _aware(datetime.fromisoformat(raw["until"])))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return task if task.until > (now or _utc_now()) else None
+
+
+async def _save_task(store: Store, task: TaskMode) -> None:
+    await store.kv_set(TASK_KEY, json.dumps({"reason": task.reason, "since": task.since.isoformat(), "until": task.until.isoformat()}))
+
+
+async def start_task_mode(home: Home, store: Store, chat_id: int, reason: object, now: datetime) -> TaskMode:
+    """Put the owner's DM into assistant mode, or keep it there and push its end back. Never in another chat, and
+    never over a preset the owner pinned on the chat."""
+    if store.scope_for(chat_id, "private") != "owner_dm":
+        raise TaskRefused("task mode is only for the owner's DM")
+    if (await store.get_chat_personality(chat_id))[0]:
+        raise TaskRefused("this chat has its own preset, so task mode would change nothing here")
+    if load_preset(home, ASSISTANT) is None:
+        raise TaskRefused("there is no assistant preset installed")
+    reason = clean_reason(reason)
+    if not reason:
+        raise TaskRefused("give a short reason")
+    current = await task_mode(store, chat_id, now)
+    task = TaskMode(reason, current.since if current else now, now + TASK_QUIET)
+    await _save_task(store, task)
+    return task
+
+
+async def keep_task_mode(store: Store, task: TaskMode, now: datetime) -> None:
+    """The owner is still talking: the quiet period starts again."""
+    await _save_task(store, replace(task, until=now + TASK_QUIET))
+
+
+async def end_task_mode(store: Store, chat_id: int, now: datetime) -> bool:
+    """Back to the vibe in force. False when task mode was not on."""
+    if await task_mode(store, chat_id, now) is None:
+        return False
+    await store.kv_set(TASK_KEY, "")
+    return True
