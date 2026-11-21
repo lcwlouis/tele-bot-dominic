@@ -22,7 +22,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPrevie
 from dom import guard, turn_log
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
-from dom.agent import NoFinalAnswer, parse_actions, run_turn
+from dom.agent import NoFinalAnswer, malformed_shape, parse_actions, run_turn
 from dom.desktop.sandbox import DEFAULT
 from dom.desktop.tools import untrusted
 from dom.gifs import GIF_NOTE
@@ -710,6 +710,8 @@ class Dispatcher:
                     await check_model_allowed()
                     reply = await app.client.complete(messages, [], once=True)
                 actions = parse_actions(reply.get("content"))
+                if actions is None:
+                    log.info("desktop task %s report was not usable: %s", task_id, malformed_shape(reply))
             except Exception as exc:
                 log.warning("could not compose desktop task %s report (%s)", task_id, type(exc).__name__)
                 actions = None

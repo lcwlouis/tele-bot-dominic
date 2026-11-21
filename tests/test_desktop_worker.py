@@ -277,6 +277,24 @@ async def test_plain_fallback_is_truncated_without_previews_and_not_stored_as_a_
     assert f"Desktop task #{task_id} result sent as plain text" in str(window)
 
 
+async def test_out_of_steps_the_task_says_how_far_it_got(make_app):
+    # A Reddit inbox-and-watchlist brief ran out of its 30 steps and the owner heard only "Stopped after 30 steps".
+    app = make_app()
+    worker = await worker_for(
+        app, call("read_page"), call("read_page"), call("finish", result="Read the inbox; the watchlist is left."),
+        {"content": "invalid"}, max_steps=2,
+    )
+    task_id = await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    row = await task_row(app, task_id)
+    assert row["status"] == "failed" and "step limit" in row["error"]
+    assert row["result"] == "Read the inbox; the watchlist is left."
+    wrap_up = app.client.requests[2]
+    assert [schema["function"]["name"] for schema in wrap_up[1]] == ["finish"]
+    assert "used every step" in wrap_up[0][-1]["content"]
+    assert "the watchlist is left" in app.bot.of("send", OWNER)[-1][2]
+
+
 async def test_failure_result_never_holds_raw_tool_output(make_app):
     app = make_app()
     worker = await worker_for(app, call("read_page"), call("read_page"), {"content": "invalid"}, max_steps=2)
