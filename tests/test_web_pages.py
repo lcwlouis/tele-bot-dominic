@@ -146,6 +146,23 @@ async def test_web_decides_through_proposals_including_selected_imports(make_app
         decide.assert_awaited_with(second["id"], False)
 
 
+async def test_deciding_on_the_dashboard_settles_the_telegram_card(make_app, browser):
+    # Plugin #7 was approved on the dashboard and its Telegram card kept live Approve and Reject buttons.
+    app = make_app()
+    skill = {"name": "report", "description": "Summarise a web table", "body": "Open the page and summarise the table."}
+    proposal_id = await app.proposals.create("skill", "Skill: report", skill, "chat")
+    card_id = app.bot._next_id  # the card is the last message sent
+    async with browser(app) as client:
+        response = await client.post(f"/proposals/{proposal_id}/approve", headers=POST_HEADERS)
+    assert response.status_code == 200
+    _, chat_id, message_id, markup = app.bot.of("markup")[-1]
+    assert (chat_id, message_id) == (OWNER, card_id)
+    (button,), = markup.inline_keyboard
+    assert (button.text, button.callback_data) == ("✅ Approved", "noop")
+    await app.proposals.settle_cards()  # settled once: nothing more to edit
+    assert len(app.bot.of("markup")) == 1
+
+
 async def test_agent_and_dispatch_write_turn_and_daily_retention(make_app):
     app = make_app()
     now = app.dispatch.now()

@@ -259,6 +259,7 @@ input[type="file"]::file-selector-button {
   .waiting { grid-column: 6 / -1; }
   .chats-panel { grid-column: 1 / -1; }
   .desktop-tile { grid-column: 1 / -1; }
+  #own-work, #plugin-panels { grid-column: 1 / -1; } /* full width on Now; without a placement they took one of 12 columns */
   .usage { grid-column: 1 / 6; grid-row: 4; }
   .turns { grid-column: 6 / -1; grid-row: 4; }
   .single > section { grid-column: 1 / -1; grid-row: auto; }

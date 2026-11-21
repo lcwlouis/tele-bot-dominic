@@ -9,6 +9,7 @@ from datetime import timedelta, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom.config import replace_host
@@ -24,6 +25,8 @@ log = logging.getLogger(__name__)
 MEMORY_FILES = {"USER.md": "private/USER.md", "NOTES.md": "private/NOTES.md", "MEMORY.md": "memory/MEMORY.md"}
 REFLECTION_SOURCE = "reflection"
 REFLECTION_INTERVAL = timedelta(days=7)
+CARDS_KEY = "proposal-cards"  # {proposal id: [Telegram message ids of its cards with buttons]}
+SETTLED_LABELS = {"approved": "✅ Approved", "rejected": "❌ Rejected", "expired": "Expired"}
 
 
 class Refused(ValueError):
@@ -179,6 +182,7 @@ class Proposals:
             review = review_button(app, body)
             if review is None:
                 text += f"\nOpen {plugin_review_path(body)} in the dashboard to review."
+        sent = None
         for start in range(0, len(text), 2000):
             markup = None
             if start + 2000 >= len(text):
@@ -186,9 +190,41 @@ class Proposals:
                 if review is not None:
                     keyboard.insert(0, [review])
                 markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-            await app.bot.send_message(
+            sent = await app.bot.send_message(
                 app.owner_id, text[start:start + 2000], disable_notification=True, reply_markup=markup,
             )
+        message_id = getattr(sent, "message_id", None)
+        if isinstance(message_id, int):
+            cards = await self._cards()
+            cards.setdefault(str(row["id"]), []).append(message_id)
+            await app.store.kv_set(CARDS_KEY, json.dumps(cards))
+
+    async def _cards(self) -> dict[str, list[int]]:
+        try:
+            cards = json.loads(await self.app.store.kv_get(CARDS_KEY) or "{}")
+        except ValueError:
+            return {}
+        return cards if isinstance(cards, dict) else {}
+
+    async def settle_cards(self) -> None:
+        """Turn the buttons of every Telegram card whose proposal is no longer pending into its outcome, whichever
+        way it was decided (the card, the dashboard, a plugin decision or expiry), so no stale Approve is left."""
+        app = self.app
+        cards = await self._cards()
+        if not cards or app.owner_id is None:
+            return
+        statuses = await app.store.proposal_statuses([int(key) for key in cards if key.isdigit()])
+        settled = {key for key in cards if statuses.get(int(key) if key.isdigit() else -1) != "pending"}
+        for key in settled:
+            label = SETTLED_LABELS.get(statuses.get(int(key)) if key.isdigit() else "", "Handled")
+            markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]])
+            for message_id in cards[key]:
+                try:
+                    await app.bot.edit_message_reply_markup(chat_id=app.owner_id, message_id=message_id, reply_markup=markup)
+                except TelegramAPIError:  # too old, deleted, or already showing it
+                    log.info("could not settle the card of proposal %s", key)
+        if settled:
+            await app.store.kv_set(CARDS_KEY, json.dumps({key: ids for key, ids in cards.items() if key not in settled}))
 
     async def pending(self) -> list[dict]:
         return await self.app.store.pending_proposals()
@@ -218,6 +254,11 @@ class Proposals:
             await self._notify(proposal_id, "soul_edit", title, body, event=f"Dom proposed a soul edit (#{proposal_id})")
 
     async def decide(self, proposal_id: int, approve: bool) -> str:
+        outcome = await self._decide(proposal_id, approve)
+        await self.settle_cards()
+        return outcome
+
+    async def _decide(self, proposal_id: int, approve: bool) -> str:
         app = self.app
         status = "approved" if approve else "rejected"
         at = app.dispatch.now().astimezone(timezone.utc).isoformat()
@@ -268,3 +309,4 @@ class Proposals:
     async def expire(self) -> None:
         now = self.app.dispatch.now().astimezone(timezone.utc)
         await self.app.store.expire_proposals((now - timedelta(days=14)).isoformat(), now.isoformat())
+        await self.settle_cards()
