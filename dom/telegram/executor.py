@@ -128,6 +128,7 @@ async def perform(
     stickers: Mapping[str, Sequence[str]] | None = None,
     gifs: GifSearch | None = None,
     ephemeral_recipient: int | None = None,
+    ephemeral_in_chat: bool = True,
     link_previews: bool = True,
     record: bool = True,
     typed_already: float = 0.0,
@@ -140,6 +141,8 @@ async def perform(
             log.warning("ignored a private action without an eligible receiver in chat %s", chat_id)
             await _tell_owner_held_back(store, chat_id)
             return []
+        if not ephemeral_in_chat:  # Dom is not an admin there, so Telegram would refuse: straight to the DM
+            return await _private_reply_to_dm(bot, store, chat_id, [b.text for b in actions.bubbles], "BOT_NOT_ADMIN")
         parameters = EphemeralMessageParameters(receiver_user_id=ephemeral_recipient)
         # Keep these bubbles out of the group's history and skip public side effects.
         sent_ids = []

@@ -98,6 +98,9 @@ class Dispatcher:
         self._memory_last: dict[int, datetime] = {}  # when the chat's last pass finished
         self._memory_slot = asyncio.Semaphore(1)  # one pass at a time across chats
         self._reactions_off: set[int] = set()  # chats where Telegram refused a reaction; not asked again
+        # Whether Dom is an admin in a group, which Telegram needs for ephemeral bubbles. Kept from my_chat_member
+        # updates (note_admin), else asked once per group; a group not known yet is asked on its next owner turn.
+        self._admin: dict[int, bool] = {}
         presence.on_session_end = self.request_memory_pass
 
     def notify(self, msg: IncomingMessage) -> None:
@@ -512,6 +515,21 @@ class Dispatcher:
         chat = [m for m in window if m.role != "event"]  # events are the owner's commands, not chat content for Jev
         return self.app.store.format_chat_window_xml(chat_id, chat[-TRIAGE_WINDOW:], self.presence.tz)
 
+    def note_admin(self, chat_id: int, admin: bool) -> None:
+        self._admin[chat_id] = admin
+
+    async def _is_admin(self, chat_id: int) -> bool:
+        """True unless Telegram says Dom is not an admin here. If it cannot be asked, the in-group send is tried and
+        a refusal still moves the reply to the owner's DM."""
+        if chat_id not in self._admin:
+            try:
+                member = await self.app.bot.get_chat_member(chat_id, self.app.bot_id)
+            except Exception as exc:
+                log.info("could not ask whether Dom is an admin in chat %s (%s)", chat_id, type(exc).__name__)
+                return True
+            self._admin[chat_id] = member.status in ("administrator", "creator")
+        return self._admin[chat_id]
+
     def _ephemeral_recipient(self, scope: Scope, trigger: StoredMessage | None) -> int | None:
         owner = self.app.owner_id
         if (
@@ -552,12 +570,13 @@ class Dispatcher:
             turn_log.outcome("Held back: possible leak")
             return False
         recipient = self._ephemeral_recipient(scope, newest)
+        in_group = recipient is None or await self._is_admin(chat_id)
         try:
             with turn_log.timed("typing"):  # the typing delays and the sending
                 sent = await executor.perform(
                     app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
                     thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
-                    gifs=app.gifs, ephemeral_recipient=recipient, typed_already=thought,
+                    gifs=app.gifs, ephemeral_recipient=recipient, ephemeral_in_chat=in_group, typed_already=thought,
                 )
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
@@ -788,9 +807,14 @@ class Dispatcher:
             if casual:
                 note += f"\n{casual}"
         if self._ephemeral_recipient(scope, newest) is not None:
+            where = (
+                "ephemeral bubbles visible only to the owner, here in the group" if await self._is_admin(chat_id)
+                else "the answer to the owner's DM instead (you are not an admin of this group, which Telegram "
+                "needs for private bubbles in it)"
+            )
             note += (
                 '\nThe latest message is from the owner. For an assistant-like answer to that message, '
-                'you may add "private": true to the actions to send ephemeral bubbles visible only to the owner. '
+                f'you may add "private": true to the actions to send {where}. '
                 'It goes at the top level, next to "bubbles", never inside a bubble: '
                 '{"private": true, "bubbles": [{"text": "..."}]}.'
             )
