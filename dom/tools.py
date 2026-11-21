@@ -404,7 +404,8 @@ TASK_MODE_TOOL = Tool(
     name="task_mode",
     description=(
         "Owner's DM only. For an important task (planning, research, admin, or anything that needs reminders, web "
-        "search or desktop tasks at length) call it with active=true and a short reason: from your next reply you use "
+        "search or desktop tasks at length) that your friend has asked you to do, call it with active=true and a short "
+        "reason. Never for small talk, a greeting, or a one-word reply like \"sure\" or \"ok\". From your next reply you use "
         "the assistant preset, so tell your friend in character that you are switching to work mode. Call it with "
         f"active=false when the task is done. It also ends after {TASK_QUIET_MINUTES} quiet minutes. It does not use "
         "up switch_vibe and does nothing in a chat that has its own preset."
