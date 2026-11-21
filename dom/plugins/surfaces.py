@@ -50,6 +50,24 @@ def _arguments(text: str) -> str:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
+def _hint(error: Exception) -> str:
+    """What the owner can do about the common failure: a plugin that tries to keep files."""
+    text = str(error)
+    if "Read-only file system" in text or "No space left" in text:
+        return " (plugins cannot save files between runs; ask Dom for a version that keeps nothing)"
+    return ""
+
+
+async def _note_failure(app: App, what: str, error: Exception) -> None:
+    """Tell Dom, through an event in the owner's DM, that a plugin he drafted failed, so he can offer a fix. Only
+    the name and the kind of failure: plugin output stays out of the chat history."""
+    why = ", because it tried to save a file" if _hint(error) else ""
+    try:
+        await app.store.record_owner_event(f"{what} failed when it ran{why}")
+    except Exception:
+        log.exception("could not record a plugin failure")
+
+
 def _plain(text: str) -> str:
     """Drop control, bidi and invisible characters (newlines and tabs stay) and bound the length."""
     text = "".join(char for char in text if _visible(char)).strip()
@@ -112,7 +130,8 @@ async def _run_command(app: App, plugin: Plugin, name: str, text: str, scope: st
     except PluginsUnavailable:
         return "Plugins are unavailable right now." if not owner else "Plugins are unavailable: the sandbox check failed."
     except PluginError as error:
-        return _plain(f"/{name} failed: {error}") if owner else f"/{name} didn't work this time."
+        await _note_failure(app, f"/{name} from plugin {plugin.manifest.name}", error)
+        return _plain(f"/{name} failed: {error}{_hint(error)}") if owner else f"/{name} didn't work this time."
     except (OSError, ValueError, RuntimeError):
         return f"/{name} could not run."
     return _plain(result) if isinstance(result, str) else ""
@@ -203,7 +222,8 @@ async def run_panel(app: App, plugin: Plugin, panel: PanelManifest) -> tuple[Pan
     except PluginBusy:
         return None, "Plugins are busy. Refresh in a moment."
     except PluginError as error:
-        return None, _plain(f"The panel failed: {error}")
+        await _note_failure(app, f"the {panel.id} panel of plugin {plugin.manifest.name}", error)
+        return None, _plain(f"The panel failed: {error}{_hint(error)}")
     except (OSError, ValueError, RuntimeError):
         return None, "The panel could not run."
     try:

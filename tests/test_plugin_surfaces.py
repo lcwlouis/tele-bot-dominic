@@ -335,6 +335,19 @@ async def test_command_errors(make_app, browser, monkeypatch, error, owner_sees)
     assert "boom" not in app.bot.of("send", GROUP)[-1][2]
 
 
+async def test_a_failed_command_tells_dom_through_an_event_without_the_plugin_output(make_app, browser, monkeypatch):
+    # /km on the Pi tried to save its history and failed; Dom never learnt that his plugin was broken.
+    app = make_app()
+    await approve(app, browser, monkeypatch=monkeypatch)
+    fake_runner(app, monkeypatch, PluginError("[Errno 30] Read-only file system: '~' secret-output"))
+    await command(app, "/weather", msg_id=65)
+    assert "plugins cannot save files between runs" in app.bot.of("send", OWNER)[-1][2]
+    rows = app.store._conn.execute("SELECT text FROM messages WHERE role = 'event' ORDER BY id").fetchall()
+    note = rows[-1]["text"]
+    assert note.startswith("/weather from plugin") and note.endswith("failed when it ran, because it tried to save a file")
+    assert "secret-output" not in note
+
+
 async def test_unapproved_or_unavailable_plugins_do_not_capture_commands(make_app, browser, monkeypatch):
     app = make_app()
     await draft(app, manifest=SURFACES)
