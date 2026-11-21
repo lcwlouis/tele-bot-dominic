@@ -337,6 +337,29 @@ async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> Non
         log.warning("could not answer callback %s", query.id)
 
 
+SETTLED = {"Approved": "✅ Approved", "Rejected": "❌ Rejected", "Cancelled": "Cancelled", "already handled": "Already handled"}
+
+
+async def _settle_button(app: App, query: CallbackQuery, outcome: str, suffix: str = "") -> None:
+    """Swap the row with the tapped button for the outcome, on a button that does nothing, so the card says what
+    happened and a stale Approve or Cancel cannot be tapped again. Other rows (other reminders) stay as they were."""
+    label = SETTLED.get(outcome)
+    message = query.message
+    if label is None or message is None:
+        return
+    done = [InlineKeyboardButton(text=f"{label}{suffix}", callback_data="noop")]
+    markup = getattr(message, "reply_markup", None)
+    rows = list(markup.inline_keyboard) if markup is not None else []
+    tapped = any(button.callback_data == query.data for row in rows for button in row)
+    keyboard = [done if any(b.callback_data == query.data for b in row) else row for row in rows] if tapped else [done]
+    try:
+        await app.bot.edit_message_reply_markup(
+            chat_id=message.chat.id, message_id=message.message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        )
+    except TelegramBadRequest:  # too old to edit, or already showing it; the toast still told the owner
+        log.info("could not mark the handled button in chat %s", message.chat.id)
+
+
 async def _replace_with_prompt(app: App, query: CallbackQuery, text: str, markup: InlineKeyboardMarkup) -> None:
     """Rich messages cannot be edited, so the owner's old /status message is deleted and the new one sent after it."""
     if query.message is None:
@@ -462,7 +485,9 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
     if proposal_id is None:
         return
     if action in ("yes", "no"):
-        await _toast(app, query, await app.proposals.decide(proposal_id, action == "yes"))
+        outcome = await app.proposals.decide(proposal_id, action == "yes")
+        await _toast(app, query, outcome)
+        await _settle_button(app, query, outcome)
     elif action == "page":
         await _toast(app, query)
         await owner.show_proposals(app, proposal_id)
@@ -477,6 +502,9 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
 
 async def handle_callback(app: App, query: CallbackQuery) -> None:
     action, _, raw_chat_id = (query.data or "").partition(":")
+    if action == "noop":  # a button that only shows how something was settled
+        await _toast(app, query)
+        return
     if action in ("preset", "presetset"):
         await _handle_preset(app, query, action, raw_chat_id)
         return
@@ -546,7 +574,9 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         decision, _, raw_id = raw_chat_id.partition(":")
         if not query.from_user.is_bot and decision == "cancel" and (item_id := _item_id(raw_id)) is not None:
             changed = await app.dispatch.reminders.cancel(item_id)
-            await _toast(app, query, "Cancelled" if changed else "already handled")
+            outcome = "Cancelled" if changed else "already handled"
+            await _toast(app, query, outcome)
+            await _settle_button(app, query, outcome, f" #{item_id}")
         return
     try:
         chat_id = int(raw_chat_id)

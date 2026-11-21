@@ -54,6 +54,9 @@ class FakeBot:
         self.calls.append(("edit", chat_id, message_id, text))
         self.edit_markups.append(kw.get("reply_markup"))
 
+    async def edit_message_reply_markup(self, chat_id=None, message_id=None, reply_markup=None, **kw):
+        self.calls.append(("markup", chat_id, message_id, reply_markup))
+
     async def leave_chat(self, chat_id, **kw):
         self.calls.append(("leave", chat_id))
         if self.leave_error is not None:

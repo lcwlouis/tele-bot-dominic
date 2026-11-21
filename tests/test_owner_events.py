@@ -21,10 +21,13 @@ async def say(app, chat_id, sender, text, msg_id):
     await drain_dispatch(app.dispatch)
 
 
-async def press(app, data, sender=OWNER):
+async def press(app, data, sender=OWNER, markup=None):
+    message = tg(chat_id=OWNER, sender=OWNER, msg_id=77)
+    if markup is not None:  # the keyboard of the message the button is on
+        message = message.model_copy(update={"reply_markup": markup})
     query = CallbackQuery(
         id="cb1", from_user=User(id=sender, is_bot=False, first_name="Fran"),
-        chat_instance="ci", data=data, message=tg(chat_id=OWNER, sender=OWNER, msg_id=77),
+        chat_instance="ci", data=data, message=message,
     )
     await handlers.handle_callback(app, query)
     await drain_dispatch(app.dispatch)
