@@ -103,3 +103,18 @@ async def test_once_400_is_raised_without_fallback():
         with pytest.raises(httpx.HTTPStatusError):
             await client.complete([], [], once=True)
     assert calls == ["home"]
+
+
+@pytest.mark.parametrize("status", [401, 402, 403, 404])
+async def test_a_primary_this_key_may_not_use_falls_back(status):
+    # An expired key or no credit on the primary used to fail the owner's turn three times with no fallback tried.
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.host)
+        return httpx.Response(status, json={"error": "no"}) if request.url.host == "home" else httpx.Response(200, json=OK)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = FallbackClient(_client(handler, http, "home"), _client(handler, http, "cloud"))
+        await client.complete([], [], once=True)
+    assert calls == ["home", "cloud"]

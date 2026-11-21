@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Errors redirected instead of swallowed: a private reply moved to the owner's DM is split to fit Telegram's 4096-character limit (counted in UTF-16, as Telegram does) and, if the DM refuses it too, the owner event gives the real reason. A primary chat model this key may not use (HTTP 401, 402, 403 or 404: an expired key, no credit, a withdrawn model) now falls back to the second model. When a chat's unread messages are given up on, the owner hears why: a plain line in his own DM, an event for other chats. A chat where Dom may not write (no rights, a closed or deleted topic) is given up on after the first failure instead of three.
 - Dom knows whether he is an admin of a group (kept from Telegram's membership updates, else asked once per group). Where he is not, the turn note tells him a private answer goes to the owner's DM, and it goes there directly instead of after a refused in-group send.
 - After a private reply in a group (shown to the owner, or moved to the owner's DM), the group's history gets an event saying the owner was answered privately, without the answer. Dom no longer thinks the owner is still unanswered and repeats the take publicly.
 - Ephemeral group replies need Dom to be a group admin (Telegram answers `BOT_NOT_ADMIN` otherwise). A private reply Telegram refuses now goes to the owner's DM with a line saying why, instead of being lost, and the log names Telegram's reason. It is never sent publicly in the group.

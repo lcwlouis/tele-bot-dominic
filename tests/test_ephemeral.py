@@ -172,3 +172,25 @@ async def test_becoming_a_group_admin_is_noted_from_the_membership_update(make_a
     update.new_chat_member.status = "member"
     await handle_my_chat_member(app, update)
     assert await app.dispatch._is_admin(GROUP) is False
+
+
+async def test_a_long_private_reply_moved_to_the_dm_is_split_to_fit_telegram(make_app):
+    # Six bubbles of up to 4000 characters joined into one DM would pass Telegram's 4096 limit and be lost.
+    app = make_app()
+    sent = []
+
+    async def send(chat_id, text, **kw):
+        if chat_id == GROUP:
+            raise TelegramBadRequest(method=None, message="Bad Request: BOT_NOT_ADMIN")
+        assert len(text.encode("utf-16-le")) // 2 <= 4096
+        sent.append(text)
+        return type("Sent", (), {"message_id": len(sent)})()
+
+    app.bot.send_message = send
+    bubbles = [{"text": "a" * 3000}, {"text": "😀" * 1500}, {"text": "short"}]
+    ids = await executor.perform(
+        app.bot, app.store, GROUP, 1, Actions(private=True, bubbles=bubbles), ephemeral_recipient=OWNER, sleep=app.sleep,
+    )
+    assert ids == [1, 2]  # the emoji count double toward the limit, and "short" still fits after them
+    assert sent[0].startswith("My private reply in") and sent[0].endswith("a" * 3000)
+    assert sent[1] == "😀" * 1500 + "\n\nshort"
