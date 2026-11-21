@@ -211,6 +211,7 @@ summary { cursor: pointer; }
 .stickers, .memory-import { border-top: 1px solid var(--seam); padding-top: var(--s3); margin-top: var(--s3); }
 .stickers form, .memory-import form, .memory-import p { margin-top: var(--s2); }
 .traits { margin-top: var(--s1); }
+.traits > summary { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .traits-list { display: grid; gap: var(--s2); margin: var(--s2) 0 var(--s3); }
 .trait-row { display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s3); align-items: center; }
 .trait-row input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--arc); }
