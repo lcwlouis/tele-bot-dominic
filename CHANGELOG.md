@@ -154,3 +154,4 @@ a Raspberry Pi as a systemd user service.
   settings only when asked.
 - Fixed: buttons from `/preset` and `/plugins` did nothing, because the router's
   prefix list left them out.
+- Dashboard: the per-chat "Traits" section is now labelled "Personality sliders … tap to edit" and shows how many sliders differ for that chat, so the slider editor is easier to find.
