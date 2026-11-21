@@ -90,7 +90,7 @@ async def test_self_inspect_reports_the_global_preset_and_chats_that_override_it
     await app.store.set_chat_preset(GROUP, "loud")
     found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))
     assert found["preset"] == {
-        "everywhere": "calm", "chats_with_own": [{"title": "Book Club", "preset": "loud"}],
+        "everywhere": "calm", "chats_with_own": [{"title": "Book Club", "preset": "loud"}], "task_mode": {"on": False},
         "today": {"mode": "locked", "preset": "calm", "your_reason": None, "how": None},
     }
 
@@ -107,7 +107,7 @@ async def test_self_inspect_shape_and_owner_only_tools(make_app):
         "models", "last_errors", "preset",
     }
     assert found["preset"] == {
-        "everywhere": "", "chats_with_own": [], "today": {"mode": "none", "preset": None, "your_reason": None, "how": None},
+        "everywhere": "", "chats_with_own": [], "task_mode": {"on": False}, "today": {"mode": "none", "preset": None, "your_reason": None, "how": None},
     }
     assert found["plugin_sandbox_failure"] is None
     app.plugin_runner.last_failure = "network probe: bind allowed"

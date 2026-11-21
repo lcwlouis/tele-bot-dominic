@@ -24,7 +24,7 @@ from dom.presence import Habits, Presence
 from dom.search import SearchClient
 from dom.skills import BODY_LIMIT, DESCRIPTION_LIMIT, NAME_LIMIT, skills_list, view_text
 from dom.store import Store
-from dom.traits import AUTO, clean_reason, global_preset_name
+from dom.traits import AUTO, TASK_QUIET, clean_reason, global_preset_name
 from dom.usage import ModelCallSkipped, model_request
 
 if TYPE_CHECKING:
@@ -372,16 +372,64 @@ SWITCH_VIBE_TOOL = Tool(
 )
 
 
+TASK_QUIET_MINUTES = int(TASK_QUIET.total_seconds() // 60)
+
+
+async def _task_mode(args: dict, ctx: TurnCtx) -> str:
+    from dom.traits import TaskRefused, end_task_mode, start_task_mode, task_mode
+
+    app = ctx.app
+    if app is None or not ctx.is_owner_dm():
+        return "error: task mode is available only in the owner's DM"
+    now = app.dispatch.now()
+    if args.get("active") is False:
+        if not await end_task_mode(app.store, ctx.chat_id, now):
+            return "error: task mode is not on"
+        await app.store.record_owner_event("Dom left assistant mode: the task is done")
+        return json.dumps({"task_mode": "off", "applies": "from your next reply"})
+    if args.get("active") is not True:
+        return "error: active must be true or false"
+    was_on = await task_mode(app.store, ctx.chat_id, now) is not None
+    try:
+        task = await start_task_mode(app.home, app.store, ctx.chat_id, args.get("reason"), now)
+    except TaskRefused as error:
+        return f"error: {error}"
+    if not was_on:
+        await app.store.record_owner_event(f"Dom went into assistant mode for a task: {task.reason}")
+    log.info("Dom is in task mode: %s", task.reason)
+    return json.dumps({"task_mode": "on", "applies": "from your next reply", "ends_after_quiet_minutes": TASK_QUIET_MINUTES})
+
+
+TASK_MODE_TOOL = Tool(
+    name="task_mode",
+    description=(
+        "Owner's DM only. For an important task (planning, research, admin, or anything that needs reminders, web "
+        "search or desktop tasks at length) call it with active=true and a short reason: from your next reply you use "
+        "the assistant preset, so tell your friend in character that you are switching to work mode. Call it with "
+        f"active=false when the task is done. It also ends after {TASK_QUIET_MINUTES} quiet minutes. It does not use "
+        "up switch_vibe and does nothing in a chat that has its own preset."
+    ),
+    schema={
+        "type": "object",
+        "properties": {"active": {"type": "boolean"}, "reason": {"type": "string", "maxLength": 160}},
+        "required": ["active"],
+    },
+    handler=_task_mode,
+    scopes={"owner_dm"},
+)
+
+
 async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
     from dom.capabilities import desktop_hosts, desktop_status
     from dom.plugins.manifest import SCOPES
-    from dom.traits import vibe
+    from dom.traits import task_mode, vibe
 
     app = ctx.app
     if app is None or not ctx.is_owner_dm():
         return "error: self_inspect is available only in the owner's DM"
     enabled = {scope: [tool.name for tool in await enabled_tools(app, scope)] for scope in SCOPES}
     today = await vibe(app.home, app.store, app.dispatch.now())
+    task = await task_mode(app.store, ctx.chat_id, app.dispatch.now())
     return json.dumps({
         "version": VERSION,
         "repository": app.config.update.repo_url,
@@ -404,6 +452,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
                 "your_reason": today.reason or None,
                 "how": today.source or None,
             },
+            "task_mode": {"on": True, "reason": task.reason, "until": task.until.isoformat()} if task else {"on": False},
             "chats_with_own": [
                 {"title": row["title"] or row["chat_id"], "preset": row["preset"]}
                 for row in await app.store.list_chats("approved") if row["preset"]
@@ -474,7 +523,7 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
         from dom.t3.tools import TOOLS
 
         tools.extend(TOOLS)
-    tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL, FIND_DEVICES_TOOL))
+    tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL, FIND_DEVICES_TOOL, TASK_MODE_TOOL))
     if await global_preset_name(app.store) == AUTO:
         tools.append(SWITCH_VIBE_TOOL)
     return [tool for tool in tools if scope in tool.scopes] + await offered(app, scope)
