@@ -261,6 +261,35 @@ async def test_client_error_is_not_retried(env):
     assert len(script.requests) == 1
 
 
+def test_extra_bubbles_from_the_model_join_the_last_one_instead_of_losing_the_reply():
+    # A 4-day itinerary came back from the homelab model as 9 bubbles and was dropped as malformed.
+    texts = [f"day {n}" for n in range(1, 10)]
+    actions = parse_actions(json.dumps({"no_response": False, "bubbles": [{"text": t, "reply_to": None} for t in texts]}))
+    assert [b.text for b in actions.bubbles] == [*texts[:5], "day 6\n\nday 7\n\nday 8\n\nday 9"]
+
+
+def test_extra_bubbles_that_would_make_one_too_long_still_fail():
+    assert parse_actions(json.dumps({"bubbles": [{"text": "x" * 1500} for _ in range(9)]})) is None
+
+
+def test_the_reply_format_tells_the_model_the_bubble_limit():
+    from dom.prompt import FRAME
+
+    assert "at most 6" in FRAME
+
+
+def test_a_malformed_reply_is_described_by_its_shape_not_its_text():
+    from dom.agent import malformed_shape
+
+    long_bubble = json.dumps({"bubbles": [{"text": "secret plans " * 400}]})
+    shape = malformed_shape({"content": long_bubble})
+    assert shape.startswith("invalid actions (bubbles.0.text:string_too_long) keys=['bubbles']")
+    assert "secret" not in shape
+    assert malformed_shape({"content": "just prose"}) == "no JSON object in 10 chars"
+    assert malformed_shape({"content": ""}) == "empty"
+    assert malformed_shape(None) == "no reply"
+
+
 def test_actions_validation_limits():
     Actions(bubbles=[Bubble(text="a")] * 6)
     with pytest.raises(ValidationError):

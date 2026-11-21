@@ -26,6 +26,9 @@ class Bubble(BaseModel):
     delete_after: float | None = Field(default=None, ge=1, le=30)
 
 
+MAX_BUBBLES = 6
+
+
 class Actions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -34,7 +37,20 @@ class Actions(BaseModel):
     react: str | None = None
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     gif: str | None = Field(default=None, min_length=1, max_length=50, strict=True)
-    bubbles: list[Bubble] = Field(default_factory=list, max_length=6)
+    bubbles: list[Bubble] = Field(default_factory=list, max_length=MAX_BUBBLES)
+
+    @field_validator("bubbles", mode="before")
+    @classmethod
+    def _fold_extra_bubbles(cls, value: object) -> object:
+        """A long answer (an itinerary, say) can come back as more bubbles than Dom sends. Rather than throw the whole
+        reply away, the extra ones join the last allowed bubble; a bubble that is then too long still fails."""
+        if not isinstance(value, list) or len(value) <= MAX_BUBBLES:
+            return value
+        tail = value[MAX_BUBBLES - 1:]
+        if not all(isinstance(item, dict) and isinstance(item.get("text"), str) for item in tail):
+            return value
+        merged = {"text": "\n\n".join(item["text"].strip() for item in tail if item["text"].strip())}
+        return [*value[: MAX_BUBBLES - 1], merged]
 
     @field_validator("react", mode="before")
     @classmethod

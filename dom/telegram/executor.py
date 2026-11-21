@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from random import choice
 from typing import Awaitable, Callable
@@ -36,6 +37,29 @@ async def _type_for(bot, chat_id: int, seconds: float, thread_id: int | None, sl
             return
         await sleep(TYPING_REFRESH_SECONDS)
         seconds -= TYPING_REFRESH_SECONDS
+
+
+@asynccontextmanager
+async def typing_while(bot, chat_id: int, thread_id: int | None = None):
+    """Show "typing" while Dom is still working out his reply (the model calls), so a slow answer does not look
+    like a crash. The indicator is cosmetic: a failed send is ignored, and it lapses by itself a few seconds after
+    the block ends if Dom decides to say nothing."""
+
+    async def keep() -> None:
+        while True:
+            try:
+                await bot.send_chat_action(chat_id, "typing", message_thread_id=thread_id)
+            except Exception:  # network trouble or a chat that refuses it; the reply itself still goes out
+                log.debug("typing indicator failed in chat %s", chat_id, exc_info=True)
+            await asyncio.sleep(TYPING_REFRESH_SECONDS)
+
+    task = asyncio.create_task(keep())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def _delete_later(bot, store: Store, chat_id: int, message_id: int, delay: float, sleep) -> None:
@@ -82,6 +106,7 @@ async def perform(
     ephemeral_recipient: int | None = None,
     link_previews: bool = True,
     record: bool = True,
+    typed_already: float = 0.0,
 ) -> list[int]:
     """Send the bubbles, reaction, sticker and GIF; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
@@ -108,8 +133,11 @@ async def perform(
         await react(bot, chat_id, trigger_msg_id, actions.react)
 
     sent_ids: list[int] = []
-    for bubble in actions.bubbles:
-        await _type_for(bot, chat_id, min(len(bubble.text) / typing_cps, MAX_TYPING_SECONDS), thread_id, sleep)
+    for index, bubble in enumerate(actions.bubbles):
+        seconds = min(len(bubble.text) / typing_cps, MAX_TYPING_SECONDS)
+        if index == 0:  # "typing" already showed while Dom thought; that time counts towards the first bubble
+            seconds = max(0.0, seconds - typed_already)
+        await _type_for(bot, chat_id, seconds, thread_id, sleep)
         reply = (
             ReplyParameters(message_id=bubble.reply_to, allow_sending_without_reply=True)
             if bubble.reply_to is not None
