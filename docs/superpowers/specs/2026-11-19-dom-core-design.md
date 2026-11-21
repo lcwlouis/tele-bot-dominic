@@ -74,7 +74,6 @@ DOM_HOME/
   private/               owner DM only
     USER.md              the owner: preferences, how to help    ≤ 1,375 chars
     NOTES.md             assistant memory                       ≤ 2,200 chars
-    imports/             raw memory exports waiting for review
   skills/<name>/SKILL.md procedures; only name + description are in the prompt
   plugins/{staging,active}/<name>/
   state.db               SQLite
@@ -199,7 +198,7 @@ Media is transcribed or described once by the media model when it arrives. The d
    - Reflection may *propose* `SOUL.md` edits. The owner approves them in DM or in the UI.
 2. **Plugins:**
    - Dom drafts a plugin into `plugins/staging/`.
-   - The owner gets the full code in DM, chunked, plus a diff on updates. Only the owner's button press in their DM activates it.
+   - The owner gets the full code in DM, chunked, plus a diff on updates. Only the owner activates it: a button in their DM, or the dashboard's approvals (owner-only, behind Cloudflare Access), which the phase 6 plan added and the owner accepted.
    - Plugins run in a subprocess with an empty environment (no secrets) and talk over JSON-lines on stdio.
    - A plugin can add tools, Telegram slash commands and dashboard panels (owner decision E11, 2026-11-20). Commands reply with plain text; panels return structured data that Dom renders with its own templates. Plugins never ship HTML or JavaScript.
 3. **Core code:**
@@ -221,7 +220,7 @@ Media is transcribed or described once by the media model when it arrives. The d
 **Logins.** Dom calls `desktop_handoff(reason)`. The owner gets a link to the live view (VNC behind the UI's auth), logs in, and taps "done". Cookies stay in the container profile and never reach Dom's core.
 
 **Candidates:** AIO Sandbox (`ghcr.io/agent-infra/sandbox`) and Cua (`ghcr.io/trycua/linux:24.04[-slim]`). Both have arm64 images.
-- **Chosen: AIO Sandbox, run lean** (`2026-11-19-desktop-spike-results.md`). Still to confirm on the Pi itself.
+- **Chosen: AIO Sandbox, run lean** (`2026-11-19-desktop-spike-results.md`). Confirmed on the Pi: it runs there with the DOM-DESKTOP LAN firewall.
 - Desktop tasks run in a worker agent that never sees `private/`; see the roadmap, phase 5.
 - Acceptance: idle under 1.2GB and working peak under 1.6GB on the Pi, with the core still responsive.
 - If neither passes, `local` mode uses the slim image without VS Code. The full image goes to `remote`.
@@ -237,9 +236,9 @@ Media is transcribed or described once by the media model when it arrives. The d
 
 ## 11. Memory import
 
-1. The owner uploads an export from another AI service in DM or the UI. It lands in `private/imports/`.
-2. A job splits it into facts. Each fact is classified `private | shareable | discard` (Jev `choice`), and the owner reviews them in the UI.
-3. Accepted facts are merged into `private/USER.md` and `private/NOTES.md`, within their limits. Shareable facts go to `memory/` only after review.
+1. The owner uploads a text export from another AI service with `/import` in their DM or on the dashboard, and picks the service. The file is not kept.
+2. A line parser splits it into facts, skipping ones Dom already has. Each fact becomes a private `memory_fact` proposal; the owner's review is the classification (E16), with no automatic private/shareable/discard step.
+3. Approved facts are merged into `private/USER.md` within its limit; rejected ones are dropped. Nothing moves to `memory/` from an import.
 4. Nothing goes public by default.
 
 ## 12. Web UI

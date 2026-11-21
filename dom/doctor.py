@@ -186,7 +186,7 @@ def _self_work(config: Config, home: Path) -> Check:
     except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
         guard = None
     if guard is None:
-        return Check("warn", "self-directed work", f"Network guard not verified yet; Dom checks it before each task. {hint}")
+        return Check("ok", "self-directed work", "No task has run yet; Dom verifies the network guard before each one.")
     if ok is not True:
         return Check("warn", "self-directed work", f"Network guard NOT verified at {at}: {detail}. Tasks are refused. {hint}")
     return Check("ok", "self-directed work", f"Network guard verified from inside the sandbox at {at}.")

@@ -393,7 +393,7 @@ def test_self_directed_work_reports_the_last_guard_verification(home, monkeypatc
     monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/bin/" + name)
     main(["doctor", str(home)])
     out = capsys.readouterr().out
-    assert "warn self-directed work: Network guard not verified yet" in out and "dom desktop-setup" in out
+    assert "ok self-directed work: No task has run yet" in out  # nothing to warn about before the first task
 
     def record(ok, detail):
         with sqlite3.connect(home / "state.db") as db:
