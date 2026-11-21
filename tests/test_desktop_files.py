@@ -326,3 +326,30 @@ async def test_inbox_removal_exit_code_is_verified(make_app, caplog, result, log
     await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
     assert ("could not remove the desktop inbox" in caplog.text) is logged
+
+
+async def test_images_go_as_photos_and_fall_back_to_files(make_app):
+    # The owner had to tap Download to see a page screenshot; a photo opens inline.
+    from aiogram.exceptions import TelegramBadRequest
+
+    from dom.actions import SendFile
+    from dom.telegram import executor
+
+    app = make_app()
+    sent = []
+
+    class Bot:
+        async def send_photo(self, chat_id, photo):
+            if photo.filename == "long-page.png":
+                raise TelegramBadRequest(method=None, message="PHOTO_INVALID_DIMENSIONS")
+            sent.append(("photo", photo.filename))
+
+        async def send_document(self, chat_id, document):
+            sent.append(("document", document.filename))
+
+    files = [
+        SendFile("page.png", b"png"), SendFile("long-page.png", b"png"), SendFile("notes.txt", b"txt"),
+        SendFile("huge.jpg", b"x" * (executor.PHOTO_MAX_BYTES + 1)),
+    ]
+    await executor.send_files(Bot(), app.store, OWNER, files)
+    assert sent == [("photo", "page.png"), ("document", "long-page.png"), ("document", "notes.txt"), ("document", "huge.jpg")]

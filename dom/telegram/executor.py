@@ -230,11 +230,21 @@ async def react(bot, chat_id: int, msg_id: int, emoji: str) -> bool | None:
     return True
 
 
+PHOTO_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+PHOTO_MAX_BYTES = 10_000_000  # Telegram's limit for a photo; it also refuses one whose width + height passes 10000
+
+
 async def send_files(bot, store: Store, chat_id: int, files: Sequence[SendFile]) -> None:
     if chat_id != store.owner_id:
         return
     for file in files:
         try:
+            if file.filename.lower().endswith(PHOTO_SUFFIXES) and len(file.data) <= PHOTO_MAX_BYTES:
+                try:  # a photo opens inline, with no download tap
+                    await bot.send_photo(chat_id, BufferedInputFile(file.data, filename=file.filename))
+                    continue
+                except TelegramBadRequest:  # too large in pixels or too long a page for a photo: send it as a file
+                    pass
             await bot.send_document(chat_id, BufferedInputFile(file.data, filename=file.filename))
         except TelegramAPIError:
             log.warning("could not send a desktop result document")
