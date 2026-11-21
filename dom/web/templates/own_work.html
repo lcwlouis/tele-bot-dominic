@@ -26,7 +26,7 @@
       <li>Uses: {{ task.tools | join(", ") }}</li>
       <li>Sites: {{ task.sites | join(", ") if task.sites else "none, offline" }}</li>
       <li>Budget: up to {{ task.minutes }} min and {{ task.steps_budget }} steps{% if task.steps %}; used {{ task.steps }} steps{% endif %}</li>
-      <li>Announced {{ task.announced_local }}{% if task.status == "planned" %}; starts after {{ task.not_before_local }}{% endif %}{% if task.finished_local %}; ended {{ task.finished_local }}{% endif %}</li>
+      <li>Announced {{ task.announced_local }}{% if task.status == "planned" %}; {% if task.not_before_local %}starts after {{ task.not_before_local }}{% else %}not announced yet, so it will not start{% endif %}{% endif %}{% if task.finished_local %}; ended {{ task.finished_local }}{% endif %}</li>
     </ul>
     {% if task.result %}<p>{{ task.result }}</p>{% endif %}
     {% if task.error %}<p class="notice">{{ task.error }}</p>{% endif %}

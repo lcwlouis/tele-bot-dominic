@@ -1211,6 +1211,14 @@ class Store:
 
         return await self._run(add)
 
+    async def schedule_self_tasks(self, task_ids: list[int], not_before: datetime) -> None:
+        """Set the start time of announced tasks that are still planned."""
+        placeholders = ", ".join("?" for _ in task_ids)
+        await self._run(lambda: self._conn.execute(
+            f"UPDATE self_tasks SET not_before = ? WHERE status = 'planned' AND id IN ({placeholders})",
+            (not_before.isoformat(), *task_ids),
+        ))
+
     async def self_tasks(self, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         return await self._run(lambda: [dict(row) for row in self._conn.execute(
             "SELECT * FROM self_tasks WHERE (? IS NULL OR status = ?) ORDER BY id DESC LIMIT ?", (status, status, limit),

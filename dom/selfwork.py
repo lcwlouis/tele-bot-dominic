@@ -21,7 +21,7 @@ import json
 import logging
 import re
 from contextvars import Context
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,6 +35,7 @@ from dom.desktop import network
 from dom.desktop import tools as desktop_tools
 from dom.desktop.client import SandboxError
 from dom.desktop.files import safe_filename
+from dom.desktop.sandbox import SELF_WORK
 from dom.desktop.worker import GuardRefused, PlanBreach, Progress
 from dom.home import PrivateAccessError
 from dom.traits import decode
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
 log = logging.getLogger(__name__)
-CONTAINER = "self-work"  # its own container, so its browser profile is never the owner's
+CONTAINER = SELF_WORK  # its own container, so its browser profile is never the owner's
 MAX_TASKS = 3
 MAX_SITES = 5
 EXPIRY = timedelta(hours=24)
@@ -52,6 +53,11 @@ GUARD_KEY = "self_work:guard"  # JSON {ok, at, detail}: the last guard verificat
 FILES_DIR = "self-work"  # under DOM_HOME: self-work/<task id>/<screenshot>.png
 FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.png")
 SUMMARY_LIMIT = 300
+MESSAGE_LIMIT = 4096  # Telegram's limit for one message
+SITES_TEXT_LIMIT = 160  # per task in the announcement; the dashboard lists every site
+UNANNOUNCED = datetime(9000, 1, 1, tzinfo=timezone.utc)  # the start time of a task whose plan was not announced yet
+# Links in a summary of web content: full URLs, www. names, and bare domain names (with an optional port or path).
+LINK = re.compile(r"(?:https?://|www\.)\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?\b(?:/\S*)?", re.IGNORECASE)
 PLAN_FRAME = (
     "You are Dom, daydreaming before sleep. You may plan up to three small things to do on your own little computer "
     "tomorrow: research a topic you are curious about on a few named public sites, or practise a skill in the "
@@ -125,10 +131,12 @@ def brief(row: dict) -> str:
 
 
 def describe(row: dict) -> str:
-    sites = json.loads(row["sites_json"])
+    sites = ", ".join(json.loads(row["sites_json"]))
+    if len(sites) > SITES_TEXT_LIMIT:
+        sites = sites[:SITES_TEXT_LIMIT - 1] + "… (all on the dashboard)"
     return (
         f"#{row['id']} {row['goal']}\n   Why: {row['why']}\n   Uses: {', '.join(json.loads(row['tools_json']))}; "
-        f"sites: {', '.join(sites) if sites else 'none, offline'}\n"
+        f"sites: {sites or 'none, offline'}\n"
         f"   Budget: up to {row['minutes']} min and {row['steps_budget']} steps"
     )
 
@@ -200,24 +208,38 @@ class SelfWork:
         if not tasks:
             return
         now = app.dispatch.now()
-        rows = await app.store.add_self_tasks(tasks, now, now + timedelta(hours=self.settings.delay_hours))
-        await self._announce(announcement, rows)
+        # Stored first with no start time: a task can run only once its announcement reached the owner.
+        rows = await app.store.add_self_tasks(tasks, now, UNANNOUNCED)
+        start = now + timedelta(hours=self.settings.delay_hours)
+        if await self._announce(announcement, rows, start):
+            await app.store.schedule_self_tasks([row["id"] for row in rows], start)
+            return
+        for row in rows:
+            await app.store.update_self_task(row["id"], ("planned",), "refused", error="the plan could not be announced in the owner's DM")
 
-    async def _announce(self, announcement: str, rows: list[dict]) -> None:
+    async def _announce(self, announcement: str, rows: list[dict], start: datetime) -> bool:
+        """Send the plan to the owner's DM; False if it was not delivered."""
         app, owner = self.app, self.app.owner_id
-        start = datetime.fromisoformat(rows[0]["not_before"]).astimezone(ZoneInfo(app.config.timezone))
+        local = start.astimezone(ZoneInfo(app.config.timezone))
         text = (
             f"{announcement or 'I have a few things I want to try on my own computer.'}\n\n"
             + "\n".join(describe(row) for row in rows)
-            + f"\n\nNot before {start:%a %H:%M}, and only while I'm awake and free. "
+            + f"\n\nNot before {local:%a %H:%M}, and only while I'm awake and free. "
             "Cancel any of them here or on the dashboard."
         )
+        if len(text) > MESSAGE_LIMIT:
+            text = text[:MESSAGE_LIMIT - 1] + "…"
         buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"own:cancel:{row['id']}")] for row in rows]
-        await app.bot.send_message(
-            owner, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
-        )
+        try:
+            await app.bot.send_message(
+                owner, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+        except Exception as exc:
+            log.warning("could not announce self-directed tasks; they will not run (%s)", type(exc).__name__)
+            return False
         await app.store.record_owner_event(f"Dom planned self-directed tasks #{rows[0]['id']}–#{rows[-1]['id']}")
+        return True
 
     # ---- running (every scheduler tick) -----------------------------------------------------------------
 
@@ -345,9 +367,12 @@ class SelfWork:
         """The one message a self-directed task sends: a short summary to the owner."""
         task = f"my own task #{row['id']} ({row['goal']})"
         if row["status"] == "done":
-            text = f"Finished {task}: {_text(row['result'], SUMMARY_LIMIT)}"
-            if json.loads(row["files_json"]):
-                text += "\nScreenshots are on the dashboard."
+            # The result is the worker's account of web pages: say so, and keep its links off Telegram.
+            summary = _text(LINK.sub("[link removed]", row["result"] or ""), SUMMARY_LIMIT)
+            text = (
+                f"Finished {task}. Summary of web content (not checked by me, links removed): {summary}\n"
+                "The full result" + (" and screenshots are" if json.loads(row["files_json"]) else " is") + " on the dashboard."
+            )
         elif row["status"] == "refused":
             text = f"I didn't start {task}: {row['error']}. Nothing ran."
         else:

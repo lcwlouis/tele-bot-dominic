@@ -3,6 +3,7 @@
 import asyncio
 import ipaddress
 import json
+import posixpath
 import shlex
 from contextlib import nullcontext
 from datetime import timedelta
@@ -53,6 +54,11 @@ class Box:
         self.resets = self.stops = 0
         self.guard = {}
         self.after_click = None
+        self.wrapper = "offline"  # what the offline wrapper check prints
+        self.links = {}  # symlinks: path -> where realpath resolves it
+        self.disk = {}  # files the file API can read
+        self.on_shell = None
+        self.element_list = []
 
     def status(self):
         return "ready"
@@ -69,6 +75,12 @@ class Box:
     def redact(self, text):
         return text
 
+    memory_mb = 1600
+    name = CONTAINER
+
+    async def free_memory_mb(self):
+        return 8000
+
     async def reset_profile(self):
         self.resets += 1
 
@@ -79,7 +91,22 @@ class Box:
         self.commands.append(command)
         if "/proc/net/route" in command:
             return guard_reply(command, **self.guard)
+        if command.startswith("/usr/bin/unshare") and 'print("online")' in command:
+            return {"exit_code": 0, "stdout": self.wrapper + "\n", "stderr": ""}
+        if command.startswith("/usr/bin/realpath -m -- "):
+            path = posixpath.normpath(shlex.split(command)[-1])
+            return {"exit_code": 0, "stdout": self.links.get(path, path) + "\n", "stderr": ""}
+        if self.on_shell:
+            self.on_shell(command)
         return {"exit_code": 0, "stdout": "ran", "stderr": ""}
+
+    async def read_file(self, path):
+        if path not in self.disk:
+            raise SandboxError("no such file")
+        return {"content": self.disk[path]}
+
+    async def elements(self):
+        return self.element_list
 
     async def browser_tabs(self):
         return [{"index": 0, "url": self.url, "title": "", "is_active": True}]
@@ -103,6 +130,9 @@ class Box:
     async def fill(self, selector, text):
         return {}
 
+    async def press_key(self, key):
+        return {}
+
     async def screenshot(self):
         return PNG
 
@@ -113,6 +143,7 @@ class Box:
         return self.files[path]
 
     async def write_file(self, path, content):
+        self.disk[path] = content
         return {}
 
 
@@ -330,7 +361,7 @@ async def test_a_finished_task_keeps_screenshots_for_the_dashboard_and_sends_one
     sends = [call for call in app.bot.calls if call[0] == "send"]
     assert len(sends) == 1 and sends[0][1] == OWNER
     assert sends[0][2].startswith(f"Finished my own task #{row['id']}") and len(sends[0][2]) < 500
-    assert "Screenshots are on the dashboard." in sends[0][2]
+    assert "The full result and screenshots are on the dashboard." in sends[0][2]
     messages, schemas, _ = app.client.requests[0]
     assert messages[0]["content"] == OWN_SYSTEM_PROMPT
     assert "en.wikipedia.org" in messages[1]["content"]
@@ -352,9 +383,9 @@ async def test_tools_outside_the_plan_and_sites_outside_the_plan_are_refused(mak
     assert (await status(app, row["id"]))["status"] == "done"
     results = [m["content"] for m in app.client.requests[-1][0] if m["role"] == "tool"]
     assert "Tool error: invalid arguments" in results[0] and "Tool error: invalid arguments" in results[1]
-    assert "Blocked: that site is not in this task" in results[2]
+    assert "Blocked: that address is not on a site in this task" in results[2]
     assert app.box.navigated == ["https://en.wikipedia.org/wiki/Tide_pool"]
-    assert not any("/proc/net/route" not in command for command in app.box.commands)  # no shell ran
+    assert all("/proc/net/route" in command or 'print("online")' in command for command in app.box.commands)  # only the guard ran
     assert len(app.bot.of("send", OWNER)) == 1  # no handoff message
 
 
@@ -365,6 +396,7 @@ async def test_a_page_that_leaves_the_plan_is_closed(make_app):
         call("finish", result="Ok"),
     )
     app.box.after_click = "https://tracker.example.net/landing"
+    app.box.element_list = [{"index": 3, "tag": "a", "text": "More"}]
     [row] = await planned(app, {**TASK, "tools": ["browse", "click"]})
     await run_next(app)
     results = [m["content"] for m in app.client.requests[-1][0] if m["role"] == "tool"]
@@ -382,7 +414,8 @@ async def test_code_runs_offline_and_fill_takes_only_short_search_text(make_app)
     [row] = await planned(app, {**PRACTICE, "tools": ["run_python", "browse", "fill"], "sites": ["duckduckgo.com"], "steps": 9})
     await run_next(app)
     [python] = [command for command in app.box.commands if "python3 /tmp/" in command]
-    assert "unshare --net --map-root-user -- sh -c" in python
+    assert python.startswith("/usr/bin/unshare --net --map-root-user -- /bin/sh -c ")
+    assert "/usr/bin/python3 /tmp/" in python and "/bin/rm -f -- /tmp/" in python
     results = [m["content"] for m in app.client.requests[-1][0] if m["role"] == "tool"]
     assert "Blocked: fill" in results[1] and "Blocked: fill" in results[2] and "Blocked" not in results[3]
 
@@ -433,6 +466,9 @@ async def test_an_unverified_guard_refuses_the_task_and_tells_the_owner(make_app
 async def test_guard_probes_known_lan_services_the_host_and_the_gateway():
     class Client:
         async def bash(self, command):
+            if command.startswith("/usr/bin/unshare"):
+                self.wrapped = command
+                return {"exit_code": 0, "stdout": "offline\n", "stderr": ""}
             self.spec = json.loads(shlex.split(command)[-1])
             return guard_reply(command)
 
@@ -442,7 +478,7 @@ async def test_guard_probes_known_lan_services_the_host_and_the_gateway():
     assert await network.verify_inside(client, config, address="192.0.2.5") is None
     assert {"192.0.2.1:443", "192.0.2.5:22", "192.0.2.5:8090", *network.SAMPLED} <= set(client.spec["targets"])
     assert client.spec["gateway_ports"] == [22, 8090] and client.spec["control"] == "1.1.1.1:443"
-    assert network.judge({"1.1.1.1:443": "open", "a:1": "unreachable"}, "1.1.1.1:443", ["a:1"], ()) == (
+    assert network.judge({"1.1.1.1:443": "open", "a:1": "unreachable"}, "1.1.1.1:443", ["a:1"], [], {"a:1"}, ()) == (
         "the sandbox can reach a:1 on the local network"
     )
 
@@ -503,3 +539,199 @@ async def test_dashboard_shows_the_plan_results_and_guard_and_cancels(make_app, 
         assert response.status_code == 200 and f"Cancelled task #{row['id']}." in response.text
         assert (await client.post(f"/own-work/{row['id']}/cancel")).status_code == 403  # not an htmx same-origin post
     assert (await status(app, row["id"]))["status"] == "cancelled"
+
+
+# ---- security review fixes ---------------------------------------------------------------------------------
+
+
+def tool_results(app):
+    return [m["content"] for m in app.client.requests[-1][0] if m["role"] == "tool"]
+
+
+def test_the_offline_wrapper_uses_absolute_paths_and_a_plain_sh():
+    from dom.desktop.tools import offline
+
+    assert offline("echo hi") == "/usr/bin/unshare --net --map-root-user -- /bin/sh -c 'echo hi'"
+
+
+async def test_files_are_only_read_and_written_under_tmp_and_the_outbox(make_app):
+    app = self_app(
+        make_app,
+        call("read_file", path="/home/gem/.bashrc"),
+        call("write_file", path="/tmp/../home/gem/.profile", content="x"),
+        call("write_file", path="/tmp/link", content="x"),  # a symlink to a startup file
+        call("write_file", path="relative.txt", content="x"),
+        call("write_file", path="/tmp/notes.txt", content="tide pools"),
+        call("read_file", path="/home/gem/outbox/../outbox/notes.md"),
+        call("finish", result="Kept notes"),
+    )
+    app.box.links["/tmp/link"] = "/home/gem/.bashrc"
+    app.box.disk["/home/gem/outbox/notes.md"] = "older notes"
+    [row] = await planned(app, {**PRACTICE, "tools": ["read_file", "write_file"], "steps": 9})
+    await run_next(app)
+    results = tool_results(app)
+    assert all("Blocked: files may be read and written only under /tmp and /home/gem/outbox" in r for r in results[:4])
+    assert "Blocked" not in results[4] and "older notes" in results[5]
+    assert app.box.disk.keys() == {"/home/gem/outbox/notes.md", "/tmp/notes.txt"}
+    assert (await status(app, row["id"]))["status"] == "done"
+
+
+async def test_a_task_that_changes_a_shell_startup_file_is_stopped(make_app):
+    app = self_app(make_app, call("run_shell", command="ls"), call("run_shell", command="ls"), call("finish", result="x"))
+    app.box.disk["/home/gem/.bashrc"] = "# stock"
+
+    def tamper(command):
+        app.box.disk["/home/gem/.bashrc"] = "unshare() { sh -c \"$4\"; }"
+
+    app.box.on_shell = tamper
+    [row] = await planned(app, {**PRACTICE, "tools": ["run_shell"]})
+    await run_next(app)
+    stopped = await status(app, row["id"])
+    assert stopped["status"] == "failed" and stopped["error"] == "the task changed a shell startup file"
+    assert sum(command.endswith(" -c ls") for command in app.box.commands) == 1  # the second command never ran
+
+
+@pytest.mark.parametrize("verdict", ["online", "unshare: unshare failed: Operation not permitted"])
+async def test_the_guard_refuses_when_the_offline_wrapper_is_not_offline(make_app, verdict):
+    app = self_app(make_app, call("finish", result="never"))
+    app.box.wrapper = verdict
+    [row] = await planned(app, PRACTICE)
+    await run_next(app)
+    refused = await status(app, row["id"])
+    assert refused["status"] == "refused" and "offline shell wrapper" in refused["error"]
+    [wrapped] = [command for command in app.box.commands if command.startswith("/usr/bin/unshare")]
+    assert "/usr/bin/python3 -c" in wrapped and "1.1.1.1" in wrapped and app.client.requests == []
+
+
+@pytest.mark.parametrize("url", [
+    "http://evil.example\\@en.wikipedia.org/",
+    "https://user" + "@en.wikipedia.org/",
+    "https://en.wikipedia.org%2eevil.example/",
+    "https://en.wikipedia.org\t/",
+    "https://en.wikipedia.org:8443/",
+    "https://en.wikipedia.org:22/",
+])
+async def test_ambiguous_urls_and_other_ports_are_never_opened(make_app, url):
+    from dom.desktop.tools import own_host
+
+    assert own_host(url) is None
+    app = self_app(make_app, call("browse", url=url), call("finish", result="x"))
+    await planned(app, TASK)
+    await run_next(app)
+    assert app.box.navigated == []
+    result = tool_results(app)[0]
+    assert "Blocked" in result or "Tool error" in result
+
+
+def test_planned_sites_may_not_be_public_suffixes_and_only_web_ports_count():
+    from dom.desktop.tools import on_plan_url, own_host, site
+
+    assert [site(value) for value in ("co.uk", "github.io", "com.au", "vercel.app", "bbc.co.uk", "someone.github.io")] == [
+        None, None, None, None, "bbc.co.uk", "someone.github.io",
+    ]
+    assert own_host("https://en.wikipedia.org:443/x") == "en.wikipedia.org"
+    assert not on_plan_url("https://en.wikipedia.org:8080/", ("wikipedia.org",))
+    assert parse_task({**TASK, "sites": ["github.io"]}, 20, 25) is None
+
+
+async def test_keys_and_clicks_cannot_submit_forms_except_a_search(make_app):
+    app = self_app(
+        make_app,
+        call("press", key="Enter"),  # no search typed: blocked
+        call("press", key="Tab"),
+        call("fill", selector="#comment", text="nice post"),  # not a search field
+        call("click", selector_or_index="button.submit"),
+        call("click", selector_or_index=2),  # a submit button in the element list
+        call("click", selector_or_index=9),  # not in the element list: cannot tell, so no
+        call("click", selector_or_index="div.results > a.title"),
+        call("click", selector_or_index=1),  # a link
+        call("press", key="PageDown"),
+        call("fill", selector="input[name=q]", text="tide pools"), call("press", key="Enter"),
+        call("fill", selector="#search", text="anemones"), call("click", selector_or_index="button.submit"),
+        call("finish", result="Searched"),
+    )
+    app.box.element_list = [
+        {"index": 1, "tag": "a", "text": "Tide pool"},
+        {"index": 2, "tag": "button", "type": "submit", "text": "Post"},
+    ]
+    await planned(app, {**TASK, "tools": ["browse", "click", "press", "fill"], "steps": 14})
+    await run_next(app)
+    results = tool_results(app)
+    assert [("Blocked" in result) for result in results] == [
+        True, True, True, True, True, True, False, False, False, False, False, False, False,
+    ]
+
+
+async def test_a_plan_that_could_not_be_announced_never_runs(make_app):
+    app = self_app(make_app, plan_reply(TASK, PRACTICE), call("finish", result="never"))
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("Telegram is down")
+
+    app.bot.send_message = fail
+    await app.self_work.plan()
+    rows = await app.store.self_tasks()
+    assert [row["status"] for row in rows] == ["refused", "refused"]
+    assert all("could not be announced" in row["error"] for row in rows)
+    app.dispatch.now.advance(hours=12)
+    await run_next(app)
+    assert app.box.resets == 0 and len(app.client.requests) == 1
+
+
+async def test_tasks_wait_for_their_announcement_and_a_long_plan_fits_one_message(make_app):
+    long_sites = [f"{'a' * 63}.{'b' * 63}.{'c' * 60}{n}.org" for n in range(5)]
+    tasks = [{**TASK, "goal": "g" * 200, "why": "w" * 300, "sites": long_sites, "tools": list(selfwork.desktop_tools.OWN)}] * 3
+    app = self_app(make_app, plan_reply(*tasks, announcement="a" * 500))
+    sent = []
+
+    async def capture(chat_id, text, **kwargs):
+        rows = await app.store.self_tasks()
+        sent.append((text, [row["not_before"] for row in rows]))
+
+    app.bot.send_message = capture
+    await app.self_work.plan()
+    [(text, before)] = sent
+    assert len(text) <= 4096 and "(all on the dashboard)" in text
+    assert before == [selfwork.UNANNOUNCED.isoformat()] * 3  # not runnable while the DM is in flight
+    now = app.dispatch.now()
+    assert {row["not_before"] for row in await app.store.self_tasks()} == {(now + timedelta(hours=3)).isoformat()}
+
+
+async def test_another_running_container_makes_a_self_task_wait(make_app):
+    app = self_app(make_app, call("finish", result="Done"))
+    default = app.desktop_worker.lane()
+    default.sandbox.status = lambda: "ready"  # the owner's container is up, idle
+    [row] = await planned(app, PRACTICE)
+    await run_next(app)
+    assert (await status(app, row["id"]))["status"] == "planned" and app.box.resets == 0
+    default.sandbox.status = lambda: "stopped"
+    await run_next(app)
+    assert (await status(app, row["id"]))["status"] == "done"
+
+
+async def test_a_dead_lan_probe_does_not_verify_the_guard(make_app, monkeypatch):
+    async def answers(target, seconds=network.PROBE_SECONDS):
+        return not target.startswith("192.0.2.1:")
+
+    monkeypatch.setattr(network, "host_answers", answers)
+    app = self_app(make_app, call("finish", result="never"))
+    [row] = await planned(app, PRACTICE)
+    await run_next(app)
+    refused = await status(app, row["id"])
+    assert refused["status"] == "refused" and "no lan_probes service answers" in refused["error"]
+    lan, hosts = ["192.0.2.1:443"], ["192.0.2.5:22"]
+    timeouts = {"1.1.1.1:443": "open", "192.0.2.1:443": "timeout", "192.0.2.5:22": "timeout"}
+    assert "does not answer from the Docker host" in network.judge(timeouts, "1.1.1.1:443", lan, hosts, {"192.0.2.1:443"}, ())
+    assert network.judge(timeouts, "1.1.1.1:443", lan, hosts, {"192.0.2.1:443", "192.0.2.5:22"}, ()) is None
+
+
+async def test_the_dm_summary_is_labelled_and_carries_no_links(make_app):
+    result = "Anemones live there. Read https://evil.example/x?y=1, www.tricky.org and click-here.net/login now."
+    app = self_app(make_app, call("finish", result=result))
+    [row] = await planned(app, PRACTICE)
+    await run_next(app)
+    [send] = app.bot.of("send", OWNER)
+    text = send[2]
+    assert "Summary of web content (not checked by me, links removed)" in text and "Anemones live there." in text
+    assert not any(part in text for part in ("evil.example", "tricky.org", "click-here.net", "http"))
+    assert (await status(app, row["id"]))["result"] == result  # the dashboard keeps the full result

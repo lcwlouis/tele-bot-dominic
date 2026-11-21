@@ -559,7 +559,8 @@ async def _own_work(app: App, message: str = "") -> dict:
 
     rows = [{
         **row, "tools": json.loads(row["tools_json"]), "sites": json.loads(row["sites_json"]),
-        "files": json.loads(row["files_json"]), "not_before_local": local(row["not_before"]),
+        "files": json.loads(row["files_json"]),
+        "not_before_local": "" if row["not_before"] >= selfwork.UNANNOUNCED.isoformat() else local(row["not_before"]),
         "announced_local": local(row["announced_at"]), "finished_local": local(row["finished_at"]),
     } for row in await app.store.self_tasks()]
     guard = None

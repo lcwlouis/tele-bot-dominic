@@ -259,16 +259,37 @@ anyone else.
 - Tasks run only in a local desktop container named `self-work`, never on the Dom
   host and never on a remote host. Its browser profile is deleted before every task,
   so there are no logins to use, and the worker has no `handoff` tool, so it cannot
-  ask for one. The default container's profile (your logins) is never touched.
+  ask for one. The default container's profile (your logins) is never touched. If you
+  run your own desktop task in the `self-work` container, any logins you make there
+  are wiped before Dom's next self-directed task; use another container for those.
+- Containers share the desktop bridge, so a self-directed task starts only while
+  every other local container is stopped, and no other container may start while it
+  runs (cancel it on the Own work page to free the desktop).
 - The worker gets only the desktop tools the plan named. Plugins, the T3 bridge,
   skills, skill proposals and core-change briefs are not available to it.
-- The browser may open only the plan's sites (and their subdomains). A page that
-  leaves them, by a click or a redirect, is closed; if it cannot be closed, the task
-  stops. `fill` takes only short search text, never into a login-looking field.
-- `run_shell` and `run_python` run in their own network namespace with no network
-  (`unshare --net`). If the sandbox cannot create one, the command fails rather than
-  running online.
+- Planned sites are public hostnames: no IP addresses, LAN names or public suffixes
+  shared by unrelated owners (`co.uk`, `github.io` and the like). The browser may open
+  only those sites and their subdomains, on ports 80 and 443, and only through URLs
+  that browsers and Dom read the same way (no `\`, `@`, `%` or whitespace in the
+  address part). A page that leaves the plan, by a click or a redirect, is closed; if
+  it cannot be closed, the task stops.
+- The only form is a search: `fill` takes up to 120 characters in a field that looks
+  like a search box, and never in a login-looking one. `press` takes scrolling keys and
+  Escape, and Enter only right after a search was typed. `click` takes links only, or
+  a button right after a search was typed; an element Dom cannot tell apart from a
+  button or form control is refused.
+- `read_file` and `write_file` work only under `/tmp` and `/home/gem/outbox`, after
+  resolving `..` and symlinks.
+- `run_shell` and `run_python` run through `/usr/bin/unshare --net --map-root-user --
+  /bin/sh -c`, in their own network namespace with no network. If the sandbox cannot
+  create one, the command fails rather than running online. A task whose commands
+  change a shell startup file (`~/.bashrc`, `~/.profile` and the like) is stopped,
+  so no later shell can define commands that stand in for the wrapper.
 - The step and time budgets stop the task when exceeded.
+- The plan runs only once its announcement reached your DM. If the message cannot be
+  sent, the tasks are refused. The summary Dom sends you when a task finishes is
+  labelled as a summary of web content and has its links removed; the full result is
+  on the dashboard.
 
 ### Network guard
 
@@ -278,9 +299,16 @@ own shell. The check must show that:
 
 - the public `probe_control` address connects,
 - every `lan_probes` service, the Docker host's own LAN address and the container's
-  gateway (on port 22 and the dashboard port) time out, and
+  gateway (on port 22 and the dashboard port) time out,
 - no sampled private address (the first address of each private, shared and
-  link-local range) answers.
+  link-local range) answers, and
+- a connect to `probe_control` under the exact offline wrapper fails.
+
+A timeout counts as proof only for a target that answers from the Docker host itself:
+a switched-off `lan_probes` device times out whether or not the firewall is there. Every
+host address and at least one `lan_probes` service must prove the block, so probe a
+service that is always on, such as the router. The startup firewall check for every
+local container applies the same rule to `lan_probes`.
 
 If any of this fails, or the check cannot run, the task is refused, nothing else
 runs, and Dom tells you why in your DM. The result of the last check is stored and
