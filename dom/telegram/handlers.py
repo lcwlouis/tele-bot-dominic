@@ -619,7 +619,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
     if action not in owner.PENDING_DECISIONS:
         return
     chat, label = await owner.decide_pending_chat(app, chat_id, action, _person(query.from_user.full_name))
-    await app.bot.answer_callback_query(query.id, text=label)
+    await _toast(app, query, label)  # a tap from before a restart is too old to answer, but the card still updates
     if chat is not None and query.message is not None:
         await app.bot.edit_message_text(
             f"{label}: {chat['title'] or chat_id}", chat_id=query.message.chat.id, message_id=query.message.message_id

@@ -446,6 +446,27 @@ async def test_callback_does_not_override_an_already_decided_chat(make_app):
     assert len(app.bot.of("edit")) == 1
 
 
+async def test_a_stale_approval_tap_still_decides_and_updates_the_card(make_app):
+    """After a restart Telegram calls the tap too old to answer; the chat is still approved and the card edited."""
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import AnswerCallbackQuery
+
+    app = make_app()
+    await handlers.handle_message(app, tg())
+
+    async def too_old(callback_query_id, text=None, **kw):
+        raise TelegramBadRequest(AnswerCallbackQuery(callback_query_id=callback_query_id), "query is too old")
+
+    app.bot.answer_callback_query = too_old
+    prompt = tg(chat_id=OWNER, sender=999, text="prompt", msg_id=60)
+    await handlers.handle_callback(app, CallbackQuery(
+        id="cb1", from_user=User(id=OWNER, is_bot=False, first_name="X"),
+        chat_instance="ci", data=f"approve:{GROUP}", message=prompt,
+    ))
+    assert (await app.store.get_chat_auth_status(GROUP))["authorization_status"] == "approved"
+    assert len(app.bot.of("edit")) == 1
+
+
 # ---- approval delivery -----------------------------------------------------------
 
 def _method_error(cls):
