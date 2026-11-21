@@ -239,6 +239,8 @@ async def switch_vibe(home: Home, store: Store, chat_id: int, name: object, reas
         raise SwitchRefused("the owner has fixed your preset, so you cannot switch")
     if (await store.get_chat_personality(chat_id))[0]:
         raise SwitchRefused("this chat has its own preset, so switching would change nothing here")
+    if await task_mode(store, chat_id, now) is not None:
+        raise SwitchRefused("you are in task mode here; finish the task first, then switch")
     if current.source == "switch":
         raise SwitchRefused("you already switched today; wait for tomorrow's pick")
     reason = clean_reason(reason)
