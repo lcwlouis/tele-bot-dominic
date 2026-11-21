@@ -579,17 +579,19 @@ async def change_sticker_set(app: App, action: str, name: str) -> str:
     return result
 
 
-async def import_memory(app: App, message: Message, text: str) -> tuple[str, str]:
-    """Prepare the DM response and owner event for an import command."""
+async def import_memory(app: App, message: Message, text: str) -> tuple[str, str, str | None]:
+    """Prepare the DM response, the owner event and, for a bare /import, the prompt to send as a code block."""
     line, _, inline = text.partition("\n")
     args = line.split()[1:]
     event = "Ran /import"
+    code = None
     if not args and message.document is None:
         response = (
-            "Paste this prompt into ChatGPT, Claude or Muse. Reply here with /import <service> on the first "
-            "line and the export below. You can also reply to the export with /import <service>, or attach "
-            "a .txt or .md document with that caption.\n\n" + memory_import.export_prompt()
+            "Paste the prompt below into ChatGPT, Claude or Muse (tap it to copy). Reply here with /import <service> "
+            "on the first line and the export below. You can also reply to the export with /import <service>, or "
+            "attach a .txt or .md document with that caption."
         )
+        code = memory_import.export_prompt().strip()
     elif len(args) == 1 and args[0].lower() == "siri":
         response = "Siri has no exportable memory."
         event = "Ran /import siri"
@@ -616,7 +618,7 @@ async def import_memory(app: App, message: Message, text: str) -> tuple[str, str
         else:
             response = memory_import.summary(service, parsed)
             event = response
-    return response, event
+    return response, event, code
 
 
 async def show_t3(app: App) -> None:

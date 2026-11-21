@@ -15,7 +15,9 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntity,
+)
 
 from dom.claim import try_claim
 from dom.config import Config, load_config
@@ -233,9 +235,13 @@ async def handle_message(app: App, message: Message) -> None:
         return
     if command == "/import":
         if owner_dm:
-            response, event = await owner.import_memory(app, message, msg.text)
+            response, event, code = await owner.import_memory(app, message, msg.text)
             await owner.record_event(app, event)
             await app.bot.send_message(msg.chat_id, response)
+            if code:  # its own message as one code block: one tap copies it with its line breaks
+                await app.bot.send_message(msg.chat_id, code, entities=[
+                    MessageEntity(type="pre", offset=0, length=len(code.encode("utf-16-le")) // 2),
+                ])
         return
     if owner_dm:
         who = _person(msg.sender_name)
@@ -338,20 +344,48 @@ async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> Non
 
 
 SETTLED = {"Approved": "✅ Approved", "Rejected": "❌ Rejected", "Cancelled": "Cancelled", "already handled": "Already handled"}
+_PROPOSAL_BUTTON = re.compile(r"^prop:(?:yes|no):(\d+)$")
+_REMINDER_BUTTON = re.compile(r"^rem:cancel:(\d+)$")
+_PROPOSAL_LABELS = {"approved": "✅ Approved", "rejected": "❌ Rejected", "expired": "Expired"}
+
+
+def _row_id(row: list[InlineKeyboardButton], pattern: re.Pattern) -> int | None:
+    for button in row:
+        if (found := pattern.match(button.callback_data or "")) is not None:
+            return int(found.group(1))
+    return None
 
 
 async def _settle_button(app: App, query: CallbackQuery, outcome: str, suffix: str = "") -> None:
-    """Swap the row with the tapped button for the outcome, on a button that does nothing, so the card says what
-    happened and a stale Approve or Cancel cannot be tapped again. Other rows (other reminders) stay as they were."""
+    """Show on the card what has been settled, on buttons that do nothing, so a stale Approve or Cancel cannot be
+    tapped again. Every proposal and reminder row is rebuilt from the database, not from the tapped message alone:
+    on a /proposals list two quick taps each carry the keyboard as it was before the other's edit."""
     label = SETTLED.get(outcome)
     message = query.message
     if label is None or message is None:
         return
-    done = [InlineKeyboardButton(text=f"{label}{suffix}", callback_data="noop")]
     markup = getattr(message, "reply_markup", None)
     rows = list(markup.inline_keyboard) if markup is not None else []
-    tapped = any(button.callback_data == query.data for row in rows for button in row)
-    keyboard = [done if any(b.callback_data == query.data for b in row) else row for row in rows] if tapped else [done]
+    proposals = [pid for row in rows if (pid := _row_id(row, _PROPOSAL_BUTTON)) is not None]
+    statuses = await app.store.proposal_statuses(proposals)
+    reminders = [rid for row in rows if (rid := _row_id(row, _REMINDER_BUTTON)) is not None]
+    active = {row["id"] for row in await app.dispatch.reminders.active()} if reminders else set()
+    numbered = len(proposals) > 1
+    keyboard = []
+    for row in rows:
+        data = [button.callback_data or "" for button in row]
+        if (pid := _row_id(row, _PROPOSAL_BUTTON)) is not None and statuses.get(pid, "pending") != "pending":
+            text = _PROPOSAL_LABELS.get(statuses[pid], "Handled") + (f" #{pid}" if numbered else "")
+            keyboard.append([InlineKeyboardButton(text=text, callback_data="noop")])
+        elif (rid := _row_id(row, _REMINDER_BUTTON)) is not None and rid not in active:
+            ended = "Cancelled" if query.data == f"rem:cancel:{rid}" else "Ended"  # another may have fired since
+            keyboard.append([InlineKeyboardButton(text=f"{ended} #{rid}", callback_data="noop")])
+        elif any(item.startswith("prop:all:") for item in data) and all(statuses.get(p) != "pending" for p in proposals):
+            continue  # nothing left on the page to approve
+        else:
+            keyboard.append(row)
+    if not rows:  # the tapped message's keyboard is unknown: show the outcome alone
+        keyboard = [[InlineKeyboardButton(text=f"{label}{suffix}", callback_data="noop")]]
     try:
         await app.bot.edit_message_reply_markup(
             chat_id=message.chat.id, message_id=message.message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),

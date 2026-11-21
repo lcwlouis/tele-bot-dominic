@@ -64,7 +64,10 @@ async def test_import_prompts_and_reply_creates_private_proposals_with_one_summa
     app = make_app()
     prompt = resources.files("dom").joinpath("starter_home", "EXPORT_PROMPT.md").read_text()
     await handlers.handle_message(app, tg(OWNER, OWNER, "/import"))
-    assert prompt in app.bot.of("send", OWNER)[0][2]
+    instructions, code = app.bot.of("send", OWNER)
+    assert "/import <service>" in instructions[2] and prompt.strip() == code[2]
+    (entity,) = code[3]["entities"]  # one code block over the whole prompt, so one tap copies it
+    assert (entity.type, entity.offset, entity.length) == ("pre", 0, len(code[2].encode("utf-16-le")) // 2)
     assert all(word in prompt for word in ("[category]", "when learned"))
     app.bot.calls.clear()
     put(app.home, "private/USER.md", "- Prefers tea\n")

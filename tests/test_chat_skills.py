@@ -171,3 +171,26 @@ async def test_a_real_turn_carries_the_skill_list(make_app):
     await online(app)
     await deliver(app, tg())
     assert "- report: Summarise a web table" in app.script.requests[-1]["messages"][0]["content"]
+
+
+async def test_two_quick_taps_on_a_proposals_list_settle_both_rows(make_app):
+    # On the Pi, Reject #8 then Reject #9 left #8's row with live buttons again: the second tap's keyboard was
+    # the one from before the first edit.
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from dom.proposals import buttons
+
+    app = make_app()
+    owner = ctx(app, "owner_dm", OWNER, OWNER)
+    ids = [json.loads(await SKILL_MANAGE_TOOL.handler({"name": f"s{n}", "description": "D", "body": BODY}, owner))["id"]
+           for n in range(2)]
+    stale = InlineKeyboardMarkup(inline_keyboard=[
+        *(buttons(pid, numbered=True) for pid in ids),
+        [InlineKeyboardButton(text="Approve all on this page", callback_data=f"prop:all:{ids[0]}:{ids[1]}")],
+    ])
+    await press(app, f"prop:no:{ids[0]}", markup=stale)
+    await press(app, f"prop:no:{ids[1]}", markup=stale)  # still the keyboard from before the first edit
+    rows = app.bot.of("markup")[-1][3].inline_keyboard
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
+        [(f"❌ Rejected #{ids[0]}", "noop")], [(f"❌ Rejected #{ids[1]}", "noop")],
+    ]
