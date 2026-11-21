@@ -218,6 +218,21 @@ async def test_reminders_command_has_owner_only_cancel_buttons(make_app):
     assert any("Cancelled" in event["text"] for event in await events(app))
 
 
+async def test_a_cancelled_reminder_shows_it_on_its_own_button_only(make_app):
+    app = make_app()
+    first, second = await add(app), await add(app)
+    await handlers.handle_message(app, tg(OWNER, OWNER, "/reminders"))
+    markup = app.bot.of("send", OWNER)[-1][3]["reply_markup"]
+    await press(app, f"rem:cancel:{first}", markup=markup)
+    _, chat_id, message_id, edited = app.bot.of("markup")[-1]
+    assert (chat_id, message_id) == (OWNER, 77)
+    assert [[(b.text, b.callback_data) for b in row] for row in edited.inline_keyboard] == [
+        [(f"Cancelled #{first}", "noop")], [(f"Cancel #{second}", f"rem:cancel:{second}")],
+    ]
+    await press(app, "noop")  # the settled button does nothing
+    assert [r["id"] for r in await app.dispatch.reminders.active()] == [second]
+
+
 def _styled(app, *bubbles):
     app.script.contents[:] = [json.dumps({"no_response": False, "bubbles": [{"text": text} for text in bubbles]})]
 

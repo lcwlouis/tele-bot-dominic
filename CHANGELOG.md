@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Telegram cards show what was done: after Approve or Reject on a proposal, or Cancel on a reminder, that button row turns into "✅ Approved", "❌ Rejected" or "Cancelled #N" (a button that does nothing), so a stale button cannot be tapped again; other reminders on a /reminders list keep their buttons.
 - A second `skill_manage` proposal for a skill that already has one waiting is refused until the owner decides, so the owner's DM gets one card per skill. `skill_manage` now says skills are used in every chat and must carry no names or personal details, and `remind` says it is only for a reminder the owner asked for or agreed to, never a placeholder or test.
 - The turn log records a turn cut off by a restart or shutdown as "Interrupted" instead of "Stayed quiet"; its unread messages are answered after the restart as before.
 - Dom shows "typing" while he works out a reply (the model calls and any tools), not only while he types it, so a slow answer no longer looks like a crash; that time counts towards the reply's typing. One reply now types for at most 30 seconds in all (each bubble still up to 20), then each later bubble follows a 1-second pause, so a long task-mode answer no longer arrives minutes after it was written. The dashboard puts a separator before a chat's "Task mode:" line.

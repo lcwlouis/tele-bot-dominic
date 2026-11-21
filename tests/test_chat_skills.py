@@ -80,6 +80,9 @@ async def test_manage_creates_a_proposal_the_owner_must_approve(make_app, scope,
     assert BODY in app.bot.of("send", OWNER)[-1][2]
     await press(app, f"prop:yes:{proposal['id']}")
     assert skill_view(app.home, "report") == BODY
+    # the card now says so, and its Approve and Reject buttons are gone
+    (button,), = app.bot.of("markup")[-1][3].inline_keyboard
+    assert (button.text, button.callback_data) == ("✅ Approved", "noop")
 
 
 async def test_a_second_proposal_for_the_same_skill_waits_for_the_owner_to_decide_on_the_first(make_app):
