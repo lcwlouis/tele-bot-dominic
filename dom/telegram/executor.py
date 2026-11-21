@@ -24,6 +24,8 @@ from dom.store import Store
 
 log = logging.getLogger("dom.executor")
 MAX_TYPING_SECONDS = 20  # typing time keeps scaling with length up to this; at 8 characters a second that is 160
+MAX_REPLY_TYPING_SECONDS = 30  # all of one reply's typing, the time already shown while thinking included
+BUBBLE_GAP_SECONDS = 1.0  # once that is spent, each later bubble still follows a short pause
 TYPING_REFRESH_SECONDS = 4  # Telegram's typing indicator lapses after about 5 seconds
 _background: set[asyncio.Task] = set()  # keeps scheduled deletions alive until they run
 
@@ -133,10 +135,14 @@ async def perform(
         await react(bot, chat_id, trigger_msg_id, actions.react)
 
     sent_ids: list[int] = []
+    # "typing" already showed while Dom thought, so that time counts against the reply's budget; a long reply in
+    # many bubbles would otherwise keep the friend waiting minutes after it was written.
+    budget = max(0.0, MAX_REPLY_TYPING_SECONDS - typed_already)
     for index, bubble in enumerate(actions.bubbles):
-        seconds = min(len(bubble.text) / typing_cps, MAX_TYPING_SECONDS)
-        if index == 0:  # "typing" already showed while Dom thought; that time counts towards the first bubble
-            seconds = max(0.0, seconds - typed_already)
+        seconds = min(len(bubble.text) / typing_cps, MAX_TYPING_SECONDS, budget)
+        budget -= seconds
+        if index > 0:
+            seconds = max(seconds, BUBBLE_GAP_SECONDS)
         await _type_for(bot, chat_id, seconds, thread_id, sleep)
         reply = (
             ReplyParameters(message_id=bubble.reply_to, allow_sending_without_reply=True)
