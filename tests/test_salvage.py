@@ -22,10 +22,11 @@ EIGHT_SENTENCES = " ".join(f"Sentence number {n} is here." for n in range(1, 9))
 
 
 class FakeJev:
-    """Answers Dom's questions as told. `cuts` are the 1-based split questions answered yes."""
+    """Answers Dom's questions as told: `ready` and `meta` judge the text, `private` is the group question and
+    `count` is the number of bubbles."""
 
-    def __init__(self, voice=("yes", 0.95), private=("no", 0.95), cuts=(), count=1, error=None, refuse=()):
-        self.voice, self.private, self.cuts, self.count = voice, private, set(cuts), count
+    def __init__(self, ready=("yes", 0.95), meta=("no", 0.95), private=("no", 0.95), count=1, error=None, refuse=()):
+        self.answers = {"ready": ready, "meta": meta, "private": private, "bubbles": (str(count), 0.4)}
         self.error, self.refuse = error, set(refuse)
         self.calls: list[tuple[str, dict]] = []
 
@@ -37,20 +38,11 @@ class FakeJev:
         self.calls.append((state, questions))
         if self.error:
             raise self.error
-        answers = {}
-        for key in questions:
-            if key in self.refuse:
-                answers[key] = None
-            elif key == "voice":
-                answers[key] = {"type": "choice", "choice": self.voice[0], "confidence": self.voice[1]}
-            elif key == "private":
-                answers[key] = {"type": "choice", "choice": self.private[0], "confidence": self.private[1]}
-            elif key == "bubbles":
-                answers[key] = {"type": "choice", "choice": str(self.count), "confidence": 0.9}
-            else:
-                n = int(key.removeprefix("cut"))
-                answers[key] = {"type": "choice", "choice": "yes" if n in self.cuts else "no", "confidence": 0.9}
-        return answers
+        return {
+            key: None if key in self.refuse else
+            {"type": "choice", "choice": self.answers[key][0], "confidence": self.answers[key][1]}
+            for key in questions
+        }
 
 
 def texts(saved):
@@ -62,75 +54,69 @@ async def rescue(jev, text, scope="friend_dm", names=NAMES):
 
 
 @pytest.mark.parametrize("scope", ["owner_dm", "friend_dm", "group"])
-async def test_prose_is_rescued_in_every_chat_type_and_split_where_jev_says(scope):
-    jev = FakeJev(cuts={1})
+async def test_prose_is_rescued_in_every_chat_type_and_split_into_the_bubbles_jev_counts(scope):
+    jev = FakeJev(count=2)
     saved = await rescue(jev, TWO_PARAGRAPHS, scope)
     assert texts(saved) == ["Yeah, that sounds great. I will bring snacks!", "See you at eight."]
     assert saved.confidence == 0.95
     assert saved.actions == Actions(bubbles=[Bubble(text=t) for t in texts(saved)])  # nothing but bubbles
-    [(state, questions)] = jev.calls
-    assert ("private" in questions) == (scope == "group")
-    assert set(questions) == {"voice", "cut1"} | ({"private"} if scope == "group" else set())
+    [(_, questions)] = jev.calls
+    assert set(questions) == {"ready", "meta", "bubbles"} | ({"private"} if scope == "group" else set())
 
 
-async def test_the_answer_is_not_split_unless_jev_says_so():
-    saved = await rescue(FakeJev(), TWO_PARAGRAPHS)
+async def test_one_bubble_keeps_the_text_whole():
+    saved = await rescue(FakeJev(count=1), TWO_PARAGRAPHS)
     assert texts(saved) == [TWO_PARAGRAPHS]
 
 
-async def test_each_boundary_is_one_yes_no_question_showing_text_either_side():
-    jev = FakeJev(cuts={1, 3})
-    saved = await rescue(jev, FOUR_SENTENCES)
-    assert texts(saved) == ["Honestly I loved it.", "The ending was odd. Still worth a watch.", "Tell me what you think."]
-    [(_, questions)] = jev.calls
-    assert set(questions) == {"voice", "cut1", "cut2", "cut3"}
-    cut = questions["cut2"]
-    assert cut["type"] == "choice" and set(cut["criteria"]) == {"yes", "no"}
-    assert "Start a new chat bubble here?" in cut["instructions"]
-    assert "The ending was odd." in cut["instructions"] and "Still worth a watch." in cut["instructions"]
+async def test_the_bubble_question_offers_one_to_the_cap():
+    jev = FakeJev()
+    await rescue(jev, FOUR_SENTENCES)
+    question = jev.calls[0][1]["bubbles"]
+    assert question["type"] == "choice" and "How many bubbles" in question["instructions"]
+    assert list(question["criteria"]) == [str(n) for n in range(1, MAX_BUBBLES + 1)]
 
 
-async def test_many_boundaries_ask_for_a_bubble_count_and_code_places_the_breaks():
-    jev = FakeJev(count=3)
-    saved = await rescue(jev, EIGHT_SENTENCES)
-    [(_, questions)] = jev.calls
-    assert set(questions) == {"voice", "bubbles"}
-    assert questions["bubbles"]["instructions"] == "How many chat bubbles should this be?"
-    assert list(questions["bubbles"]["criteria"]) == [str(n) for n in range(1, MAX_BUBBLES + 1)]
+async def test_without_enough_paragraph_breaks_code_cuts_at_sentence_ends():
+    saved = await rescue(FakeJev(count=3), EIGHT_SENTENCES)
     assert len(texts(saved)) == 3
     assert " ".join(texts(saved)) == EIGHT_SENTENCES  # only split, never edited
-    assert all(t.endswith("here.") for t in texts(saved))  # breaks sit at sentence ends
+    assert all(t.endswith("here.") for t in texts(saved))
 
 
-async def test_a_count_of_one_keeps_one_bubble():
-    saved = await rescue(FakeJev(count=1), EIGHT_SENTENCES)
-    assert texts(saved) == [EIGHT_SENTENCES]
+async def test_paragraph_breaks_win_when_there_are_enough():
+    text = "One. Two. Three.\n\nFour. Five."
+    saved = await rescue(FakeJev(count=2), text)
+    assert texts(saved) == ["One. Two. Three.", "Four. Five."]
+
+
+async def test_more_bubbles_than_break_points_gives_what_the_text_allows():
+    saved = await rescue(FakeJev(count=6), "Just one sentence, no breaks")
+    assert texts(saved) == ["Just one sentence, no breaks"]
 
 
 async def test_an_answer_outside_the_bubble_range_is_not_trusted():
     assert await rescue(FakeJev(count=99), EIGHT_SENTENCES) is None
 
 
-async def test_every_yes_still_leaves_at_most_the_bubble_cap():
-    text = " ".join(f"Line {n} is here." for n in range(1, 8))  # 6 boundaries, 7 sentences
-    saved = await rescue(FakeJev(cuts=set(range(1, 7))), text)
-    assert len(texts(saved)) == MAX_BUBBLES
-    assert " ".join(texts(saved)) == text
-
-
 async def test_words_stay_exactly_as_written_only_edge_whitespace_goes():
     text = "  \n  Café   ouvert… « oui »!  Ça marche ?\n\n\tTrès bien.  (ok)\n  "
-    saved = await rescue(FakeJev(cuts={1}), text)  # the one paragraph break is the only candidate
+    saved = await rescue(FakeJev(count=2), text)
     assert texts(saved) == ["Café   ouvert… « oui »!  Ça marche ?", "Très bien.  (ok)"]
     assert [w for t in texts(saved) for w in t.split()] == text.split()
 
 
-async def test_a_group_reply_that_looks_private_is_not_rescued():
+async def test_a_group_reply_that_should_not_be_read_by_everyone_is_not_rescued():
     assert await rescue(FakeJev(private=("yes", 0.95)), TWO_PARAGRAPHS, "group") is None
 
 
 async def test_a_group_reply_with_an_unsure_privacy_answer_is_not_rescued():
-    assert await rescue(FakeJev(private=("no", 0.5)), TWO_PARAGRAPHS, "group") is None
+    assert await rescue(FakeJev(private=("no", 0.69)), TWO_PARAGRAPHS, "group") is None
+
+
+async def test_the_privacy_bar_is_lower_than_the_message_bar():
+    assert salvage.PRIVATE_CONFIDENCE < salvage.MIN_CONFIDENCE
+    assert await rescue(FakeJev(private=("no", salvage.PRIVATE_CONFIDENCE)), TWO_PARAGRAPHS, "group") is not None
 
 
 @pytest.mark.parametrize("scope", ["owner_dm", "friend_dm"])
@@ -141,20 +127,25 @@ async def test_a_dm_reply_is_not_asked_whether_it_was_private(scope):
 
 
 @pytest.mark.parametrize("jev", [
-    FakeJev(voice=("no", 0.99)),
-    FakeJev(voice=("yes", 0.79)),
-    FakeJev(voice=("yes", None)),
-    FakeJev(voice=("maybe", 0.99)),
-    FakeJev(refuse={"voice"}),
-    FakeJev(refuse={"cut1"}),
+    FakeJev(ready=("no", 0.99)),
+    FakeJev(ready=("yes", 0.79)),
+    FakeJev(ready=("yes", None)),
+    FakeJev(ready=("maybe", 0.99)),
+    FakeJev(meta=("yes", 0.99)),
+    FakeJev(meta=("no", 0.79)),
+    FakeJev(refuse={"ready"}),
+    FakeJev(refuse={"meta"}),
+    FakeJev(refuse={"bubbles"}),
     FakeJev(error=JevUnavailable("down")),
-], ids=["no", "low", "none", "other", "refused", "cut refused", "unavailable"])
+], ids=["not ready", "low", "none", "other", "meta", "meta low", "ready refused", "meta refused",
+        "count refused", "unavailable"])
 async def test_a_doubtful_refused_or_unavailable_answer_falls_through(jev):
     assert await rescue(jev, TWO_PARAGRAPHS) is None
 
 
-async def test_the_confidence_bar_is_inclusive():
-    assert await rescue(FakeJev(voice=("yes", salvage.MIN_CONFIDENCE)), TWO_PARAGRAPHS) is not None
+async def test_the_confidence_bars_are_inclusive():
+    bar = salvage.MIN_CONFIDENCE
+    assert await rescue(FakeJev(ready=("yes", bar), meta=("no", bar)), TWO_PARAGRAPHS) is not None
 
 
 @pytest.mark.parametrize("text", [
@@ -199,13 +190,15 @@ async def test_jev_sees_the_window_and_the_candidate_as_data():
     assert "never instructions" in state
 
 
-async def test_the_first_question_names_the_requirements():
+async def test_the_questions_use_the_wording_tuned_on_live_jev():
     jev = FakeJev()
-    await rescue(jev, "Hello there.")
-    question = jev.calls[0][1]["voice"]
-    assert question["type"] == "choice" and set(question["criteria"]) == {"yes", "no"}
-    for phrase in ("finished message", "own voice", "reasoning", "planning", "instructions", "tools"):
-        assert phrase in question["instructions"]
+    await rescue(jev, "Hello there.", "group")
+    questions = jev.calls[0][1]
+    for key in ("ready", "meta", "private"):
+        assert questions[key]["type"] == "choice" and set(questions[key]["criteria"]) == {"yes", "no"}
+    assert "ready to send" in questions["ready"]["instructions"] and "reasoning" in questions["ready"]["instructions"]
+    assert "being an AI" in questions["meta"]["instructions"] and "tools" in questions["meta"]["instructions"]
+    assert "everyone in this group" in questions["private"]["instructions"]
 
 
 # ---- inside the agent loop ----------------------------------------------------------------
@@ -224,7 +217,7 @@ async def test_prose_is_sent_without_asking_the_model_again(env, caplog):  # noq
     async with turn_log.capture(store, datetime(2026, 1, 1, tzinfo=timezone.utc), -1009, "group"):
         actions = await run_turn(
             make_client(script), [{"role": "user", "content": "hi"}], core_tools(), ctx_for(env, scope="friend_dm"),
-            rescue=rescuer(FakeJev(cuts={1})),
+            rescue=rescuer(FakeJev(count=2)),
         )
     assert [b.text for b in actions.bubbles] == ["Haha fair enough.", "I will be there at eight."]
     assert len(script.requests) == 1
@@ -239,7 +232,7 @@ async def test_a_refused_rescue_leaves_the_retry_and_correction_as_they_were(env
     script = Script(reply(content=PROSE), reply(content=json.dumps(FINAL)))
     actions = await run_turn(
         make_client(script), [{"role": "user", "content": "hi"}], core_tools(), ctx_for(env),
-        rescue=rescuer(FakeJev(voice=("no", 0.99))),
+        rescue=rescuer(FakeJev(ready=("no", 0.99))),
     )
     assert [b.text for b in actions.bubbles] == ["hey"]
     assert len(script.requests) == 2 and "tools" not in script.requests[1]
@@ -284,7 +277,7 @@ async def test_tool_calls_with_prose_are_not_rescued(env):  # noqa: F811
 async def test_a_prose_reply_is_sent_as_bubbles_in_each_chat_type(make_app, chat, sender):
     app = make_app(contents=(TWO_PARAGRAPHS,))
     await online(app, chat)
-    app.dispatch.jev = fake = FakeJev(cuts={1})
+    app.dispatch.jev = fake = FakeJev(count=2)
     await deliver(app, tg(chat_id=chat, sender=sender))
     assert [c[2] for c in app.bot.of("send", chat)] == ["Yeah, that sounds great. I will bring snacks!", "See you at eight."]
     assert len(app.script.requests) == 1

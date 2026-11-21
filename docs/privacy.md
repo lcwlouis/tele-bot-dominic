@@ -63,7 +63,7 @@ Cloudflare. Keep local bearer-token testing on loopback.
 
   Jev also sees the text of a chat reply in every chat type, the owner DM included, when the chat model answers in
   plain prose instead of the JSON actions object. Dom sends that reply and the same recent messages that triage
-  uses, and Jev judges whether it is a finished message and where to start a new bubble. Dom sends it as written
+  uses, and Jev judges whether it is ready to send and how many bubbles it should be. Dom sends it as written
   when Jev is sure, and asks the model again otherwise. This happens only on such a reply, not on every turn, and
   `leak_check = false` does not turn it off. With no Jev API key (the one `models.triage.api_key_env` names) Dom
   makes no Jev calls at all and asks the model again as before.
