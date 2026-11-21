@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -106,6 +107,24 @@ def malformed_shape(reply: dict | None) -> str:
     return f"{len(objects)} objects in {len(text)} chars"
 
 
+def prompt_fingerprint(messages: list[dict], schemas: list[dict]) -> str:
+    """Short hashes of the prompt parts in front of the chat window, which must stay the same from turn to turn for
+    the home endpoint's prefix cache to hold. When a turn's first call is slow, the part whose hash moved is why."""
+
+    def short(value: object) -> str:
+        text = value if isinstance(value, str) else json.dumps(value, sort_keys=False, ensure_ascii=False)
+        return hashlib.blake2s(text.encode(), digest_size=3).hexdigest()
+
+    system = next((m.get("content") or "" for m in messages if m.get("role") == "system"), "")
+    user = next((m.get("content") or "" for m in messages if m.get("role") == "user"), "")
+    head, _, window = user.partition("<chat_window")
+    first = re.search(r'<msg id="([^"]*)"', window)
+    return (
+        f"tools={short(schemas)} system={short(system)} head={short(head)} "
+        f"window_from={first.group(1) if first else '-'}"
+    )
+
+
 def _well_formed(calls: object) -> bool:
     return isinstance(calls, list) and all(
         isinstance(c, dict) and isinstance(c.get("function"), dict) and isinstance(c["function"].get("name"), str)
@@ -147,6 +166,7 @@ async def run_turn(
     tell a lost reply from a chosen silence."""
     offered = {t.name: t for t in tools if ctx.scope in t.scopes}
     schemas = [t.openai_schema() for t in offered.values()]
+    log.info("prompt chat=%s %s", ctx.chat_id, prompt_fingerprint(messages, schemas))
     messages = list(messages)
     trace: list[str] = []  # one entry per model call, logged once per turn
 
