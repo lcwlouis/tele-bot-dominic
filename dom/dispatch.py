@@ -785,7 +785,9 @@ class Dispatcher:
         if self._ephemeral_recipient(scope, newest) is not None:
             note += (
                 '\nThe latest message is from the owner. For an assistant-like answer to that message, '
-                'you may add "private": true to the actions to send ephemeral bubbles visible only to the owner.'
+                'you may add "private": true to the actions to send ephemeral bubbles visible only to the owner. '
+                'It goes at the top level, next to "bubbles", never inside a bubble: '
+                '{"private": true, "bubbles": [{"text": "..."}]}.'
             )
         if not final_bot_turn and (sticker_note := app.stickers.turn_note()):
             note += f"\n{sticker_note}"
