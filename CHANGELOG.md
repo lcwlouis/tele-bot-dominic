@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Self-directed work hardening (security review): the offline shell wrapper uses absolute paths and a task that changes a shell startup file is stopped; the guard also checks that the wrapper has no network; `read_file`/`write_file` work only under `/tmp` and the outbox; ambiguous URLs, other ports and public-suffix sites are refused; `press` and `click` cannot submit forms other than a search; a plan runs only once its announcement was delivered, and the DM stays under Telegram's limit; a self-directed task runs only while every other local container is stopped (and none starts meanwhile); a LAN probe that does not answer from the host no longer counts as proof, for the guard and for every local container's startup check; the finish summary in the DM is labelled as web content and has its links removed.
 - Typing time now keeps scaling with a bubble's length up to 20 seconds (it capped at 8), and the "typing" indicator is re-sent every 4 seconds during a long wait so it does not lapse.
 - Openers (Dom texting first in the owner's DM) are off by default: `[openers] enabled` now defaults to `false`, in the starter config too. An instance that sets it keeps its setting.
 - `self_inspect` reports the public repository URL (`[update] repo_url`) with the running version, and the desktop worker is told it may `git clone` that repository in the sandbox to read code and history, read-only: no push, no commits, no credentials.

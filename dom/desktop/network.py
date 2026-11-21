@@ -11,6 +11,7 @@ import subprocess
 from collections.abc import Callable
 
 from dom.config import Config, mdns_name
+from dom.desktop.tools import offline
 
 LAN_RANGES = (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
@@ -253,44 +254,99 @@ def host_address(control: str) -> str | None:
     return address if any(ip in ipaddress.IPv4Network(block) for block in LAN_RANGES[:5]) else None
 
 
-def judge(results: object, control: str, known: list[str], sampled: tuple[str, ...] = SAMPLED) -> str | None:
-    """Why the guard is not verified, or None: the public control must connect, every known LAN service
-    must time out (dropped), and no sampled private address may answer."""
+async def host_answers(target: str, seconds: float = PROBE_SECONDS) -> bool:
+    """Whether `target` answers a TCP connect from this host (connected or refused). A LAN probe that does not
+    answer from here, such as a device that is switched off, proves nothing when it times out in the sandbox."""
+    host, _, port = target.rpartition(":")
+    try:
+        async with asyncio.timeout(seconds):
+            _, writer = await asyncio.open_connection(host, int(port))
+    except ConnectionRefusedError:
+        return True
+    except (OSError, TimeoutError, ValueError):
+        return False
+    writer.close()
+    return True
+
+
+async def answering(targets: list[str]) -> set[str]:
+    """The targets that answer from this host, checked in parallel."""
+    answers = await asyncio.gather(*(host_answers(target) for target in targets))
+    return {target for target, answered in zip(targets, answers) if answered}
+
+
+def judge(
+    results: object, control: str, lan: list[str], hosts: list[str], answered: set[str], sampled: tuple[str, ...] = SAMPLED,
+) -> str | None:
+    """Why the guard is not verified, or None. The public control must connect; no known target (`lan`, the LAN
+    services, and `hosts`, the Docker host's own addresses) may answer in the sandbox; a timeout counts as proof
+    only for a target that answers from the Docker host (`answered`), so every host address and at least one LAN
+    service must prove the block; and no sampled private address may answer."""
     if not isinstance(results, dict):
         return "the network check inside the sandbox returned nothing usable"
     if results.get(control) != "open":
         return f"the sandbox could not reach the public test address {control}, so the check proves nothing"
-    for target in known:
+    for target in (*lan, *hosts):
         if results.get(target) != "timeout":
             return f"the sandbox can reach {target} on the local network"
+    for target in hosts:
+        if target not in answered:
+            return f"{target} does not answer from the Docker host either, so its timeout proves nothing"
+    if not any(target in answered for target in lan):
+        return "no lan_probes service answers from the Docker host, so the check proves nothing; probe one that is always on"
     for target in sampled:
         if results.get(target) not in ("timeout", "unreachable"):
             return f"the sandbox can reach {target} on the local network"
     return None
 
 
+# Run under the exact offline wrapper the self-directed shell uses: it must not connect where a plain connect does.
+OFFLINE_SCRIPT = """
+import socket, sys
+try:
+    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=3).close()
+    print("online")
+except OSError:
+    print("offline")
+"""
+
+
 async def verify_inside(client, config: Config, *, address: str | None = None) -> str | None:
     """Check from inside a freshly started desktop container that LAN and private addresses are unreachable
-    while a public address is reachable. Returns why the guard is not verified, or None when it is."""
+    while a public address is reachable, and that the offline wrapper has no network. Returns why the guard is
+    not verified, or None when it is."""
     settings = config.desktop
     try:
-        known = await asyncio.to_thread(lan_targets, settings.lan_probes)
+        lan = await asyncio.to_thread(lan_targets, settings.lan_probes)
     except ValueError as exc:
         return f"could not resolve a LAN probe ({exc})"
-    if not known:
+    if not lan:
         return "set [desktop] lan_probes so the guard has a known LAN service to test"
     ports = (*GUARD_PORTS, config.web.port)
     host = address or await asyncio.to_thread(host_address, settings.probe_control)
-    if host:
-        known += [f"{host}:{port}" for port in ports]
-    spec = {"seconds": PROBE_SECONDS, "control": settings.probe_control, "targets": [*known, *SAMPLED], "gateway_ports": ports}
+    hosts = [f"{host}:{port}" for port in ports] if host else []
+    control = settings.probe_control
+    spec = {"seconds": PROBE_SECONDS, "control": control, "targets": [*lan, *hosts, *SAMPLED], "gateway_ports": ports}
     try:
         async with asyncio.timeout(60):
-            result = await client.bash(f"python3 -c {shlex.quote(GUARD_SCRIPT)} {shlex.quote(json.dumps(spec))}")
+            result = await client.bash(f"/usr/bin/python3 -c {shlex.quote(GUARD_SCRIPT)} {shlex.quote(json.dumps(spec))}")
         report = json.loads(result["stdout"])
         results, gateway = report["results"], report["gateway"]
     except Exception:
         return "could not run the network check inside the sandbox"
     if not isinstance(gateway, str) or not gateway:
         return "could not find the sandbox's default gateway"
-    return judge(results, settings.probe_control, [*known, *(f"{gateway}:{port}" for port in ports)])
+    hosts += [f"{gateway}:{port}" for port in ports]
+    if reason := judge(results, control, lan, hosts, await answering([*lan, *hosts])):
+        return reason
+    control_host, _, control_port = control.rpartition(":")
+    check = f"/usr/bin/python3 -c {shlex.quote(OFFLINE_SCRIPT)} {shlex.quote(control_host)} {shlex.quote(control_port)}"
+    try:
+        async with asyncio.timeout(30):
+            result = await client.bash(offline(check))
+        verdict = result["stdout"].strip() if isinstance(result, dict) and result.get("exit_code") == 0 else ""
+    except Exception:
+        verdict = ""
+    if verdict != "offline":
+        return "the offline shell wrapper " + ("has network" if verdict == "online" else "could not be verified")
+    return None

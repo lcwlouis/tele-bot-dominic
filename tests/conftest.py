@@ -1,4 +1,5 @@
 import httpx
+import pytest
 import pytest_asyncio
 
 from dom.dispatch import Dispatcher
@@ -9,6 +10,18 @@ from dom.llm import ChatClient
 from dom.store import Store
 from dom.telegram import handlers
 from tghelpers import BOT_USER, OWNER, Clock, FakeBot, FixedRandom, ModelScript, no_sleep
+
+
+@pytest.fixture(autouse=True)
+def lan_probes_answer(monkeypatch):
+    """Tests never touch the network: every LAN probe and host address answers from the host unless a test
+    says otherwise (the desktop guards count a sandbox timeout only for targets that answer from the host)."""
+    from dom.desktop import network
+
+    async def answers(target, seconds=network.PROBE_SECONDS):
+        return True
+
+    monkeypatch.setattr(network, "host_answers", answers)
 
 
 @pytest_asyncio.fixture

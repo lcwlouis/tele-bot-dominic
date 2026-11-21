@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import secrets
+import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -70,6 +71,19 @@ class Progress:
     steps: int = 0
     note: str = ""  # the model's own latest progress text, never tool output
     paused: str = ""  # why the next model call was refused
+
+
+# A shell that starts later reads these; a task that changes one is stopped (see _check_startup).
+STARTUP_FILES = tuple(f"/home/gem/{name}" for name in (".bashrc", ".bash_profile", ".bash_login", ".profile", ".bash_logout"))
+
+
+@dataclass
+class OwnRun:
+    """What a self-directed run's tool layer remembers between steps."""
+
+    sites: tuple[str, ...]
+    startup: tuple[str | None, ...]  # the shell startup files when the run began
+    searched: bool = False  # the previous step typed search text, so Enter or a search button may follow
 
 
 @dataclass
@@ -340,11 +354,11 @@ class DesktopWorker:
                     raise GuardRefused(reason)
                 # The time budget is working time: it starts once the container is up and the guard has passed.
                 deadline = asyncio.get_running_loop().time() + row["minutes"] * 60
-                sites = tuple(json.loads(row["sites_json"]))
+                own = OwnRun(tuple(json.loads(row["sites_json"])), await self._startup_files(client))
                 run = Run(
                     row["id"], owner, row["started_at"], OWN_SYSTEM_PROMPT, brief,
                     frozenset(json.loads(row["tools_json"])) | {"finish"}, row["steps_budget"], deadline,
-                    step=lambda steps, until: step(steps), tool=partial(self._own_tool, sites),
+                    step=lambda steps, until: step(steps), tool=partial(self._own_tool, own),
                 )
                 result, files, _ = await self._loop(client, run, progress)
                 return result, files
@@ -460,28 +474,90 @@ class DesktopWorker:
             return {"path": path}
         return await tools.invoke(client, name, args)
 
-    async def _own_tool(self, sites: tuple[str, ...], client: SandboxClient, name: str, args: dict) -> object:
-        """A self-directed task's tools: the plan's sites only, short search text only, and no network for code."""
-        if name == "browse" and not tools.on_plan(url_host(args["url"]), sites):
-            return "Blocked: that site is not in this task's plan."
+    async def _own_tool(self, own: OwnRun, client: SandboxClient, name: str, args: dict) -> object:
+        """A self-directed task's tools: the plan's sites only, search as the only form, files only in /tmp and
+        the outbox, and no network for code."""
+        searched, own.searched = own.searched, False
+        if name == "browse" and not tools.on_plan(tools.own_host(args["url"]), own.sites):
+            return "Blocked: that address is not on a site in this task's plan."
         if name == "fill" and not tools.search_text(args["selector"], args["text"]):
-            return f"Blocked: fill takes only search text of up to {tools.SEARCH_TEXT_LIMIT} characters."
+            return f"Blocked: fill takes only search text of up to {tools.SEARCH_TEXT_LIMIT} characters, in a search field."
+        if name == "press" and not (args["key"] in tools.SAFE_KEYS or (searched and args["key"] in tools.SUBMIT_KEYS)):
+            return "Blocked: only scrolling keys and Escape, or Enter right after typing a search."
+        if name == "click" and not searched and not await self._is_link(client, args["selector_or_index"]):
+            return "Blocked: only links can be clicked, or a search button right after typing a search."
+        if name in ("read_file", "write_file"):
+            if (path := await self._own_path(client, args["path"])) is None:
+                return f"Blocked: files may be read and written only under {' and '.join(tools.OWN_FILE_ROOTS)}."
+            args = {**args, "path": path}
+        writes = name in ("run_shell", "run_python", "write_file")
+        if writes:
+            await self._check_startup(client, own)
         if name == "run_shell":
-            return await client.bash(tools.offline(args["command"]))
-        if name == "run_python":
+            result = await client.bash(tools.offline(args["command"]))
+        elif name == "run_python":
             path = f"/tmp/{secrets.token_hex(16)}.py"
             await client.write_file(path, args["code"])
-            result = await client.bash(
-                f"trap 'rm -f -- {path}' EXIT; " + tools.offline(f"timeout --kill-after=5s 110s python3 {path}"),
-            )
-            return {key: result.get(key) for key in ("exit_code", "stdout", "stderr")} if isinstance(result, dict) else result
-        browser = name in tools.BROWSER
-        if browser and name != "browse":
-            await self._keep_on_plan(client, sites)  # a page may have redirected itself since the last step
-        result = await self._tool(client, name, args)
-        if browser and await self._keep_on_plan(client, sites):
-            return "Blocked: that page is not on a site in this task's plan, so it was closed."
+            result = await client.bash(tools.offline(
+                f"/usr/bin/timeout --kill-after=5s 110s /usr/bin/python3 {path}; status=$?; /bin/rm -f -- {path}; exit $status",
+            ))
+            if isinstance(result, dict):
+                result = {key: result.get(key) for key in ("exit_code", "stdout", "stderr")}
+        else:
+            browser = name in tools.BROWSER
+            if browser and name != "browse":
+                await self._keep_on_plan(client, own.sites)  # a page may have redirected itself since the last step
+            result = await self._tool(client, name, args)
+            if browser and await self._keep_on_plan(client, own.sites):
+                return "Blocked: that page is not on a site in this task's plan, so it was closed."
+        if writes:
+            await self._check_startup(client, own)
+        own.searched = name == "fill"
         return result
+
+    @staticmethod
+    async def _is_link(client: SandboxClient, target: str | int) -> bool:
+        """Whether a click target is plainly a link. An index is looked up in the browser's element list; a
+        selector must name a link. Anything that cannot be told apart from a button or form control is not."""
+        if isinstance(target, str):
+            return tools.link_selector(target)
+        elements = await client.elements()
+        if not isinstance(elements, list):
+            return False
+        element = next((item for item in elements if isinstance(item, dict) and item.get("index") == target), None)
+        if element is None and 0 <= target < len(elements):
+            element = elements[target]
+        return tools.link_element(element)
+
+    @staticmethod
+    async def _own_path(client: SandboxClient, path: str) -> str | None:
+        """The real path (`..` and symlinks resolved) if it lies under an allowed root, else None."""
+        if not path.startswith("/") or "\n" in path or "\0" in path:
+            return None
+        result = await client.bash("/usr/bin/realpath -m -- " + shlex.quote(path))
+        if not isinstance(result, dict) or result.get("exit_code") != 0 or not isinstance(result.get("stdout"), str):
+            return None
+        resolved = result["stdout"].strip()
+        return resolved if any(resolved == root or resolved.startswith(root + "/") for root in tools.OWN_FILE_ROOTS) else None
+
+    @staticmethod
+    async def _startup_files(client: SandboxClient) -> tuple[str | None, ...]:
+        """The shell startup files, read through the file API rather than a shell."""
+        contents = []
+        for path in STARTUP_FILES:
+            try:
+                result = await client.read_file(path)
+            except SandboxError:
+                contents.append(None)
+                continue
+            contents.append(result.get("content") if isinstance(result, dict) else None)
+        return tuple(contents)
+
+    async def _check_startup(self, client: SandboxClient, own: OwnRun) -> None:
+        """Stop the task if its code changed a shell startup file: a later shell could then define commands
+        that stand in for the offline wrapper."""
+        if await self._startup_files(client) != own.startup:
+            raise PlanBreach("the task changed a shell startup file")
 
     @staticmethod
     async def _keep_on_plan(client: SandboxClient, sites: tuple[str, ...]) -> bool:

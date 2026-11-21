@@ -879,3 +879,51 @@ async def test_size_caps_apply_to_the_raw_bytes_on_the_wire():
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
         with pytest.raises(SandboxError, match="compressed"):
             await SandboxClient("https://example.org", None, http).markdown()
+
+
+async def test_a_lan_probe_that_does_not_answer_from_the_host_is_no_proof(tmp_path, monkeypatch):
+    """A switched-off probe device times out in the sandbox whether or not the firewall is in place."""
+    from dom.desktop import network
+
+    answering = {"192.0.2.2:22"}
+
+    async def answers(target, seconds=network.PROBE_SECONDS):
+        return target in answering
+
+    monkeypatch.setattr(network, "host_answers", answers)
+    docker = FakeDocker(probe=7)
+    config = local_config(tmp_path)
+    sandbox = LocalSandbox(config, run=docker)
+    await start_failing(sandbox)
+    assert docker.probes() == [probe_call(config, ["192.0.2.2:22", f"{GATEWAY}:8080", f"{GATEWAY}:22"])]
+    answering.clear()
+    docker.calls.clear()
+    assert "no lan_probes target answers from this host" in await start_failing(sandbox)
+    assert docker.probes() == [] and docker.started() == []
+    await sandbox.close()
+
+
+def test_self_work_and_other_local_containers_never_run_together(tmp_path):
+    from dom.config import DesktopHost
+    from dom.desktop.sandbox import SELF_WORK, Host
+
+    class Stub:
+        memory_mb = 0
+
+        def __init__(self, name, status):
+            self.name, self._status = name, status
+
+        def status(self):
+            return self._status
+
+    host = Host(DesktopHost(name="local", mode="local", max_containers=3, min_free_memory_mb=0))
+    default, own = Stub("default", "ready"), Stub(SELF_WORK, "stopped")
+    host.register(default)
+    host.register(own)
+    assert "no other desktop container is running (default)" in asyncio.run(host.refusal(own))
+    default._status = "error"  # possibly still running: fail closed
+    assert asyncio.run(host.refusal(own)) is not None
+    default._status, own._status = "stopped", "ready"
+    assert "Dom's own task is using the desktop" in asyncio.run(host.refusal(default))
+    own._status = "stopped"
+    assert asyncio.run(host.refusal(default)) is None and asyncio.run(host.refusal(own)) is None

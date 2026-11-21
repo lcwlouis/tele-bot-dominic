@@ -63,15 +63,38 @@ _SITE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a
 _PRIVATE_SUFFIXES = (
     ".local", ".lan", ".home", ".internal", ".intranet", ".corp", ".arpa", ".localhost", ".test", ".invalid",
 )
+# Public suffixes a planned site may not be, because unrelated owners share them (a plan naming one would allow
+# every tenant). A small built-in list rather than a Public Suffix List dependency: a plan names a few sites, and
+# anything missed here still faces the LAN guard. Country second levels (co.uk, com.au, ne.jp...) are matched by
+# _CC_SECOND_LEVEL; the list holds the common multi-tenant hosting suffixes.
+_SHARED_SUFFIXES = frozenset((
+    "github.io", "gitlab.io", "pages.dev", "workers.dev", "r2.dev", "vercel.app", "netlify.app", "web.app",
+    "firebaseapp.com", "herokuapp.com", "appspot.com", "blogspot.com", "wordpress.com", "tumblr.com",
+    "substack.com", "medium.com", "azurewebsites.net", "cloudfront.net", "amazonaws.com", "s3.amazonaws.com",
+    "fly.dev", "onrender.com", "glitch.me", "replit.app", "repl.co", "surge.sh", "ngrok.io", "ngrok-free.app",
+    "trycloudflare.com", "duckdns.org", "no-ip.org", "ddns.net", "dyndns.org", "myshopify.com", "wixsite.com",
+    "weebly.com", "neocities.org", "codeberg.page", "translate.goog", "sourceforge.io", "readthedocs.io",
+))
+_CC_SECOND_LEVEL = re.compile(r"(co|com|net|org|gov|edu|ac|or|ne|go|gob|mil|nic|ltd|plc|sch)\.[a-z]{2}")
 _LOGIN_WORDS = ("pass", "login", "user", "email", "card", "otp")
+_SEARCH_FIELD = re.compile(r"search|\bq\b|query", re.IGNORECASE)
+WEB_PORTS = (80, 443)
+# Keys a self-directed task may press: scrolling and closing things. Enter only right after a search fill.
+SAFE_KEYS = frozenset(("PageDown", "PageUp", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"))
+SUBMIT_KEYS = frozenset(("Enter",))
+# The only places a self-directed task may read or write files with read_file/write_file.
+OWN_FILE_ROOTS = ("/tmp", "/home/gem/outbox")
 
 
 def site(value: object) -> str | None:
-    """A planned site as a lowercase public hostname, or None. IP literals and LAN-style names are refused."""
+    """A planned site as a lowercase public hostname, or None. IP literals, LAN-style names and public
+    suffixes are refused."""
     if not isinstance(value, str):
         return None
     host = value.strip().lower().removeprefix("www.").rstrip(".")
     if not _SITE.fullmatch(host) or host.endswith(_PRIVATE_SUFFIXES):
+        return None
+    if host in _SHARED_SUFFIXES or _CC_SECOND_LEVEL.fullmatch(host):
         return None
     try:
         ipaddress.ip_address(host)
@@ -80,24 +103,65 @@ def site(value: object) -> str | None:
     return None
 
 
+def own_host(url: object) -> str | None:
+    """The host of a URL a self-directed task may open, or None. Stricter than urlsplit: Chrome reads some
+    authorities differently (`http://a.example\\@b.example/` goes to a.example), so anything ambiguous is refused:
+    backslashes, `@`, `%`, whitespace or control characters in the authority, a netloc other than exactly the
+    host (and port), a scheme other than http or https, and any port but 80 or 443."""
+    if not isinstance(url, str) or "\\" in url or any(ord(char) < 33 or ord(char) == 127 for char in url):
+        return None
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return None
+    netloc = parts.netloc.lower()
+    if parts.scheme not in ("http", "https") or not host or any(char in netloc for char in "@%"):
+        return None
+    if netloc not in (host, f"{host}:{port}") or (port is not None and port not in WEB_PORTS):
+        return None
+    return url_host(url)
+
+
 def on_plan(host: str | None, sites: tuple[str, ...]) -> bool:
     """Whether `host` is one of the plan's sites or a subdomain of one."""
     return bool(host) and any(host == entry or host.endswith("." + entry) for entry in sites)
 
 
 def on_plan_url(url: object, sites: tuple[str, ...]) -> bool:
-    return url in _BLANK or on_plan(url_host(url), sites)
+    return url in _BLANK or on_plan(own_host(url), sites)
 
 
 def search_text(selector: str, text: str) -> bool:
-    """A self-directed task may type only short search text, never into a login-looking field."""
-    return len(text) <= SEARCH_TEXT_LIMIT and not any(word in selector.lower() for word in _LOGIN_WORDS)
+    """A self-directed task may type only short text into a search field, never into a login-looking one."""
+    lowered = selector.lower()
+    return (
+        len(text) <= SEARCH_TEXT_LIMIT and bool(_SEARCH_FIELD.search(selector))
+        and not any(word in lowered for word in _LOGIN_WORDS)
+    )
+
+
+def link_selector(selector: str) -> bool:
+    """Whether a CSS selector's last compound names a link (`a`, `a.title`, `nav > a[href]`)."""
+    last = re.split(r"[\s>+~]+", selector.strip())[-1] if selector.strip() else ""
+    return bool(re.fullmatch(r"a(?:[.#\[:].*)?", last))
+
+
+def link_element(element: object) -> bool:
+    """Whether an element from the browser's element list is plainly a link. Anything it cannot tell is not."""
+    if not isinstance(element, dict):
+        return False
+    tag = next((element[key] for key in ("tag", "tag_name", "tagName") if isinstance(element.get(key), str)), "")
+    role = element.get("role") if isinstance(element.get("role"), str) else ""
+    kind = element.get("type") if isinstance(element.get("type"), str) else ""
+    return (tag.lower() == "a" or role.lower() == "link") and kind.lower() not in ("submit", "button", "image", "reset")
 
 
 def offline(command: str) -> str:
-    """Run `command` in its own network namespace with no interfaces up: it has no network at all.
-    If the sandbox cannot create the namespace, the command fails instead of running online."""
-    return "unshare --net --map-root-user -- sh -c " + shlex.quote(command)
+    """Run `command` in its own network namespace with no interfaces up: it has no network at all. Absolute
+    paths, so no command found earlier in PATH stands in for them; /bin/sh -c reads no startup files. If the
+    sandbox cannot create the namespace, the command fails instead of running online."""
+    return "/usr/bin/unshare --net --map-root-user -- /bin/sh -c " + shlex.quote(command)
 
 
 def schemas() -> list[dict]:

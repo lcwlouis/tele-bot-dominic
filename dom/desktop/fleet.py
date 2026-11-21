@@ -119,7 +119,16 @@ class DesktopFleet:
             lane = None
         if lane is None or lane.host.config.mode != "local":
             return None, "self-directed work needs a local desktop host"
-        return lane, await self._refusal(lane)
+        # Containers share the desktop bridge: wait until every other local one is stopped. The host's admission
+        # check enforces the same at the start itself.
+        others = sorted(
+            other.name for other in self.lanes.values()
+            if other is not lane and other.host.config.mode == "local" and other.status() not in ("stopped", "off")
+        )
+        if others:
+            return lane, f"another desktop container is running ({', '.join(others)})"
+        busy = [other.name for other in self.lanes.values() if other.host is lane.host and other is not lane and other.worker.busy()]
+        return lane, await lane.host.refusal(lane.sandbox, busy=busy)
 
     def available(self) -> bool:
         return any(lane.worker.available() for lane in self.lanes.values())

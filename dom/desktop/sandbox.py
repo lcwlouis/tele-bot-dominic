@@ -24,6 +24,9 @@ Status = Literal["off", "stopped", "starting", "ready", "error"]
 log = logging.getLogger(__name__)
 DEFAULT = "default"  # the name of the container that existed before there could be more than one
 CONTAINER = "dom-desktop"
+# The container of Dom's self-directed tasks (W13). Containers share the desktop bridge, so it runs only while
+# every other local container is stopped, and no other may start while it runs.
+SELF_WORK = "self-work"
 CONTAINER_MEMORY_MB = 1600  # the --memory limit of a local container
 SECCOMP_PROFILE = Path(__file__).resolve().with_name("seccomp-chromium.json")
 LAN_REACHABLE = "LAN reachable from the sandbox — run dom desktop-setup"
@@ -95,6 +98,15 @@ class Host:
     async def refusal(self, sandbox: LocalSandbox | RemoteSandbox, *, busy: Collection[str] = (), memory: bool = True) -> str | None:
         """Why `sandbox` may not start now, or None. `memory=False` skips a reading that would cost a request."""
         settings = self.config
+        if settings.mode == "local":
+            if sandbox.name == SELF_WORK:
+                others = sorted(
+                    name for name, other in self.sandboxes.items() if name != SELF_WORK and other.status() not in ("stopped", "off")
+                )
+                if others:
+                    return f"Dom's own tasks run only while no other desktop container is running ({', '.join(others)})"
+            elif SELF_WORK in self.running(sandbox.name, busy):
+                return "Dom's own task is using the desktop; cancel it on the Own work page or wait for it to finish"
         holding = self.running(sandbox.name, busy)
         if len(holding) >= settings.max_containers:
             return (
@@ -373,7 +385,14 @@ class LocalSandbox:
             probes = await asyncio.to_thread(network.lan_targets, settings.lan_probes)
         except ValueError as exc:
             raise SandboxError(f"could not verify the desktop firewall: {exc}") from None
-        targets = [*probes, f"{gateway}:{self.config.web.port}", f"{gateway}:22"]
+        # A timeout proves a block only for a target that answers from this host; a switched-off device proves
+        # nothing. Probe the ones that answer, and refuse when none does.
+        live = await network.answering(probes)
+        if not live:
+            raise SandboxError(
+                "could not verify the desktop firewall: no lan_probes target answers from this host, so a timeout would prove nothing",
+            )
+        targets = [*(probe for probe in probes if probe in live), f"{gateway}:{self.config.web.port}", f"{gateway}:22"]
         code, _ = await self._docker(*network.probe_command(self.config, *targets)[1:])
         if code == network.PROBE_REACHABLE:
             if self.alert is not None and not self._alerted:
