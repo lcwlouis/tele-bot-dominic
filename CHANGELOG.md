@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- After a private reply in a group (shown to the owner, or moved to the owner's DM), the group's history gets an event saying the owner was answered privately, without the answer. Dom no longer thinks the owner is still unanswered and repeats the take publicly.
 - Ephemeral group replies need Dom to be a group admin (Telegram answers `BOT_NOT_ADMIN` otherwise). A private reply Telegram refuses now goes to the owner's DM with a line saying why, instead of being lost, and the log names Telegram's reason. It is never sent publicly in the group.
 - `/status`: the per-chat wake button reads "☀️ Wake <chat>" instead of just "☀️ <chat>", so it is clear what it does.
 - Ephemeral group replies: a `"private": true` written inside the bubbles (where the home-lab model puts it) now makes the whole answer private instead of failing validation three times and leaving the owner with no answer; the turn note shows the exact shape. A malformed final answer's correction now says what was wrong by shape only (keys and error kinds, never text), so the retry can fix it instead of repeating it.
