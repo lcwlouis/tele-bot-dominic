@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Plugins: `draft_plugin` now tells Dom that every call starts fresh (no files, history or settings survive), that `version` is a short string and that the description must match `plugin.toml`. A plugin command or panel that fails records an event in the owner's DM with only its name and the kind of failure (never its output), so Dom knows on his next turn and can offer a fix, and a failure from trying to save a file says so.
 - Telegram cards show what was done: after Approve or Reject on a proposal, or Cancel on a reminder, that button row turns into "✅ Approved", "❌ Rejected" or "Cancelled #N" (a button that does nothing), so a stale button cannot be tapped again; other reminders on a /reminders list keep their buttons.
 - A second `skill_manage` proposal for a skill that already has one waiting is refused until the owner decides, so the owner's DM gets one card per skill. `skill_manage` now says skills are used in every chat and must carry no names or personal details, and `remind` says it is only for a reminder the owner asked for or agreed to, never a placeholder or test.
 - The turn log records a turn cut off by a restart or shutdown as "Interrupted" instead of "Stayed quiet"; its unread messages are answered after the restart as before.

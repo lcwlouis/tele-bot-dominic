@@ -46,7 +46,11 @@ DRAFT_PLUGIN_TOOL = Tool(
         "main.py: from _dom import tool, command, panel, run, then decorate functions named as declared: "
         "tool def name(**args) -> str; command def name(text, scope) -> str (plain text, gets only the text "
         'after /name); panel def id() -> dict with only "title", "paragraphs" [str], "items" [[key, value]] and '
-        '"table" {"columns": [...], "rows": [[...]]}; no HTML; end with run(). Stdlib only, offline unless network = true.'
+        '"table" {"columns": [...], "rows": [[...]]}; no HTML; end with run(). Stdlib only, offline unless network = true. '
+        "Every call starts fresh in a sandbox: the plugin folder is read-only, /tmp is emptied after each call and "
+        "there is no home folder, so a plugin cannot keep files, history or settings between calls; build it to work "
+        "from its input alone, and say so to your friend if what they asked needs memory. version is a short "
+        'string like "1.0.0", and description must be the same text as in plugin.toml.'
     ),
     schema={
         "type": "object",
