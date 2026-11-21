@@ -191,6 +191,7 @@ class DesktopWorker:
                     )
                     if failed:
                         await self._report(failed)
+                        await self._settle_card(row["id"], "Task ended")
 
     async def close(self) -> None:
         if self._job is not None:
@@ -233,7 +234,14 @@ class DesktopWorker:
                 return False
             self._handoff[2].set()
             await self.app.store.record_owner_event(f"Resumed desktop task #{task_id}")
-            return True
+        await self._settle_card(task_id, "✅ Resumed")
+        return True
+
+    async def _settle_card(self, task_id: int, label: str) -> None:
+        try:
+            await self.app.dispatch.settle_handoff_card(task_id, label)
+        except Exception:  # cosmetic: the task itself has moved on either way
+            log.exception("could not settle the log-in card of desktop task %s", task_id)
 
     async def _report(self, row: dict, files: tuple[SendFile, ...] = ()) -> None:
         try:
@@ -246,6 +254,7 @@ class DesktopWorker:
             await self._run_task(task_id, chat_id)
         finally:
             discard_bound(self.app.home.root, task_id)
+            await self._settle_card(task_id, "Task ended")  # only if it ended while still waiting for the owner
 
     async def _run_task(self, task_id: int, chat_id: int) -> None:
         store = self.app.store

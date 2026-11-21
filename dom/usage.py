@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
@@ -11,6 +12,8 @@ from datetime import datetime, time, timedelta, timezone
 from math import isclose
 from sys import float_info
 from typing import TYPE_CHECKING, Literal
+
+import httpx
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
@@ -21,6 +24,21 @@ if TYPE_CHECKING:
 
 Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop"]
 log = logging.getLogger("dom.usage")
+
+
+def _on_own_network(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host == "localhost" or host.endswith((".local", ".lan", ".home.arpa"))
+    return address.is_private or address.is_loopback
+
+
+def local_hosts(config: Config) -> tuple[str, ...]:
+    """Hosts of the configured model endpoints on the owner's own network (a home-lab vLLM, say). Their calls cost
+    nothing, so a desktop task's dollar ceiling must not price them from tokens."""
+    hosts = {httpx.URL(endpoint.base_url).host for endpoint in config.models.values()}
+    return tuple(sorted(host for host in hosts if host and _on_own_network(host)))
 
 
 class ModelCallSkipped(Exception):

@@ -40,13 +40,14 @@ from dom.telegram import executor, gate
 from dom.tools import TurnCtx, enabled_tools
 from dom.traits import for_chat, keep_task_mode, task_mode
 from dom.triage import persona_card, triage_offline, triage_online, triage_urgency
-from dom.usage import ModelCallSkipped, Usage, check_model_allowed, model_request
+from dom.usage import ModelCallSkipped, Usage, check_model_allowed, local_hosts, model_request
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
 log = logging.getLogger("dom.dispatch")
 TICK_SECONDS = 60
+HANDOFF_CARD = "desktop-handoff-card:"  # + task id -> the Telegram message id of its log-in card
 DEBOUNCE_CAP = timedelta(seconds=15)  # a steady stream of messages cannot postpone a turn longer
 MEDIA_WAIT_SECONDS = 15
 ORPHAN_AGE = timedelta(seconds=10)  # an online chat's unread message this old lost its debounce
@@ -323,7 +324,7 @@ class Dispatcher:
         settings = self.app.config.desktop
         cap = settings.task_cost_cap_usd
         if cap and await self.app.store.usage_cost(
-            "desktop", chat_id, started_at, settings.fallback_usd_per_1k_tokens,
+            "desktop", chat_id, started_at, settings.fallback_usd_per_1k_tokens, local_hosts(self.app.config),
         ) >= cap:
             return f"task cost cap of ${cap:.2f} reached"
         return None
@@ -626,7 +627,7 @@ class Dispatcher:
             link = f"{base}/desktop" + ("" if container == DEFAULT else "?" + urlencode({"container": container}))
             buttons.append(InlineKeyboardButton(text="Open Desktop", url=link))
         buttons.append(InlineKeyboardButton(text="Done", callback_data=f"desktop:done:{task_id}:{steps}"))
-        await app.bot.send_message(
+        sent = await app.bot.send_message(
             chat_id,
             f"Dom needs you to log in{'' if container == DEFAULT else f' on the {container} desktop'} "
             f"(browser was on {host or 'an unknown site'} at {observed:%H:%M}): {reason}\nLogins you make here are kept for later tasks."
@@ -634,6 +635,22 @@ class Dispatcher:
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
+        if isinstance(message_id := getattr(sent, "message_id", None), int):
+            await app.store.kv_set(f"{HANDOFF_CARD}{task_id}", str(message_id))
+
+    async def settle_handoff_card(self, task_id: int, label: str) -> None:
+        """Replace the log-in card's Done button with what happened, however the task moved on (Done on the
+        dashboard or in Telegram, a cancel, a timeout or a restart), so a stale Done is not left to tap."""
+        app, key = self.app, f"{HANDOFF_CARD}{task_id}"
+        raw = await app.store.kv_get(key)
+        if not raw or not raw.isdigit() or app.owner_id is None:
+            return
+        await app.store.kv_set(key, "")
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]])
+        try:
+            await app.bot.edit_message_reply_markup(chat_id=app.owner_id, message_id=int(raw), reply_markup=markup)
+        except TelegramBadRequest:
+            log.info("could not settle the log-in card of desktop task %s", task_id)
 
     async def grumble_after_command(self, chat_id: int, name: str, args: str) -> None:
         """The owner woke Dom with a plugin command. Its result is already sent; add one in-character line.

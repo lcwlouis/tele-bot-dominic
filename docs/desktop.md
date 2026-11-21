@@ -221,7 +221,10 @@ skipped, and the plain report is sent instead, when the daily cap or the task
 ceiling has been reached. A provider that reports no cost for a call is priced
 from its tokens at `[desktop] fallback_usd_per_1k_tokens` (default `0.002`) for the
 task ceiling only; the daily cap counts reported cost. Set the price above what
-your model really costs, so the ceiling errs towards stopping.
+your model really costs, so the ceiling errs towards stopping. A call to a model
+endpoint on your own network (a private or loopback address, or a `.local`, `.lan`
+or `.home.arpa` name, such as a home-lab vLLM) costs nothing, so a task on a local
+model is bounded by its step budget (`max_steps`), not by the dollar ceiling.
 
 ## Dashboard handoff
 
