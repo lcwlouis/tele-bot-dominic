@@ -15,7 +15,7 @@ from dom.desktop.files import MAX_RESULT_FILES
 from dom.skills import BODY_LIMIT, DESCRIPTION_LIMIT, NAME_LIMIT
 
 RESULT_LIMIT = 6000
-PAGE_PART = 4000  # read_page text per part; with its header and escaping it stays under RESULT_LIMIT
+PAGE_PART = 4000  # read_page text per part, measured after escaping, so a part never reaches RESULT_LIMIT
 _STRING = {"type": "string"}
 _TOOLS = {
     "browse": ("Navigate to a URL.", {"url": _STRING}),
@@ -232,14 +232,31 @@ def arguments(function: dict) -> tuple[str, dict]:
     return name, args
 
 
+_ESCAPED = {"&": 5, "<": 4, ">": 4}  # how long xml escape() makes each character that it changes
+
+
+def _page_parts(text: str) -> list[str]:
+    """The page cut so that each part, once escaped, is at most PAGE_PART characters."""
+    parts, start, size = [], 0, 0
+    for index, char in enumerate(text):
+        width = _ESCAPED.get(char, 1)
+        if size + width > PAGE_PART:
+            parts.append(text[start:index])
+            start, size = index, 0
+        size += width
+    return [*parts, text[start:]]
+
+
 def _page_part(text: Any, part: int) -> Any:
     """One part of a long page, headed "Part n of m."; a page that fits in one part comes back as it is."""
-    if not isinstance(text, str) or len(text) <= PAGE_PART:
+    if not isinstance(text, str):
         return text
-    count = -(-len(text) // PAGE_PART)
-    if part > count:
-        return f"There are only {count} parts."
-    return f"Part {part} of {count}.\n" + text[(part - 1) * PAGE_PART:part * PAGE_PART]
+    parts = _page_parts(text)
+    if len(parts) == 1:
+        return text
+    if part > len(parts):
+        return f"There are only {len(parts)} parts."
+    return f"Part {part} of {len(parts)}.\n" + parts[part - 1]
 
 
 def _web_url(url: str) -> bool:

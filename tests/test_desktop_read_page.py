@@ -60,3 +60,16 @@ def test_the_tool_says_how_to_read_further():
 def test_part_is_optional_in_the_schema_the_model_sees():
     [schema] = [s for s in tools.schemas() if s["function"]["name"] == "read_page"]
     assert schema["function"]["parameters"]["required"] == []
+
+
+async def test_a_page_dense_in_markup_still_reaches_every_character():
+    """Escaping turns & < > into entities; parts are cut by escaped length, so no part loses its tail to the cap."""
+    dense = "".join(f"<td>{n:05d}&amp;</td>" for n in range(2000))
+    page = Page(dense)
+    first = await tools.invoke(page, *read({}))
+    count = int(first.split("\n", 1)[0].split(" of ")[1].rstrip("."))
+    parts = [await tools.invoke(page, *read({"part": n})) for n in range(1, count + 1)]
+    assert "".join(part.split("\n", 1)[1] for part in parts) == dense
+    for part in parts:
+        wrapped = tools.untrusted(part)
+        assert len(wrapped) < tools.RESULT_LIMIT  # under the cap, so untrusted() cut nothing
