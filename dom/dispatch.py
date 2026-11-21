@@ -10,6 +10,7 @@ from collections import deque
 from contextlib import asynccontextmanager, nullcontext
 from functools import partial
 from datetime import datetime, timedelta
+from time import monotonic
 from urllib.parse import urlencode, urlsplit
 from collections.abc import AsyncIterator, Coroutine
 from xml.sax.saxutils import escape
@@ -540,9 +541,12 @@ class Dispatcher:
     ) -> bool:
         """Run one turn and send its result; True when it said or reacted something in the chat."""
         app = self.app
-        actions = await self._compose_turn(
-            chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
-        )
+        thinking_started = monotonic()
+        async with executor.typing_while(app.bot, chat_id, live.thread_id if live else None):
+            actions = await self._compose_turn(
+                chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
+            )
+        thought = monotonic() - thinking_started
         if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
             turn_log.outcome("Held back: possible leak")
             return False
@@ -552,7 +556,7 @@ class Dispatcher:
                 sent = await executor.perform(
                     app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
                     thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
-                    gifs=app.gifs, ephemeral_recipient=recipient,
+                    gifs=app.gifs, ephemeral_recipient=recipient, typed_already=thought,
                 )
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
@@ -748,7 +752,7 @@ class Dispatcher:
         if scope == "owner_dm" and (task := await task_mode(app.store, chat_id, self.now())) is not None:
             note += (
                 f"\ntask mode: on since {task.since.astimezone(self.presence.tz):%H:%M} for: {escape(task.reason)}. You are "
-                "using the assistant preset until you call task_mode with active=false or your friend goes quiet."
+                "using the assistant preset until you call task_mode with action=end or your friend goes quiet."
             )
             if newest is not None:  # the owner is still here, so the quiet period starts again
                 await keep_task_mode(app.store, task, self.now())

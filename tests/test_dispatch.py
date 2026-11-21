@@ -540,7 +540,7 @@ async def test_the_switch_turns_the_seen_reaction_off(setup_dispatch):
     app, _, _ = await online_with(setup_dispatch, QUIET, chat_id=FRIEND)
     app.config = app.config.model_copy(update={"presence": PresenceConfig(seen_reaction=False)})
     await deliver(app, 3, chat_id=FRIEND, sender=FRIEND)
-    assert not app.bot.calls
+    assert [call for call in app.bot.calls if call[0] != "action"] == []  # only "typing" while he thought
 
 
 async def test_a_batch_gets_one_seen_reaction_on_its_newest_message(setup_dispatch):

@@ -341,6 +341,39 @@ async def test_executor_keeps_typing_alive_and_scales_up_to_the_cap(store):
     assert all(c[2] == "typing" for c in bot.calls if c[0] == "action")
 
 
+async def test_time_spent_thinking_counts_towards_the_first_bubble_only(store):
+    bot, sleeps = FakeBot(), []
+
+    async def sleep(s):
+        sleeps.append(s)
+
+    actions = Actions(bubbles=[Bubble(text="a" * 100), Bubble(text="b" * 16)])
+    await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep, typed_already=10.0)
+    assert sleeps == [2.5, 2.0]  # 12.5 s less the 10 s already shown, then the second bubble in full
+
+
+async def test_typing_shows_while_dom_thinks_and_stops_after(monkeypatch):
+    monkeypatch.setattr(executor, "TYPING_REFRESH_SECONDS", 0.01)
+    bot = FakeBot()
+    async with executor.typing_while(bot, GROUP, 7):
+        await asyncio.sleep(0.05)
+    shown = len(bot.calls)
+    await asyncio.sleep(0.03)
+    assert shown >= 2 and len(bot.calls) == shown
+    assert all(c[:3] == ("action", GROUP, "typing") and c[3] == {"message_thread_id": 7} for c in bot.calls)
+
+
+async def test_a_failing_typing_indicator_does_not_stop_the_turn(monkeypatch):
+    monkeypatch.setattr(executor, "TYPING_REFRESH_SECONDS", 0.01)
+
+    class Broken:
+        async def send_chat_action(self, *args, **kwargs):
+            raise RuntimeError("network down")
+
+    async with executor.typing_while(Broken(), GROUP):
+        await asyncio.sleep(0.03)
+
+
 async def test_executor_schedules_delete_after(store):
     bot, sleeps = FakeBot(), []
 

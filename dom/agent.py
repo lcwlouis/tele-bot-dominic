@@ -85,6 +85,27 @@ def _final(reply: dict) -> Actions | None:
     return None if reply.get("tool_calls") else parse_actions(reply.get("content"))
 
 
+def malformed_shape(reply: dict | None) -> str:
+    """Why a reply is not usable actions, by its shape only (never its text, which may quote private chats)."""
+    if reply is None:
+        return "no reply"
+    if reply.get("tool_calls"):
+        return "tool calls" if _well_formed(reply["tool_calls"]) else "malformed tool calls"
+    text = unfence(reply.get("content"))
+    if not text:
+        return "empty"
+    objects = [value for value in _objects(text) if isinstance(value, dict)]
+    if not objects:
+        return f"no JSON object in {len(text)} chars"
+    last = objects[-1]
+    try:
+        Actions.model_validate(last)
+    except ValidationError as error:
+        problems = ", ".join(f"{'.'.join(map(str, e['loc']))}:{e['type']}" for e in error.errors()[:4])
+        return f"invalid actions ({problems}) keys={sorted(map(str, last))[:8]} in {len(text)} chars"
+    return f"{len(objects)} objects in {len(text)} chars"
+
+
 def _well_formed(calls: object) -> bool:
     return isinstance(calls, list) and all(
         isinstance(c, dict) and isinstance(c.get("function"), dict) and isinstance(c["function"].get("name"), str)
@@ -156,6 +177,7 @@ async def run_turn(
             return succeed(actions)
         trace.append("malformed")
         turn_log.step("malformed")
+        log.info("malformed reply in chat %s: %s", ctx.chat_id, malformed_shape(reply))
         settled = list(messages)
         if not calls:  # malformed tool calls are kept out of the history and handled like a malformed final
             messages.append(reply)
@@ -172,6 +194,7 @@ async def run_turn(
         return succeed(actions)
     trace.append("malformed")
     turn_log.step("malformed")
+    log.info("malformed retry in chat %s: %s", ctx.chat_id, malformed_shape(retry))
 
     if isinstance(client, FallbackClient) and client.fallback is not None:
         turn_log.step("fallback")
@@ -187,6 +210,7 @@ async def run_turn(
                 trace.append("fallback")
                 return succeed(actions)
             trace.append("fallback:malformed")
+            log.info("malformed fallback reply in chat %s: %s", ctx.chat_id, malformed_shape(reply))
     log.warning(
         "turn chat=%s scope=%s calls=%d [%s] -> no usable final answer", ctx.chat_id, ctx.scope, len(trace), " ".join(trace),
     )

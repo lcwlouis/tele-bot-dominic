@@ -17,7 +17,7 @@ from test_owner_controls import approve
 
 
 async def go(app, reason="plan the move"):
-    return json.loads(await TASK_MODE_TOOL.handler({"active": True, "reason": reason}, ctx(app)))
+    return json.loads(await TASK_MODE_TOOL.handler({"action": "start", "reason": reason}, ctx(app)))
 
 
 async def test_the_tool_is_for_the_owner_dm_alone(make_app):
@@ -28,9 +28,9 @@ async def test_the_tool_is_for_the_owner_dm_alone(make_app):
     assert "task_mode" in [tool.name for tool in await enabled_tools(app, "owner_dm")]
     # Not even a hand-built call works from another chat or from someone else in the owner's DM.
     for chat, scope in ((FRIEND, "friend_dm"), (GROUP, "group")):
-        assert (await TASK_MODE_TOOL.handler({"active": True, "reason": "x"}, ctx(app, chat, scope))).startswith("error:")
+        assert (await TASK_MODE_TOOL.handler({"action": "start", "reason": "x"}, ctx(app, chat, scope))).startswith("error:")
     stranger = TurnCtx("owner_dm", OWNER, FRIEND, app.home, app.store, OWNER, app=app)
-    assert (await TASK_MODE_TOOL.handler({"active": True, "reason": "x"}, stranger)).startswith("error:")
+    assert (await TASK_MODE_TOOL.handler({"action": "start", "reason": "x"}, stranger)).startswith("error:")
     assert await task_mode(app.store, OWNER, app.dispatch.now()) is None
 
 
@@ -62,7 +62,7 @@ async def test_a_pinned_preset_on_the_owner_dm_wins(make_app):
     await approve(app, OWNER)
     await pick_vibe(app)
     await app.store.set_chat_preset(OWNER, "fboy")
-    assert "own preset" in await TASK_MODE_TOOL.handler({"active": True, "reason": "x"}, ctx(app))
+    assert "own preset" in await TASK_MODE_TOOL.handler({"action": "start", "reason": "x"}, ctx(app))
     # A pin made while task mode is on takes over from then on, sliders included.
     await app.store.set_chat_preset(OWNER, "")
     await go(app)
@@ -83,12 +83,12 @@ async def test_it_ends_when_dom_says_so_or_after_a_quiet_period(make_app):
     install(app)
     await pick_vibe(app)
     now = app.dispatch.now()
-    assert (await TASK_MODE_TOOL.handler({"active": False}, ctx(app))).startswith("error: task mode is not on")
+    assert (await TASK_MODE_TOOL.handler({"action": "end"}, ctx(app))).startswith("error: task mode is not on")
     await go(app)
     assert (await for_chat(app.home, app.store, OWNER, now + timedelta(minutes=29)))[1].name == "assistant"
     assert (await for_chat(app.home, app.store, OWNER, now + TASK_QUIET + timedelta(seconds=1)))[1].name == "classic"
     await go(app)
-    assert json.loads(await TASK_MODE_TOOL.handler({"active": False}, ctx(app)))["task_mode"] == "off"
+    assert json.loads(await TASK_MODE_TOOL.handler({"action": "end"}, ctx(app)))["task_mode"] == "off"
     assert (await for_chat(app.home, app.store, OWNER, now))[1].name == "classic"
     events = [m.text for m in await app.store.get_recent_chat_window(OWNER) if m.role == "event"]
     assert [e for e in events if "assistant mode" in e] == [
@@ -120,7 +120,7 @@ async def test_it_does_not_touch_switch_vibe_or_the_daily_pick(make_app):
     friend = ctx(app, FRIEND, "friend_dm")
     assert json.loads(await SWITCH_VIBE_TOOL.handler({"preset": "fboy", "reason": "she flirted"}, friend))["preset"] == "fboy"
     assert "already switched" in await SWITCH_VIBE_TOOL.handler({"preset": "classic", "reason": "again"}, friend)
-    await TASK_MODE_TOOL.handler({"active": False}, ctx(app))
+    await TASK_MODE_TOOL.handler({"action": "end"}, ctx(app))
     assert (await for_chat(app.home, app.store, OWNER, app.dispatch.now()))[1].name == "fboy"  # back to the day's vibe, as switched
     # Task mode used none of the allowance: with a fresh day's pick it is still one switch.
     await pick(app, "classic", "new day", since=app.dispatch.now() + timedelta(hours=8))

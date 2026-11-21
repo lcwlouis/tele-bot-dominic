@@ -382,13 +382,14 @@ async def _task_mode(args: dict, ctx: TurnCtx) -> str:
     if app is None or not ctx.is_owner_dm():
         return "error: task mode is available only in the owner's DM"
     now = app.dispatch.now()
-    if args.get("active") is False:
+    action = args.get("action")
+    if action == "end":
         if not await end_task_mode(app.store, ctx.chat_id, now):
-            return "error: task mode is not on"
+            return "error: task mode is not on; to start it for a task, call task_mode with action=start and a reason"
         await app.store.record_owner_event("Dom left assistant mode: the task is done")
         return json.dumps({"task_mode": "off", "applies": "from your next reply"})
-    if args.get("active") is not True:
-        return "error: active must be true or false"
+    if action != "start":
+        return "error: action must be start or end"
     was_on = await task_mode(app.store, ctx.chat_id, now) is not None
     try:
         task = await start_task_mode(app.home, app.store, ctx.chat_id, args.get("reason"), now)
@@ -402,18 +403,23 @@ async def _task_mode(args: dict, ctx: TurnCtx) -> str:
 
 TASK_MODE_TOOL = Tool(
     name="task_mode",
+    # "start"/"end" rather than a boolean: with active=true/false the homelab model sent active=false for a planning
+    # request three times in four, which is the "end" call and was refused.
     description=(
-        "Owner's DM only. For an important task (planning, research, admin, or anything that needs reminders, web "
-        "search or desktop tasks at length) that your friend has asked you to do, call it with active=true and a short "
-        "reason. Never for small talk, a greeting, or a one-word reply like \"sure\" or \"ok\". From your next reply you use "
-        "the assistant preset, so tell your friend in character that you are switching to work mode. Call it with "
-        f"active=false when the task is done. It also ends after {TASK_QUIET_MINUTES} quiet minutes. It does not use "
-        "up switch_vibe and does nothing in a chat that has its own preset."
+        "Owner's DM only. Switch into work mode for an important task your friend has asked you to do (planning, "
+        "research, admin, or anything that needs reminders, web search or desktop tasks at length): action=start with a "
+        "short reason. From your next reply you use the assistant preset, so tell your friend in character that you are "
+        "switching to work mode. Never for small talk, a greeting, or a one-word reply like \"sure\" or \"ok\". "
+        f"action=end only once the task is finished and task mode is on. It also ends after {TASK_QUIET_MINUTES} quiet "
+        "minutes. It does not use up switch_vibe and does nothing in a chat that has its own preset."
     ),
     schema={
         "type": "object",
-        "properties": {"active": {"type": "boolean"}, "reason": {"type": "string", "maxLength": 160}},
-        "required": ["active"],
+        "properties": {
+            "action": {"type": "string", "enum": ["start", "end"]},
+            "reason": {"type": "string", "maxLength": 160},
+        },
+        "required": ["action"],
     },
     handler=_task_mode,
     scopes={"owner_dm"},

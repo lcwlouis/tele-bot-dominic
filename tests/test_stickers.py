@@ -84,7 +84,8 @@ async def test_executor_sends_a_matching_sticker_after_text(make_app):
     await app.stickers.refresh()
     await online(app)
     await deliver(app, tg())
-    assert [call[0] for call in app.bot.calls] == ["action", "send", "sticker"]
+    # typing while Dom thinks, then typing for the bubble
+    assert [call[0] for call in app.bot.calls] == ["action", "action", "send", "sticker"]
     assert app.bot.of("sticker")[0][:3] == ("sticker", GROUP, "file-a")
     latest = await app.store.get_recent_chat_window(GROUP, 1)
     assert json.loads(latest[0].media_json)["emoji"] == "📚"
