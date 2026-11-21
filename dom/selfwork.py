@@ -9,7 +9,7 @@ What runs when:
   online or mid-turn, and no desktop task is running. A task not started within a day expires.
 - A run uses its own local container with an emptied browser profile (no logins). Before any page loads, the
   network guard is verified from inside that container; if it is not, the task is refused and the owner is
-  told why. The worker then gets only the tools and sites the plan named, an offline shell, and the plan's
+  told why. The worker then gets only the browser and file tools and the sites the plan named (no shell or code), and the plan's
   step and time budgets, all enforced in code. The result and screenshots go to the dashboard; the owner gets
   one short summary. Self-directed tasks never message anyone else.
 """
