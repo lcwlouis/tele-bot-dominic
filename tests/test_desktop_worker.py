@@ -167,7 +167,7 @@ async def test_worker_prompt_uses_only_brief_and_capped_untrusted_results(make_a
     assert tool_result.startswith("<untrusted_tool_result>\n")
     assert tool_result.endswith("</untrusted_tool_result>")
     assert "&lt;/untrusted_tool_result&gt;" in tool_result
-    assert len(tool_result) == 6000
+    assert len(tool_result) <= 6000 and "Part 1 of 3." in tool_result  # a long page comes in parts
     assert report[1:] == ([], True)
     assert f"Your desktop task #{task_id} finished." in str(report[0])
     # The report is composed from the soul, a slider line and the untrusted result: no files, no history.

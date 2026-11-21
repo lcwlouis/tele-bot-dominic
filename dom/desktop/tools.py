@@ -15,10 +15,15 @@ from dom.desktop.files import MAX_RESULT_FILES
 from dom.skills import BODY_LIMIT, DESCRIPTION_LIMIT, NAME_LIMIT
 
 RESULT_LIMIT = 6000
+PAGE_PART = 4000  # read_page text per part; with its header and escaping it stays under RESULT_LIMIT
 _STRING = {"type": "string"}
 _TOOLS = {
     "browse": ("Navigate to a URL.", {"url": _STRING}),
-    "read_page": ("Read the current page as Markdown.", {}),
+    "read_page": (
+        "Read the current page as Markdown. A long page comes in parts: the first line says which part of how many; "
+        "pass part to read further. Scrolling does not change what this returns.",
+        {"part": {"type": "integer", "minimum": 1}},
+    ),
     "list_elements": ("List interactive elements on the current page.", {}),
     "click": ("Click a selector or an element index.", {
         "selector_or_index": {"anyOf": [_STRING, {"type": "integer"}]},
@@ -192,7 +197,7 @@ def schemas() -> list[dict]:
         "type": "function",
         "function": {
             "name": name, "description": description,
-            "parameters": {"type": "object", "properties": properties, "required": [key for key in properties if key != "files"],
+            "parameters": {"type": "object", "properties": properties, "required": [key for key in properties if key not in ("files", "part")],
                            "additionalProperties": False},
         },
     } for name, (description, properties) in _TOOLS.items()]
@@ -204,7 +209,7 @@ def arguments(function: dict) -> tuple[str, dict]:
         raise ValueError("unknown desktop tool")
     args = json.loads(function.get("arguments") or "{}")
     properties = _TOOLS[name][1]
-    required = properties.keys() - {"files"}
+    required = properties.keys() - {"files", "part"}
     if not isinstance(args, dict) or not required <= args.keys() <= properties.keys():
         raise ValueError("invalid tool arguments")
     for key, value in args.items():
@@ -214,6 +219,10 @@ def arguments(function: dict) -> tuple[str, dict]:
             raise ValueError("invalid files")
         if key == "selector_or_index" and type(value) is int and value >= 0:
             continue
+        if key == "part":
+            if type(value) is int and value >= 1:
+                continue
+            raise ValueError("invalid tool arguments")
         if not isinstance(value, str):
             raise ValueError("invalid tool arguments")
         if "enum" in properties[key] and value not in properties[key]["enum"]:
@@ -221,6 +230,16 @@ def arguments(function: dict) -> tuple[str, dict]:
     if name == "browse" and not _web_url(args["url"]):
         raise ValueError("invalid tool arguments")
     return name, args
+
+
+def _page_part(text: Any, part: int) -> Any:
+    """One part of a long page, headed "Part n of m."; a page that fits in one part comes back as it is."""
+    if not isinstance(text, str) or len(text) <= PAGE_PART:
+        return text
+    count = -(-len(text) // PAGE_PART)
+    if part > count:
+        return f"There are only {count} parts."
+    return f"Part {part} of {count}.\n" + text[(part - 1) * PAGE_PART:part * PAGE_PART]
 
 
 def _web_url(url: str) -> bool:
@@ -238,9 +257,10 @@ def untrusted(value: Any, *, limit: int = RESULT_LIMIT) -> str:
 
 
 async def invoke(client: SandboxClient, name: str, args: dict) -> Any:
+    part = args.pop("part", 1) if name == "read_page" else None
     result = await getattr(client, _METHODS[name])(**args)
     if name == "read_page" and isinstance(result, dict):
-        return result.get("markdown", result)
+        return _page_part(result.get("markdown", result), part)
     if name == "list_elements" and isinstance(result, list):
         return result[:80]
     if name == "read_file" and isinstance(result, dict):
