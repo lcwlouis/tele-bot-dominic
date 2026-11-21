@@ -71,7 +71,12 @@ async def test_owner_group_private_action_uses_ephemeral_bubbles_and_stays_out_o
     assert sent[2] == "Owner-only answer."
     assert sent[3]["ephemeral_message_parameters"] == EphemeralMessageParameters(receiver_user_id=OWNER)
     assert not app.bot.of("react") and not app.bot.of("sticker")
-    assert all(row.role != "assistant" for row in await app.store.get_recent_chat_window(GROUP))
+    window = await app.store.get_recent_chat_window(GROUP)
+    assert all(row.role != "assistant" for row in window)
+    # Live test 13: without a note, Dom thought the owner was still unanswered and gave the same take publicly.
+    [event] = [row for row in window if row.role == "event"]
+    assert "answered the owner" in event.text and "Owner-only answer." not in event.text
+    assert event.visibility_scope == f"chat:{GROUP}"
     assert "PRIVATE OWNER NOTE" not in str(turn_requests(app))
 
 

@@ -782,6 +782,12 @@ class Store:
             text=text, created_at=_now(),
         ))
 
+    async def record_chat_event(self, chat_id: int | str, text: str) -> None:
+        """A one-line note for Dom in one chat's history (no msg_id, never unread). Only the main model sees it."""
+        await self.record_new_message(StoredMessage(
+            chat_id=str(chat_id), role="event", visibility_scope=self.visibility_for(chat_id), text=text, created_at=_now(),
+        ))
+
     async def has_message(self, chat_id: int | str, msg_id: int) -> bool:
         return await self._run(self._has_message, str(chat_id), msg_id)
 

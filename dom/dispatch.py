@@ -561,6 +561,11 @@ class Dispatcher:
                 )
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
+                if sent:  # the bubbles stay out of the group's history, so say here that the owner was answered
+                    await app.store.record_chat_event(
+                        chat_id, "You answered the owner's latest message here privately; only he saw it. "
+                        "Don't repeat that answer to the group.",
+                    )
             elif sent:
                 bubbles = len(actions.bubbles)
                 label = "bubble" if bubbles == 1 else "bubbles"
