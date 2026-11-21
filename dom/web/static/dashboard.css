@@ -193,6 +193,7 @@ button { font: 700 var(--t-sm)/1 var(--body); border-radius: 6px; padding: 10px 
 .log time { color: var(--fog); font-family: var(--display); font-size: var(--t-md); }
 .log .what { color: var(--ink); }
 .log .held { color: var(--signal); }
+main:not(.single) .turns .log { max-height: 28rem; overflow-y: auto; overscroll-behavior: contain; } /* on Now the log scrolls inside its panel; the Turn log page shows it all */
 .chips { grid-column: 2; display: flex; flex-wrap: wrap; gap: var(--s1); }
 .chips span { border: 1px solid var(--seam); padding: 1px 6px; color: var(--fog); }
 
