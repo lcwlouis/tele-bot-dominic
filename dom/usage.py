@@ -96,9 +96,17 @@ class UsageRecorder:
         except ValueError:
             payload = None
         request = _request.get()
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        if kind == "chat" and isinstance(usage, dict):
+            details = usage.get("prompt_tokens_details") or {}
+            log.info(
+                "chat call chat=%s model=%s in=%s cached=%s out=%s", request.chat_id if request else None, model,
+                usage.get("prompt_tokens"), details.get("cached_tokens") if isinstance(details, dict) else None,
+                usage.get("completion_tokens"),
+            )
         await self.record(
             request_kind(kind), model, host,
-            payload.get("usage") if isinstance(payload, dict) else None,
+            usage,
             chat_id=request.chat_id if request else None, fallback=fallback,
         )
 

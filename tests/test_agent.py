@@ -506,3 +506,19 @@ async def test_tool_results_are_followed_by_a_reminder_of_the_answer_format(env)
     assert messages[-2]["role"] == "tool"
     assert messages[-1]["role"] == "user" and "JSON" in messages[-1]["content"]
     assert [m["role"] for m in script.requests[0]["messages"]] == ["user"]
+
+
+def test_the_prompt_fingerprint_moves_only_when_a_part_in_front_of_the_window_changes():
+    from dom.agent import prompt_fingerprint
+
+    def prompt(head, msgs):
+        window = "".join(f'<msg id="{n}">hi</msg>' for n in msgs)
+        return [{"role": "system", "content": "frame"}, {"role": "user", "content": f"{head}<chat_window>{window}</chat_window>"}]
+
+    tools = [{"name": "a"}]
+    before = prompt_fingerprint(prompt("notes", [1, 2]), tools)
+    assert prompt_fingerprint(prompt("notes", [1, 2, 3]), tools) == before  # the window grew: the prefix holds
+    assert before.endswith("window_from=1")
+    moved = prompt_fingerprint(prompt("new notes", [1, 2]), tools)
+    assert moved.split()[2] != before.split()[2] and moved.split()[:2] == before.split()[:2]
+    assert prompt_fingerprint(prompt("notes", [1, 2]), [{"name": "b"}]).split()[0] != before.split()[0]
