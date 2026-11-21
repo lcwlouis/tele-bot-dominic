@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Live view{% if container %} · {{ container }}{% endif %}</title>
   <link rel="stylesheet" href="/static/desktop-viewer.css">
   <script type="module" src="/static/desktop-viewer.js"></script>
@@ -9,5 +10,17 @@
 <body>
   <div id="status">{% if container %}{{ container }} · {% endif %}<span id="state">Connecting</span></div>
   <div id="screen"></div>
+  {# A real text field, so a phone shows its keyboard and a password manager can fill it. What is typed goes to the
+     desktop as keystrokes and is never sent to Dom's server as a form. #}
+  <form id="type" autocomplete="on">
+    <label class="sr-only" for="type-text">Type into the desktop</label>
+    <input id="type-text" name="username" type="text" autocomplete="username" autocapitalize="off" autocorrect="off"
+           spellcheck="false" placeholder="Type into the desktop" enterkeyhint="send">
+    <label class="secret"><input id="type-secret" type="checkbox"> Password</label>
+    <button type="submit">Send</button>
+    <button type="button" data-key="Enter">Enter</button>
+    <button type="button" data-key="Tab">Tab</button>
+    <button type="button" data-key="BackSpace" aria-label="Backspace">⌫</button>
+  </form>
 </body>
 </html>
