@@ -173,6 +173,25 @@ async def test_handler_exception_becomes_error_result(env):
     assert "kaput" in tool_result(script.requests[1])
 
 
+async def test_a_refused_tool_call_is_marked_in_the_turn_log_and_says_why_in_the_journal(env, caplog):
+    from datetime import datetime, timezone
+
+    from dom import turn_log
+
+    async def refuse(args, ctx):
+        return "error: give a short reason"
+
+    _, _, store = env
+    t = Tool("task_mode", "x", {"type": "object", "properties": {}}, refuse, {"group"})
+    script = Script(reply(tool_calls=[call("task_mode", {})]), reply(content=json.dumps(FINAL)))
+    caplog.set_level("INFO", logger="dom.agent")
+    async with turn_log.capture(store, datetime(2026, 1, 1, tzinfo=timezone.utc), -1009, "group"):
+        await run_turn(make_client(script), [], [t], ctx_for(env))
+    [row] = await store.recent_turns()
+    assert [step for step in json.loads(row["trace"]) if "@" not in step] == ["task_mode", "task_mode refused", "final"]
+    assert "tool task_mode refused in chat -1009: give a short reason" in caplog.text
+
+
 async def test_max_steps_exhausted_asks_for_the_final_answer_without_tools(env):
     script = Script(
         *[reply(tool_calls=[call("search_history", {"query": "x"})]) for _ in range(3)],
