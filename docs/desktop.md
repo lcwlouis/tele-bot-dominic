@@ -244,7 +244,10 @@ With `[self_work] enabled = true` (the default) and a local desktop host, Dom ma
 plan up to three small tasks of his own during his nightly daydream, in the hour
 before he sleeps: research a topic by reading up to four named public sites in the
 browser, keeping notes in files if he likes. Each task records its goal, why, the
-tools it will use, the sites it will open, and a time and step budget. Set `enabled = false` to turn it off; see
+tools it will use, the sites it will open, and a time and step budget. Every task can read the pages it opens
+(`browse`, `read_page`, `list_elements`, `scroll`, `look` and `save_screenshot`), and gets at least 10 steps, or
+`max_steps` if that is lower. Its report may only say what the pages said, not facts from the model's memory.
+Set `enabled = false` to turn it off; see
 [Configuration](configuration.md#self-directed-work) for the delay and budget limits.
 
 **You see the plan first.** Dom sends one message to your DM listing the tasks, each

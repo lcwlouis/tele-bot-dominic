@@ -48,6 +48,9 @@ log = logging.getLogger(__name__)
 CONTAINER = SELF_WORK  # its own container, so its browser profile is never the owner's
 MAX_TASKS = 3
 MAX_SITES = 4
+# Every task gets the read-only browser tools: a plan that listed only browse could open pages but not read them.
+READING = ("browse", "read_page", "list_elements", "scroll", "look", "save_screenshot")
+MIN_STEPS = 10  # a live 4-step task ran out before it read a single page
 EXPIRY = timedelta(hours=24)
 GUARD_KEY = "self_work:guard"  # JSON {ok, at, detail}: the last guard verification, read by `dom doctor`
 FILES_DIR = "self-work"  # under DOM_HOME: self-work/<task id>/<screenshot>.png
@@ -77,11 +80,13 @@ PLAN_FRAME = (
 def _plan_format(max_minutes: int, max_steps: int) -> str:
     return (
         'Return only JSON: {"announcement": "one short message to your owner in your own voice about what you '
-        'plan and why", "tasks": [{"goal": "what you will do", "why": "why you want to", "tools": ["browse"], '
+        'plan and why", "tasks": [{"goal": "what you will do", "why": "why you want to", "tools": ["browse", "read_page"], '
         '"sites": ["example.org"], "minutes": 10, "steps": 15}]}. '
-        f"Tools are any of: {', '.join(desktop_tools.OWN)}, and every task uses browse. List every site a task will "
+        f"Tools are any of: {', '.join(desktop_tools.OWN)}, and every task uses browse. Every task also gets "
+        f"{', '.join(READING)}. List every site a task will "
         f"open as a hostname, at most {MAX_SITES} (a search engine too, if you will search); other sites are blocked. "
-        f"There is no shell or code. minutes is at most {max_minutes} and steps at most {max_steps}. At most "
+        f"There is no shell or code. minutes is at most {max_minutes} and steps from {min(MIN_STEPS, max_steps)} to "
+        f"{max_steps}; each tool call is a step. At most "
         f"{MAX_TASKS} tasks."
     )
 
@@ -114,8 +119,8 @@ def parse_task(item: object, max_minutes: int, max_steps: int) -> dict | None:
     if minutes is None or steps is None or minutes < 1 or steps < 1:
         return None
     return {
-        "goal": goal, "why": why, "tools": list(dict.fromkeys(names)), "sites": list(dict.fromkeys(sites)),
-        "minutes": min(minutes, max_minutes), "steps": min(steps, max_steps),
+        "goal": goal, "why": why, "tools": list(dict.fromkeys([*READING, *names])), "sites": list(dict.fromkeys(sites)),
+        "minutes": min(minutes, max_minutes), "steps": min(max(steps, MIN_STEPS), max_steps),
     }
 
 

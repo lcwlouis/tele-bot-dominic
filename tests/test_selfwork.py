@@ -228,7 +228,7 @@ async def test_plan_announces_tasks_in_the_owner_dm_with_cancel_buttons(make_app
     assert len(sends) == 1 and not app.bot.of("send", FRIEND)
     _, _, text, kwargs = sends[0]
     assert text.startswith("Got curious tonight.")
-    assert "en.wikipedia.org" in text and "up to 10 min and 8 steps" in text
+    assert "en.wikipedia.org" in text and "up to 10 min and 10 steps" in text
     buttons = [row[0].callback_data for row in kwargs["reply_markup"].inline_keyboard]
     assert buttons == [f"own:cancel:{row['id']}" for row in rows]
     request = app.client.requests[0][0]
@@ -368,7 +368,7 @@ async def test_a_finished_task_keeps_screenshots_for_the_dashboard_and_sends_one
     messages, schemas, _ = app.client.requests[0]
     assert messages[0]["content"] == OWN_SYSTEM_PROMPT
     assert "en.wikipedia.org" in messages[1]["content"]
-    assert sorted(schema["function"]["name"] for schema in schemas) == sorted([*TASK["tools"], "finish"])
+    assert sorted(schema["function"]["name"] for schema in schemas) == sorted({*selfwork.READING, *TASK["tools"], "finish"})
     assert json.loads(await app.store.kv_get(GUARD_KEY))["ok"] is True
 
 
@@ -430,8 +430,9 @@ async def test_step_and_time_budgets_stop_the_task(make_app, over):
 
     replies = [call("read_page")] * 3 if over == "steps" else [slow]
     app = self_app(make_app, *replies)
-    task = {**TASK, "steps": 2} if over == "steps" else TASK
-    [row] = await planned(app, task)
+    [row] = await planned(app, TASK)
+    if over == "steps":  # below the planning floor, to keep the test short
+        await app.store._run(lambda: app.store._conn.execute("UPDATE self_tasks SET steps_budget = 2 WHERE id = ?", (row["id"],)))
     if over == "time":  # a budget of a few milliseconds
         await app.store._run(lambda: app.store._conn.execute("UPDATE self_tasks SET minutes = 0.0005 WHERE id = ?", (row["id"],)))
     await run_next(app)
@@ -775,3 +776,23 @@ async def test_a_start_refused_by_the_host_puts_the_task_back_to_wait(make_app):
     assert waiting["status"] == "planned" and waiting["error"] is None and app.bot.of("send", OWNER) == []
     await run_next(app)
     assert (await status(app, row["id"]))["status"] == "done"
+
+
+def test_every_task_can_read_what_it_opens():
+    """Live run 2026-11-22: a plan listing only "browse" could open pages but never read them."""
+    task = parse_task({**TASK, "tools": ["browse"]}, 20, 25)
+    assert set(selfwork.READING) <= set(task["tools"])
+    assert task["tools"][: len(selfwork.READING)] == list(selfwork.READING)
+    assert "write_file" in parse_task(NOTES, 20, 25)["tools"]  # extra tools from the plan stay
+
+
+def test_a_task_gets_at_least_the_minimum_steps_but_never_more_than_the_cap():
+    assert parse_task({**TASK, "steps": 4}, 20, 25)["steps"] == selfwork.MIN_STEPS
+    assert parse_task({**TASK, "steps": 4}, 20, 6)["steps"] == 6
+
+
+def test_the_worker_reports_only_what_the_pages_said():
+    from dom.desktop.worker import WRAP_UP
+    for prompt in (OWN_SYSTEM_PROMPT, WRAP_UP):
+        assert "never add facts from your own memory" in prompt.lower()
+    assert "read_page" in OWN_SYSTEM_PROMPT

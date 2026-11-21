@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Self-directed tasks can read the pages they open. The first live run (2026-11-22) planned only `browse`, which opens a page without reading it, ran out of its 4 steps and filled the gap from memory. Every task now gets the read-only browser tools and at least 10 steps (or `max_steps` if lower), and its report may only say what the pages said.
 - The Usage page draws the Desktop bar and its legend swatch in their own colour instead of black.
 - A chat approval button tapped after a restart (Telegram calls the tap too old to answer) still approves or ignores the chat and updates the card, instead of failing before either.
 - `/update` looks for releases at the repository's new address, `https://github.com/lcwlouis/tele-bot-dominic.git` (the old name still redirects). An instance whose `config.toml` sets `update.repo_url` to the old address keeps working through the redirect; change it when convenient.
