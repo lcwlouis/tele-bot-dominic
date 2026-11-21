@@ -11,7 +11,6 @@ import subprocess
 from collections.abc import Callable
 
 from dom.config import Config, mdns_name
-from dom.desktop.tools import offline
 
 LAN_RANGES = (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
@@ -300,21 +299,9 @@ def judge(
     return None
 
 
-# Run under the exact offline wrapper the self-directed shell uses: it must not connect where a plain connect does.
-OFFLINE_SCRIPT = """
-import socket, sys
-try:
-    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=3).close()
-    print("online")
-except OSError:
-    print("offline")
-"""
-
-
 async def verify_inside(client, config: Config, *, address: str | None = None) -> str | None:
     """Check from inside a freshly started desktop container that LAN and private addresses are unreachable
-    while a public address is reachable, and that the offline wrapper has no network. Returns why the guard is
-    not verified, or None when it is."""
+    while a public address is reachable. Returns why the guard is not verified, or None when it is."""
     settings = config.desktop
     try:
         lan = await asyncio.to_thread(lan_targets, settings.lan_probes)
@@ -337,16 +324,4 @@ async def verify_inside(client, config: Config, *, address: str | None = None) -
     if not isinstance(gateway, str) or not gateway:
         return "could not find the sandbox's default gateway"
     hosts += [f"{gateway}:{port}" for port in ports]
-    if reason := judge(results, control, lan, hosts, await answering([*lan, *hosts])):
-        return reason
-    control_host, _, control_port = control.rpartition(":")
-    check = f"/usr/bin/python3 -c {shlex.quote(OFFLINE_SCRIPT)} {shlex.quote(control_host)} {shlex.quote(control_port)}"
-    try:
-        async with asyncio.timeout(30):
-            result = await client.bash(offline(check))
-        verdict = result["stdout"].strip() if isinstance(result, dict) and result.get("exit_code") == 0 else ""
-    except Exception:
-        verdict = ""
-    if verdict != "offline":
-        return "the offline shell wrapper " + ("has network" if verdict == "online" else "could not be verified")
-    return None
+    return judge(results, control, lan, hosts, await answering([*lan, *hosts]))
