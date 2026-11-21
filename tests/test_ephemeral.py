@@ -106,16 +106,24 @@ async def test_dropping_an_ineligible_private_group_reply_tells_the_owner(make_a
     ]
 
 
-async def test_a_refused_ephemeral_send_is_logged_not_raised(make_app, caplog):
+async def test_a_refused_ephemeral_send_goes_to_the_owners_dm_with_why(make_app, caplog):
+    # Live test 13: Dom is not an admin in the test group, Telegram answered BOT_NOT_ADMIN, and the owner got nothing.
     app = make_app()
+    send = app.bot.send_message
 
-    async def refuse(chat_id, text, **kw):
-        raise TelegramBadRequest(method=None, message="Bad Request: ephemeral refused")
+    async def refuse_in_group(chat_id, text, **kw):
+        if chat_id == GROUP:
+            raise TelegramBadRequest(method=None, message="Bad Request: BOT_NOT_ADMIN")
+        return await send(chat_id, text, **kw)
 
-    app.bot.send_message = refuse
+    app.bot.send_message = refuse_in_group
     sent = await executor.perform(
         app.bot, app.store, GROUP, 1, Actions(private=True, bubbles=[{"text": "One"}, {"text": "Two"}]),
         ephemeral_recipient=OWNER, sleep=app.sleep,
     )
-    assert sent == []
-    assert "ephemeral" in caplog.text
+    assert len(sent) == 1
+    [dm] = app.bot.of("send", OWNER)
+    assert "only when I'm a group admin" in dm[2] and dm[2].endswith("One\n\nTwo")
+    assert app.bot.of("send", GROUP) == []
+    assert "BOT_NOT_ADMIN" in caplog.text
+    assert any("to the owner's DM" in event["text"] for event in await events(app))

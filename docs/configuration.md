@@ -20,7 +20,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `window_keep_tokens` | `20000` | Prompt size a trim brings the window down to (about; messages are estimated at one token per three bytes). It must be below `window_budget_tokens`; the gap sets how many messages go in one trim. |
 | `window_size` | `500` | Safety bound on the messages in one chat's window, for chats of very short messages: past it a trim also happens, down to 60% of it. Not the normal trigger. |
 | `daily_spend_cap_usd` | `1.0` | Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap. |
-| `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups when supported by Telegram. |
+| `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; where Dom is not, a private reply goes to the owner's DM instead, with a note saying why. |
 | `leak_check` | `true` | Use Jev to screen eligible outbound text and network plugin calls for private information. |
 | `leak_threshold` | `1.2` | Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call. |
 
