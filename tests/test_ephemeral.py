@@ -132,3 +132,43 @@ async def test_a_refused_ephemeral_send_goes_to_the_owners_dm_with_why(make_app,
     assert app.bot.of("send", GROUP) == []
     assert "BOT_NOT_ADMIN" in caplog.text
     assert any("to the owner's DM" in event["text"] for event in await events(app))
+
+
+async def test_where_dom_is_not_admin_a_private_reply_goes_straight_to_the_dm(make_app):
+    # The owner's ask: know whether Dom is an admin instead of finding out from a refused send.
+    from types import SimpleNamespace
+
+    app = make_app(contents=(PRIVATE,))
+    app.config = app.config.model_copy(update={"ephemeral_replies": True})
+    asked = []
+
+    async def get_chat_member(chat_id, user_id):
+        asked.append(chat_id)
+        return SimpleNamespace(status="member")
+
+    app.bot.get_chat_member = get_chat_member
+    await online(app, GROUP)
+    await deliver(app, tg(GROUP, OWNER))
+    assert app.bot.of("send", GROUP) == []  # no doomed in-group attempt
+    [dm] = app.bot.of("send", OWNER)
+    assert "only when I'm a group admin" in dm[2] and dm[2].endswith("Owner-only answer.")
+    assert "you are not an admin of this group" in str(turn_requests(app))
+    assert asked == [GROUP]  # asked once, then kept
+
+
+async def test_becoming_a_group_admin_is_noted_from_the_membership_update(make_app):
+    from types import SimpleNamespace
+
+    from dom.telegram.handlers import handle_my_chat_member
+
+    app = make_app()
+    update = SimpleNamespace(
+        chat=SimpleNamespace(id=GROUP, type="supergroup", title="The Group"),
+        new_chat_member=SimpleNamespace(status="administrator"),
+        from_user=SimpleNamespace(id=OWNER, username="owner", full_name="Owner"),
+    )
+    await handle_my_chat_member(app, update)
+    assert await app.dispatch._is_admin(GROUP) is True
+    update.new_chat_member.status = "member"
+    await handle_my_chat_member(app, update)
+    assert await app.dispatch._is_admin(GROUP) is False

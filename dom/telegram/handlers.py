@@ -643,6 +643,7 @@ async def handle_my_chat_member(app: App, update: ChatMemberUpdated) -> None:
     if update.chat.type not in ("group", "supergroup") or owner_id is None:
         return
     status = update.new_chat_member.status
+    app.dispatch.note_admin(update.chat.id, status in ("administrator", "creator"))
     if status in ("left", "kicked"):
         await _note_removed(app, update, owner_id)
         return
