@@ -333,23 +333,35 @@ async def test_executor_keeps_typing_alive_and_scales_up_to_the_cap(store):
     async def sleep(s):
         sleeps.append(s)
 
-    actions = Actions(bubbles=[Bubble(text="a" * 100), Bubble(text="b" * 4000)])
+    actions = Actions(bubbles=[Bubble(text="a" * 80), Bubble(text="b" * 4000)])
     await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep)
-    assert sleeps == [4, 4, 4, 0.5] + [4] * 5  # 12.5 s, then the 20 s cap
-    assert sum(sleeps[4:]) == executor.MAX_TYPING_SECONDS
-    assert [c[0] for c in bot.calls] == ["action"] * 4 + ["send"] + ["action"] * 5 + ["send"]
+    assert sleeps == [4, 4, 2] + [4] * 5  # 10 s, then the 20 s cap
+    assert sum(sleeps[3:]) == executor.MAX_TYPING_SECONDS
+    assert [c[0] for c in bot.calls] == ["action"] * 3 + ["send"] + ["action"] * 5 + ["send"]
     assert all(c[2] == "typing" for c in bot.calls if c[0] == "action")
 
 
-async def test_time_spent_thinking_counts_towards_the_first_bubble_only(store):
+async def test_one_reply_types_for_at_most_30_seconds_in_all(store):
     bot, sleeps = FakeBot(), []
 
     async def sleep(s):
         sleeps.append(s)
 
-    actions = Actions(bubbles=[Bubble(text="a" * 100), Bubble(text="b" * 16)])
-    await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep, typed_already=10.0)
-    assert sleeps == [2.5, 2.0]  # 12.5 s less the 10 s already shown, then the second bubble in full
+    # Six 20-second bubbles were 2 minutes of typing after a task-mode reply was already written.
+    actions = Actions(bubbles=[Bubble(text="x" * 160) for _ in range(6)])
+    await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep)
+    assert sum(sleeps) == executor.MAX_REPLY_TYPING_SECONDS + 4 * executor.BUBBLE_GAP_SECONDS  # 20 + 10, then pauses
+
+
+async def test_time_spent_thinking_counts_against_the_reply_typing_budget(store):
+    bot, sleeps = FakeBot(), []
+
+    async def sleep(s):
+        sleeps.append(s)
+
+    actions = Actions(bubbles=[Bubble(text="a" * 100), Bubble(text="b" * 16), Bubble(text="c" * 16)])
+    await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep, typed_already=25.0)
+    assert sleeps == [4, 1.0, 1.0, 1.0]  # 5 s left of the budget, then a short pause before each later bubble
 
 
 async def test_typing_shows_while_dom_thinks_and_stops_after(monkeypatch):
