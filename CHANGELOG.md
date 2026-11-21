@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- A chat approval button tapped after a restart (Telegram calls the tap too old to answer) still approves or ignores the chat and updates the card, instead of failing before either.
 - `/update` looks for releases at the repository's new address, `https://github.com/lcwlouis/tele-bot-dominic.git` (the old name still redirects). An instance whose `config.toml` sets `update.repo_url` to the old address keeps working through the redirect; change it when convenient.
 - Dashboard: on the Now page the Turn log scrolls inside its panel (at most about 28 lines high) instead of stretching the page; the Turn log page still shows all of it.
 - Errors redirected instead of swallowed: a private reply moved to the owner's DM is split to fit Telegram's 4096-character limit (counted in UTF-16, as Telegram does) and, if the DM refuses it too, the owner event gives the real reason. A primary chat model this key may not use (HTTP 401, 402, 403 or 404: an expired key, no credit, a withdrawn model) now falls back to the second model. When a chat's unread messages are given up on, the owner hears why: a plain line in his own DM, an event for other chats. A chat where Dom may not write (no rights, a closed or deleted topic) is given up on after the first failure instead of three.
