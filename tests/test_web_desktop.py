@@ -279,6 +279,10 @@ async def test_the_page_lists_every_container_and_shows_the_chosen_one(make_app,
         assert (await client.get("/desktop?container=Bad Name", headers=auth)).status_code == 404
         viewer = await client.get("/desktop/vnc/index.html?container=shop", headers=auth)
         assert "shop" in viewer.text and "<script>" not in viewer.text.replace('<script type="module" src', "")
+        # A phone gets a keyboard from a real field, and a password manager can fill it in password mode.
+        assert 'name="viewport"' in viewer.text
+        assert 'id="type-text"' in viewer.text and 'autocomplete="username"' in viewer.text
+        assert 'id="type-secret" type="checkbox"' in viewer.text
 
 
 async def test_start_and_done_act_on_the_chosen_container(make_app, monkeypatch):

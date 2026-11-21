@@ -1,4 +1,10 @@
 html, body { height: 100%; margin: 0; background: #1c1c1e; }
-body { display: flex; flex-direction: column; font: 12px system-ui, sans-serif; color: #eee; }
+body { display: flex; flex-direction: column; font: 13px system-ui, sans-serif; color: #eee; }
 #status { padding: 4px 8px; text-align: center; }
-#screen { flex: 1; overflow: hidden; }
+#screen { flex: 1; min-height: 0; overflow: hidden; }
+#type { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px; padding-bottom: max(8px, env(safe-area-inset-bottom)); border-top: 1px solid #333; }
+#type input[type="text"], #type input[type="password"] { flex: 1 1 12em; min-width: 0; font-size: 16px; /* 16px stops iOS zooming in */ padding: 8px; border-radius: 6px; border: 1px solid #444; background: #111; color: #eee; }
+#type button { font: inherit; font-size: 15px; padding: 8px 12px; border-radius: 6px; border: 1px solid #444; background: #2c2c2e; color: #eee; }
+#type button[type="submit"] { background: #4fd8e8; color: #111; border-color: #4fd8e8; }
+#type .secret { display: flex; gap: 4px; align-items: center; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
