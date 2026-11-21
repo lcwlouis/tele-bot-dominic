@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator, Coroutine
 from xml.sax.saxutils import escape
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
 
+import httpx
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
@@ -62,7 +63,10 @@ BOT_DEPTH_LIMIT = 6
 BOT_REPLY_INTERVAL = timedelta(seconds=10)
 BOT_DEDUP_WINDOW = timedelta(seconds=60)
 MAX_TURN_FAILURES = 3  # consecutive failures after which a chat's unread messages are given up on
-_CHAT_GONE = re.compile(r"chat not found|kicked|not a member", re.IGNORECASE)
+# Telegram errors that a retry cannot fix: Dom is out of the chat, may not write there, or the topic is closed or gone.
+_CHAT_GONE = re.compile(
+    r"chat not found|kicked|not a member|not enough rights|have no rights|topic_closed|thread not found", re.IGNORECASE,
+)
 MEMORY_PASS_INTERVAL = timedelta(minutes=5)  # per chat
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 NO_ANSWER_NOTICE = "Sorry, I couldn't put a reply together just now. Could you send that again?"
@@ -378,8 +382,28 @@ class Dispatcher:
                 _, newest = await self.app.store.get_unread(chat_id)
                 if newest is not None:
                     await self.app.store.mark_chat_read(chat_id, newest.msg_id)
+                    await self._tell_owner_gave_up(chat_id, exc, gone)
         else:
             self._failures.pop(chat_id, None)
+
+    async def _tell_owner_gave_up(self, chat_id: int, exc: Exception, gone: bool) -> None:
+        """Unread messages were given up on: the owner hears why rather than meeting silence. In his own DM a plain
+        line goes out (it may not reach him if Telegram itself is the problem); for other chats, an event."""
+        app = self.app
+        if isinstance(exc, httpx.HTTPStatusError):
+            why = f"the chat model kept failing (HTTP {exc.response.status_code})"
+        elif gone:
+            why = f"Telegram won't let me write there ({str(exc).removeprefix('Telegram server says - ')[:120]})"
+        else:
+            why = f"my turns kept failing ({type(exc).__name__})"
+        try:
+            if chat_id == app.owner_id:
+                await app.bot.send_message(chat_id, f"I couldn't answer your last messages: {why}. Try again in a bit?")
+            elif app.owner_id is not None:
+                title = (await app.store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
+                await app.store.record_owner_event(f"Gave up on the unread messages in {title}: {why}")
+        except Exception:
+            log.exception("could not tell the owner about giving up on chat %s", chat_id)
 
     async def _dispatch(
         self, chat_id: int, habits: Habits, *, background: bool = False, catch_up: bool = False,

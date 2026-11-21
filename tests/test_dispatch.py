@@ -373,6 +373,31 @@ async def test_unreachable_chat_is_marked_read(setup_dispatch, error, caplog):
     assert "giving up" in caplog.text
 
 
+@pytest.mark.parametrize("message", [
+    "Bad Request: not enough rights to send text messages to the chat", "Bad Request: TOPIC_CLOSED",
+    "Bad Request: message thread not found",
+])
+async def test_a_chat_dom_may_not_write_in_is_given_up_at_once_and_the_owner_told(setup_dispatch, message):
+    app, dispatch, _ = await setup_dispatch()
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    sends = send_fails(app, telegram_error(TelegramBadRequest, message))
+    await deliver(app)
+    assert len(sends) == 1 and (await app.store.get_unread(GROUP))[0] == 0
+    events = [row.text for row in await app.store.get_recent_chat_window(OWNER) if row.role == "event"]
+    assert any("Gave up on the unread messages" in text and "won't let me write there" in text for text in events)
+
+
+async def test_giving_up_in_the_owners_dm_tells_him(setup_dispatch):
+    app, dispatch, _ = await setup_dispatch()
+    await dispatch.presence.go_online(OWNER, parse_habits(""))
+    sends = send_fails(app, RuntimeError("network down"), RuntimeError("network down"), RuntimeError("network down"), None)
+    for msg_id in (1, 2, 3):
+        await deliver(app, msg_id, chat_id=OWNER, sender=OWNER)
+    assert (await app.store.get_unread(OWNER))[0] == 0
+    assert len(sends) == 4  # three failed turns, then the notice
+    assert "I couldn't answer your last messages: my turns kept failing (RuntimeError)" in app.bot.of("send", OWNER)[-1][2]
+
+
 async def test_other_bad_requests_are_retried_like_any_failure(setup_dispatch):
     app, dispatch, _ = await setup_dispatch()
     await dispatch.presence.go_online(GROUP, parse_habits(""))

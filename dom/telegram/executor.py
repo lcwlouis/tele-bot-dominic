@@ -82,11 +82,14 @@ async def cancel_pending_deletions() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _tell_owner_held_back(store: Store, chat_id: int) -> None:
+TELEGRAM_TEXT_LIMIT = 4096
+
+
+async def _tell_owner_held_back(store: Store, chat_id: int, why: str = "it wasn't eligible") -> None:
     """Leave a note in the owner's DM so they are not left wondering why a private reply never arrived."""
     try:
         title = (await store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
-        await store.record_owner_event(f"Held back a private reply in {title}: it wasn't eligible")
+        await store.record_owner_event(f"Held back a private reply in {title}: {why}")
     except Exception:
         log.exception("could not record the held-back private reply")
 
@@ -100,17 +103,33 @@ async def _private_reply_to_dm(bot, store: Store, chat_id: int, texts: list[str]
     with suppress(Exception):
         title = (await store.get_chat_auth_status(chat_id))["title"] or title
     why = "Telegram lets me send those only when I'm a group admin" if "ADMIN" in reason.upper() else "Telegram refused it"
+    sent_ids = []
     try:
-        sent = await bot.send_message(
-            owner, f"My private reply in {title} (it couldn't go there: {why}):\n\n" + "\n\n".join(texts),
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
-        )
-        await store.record_owner_event(f"Sent a private reply for {title} to the owner's DM: {why}")
-        return [sent.message_id]
-    except Exception:
+        for text in _pack([f"My private reply in {title} (it couldn't go there: {why}):", *texts]):
+            sent = await bot.send_message(owner, text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+            sent_ids.append(sent.message_id)
+    except Exception as exc:
         log.exception("could not move a refused private reply to the owner's DM")
-        await _tell_owner_held_back(store, chat_id)
-        return []
+        if not sent_ids:
+            await _tell_owner_held_back(store, chat_id, f"{why}, and the owner's DM refused it too ({type(exc).__name__})")
+            return []
+    await store.record_owner_event(f"Sent a private reply for {title} to the owner's DM: {why}")
+    return sent_ids
+
+
+def _utf16(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2  # Telegram counts message length in UTF-16 code units
+
+
+def _pack(texts: list[str]) -> list[str]:
+    """Join texts with blank lines into as few messages as fit Telegram's limit; a text never splits across two."""
+    messages: list[str] = []
+    for text in texts:
+        if messages and _utf16(messages[-1]) + 2 + _utf16(text) <= TELEGRAM_TEXT_LIMIT:
+            messages[-1] += "\n\n" + text
+        else:
+            messages.append(text)
+    return messages
 
 
 async def perform(

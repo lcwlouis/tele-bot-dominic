@@ -24,6 +24,12 @@ def _retryable(status: int) -> bool:
     return status == 429 or status >= 500
 
 
+def _fallback_worthy(status: int) -> bool:
+    """Worth asking the fallback model: a busy or broken primary, or one this key may not use (an expired key, no
+    credit, a model withdrawn). A 400 is a bad request, which the fallback would refuse too."""
+    return _retryable(status) or status in (401, 402, 403, 404)
+
+
 class ChatClient:
     def __init__(
         self,
@@ -83,7 +89,7 @@ class FallbackClient:
             reply = await self.primary.complete(messages, tools, once=once)
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
             status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-            if self.fallback is None or (status is not None and not _retryable(status)):
+            if self.fallback is None or (status is not None and not _fallback_worthy(status)):
                 raise
             log.warning("chat model %s failed (%s); using fallback %s",
                         self.primary.endpoint.model, status or type(exc).__name__, self.fallback.endpoint.model)
