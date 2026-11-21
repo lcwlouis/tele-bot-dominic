@@ -56,6 +56,10 @@ OWN_SYSTEM_PROMPT = (
     "its path in finish files."
 )
 ACTIVE = ("queued", "running", "waiting_owner")
+WRAP_UP = (
+    "You have used every step this task had. Do not use any other tool. Call finish now with what you found so far, "
+    "how far you got, and what is still left undone, so the owner knows how close the task came."
+)
 
 
 class GuardRefused(Exception):
@@ -452,7 +456,24 @@ class DesktopWorker:
                         "role": "tool", "tool_call_id": str(call.get("id") or ""),
                         "content": tools.untrusted(self._result_text(client, result)),
                     })
+            await self._wrap_up(client, run, messages, progress)
         raise SandboxError("desktop task step limit reached")
+
+    async def _wrap_up(self, client: SandboxClient, run: Run, messages: list[dict], progress: Progress) -> None:
+        """Out of steps: one last call, offering only finish, so the owner hears what the task found and how far it
+        got instead of a bare step count. The task still fails; its note becomes this account."""
+        schemas = [schema for schema in tools.schemas() if schema["function"]["name"] == "finish"]
+        try:
+            async with asyncio.timeout_at(run.deadline):
+                await check_model_allowed()
+                reply = await self.app.client.complete([*messages, {"role": "user", "content": WRAP_UP}], schemas)
+            calls = reply.get("tool_calls")
+            if calls and _well_formed(calls):
+                name, args = tools.arguments(calls[0]["function"])
+                if name == "finish" and (note := client.redact(args["result"]).strip()[:tools.RESULT_LIMIT]):
+                    progress.note = note
+        except Exception as exc:  # TimeoutError, a skipped call or a bad answer: the bare step count stands
+            log.info("desktop task %s wrap-up gave nothing (%s)", run.task_id, type(exc).__name__)
 
     async def _step(self, task_id: int, chat_id: int, steps: int, deadline: float) -> None:
         async with asyncio.timeout_at(deadline):

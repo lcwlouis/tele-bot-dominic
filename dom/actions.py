@@ -42,9 +42,14 @@ class Actions(BaseModel):
     @field_validator("bubbles", mode="before")
     @classmethod
     def _fold_extra_bubbles(cls, value: object) -> object:
-        """A long answer (an itinerary, say) can come back as more bubbles than Dom sends. Rather than throw the whole
-        reply away, the extra ones join the last allowed bubble; a bubble that is then too long still fails."""
-        if not isinstance(value, list) or len(value) <= MAX_BUBBLES:
+        """A bubble written as a bare string is read as its text. A long answer (an itinerary, say) can come back as
+        more bubbles than Dom sends. Rather than throw the whole reply away, the extra ones join the last allowed
+        bubble; a bubble that is then too long still fails."""
+        if not isinstance(value, list):
+            return value
+        # Models sometimes write a bubble as a bare string; it means the same as {"text": ...}.
+        value = [{"text": item} if isinstance(item, str) else item for item in value]
+        if len(value) <= MAX_BUBBLES:
             return value
         tail = value[MAX_BUBBLES - 1:]
         if not all(isinstance(item, dict) and isinstance(item.get("text"), str) for item in tail):

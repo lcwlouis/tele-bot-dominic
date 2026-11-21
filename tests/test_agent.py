@@ -268,6 +268,13 @@ def test_extra_bubbles_from_the_model_join_the_last_one_instead_of_losing_the_re
     assert [b.text for b in actions.bubbles] == [*texts[:5], "day 6\n\nday 7\n\nday 8\n\nday 9"]
 
 
+def test_a_bubble_written_as_a_bare_string_is_read_as_its_text():
+    # The homelab model wrote a desktop task report as {"bubbles": ["...", "..."]} and the report went out as plain text.
+    actions = parse_actions(json.dumps({"no_response": False, "bubbles": ["oh no", {"text": "it ran out of steps"}]}))
+    assert [b.text for b in actions.bubbles] == ["oh no", "it ran out of steps"]
+    assert parse_actions(json.dumps({"bubbles": [""]})) is None
+
+
 def test_extra_bubbles_that_would_make_one_too_long_still_fail():
     assert parse_actions(json.dumps({"bubbles": [{"text": "x" * 1500} for _ in range(9)]})) is None
 

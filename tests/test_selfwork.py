@@ -439,8 +439,9 @@ async def test_step_and_time_budgets_stop_the_task(make_app, over):
     assert stopped["status"] == "failed"
     assert stopped["error"] == ("step budget reached" if over == "steps" else "time budget reached")
     assert app.bot.of("send", OWNER)[-1][2].startswith(f"Stopped my own task #{row['id']}")
-    if over == "steps":
-        assert len(app.client.requests) == 2
+    if over == "steps":  # two steps, then a wrap-up that may only call finish: the third read_page never runs
+        assert len(app.client.requests) == 3
+        assert [schema["function"]["name"] for schema in app.client.requests[2][1]] == ["finish"]
 
 
 # ---- the network guard ------------------------------------------------------------------------------------
