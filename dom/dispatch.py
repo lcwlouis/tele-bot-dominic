@@ -212,6 +212,8 @@ class Dispatcher:
         self.prompt_cache = PromptCache()
         self._trim_seq: dict[int, int] = {}
         self._stay_marks: dict[int, int] = {}  # chat -> the newest message whose staying-online decision was started
+        self._stay_running: set[int] = set()  # chats with a staying-online decision in flight
+        self._stay_pending: dict[int, int | None] = {}  # chat -> turn row of a reply that came in during that decision
         presence.on_session_end = self.request_memory_pass
 
     def notify(self, msg: IncomingMessage) -> None:
@@ -957,9 +959,14 @@ class Dispatcher:
                         trace.model = trace.model_calls[-1].model
         finally:
             del self._active[chat_id]
-            if completed and attempt.stay_check and not trace.superseded and self._stay_marks.get(chat_id) != newest.msg_id:
+            if (completed and attempt.stay_check and not trace.superseded and not self._closing
+                    and self._stay_marks.get(chat_id) != newest.msg_id):
                 self._stay_marks[chat_id] = newest.msg_id
-                self._spawn(self._stay_check(chat_id, trace.row_id))
+                if chat_id in self._stay_running:
+                    self._stay_pending[chat_id] = trace.row_id  # judged again, with this reply in, once the first is done
+                else:
+                    self._stay_running.add(chat_id)
+                    self._spawn(self._stay_checks(chat_id, trace.row_id))
             if trace.superseded:
                 self._interrupted.setdefault(chat_id, []).append(attempt)
             else:
@@ -975,6 +982,19 @@ class Dispatcher:
                     self._followups.pop(chat_id, None)
             if bot_key is not None:
                 self._bots_in_flight.remove(bot_key)
+
+    async def _stay_checks(self, chat_id: int, row_id: int | None) -> None:
+        """One staying-online decision at a time per chat, so two quick replies never add two extensions at once. A
+        reply that finished meanwhile gets one more decision afterwards, which sees the first one's extension."""
+        try:
+            while True:
+                await self._stay_check(chat_id, row_id)
+                if self._closing or chat_id not in self._stay_pending:
+                    return
+                row_id = self._stay_pending.pop(chat_id)
+        finally:
+            self._stay_running.discard(chat_id)
+            self._stay_pending.pop(chat_id, None)
 
     async def _stay_check(self, chat_id: int, row_id: int | None) -> None:
         """After a reply went out: Jev judges from the conversation whether Dom stays online longer, instead of the model

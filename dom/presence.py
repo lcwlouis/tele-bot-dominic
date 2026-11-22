@@ -208,12 +208,13 @@ class Presence:
         self._session_ended(chat_id)
         return until
 
-    def _extension(self, chat_id, row: dict, minutes: float) -> tuple[datetime, datetime, bool]:
+    def _extension(self, chat_id, row: dict, habits: Habits, minutes: float) -> tuple[datetime, datetime, bool]:
         """(current deadline, deadline after adding up to `minutes`, owner woke Dom) with the session cap applied.
-        Raises ValueError when the chat is no longer online."""
+        Raises ValueError when the chat is no longer online, judged as `state` judges it: a session that ran past
+        the start of sleep (without an owner wake) is over, even before `state` has written that down."""
         online = _deadline(row["online_until"])
         now = self.now()
-        if online is None or online <= now:
+        if online is None or online <= now or self.peek(row, habits)[0] != "online":
             raise ValueError("the chat is no longer online")
         owner_wake = _deadline(row["sleep_until"]) == online
         until = online + timedelta(minutes=min(max(minutes, 0), 30))
@@ -223,7 +224,7 @@ class Presence:
         """(minutes left in this online session, minutes an extension could still add right now). Writes nothing;
         (0, 0) when the chat is not online."""
         try:
-            online, until, owner_wake = self._extension(chat_id, await self.store.get_presence(chat_id), 30)
+            online, until, owner_wake = self._extension(chat_id, await self.store.get_presence(chat_id), habits, 30)
         except ValueError:
             return 0.0, 0.0
         now = self.now()
@@ -234,7 +235,7 @@ class Presence:
     async def extend_online(self, chat_id, habits: Habits, minutes: float) -> datetime:
         """Extend by up to 30 minutes, but never past 2 hours after the session began, nor (unless the
         owner woke Dom) into the next sleep window. When nothing can be added the deadline is unchanged."""
-        online, until, owner_wake = self._extension(chat_id, await self.store.get_presence(chat_id), minutes)
+        online, until, owner_wake = self._extension(chat_id, await self.store.get_presence(chat_id), habits, minutes)
         if not owner_wake:
             until = min(until, self._next_sleep_start(self.now(), habits))
         return await self._set_online(chat_id, max(until, online), override=owner_wake)

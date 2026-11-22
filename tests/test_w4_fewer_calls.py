@@ -498,3 +498,50 @@ async def test_extend_turn_adds_to_the_saved_row(make_app):
     assert (row["calls"], json.loads(row["trace"]), json.loads(row["model_calls"])) == (
         2, ["final", "after_reply@9"], [{"kind": "triage"}],
     )
+
+
+async def test_a_session_that_ran_into_sleep_is_not_extended(setup_dispatch):
+    """go_online does not stop at the start of sleep, so a session can still have minutes left once sleep has begun:
+    no extension then (and no Jev call), unless the owner woke Dom."""
+    jev = W4Jev(stay="a_while")
+    app, dispatch, clock = await setup_dispatch(jev)
+    clock.at = clock.at.replace(hour=23, minute=50)  # the sleep window starts at 23:59
+    await online_for(dispatch, 15)  # online until 00:05
+    clock.at = clock.at.replace(hour=23, minute=59, second=5)
+    assert await dispatch.presence.stay_room(GROUP, HABITS) == (0, 0)
+    with pytest.raises(ValueError):
+        await dispatch.presence.extend_online(GROUP, HABITS, 30)
+    await dispatch._stay_check(GROUP, None)
+    assert jev.stay_calls == []
+
+
+@pytest.mark.parametrize("first, calls, added", [("a_while", 1, 30), ("no", 2, 30)])
+async def test_a_reply_during_a_stay_decision_waits_for_it(setup_dispatch, first, calls, added):
+    """Two quick replies never run two decisions at once (that could add two extensions in one go). The later reply is
+    judged after the first decision, which it sees: after an extension there is plenty left, so Jev is not asked again."""
+    release, asked = asyncio.Event(), asyncio.Event()
+
+    class Gated(W4Jev):
+        async def decide(self, state, questions):
+            if "stay" in questions and not asked.is_set():
+                asked.set()
+                await release.wait()
+                self.stay = first
+                answer = await super().decide(state, questions)
+                self.stay = "a_while"
+                return answer
+            return await super().decide(state, questions)
+
+    jev = Gated()
+    app, dispatch, _ = await setup_dispatch(jev)
+    until = await online_for(dispatch, 5)
+    dispatch._stay_running.add(GROUP)
+    task = asyncio.create_task(dispatch._stay_checks(GROUP, None))
+    await asyncio.wait_for(asked.wait(), timeout=2)
+    dispatch._stay_pending[GROUP] = None  # what a second reply finishing now records
+    release.set()
+    await asyncio.wait_for(task, timeout=2)
+    assert len(jev.stay_calls) == calls
+    assert (await dispatch.presence.state(GROUP, HABITS))[1] == until + timedelta(minutes=added)
+    assert GROUP not in dispatch._stay_running and GROUP not in dispatch._stay_pending
+
