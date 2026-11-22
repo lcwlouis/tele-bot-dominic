@@ -850,8 +850,10 @@ class Dispatcher:
                 'It goes at the top level, next to "bubbles", never inside a bubble: '
                 '{"private": true, "bubbles": [{"text": "..."}]}.'
             )
-        if not final_bot_turn and (sticker_note := app.stickers.turn_note()):
-            note += f"\n{sticker_note}"
+        if not final_bot_turn:
+            await app.stickers.ensure_descriptions()
+            if sticker_note := app.stickers.turn_note():
+                note += f"\n{sticker_note}"
         if not final_bot_turn and app.gifs is not None:
             note += f"\n{GIF_NOTE}"
         if scope == "owner_dm" and newest is not None and newest.media_json:

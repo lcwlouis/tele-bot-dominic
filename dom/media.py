@@ -23,6 +23,10 @@ PROMPT = (
     "Describe this for a friend reading a group chat: what it shows/says, any text, the vibe. "
     "Voice/audio: transcribe, then one line on tone. Max 80 words."
 )
+STICKER_PREVIEW_PROMPT = (
+    "Describe this Telegram sticker in one short line (max 12 words): "
+    "what it shows and its mood. Plain text, no quotes or bullets."
+)
 
 DEFAULT_MIME = {
     "photo": "image/jpeg",
@@ -51,11 +55,16 @@ class MediaDescriber:
         self._one_at_a_time = asyncio.Semaphore(1)  # one file in memory at once, across all chats
 
     async def describe(
-        self, media: dict, *, request: AsyncContextManager[None] | None = None,
+        self, media: dict, *, request: AsyncContextManager[None] | None = None, prompt: str = PROMPT,
     ) -> str | None:
         kind = media.get("kind")
         async with self._one_at_a_time:
-            return await self._describe(kind, media, request or nullcontext())
+            return await self._describe(kind, media, request or nullcontext(), prompt)
+
+    async def describe_sticker(
+        self, media: dict, *, request: AsyncContextManager[None] | None = None,
+    ) -> str | None:
+        return await self.describe(media, request=request, prompt=STICKER_PREVIEW_PROMPT)
 
     async def describe_desktop(self, screenshot: bytes) -> str | None:
         if not screenshot or len(screenshot) > MAX_BYTES["photo"]:
@@ -71,7 +80,7 @@ class MediaDescriber:
         return description.strip() if isinstance(description, str) else None
 
     async def _describe(
-        self, kind: str | None, media: dict, request: AsyncContextManager[None],
+        self, kind: str | None, media: dict, request: AsyncContextManager[None], prompt: str,
     ) -> str | None:
         try:
             part_type = _PART_TYPES.get(kind)
@@ -103,7 +112,7 @@ class MediaDescriber:
             else:
                 part = {"url": f"data:{mime};base64,{encoded}"}
             messages = [{"role": "user", "content": [
-                {"type": "text", "text": PROMPT},
+                {"type": "text", "text": prompt},
                 {"type": part_type, part_type: part},
             ]}]
             async with request:

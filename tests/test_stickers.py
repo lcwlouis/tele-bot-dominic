@@ -1,3 +1,4 @@
+import io
 import json
 from types import SimpleNamespace
 
@@ -6,6 +7,8 @@ from aiogram.exceptions import TelegramNetworkError
 from pydantic import ValidationError
 
 from dom.actions import Actions, Bubble
+from dom.media import MediaDescriber, STICKER_PREVIEW_PROMPT
+from dom.stickers import DESCRIPTIONS_FILE, Stickers
 from dom.telegram import executor, handlers
 from test_owner_events import events
 from test_traits import put
@@ -176,3 +179,206 @@ async def test_a_failing_sticker_refresh_does_not_stop_jobs_or_openers_in_the_sa
     monkeypatch.setattr(app.dispatch.openers, "maybe", maybe)
     await app.dispatch._background_jobs()
     assert ran == ["job", "opener"]
+
+
+def make_describer(replies, *, error=None):
+    downloads = []
+    calls = []
+
+    class FakeDownload:
+        async def download(self, file_id):
+            downloads.append(file_id)
+            return io.BytesIO(f"bytes:{file_id}".encode())
+
+    class FakeClient:
+        async def complete(self, messages, tools):
+            calls.append(messages)
+            if error is not None and error.get("on", True):
+                raise RuntimeError("media model down")
+            file_id = downloads[-1]
+            text = replies(file_id) if callable(replies) else replies.get(file_id, "cozy sticker")
+            return {"content": text}
+
+    return MediaDescriber(FakeClient(), FakeDownload()), downloads, calls
+
+
+async def test_adding_set_describes_stickers_caches_in_home_and_keeps_prefix_stable(make_app):
+    app = make_app(contents=(
+        '{"bubbles":[{"text":"First!"}],"sticker":"📚"}',
+        '{"bubbles":[{"text":"Second!"}]}',
+    ))
+    sticker_bot(app, {SET: [("📚", "file-a"), ("🍵", "file-b")]})
+    describer, downloads, calls = make_describer({
+        "file-a": "  \"Cozy cat reading a book, calm\"  \n",
+        "file-b": "Steaming green tea cup, relaxed",
+    })
+    app.media_describer = describer
+
+    await handlers.handle_message(app, tg(OWNER, OWNER, f"/stickers add {SET}"))
+    assert downloads == ["file-a", "file-b"]
+    assert calls[0][0]["content"][0]["text"] == STICKER_PREVIEW_PROMPT
+    cached = json.loads(app.home.read(DESCRIPTIONS_FILE))
+    assert cached == {
+        "file-a": "Cozy cat reading a book, calm",
+        "file-b": "Steaming green tea cup, relaxed",
+    }
+
+    await online(app)
+    await deliver(app, tg(msg_id=1, text="hi"))
+    prefix1, context1 = [row["content"] for row in turn_requests(app)[0]["messages"]]
+    assert "Cozy cat reading a book, calm" not in prefix1
+    assert "📚" not in prefix1
+    assert "- 📚: Cozy cat reading a book, calm" in context1
+    assert "- 🍵: Steaming green tea cup, relaxed" in context1
+
+    note1 = app.stickers.turn_note()
+    await deliver(app, tg(msg_id=2, text="again"))
+    prefix2, _ = [row["content"] for row in turn_requests(app)[1]["messages"]]
+    assert prefix2 == prefix1
+    assert app.stickers.turn_note() == note1
+    assert downloads == ["file-a", "file-b"]  # each sticker described once
+
+
+async def test_existing_sets_describe_lazily_on_first_use_and_persist_across_restarts(make_app):
+    app = make_app(contents=('{"bubbles":[{"text":"Hey"}]}',))
+    sticker_bot(app, {SET: [("📚", "file-a")]})
+    describer, downloads, _ = make_describer({"file-a": "Owl perched on stacked books, studious"})
+    app.media_describer = describer
+    put(app.home, "stickers.toml", f"sets = [{json.dumps(SET)}]")
+
+    await app.stickers.refresh()
+    assert downloads == []  # lazy: not described until first use
+
+    await online(app)
+    await deliver(app, tg())
+    assert downloads == ["file-a"]
+    _, context = [row["content"] for row in turn_requests(app)[0]["messages"]]
+    assert "- 📚: Owl perched on stacked books, studious" in context
+
+    # Simulate restart: new Stickers instance reuses cached descriptions from DOM_HOME without calling media model.
+    restarted = Stickers(app.home, app.bot, lambda: app.dispatch.now(), describer=lambda: describer)
+    await restarted.refresh()
+    await restarted.ensure_descriptions()
+    assert downloads == ["file-a"]
+    assert "- 📚: Owl perched on stacked books, studious" in restarted.turn_note()
+
+
+async def test_animated_and_video_stickers_describe_thumbnail_and_skip_missing_thumb(make_app):
+    app = make_app()
+
+    async def get_sticker_set(name):
+        return SimpleNamespace(stickers=[
+            SimpleNamespace(
+                emoji="🎉", file_id="anim-file", file_unique_id="u-anim",
+                is_animated=True, is_video=False, thumbnail=SimpleNamespace(file_id="thumb-anim"),
+            ),
+            SimpleNamespace(
+                emoji="🎬", file_id="vid-file", file_unique_id="u-vid",
+                is_animated=False, is_video=True, thumbnail=SimpleNamespace(file_id="thumb-vid"),
+            ),
+            SimpleNamespace(
+                emoji="👻", file_id="nothumb-file", file_unique_id="u-nothumb",
+                is_animated=True, is_video=False, thumbnail=None,
+            ),
+        ])
+
+    app.bot.get_sticker_set = get_sticker_set
+    describer, downloads, calls = make_describer({
+        "thumb-anim": "Confetti popping, celebratory",
+        "thumb-vid": "Clapperboard snapping, playful",
+    })
+    app.media_describer = describer
+    await app.stickers.change("add", SET)
+
+    assert downloads == ["thumb-anim", "thumb-vid"]
+    assert all(call[0]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,") for call in calls)
+    note = app.stickers.turn_note()
+    assert "- 🎉: Confetti popping, celebratory" in note
+    assert "- 🎬: Clapperboard snapping, playful" in note
+    assert "\n- 👻" in note  # falls back to bare alias quietly
+
+
+async def test_media_failure_falls_back_to_alias_and_retries_after_backoff(make_app):
+    app = make_app()
+    sticker_bot(app, {SET: [(chr(0x1F680 + i), f"file-{i}") for i in range(6)]})
+    failing = {"on": True}
+    describer, downloads, _ = make_describer(lambda fid: f"preview for {fid}", error=failing)
+    app.media_describer = describer
+
+    await app.stickers.change("add", SET)
+    # Circuit breaker stops after 3 consecutive failures instead of hammering a down endpoint.
+    assert len(downloads) == 3
+    note = app.stickers.turn_note()
+    assert chr(0x1F680) in note and "preview for" not in note
+
+    # Still backed off before RETRY_AFTER elapses.
+    app.dispatch.now.advance(minutes=59)
+    await app.stickers.ensure_descriptions()
+    assert len(downloads) == 3
+
+    # Media model recovers and backoff expires: all 6 get described on retry.
+    failing["on"] = False
+    app.dispatch.now.advance(minutes=1)
+    await app.stickers.ensure_descriptions()
+    assert len(downloads) == 9
+    assert f"- {chr(0x1F680)}: preview for file-0" in app.stickers.turn_note()
+    assert f"- {chr(0x1F685)}: preview for file-5" in app.stickers.turn_note()
+
+
+async def test_removed_set_is_excluded_from_turn_note(make_app):
+    app = make_app()
+    other = "example_other_by_examplebot"
+    sticker_bot(app, {SET: [("📚", "file-a")], other: [("🍵", "file-b")]})
+    describer, _, _ = make_describer({"file-a": "Stack of books, cozy", "file-b": "Cup of tea, warm"})
+    app.media_describer = describer
+
+    await app.stickers.change("add", SET)
+    await app.stickers.change("add", other)
+    assert "Stack of books, cozy" in app.stickers.turn_note()
+    assert "Cup of tea, warm" in app.stickers.turn_note()
+
+    await app.stickers.change("remove", other)
+    note = app.stickers.turn_note()
+    assert "Stack of books, cozy" in note
+    assert "Cup of tea, warm" not in note
+    assert "🍵" not in note
+
+
+async def test_dashboard_refresh_descriptions_is_owner_only_and_regenerates_cache(make_app, monkeypatch):
+    import httpx
+    from dom.web.app import create_app
+    from dom.web.auth import Auth
+    from test_web_auth import ORIGIN, POST_HEADERS, TOKEN
+
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
+    app = make_app()
+    sticker_bot(app, {SET: [("📚", "file-a")]})
+    version = {"n": 1}
+    describer, downloads, _ = make_describer(lambda fid: f"Book cat v{version['n']}")
+    app.media_describer = describer
+    await app.stickers.change("add", SET)
+    assert "Book cat v1" in app.stickers.turn_note()
+
+    config = app.config.model_copy(update={
+        "web": app.config.web.model_copy(update={"dev_token_env": "DOM_TEST_TOKEN"}),
+    })
+    web_app = create_app(app, Auth(config))
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web_app), base_url=ORIGIN) as anon:
+        denied = await anon.post("/stickers/refresh", headers=POST_HEADERS)
+        assert denied.status_code in (401, 403)
+
+    version["n"] = 2
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=web_app), base_url=ORIGIN,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        chats = await client.get("/chats")
+        assert "/stickers/refresh" in chats.text
+        resp = await client.post("/stickers/refresh", headers=POST_HEADERS)
+        assert resp.status_code == 200
+        assert "Sticker descriptions refreshed (1 described)." in resp.text
+
+    assert "Book cat v2" in app.stickers.turn_note()
+    assert downloads == ["file-a", "file-a"]
+    assert any("Sticker descriptions refreshed" in row["text"] for row in await events(app))

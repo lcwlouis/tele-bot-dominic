@@ -579,6 +579,20 @@ async def change_sticker_set(app: App, action: str, name: str) -> str:
     return result
 
 
+async def refresh_sticker_descriptions(app: App) -> str:
+    if app.media_describer is None:
+        return "Sticker descriptions unavailable: media model is not configured."
+    try:
+        described, failed = await app.stickers.refresh_descriptions()
+    except (OSError, ValueError) as error:
+        result = str(error) if isinstance(error, ValueError) else "Sticker descriptions could not be refreshed."
+    else:
+        suffix = f", {failed} failed" if failed else ""
+        result = f"Sticker descriptions refreshed ({described} described{suffix})."
+    await app.store.record_owner_event(result)
+    return result
+
+
 async def import_memory(app: App, message: Message, text: str) -> tuple[str, str, str | None]:
     """Prepare the DM response, the owner event and, for a bare /import, the prompt to send as a code block."""
     line, _, inline = text.partition("\n")

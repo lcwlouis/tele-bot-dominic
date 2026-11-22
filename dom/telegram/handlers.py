@@ -84,7 +84,9 @@ class App:
         self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self))
         self.plugin_runner = PluginRunner(home=self.home.root)
         self.proposals = Proposals(self)
-        self.stickers = Stickers(self.home, self.bot, lambda: self.dispatch.now())
+        self.stickers = Stickers(
+            self.home, self.bot, lambda: self.dispatch.now(), describer=lambda: self.media_describer,
+        )
         self.memory_import = MemoryImport(self)
         presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
         if self.config.t3.enabled:

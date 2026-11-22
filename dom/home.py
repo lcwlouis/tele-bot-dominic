@@ -197,6 +197,10 @@ class Home:
     def write_sticker_sets(self, names: list[str]) -> None:
         self.scoped(allow_private=False)._write_regular("stickers.toml", f"sets = {json.dumps(names)}\n")
 
+    def write_sticker_descriptions(self, descriptions: dict[str, str]) -> None:
+        content = json.dumps(descriptions, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        self.scoped(allow_private=False)._write_regular("sticker_descriptions.json", content)
+
     def edited_soul(self, old: str, new: str) -> str | None:
         """SOUL.md with `old` replaced by `new`, or None unless `old` occurs in it exactly once."""
         current = self.scoped(allow_private=False).read("SOUL.md")
