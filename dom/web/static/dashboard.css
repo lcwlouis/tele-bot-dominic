@@ -205,6 +205,12 @@ main:not(.single) .turns .log { max-height: 28rem; overflow-y: auto; overscroll-
 .stage-debounce { --stage-color: #749fd0; }
 .stage-media_wait { --stage-color: #bdb571; }
 .stage-lock_wait { --stage-color: #d88d68; }
+.stage-queue_wait { --stage-color: #debb76; }
+.attention-axis { display: flex; justify-content: space-between; margin-left: calc(40% + var(--s2)); }
+.attention-strip { list-style: none; margin: 0; padding: 0; }
+.attention-strip li { display: grid; grid-template-columns: minmax(0, 2fr) 3fr; gap: var(--s2); align-items: center; }
+.attention-track { display: block; width: 100%; height: 8px; }
+.attention-track rect { fill: #debb76; }
 .stage-triage { --stage-color: #a6cc78; }
 .stage-model { --stage-color: var(--arc); }
 .stage-retry_backoff { --stage-color: var(--amber); }

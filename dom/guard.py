@@ -91,12 +91,13 @@ async def notify_held(app: App, notice: str) -> None:
     except Exception:
         log.exception("could not record the held-message event")
     try:
-        from dom.telegram.executor import retry_telegram
+        from dom.telegram.executor import FloodBudget, retry_telegram
 
+        budget = FloodBudget()
         # Each character can occupy two UTF-16 code units in Telegram.
         for start in range(0, len(notice), 2000):
             chunk = notice[start:start + 2000]
-            await retry_telegram(lambda c=chunk: app.bot.send_message(app.owner_id, c), sleep=app.sleep)
+            await retry_telegram(lambda c=chunk: app.bot.send_message(app.owner_id, c), sleep=app.sleep, budget=budget)
     except Exception:
         log.exception("could not notify the owner about a held message")
 

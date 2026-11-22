@@ -25,6 +25,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPrevie
 from dom import guard, salvage, turn_log
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
+from dom.attention import Attention, Tier
 from dom.agent import NoFinalAnswer, execute_tool_call, malformed_shape, parse_actions, run_turn
 from dom.desktop.sandbox import DEFAULT
 from dom.desktop.tools import untrusted
@@ -45,7 +46,7 @@ from dom.telegram import executor, gate
 from dom.tools import Tool, TurnCtx, enabled_tools
 from dom.traits import ASSISTANT, for_chat, keep_task_mode, switch_blocker, task_mode
 from dom.triage import Triage, chat_state, persona_card, triage_offline, triage_online, triage_stay, triage_urgency
-from dom.usage import ModelCallSkipped, Usage, check_model_allowed, local_hosts, model_request
+from dom.usage import ModelCallSkipped, Usage, check_model_allowed, local_hosts, model_request, request_kind
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -148,6 +149,8 @@ class TurnAttempt:
     away: int = 0  # messages that came in while Dom was away, as the first attempt told the model
     credit: float = 0.0  # seconds "typing…" showed in attempts this one restarted
     shown: float = 0.0  # seconds it showed in this one
+    visited: bool = False
+    resume_visit: bool = False
     stay_check: bool = False  # a reply went out, so Jev owes the after-turn staying-online decision
 
     def commit(self) -> None:
@@ -186,6 +189,7 @@ class Dispatcher:
         sleep: Callable[[float], Awaitable[None]], now: Callable[[], datetime],
     ):
         self.app, self.presence, self.jev = app, presence, jev
+        self.attention = Attention()
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
         self.jobs = DailyJobs(app, now)
@@ -244,7 +248,7 @@ class Dispatcher:
             attempt is not None and attempt.thread_id == msg.thread_id
             and msg.msg_id > attempt.msg_id and not attempt.trace.superseded
         ):
-            restarts = len(self._interrupted.get(chat_id, ()))
+            restarts = sum(prior.visited for prior in self._interrupted.get(chat_id, ()))
             if attempt.committed or restarts >= MAX_RESTARTS or attempt.task not in self._tasks:
                 attempt.later.append(msg.msg_id)
             else:
@@ -329,7 +333,8 @@ class Dispatcher:
             if verdict.confident and verdict.action == "react" and verdict.emoji:
                 arrival.reaction = self._spawn(self._perform_reaction(chat_id, msg.msg_id, verdict.emoji))
             elif verdict.action == "reply" or not verdict.confident:
-                arrival.typing = executor.TypingIndicator(self.app.bot, chat_id, msg.thread_id, monotonic)
+                if self.attention.can_type(chat_id):
+                    arrival.typing = executor.TypingIndicator(self.app.bot, chat_id, msg.thread_id, monotonic)
                 if (scope == "owner_dm" and verdict.action == "reply" and verdict.confident
                         and verdict.ready and verdict.likely_long):
                     self._maybe_ack(arrival)
@@ -677,8 +682,9 @@ class Dispatcher:
 
     async def spend_paused(self, chat_id: int) -> bool:
         """Friends' chats pause once today's spend cap is reached; the owner's own chat never does."""
+        spawn_notice = partial(self._spawn, committed=True) if request_kind("triage") in ("chat", "guard") else None
         return chat_id != self.app.owner_id and await self.usage.over_cap(
-            self.app.config, self.app.bot, sleep=self.app.sleep,
+            self.app.config, self.app.bot, sleep=self.app.sleep, spawn_notice=spawn_notice,
         )
 
     async def model_allowed(self, chat_id: int) -> bool:
@@ -1094,6 +1100,7 @@ class Dispatcher:
             attempt.notices, prior[-1].notices = prior[-1].notices, []
             attempt.credit = prior[-1].credit + prior[-1].shown
             resumed = prior[-1].answering
+            attempt.resume_visit = prior[-1].visited or prior[-1].resume_visit
             if resumed:  # the restarted answer was already chosen: a newer message must not turn it into a skip
                 catch_up, count = catch_up or prior[-1].catch_up, prior[-1].away
                 # and so does this attempt, even if it is itself restarted before reaching the model
@@ -1147,7 +1154,10 @@ class Dispatcher:
                     if not trace.superseded:
                         interrupted = self._interrupted.get(chat_id, ())
                         if interrupted and interrupted[-1].thread_id == topic_thread_id:
-                            trace.steps[:0] = ["Restarted before sending"] * len(interrupted)
+                            trace.steps[:0] = [
+                                "Restarted before sending" if item.visited else "Superseded before composing"
+                                for item in interrupted
+                            ]
                             trace.steps[:0] = [step for item in interrupted for step in item.trace.steps]
                             trace.model_calls[:0] = [call for item in interrupted for call in item.trace.model_calls]
                             trace.timings[:0] = [timing for item in interrupted for timing in item.trace.timings]
@@ -1334,6 +1344,7 @@ class Dispatcher:
             arrival.feedback = False
         use_arrival = arrival is not None and (arrival.state == state or (arrival.task is not None and not arrival.task.done()))
 
+        triage = None
         picked: str | None = None  # the skill Jev chose for this conversation, for the turn note
         urgency = None
         if (state != "online" and scope == "owner_dm" and not background and not count_wakes and not resume_wake
@@ -1420,10 +1431,19 @@ class Dispatcher:
             await check_model_allowed()
         if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
             return True, until, False
+        tier: Tier = "later"
+        if followup and bot_depth is None:
+            tier = "next"
+        elif not (catch_up or background or bot_depth is not None):
+            verdict = arrival.verdict if arrival is not None else triage
+            if self._directly_addressed(newest, window) or (
+                verdict is not None and verdict.confident and verdict.action == "reply"
+            ):
+                tier = "next"
         with model_request("chat", chat_id, partial(self.model_allowed, chat_id)):
             answered, flood_limited = await self._run_turn(
                 chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
-                attempt, arrival, followup, picked, waits,
+                attempt, arrival, followup, picked, waits, tier=tier,
             )
         attempt.commit()
         attempt.delivered |= answered
@@ -1519,14 +1539,15 @@ class Dispatcher:
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
         attempt: TurnAttempt, arrival: Arrival | None, followup: list[int], skill: str | None = None,
-        waits: QueueWaits | None = None,
+        waits: QueueWaits | None = None, *, tier: Tier = "later",
     ) -> tuple[bool, bool]:
         """Run one turn and send its result; returns `(answered, flood_limited)`."""
         app = self.app
         thread_id = newest.thread_id if newest.thread_id is not None else (live.thread_id if live else None)
         typing = arrival.typing if arrival is not None else None
-        if typing is None:
-            typing = executor.TypingIndicator(app.bot, chat_id, thread_id, monotonic)
+        if typing is not None and not self.attention.can_type(chat_id):
+            attempt.credit += typing.stop()
+            typing = None
         note = ""
         if followup:
             ids = ", ".join(map(str, followup))
@@ -1548,14 +1569,33 @@ class Dispatcher:
 
         actions = None
         try:
-            reply_started = monotonic()
-            actions = await self._compose_turn(
-                chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
-                extra_note=note, attempt=attempt, skill=skill,
-            )
-            if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
-                turn_log.outcome("Held back: possible leak")
-                return False, False
+            queued_at = monotonic()
+            started = None
+            try:
+                async with self.attention.visit(
+                    chat_id, scope, tier, attempt.started, resume=attempt.resume_visit,
+                ) as visit:
+                    started = self.now()
+                    queue_ms = round((monotonic() - queued_at) * 1000)
+                    if visit.behind is not None or queue_ms:
+                        attempt.trace.add_timing("queue_wait", queue_ms)
+                    # The cap may have changed while this request waited behind another chat.
+                    await check_model_allowed()
+                    attempt.visited = True
+                    if typing is None:
+                        typing = executor.TypingIndicator(app.bot, chat_id, thread_id, monotonic)
+                    reply_started = monotonic()
+                    with turn_log.attention_visit(self.attention, visit, started, self.now):
+                        actions = await self._compose_turn(
+                            chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
+                            extra_note=note, attempt=attempt, skill=skill,
+                        )
+                        if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
+                            turn_log.outcome("Held back: possible leak")
+                            return False, False
+            finally:
+                if started is None:
+                    attempt.trace.add_timing("queue_wait", round((monotonic() - queued_at) * 1000))
             recipient = self._ephemeral_recipient(scope, newest)
             in_group = recipient is None or await self._is_admin(chat_id)
             ineligible_reason = None if recipient is not None else self._ephemeral_ineligible_reason(scope, newest)
@@ -1625,7 +1665,8 @@ class Dispatcher:
                 turn_log.outcome("Reaction failed")
             return bool(sent) or sent.reacted, False
         finally:
-            attempt.shown = typing.stop()
+            if typing is not None:
+                attempt.shown = typing.stop()
             if (
                 attempt.committed and newest.is_bot and newest.sender_user_id is not None
                 and actions is not None and not actions.no_response
@@ -1664,7 +1705,10 @@ class Dispatcher:
 
         if app.owner_id is not None:
             chat = title or (await app.store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
-            await guard.notify_held(app, f"Held back a message in {chat} that looked like it leaked private info\n\n{text}")
+            self._spawn(
+                guard.notify_held(app, f"Held back a message in {chat} that looked like it leaked private info\n\n{text}"),
+                committed=True,
+            )
         return True
 
     async def desktop_handoff(

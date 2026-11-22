@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -196,7 +196,10 @@ class Usage(UsageRecorder):
         ]
         return [day for day, _, _ in bounds], await self.store.usage_by_day(bounds)
 
-    async def over_cap(self, config: Config, bot, *, sleep=None) -> bool:
+    async def over_cap(
+        self, config: Config, bot, *, sleep=None,
+        spawn_notice: Callable[[Coroutine[None, None, None]], object] | None = None,
+    ) -> bool:
         cap = config.daily_spend_cap_usd
         if cap == 0:
             return False
@@ -213,12 +216,18 @@ class Usage(UsageRecorder):
                 f"Daily spend cap of ${cap:.2f} reached (${spent:.2f} spent). Friends' chats are paused until midnight. "
                 "Change `daily_spend_cap_usd` in config.toml."
             )
-            try:
-                from dom.telegram.executor import retry_telegram
+            async def notify() -> None:
+                try:
+                    from dom.telegram.executor import FloodBudget, retry_telegram
 
-                await self.store.record_owner_event(text)
-                kw = {"sleep": sleep} if sleep is not None else {}
-                await retry_telegram(lambda: bot.send_message(owner_id, text), **kw)
-            except Exception:
-                log.exception("could not send or record the owner's daily spend cap notice")
+                    await self.store.record_owner_event(text)
+                    kw = {"sleep": sleep} if sleep is not None else {}
+                    await retry_telegram(lambda: bot.send_message(owner_id, text), budget=FloodBudget(), **kw)
+                except Exception:
+                    log.exception("could not send or record the owner's daily spend cap notice")
+
+            if spawn_notice is None:
+                await notify()
+            else:
+                spawn_notice(notify())
         return True

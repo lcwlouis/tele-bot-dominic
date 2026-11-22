@@ -179,7 +179,7 @@ async def test_agent_and_dispatch_write_turn_and_daily_retention(make_app):
     assert row["chat_id"] == str(GROUP)
     assert row["scope"] == "group" and row["calls"] == 1 and row["model"] == "m"
     trace = json.loads(row["trace"])
-    assert trace[0] == "final" and [item.partition("@")[0] for item in trace[1:]] == [
+    assert trace[0] == "final" and [item.partition("@")[0] for item in trace if "@" in item] == [
         "debounce", "model", "typing", "send",
     ]
     assert row["fallback"] == 0

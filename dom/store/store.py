@@ -1572,6 +1572,14 @@ class Store:
             )
         ])
 
+    async def recent_attention_turns(self) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                """SELECT trace, model_calls FROM turns WHERE trace LIKE '%"attention:%'
+                   ORDER BY at DESC, id DESC LIMIT 200"""
+            )
+        ])
+
     async def recent_turn_errors(self) -> list[dict[str, Any]]:
         return await self._run(lambda: [
             dict(row) for row in self._conn.execute(

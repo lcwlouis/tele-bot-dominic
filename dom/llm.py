@@ -98,8 +98,8 @@ class ChatClient:
                     url, json=body, headers=headers, follow_redirects=False,
                     timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS)),
                 )
-            if call is not None:
-                call.received(response)
+                if call is not None:
+                    call.received(response)
             if self.usage is not None:
                 await self.usage.record_response(response, self.kind, self.endpoint.model, self.address, fallback=fallback)
             if delay is None or not _retryable(response.status_code):
