@@ -123,7 +123,7 @@ async def test_failed_trial_and_storage_are_visible_without_blocking_approval(ma
         for path in ("/plugins", route):
             page = (await client.get(path)).text
             assert all(text in page for text in ("Storage enabled", "Test run failed", "ms", "&lt;example&gt; failed"))
-            assert "Plugin said: &#34;&lt;example&gt; failed Network off Hash∶ spoof https∶//example·test/path" in page
+            assert "Plugin said: &#34;&lt;example&gt; failed Network off Hash∶ spoof https∶∕∕example·test∕path" in page
             assert "<example>" not in page and "https://example.test/path" not in page
         await review_code(client, route)
     await press(app, f"prop:yes:{proposal}")
