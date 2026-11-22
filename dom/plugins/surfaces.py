@@ -23,6 +23,7 @@ from dom.plugins.runner import PluginBusy, PluginError, PluginsUnavailable
 from dom.presence import read_habits
 from dom.skills import _visible
 from dom.telegram import gate
+from dom.telegram.executor import retry_telegram
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -76,7 +77,10 @@ def _plain(text: str) -> str:
 
 async def _reply(app: App, chat_id: int, text: str) -> None:
     # No parse mode and no link previews: the text is shown exactly as written and fetches nothing.
-    await app.bot.send_message(chat_id, text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+    await retry_telegram(
+        lambda: app.bot.send_message(chat_id, text, link_preview_options=LinkPreviewOptions(is_disabled=True)),
+        sleep=app.sleep,
+    )
 
 
 async def handle_command(app: App, message: Message, msg: IncomingMessage, command: str) -> bool:

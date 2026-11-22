@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from dom.agent import unfence
 from dom.home import PrivateAccessError, limit_for
 from dom.models import Scope
+from dom.telegram.executor import retry_telegram
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
 if TYPE_CHECKING:
@@ -242,7 +243,10 @@ class MemoryPass:
         app = self.app
         text = f"📝 Noted: {summary}"
         try:
-            await app.bot.send_message(app.owner_id, text, disable_notification=True)
+            await retry_telegram(
+                lambda: app.bot.send_message(app.owner_id, text, disable_notification=True),
+                sleep=app.sleep,
+            )
             await app.store.record_owner_event(f"Dom noted: {summary}")
         except Exception:
             log.exception("could not tell the owner what was noted")

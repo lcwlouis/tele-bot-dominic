@@ -34,11 +34,12 @@ Checked on 2026-11-20 against the providers' own documentation.
 ## Limits of this integration
 
 - Dom asks for `content_filter=high`, the strictest level, so some searches return nothing and Dom sends
-  no GIF.
+  no GIF (falling back to `*<query>*` on a GIF-only turn).
 - Requests time out after 5 seconds. Only `https` mp4 files on `klipy.com` hosts and at most 5 MB are
   used. Dom sends the URL; Telegram downloads the file itself, so Dom keeps no copy.
-- Any failure (timeout, HTTP error, empty or odd answer, Telegram refusing the file) means no GIF. The
-  rest of the turn is sent as usual.
+- Any failure (timeout, HTTP error, empty or odd answer, Telegram refusing the file) means no GIF. If
+  the turn also has text bubbles (or a sticker that sent), the rest of the turn is sent as usual; on a
+  GIF-only turn, Dom sends a text fallback (`*<query>*`) instead of staying silent.
 - Dom sends the fixed `customer_id=dom`, never a chat, user or owner identifier. The API key is part of
   KLIPY's request URL, so Dom lowers the `httpx` log level to keep it out of the logs.
 - KLIPY's [integration requirements](https://docs.klipy.com/integration-requirements) say that server-side

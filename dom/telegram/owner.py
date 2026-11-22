@@ -54,12 +54,12 @@ OWNER_COMMANDS = [
     BotCommand(command="pending", description="Chats waiting for your approval"),
     BotCommand(command="chats", description="Every group and DM Dom knows about"),
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
-    BotCommand(command="proposals", description="Review pending changes"),
-    BotCommand(command="plugins", description="List and disable plugins"),
+    BotCommand(command="proposals", description="Review pending or delete settled proposals"),
+    BotCommand(command="plugins", description="List, disable and delete plugins"),
     BotCommand(command="skills", description="List, retire, restore and delete skills"),
-    BotCommand(command="reminders", description="List and cancel reminders"),
+    BotCommand(command="reminders", description="List, cancel and delete reminders"),
     BotCommand(command="t3", description="View T3 sign-in, machines and audit history"),
-    BotCommand(command="tasks", description="List and cancel desktop tasks"),
+    BotCommand(command="tasks", description="List, cancel and delete desktop tasks"),
     BotCommand(command="ownwork", description="List, cancel and delete self-directed tasks"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
     BotCommand(command="import", description="Bring memories from another assistant"),
@@ -377,7 +377,7 @@ async def show_own_work(app: App) -> None:
         return
     rows = await app.store.self_tasks(limit=20)
     if not rows:
-        await app.bot.send_message(app.owner_id, "No self-directed tasks yet.")
+        await _send(app, "No self-directed tasks yet.")
         return
     for start in range(0, len(rows), 10):
         lines, buttons = [], []
@@ -391,8 +391,8 @@ async def show_own_work(app: App) -> None:
                     text=f"Delete #{row['id']}",
                     callback_data=f"own:del:{row['id']}:{stamp_token(row['announced_at'])}",
                 )])
-        await app.bot.send_message(
-            app.owner_id, "\n".join(lines),
+        await _send(
+            app, "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
         )
 
@@ -487,7 +487,7 @@ async def show_skills(app: App) -> None:
         return
     rows = await asyncio.to_thread(skills.skills_inventory, app.home)
     if not rows:
-        await app.bot.send_message(app.owner_id, "No skills yet.")
+        await _send(app, "No skills yet.")
         return
     for start in range(0, len(rows), 10):
         lines, buttons = [], []
@@ -507,8 +507,8 @@ async def show_skills(app: App) -> None:
                 text=f"Delete {name}", callback_data=await skill_callback(app, "del", name, digest),
             )
             buttons.append([toggle, delete_btn])
-        await app.bot.send_message(
-            app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        await _send(
+            app, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
 
 
@@ -623,7 +623,7 @@ async def send_delete_confirm(app: App, prompt: str, yes_data: str, no_data: str
         InlineKeyboardButton(text="Yes, delete", callback_data=yes_data),
         InlineKeyboardButton(text="Cancel", callback_data=no_data),
     ]])
-    await app.bot.send_message(app.owner_id, prompt, reply_markup=markup)
+    await _send(app, prompt, reply_markup=markup)
 
 
 async def render_status(app: App) -> View:
@@ -871,7 +871,7 @@ async def approve_proposal_page(app: App, first: int, last: int) -> str:
 async def show_settled_proposals(app: App) -> None:
     rows = await app.proposals.settled(limit=20)
     if not rows:
-        await app.bot.send_message(app.owner_id, "No settled proposals.")
+        await _send(app, "No settled proposals.")
         return
     for start in range(0, len(rows), 10):
         lines, buttons = [], []
@@ -882,8 +882,8 @@ async def show_settled_proposals(app: App) -> None:
                 text=f"Delete #{row['id']}",
                 callback_data=f"prop:del:{row['id']}:{stamp_token(row['created_at'])}",
             )])
-        await app.bot.send_message(
-            app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        await _send(
+            app, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
             disable_notification=True,
         )
 
@@ -899,7 +899,12 @@ async def show_reminders(app: App, *, include_settled: bool = False) -> None:
         for row in reminders[start:start + 10]:
             due = datetime.fromisoformat(row["due_at"]).astimezone(tz)
             repeat = f", {row['repeat']}" if row["repeat"] else ""
-            status = f", {row['status']}" if row["status"] != "active" else ""
+            if row["status"] != "active":
+                status = f", {row['status']}"
+            elif row.get("undeliverable"):
+                status = ", undeliverable"
+            else:
+                status = ""
             preview = " ".join(row["text"].split())[:130]
             lines.append(f"#{row['id']} {due:%Y-%m-%d %H:%M} ({row['importance']}{repeat}{status}) {preview}")
             del_data = f"rem:del:{row['id']}:{stamp_token(row['created_at'])}"

@@ -1,7 +1,7 @@
 import pytest
 
 from dom.home import Home
-from dom.prompt import FRAME, build_messages
+from dom.prompt import FRAME, MACHINERY_RULE, REPORT_FRAME, build_messages, report_messages
 
 PRIVATE_USER = "OWNER-PRIVATE-USER-FACT"
 PRIVATE_NOTES = "OWNER-PRIVATE-NOTES-FACT"
@@ -104,7 +104,60 @@ def test_frame_discourages_reply_to_in_dms():
 
 def test_frame_does_not_offer_memory_editing():
     assert "memory tool" not in FRAME
-    assert "cannot edit them" in FRAME
+    assert "propose_memory_edit" not in FRAME  # owner-only tool names never leak into the shared prefix
+    assert "do not edit them yourself" in FRAME
+    assert "propose a change for the owner to approve" in FRAME
+
+
+def test_frame_prefix_stays_cache_stable_across_scopes(home):
+    owner = build(home, scope="owner_dm", chat_id=111, participants=[111])
+    friend = build(home, scope="friend_dm", chat_id=222, participants=[222])
+    group = build(home, scope="group", chat_id=-1009, participants=[111, 222])
+    assert owner[0] == friend[0] == group[0]
+    assert PRIVATE_USER not in group[1]["content"] and PRIVATE_NOTES not in group[1]["content"]
+    assert PRIVATE_USER not in friend[1]["content"] and PRIVATE_NOTES not in friend[1]["content"]
+
+
+def test_report_frame_carries_machinery_rule_and_frames_restart(home):
+    assert MACHINERY_RULE in FRAME
+    assert MACHINERY_RULE in REPORT_FRAME
+    note = (
+        "Your desktop task #3 failed. Result: <untrusted_tool_result>\nDom restarted\n</untrusted_tool_result> "
+        "Tell your friend in your own words."
+    )
+    msgs = report_messages(home, {"humor": 0.5}, note)
+    assert MACHINERY_RULE in msgs[0]["content"]
+    assert "Dom restarted" not in msgs[1]["content"]
+    assert "interrupted" in msgs[1]["content"].lower()
+
+
+async def test_report_desktop_task_does_not_feed_restart_text_to_model(make_app):
+    from tghelpers import FINAL, OWNER
+
+    captured = []
+
+    class CaptureClient:
+        async def complete(self, messages, tools, *, once=False):
+            captured.append(messages)
+            return {"content": FINAL}
+
+    app = make_app()
+    app.client = CaptureClient()
+    row = {
+        "id": 9,
+        "chat_id": OWNER,
+        "status": "failed",
+        "result": None,
+        "error": "Dom restarted",
+        "container": "default",
+        "started_at": None,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    await app.dispatch.report_desktop_task(row)
+    assert len(captured) == 1
+    assert MACHINERY_RULE in captured[0][0]["content"]
+    assert "Dom restarted" not in captured[0][1]["content"]
+    assert "interrupted" in captured[0][1]["content"].lower()
 
 
 SELF_DESCRIPTION = (

@@ -1,7 +1,9 @@
 """Owner reminders, including delivery independent of the chat model.
 
 A reminder is advanced only after every chunk of it was sent, so a crash between send and advance can duplicate a
-reminder, never lose one. A failed delivery is retried with a growing delay and cancelled after MAX_ATTEMPTS."""
+reminder, never lose one. A failed delivery is retried with a growing delay: non-critical reminders are cancelled
+after MAX_ATTEMPTS, while critical reminders persist retry state, keep retrying (notifying the owner once after
+MAX_ATTEMPTS), and stay active marked undeliverable if the destination is gone."""
 
 from __future__ import annotations
 
@@ -235,6 +237,11 @@ class Reminders:
             return False, f"Cannot delete reminder #{reminder_id} while it is being delivered."
         event_at = datetime.now(timezone.utc).isoformat()
         event_text = f"Deleted reminder #{reminder_id}"
+        retry_key = self._retry_key(reminder_id)
+        retry_value = await app.store.kv_get(retry_key)
+        rows: dict[str, object] = {"reminder": row}
+        if retry_value:
+            rows["kv"] = [{"key": retry_key, "value": retry_value}]
         try:
             archive = await asyncio.to_thread(
                 stage_deletion,
@@ -243,7 +250,7 @@ class Reminders:
                 reminder_id,
                 event_text=event_text,
                 event_at=event_at,
-                rows={"reminder": row},
+                rows=rows,
             )
         except (OSError, ValueError) as error:
             log.warning("could not archive reminder %s: %s", reminder_id, type(error).__name__)
@@ -252,8 +259,28 @@ class Reminders:
             if self.is_delivering(reminder_id):
                 await asyncio.to_thread(archive.rollback)
                 return False, f"Cannot delete reminder #{reminder_id} while it is being delivered."
+            latest_row = await app.store.get_reminder(owner, reminder_id)
+            if latest_row is None:
+                await asyncio.to_thread(archive.rollback)
+                return False, f"Reminder #{reminder_id} not found."
+            if not stamp_matches(latest_row["created_at"], expected_created_at):
+                await asyncio.to_thread(archive.rollback)
+                return False, STALE_MESSAGE
+            latest_retry = await app.store.kv_get(retry_key)
+            updated_rows: dict[str, object] = {"reminder": latest_row}
+            if latest_retry:
+                updated_rows["kv"] = [{"key": retry_key, "value": latest_retry}]
+            if updated_rows != rows:
+                try:
+                    await asyncio.to_thread(archive.update_rows, updated_rows)
+                except (OSError, ValueError) as error:
+                    log.warning("could not archive reminder %s: %s", reminder_id, type(error).__name__)
+                    await asyncio.to_thread(archive.rollback)
+                    return False, "Could not archive reminder before deleting."
             try:
-                result = await app.store.delete_reminder(owner, reminder_id, expected_created_at, event_text, event_at)
+                result = await app.store.delete_reminder(
+                    owner, reminder_id, expected_created_at, event_text, event_at, retry_key=retry_key,
+                )
             except sqlite3.Error as error:
                 log.warning("could not delete reminder %s: %s", reminder_id, type(error).__name__)
                 await asyncio.to_thread(archive.rollback)
