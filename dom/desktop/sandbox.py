@@ -251,6 +251,8 @@ class LocalSandbox:
         # Told once, with a short message, when the LAN probe stops a start.
         self.alert: Callable[[str], Awaitable[None]] | None = None
         self._alerted = False
+        # Called whenever this container stops (explicit stop, idle stop, reset or close).
+        self.on_stop: Callable[[], None] | None = None
 
     def status(self) -> Status:
         return self._status
@@ -493,6 +495,8 @@ class LocalSandbox:
         self.client = None
         self.error = None
         self._status = "stopped"
+        if self.on_stop is not None:
+            self.on_stop()
 
     async def stop_if_idle(self) -> None:
         async with self._lock:
@@ -516,5 +520,7 @@ class LocalSandbox:
             await asyncio.shield(self._discard())
             self.client = None
             self._status = "stopped"
+            if self.on_stop is not None:
+                self.on_stop()
         if self._owns_http:
             await self._http.aclose()

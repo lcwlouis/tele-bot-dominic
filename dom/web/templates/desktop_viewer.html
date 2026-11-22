@@ -7,20 +7,103 @@
   <link rel="stylesheet" href="/static/desktop-viewer.css">
   <script type="module" src="/static/desktop-viewer.js"></script>
 </head>
-<body>
-  <div id="status">{% if container %}{{ container }} · {% endif %}<span id="state">Connecting</span></div>
-  <div id="screen"></div>
+<body
+  data-container="{{ container }}"
+  data-query="{{ q }}"
+  data-back-url="{{ back_url }}"
+  data-status="{{ status }}"
+  data-resolution="{{ resolution }}"
+  data-phone-mode="{{ 'true' if phone_mode else 'false' }}"
+  data-can-resize="{{ 'true' if can_resize else 'false' }}"
+  {% if handoff %}
+  data-handoff-task="{{ handoff.task_id }}"
+  data-handoff-steps="{{ handoff.steps }}"
+  {% if handoff.remaining_seconds is not none %}data-handoff-remaining="{{ handoff.remaining_seconds }}"{% endif %}
+  {% endif %}
+>
+  <header id="topbar">
+    <div class="bar-group bar-left">
+      <a id="back-link" class="chip" href="{{ back_url }}" aria-label="Back to Dashboard">←<span class="back-text"> Dashboard</span></a>
+      <a id="open-full" class="chip" href="/desktop/vnc/index.html{{ q }}" target="_top" hidden>Full page</a>
+      <span class="conn" aria-live="polite">
+        <span id="state-dot" class="dot" data-state="connecting" aria-hidden="true"></span>
+        <span id="state">Connecting</span>
+      </span>
+      {% if container %}<span class="pill container-pill">{{ container }}</span>{% endif %}
+    </div>
+    <div class="bar-group bar-center">
+      <span id="live-host" class="host" title="Active browser site">{{ handoff.host if handoff and handoff.host else "" }}</span>
+      <span id="countdown" class="countdown" aria-label="Handoff time remaining"{% if not handoff %} hidden{% endif %}></span>
+    </div>
+    <div class="bar-group bar-right">
+      <button id="done-btn" type="button" class="btn-done"{% if not handoff %} hidden{% endif %}>Done</button>
+      <button id="fullscreen-btn" type="button" class="chip" aria-label="Toggle fullscreen" title="Fullscreen">⛶</button>
+    </div>
+  </header>
+
+  <div id="handoff-banner"{% if not handoff %} hidden{% endif %}>
+    <span id="handoff-reason">{{ handoff.reason if handoff else "" }}</span>
+  </div>
+
+  <main id="viewport" aria-label="Remote desktop">
+    <div id="screen"></div>
+    <div id="reconnect-bar" hidden>
+      <span id="reconnect-msg">Reconnecting…</span>
+      <button id="reconnect-btn" type="button" class="chip">Reconnect now</button>
+    </div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+  </main>
+
+  <nav id="controls" aria-label="Viewer controls">
+    <div class="ctrl-group">
+      <button id="mode-scroll" type="button" class="chip" aria-pressed="false" title="One-finger scroll">Scroll</button>
+      <button id="mode-pan" type="button" class="chip" aria-pressed="false" title="One-finger pan" hidden>Pan</button>
+    </div>
+    <div class="ctrl-group" aria-label="Local zoom">
+      <button id="zoom-out" type="button" class="chip" aria-label="Zoom out">−</button>
+      <button id="zoom-reset" type="button" class="chip" aria-label="Reset zoom">100%</button>
+      <button id="zoom-in" type="button" class="chip" aria-label="Zoom in">+</button>
+    </div>
+    <div class="ctrl-group">
+      <button id="phone-mode-btn" type="button" class="chip"
+        aria-pressed="{{ 'true' if phone_mode else 'false' }}"
+        {% if not can_resize %}disabled{% endif %}
+        title="Resize remote screen for phone (800×600)">Phone mode</button>
+    </div>
+    <div class="ctrl-group" aria-label="Clipboard">
+      <button id="copy-btn" type="button" class="chip" title="Copy remote clipboard to this device">Copy</button>
+      <button id="paste-btn" type="button" class="chip" title="Paste from this device into desktop">Paste</button>
+    </div>
+    <div class="ctrl-group">
+      <button id="keys-toggle" type="button" class="chip" aria-expanded="true" aria-controls="keybar">Keys</button>
+    </div>
+  </nav>
+
+  <div id="keybar" role="toolbar" aria-label="Remote keys">
+    <button type="button" class="key" data-key="Escape">Esc</button>
+    <button type="button" class="key" data-key="Tab">Tab</button>
+    <button type="button" class="key" data-key="Enter">Enter</button>
+    <button type="button" class="key" data-key="BackSpace" aria-label="Backspace">⌫</button>
+    <button type="button" class="key" data-key="ArrowLeft" aria-label="Left arrow">←</button>
+    <button type="button" class="key" data-key="ArrowUp" aria-label="Up arrow">↑</button>
+    <button type="button" class="key" data-key="ArrowDown" aria-label="Down arrow">↓</button>
+    <button type="button" class="key" data-key="ArrowRight" aria-label="Right arrow">→</button>
+    <button id="ctrl-toggle" type="button" class="key" aria-pressed="false">Ctrl</button>
+    <button type="button" class="key" data-combo="a">Ctrl+A</button>
+    <button type="button" class="key" data-combo="c">Ctrl+C</button>
+    <button type="button" class="key" data-combo="v">Ctrl+V</button>
+    <button type="button" class="key" data-combo="z">Ctrl+Z</button>
+    <button type="button" class="key" data-combo="l">Ctrl+L</button>
+  </div>
+
   {# A real text field, so a phone shows its keyboard and a password manager can fill it. What is typed goes to the
-     desktop as keystrokes and is never sent to Dom's server as a form. #}
+     desktop as keystrokes over VNC and is never sent to Dom's server as a form. #}
   <form id="type" autocomplete="on">
     <label class="sr-only" for="type-text">Type into the desktop</label>
     <input id="type-text" name="username" type="text" autocomplete="username" autocapitalize="off" autocorrect="off"
            spellcheck="false" placeholder="Type into the desktop" enterkeyhint="send">
-    <label class="secret"><input id="type-secret" type="checkbox"> Password</label>
-    <button type="submit">Send</button>
-    <button type="button" data-key="Enter">Enter</button>
-    <button type="button" data-key="Tab">Tab</button>
-    <button type="button" data-key="BackSpace" aria-label="Backspace">⌫</button>
+    <label id="secret-label" class="secret"><input id="type-secret" type="checkbox"> <span>Password</span></label>
+    <button id="send-btn" type="submit">Send</button>
   </form>
 </body>
 </html>

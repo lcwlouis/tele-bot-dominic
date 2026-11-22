@@ -73,3 +73,14 @@ document.addEventListener("click", async (event) => {
 });
 
 document.querySelector(".rail [aria-current]")?.scrollIntoView({ inline: "center", block: "nearest" });
+
+// Opening /desktop from a handoff link launches the full-page viewer unless the owner chose the dashboard panel.
+const desktopState = document.getElementById("desktop-state");
+if (
+    desktopState?.dataset.handoff === "true" &&
+    desktopState.dataset.status === "ready" &&
+    desktopState.dataset.viewerUrl &&
+    new URLSearchParams(window.location.search).get("panel") !== "1"
+) {
+    window.location.replace(desktopState.dataset.viewerUrl);
+}
