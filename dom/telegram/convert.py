@@ -32,7 +32,27 @@ def _media(message: Message) -> dict | None:
     return None
 
 
-def to_incoming(message: Message) -> IncomingMessage:
+def mentions_owner(message: Message, owner_id: int, owner_handle: str) -> bool:
+    if (
+        message.chat.type not in ("group", "supergroup") or message.sender_chat is not None
+        or message.from_user is None or message.from_user.is_bot or message.from_user.id == owner_id
+    ):
+        return False
+    reply = message.reply_to_message
+    if reply and reply.sender_chat is None and reply.from_user and reply.from_user.id == owner_id:
+        return True
+    body = message.text or message.caption or ""
+    for entity in message.entities or message.caption_entities or ():
+        if entity.type == "text_mention" and entity.user and entity.user.id == owner_id:
+            return True
+        if entity.type == "mention" and owner_handle and entity.extract_from(body).casefold() == owner_handle.casefold():
+            return True
+    return False
+
+
+def to_incoming(
+    message: Message, *, owner_id: int | None = None, owner_handle: str = "",
+) -> IncomingMessage:
     user = message.from_user
     chat = message.chat
     if message.sender_chat is not None:  # sent on behalf of a chat (anonymous admin, channel post)
@@ -57,4 +77,6 @@ def to_incoming(message: Message) -> IncomingMessage:
         media=_media(message),
         date=message.date,
         thread_id=message.message_thread_id if message.is_topic_message else None,
+        mentions_owner=owner_id is not None and mentions_owner(message, owner_id, owner_handle),
+        message_url=message.get_url(include_thread_id=True) if owner_id is not None else None,
     )

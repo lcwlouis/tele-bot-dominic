@@ -9,11 +9,15 @@ from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from errno import ECONNREFUSED
 from random import choice
 from time import monotonic
 from typing import Awaitable, Callable, TypeVar
 
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramMigrateToChat, TelegramRetryAfter
+from aiohttp import ClientConnectorError
+from aiogram.exceptions import (
+    TelegramAPIError, TelegramBadRequest, TelegramMigrateToChat, TelegramNetworkError, TelegramRetryAfter,
+)
 from aiogram.types import (
     BufferedInputFile, EphemeralMessageParameters, LinkPreviewOptions, ReactionTypeEmoji, ReplyParameters,
 )
@@ -80,8 +84,9 @@ async def retry_telegram(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     max_retries: int = MAX_FLOOD_RETRIES,
     budget: FloodBudget | None = None,
+    retry_refused: bool = False,
 ) -> T:
-    """Run a Telegram API call, waiting out TelegramRetryAfter up to `max_retries` times (and within `budget` if given)."""
+    """Retry bounded flood waits and, when requested, a refused connection before any request was sent."""
     for attempt in range(max_retries + 1):
         try:
             return await call()
@@ -104,6 +109,14 @@ async def retry_telegram(
                     raise
                 log.warning("Telegram flood control: waiting %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries)
                 await sleep(wait)
+        except TelegramNetworkError as exc:
+            cause = exc.__cause__
+            if (
+                not retry_refused or attempt >= max_retries
+                or not isinstance(cause, ClientConnectorError) or cause.os_error.errno != ECONNREFUSED
+            ):
+                raise
+            await sleep(0.25 * (attempt + 1))
     raise AssertionError("unreachable")
 
 
@@ -288,6 +301,8 @@ async def perform(
     ephemeral_ineligible_reason: str | None = None,
     link_previews: bool = True,
     record: bool = True,
+    disable_notification: bool = False,
+    retry_refused: bool = False,
     typed_already: float | None = None,
     reply_elapsed: float = 0.0,
     before_send: Callable[[], None] | None = None,
@@ -398,6 +413,8 @@ async def perform(
             else None
         )
         options = {} if link_previews else {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+        if disable_notification:
+            options["disable_notification"] = True
         try:
             if not await enter_send_boundary():
                 return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
@@ -406,7 +423,7 @@ async def perform(
                     lambda b=bubble, r=reply, o=options: bot.send_message(
                         chat_id, b.text, reply_parameters=r, message_thread_id=thread_id, **o,
                     ),
-                    sleep=sleep, budget=flood,
+                    sleep=sleep, budget=flood, retry_refused=retry_refused,
                 )
         except TelegramMigrateToChat:
             if on_migrate is not None:

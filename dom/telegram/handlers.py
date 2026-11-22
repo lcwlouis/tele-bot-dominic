@@ -173,6 +173,8 @@ async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = Fals
     if notify:
         app.dispatch.notify(msg)
     await app.store.set_chat_title(msg.chat_id, msg.chat_title)
+    if notify and msg.mentions_owner:
+        await app.dispatch.cross_chat.alert(msg)
 
 
 def _claim_code(text: str, username: str) -> str | None:
@@ -193,6 +195,7 @@ async def _send(app: App, chat_id: int, text: str, **kw: Any) -> Any:
 async def _handle_claim(app: App, msg: IncomingMessage, code: str) -> None:
     if try_claim(app.config.home, app.config, msg.sender_id, msg.chat_type, code):
         await app.store.set_owner(msg.sender_id)
+        await app.store.resolve_person(msg.sender_id, msg.sender_handle, msg.sender_name)
         app.config = load_config(app.config.home)
         await _send(app, msg.chat_id, "Done: you are my owner now. Other chats will ask you before I talk in them.")
         await owner.refresh_menu(app)
@@ -409,6 +412,11 @@ async def handle_message(app: App, message: Message) -> None:
             # Under the ingest lock on purpose: the owner's next message must not be recorded, answered or marked
             # read before this one. The download is bounded by DOCUMENT_TIMEOUT so the wait stays short.
             msg = await _receive_desktop_document(app, message, msg)
+        if decision == "process" and app.owner_id is not None and msg.chat_type != "private" and not msg.is_bot:
+            entities = message.entities or message.caption_entities or ()
+            if message.reply_to_message or any(e.type in ("mention", "text_mention") for e in entities):
+                handle = await app.store.person_handle(app.owner_id) if any(e.type == "mention" for e in entities) else ""
+                msg = to_incoming(message, owner_id=app.owner_id, owner_handle=handle)
         await _record(app, msg, describe_media=decision == "process", notify=decision == "process")
     if decision == "hold":
         kind = "chat" if msg.chat_type == "private" else "group"
@@ -460,7 +468,7 @@ async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> Non
         log.warning("could not answer callback %s (%s)", query.id, type(error).__name__)
 
 
-SETTLED = {"Approved": "✅ Approved", "Rejected": "❌ Rejected", "Cancelled": "Cancelled", "already handled": "Already handled"}
+SETTLED = {"Expired": "Expired", "Approved": "✅ Approved", "Rejected": "❌ Rejected", "Cancelled": "Cancelled", "already handled": "Already handled"}
 _PROPOSAL_BUTTON = re.compile(r"^prop:(?:yes|no):(\d+)$")
 _REMINDER_BUTTON = re.compile(r"^rem:cancel:(\d+)$")
 _PROPOSAL_LABELS = {"approved": "✅ Approved", "rejected": "❌ Rejected", "expired": "Expired"}

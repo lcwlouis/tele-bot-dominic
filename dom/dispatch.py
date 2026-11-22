@@ -26,6 +26,7 @@ from dom import guard, salvage, turn_log
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
 from dom.attention import Attention, Tier
+from dom.cross_chat import CrossChat
 from dom.agent import NoFinalAnswer, execute_tool_call, malformed_shape, parse_actions, run_turn
 from dom.desktop.sandbox import DEFAULT
 from dom.desktop.tools import untrusted
@@ -190,6 +191,7 @@ class Dispatcher:
     ):
         self.app, self.presence, self.jev = app, presence, jev
         self.attention = Attention()
+        self.cross_chat = CrossChat(self)
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
         self.jobs = DailyJobs(app, now)
@@ -580,11 +582,13 @@ class Dispatcher:
         await self._decide(chat_id, debounce_started=first)
 
     def start(self) -> None:
+        self.cross_chat.start()
         if self._loop is None or self._loop.done():
             self._loop = self._spawn(self._run())
 
     async def close(self) -> None:
         self._closing = True
+        self.cross_chat.stop()
         committed = {attempt.task for attempt in self._active.values() if attempt.committed} | self._committed_tasks
         tasks = self._tasks | committed
         for task in tasks - committed:
@@ -594,6 +598,7 @@ class Dispatcher:
         for chat_id in list(self._interrupted):
             self._discard_interrupted(chat_id)
         await asyncio.gather(*self._committed_tasks, return_exceptions=True)
+        await self.cross_chat.close()
         for arrivals in self._arrivals.values():
             for arrival in arrivals.values():
                 arrival.stop_typing()
@@ -602,6 +607,7 @@ class Dispatcher:
         self._spawn(self._run_reminders())
         while True:
             await self.sleep(TICK_SECONDS)
+            self.cross_chat.start()
             try:
                 await self._poll_chats()
             except Exception:
@@ -830,6 +836,14 @@ class Dispatcher:
             await asyncio.shield(running)
 
     @asynccontextmanager
+    async def chat_slot(self, chat_id: int) -> AsyncIterator[None]:
+        """Reserve delivery order while allowing chat state changes during model and network calls."""
+        async with self._turn_slot(chat_id):
+            async with self.app.locks[chat_id]:
+                pass
+            yield
+
+    @asynccontextmanager
     async def _dispatch_slot(
         self, chat_id: int, *, debounce_started: datetime | None = None, wait_media: bool = True, early: bool = False,
     ) -> AsyncIterator[QueueWaits]:
@@ -845,9 +859,7 @@ class Dispatcher:
         started = monotonic()
         lock = self.app.locks[chat_id]
         waiting = lock.locked() or self.turn_running(chat_id)
-        async with self._turn_slot(chat_id):
-            async with lock:
-                pass
+        async with self.chat_slot(chat_id):
             elapsed = round((monotonic() - started) * 1000)
             if waiting or elapsed:
                 waits.lock_ms = elapsed

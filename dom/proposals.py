@@ -17,6 +17,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPrevie
 
 from dom.agent import unfence
 from dom.config import replace_host
+from dom.cross_chat import CARD_LIFETIME
 from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.guard import check_local_private_text
 from dom.memory_edit import apply_proposal as apply_memory_edit, format_summary as memory_edit_summary, prepare_proposal as prepare_memory_edit
@@ -118,6 +119,10 @@ def summary(row: dict) -> str:
         return f"{heading}\n{body['file']}: {body['text']}"
     if row["kind"] == "memory_edit":
         return memory_edit_summary(heading, body)
+    if row["kind"] == "cross_chat":
+        score = body["leak_score"]
+        leak = "Leak check unavailable" if score is None else f"Leak score {score:g}/3"
+        return f"{heading}\n\n{body['text']}\n\nReason: {body['reason']}\n{leak} · Expires in 2 h"
     return heading
 
 
@@ -264,6 +269,8 @@ class Proposals:
             review = review_button(app, body)
             if review is None:
                 text += f"\nOpen {plugin_review_path(body)} in the dashboard to review."
+        if row["kind"] == "cross_chat":
+            options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
         sent = None
         for start in range(0, len(text), 2000):
             markup = None
@@ -287,9 +294,7 @@ class Proposals:
             )
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):
-            cards = await self._cards()
-            cards.setdefault(str(row["id"]), []).append(message_id)
-            await app.store.kv_set(CARDS_KEY, json.dumps(cards))
+            await app.store.update_proposal_cards(CARDS_KEY, {str(row["id"]): [message_id]})
 
     async def _cards(self) -> dict[str, list[int]]:
         try:
@@ -323,7 +328,7 @@ class Proposals:
                 except TelegramAPIError:  # too old, deleted, or already showing it
                     log.info("could not settle the card of proposal %s", key)
         if settled:
-            await app.store.kv_set(CARDS_KEY, json.dumps({key: ids for key, ids in cards.items() if key not in settled}))
+            await app.store.update_proposal_cards(CARDS_KEY, {key: cards[key] for key in settled}, remove=True)
 
     async def _current(self, rows: list[dict]) -> list[dict]:
         """A plugin card shows the plugin row's own trial result, which a later test run updates; the copy taken when
@@ -386,6 +391,8 @@ class Proposals:
                 return False, STALE_MESSAGE
             if result == "pending":
                 return False, f"Proposal #{proposal_id} is still pending. Approve or reject it before deleting."
+            if result == "in_flight":
+                return False, "Let the delivery finish before deleting its approval."
             return False, f"Proposal #{proposal_id} not found."
         await asyncio.to_thread(archive.commit)
         await asyncio.to_thread(prune_deletions, app.home.root)
@@ -423,23 +430,37 @@ class Proposals:
     async def _decide(self, proposal_id: int, approve: bool) -> str:
         app = self.app
         status = "approved" if approve else "rejected"
-        at = app.dispatch.now().astimezone(timezone.utc).isoformat()
+        now = app.dispatch.now().astimezone(timezone.utc)
+        at = now.isoformat()
+        row = await app.store.get_proposal(proposal_id)
+        if row is None or row["status"] != "pending":
+            return "already handled"
+        body = json.loads(row["body_json"])
         try:
-            for row in await self.pending():
-                if row["id"] == proposal_id and row["kind"] == "plugin":
-                    body = json.loads(row["body_json"])
-                    decision = "approve" if approve else "reject"
-                    return await app.plugins.decide(body["name"], body["hash"], decision)
+            if row["kind"] == "plugin":
+                return await app.plugins.decide(body["name"], body["hash"], "approve" if approve else "reject")
+            if row["kind"] == "cross_chat" and now - datetime.fromisoformat(row["created_at"]) >= CARD_LIFETIME:
+                await app.store.change_cross_chat(body["item_id"], "awaiting_approval", "dropped", at, reason="expired")
+                return "Expired"
             changed = await app.store.decide_proposal(proposal_id, status, at, self._apply)
         except (OSError, ValueError) as error:
             await app.store.record_owner_event(f"Could not approve proposal #{proposal_id}")
             return str(error) if isinstance(error, Refused) else "Could not write the proposal. It is still pending."
         if not changed:
             return "already handled"
-        await app.store.record_owner_event(f"{status.capitalize()} proposal #{proposal_id}")
+        if row["kind"] == "cross_chat":
+            cross_chat = app.dispatch.cross_chat
+            if approve:
+                await cross_chat.approved(body["item_id"])
+            else:
+                await cross_chat.rejected(body["item_id"])
+        else:
+            await app.store.record_owner_event(f"{status.capitalize()} proposal #{proposal_id}")
         return status.capitalize()
 
     def _apply(self, kind: str, body: dict) -> None:
+        if kind == "cross_chat":
+            return
         if kind == "soul_edit":
             if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
                 raise Refused(problem)

@@ -14,6 +14,7 @@
         <option value="memory_fact"{% if context.kind == "memory_fact" %} selected{% endif %}>Memory fact</option>
         <option value="memory_edit"{% if context.kind == "memory_edit" %} selected{% endif %}>Memory edit</option>
         <option value="lan_address"{% if context.kind == "lan_address" %} selected{% endif %}>LAN address</option>
+        <option value="cross_chat"{% if context.kind == "cross_chat" %} selected{% endif %}>Message to another chat</option>
         <option value="chat_approval"{% if context.kind == "chat_approval" %} selected{% endif %}>Chat approval</option>
       </select>
     </label>
@@ -86,6 +87,10 @@
     {% if card.body.places %}<p>Used in {{ card.body.places|join(", ") }}.</p>{% endif %}
     {% if card.body.macs %}<p class="fog">Device {{ card.body.macs|join(", ") }}</p>{% endif %}
     <p class="fog">Dom uses the new address after his next restart.</p>
+    {% elif card.kind == "cross_chat" %}
+    <pre class="skill-text">{{ card.body.text }}</pre>
+    <p>{{ card.body.reason }}</p>
+    <p class="fog">{% if card.body.leak_score is none %}Leak check unavailable{% else %}Leak score {{ card.body.leak_score }}/3{% endif %} · Expires in 2 h</p>
     {% elif card.kind == "memory_edit" %}
     {% if card.changes %}
     <div class="diff" aria-label="Proposed changes">

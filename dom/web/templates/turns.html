@@ -42,6 +42,20 @@
     </table>
   </section>
   {% endif %}
+  {% if context.cross_chat %}
+  <section class="attention-view" aria-label="Cross-chat deliveries">
+    <h3>Cross-chat</h3>
+    <ol class="log">
+      {% for item in context.cross_chat %}
+      <li><details>
+        <summary>{{ item.kind|replace("_", " ")|capitalize }} · {{ item.source_title }} → {{ item.target_title }} · {{ item.status|replace("_", " ") }}{% if item.drop_reason %} ({{ item.drop_reason }}){% endif %}</summary>
+        <p class="fog">Created <time datetime="{{ item.created_at }}">{{ item.created_at }}</time>{% if item.queued_at %} · Queued <time datetime="{{ item.queued_at }}">{{ item.queued_at }}</time>{% endif %}{% if item.sending_at %} · Sending <time datetime="{{ item.sending_at }}">{{ item.sending_at }}</time>{% endif %} · Updated <time datetime="{{ item.updated_at }}">{{ item.updated_at }}</time></p>
+        <pre class="skill-text">{{ item.text }}</pre>
+      </details></li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
   {% if context.visible_stages %}
   <ul class="turn-legend">
     {% for stage, label in context.stages.items() if stage in context.visible_stages %}

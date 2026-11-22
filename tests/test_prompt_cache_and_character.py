@@ -109,13 +109,14 @@ async def test_tool_list_puts_shared_first_owner_last_and_keeps_scopes_separate(
 
     # Owner DM starts with the exact shared prefix in the exact same order and schemas.
     assert group_names == friend_names
-    assert owner_names[: len(group_names)] == group_names
-    assert [t.openai_schema() for t in owner_tools[: len(group_tools)]] == [
-        t.openai_schema() for t in group_tools
+    assert group_names[-1] == "tell_owner" and owner_names[-1] == "message_chat"
+    assert owner_names[: len(group_names) - 1] == group_names[:-1]
+    assert [t.openai_schema() for t in owner_tools[: len(group_tools) - 1]] == [
+        t.openai_schema() for t in group_tools[:-1]
     ]
 
     # Owner-only tools come strictly after shared tools, with dynamic tools after core owner tools.
-    owner_tail = owner_names[len(group_names):]
+    owner_tail = owner_names[len(group_names) - 1:]
     assert "remind" in owner_tail and "self_inspect" in owner_tail
     assert owner_tail.index("remind") < owner_tail.index("start_desktop_task")
     assert owner_tail.index("start_desktop_task") < owner_tail.index("coding_overview")
@@ -137,10 +138,10 @@ async def test_dynamic_tools_coming_and_going_do_not_reshape_shared_part(make_ap
     monkeypatch.setattr(app.plugins, "entries", fake_entries)
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
 
-    base_shared = [t.openai_schema() for t in await enabled_tools(app, "group")]
+    base_shared = [t.openai_schema() for t in (await enabled_tools(app, "group"))[:-1]]
     base_owner_all = await enabled_tools(app, "owner_dm")
     assert [t.openai_schema() for t in base_owner_all[: len(base_shared)]] == base_shared
-    core_owner_schemas = [t.openai_schema() for t in base_owner_all[len(base_shared):]]
+    core_owner_schemas = [t.openai_schema() for t in base_owner_all[len(base_shared):-1]]
 
     # 1) Toggle desktop on -> shared prefix and core owner-only tools stay identical.
     desktop_on = True
@@ -159,7 +160,7 @@ async def test_dynamic_tools_coming_and_going_do_not_reshape_shared_part(make_ap
     after_owner_plugin = await enabled_tools(app, "owner_dm")
     assert [t.openai_schema() for t in after_owner_plugin[: len(base_shared)]] == base_shared
     assert [t.openai_schema() for t in after_owner_plugin[len(base_shared): len(base_shared) + len(core_owner_schemas)]] == core_owner_schemas
-    assert [t.openai_schema() for t in await enabled_tools(app, "group")] == base_shared
+    assert [t.openai_schema() for t in (await enabled_tools(app, "group"))[:-1]] == base_shared
 
     # 4) Toggle vibe switch on and add a shared plugin -> fixed shared core prefix never reorders or reshapes.
     await app.store.kv_set(GLOBAL_PRESET_KEY, AUTO)
@@ -167,7 +168,7 @@ async def test_dynamic_tools_coming_and_going_do_not_reshape_shared_part(make_ap
     group_now = await enabled_tools(app, "group")
     owner_now = await enabled_tools(app, "owner_dm")
     assert [t.openai_schema() for t in group_now[: len(base_shared)]] == base_shared
-    assert [t.openai_schema() for t in owner_now[: len(group_now)]] == [t.openai_schema() for t in group_now]
+    assert [t.openai_schema() for t in owner_now[: len(group_now) - 1]] == [t.openai_schema() for t in group_now[:-1]]
     assert group_now[len(base_shared)].name == "switch_vibe"
     assert group_now[len(base_shared) + 1].name == "plugin_calc_add"
 

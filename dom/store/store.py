@@ -1947,6 +1947,184 @@ class Store:
 
     # ---- proposals and reminders -----------------------------------------
 
+    # ---- cross-chat delivery -----------------------------------------------
+
+    async def person_handle(self, user_id: int) -> str:
+        def select() -> str:
+            row = self._conn.execute(
+                "SELECT current_handle FROM people_identities WHERE telegram_user_id = ?", (user_id,),
+            ).fetchone()
+            return (row[0] or "") if row else ""
+
+        return await self._run(select)
+
+    async def add_owner_delivery(
+        self, kind: str, source: int, text: str, reason: str, now: datetime,
+        *, sender: int | None = None, msg_id: int | None = None,
+    ) -> bool:
+        def insert() -> bool:
+            hour = (now - timedelta(hours=1)).isoformat()
+            interval = (now - timedelta(minutes=15 if kind == "alert" else 10)).isoformat()
+            at = now.isoformat()
+            with self._tx() as conn:
+                if self.owner_id is None or not self._is_chat_approved(str(source)) or source == self.owner_id:
+                    return False
+                if kind == "alert" and (source >= 0 or conn.execute(
+                    "SELECT 1 FROM messages WHERE chat_id = ? AND sender_user_id = ? AND role = 'user' "
+                    "AND is_bot = 0 AND julianday(created_at) > julianday(?) LIMIT 1",
+                    (str(source), self.owner_id, interval),
+                ).fetchone()):
+                    return False
+                recent = conn.execute(
+                    "SELECT kind, source_chat_id, sender_user_id, created_at FROM cross_chat "
+                    "WHERE kind IN ('alert', 'owner_note') AND created_at > ?", (hour,),
+                ).fetchall()
+                if len(recent) >= 6 or any(
+                    row["source_chat_id"] == source and row["kind"] == kind
+                    and (row["created_at"] > interval or (kind == "alert" and row["sender_user_id"] == sender))
+                    for row in recent
+                ):
+                    return False
+                return conn.execute(
+                    "INSERT INTO cross_chat (kind, source_chat_id, target_chat_id, text, reason, sender_user_id, "
+                    "source_msg_id, status, created_at, queued_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?) ON CONFLICT DO NOTHING",
+                    (kind, source, self.owner_id, text, reason, sender, msg_id, at, at, at),
+                ).rowcount == 1
+
+        return await self._run(insert)
+
+    def _cross_chat_send_count(self, day_start: str) -> int:
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM cross_chat WHERE kind = 'message' AND "
+            "(status = 'sent' OR (status = 'dropped' AND drop_reason = 'may not have been sent')) AND sending_at >= ?",
+            (day_start,),
+        ).fetchone()[0]
+
+    async def create_cross_chat_card(self, body: dict, at: str, day_start: str) -> None:
+        def create() -> None:
+            source, target = body["source_chat_id"], body["target_chat_id"]
+            with self._tx() as conn:
+                if not self._is_owner_chat(source) or self._is_owner_chat(target):
+                    raise ValueError("Choose a group or a friend's chat.")
+                if self._resolve_chat_id(str(target)) != str(target) or not self._is_chat_approved(str(target)):
+                    raise ValueError("That chat is no longer available. Choose it again.")
+                pending = conn.execute(
+                    "SELECT COUNT(*) FROM proposals WHERE kind = 'cross_chat' AND status = 'pending' "
+                    "AND julianday(created_at) > julianday(?) - 2.0 / 24", (at,),
+                ).fetchone()[0]
+                if pending >= 3:
+                    raise ValueError("There are already three messages waiting for the owner's OK.")
+                if self._cross_chat_send_count(day_start) >= 10:
+                    raise ValueError("The daily limit for messages to other chats has been reached.")
+                body["item_id"] = conn.execute(
+                    "INSERT INTO cross_chat (kind, source_chat_id, target_chat_id, text, reason, status, "
+                    "created_at, updated_at) VALUES ('message', ?, ?, ?, ?, 'awaiting_approval', ?, ?) RETURNING id",
+                    (source, target, body["text"], body["reason"], at, at),
+                ).fetchone()[0]
+                title = f'Send a message to "{body["target_title"]}"'
+                proposal_id = conn.execute(
+                    "INSERT INTO proposals (kind, title, body_json, source, created_at) "
+                    "VALUES ('cross_chat', ?, ?, 'message_chat', ?) RETURNING id",
+                    (title, json.dumps(body), at),
+                ).fetchone()[0]
+                conn.execute("UPDATE cross_chat SET proposal_id = ? WHERE id = ?", (proposal_id, body["item_id"]))
+                event = f"Proposed #{proposal_id}: {title}"
+                self._insert_owner_event(conn, event, at)
+            self._append_owner_event_transcript(event, at)
+
+        await self._run(create)
+
+    async def cross_chat_items(self, *, work: bool = False) -> list[dict[str, Any]]:
+        def select() -> list[dict[str, Any]]:
+            predicate = "WHERE c.status IN ('awaiting_approval', 'queued', 'sending')" if work else ""
+            order = "ORDER BY c.created_at, c.id" if work else "ORDER BY c.created_at DESC, c.id DESC LIMIT 20"
+            return [dict(row) for row in self._conn.execute(
+                "SELECT c.*, p.status AS approval_status, p.created_at AS card_created_at, "
+                "(SELECT title FROM chats WHERE chat_id = CAST(c.target_chat_id AS TEXT)) AS target_title "
+                f"FROM cross_chat c LEFT JOIN proposals p ON c.proposal_id = p.id {predicate} {order}",
+            )]
+
+        return await self._run(select)
+
+    async def claim_cross_chat_card(self, item_id: int, at: str) -> dict[str, Any] | None:
+        def claim() -> dict[str, Any] | None:
+            with self._tx() as conn:
+                row = conn.execute(
+                    "SELECT p.* FROM cross_chat c JOIN proposals p ON c.proposal_id = p.id "
+                    "WHERE c.id = ? AND c.status = 'awaiting_approval' AND p.status = 'pending' "
+                    "AND c.card_claimed_at IS NULL AND julianday(p.created_at) > julianday(?) - 2.0 / 24",
+                    (item_id, at),
+                ).fetchone()
+                if row is None:
+                    return None
+                conn.execute("UPDATE cross_chat SET card_claimed_at = ? WHERE id = ?", (at, item_id))
+                return dict(row)
+
+        return await self._run(claim)
+
+    async def change_cross_chat(
+        self, item_id: int, before: str, after: str, at: str, *, target: int | None = None,
+        day_start: str | None = None, reason: str | None = None, sent_msg_id: int | None = None,
+    ) -> bool:
+        def change() -> bool:
+            event = None
+            with self._tx() as conn:
+                row = conn.execute(
+                    "SELECT c.*, p.status AS approval_status, "
+                    "(SELECT title FROM chats WHERE chat_id = CAST(c.target_chat_id AS TEXT)) AS target_title "
+                    "FROM cross_chat c LEFT JOIN proposals p ON c.proposal_id = p.id WHERE c.id = ? AND c.status = ?",
+                    (item_id, before),
+                ).fetchone()
+                if row is None or (target is not None and target != row["target_chat_id"]):
+                    return False
+                status, why = after, reason
+                if status == "sending":
+                    if not self._is_chat_approved(str(row["target_chat_id"])):
+                        status, why = "dropped", "chat gone"
+                    elif row["kind"] == "message":
+                        if row["approval_status"] != "approved":
+                            status, why = "dropped", "refused"
+                        elif datetime.fromisoformat(at) - datetime.fromisoformat(row["created_at"]) >= timedelta(hours=2):
+                            status, why = "dropped", "expired"
+                        elif day_start is not None and self._cross_chat_send_count(day_start) >= 10:
+                            status, why = "dropped", "daily limit"
+                if status == "dropped":
+                    title = row["target_title"] or str(row["target_chat_id"])
+                    words = " ".join(row["text"].split())[:80]
+                    event = f'Delivery to "{title}" dropped ({why}): {words}'
+                    if why == "expired":
+                        conn.execute(
+                            "UPDATE proposals SET status = 'expired', decided_at = ? "
+                            "WHERE id = ? AND status IN ('pending', 'approved')", (at, row["proposal_id"]),
+                        )
+                elif status == "sent":
+                    if row["kind"] == "alert":
+                        event = row["text"]
+                    elif row["kind"] == "message":
+                        title = row["target_title"] or str(row["target_chat_id"])
+                        event = f'Sent to "{title}": {row["text"][:80]}'
+                conn.execute(
+                    "UPDATE cross_chat SET status = ?, updated_at = ?, drop_reason = ?, sent_msg_id = ?, "
+                    "queued_at = CASE WHEN ? = 'queued' THEN COALESCE(queued_at, ?) ELSE queued_at END, "
+                    "sending_at = CASE WHEN ? = 'sending' THEN ? ELSE sending_at END WHERE id = ?",
+                    (status, at, why, sent_msg_id, status, at, status, at, item_id),
+                )
+                if event and self.owner_id is not None:
+                    self._insert_owner_event(conn, event, at)
+            if event:
+                self._append_owner_event_transcript(event, at)
+            return status == after
+
+        return await self._run(change)
+
+    async def prune_cross_chat(self, before: datetime) -> None:
+        await self._run(
+            self._conn.execute,
+            "DELETE FROM cross_chat WHERE created_at < ? AND status IN ('sent', 'dropped')",
+            (before.isoformat(),),
+        )
+
     async def create_proposal(
         self, kind: str, title: str, body: dict, source: str, at: str, *, since: str | None = None,
     ) -> int | None:
@@ -1960,6 +2138,27 @@ class Store:
             return row["id"] if row else None
 
         return await self._run(insert)
+
+    async def update_proposal_cards(self, key: str, changes: dict[str, list[int]], *, remove: bool = False) -> None:
+        def update() -> None:
+            with self._tx() as conn:
+                row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+                try:
+                    cards = json.loads(row[0] or "{}") if row else {}
+                except ValueError:
+                    cards = {}
+                if not isinstance(cards, dict):
+                    cards = {}
+                for proposal, ids in changes.items():
+                    old = cards.get(proposal, [])
+                    current = [mid for mid in old if mid not in ids] if remove else list(dict.fromkeys([*old, *ids]))
+                    if current:
+                        cards[proposal] = current
+                    else:
+                        cards.pop(proposal, None)
+                self._write_kv(conn, {key: json.dumps(cards)})
+
+        await self._run(update)
 
     async def pending_proposals(self) -> list[dict[str, Any]]:
         return await self._run(lambda: [
@@ -1994,13 +2193,18 @@ class Store:
                 ).fetchone()
                 if row and status == "approved":
                     apply(row["kind"], json.loads(row["body_json"]))
-                return row is not None
+                event = f"{status.capitalize()} proposal #{proposal_id}" if row and row["kind"] == "cross_chat" else None
+                if event and self.owner_id is not None:
+                    self._insert_owner_event(conn, event, at)
+            if event:
+                self._append_owner_event_transcript(event, at)
+            return row is not None
 
         return await self._run(decide)
 
     async def expire_proposals(self, before: str, at: str) -> None:
         await self._run(self._conn.execute,
-            "UPDATE proposals SET status = 'expired', decided_at = ? WHERE status = 'pending' AND created_at < ?",
+            "UPDATE proposals SET status = 'expired', decided_at = ? WHERE status = 'pending' AND created_at < ? AND kind != 'cross_chat'",
             (at, before),
         )
 
@@ -2033,6 +2237,11 @@ class Store:
                     return "pending"
                 if not stamp_matches(row["created_at"], expected_created_at):
                     return "stale"
+                if row["kind"] == "cross_chat" and conn.execute(
+                    "SELECT 1 FROM cross_chat WHERE proposal_id = ? AND status IN ('awaiting_approval', 'queued', 'sending')",
+                    (proposal_id,),
+                ).fetchone():
+                    return "in_flight"
                 conn.execute("DELETE FROM proposals WHERE id = ?", (proposal_id,))
                 raw_cards = conn.execute("SELECT value FROM kv WHERE key = ?", (cards_key,)).fetchone()
                 if raw_cards is not None:

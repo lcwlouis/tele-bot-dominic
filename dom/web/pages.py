@@ -257,6 +257,8 @@ def _proposal_label(kind: str, source: str) -> str:
         return f"Memory imported from {IMPORT_SERVICES.get(service, service)}" if service else "Memory fact"
     if kind == "memory_edit":
         return "Memory edit"
+    if kind == "cross_chat":
+        return "Message to another chat"
     if kind == "skill":
         return "Skill proposed after a desktop task" if source == "desktop" else "Skill proposal"
     if kind == "lan_address":
@@ -458,7 +460,12 @@ async def _turns(app: App, chat: str = "") -> dict:
     # The filter offers chats Dom is in, plus any that appear in the turns shown; a chat he left long ago does not
     # clutter it.
     offered = {*approved, *(row["chat_id"] for row in rows), chat}
+    cross_chat = await app.store.cross_chat_items()
+    for item in cross_chat:
+        item["source_title"] = title(str(item["source_chat_id"]))
+        item["target_title"] = title(str(item["target_chat_id"]))
     return {
+        "cross_chat": cross_chat,
         "rows": rows, "chat": chat, "stages": TURN_STAGES,
         **_attention_stats(await app.store.recent_attention_turns(), title, tz),
         "visible_stages": {stage for row in rows for stage, _, _, _ in row["segments"]},
