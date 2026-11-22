@@ -8,9 +8,9 @@ three kinds of surface:
 - **Dashboard panels** that show data on the Plugins page and the dashboard home.
 
 Dom drafts plugins in the owner DM with `draft_plugin`, or the owner places one
-under `<home>/plugins/<name>/`. Nothing runs until the owner reviews the exact
-code on the dashboard and approves that version. Any change to the files,
-including the commands, panels, tools or network access declared in
+under `<home>/plugins/<name>/`. Staging runs an isolated trial. Live calls need
+the owner to review the exact code on the dashboard and approve that version.
+Any change to the files, including the commands, panels, tools, network access or storage declared in
 `plugin.toml`, makes it a new version that needs a fresh review and approval.
 
 ## Files
@@ -25,6 +25,7 @@ description = "Convert units"  # up to 200 characters
 version = "1"
 # Optional, and they must come before any [[...]] table:
 # network = false              # true allows outgoing internet connections
+# storage = false              # true lets an offline plugin keep one JSON blob
 # timeout_seconds = 10         # 1 to 30, wall time and CPU time
 # memory_mb = 64               # 16 to 256
 
@@ -51,6 +52,32 @@ title = "Unit conversions"     # up to 80 characters
 
 A plugin needs at least one tool, command or panel. Function names match the
 declared names. A plugin can declare up to ten commands and five panels.
+
+## Plugin storage
+
+With `storage = true`, an offline plugin can import `load_storage` and
+`save_storage` from `_dom`. `load_storage()` returns the current JSON value or
+`None` on the first call. Pass the full replacement to `save_storage(value)`.
+Dom validates the JSON and limits it to 64 KiB of UTF-8. The replacement is saved
+after the sandbox finishes and returns a valid response. All calls to the same
+plugin share this blob across chats, surfaces and approved versions. Account for
+the scopes of every surface that can read it. The database stays outside the sandbox.
+
+## Trial runs
+
+Define a zero-argument function decorated with `self_test` from `_dom` to run
+checks on staging. Return a short string or `None` on success and raise an
+exception on failure. If there is no self-test, Dom tries the first declared
+panel, command or tool in that order. A command receives empty text and its
+first scope. A tool receives an empty argument object.
+
+The trial uses the live sandbox limits with networking off and empty, disposable
+storage. The owner's approval card and the Plugins page show the result and
+elapsed time. Approval remains available after a failed test.
+
+Dom uses the `[models.drafting]` endpoint for plugin and skill drafts. The
+starter uses Claude Haiku 5.5 on OpenRouter with low thinking. See
+[Configuration](configuration.md#models) for endpoint and thinking settings.
 
 ## Commands
 
@@ -106,8 +133,8 @@ Tools, commands and panels run the same way:
 - In a Bubblewrap sandbox with an empty environment, no access to Dom's home,
   a read-only `/plugin`, an 8 MB `/tmp`, no new processes and restricted system
   calls. Network access only if the manifest asks for it and the owner approved.
-- Only the exact approved bytes run. Dom re-reads and re-hashes the files before
-  every call.
+- Live calls run the exact approved bytes. Dom re-reads and re-hashes the files
+  before every live call. Trials run the exact staged bytes.
 - One plugin process at a time. A call while another plugin runs gets "busy"
   instead of waiting.
 - The manifest's `timeout_seconds` and `memory_mb`, 16 KB of output, 1 MB files

@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import signal
@@ -72,6 +73,38 @@ def test_output_cap_during_read():
     with pytest.raises(PluginError, match="16 KB"):
         runner.exchange(process, b"{}\n", 5)
     assert process.returncode is not None
+
+
+def storage_exchange(payload, saved):
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.argv[1]))",
+         base64.b64encode(payload).decode()],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True,
+    )
+    return runner.exchange(process, b"{}\n", 5, save_storage=saved.append)
+
+
+def test_host_accepts_a_full_utf8_storage_blob_with_an_independent_result_limit():
+    state = ('"' + "é" * (runner.MAX_STORAGE // 2 - 1) + '"').encode()
+    saved = []
+    assert storage_exchange(b'{"ok":true,"result":"ok"}\n' + state + b"\n", saved) == "ok"
+    assert saved == [state.decode()]
+
+
+@pytest.mark.parametrize(("payload", "error"), [
+    (b'{"ok":true,"result":"ok"}\nNaN\n', "valid JSON"),
+    (b'{"ok":true,"result":"ok"}\n{"x":NaN,"x":2}\n', "valid JSON"),
+    (b'{"ok":true,"result":"ok"}\n"\\ud800"\n', "valid JSON"),
+    (b'{"ok":true,"result":"ok"}\nnull\nnull\n', "storage response"),
+    (b'{"ok":true,"result":"ok"}\n"' + b"x" * runner.MAX_STORAGE + b'"\n', "storage exceeded 64 KB"),
+    (b'{"ok":true,"result":"' + b"x" * runner.MAX_OUTPUT + b'"}\nnull\n', "output exceeded 16 KB"),
+    (b'{"ok":false,"error":"failed"}\nnull\n', "failed"),
+])
+def test_invalid_storage_exchange_cannot_write(payload, error):
+    saved = []
+    with pytest.raises(PluginError, match=error):
+        storage_exchange(payload, saved)
+    assert saved == []
 
 
 def test_timeout_kills_process_group(monkeypatch):

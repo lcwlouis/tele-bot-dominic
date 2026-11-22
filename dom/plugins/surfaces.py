@@ -54,7 +54,7 @@ def _hint(error: Exception) -> str:
     """What the owner can do about the common failure: a plugin that tries to keep files."""
     text = str(error)
     if "Read-only file system" in text or "No space left" in text:
-        return " (plugins cannot save files between runs; ask Dom for a version that keeps nothing)"
+        return " (plugins cannot save files between runs; an offline version can use plugin storage)"
     return ""
 
 

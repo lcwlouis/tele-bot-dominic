@@ -27,6 +27,7 @@ from dom.briefs import list_briefs, markdown_blocks
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE
+from dom.plugins.trial import STORAGE_NOTICE
 from dom.presence import read_habits
 from dom.skills import skill_diff
 from dom.telegram import gate, owner
@@ -45,6 +46,7 @@ templates = Environment(
 )
 templates.filters.update(money=lambda amount: f"${amount:,.2f}", urlencode_query=urlencode)
 templates.globals["NETWORK_NOTICE"] = NETWORK_NOTICE
+templates.globals["STORAGE_NOTICE"] = STORAGE_NOTICE
 WHO = "The owner"
 KINDS = {
     "chat": "Replies", "triage": "Triage", "media": "Photos and voice", "memory": "Memory",

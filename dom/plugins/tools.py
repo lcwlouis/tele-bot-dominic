@@ -11,8 +11,9 @@ from dom.desktop.tools import untrusted
 from dom import guard
 from dom.guard import check_local_private_text
 from dom.models import Scope
-from dom.plugins.manifest import MAX_BYTES, MAX_FILES, Plugin, ToolManifest
+from dom.plugins.manifest import Plugin, ToolManifest
 from dom.plugins.runner import MAX_OUTPUT, PluginError
+from dom.skills import BODY_LIMIT
 from dom.tools import Tool, TurnCtx
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
@@ -38,29 +39,17 @@ async def _draft(args: dict, ctx: TurnCtx) -> str:
 DRAFT_PLUGIN_TOOL = Tool(
     name="draft_plugin",
     description=(
-        "Draft a Python plugin for owner review. Provide plugin.toml separately and include main.py in files. "
-        "Use only public information. Never include private notes, chat history, memory, or credentials. "
-        "plugin.toml has name, description, version (optional network, timeout_seconds, memory_mb first), then "
-        "[[tools]] (name, description, parameters JSON schema, scopes), [[commands]] (name, description, scopes; "
-        "a Telegram /name, default scope owner_dm) and [[panels]] (id, title; a dashboard panel). "
-        "main.py: from _dom import tool, command, panel, run, then decorate functions named as declared: "
-        "tool def name(**args) -> str; command def name(text, scope) -> str (plain text, gets only the text "
-        'after /name); panel def id() -> dict with only "title", "paragraphs" [str], "items" [[key, value]] and '
-        '"table" {"columns": [...], "rows": [[...]]}; no HTML; end with run(). Stdlib only, offline unless network = true. '
-        "Every call starts fresh in a sandbox: the plugin folder is read-only, /tmp is emptied after each call and "
-        "there is no home folder, so a plugin cannot keep files, history or settings between calls; build it to work "
-        "from its input alone, and say so to your friend if what they asked needs memory. version is a short "
-        'string like "1.0.0", and description must be the same text as in plugin.toml.'
+        "Request a Python plugin draft for owner review. Describe what it should do, the agent tools, Telegram "
+        "commands or dashboard panels it needs, and whether it needs offline storage or network access. "
+        "Use only public information. Leave out private notes, chat history, memory and credentials."
     ),
     schema={
         "type": "object",
         "properties": {
             "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,31}$"},
-            "description": {"type": "string", "maxLength": 200},
-            "files": {"type": "object", "maxProperties": MAX_FILES - 1, "additionalProperties": {"type": "string"}},
-            "manifest_toml": {"type": "string", "maxLength": MAX_BYTES},
+            "brief": {"type": "string", "maxLength": BODY_LIMIT},
         },
-        "required": ["name", "description", "files", "manifest_toml"],
+        "required": ["name", "brief"],
     },
     handler=_draft,
     scopes={"owner_dm"},

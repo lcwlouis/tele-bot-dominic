@@ -29,8 +29,16 @@ def test_manifest_defaults():
     assert manifest.version == "1"
     assert manifest.tools[0].scopes == ("owner_dm",)
     assert manifest.network is False
+    assert manifest.storage is False
     assert manifest.timeout_seconds == 10
     assert manifest.memory_mb == 64
+
+
+def test_storage_is_an_offline_opt_in():
+    manifest = MANIFEST.replace('version = "1"', 'version = "1"\nstorage = true')
+    assert Manifest.parse(manifest).storage
+    with pytest.raises(ValueError, match="offline"):
+        Manifest.parse(manifest.replace("storage = true", "storage = true\nnetwork = true"))
 
 
 @pytest.mark.parametrize(("old", "new"), [

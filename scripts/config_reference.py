@@ -15,6 +15,7 @@ MODEL_ROLES = {
     "triage": ("Built in", "Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe."),
     "media": ("Built in", "Attachment descriptions, transcriptions and desktop screenshot descriptions."),
     "search": ("Optional", "OpenRouter web search. If the table is present, omitted fields use the starter search settings."),
+    "drafting": ("Built in", "Endpoint for plugin and skill drafts. The default is Claude Haiku 5.5 with low thinking."),
 }
 
 
@@ -61,7 +62,7 @@ def render() -> str:
         "Each `[models.<name>]` table uses the following keys. Use HTTPS for a provider on a different host.",
         table(fields(ModelEndpoint, "models.<name>.")),
         "### Starter model settings",
-        "Init creates the four tables below. Omitted triage and media tables use these defaults. "
+        "Init creates the five tables below. Omitted triage, media and drafting tables use these defaults. "
         "A hand-written config must supply `[models.chat]`. Omitting `[models.search]` disables search.",
         table(
             (f"models.{role}.{key}", literal(value), ModelEndpoint.model_fields[key].description)

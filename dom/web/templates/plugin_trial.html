@@ -1,0 +1,8 @@
+{% if trial %}
+<details{% if trial.error %} open{% endif %}>
+  <summary>Test run {{ "failed" if trial.error else "passed" }} · {{ trial.label }} · {{ trial.elapsed_ms }} ms</summary>
+  <pre class="diff">{{ trial.error or trial.output or "No output." }}</pre>
+</details>
+{% else %}
+<p class="fog">Test run unavailable.</p>
+{% endif %}

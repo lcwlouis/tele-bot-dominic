@@ -28,6 +28,12 @@ base_url = "https://openrouter.ai/api/v1"
 model = "deepseek/deepseek-v4.1-flash-1017"
 api_key_env = "OPENROUTER_API_KEY"
 
+[models.drafting]
+base_url = "https://openrouter.ai/api/v1"
+model = "anthropic/claude-haiku-5.5"
+api_key_env = "OPENROUTER_API_KEY"
+reasoning_effort = "low"
+
 [desktop]
 mode = "off"
 image = "ghcr.io/agent-infra/sandbox:latest"

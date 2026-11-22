@@ -87,6 +87,7 @@ class Manifest:
     memory_mb: int
     commands: tuple[CommandManifest, ...] = ()
     panels: tuple[PanelManifest, ...] = ()
+    storage: bool = False
 
     @classmethod
     def parse(cls, text: str) -> Manifest:
@@ -128,8 +129,13 @@ class Manifest:
         network = data.get("network", False)
         if type(network) is not bool:
             raise ValueError("network must be a boolean.")
-        if any(set(tool) & {"network", "timeout_seconds", "memory_mb"} for tool in tools):
-            raise ValueError("Set network, timeout_seconds and memory_mb before the tools tables.")
+        storage = data.get("storage", False)
+        if type(storage) is not bool:
+            raise ValueError("storage must be a boolean.")
+        if storage and network:
+            raise ValueError("Plugin storage requires an offline sandbox.")
+        if any(set(tool) & {"network", "storage", "timeout_seconds", "memory_mb"} for tool in tools):
+            raise ValueError("Set network, storage, timeout_seconds and memory_mb before the tools tables.")
         commands, panels = _commands(data.get("commands", [])), _panels(data.get("panels", []))
         if not (parsed or commands or panels):
             raise ValueError("Manifest must declare at least one tool, command or panel.")
@@ -138,7 +144,7 @@ class Manifest:
             raise ValueError('A plugin with network access can only offer tools and commands in the "owner_dm" scope.')
         return cls(name, description, version, tuple(parsed), network,
                    _integer(data, "timeout_seconds", 10, 1, 30), _integer(data, "memory_mb", 64, 16, 256),
-                   commands, panels)
+                   commands, panels, storage)
 
 
 def _surface_name(value: object, field: str) -> str:

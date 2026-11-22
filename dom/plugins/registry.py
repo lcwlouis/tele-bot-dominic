@@ -18,6 +18,8 @@ from dom.home import Home
 from dom.plugins.manifest import (
     CommandManifest, Manifest, PanelManifest, Plugin, ToolManifest, read_plugin, validate_name,
 )
+from dom.plugins.runner import PluginRunner
+from dom.plugins.trial import test_run
 from dom.store import Store
 
 log = logging.getLogger(__name__)
@@ -27,14 +29,20 @@ DRAFT_PREFIX = ".draft-"  # staging folders made by _write; never plugins
 
 def _surfaces(manifest: Manifest) -> tuple:
     """What a plugin offers and where: anything here changing is shown to the owner as a surface change."""
-    return manifest.tools, manifest.commands, manifest.panels, manifest.network
+    return manifest.tools, manifest.commands, manifest.panels, manifest.network, manifest.storage
 
 
 class PluginRegistry:
-    def __init__(self, home: Home, store: Store, on_change: Callable[[], Awaitable[None]] | None = None):
+    def __init__(
+        self, home: Home, store: Store, on_change: Callable[[], Awaitable[None]] | None = None,
+        *, runner: PluginRunner | None = None,
+    ):
         self.home = home.scoped(allow_private=False)
         self.store = store
         self.lock = asyncio.Lock()
+        self.runner = runner or PluginRunner(home=home.root, store=store)
+        self._trial_lock = asyncio.Lock()
+        self._trials: dict[tuple[str, str], asyncio.Task[dict]] = {}
         self.on_change = on_change  # called after the owner approves, rejects or disables a plugin
 
     def _read_all(self) -> dict[str, Plugin]:
@@ -108,7 +116,26 @@ class PluginRegistry:
         async with self.lock:
             await asyncio.to_thread(self._clean_drafts)
 
-    async def draft(self, plugin: Plugin) -> None:
+    def _queue_trial(self, plugin: Plugin) -> asyncio.Task[dict]:
+        key = plugin.manifest.name, plugin.hash
+        if key not in self._trials:
+            self._trials[key] = asyncio.create_task(self._run_trial(plugin))
+        return self._trials[key]
+
+    async def _run_trial(self, plugin: Plugin) -> dict:
+        key = plugin.manifest.name, plugin.hash
+        try:
+            async with self._trial_lock:
+                result = await asyncio.to_thread(test_run, self.runner, plugin)
+                try:
+                    await self.store.set_plugin_test_run(*key, result)
+                except Exception:
+                    log.exception("Could not save plugin test result for %s", key[0])
+                return result
+        finally:
+            self._trials.pop(key, None)
+
+    async def draft(self, plugin: Plugin) -> dict:
         async with self.lock:
             name = plugin.manifest.name
             rows = await self.store.list_plugins()
@@ -124,28 +151,42 @@ class PluginRegistry:
             await asyncio.to_thread(self._write, plugin)
             await self.store.stage_plugins([(name, plugin.hash, json.dumps(asdict(plugin.manifest)))])
             await self.store.set_plugin_status(name, plugin.hash, "pending")
+            trial = self._queue_trial(plugin)
+        return await asyncio.shield(trial)
 
     async def _scan(self) -> dict[str, Plugin]:
         found = await asyncio.to_thread(self._read_all)
         await self.store.stage_plugins([
             (name, plugin.hash, json.dumps(asdict(plugin.manifest))) for name, plugin in found.items()
         ])
+        for row in await self.store.list_plugins():
+            plugin = found.get(row["name"])
+            if plugin and row["status"] == "pending" and row["test_run_json"] is None and plugin.hash == row["hash"]:
+                self._queue_trial(plugin)
         return found
 
     async def scan(self) -> dict[str, Plugin]:
         async with self.lock:
-            return await self._scan()
+            found = await self._scan()
+            trials = self._matching_trials(found)
+        await asyncio.gather(*(asyncio.shield(trial) for trial in trials))
+        return found
+
+    def _matching_trials(self, found: dict[str, Plugin]) -> list[asyncio.Task[dict]]:
+        return [trial for (name, digest), trial in self._trials.items()
+                if name in found and found[name].hash == digest]
 
     async def listing(self) -> list[dict]:
-        async with self.lock:
-            found = await self._scan()
-            return [
-                {
-                    **row, "available": row["name"] in found and found[row["name"]].hash == row["hash"],
-                    "network": json.loads(row["manifest_json"])["network"],
-                }
-                for row in await self.store.list_plugins()
-            ]
+        found = await self.scan()
+        return [
+            {
+                **row, "available": row["name"] in found and found[row["name"]].hash == row["hash"],
+                "network": json.loads(row["manifest_json"])["network"],
+                "storage": json.loads(row["manifest_json"]).get("storage", False),
+                "test_run": json.loads(row["test_run_json"] or "null"),
+            }
+            for row in await self.store.list_plugins()
+        ]
 
     async def _approved(self) -> list[Plugin]:
         found = await self._scan()
@@ -182,10 +223,14 @@ class PluginRegistry:
                     surfaces_changed = _surfaces(Manifest.parse(old["plugin.toml"])) != _surfaces(plugin.manifest)
                 except (ValueError, tomllib.TOMLDecodeError):
                     surfaces_changed = True
-            return {
+            result = {
                 "plugin": plugin, "status": row["status"], "documents": documents, "reviewed": reviewed,
-                "surfaces_changed": surfaces_changed,
+                "surfaces_changed": surfaces_changed, "test_run": json.loads(row["test_run_json"] or "null"),
             }
+            trial = self._trials.get((name, digest))
+        if trial is not None:
+            result["test_run"] = await asyncio.shield(trial)
+        return result
 
     async def mark_reviewed(self, name: str, digest: str) -> None:
         key = f"plugin-reviewed:{name}:{digest}"
@@ -212,6 +257,9 @@ class PluginRegistry:
             if decision == "approve":
                 if not await self.store.kv_get(f"plugin-reviewed:{name}:{digest}"):
                     return "Open the dashboard to review this plugin before approving."
+                trial = self._trials.get((name, digest))
+                if trial is not None:
+                    await asyncio.shield(trial)
                 snapshot = {path: content.decode("utf-8") for path, content in found[name].files.items()}
             if not await self.store.decide_plugin(name, digest, decision, snapshot):
                 return "already handled"

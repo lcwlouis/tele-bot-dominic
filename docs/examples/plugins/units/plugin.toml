@@ -3,6 +3,7 @@ description = "Convert units"  # up to 200 characters
 version = "1"
 # Optional, and they must come before any [[...]] table:
 # network = false              # true allows outgoing internet connections
+# storage = false              # true lets an offline plugin keep one JSON blob
 # timeout_seconds = 10         # 1 to 30, wall time and CPU time
 # memory_mb = 64               # 16 to 256
 

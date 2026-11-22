@@ -66,6 +66,7 @@ class App:
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | None = None
     gifs: GifSearch | None = None
+    draft_client: ChatClient | None = None
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
@@ -81,8 +82,8 @@ class App:
         def now() -> datetime:
             return datetime.now(timezone.utc)
 
-        self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self))
-        self.plugin_runner = PluginRunner(home=self.home.root)
+        self.plugin_runner = PluginRunner(home=self.home.root, store=self.store)
+        self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self), runner=self.plugin_runner)
         self.proposals = Proposals(self)
         self.stickers = Stickers(self.home, self.bot, lambda: self.dispatch.now())
         self.memory_import = MemoryImport(self)

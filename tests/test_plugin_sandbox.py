@@ -12,6 +12,7 @@ import pytest
 
 from dom.plugins.manifest import read_plugin
 from dom.plugins.runner import PluginError, PluginRunner
+from dom.store import Store
 from test_plugins import MANIFEST, write_plugin
 
 pytestmark = pytest.mark.skipif(
@@ -246,3 +247,68 @@ def test_commands_and_panels_run_in_the_same_sandbox(tmp_path):
     assert (text, scope) == ("hi there", "group") and set(ast.literal_eval(env)) <= {"PATH", "PWD", "LC_CTYPE"}
     panel = runner.run_request(folder, {"panel": "summary"}, plugin.manifest, approved_hash=plugin.hash)
     assert panel == {"title": "Week", "items": [["home visible", False]]}
+
+
+STORAGE_MAIN = """\
+from _dom import load_storage, run, save_storage, self_test, tool
+
+\x40self_test
+def check():
+    assert load_storage() is None
+    save_storage({"count": 99})
+    return "checked"
+
+\x40tool
+def length(action="increment"):
+    count = (load_storage() or {}).get("count", 0) + 1
+    if action == "oversize":
+        save_storage("x" * 65536)
+    elif action == "invalid":
+        save_storage({"x": float("nan")})
+    else:
+        save_storage({"count": count})
+    return str(count)
+
+run()
+"""
+
+
+async def test_storage_round_trip_is_per_plugin_and_trials_discard_writes(tmp_path):
+    manifest = MANIFEST.replace('version = "1"', 'version = "1"\nstorage = true')
+    folder = write_plugin(tmp_path, manifest)
+    (folder / "main.py").write_text(STORAGE_MAIN)
+    other = folder.with_name("sample")
+    other.mkdir()
+    (other / "main.py").write_text(STORAGE_MAIN)
+    (other / "plugin.toml").write_text(manifest.replace('"convert"', '"sample"'))
+    first, second = read_plugin(folder), read_plugin(other)
+    store = Store(tmp_path, owner_id=None)
+    try:
+        instance = PluginRunner(home=tmp_path, store=store)
+        await store.stage_plugins([
+            (item.manifest.name, item.hash, '{"storage": true}') for item in (first, second)
+        ])
+        sample = {"tool": "length", "args": {}}
+        assert instance.trial(first, sample) == {"output": "checked", "self_test": True}
+        for item in (first, second):
+            await store.set_plugin_status(item.manifest.name, item.hash, "approved")
+            assert store.read_plugin_storage(item.manifest.name, item.hash) is None
+
+        def call(item, **args):
+            directory = folder.with_name(item.manifest.name)
+            return instance.run(directory, "length", args, item.manifest, approved_hash=item.hash)
+
+        assert call(first) == "1"
+        assert call(first) == "2"
+        assert call(second) == "1"
+        assert instance.trial(first, sample) == {"output": "checked", "self_test": True}
+        with pytest.raises(PluginError, match="64 KB"):
+            call(first, action="oversize")
+        with pytest.raises(PluginError, match="JSON"):
+            call(first, action="invalid")
+        assert call(first) == "3"
+        await store.drop_plugin_storage("convert")
+        assert call(first) == "1"
+        assert call(second) == "2"
+    finally:
+        store.close()

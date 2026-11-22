@@ -46,6 +46,9 @@ Cloudflare. Keep local bearer-token testing on loopback.
   scope-filtered prompt and applicable tool results. Background memory and
   reflection calls also send context relevant to the notes or journal they
   update. An external provider may therefore receive owner DM content.
+- **Drafting model** receives the public brief or candidate for a plugin or
+  skill. Dom screens it for instance credentials and verbatim private notes
+  before sending it to `models.drafting.base_url`.
 - **Media provider** receives supported attachments for transcription or
   description, and screenshots when the desktop worker requests a description.
 - **Web search** submits the query to `models.search.base_url` (OpenRouter by
@@ -82,8 +85,11 @@ panel receives nothing. Command replies are sent as plain text and are not added
 to chat history. Panels return data that Dom renders with its own template.
 Every plugin call runs in a separate Bubblewrap process with a cleared
 environment, a bounded scratch filesystem and restricted system calls. Dom
-requires owner approval of the code version and probes isolation before running
-a plugin. Plugins are offline by default. A network-enabled plugin can send what
+probes isolation before running a plugin. Staging trials use synthetic input
+and empty disposable state in an offline sandbox. Live calls require approval of
+the exact code version. Offline plugins may opt in to one persistent JSON blob
+shared by their own tools, commands and panels across chat scopes.
+A network-enabled plugin can send what
 it receives to external services, and its commands work only in the owner DM.
 Dom screens tool arguments and command text for known secrets and verbatim owner
 notes, and can run the Jev leak check for network plugin tool calls. See
