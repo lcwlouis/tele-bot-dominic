@@ -632,7 +632,9 @@ class Dispatcher:
             await self.app.store.prune_t3()
 
     async def _prune_turn_log(self) -> None:
-        await self.app.store.prune_turn_history(self.now() - timedelta(days=30))
+        before = self.now() - timedelta(days=30)
+        await self.app.store.prune_turn_history(before)
+        await self.app.store.prune_cross_chat(before)
 
     async def _background_jobs(self) -> None:
         if self.app.menu_dirty:

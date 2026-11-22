@@ -303,6 +303,7 @@ async def perform(
     record: bool = True,
     disable_notification: bool = False,
     retry_refused: bool = False,
+    authorize_message: Callable[[], Awaitable[None]] | None = None,
     typed_already: float | None = None,
     reply_elapsed: float = 0.0,
     before_send: Callable[[], None] | None = None,
@@ -418,13 +419,15 @@ async def perform(
         try:
             if not await enter_send_boundary():
                 return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
-            with turn_log.timed("send"):
-                sent = await retry_telegram(
-                    lambda b=bubble, r=reply, o=options: bot.send_message(
-                        chat_id, b.text, reply_parameters=r, message_thread_id=thread_id, **o,
-                    ),
-                    sleep=sleep, budget=flood, retry_refused=retry_refused,
+            async def send_message():
+                if authorize_message is not None:
+                    await authorize_message()
+                return await bot.send_message(
+                    chat_id, bubble.text, reply_parameters=reply, message_thread_id=thread_id, **options,
                 )
+
+            with turn_log.timed("send"):
+                sent = await retry_telegram(send_message, sleep=sleep, budget=flood, retry_refused=retry_refused)
         except TelegramMigrateToChat:
             if on_migrate is not None:
                 on_migrate(Actions(

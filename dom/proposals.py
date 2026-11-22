@@ -269,8 +269,12 @@ class Proposals:
             review = review_button(app, body)
             if review is None:
                 text += f"\nOpen {plugin_review_path(body)} in the dashboard to review."
+        from dom.telegram.executor import FloodBudget, retry_telegram
+
+        budget = None
         if row["kind"] == "cross_chat":
             options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
+            budget = FloodBudget()
         sent = None
         for start in range(0, len(text), 2000):
             markup = None
@@ -284,13 +288,11 @@ class Proposals:
             if row["kind"] == "memory_edit":  # model-written diff: shown verbatim, nothing in it becomes tappable
                 options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
                 entities = [MessageEntity(type="pre", offset=0, length=len(chunk.encode("utf-16-le")) // 2)]
-            from dom.telegram.executor import retry_telegram
-
             sent = await retry_telegram(
                 lambda c=chunk, m=markup, e=entities, o=dict(options): app.bot.send_message(
                     app.owner_id, c, disable_notification=True, reply_markup=m, entities=e, **o,
                 ),
-                sleep=app.sleep,
+                sleep=app.sleep, budget=budget,
             )
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):

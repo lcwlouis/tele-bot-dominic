@@ -55,6 +55,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (20, "0019_memory_edit_proposals.sql"),
     (21, "0020_topics_and_migrations.sql"),
     (22, "0021_topic_reads_and_cooldowns.sql"),
+    (23, "0022_cross_chat.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -499,6 +500,7 @@ class Store:
                 "UPDATE chats SET authorization_status = 'left', updated_at = ? WHERE chat_id = ?",
                 (now, old_id),
             )
+            self._rekey_cross_chat(conn, int(old_id), int(new_id), effective_title)
             # Seed the new supergroup history with one event line noting the upgrade.
             self._insert_message(
                 conn,
@@ -1949,6 +1951,36 @@ class Store:
 
     # ---- cross-chat delivery -----------------------------------------------
 
+    @staticmethod
+    def _rekey_cross_chat(conn: sqlite3.Connection, old: int, new: int, title: str) -> None:
+        conn.execute("UPDATE cross_chat SET source_chat_id = ? WHERE source_chat_id = ?", (new, old))
+        moved = conn.execute(
+            "UPDATE cross_chat SET target_chat_id = ? WHERE target_chat_id = ? RETURNING proposal_id", (new, old),
+        ).fetchall()
+        for row in moved:
+            if row["proposal_id"] is not None:
+                conn.execute(
+                    "UPDATE proposals SET body_json = json_set(body_json, '$.target_chat_id', ?, '$.target_title', ?), "
+                    "title = ? WHERE id = ?",
+                    (new, title[:128], f'Send a message to "{title[:128]}"', row["proposal_id"]),
+                )
+
+    async def rekey_outstanding_cross_chat(self) -> None:
+        """Pick up group upgrades made by a previous release that did not know about these rows."""
+        def rekey() -> None:
+            with self._tx() as conn:
+                candidates = conn.execute(
+                    "SELECT m.old_chat_id, m.new_chat_id, c.title FROM chat_migrations m JOIN chats c "
+                    "ON c.chat_id = m.new_chat_id WHERE EXISTS (SELECT 1 FROM cross_chat x "
+                    "WHERE x.status IN ('awaiting_approval', 'queued', 'sending') "
+                    "AND (x.target_chat_id = CAST(m.old_chat_id AS INTEGER) "
+                    "OR x.source_chat_id = CAST(m.old_chat_id AS INTEGER)))",
+                ).fetchall()
+                for old, new, title in candidates:
+                    self._rekey_cross_chat(conn, int(old), int(new), title or new)
+
+        await self._run(rekey)
+
     async def person_handle(self, user_id: int) -> str:
         def select() -> str:
             row = self._conn.execute(
@@ -1987,9 +2019,11 @@ class Store:
                     return False
                 return conn.execute(
                     "INSERT INTO cross_chat (kind, source_chat_id, target_chat_id, text, reason, sender_user_id, "
-                    "source_msg_id, status, created_at, queued_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?) ON CONFLICT DO NOTHING",
-                    (kind, source, self.owner_id, text, reason, sender, msg_id, at, at, at),
+                    "source_message, status, created_at, queued_at, updated_at, status_history) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, json_array(json_object('status', 'queued', 'at', ?))) "
+                    "ON CONFLICT DO NOTHING",
+                    (kind, source, self.owner_id, text, reason, sender,
+                     f"{source}:{msg_id}" if msg_id is not None else None, at, at, at, at),
                 ).rowcount == 1
 
         return await self._run(insert)
@@ -1997,8 +2031,9 @@ class Store:
     def _cross_chat_send_count(self, day_start: str) -> int:
         return self._conn.execute(
             "SELECT COUNT(*) FROM cross_chat WHERE kind = 'message' AND "
-            "(status = 'sent' OR (status = 'dropped' AND drop_reason = 'may not have been sent')) AND sending_at >= ?",
-            (day_start,),
+            "((status = 'sent' AND updated_at >= ?) OR "
+            "(status = 'dropped' AND drop_reason = 'may not have been sent' AND sending_at >= ?))",
+            (day_start, day_start),
         ).fetchone()[0]
 
     async def create_cross_chat_card(self, body: dict, at: str, day_start: str) -> None:
@@ -2019,8 +2054,9 @@ class Store:
                     raise ValueError("The daily limit for messages to other chats has been reached.")
                 body["item_id"] = conn.execute(
                     "INSERT INTO cross_chat (kind, source_chat_id, target_chat_id, text, reason, status, "
-                    "created_at, updated_at) VALUES ('message', ?, ?, ?, ?, 'awaiting_approval', ?, ?) RETURNING id",
-                    (source, target, body["text"], body["reason"], at, at),
+                    "created_at, updated_at, status_history) VALUES ('message', ?, ?, ?, ?, 'awaiting_approval', ?, ?, "
+                    "json_array(json_object('status', 'awaiting_approval', 'at', ?))) RETURNING id",
+                    (source, target, body["text"], body["reason"], at, at, at),
                 ).fetchone()[0]
                 title = f'Send a message to "{body["target_title"]}"'
                 proposal_id = conn.execute(
@@ -2107,8 +2143,9 @@ class Store:
                 conn.execute(
                     "UPDATE cross_chat SET status = ?, updated_at = ?, drop_reason = ?, sent_msg_id = ?, "
                     "queued_at = CASE WHEN ? = 'queued' THEN COALESCE(queued_at, ?) ELSE queued_at END, "
-                    "sending_at = CASE WHEN ? = 'sending' THEN ? ELSE sending_at END WHERE id = ?",
-                    (status, at, why, sent_msg_id, status, at, status, at, item_id),
+                    "sending_at = CASE WHEN ? = 'sending' THEN ? ELSE sending_at END, "
+                    "status_history = json_insert(status_history, '$[#]', json_object('status', ?, 'at', ?)) WHERE id = ?",
+                    (status, at, why, sent_msg_id, status, at, status, at, status, at, item_id),
                 )
                 if event and self.owner_id is not None:
                     self._insert_owner_event(conn, event, at)
@@ -2122,7 +2159,7 @@ class Store:
         await self._run(
             self._conn.execute,
             "DELETE FROM cross_chat WHERE created_at < ? AND status IN ('sent', 'dropped')",
-            (before.isoformat(),),
+            (before.astimezone(timezone.utc).isoformat(),),
         )
 
     async def create_proposal(
