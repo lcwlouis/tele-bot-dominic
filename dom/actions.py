@@ -165,6 +165,7 @@ class Actions(BaseModel):
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     gif: str | None = Field(default=None, min_length=1, max_length=50, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list)
+    elsewhere: str | None = None
 
     @model_validator(mode="before")
     @classmethod

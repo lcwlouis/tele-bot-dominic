@@ -25,7 +25,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPrevie
 from dom import guard, salvage, turn_log
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
-from dom.attention import Attention, Tier
+from dom.attention import FACT_INSTRUCTION, Attention, Tier, filter_fact
 from dom.cross_chat import CrossChat
 from dom.agent import NoFinalAnswer, execute_tool_call, malformed_shape, parse_actions, run_turn
 from dom.desktop.sandbox import DEFAULT
@@ -1598,13 +1598,27 @@ class Dispatcher:
                         typing = executor.TypingIndicator(app.bot, chat_id, thread_id, monotonic)
                     reply_started = monotonic()
                     with turn_log.attention_visit(self.attention, visit, started, self.now):
-                        actions = await self._compose_turn(
-                            chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
-                            extra_note=note, attempt=attempt, skill=skill,
-                        )
-                        if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
-                            turn_log.outcome("Held back: possible leak")
-                            return False, False
+                        title = live.chat_title if live else ""
+                        fact = ""
+                        try:
+                            actions = await self._compose_turn(
+                                chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
+                                extra_note=note, attempt=attempt, skill=skill,
+                            )
+                            if await self._hold_for_leak_check(chat_id, scope, actions, title):
+                                turn_log.outcome("Held back: possible leak")
+                                return False, False
+                            if scope != "owner_dm" and actions.elsewhere:
+                                if not title:
+                                    title = (await app.store.get_chat_auth_status(chat_id))["title"]
+                                    title = title or (newest.sender_name if scope == "friend_dm" else str(chat_id))
+                                recent = [
+                                    text for message in window[-20:]
+                                    for text in (message.text, message.previous_seen_text) if text
+                                ]
+                                fact = filter_fact(actions.elsewhere, recent)
+                        finally:
+                            self.attention.finish_conversation(chat_id, scope, self.now(), title=title, fact=fact)
             finally:
                 if started is None:
                     attempt.trace.add_timing("queue_wait", round((monotonic() - queued_at) * 1000))
@@ -2000,6 +2014,11 @@ class Dispatcher:
             note += f"\nnotes updated since {since:%H:%M}; call read_notes only if your answer depends on something saved since then"
         if skill is not None and "skill_view" in offered:  # offered exactly as skill_view offers it: by scope
             note += await self._skill_note(skill)
+        if attempt is not None:
+            if scope != "owner_dm":
+                note += f"\n{FACT_INSTRUCTION}"
+            if elsewhere := self.attention.elsewhere(chat_id, scope, self.now()):
+                note += f"\n{elsewhere}"
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
             sliders=sliders, preset=preset, memory_text=snap.memory_text, notes_blocks=snap.notes_blocks,
@@ -2044,7 +2063,7 @@ class Dispatcher:
                 attempt.reminder_ids = casual_ids
         if final_bot_turn:
             bubbles = actions.bubbles[:1] if not actions.no_response else []
-            actions = Actions(bubbles=bubbles or [Bubble(text="I'll leave it there for now.")])
+            actions = Actions(bubbles=bubbles or [Bubble(text="I'll leave it there for now.")], elsewhere=actions.elsewhere)
         return actions
 
     async def _send_coding_notice(self, chat_id: int, notes: list[str]) -> None:
