@@ -55,6 +55,12 @@ class ChatClient:
         body: dict = {"model": self.endpoint.model, "messages": messages}
         if tools:
             body["tools"] = tools
+        effort = self.endpoint.reasoning_effort
+        if effort is not None:
+            if self.host == "openrouter.ai" or (self.host or "").endswith(".openrouter.ai"):
+                body["reasoning"] = {"effort": effort}
+            else:
+                body["reasoning_effort"] = effort
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         url = f"{self.endpoint.base_url.rstrip('/')}/chat/completions"
         kind = request_kind("chat")

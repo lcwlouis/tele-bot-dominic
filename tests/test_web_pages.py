@@ -383,7 +383,7 @@ async def test_empty_plugin_and_brief_pages_say_what_to_do(make_app, browser):
         briefs = (await client.get("/briefs")).text
     assert "No plugins are installed." in plugins
     assert "Ask Dom in your DM to write a plugin for something he does often." in plugins
-    assert "You'll review the code here before it runs." in plugins
+    assert "Review the code here before enabling it." in plugins
     assert "No core-change briefs yet." in briefs
     assert "When Dom thinks his own code should change, he writes a brief here for a coding agent." in briefs
 

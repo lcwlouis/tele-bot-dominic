@@ -214,7 +214,7 @@ model = "test-fallback"
     mock_http(monkeypatch, handler)
     assert main(["doctor", str(home), "--online"]) == 0
     out = capsys.readouterr().out
-    assert calls.count("completions") == 4 and calls.count("key") == 1
+    assert calls.count("completions") == 5 and calls.count("key") == 1
     assert {"getMe", "getMyCommands", "decisions"} <= set(calls)
     assert "warn Telegram privacy:" in out and "BotFather" in out
     assert "ok Telegram getMyCommands:" in out and "$3.25" in out

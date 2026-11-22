@@ -50,6 +50,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (15, "0014_desktop_containers.sql"),
     (16, "0015_self_work.sql"),
     (17, "0016_turn_timings.sql"),
+    (19, "0018_plugin_storage.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1296,11 +1297,22 @@ class Store:
     async def stage_plugins(self, manifests: list[tuple[str, str, str]]) -> None:
         def stage() -> None:
             with self._tx() as conn:
+                # Older versions ignored the storage manifest key. Require a new review if those
+                # exact bytes previously received approval without this capability.
+                for name, digest, manifest in manifests:
+                    if json.loads(manifest).get("storage") and conn.execute(
+                        "UPDATE plugins SET status = 'pending', manifest_json = ?, test_run_json = NULL, "
+                        "updated_at = ? WHERE name = ? AND hash = ? AND status != 'disabled' "
+                        "AND json_type(manifest_json, '$.storage') IS NULL",
+                        (manifest, _now(), name, digest),
+                    ).rowcount:
+                        conn.execute("DELETE FROM kv WHERE key = ?", (f"plugin-reviewed:{name}:{digest}",))
                 conn.executemany(
                     "INSERT INTO plugins (name, status, hash, manifest_json, updated_at) "
                     "VALUES (?, 'pending', ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
                     "status = CASE WHEN plugins.status IN ('approved', 'disabled') THEN 'pending' ELSE plugins.status END, "
-                    "hash = excluded.hash, manifest_json = excluded.manifest_json, updated_at = excluded.updated_at "
+                    "hash = excluded.hash, manifest_json = excluded.manifest_json, updated_at = excluded.updated_at, "
+                    "test_run_json = NULL "
                     "WHERE plugins.hash != excluded.hash",
                     [(name, digest, manifest, _now()) for name, digest, manifest in manifests],
                 )
@@ -1315,6 +1327,39 @@ class Store:
 
     async def list_plugins(self) -> list[dict[str, Any]]:
         return await self._run(lambda: [dict(row) for row in self._conn.execute("SELECT * FROM plugins ORDER BY name")])
+
+    async def set_plugin_test_run(self, name: str, digest: str, result: dict) -> None:
+        await self._run(lambda: self._conn.execute(
+            "UPDATE plugins SET test_run_json = ? WHERE name = ? AND hash = ?",
+            (json.dumps(result), name, digest),
+        ))
+
+    def read_plugin_storage(self, name: str, digest: str) -> str | None:
+        """Read state for a pinned approved version, from the sandbox worker thread."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT plugin_storage.value_json FROM plugins LEFT JOIN plugin_storage USING (name) "
+                "WHERE name = ? AND hash = ? AND approved_hash = ? AND status = 'approved'",
+                (name, digest, digest),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Plugin is no longer approved.")
+            return row[0]
+
+    def write_plugin_storage(self, name: str, digest: str, value_json: str) -> None:
+        """Commit state only if this exact version is still approved."""
+        with self._lock:
+            updated = self._conn.execute(
+                "INSERT INTO plugin_storage (name, value_json) SELECT name, ? FROM plugins "
+                "WHERE name = ? AND hash = ? AND approved_hash = ? AND status = 'approved' "
+                "ON CONFLICT(name) DO UPDATE SET value_json = excluded.value_json",
+                (value_json, name, digest, digest),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Plugin is no longer approved.")
+
+    async def drop_plugin_storage(self, name: str) -> None:
+        await self._run(lambda: self._conn.execute("DELETE FROM plugin_storage WHERE name = ?", (name,)))
 
     async def set_plugin_status(self, name: str, digest: str, status: str) -> bool:
         return await self._run(self._set_plugin_status, name, digest, status)
