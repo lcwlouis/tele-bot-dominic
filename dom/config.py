@@ -21,6 +21,9 @@ class ModelEndpoint(BaseModel):
     base_url: str = Field(description="Provider API base URL, including its API version path.")
     model: str = Field(description="Provider model ID.")
     api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for a compatible endpoint without authentication.")
+    reasoning_effort: Literal["low", "medium"] | None = Field(
+        None, description="Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default.",
+    )
 
 
 class OpenersConfig(BaseModel):
@@ -324,7 +327,7 @@ def load_config(home: Path) -> Config:
 def validate_config(home: Path, raw: dict) -> Config:
     """Apply starter defaults and validate an instance's parsed TOML table."""
     defaults = starter_config()["models"]
-    models = {key: defaults[key] for key in ("triage", "media")}
+    models = {key: defaults[key] for key in ("triage", "media", "drafting")}
     models.update(raw.get("models", {}))
     if "search" in models:
         models["search"] = {**defaults["search"], **models["search"]}

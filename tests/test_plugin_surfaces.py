@@ -148,7 +148,7 @@ async def test_changing_declared_surfaces_needs_fresh_approval(make_app, browser
     assert await app.plugins.panel_entries() == []
     async with browser(app) as client:
         page = (await client.get(review_path(row))).text
-    assert "Declared commands, panels, tools or network access changed" in page
+    assert "Declared commands, panels, tools, network access or storage changed" in page
 
 
 async def test_command_names_cannot_collide_between_plugins(make_app, browser):

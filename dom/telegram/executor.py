@@ -17,6 +17,7 @@ from aiogram.types import (
 )
 from pydantic import ValidationError
 
+from dom import turn_log
 from dom.actions import Actions, SendFile
 from dom.gifs import GifSearch
 from dom.models import StoredMessage
@@ -106,7 +107,9 @@ async def _private_reply_to_dm(bot, store: Store, chat_id: int, texts: list[str]
     sent_ids = []
     try:
         for text in _pack([f"My private reply in {title} (it couldn't go there: {why}):", *texts]):
-            sent = await bot.send_message(owner, text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+            with turn_log.timed("send"):
+                sent = await bot.send_message(owner, text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+            turn_log.bubble_sent()
             sent_ids.append(sent.message_id)
     except Exception as exc:
         log.exception("could not move a refused private reply to the owner's DM")
@@ -167,13 +170,15 @@ async def perform(
         sent_ids = []
         for bubble in actions.bubbles:
             try:
-                sent = await bot.send_message(
-                    chat_id, bubble.text, message_thread_id=thread_id, ephemeral_message_parameters=parameters,
-                )
+                with turn_log.timed("send"):
+                    sent = await bot.send_message(
+                        chat_id, bubble.text, message_thread_id=thread_id, ephemeral_message_parameters=parameters,
+                    )
             except TelegramAPIError as error:
                 log.warning("ephemeral send failed in chat %s: %s", chat_id, error.message)
                 rest = actions.bubbles[len(sent_ids):]
                 return sent_ids + await _private_reply_to_dm(bot, store, chat_id, [b.text for b in rest], error.message)
+            turn_log.bubble_sent()
             sent_ids.append(sent.message_id)
         return sent_ids
     if actions.react and trigger_msg_id is not None:
@@ -188,16 +193,19 @@ async def perform(
         budget -= seconds
         if index > 0:
             seconds = max(seconds, BUBBLE_GAP_SECONDS)
-        await _type_for(bot, chat_id, seconds, thread_id, sleep)
+        with turn_log.timed("typing"):
+            await _type_for(bot, chat_id, seconds, thread_id, sleep)
         reply = (
             ReplyParameters(message_id=bubble.reply_to, allow_sending_without_reply=True)
             if bubble.reply_to is not None
             else None
         )
         options = {} if link_previews else {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
-        sent = await bot.send_message(
-            chat_id, bubble.text, reply_parameters=reply, message_thread_id=thread_id, **options,
-        )
+        with turn_log.timed("send"):
+            sent = await bot.send_message(
+                chat_id, bubble.text, reply_parameters=reply, message_thread_id=thread_id, **options,
+            )
+        turn_log.bubble_sent()
         if record:
             await store.record_new_message(
                 StoredMessage(
@@ -229,7 +237,8 @@ async def perform(
             sent_ids.append(sticker_id)
     if actions.gif and gifs is not None:
         try:
-            url = await gifs.find(actions.gif)
+            with turn_log.timed("gif_search"):
+                url = await gifs.find(actions.gif)
         except Exception:
             log.exception("gif search crashed in chat %s", chat_id)
             url = None
@@ -247,10 +256,12 @@ async def _send_media(
 ) -> int | None:
     """Await one media send and record it; a Telegram refusal is logged and means nothing was sent."""
     try:
-        sent = await sending
+        with turn_log.timed("send"):
+            sent = await sending
     except TelegramAPIError:
         log.warning("%s send failed in chat %s", kind, chat_id)
         return None
+    turn_log.bubble_sent()
     await store.record_new_message(StoredMessage(
         chat_id=str(chat_id), msg_id=sent.message_id, is_bot=True, role="assistant",
         visibility_scope=store.visibility_for(chat_id), text=f"[{kind}]", media_json=json.dumps(media),
@@ -265,7 +276,8 @@ async def react(bot, chat_id: int, msg_id: int, emoji: str) -> bool | None:
     """React to a message: True when sent, False when Telegram refuses it (e.g. the chat has reactions
     turned off), None when it failed for another reason, such as the network."""
     try:
-        await bot.set_message_reaction(chat_id, msg_id, reaction=[ReactionTypeEmoji(emoji=emoji)])
+        with turn_log.timed("send"):
+            await bot.set_message_reaction(chat_id, msg_id, reaction=[ReactionTypeEmoji(emoji=emoji)])
     except (TelegramBadRequest, ValidationError):
         log.warning("reaction %r rejected in chat %s", emoji, chat_id)
         return False

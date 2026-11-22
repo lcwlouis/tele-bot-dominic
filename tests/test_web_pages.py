@@ -179,13 +179,47 @@ async def test_agent_and_dispatch_write_turn_and_daily_retention(make_app):
     assert row["chat_id"] == str(GROUP)
     assert row["scope"] == "group" and row["calls"] == 1 and row["model"] == "m"
     trace = json.loads(row["trace"])
-    assert trace[0] == "final" and [item.partition("@")[0] for item in trace[1:]] == ["model", "typing"]
+    assert trace[0] == "final" and [item.partition("@")[0] for item in trace[1:]] == [
+        "debounce", "model", "typing", "send",
+    ]
     assert row["fallback"] == 0
     assert row["outcome"] == "Replied in 1 bubble" and row["duration_ms"] >= 0
     for age in (30, 31):
         await app.store.record_turn(now - timedelta(days=age), OWNER, "owner_dm", 0, [], "", False, 0, "Stayed quiet")
     await app.dispatch.jobs.tick()
     assert len(await app.store.recent_turns()) == 2
+
+
+async def test_turn_timing_bar_and_call_details_are_owner_only(make_app, browser):
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    call = {
+        "kind": "chat", "model": "test-model", "fallback": False, "status": 200, "duration_ms": 1900,
+        "input_tokens": 2048, "output_tokens": 16, "cached_tokens": 1024,
+        "system_hash": "systemhash", "tools_hash": "toolshash", "user_hash": "userhash",
+        "user_prefix_hash": "prefixhash",
+    }
+    now = app.dispatch.now()
+    await app.store.record_turn(
+        now, GROUP, "group", 1, ["final", "lock_wait@2500", "model@1900", "typing@1600", "send@100"],
+        "test-model", False, 3700, "Replied in 2 bubbles", model_calls=[call],
+        first_bubble_ms=5100, last_bubble_ms=6100,
+    )
+    await app.store.record_turn(now, OWNER, "owner_dm", 0, [], "", False, 0, "Stayed quiet")
+    async with browser(app) as client:
+        page = await client.get("/turns", params={"chat": GROUP}, headers={"HX-Request": "true"})
+        assert page.status_code == 200
+        assert page.text.count("<details>") == 1
+        assert "Book Club" in page.text and "Stayed quiet" not in page.text
+        assert 'class="stage-lock_wait" x="0" width="2500"' in page.text
+        assert 'class="stage-model" x="2500" width="1900"' in page.text
+        assert "First bubble 5.1 s · Last bubble 6.1 s" in page.text
+        assert all(label in page.text for label in (
+            "Input 2048", "Output 16", "Cached 1024", "systemhash", "toolshash", "userhash", "prefixhash",
+        ))
+        client.headers.pop("Authorization")
+        denied = await client.get("/turns", params={"chat": GROUP}, headers={"HX-Request": "true"})
+        assert denied.status_code == 403 and "systemhash" not in denied.text
 
 
 def online_arcs(html):
@@ -349,7 +383,7 @@ async def test_empty_plugin_and_brief_pages_say_what_to_do(make_app, browser):
         briefs = (await client.get("/briefs")).text
     assert "No plugins are installed." in plugins
     assert "Ask Dom in your DM to write a plugin for something he does often." in plugins
-    assert "You'll review the code here before it runs." in plugins
+    assert "Review the code here before enabling it." in plugins
     assert "No core-change briefs yet." in briefs
     assert "When Dom thinks his own code should change, he writes a brief here for a coding agent." in briefs
 

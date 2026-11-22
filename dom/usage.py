@@ -48,7 +48,7 @@ class ModelCallSkipped(Exception):
 @dataclass(frozen=True)
 class _Request:
     kind: Kind
-    chat_id: int
+    chat_id: int | None
     allowed: Callable[[], Awaitable[bool]]
 
 
@@ -56,7 +56,7 @@ _request: ContextVar[_Request | None] = ContextVar("model_request", default=None
 
 
 @contextmanager
-def model_request(kind: Kind, chat_id: int, allowed: Callable[[], Awaitable[bool]]) -> Iterator[None]:
+def model_request(kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]]) -> Iterator[None]:
     """Carry request attribution and approval through tool rounds, retries and fallback."""
     token = _request.set(_Request(kind, chat_id, allowed))
     try:
@@ -76,8 +76,24 @@ async def check_model_allowed() -> None:
         raise ModelCallSkipped
 
 
-def _tokens(value: object) -> int:
-    return value if type(value) is int and 0 <= value <= 2**63 - 1 else 0
+def _tokens(value: object) -> int | None:
+    return value if type(value) is int and 0 <= value <= 2**63 - 1 else None
+
+
+def response_usage(payload: object) -> dict:
+    data = payload.get("usage") if isinstance(payload, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
+def token_counts(data: dict) -> tuple[int | None, int | None, int | None]:
+    """Provider counts for a call, with missing or invalid values left unknown."""
+    details = data.get("prompt_tokens_details") or data.get("input_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    return (
+        _tokens(data.get("prompt_tokens", data.get("input_tokens"))),
+        _tokens(data.get("completion_tokens", data.get("output_tokens"))),
+        _tokens(data.get("cached_tokens") if cached is None else cached),
+    )
 
 
 def _cost(value: object) -> float:
@@ -97,10 +113,10 @@ class UsageRecorder:
     ) -> None:
         try:
             data = usage if isinstance(usage, dict) else {}
+            input_tokens, output_tokens, _ = token_counts(data)
             await self.store.record_usage(
                 self.now().astimezone(timezone.utc).isoformat(), kind, model, host, chat_id,
-                _tokens(data.get("prompt_tokens", data.get("input_tokens"))),
-                _tokens(data.get("completion_tokens", data.get("output_tokens"))),
+                input_tokens or 0, output_tokens or 0,
                 _cost(data.get("cost")), int(fallback),
             )
         except Exception:
@@ -114,13 +130,12 @@ class UsageRecorder:
         except ValueError:
             payload = None
         request = _request.get()
-        usage = payload.get("usage") if isinstance(payload, dict) else None
-        if kind == "chat" and isinstance(usage, dict):
-            details = usage.get("prompt_tokens_details") or {}
+        usage = response_usage(payload)
+        if kind == "chat" and usage:
+            input_tokens, output_tokens, cached_tokens = token_counts(usage)
             log.info(
                 "chat call chat=%s model=%s in=%s cached=%s out=%s", request.chat_id if request else None, model,
-                usage.get("prompt_tokens"), details.get("cached_tokens") if isinstance(details, dict) else None,
-                usage.get("completion_tokens"),
+                input_tokens, cached_tokens, output_tokens,
             )
         await self.record(
             request_kind(kind), model, host,
