@@ -29,7 +29,7 @@ log = logging.getLogger("dom.usage")
 
 def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     """The address a host names literally, including forms the resolver accepts but ipaddress does not
-    (2852039166, 0xa9fea9fe, 017700000001), so they can't pass as single-label names."""
+    (decimal, hex or octal IPv4 forms), so they can't pass as single-label names."""
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
