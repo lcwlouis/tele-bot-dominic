@@ -20,6 +20,17 @@ MAX_STICKERS = 120
 MAX_EMOJI = 40
 RETRY_AFTER = timedelta(hours=1)  # before a set that failed to load is asked for again
 SET_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+SHARE_LINK = re.compile(r"(?:https?://)?(?:t|telegram)\.me/addstickers/([^/?#\s]*)/?(?:[?#]\S*)?", re.IGNORECASE)
+
+
+def set_name(value: str) -> str:
+    """A sticker set's short name, given either the name or its addstickers share link."""
+    text = value.strip()
+    if (link := SHARE_LINK.fullmatch(text)) is not None:
+        text = link.group(1)
+    if not SET_NAME.fullmatch(text):
+        raise ValueError("Use a sticker set's short name or its addstickers share link.")
+    return text
 
 
 class Stickers:
@@ -80,8 +91,7 @@ class Stickers:
             log.exception("could not refresh stickers")
 
     async def change(self, action: str, name: str) -> str:
-        if not SET_NAME.fullmatch(name):
-            raise ValueError("Use the short sticker set name from its Telegram link.")
+        name = set_name(name)
         async with self._lock:
             names = self._names()
             if action == "add":

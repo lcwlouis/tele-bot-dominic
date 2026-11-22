@@ -121,6 +121,7 @@ def test_finding_in_tracked_filename_redacts_that_name(repository):
     ("123456" + ":" + "E_-" * 12, "Telegram bot token"),
     ("https://t.me/" + "example_handle", "Telegram link"),
     ("https://t.me/" + "+fixture_invite", "Telegram link"),
+    ("https://t.me/" + "addstickers/fixture_set", "Telegram link"),
     ("[fd12:" + ":1]:443", "private IPv6"),
     ("FC00:" + ":a:0/48", "private IPv6"),
     ("fe80:" + ":1234%en0", "private IPv6"),
@@ -143,6 +144,12 @@ def test_detects_additional_personal_data_without_echoing_it(repository, line, c
 
 def test_seven_digit_numbers_without_telegram_id_fields_are_allowed(repository):
     track(repository, "settings.md", "count = 1234567\nchat_id_limit = 1234567\n")
+    assert scan(repository).returncode == 0
+
+
+def test_the_bare_sticker_share_prefix_is_allowed(repository):
+    prefix = "https://t" + ".me/addstickers/"
+    track(repository, "page.html", f'<a href="{prefix}{{{{ name }}}}">\nLINK = "{prefix}"\n')
     assert scan(repository).returncode == 0
 
 

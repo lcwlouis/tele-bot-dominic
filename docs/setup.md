@@ -82,7 +82,8 @@ process for the bot token. Open a private Telegram chat with the bot and send
 publishes the owner command menu. Send `/wake` and then a message to try it.
 
 A new group or a stranger's DM starts pending. Dom sends an approval request to
-the owner and stays silent in that chat until approved. Use the approval buttons
+the owner, with the chat's Telegram ID and the first message, and stays silent in
+that chat until approved. Use the approval buttons
 or send `/pending` in the owner DM to resend pending requests.
 
 ## Owner commands
@@ -98,7 +99,7 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/preset` | Changes the persona preset for one chat, or for every chat with the "Everywhere" button, which can also be Auto so Dom picks his own daily vibe ([presets](presets.md)). A chat's own preset wins. |
 | `/proposals` | Shows pending changes for review. |
 | `/reminders` | Lists and cancels reminders. |
-| `/stickers` | Adds and removes sticker sets. |
+| `/stickers` | Adds and removes sticker sets, by short name or share link. |
 | `/import` | Starts an owner-reviewed memory import. |
 | `/tasks` | Lists and cancels desktop tasks. |
 | `/t3` | Shows T3 Code sign-in, linked machines and audit history ([T3 Code bridge](t3-bridge.md)). |

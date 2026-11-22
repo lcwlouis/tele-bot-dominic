@@ -33,6 +33,7 @@
     <span class="kind">{{ chat.label }}</span>
     <p>{{ chat.title }}</p>
     {% if chat.detail %}<p class="fog">{{ chat.detail }}</p>{% endif %}
+    {% if chat.first %}<p class="fog">First message: {{ chat.first }}</p>{% endif %}
     <div class="actions" hx-target="#proposals" hx-swap="outerHTML">
       <button class="primary" hx-post="/proposals/chat/{{ chat.id }}/approve?{{ query }}">Approve</button>
       <button class="danger" hx-post="/proposals/chat/{{ chat.id }}/ignore?{{ query }}">Ignore</button>

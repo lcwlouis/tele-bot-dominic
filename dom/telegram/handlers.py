@@ -309,7 +309,7 @@ async def handle_message(app: App, message: Message) -> None:
         kind = "chat" if msg.chat_type == "private" else "group"
         await gate.request_approval(
             app.bot, app.store, app.owner_id, msg.chat_id,
-            msg.chat_title or msg.sender_name, kind, msg.sender_handle or msg.sender_name,
+            msg.chat_title or msg.sender_name, kind, msg.sender_handle or msg.sender_name, msg.text,
         )
         return
 

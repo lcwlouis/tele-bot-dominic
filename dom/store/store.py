@@ -430,8 +430,9 @@ class Store:
 
     def _list_pending_chats(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self._conn.execute(
-            "SELECT chat_id, title, invited_by_handle FROM chats "
-            "WHERE authorization_status = 'pending_approval' ORDER BY chat_id"
+            "SELECT c.chat_id, c.title, c.invited_by_handle, (SELECT m.text FROM messages m WHERE m.chat_id = c.chat_id "
+            "AND m.role = 'user' AND m.text IS NOT NULL AND m.text != '' ORDER BY m.id LIMIT 1) AS first_text FROM chats c "
+            "WHERE c.authorization_status = 'pending_approval' ORDER BY c.chat_id"
         )]
 
     async def release_approval_prompt(self, chat_id: int | str) -> None:

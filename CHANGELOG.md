@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Owner feedback from the phone: sticker sets can be added by their share link as well as their short name, and the dashboard lists each set as a link to preview it; the Own work page no longer squeezes each task into narrow columns on a phone; chat approval requests (in the DM and on Waiting for you) show the chat's Telegram ID and its first message, so the owner can tell who is asking.
 - Self-directed tasks can read the pages they open. The first live run (2026-11-22) planned only `browse`, which opens a page without reading it, ran out of its 4 steps and filled the gap from memory. Every task now gets the read-only browser tools and at least 10 steps (or `max_steps` if lower), and its report may only say what the pages said. `read_page` returns a long page in parts of 4,000 characters (`part` reads further); before, only the top 6,000 characters ever came back, and scrolling did not change that. A self-directed task that runs out of steps but still reports what it found ends as done, marked partial, keeps the screenshots it names, and its DM summary includes the report.
 - The Usage page draws the Desktop bar and its legend swatch in their own colour instead of black.
 - A chat approval button tapped after a restart (Telegram calls the tap too old to answer) still approves or ignores the chat and updates the card, instead of failing before either.

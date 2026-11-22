@@ -289,4 +289,5 @@ input[type="file"]::file-selector-button {
 .own-shot { display: block; max-width: 100%; height: auto; margin-top: var(--s3); border-radius: 4px; }
 #briefs summary { cursor: pointer; }
 #briefs .chat { display: block; }
+#own-work .chat { display: block; }
 #briefs textarea { width: 100%; min-height: 10rem; }

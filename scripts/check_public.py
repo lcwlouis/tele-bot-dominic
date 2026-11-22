@@ -17,7 +17,9 @@ from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 
 CONTEXTUAL_ID = re.compile(r"""(?<![\w-])(?:chat_id|user_id|owner_id)["']?\s*[:=]\s*["']?(-?[0-9]{7})(?!\w)""")
 TELEGRAM_LINK = re.compile(
-    r"(?<![\w.-])t\.me/(?:(?:\+|joinchat/)[A-Za-z0-9_-]+|[A-Za-z0-9_]{4,32})(?![\w-])", re.IGNORECASE,
+    # The bare sticker share prefix (followed by a template or a quote, not a set name) names nobody.
+    r"(?<![\w.-])t\.me/(?!addstickers/(?![A-Za-z0-9_]))(?:(?:\+|joinchat/)[A-Za-z0-9_-]+|[A-Za-z0-9_]{4,32})(?![\w-])",
+    re.IGNORECASE,
 )
 IPV6 = re.compile(r"(?<![\w:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f]):[0-9a-f:.]+(?![\w:])", re.IGNORECASE)
 PRIVATE_HOST = re.compile(

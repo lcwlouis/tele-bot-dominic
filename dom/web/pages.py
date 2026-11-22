@@ -29,7 +29,7 @@ from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE
 from dom.presence import read_habits
 from dom.skills import skill_diff
-from dom.telegram import owner
+from dom.telegram import gate, owner
 from dom.usage import check_model_allowed, model_request
 
 if TYPE_CHECKING:
@@ -287,7 +287,11 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
                 "id": chat_id,
                 "label": "Group approval" if is_group else "Stranger DM approval",
                 "title": owner.display_title(chat, app.owner_id),
-                "detail": (f"Invited by {who}" if is_group else f"From {who}") if who else "",
+                "detail": " ".join(part for part in (
+                (f"Invited by {who}." if is_group else f"From {who}.") if who else "",
+                "" if is_group else f"Telegram ID {chat_id}.",
+                ) if part),
+                "first": gate.first_line(chat.get("first_text")),
             })
     count = len(pending_chats) + sum(len(card["facts"]) if "facts" in card else 1 for card in cards)
     return {

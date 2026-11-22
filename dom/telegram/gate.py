@@ -32,24 +32,35 @@ async def decide_chat(store: Store, chat_id: int, owner_id: int | None) -> Decis
     return "drop"
 
 
-async def _send_prompt(bot, owner_id: int, chat_id: int, title: str, kind: str, requested_by: str) -> None:
+def first_line(text: str | None, limit: int = 160) -> str:
+    """A pending chat's first message as one short line, so the owner can tell who is asking."""
+    line = " ".join((text or "").split())
+    return line if len(line) <= limit else line[:limit - 1] + "…"
+
+
+async def _send_prompt(
+    bot, owner_id: int, chat_id: int, title: str, kind: str, requested_by: str, first_text: str | None = None,
+) -> None:
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="Approve", callback_data=f"approve:{chat_id}"),
         InlineKeyboardButton(text="Ignore", callback_data=f"ignore:{chat_id}"),
     ]])
-    text = f'{requested_by or "Someone"} wants Dom in the {kind} "{title}". Approve?'
+    text = f'{requested_by or "Someone"} wants Dom in the {kind} "{title}" (Telegram ID {chat_id}).'
+    if first := first_line(first_text):
+        text += f'\nFirst message: "{first}"'
+    text += "\nApprove?"
     await bot.send_message(owner_id, text, reply_markup=keyboard)
 
 
 async def request_approval(
-    bot, store: Store, owner_id: int, chat_id: int, title: str, kind: str, requested_by: str
+    bot, store: Store, owner_id: int, chat_id: int, title: str, kind: str, requested_by: str, first_text: str | None = None,
 ) -> None:
     """DM the owner Approve/Ignore buttons, once per pending chat."""
     if not await store.claim_approval_prompt(chat_id):
         return
     await store.note_pending_chat(str(chat_id), title, requested_by)
     try:
-        await _send_prompt(bot, owner_id, chat_id, title, kind, requested_by)
+        await _send_prompt(bot, owner_id, chat_id, title, kind, requested_by, first_text)
     except (TelegramBadRequest, TelegramForbiddenError):  # definitely not delivered: allow a retry
         log.exception("the approval prompt for chat %s was rejected", chat_id)
         await store.release_approval_prompt(chat_id)
@@ -64,6 +75,6 @@ async def resend_pending(bot, store: Store, owner_id: int) -> None:
         title = chat["title"] or str(chat_id)
         kind = "group" if chat_id < 0 else "chat"
         try:
-            await _send_prompt(bot, owner_id, chat_id, title, kind, chat["invited_by_handle"] or "")
+            await _send_prompt(bot, owner_id, chat_id, title, kind, chat["invited_by_handle"] or "", chat.get("first_text"))
         except Exception:
             log.exception("could not resend the approval prompt for chat %s", chat_id)
