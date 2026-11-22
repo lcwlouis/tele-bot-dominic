@@ -49,6 +49,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (14, "0013_lan_address_proposals.sql"),
     (15, "0014_desktop_containers.sql"),
     (16, "0015_self_work.sql"),
+    (17, "0016_turn_timings.sql"),
     (19, "0018_plugin_storage.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
@@ -601,10 +602,15 @@ class Store:
                 (chat_id, at, ends),
             )
 
-    async def online_sessions(self, start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+    async def online_sessions(
+        self, start: datetime, end: datetime, *, chat_id: int | None = None,
+    ) -> list[tuple[datetime, datetime]]:
+        bounds = (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat())
+        scope = " AND chat_id = ?" if chat_id is not None else ""
         rows = await self._run(lambda: self._conn.execute(
-            "SELECT started_at, ends_at FROM online_sessions WHERE ends_at > ? AND started_at < ? ORDER BY started_at",
-            (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()),
+            "SELECT started_at, ends_at FROM online_sessions WHERE ends_at > ? AND started_at < ?"
+            f"{scope} ORDER BY started_at",
+            (*bounds, str(chat_id)) if chat_id is not None else bounds,
         ).fetchall())
         return [(datetime.fromisoformat(row[0]), datetime.fromisoformat(row[1])) for row in rows]
 
@@ -1123,14 +1129,15 @@ class Store:
 
     async def record_turn(
         self, at: datetime, chat_id: int, scope: Scope, calls: int, trace: list[str], model: str, fallback: bool,
-        duration_ms: int, outcome: str,
+        duration_ms: int, outcome: str, *, model_calls: list[dict] | None = None,
+        first_bubble_ms: int | None = None, last_bubble_ms: int | None = None,
     ) -> None:
         await self._run(
             self._conn.execute,
-            "INSERT INTO turns (at, chat_id, scope, calls, trace, model, fallback, duration_ms, outcome) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO turns (at, chat_id, scope, calls, trace, model, fallback, duration_ms, outcome, "
+            "model_calls, first_bubble_ms, last_bubble_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (at.astimezone(timezone.utc).isoformat(), str(chat_id), scope, calls, json.dumps(trace), model,
-             int(fallback), duration_ms, outcome),
+             int(fallback), duration_ms, outcome, json.dumps(model_calls or []), first_bubble_ms, last_bubble_ms),
         )
 
     async def turn_counts(self, start: datetime, end: datetime) -> tuple[int, int]:

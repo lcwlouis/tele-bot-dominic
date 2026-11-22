@@ -4,10 +4,13 @@ import io
 import json
 import xml.etree.ElementTree as ET
 
+import httpx
 import pytest
 from aiogram.types import PhotoSize, Sticker, User, Voice
 
 import dom.dispatch
+from dom.config import ModelEndpoint
+from dom.llm import ChatClient
 from dom.media import MediaDescriber
 from dom.models import StoredMessage
 from dom.presence import parse_habits
@@ -89,6 +92,45 @@ async def test_photo_described_and_stored(media_app):
     await handle_message(app, message)
     await drain_dispatch(app.dispatch)
     assert bot.downloads == ["large"]
+
+
+async def test_reply_records_media_wait_and_arrival_model_call(media_app, monkeypatch):
+    ready = asyncio.Event()
+    waiting = asyncio.Event()
+    app, _, _ = await media_app(wait=ready)
+    dispatch = app.dispatch
+    clock = dispatch.now
+    start = clock()
+    monkeypatch.setattr("dom.dispatch.monotonic", lambda: (clock() - start).total_seconds())
+    wait_media = dispatch._wait_media
+
+    async def wait(chat_id):
+        waiting.set()
+        await wait_media(chat_id)
+
+    monkeypatch.setattr(dispatch, "_wait_media", wait)
+
+    def description(_):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "A crescent moon."}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 4},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(description)) as http:
+        endpoint = ModelEndpoint(base_url="http://localhost/v1", model="test-media", api_key_env=None)
+        app.media_describer.client = ChatClient(endpoint, None, http)
+        await handle_message(app, photo_message().model_copy(update={"date": start}))
+        await waiting.wait()
+        clock.advance(seconds=3)
+        ready.set()
+        await drain_dispatch(dispatch)
+
+    [row] = await app.store.recent_turns()
+    assert "media_wait@3000" in json.loads(row["trace"])
+    media, chat = json.loads(row["model_calls"])
+    assert media["kind"] == "media" and media["model"] == "test-media" and media["output_tokens"] == 4
+    assert chat["kind"] == "chat" and row["calls"] == 2
+    assert row["first_bubble_ms"] == 3000
 
 
 async def test_media_failure_records_without_description(media_app, caplog):

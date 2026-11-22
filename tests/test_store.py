@@ -71,6 +71,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             self.assertEqual(migrate_database(db), TARGET_VERSION)
+            self.assertGreaterEqual(TARGET_VERSION, 17)
             self.assertEqual(list(Path(d).glob("*.bak")), [])
             conn = sqlite3.connect(db)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
@@ -99,6 +100,26 @@ class MigrationTests(unittest.TestCase):
             self.assertTrue({"self_tasks", "idx_self_tasks_status"} <= after - before)
             self.assertEqual(conn.execute("SELECT brief FROM desktop_tasks").fetchall(), [("b",)])
             conn.close()
+
+    def test_turn_timings_migration_preserves_preexisting_turns(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "state.db"
+            with sqlite3.connect(db) as conn:
+                for _, filename in [(version, name) for version, name in MIGRATIONS if version <= 16]:
+                    conn.executescript((MIGRATIONS_DIR / filename).read_text())
+                conn.execute(
+                    "INSERT INTO turns (at, chat_id, scope, calls, trace, model, fallback, duration_ms, outcome) "
+                    "VALUES ('t', '111', 'owner_dm', 1, ?, 'test', 0, 12, 'Replied')",
+                    ('["final", "model@8", "typing@4"]',),
+                )
+            self.assertEqual(migrate_database(db), TARGET_VERSION)
+            self.assertTrue(db.with_name("state.db.v16.bak").exists())
+            self.assertEqual(migrate_database(db), TARGET_VERSION)
+            with sqlite3.connect(db) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT trace, model_calls, first_bubble_ms, last_bubble_ms FROM turns").fetchone(),
+                    ('["final", "model@8", "typing@4"]', "[]", None, None),
+                )
 
     def test_existing_v2_db_is_backed_up_and_data_preserved(self):
         with tempfile.TemporaryDirectory() as d:

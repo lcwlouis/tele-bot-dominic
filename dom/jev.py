@@ -27,15 +27,17 @@ class JevClient:
     async def decide(self, state: str, questions: dict) -> dict[str, dict | None]:
         await check_model_allowed()
         kind = request_kind("triage")
-        turn_log.attempt(self.model, kind)
+        messages = [{"role": "user", "content": {"state": state, "questions": questions}}]
         try:
-            with turn_log.timed(kind):
+            with turn_log.model_call(self.model, kind, messages, []) as call:
                 response = await self.http.post(
                     self.url,
                     json={"model": self.model, "state": state, "questions": questions},
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     timeout=8,
                 )
+            if call is not None:
+                call.received(response)
             if self.usage is not None:
                 await self.usage.record_response(response, "triage", self.model, self.host)
             response.raise_for_status()
