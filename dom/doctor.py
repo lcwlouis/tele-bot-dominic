@@ -328,13 +328,21 @@ async def _telegram(http: httpx.AsyncClient, token: str, owner: int | None) -> l
     return checks
 
 
-def _probe_hint(response: httpx.Response) -> str:
-    """Classify provider errors and return the HTTP status and fixed diagnostic text."""
+def is_zdr_refusal(response: httpx.Response) -> bool:
+    """Whether a provider HTTP error indicates a zero-data-retention / data-policy refusal."""
     try:
         body = json.dumps(response.json(), ensure_ascii=False)
     except (ValueError, RecursionError):
         body = response.text
-    if re.search(r"\bzdr\b|\bdata[ -]+policy\b|\bzero[ -]+data[ -]+retention\b", body, re.IGNORECASE):
+    return bool(
+        re.search(r"\bzdr\b|\bdata[ -]+policy\b|\bzero[ -]+data[ -]+retention\b", body, re.IGNORECASE)
+        or (response.status_code == 404 and re.search(r"\b(?:no|0)\s+endpoints\b", body, re.IGNORECASE))
+    )
+
+
+def _probe_hint(response: httpx.Response) -> str:
+    """Classify provider errors and return the HTTP status and fixed diagnostic text."""
+    if is_zdr_refusal(response):
         return (f"HTTP {response.status_code}: the provider refused it under your account's data policy "
                 "(zero data retention). Pick a model with a ZDR-compliant provider.")
     return f"HTTP {response.status_code}: Check the endpoint URL, model ID and key."

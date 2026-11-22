@@ -17,12 +17,35 @@ async function sendModelSettings(path, body) {
   });
   if (response.status === 403) throw new Error("Dashboard access expired. Reload to sign in.");
   const result = await response.json();
-  if (!response.ok) throw new Error(result.detail);
+  if (!response.ok) {
+    const error = new Error(result.detail || `Request failed (${response.status}).`);
+    if (Array.isArray(result.errors)) error.slotErrors = result.errors;
+    throw error;
+  }
   return result;
+}
+
+function clearSlotErrors(form) {
+  for (const node of form.querySelectorAll("[data-slot-error]")) node.remove();
+}
+
+function showSlotErrors(form, slotErrors) {
+  const rows = form.querySelectorAll("[data-provider]");
+  for (const item of slotErrors) {
+    const row = rows[item.index];
+    if (!row) continue;
+    const message = document.createElement("p");
+    message.className = "error";
+    message.dataset.slotError = "";
+    message.setAttribute("role", "alert");
+    message.textContent = item.error;
+    row.append(message);
+  }
 }
 
 function editModelSettings(form) {
   form.dataset.dirty = "true";
+  clearSlotErrors(form);
   const providers = [...form.querySelectorAll("[data-provider]")];
   providers.forEach((row, index) => {
     row.querySelector("legend").textContent = index === 0 ? "Primary" : `Fallback ${index}`;
@@ -86,6 +109,8 @@ document.addEventListener("submit", async (event) => {
   const [primary = null, ...fallbacks] = [...form.querySelectorAll("[data-provider]")].map(providerFields);
   const submit = form.querySelector("[type=submit]");
   submit.disabled = true;
+  clearSlotErrors(form);
+  output.textContent = "Testing and saving…";
   try {
     const settings = await sendModelSettings("/api/models", {
       revision: panel.dataset.revision,
@@ -103,7 +128,12 @@ document.addEventListener("submit", async (event) => {
     const saved = panel.querySelector(`form[data-role="${form.dataset.role}"] output`);
     saved.textContent = settings.restart_required ? "Saved. Restart Dom to apply." : "Saved.";
   } catch (error) {
-    output.textContent = error.message;
+    if (error.slotErrors?.length) {
+      showSlotErrors(form, error.slotErrors);
+      output.textContent = "Could not save; fix the provider error(s) above.";
+    } else {
+      output.textContent = error.message;
+    }
   } finally {
     submit.disabled = false;
   }

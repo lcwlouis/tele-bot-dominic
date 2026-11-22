@@ -10,6 +10,7 @@ import httpx
 
 from dom import turn_log
 from dom.config import ModelEndpoint
+from dom.llm import openrouter_host
 from dom.usage import UsageRecorder, check_model_allowed
 
 TIMEOUT_SECONDS = 30
@@ -51,11 +52,14 @@ class SearchClient:
             "content": f"Search the web and answer concisely with the key facts: {query}",
         }]
         plugins = [{"id": "web", "max_results": 3}]
+        body: dict = {"model": self.endpoint.model, "messages": messages, "plugins": plugins}
+        if openrouter_host(self.host):
+            body["provider"] = {"zdr": True}
         with turn_log.model_call(self.endpoint.model, "search", messages, plugins) as call:
             async with asyncio.timeout(TIMEOUT_SECONDS):
                 response = await self.http.post(
                     f"{self.endpoint.base_url.rstrip('/')}/chat/completions",
-                    json={"model": self.endpoint.model, "messages": messages, "plugins": plugins},
+                    json=body,
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     timeout=TIMEOUT_SECONDS,
                 )

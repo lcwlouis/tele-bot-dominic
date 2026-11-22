@@ -23,6 +23,7 @@ from dom.desktop.files import (
     OUTBOX_DIR, bind_inbox, discard_bound, download_results, drop_stale, inbox_dir, safe_filename, upload_inbox,
 )
 from dom.skills import Skill, skills_list, view_text
+from dom.telegram.executor import retry_telegram
 
 if TYPE_CHECKING:
     from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
@@ -130,8 +131,8 @@ class DesktopWorker:
             sandbox.alert = self._alert_owner
 
     async def _alert_owner(self, text: str) -> None:
-        if self.app.owner_id is not None:
-            await self.app.bot.send_message(self.app.owner_id, text)
+        if (owner_id := self.app.owner_id) is not None:
+            await retry_telegram(lambda: self.app.bot.send_message(owner_id, text), sleep=self.app.sleep)
 
     def available(self) -> bool:
         return self.sandbox.status() in ("stopped", "starting", "ready")
@@ -300,7 +301,7 @@ class DesktopWorker:
         if row:
             await self._report(row, files)
             if row["status"] == "done" and draft:
-                await self._publish_skill(draft)
+                await self._publish_skill(row, draft)
 
     async def _clear_inbox(self, task_id: int) -> None:
         """Uploaded files must not outlive the task that was given them."""
@@ -316,12 +317,20 @@ class DesktopWorker:
             if not isinstance(result, dict) or result.get("exit_code") != 0:
                 log.warning("could not remove the desktop inbox (exit code %r)", result.get("exit_code") if isinstance(result, dict) else None)
 
-    async def _publish_skill(self, skill: Skill) -> None:
+    async def _publish_skill(self, row: dict, skill: Skill) -> None:
+        chat_id = row["chat_id"]
+        started_at = row["started_at"] or row["created_at"]
+
+        async def allowed() -> bool:
+            return await self.app.dispatch.desktop_pause(chat_id, started_at) is None
+
         try:
-            await self.app.proposals.create(
-                "skill", f"Skill: {skill.name}",
-                {"name": skill.name, "description": skill.description, "body": skill.body}, "desktop",
-            )
+            with model_request("desktop", chat_id, allowed):
+                await check_model_allowed()
+                await self.app.proposals.create(
+                    "skill", f"Skill: {skill.name}",
+                    {"name": skill.name, "description": skill.description, "body": skill.body}, "desktop",
+                )
         except Exception as exc:
             log.warning("could not propose a desktop skill (%s)", type(exc).__name__)
 
