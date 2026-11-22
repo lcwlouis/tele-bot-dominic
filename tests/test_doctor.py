@@ -208,13 +208,17 @@ model = "test-fallback"
             return httpx.Response(200, json={"answers": {"check": {"type": "choice", "choice": "yes"}}})
         if request.url.path.endswith("/key"):
             return httpx.Response(200, json={"data": {"limit_remaining": 3.25, "label": MODEL_KEY}})
-        assert json.loads(request.content)["max_tokens"] == 1
+        body = json.loads(request.content)
+        assert body["max_tokens"] == 1
+        if request.url.host == "openrouter.ai":
+            assert body["provider"] == {"zdr": True}
         return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
 
     mock_http(monkeypatch, handler)
     assert main(["doctor", str(home), "--online"]) == 0
     out = capsys.readouterr().out
     assert calls.count("completions") == 5 and calls.count("key") == 1
+    assert "ok models.fallback:" in out and "ok models.drafting:" in out
     assert {"getMe", "getMyCommands", "decisions"} <= set(calls)
     assert "warn Telegram privacy:" in out and "BotFather" in out
     assert "ok Telegram getMyCommands:" in out and "$3.25" in out

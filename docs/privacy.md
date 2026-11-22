@@ -59,8 +59,8 @@ Cloudflare. Keep local bearer-token testing on loopback.
   update. An external provider may therefore receive owner DM content.
 - **Drafting model** receives the public brief or candidate for a plugin or
   skill. Dom screens it for instance credentials and verbatim private notes
-  before sending it to the drafting endpoint, or to the chat endpoint if the
-  drafting key is missing.
+  before sending it to the drafting endpoint, or to the chat route if no
+  drafting provider can answer.
 - **Media provider** receives supported attachments for transcription or
   description, and screenshots when the desktop worker requests a description.
 - **Web search** submits the query to `models.search.base_url` (OpenRouter by

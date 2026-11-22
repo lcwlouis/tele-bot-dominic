@@ -30,13 +30,14 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `models.chat` | Required | Primary chat and desktop worker model. |
-| `models.chat_fallback` | Optional | Backup chat endpoint when the primary is unavailable. |
+| `models.fallback` | Optional | Backup chat role, tried after the chat role's own providers. |
+| `models.chat_fallback` | Optional | Legacy name for the backup chat role. |
 | `models.triage` | Built in | Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe. |
 | `models.media` | Built in | Attachment descriptions, transcriptions and desktop screenshot descriptions. |
+| `models.drafting` | Built in | Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort. |
 | `models.search` | Optional | OpenRouter web search. If the table is present, omitted fields use the starter search settings. |
-| `models.drafting` | Built in | Endpoint for plugin and skill drafts. Defaults to Claude Haiku 5.5 with low thinking and uses the chat model if the drafting key is missing. |
 
-Each `[models.<name>]` table uses the following keys. Use HTTPS for a provider on a different host.
+Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -45,9 +46,19 @@ Each `[models.<name>]` table uses the following keys. Use HTTPS for a provider o
 | `models.<name>.api_key_env` | Unset | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.<name>.reasoning_effort` | Unset | Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default. |
 
+Chat, fallback, media and drafting can also list additional providers.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `models.<name>.fallbacks` | `[]` | Additional providers to try in order when this role's primary fails. |
+
+Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. An existing `[models.chat_fallback]` is read as `[models.fallback]` unless the new table is already present.
+
+The owner can save and test providers from **Settings** in the dashboard. A save keeps the previous file in `config.toml.bak`. The test sends a short synthetic prompt to the selected saved provider. Before sending conversation data to any new cloud model, run a real test and verify that your provider and account enforce zero data retention. Dom requests ZDR routing for OpenRouter chat completions.
+
 ### Starter model settings
 
-Init creates the five tables below. Omitted triage, media and drafting tables use these defaults. A hand-written config must supply `[models.chat]`. Omitting `[models.search]` disables search.
+Init creates the tables below. Omitted triage, media and drafting tables use these defaults. A hand-written config must supply `[models.chat]`. Omitting `[models.search]` disables search.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

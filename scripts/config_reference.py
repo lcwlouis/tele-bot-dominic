@@ -7,15 +7,16 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, SelfWorkConfig, T3Config, UpdateConfig, WebConfig, starter_config
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderEndpoint, SelfWorkConfig, T3Config, UpdateConfig, WebConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
-    "chat_fallback": ("Optional", "Backup chat endpoint when the primary is unavailable."),
+    "fallback": ("Optional", "Backup chat role, tried after the chat role's own providers."),
+    "chat_fallback": ("Optional", "Legacy name for the backup chat role."),
     "triage": ("Built in", "Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe."),
     "media": ("Built in", "Attachment descriptions, transcriptions and desktop screenshot descriptions."),
+    "drafting": ("Built in", "Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort."),
     "search": ("Optional", "OpenRouter web search. If the table is present, omitted fields use the starter search settings."),
-    "drafting": ("Built in", "Endpoint for plugin and skill drafts. Defaults to Claude Haiku 5.5 with low thinking and uses the chat model if the drafting key is missing."),
 }
 
 
@@ -59,10 +60,20 @@ def render() -> str:
         table(fields(Config, exclude={"home", "desktop_mode", "models", "desktop", "openers", "presence", "self_work", "web", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
-        "Each `[models.<name>]` table uses the following keys. Use HTTPS for a provider on a different host.",
-        table(fields(ModelEndpoint, "models.<name>.")),
+        "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
+        "A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.",
+        table(fields(ProviderEndpoint, "models.<name>.")),
+        "Chat, fallback, media and drafting can also list additional providers.",
+        table(fields(ModelEndpoint, "models.<name>.", exclude=ProviderEndpoint.model_fields.keys())),
+        "Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. "
+        "Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. "
+        "An existing `[models.chat_fallback]` is read as `[models.fallback]` unless the new table is already present.",
+        "The owner can save and test providers from **Settings** in the dashboard. A save keeps the previous file in "
+        "`config.toml.bak`. The test sends a short synthetic prompt to the selected saved provider. "
+        "Before sending conversation data to any new cloud model, run a real test and verify that your provider "
+        "and account enforce zero data retention. Dom requests ZDR routing for OpenRouter chat completions.",
         "### Starter model settings",
-        "Init creates the five tables below. Omitted triage, media and drafting tables use these defaults. "
+        "Init creates the tables below. Omitted triage, media and drafting tables use these defaults. "
         "A hand-written config must supply `[models.chat]`. Omitting `[models.search]` disables search.",
         table(
             (f"models.{role}.{key}", literal(value), ModelEndpoint.model_fields[key].description)

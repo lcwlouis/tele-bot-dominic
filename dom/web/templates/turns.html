@@ -57,7 +57,7 @@
         <ol class="turn-calls">
           {% for call in turn.model_calls %}
           <li>
-            <div>{{ context.stages.get(call.kind, call.kind|capitalize) }} · {{ call.model }}{% if call.fallback %} · Fallback{% endif %} · {{ duration(call.duration_ms) }}{% if call.status %} · {{ call.status }}{% endif %}</div>
+            <div>{{ context.stages.get(call.kind, call.kind|capitalize) }} · {{ call.model }}{% if call.host %} · {{ call.host }}{% endif %}{% if call.fallback %} · Fallback{% endif %} · {{ duration(call.duration_ms) }}{% if call.status %} · {{ call.status }}{% endif %}</div>
             <div class="num">Input {{ call.input_tokens if call.input_tokens is not none else '—' }} · Output {{ call.output_tokens if call.output_tokens is not none else '—' }} · Cached {{ call.cached_tokens if call.cached_tokens is not none else '—' }} tokens</div>
             <div class="turn-hashes">System <code>{{ call.system_hash }}</code> · Tools <code>{{ call.tools_hash }}</code>{% if call.user_hash %} · User <code>{{ call.user_hash }}</code>{% endif %}{% if call.user_prefix_hash %} · User prefix <code>{{ call.user_prefix_hash }}</code>{% endif %}</div>
           </li>

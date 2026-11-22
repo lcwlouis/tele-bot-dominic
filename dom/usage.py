@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import socket
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -26,19 +27,50 @@ Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "gua
 log = logging.getLogger("dom.usage")
 
 
-def _on_own_network(host: str) -> bool:
+def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The address a host names literally, including forms the resolver accepts but ipaddress does not
+    (decimal, hex or octal IPv4 forms), so they can't pass as single-label names."""
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        return host == "localhost" or host.endswith((".local", ".lan", ".home.arpa"))
-    return address.is_private or address.is_loopback
+        try:
+            address = ipaddress.IPv4Address(socket.inet_aton(host))
+        except (OSError, ValueError):
+            return None
+    return getattr(address, "ipv4_mapped", None) or address
+
+
+def unroutable_address(host: str) -> bool:
+    """An IP literal that is never a provider: link-local (169.254.x, cloud metadata), unspecified or multicast."""
+    address = _ip_literal(host)
+    if address is None:
+        return False
+    return address.is_link_local or address.is_unspecified or address.is_multicast
+
+
+def on_own_network(host: str) -> bool:
+    """Loopback, a private address, or a clearly local name (single-label, .local, .lan, .internal, .home.arpa)."""
+    host = host.rstrip(".").lower()
+    address = _ip_literal(host)
+    if address is None:
+        return "." not in host or host.endswith((".local", ".lan", ".internal", ".home.arpa"))
+    return (address.is_private or address.is_loopback) and not unroutable_address(host)
+
+
+def provider_address(url: httpx.URL) -> str:
+    """Identify the provider's host and optional port without credentials."""
+    return url.netloc.decode("ascii")
 
 
 def local_hosts(config: Config) -> tuple[str, ...]:
     """Hosts of the configured model endpoints on the owner's own network (a home-lab vLLM, say). Their calls cost
     nothing, so a desktop task's dollar ceiling must not price them from tokens."""
-    hosts = {httpx.URL(endpoint.base_url).host for endpoint in config.models.values()}
-    return tuple(sorted(host for host in hosts if host and _on_own_network(host)))
+    hosts = set()
+    for _, endpoint in config.model_endpoints():
+        url = httpx.URL(endpoint.base_url)
+        if url.host and on_own_network(url.host):
+            hosts.update((url.host, provider_address(url)))  # includes the host-only form in older usage rows
+    return tuple(sorted(hosts))
 
 
 class ModelCallSkipped(Exception):

@@ -49,6 +49,7 @@ class ModelCall:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_tokens: int | None = None
+    host: str = ""
 
     def received(self, response: httpx.Response) -> None:
         self.status = response.status_code
@@ -111,7 +112,9 @@ def timed(what: str):
 
 
 @contextmanager
-def model_call(model: str, kind: str, messages: list[dict], tools: list[dict], *, fallback: bool = False):
+def model_call(
+    model: str, kind: str, messages: list[dict], tools: list[dict], *, fallback: bool = False, host: str = "",
+):
     """Record one provider attempt, even if transport fails or the attempt is cancelled."""
     trace = _current.get()
     if trace is None or kind not in ("chat", "triage", "guard", "media", "search"):
@@ -128,6 +131,7 @@ def model_call(model: str, kind: str, messages: list[dict], tools: list[dict], *
         # Media and search users carry base64 attachments (up to ~13 MB): hashing them would stall the event loop.
         None if kind in ("media", "search") else prompt_hash(users),
         prompt_hash(head) if marker else None,
+        host=host,
     )
     trace.model_calls.append(call)
     trace.calls += 1

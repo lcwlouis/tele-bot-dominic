@@ -1,0 +1,43 @@
+{% macro provider(endpoint, index) %}
+<fieldset data-provider>
+  <legend>{{ "Primary" if index == 0 else "Fallback " ~ index }}{% if endpoint %} ({{ endpoint.kind }}){% endif %}</legend>
+  <label>Base URL <input type="url" name="base_url" value="{{ endpoint.base_url if endpoint else '' }}" required></label>
+  <label>Model ID <input name="model" value="{{ endpoint.model if endpoint else '' }}" required></label>
+  <label>Key variable <input name="api_key_env" pattern="[A-Z_][A-Z0-9_]{0,63}" value="{{ endpoint.api_key_env or '' if endpoint else '' }}"></label>
+  <label>Reasoning effort
+    <select name="reasoning_effort">
+      <option value="">Provider default</option>
+      <option value="low"{% if endpoint and endpoint.reasoning_effort == "low" %} selected{% endif %}>Low</option>
+      <option value="medium"{% if endpoint and endpoint.reasoning_effort == "medium" %} selected{% endif %}>Medium</option>
+    </select>
+  </label>
+  {% if endpoint %}
+    {% if endpoint.api_key_env %}<span>{{ "Key set" if endpoint.key_set else "Key missing" }}</span>{% endif %}
+    <button type="button" data-test="{{ index }}">Test</button>
+  {% endif %}
+  <button type="button" data-move-up{% if index < 2 %} hidden{% endif %}>Move up</button>
+  <button type="button" data-remove{% if index == 0 %} hidden{% endif %}>Remove</button>
+</fieldset>
+{% endmacro %}
+<section class="panel" id="model-settings" data-revision="{{ context.settings.revision }}">
+  <header><h2>Model settings</h2></header>
+  {% if context.settings.restart_required %}<p>Restart Dom to apply the saved routes.</p>{% endif %}
+  <p>Triage uses Jev, a classifier that cannot be swapped for a chat model: {{ context.settings.triage.model }} at {{ context.settings.triage.base_url }} ({{ "key set" if context.settings.triage.key_set else "key missing" }}).</p>
+  <p>Put key values in <code>.env</code>. Save a provider before testing it. Check any new cloud model against your zero-data-retention policy before sending it conversation data.</p>
+  <template id="provider-fields">{{ provider(none, 1) }}</template>
+  {% for role, route in context.settings.roles.items() %}
+  <form data-role="{{ role }}">
+    <h3>{{ role|capitalize }}</h3>
+    {% if role == "fallback" %}<p>Chat tries this role after exhausting its own providers.</p>{% endif %}
+    {% if role == "drafting" %}<p>Drafting tries the chat route (chat, then fallback) after its own providers.</p>{% endif %}
+    <div data-providers>
+      {% if route.primary %}{{ provider(route.primary, 0) }}{% endif %}
+      {% for endpoint in route.fallbacks %}{{ provider(endpoint, loop.index) }}{% endfor %}
+    </div>
+    <button type="button" data-add>{{ "Add fallback" if route.primary else "Set primary" }}</button>
+    {% if role == "fallback" %}<button type="button" data-clear{% if not route.primary %} hidden{% endif %}>Clear role</button>{% endif %}
+    <button type="submit">Save {{ role }}</button>
+    <output aria-live="polite"></output>
+  </form>
+  {% endfor %}
+</section>
