@@ -344,7 +344,7 @@ def _probe_hint(response: httpx.Response) -> str:
     """Classify provider errors and return the HTTP status and fixed diagnostic text."""
     if is_zdr_refusal(response):
         return (f"HTTP {response.status_code}: the provider refused it under your account's data policy "
-                "(zero data retention). Pick a model with a ZDR-compliant provider.")
+                "(zero data retention), or the model has no active endpoints. Pick a model with a ZDR-compliant provider.")
     return f"HTTP {response.status_code}: Check the endpoint URL, model ID and key."
 
 

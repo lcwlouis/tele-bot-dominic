@@ -592,7 +592,7 @@ async def test_publish_skill_records_desktop_usage_and_respects_caps(make_app):
     assert len(await app.proposals.pending()) == 1
 
 
-async def test_publish_skill_is_skipped_when_spend_cap_reached(make_app):
+async def test_publish_skill_under_a_spend_cap_skips_only_the_drafting_pass(make_app):
     from dom.config import ModelEndpoint
     from dom.skills import Skill
 
@@ -613,8 +613,9 @@ async def test_publish_skill_is_skipped_when_spend_cap_reached(make_app):
         await app.dispatch.usage.record("chat", "m", "example.org", {"cost": 1.5})
         await worker._publish_skill(row, Skill("skipped-skill", "Desc", "Body"))
 
-    assert draft_requests == []
-    assert await app.proposals.pending() == []
+    assert draft_requests == []  # no drafting call past the cap ...
+    [proposal] = await app.proposals.pending()  # ... but the owner still gets the skill as the desktop wrote it
+    assert proposal["title"] == "Skill: skipped-skill"
 
 
 async def test_sandbox_alert_retries_telegram_flood_with_app_sleep(make_app, monkeypatch):

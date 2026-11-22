@@ -334,6 +334,13 @@ def _slot_tuple(endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str |
     return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, endpoint.reasoning_effort)
 
 
+MISSING_KEY = "Not tested: this provider's key variable has no value in .env yet. Add it, then press Test."
+
+
+def _probe_tuple(endpoint: ProviderEndpoint) -> tuple[str, str, str | None]:
+    return _slot_tuple(endpoint)[:3]
+
+
 def _slot_label(index: int) -> str:
     return "Primary" if index == 0 else f"Fallback {index}"
 
@@ -350,12 +357,10 @@ async def update_models(request: Request):
     except KeyPairing as exc:
         raise HTTPException(422, str(exc)) from None
 
-    existing = current.config.providers(update.role)
-    to_test = [
-        (index, provider)
-        for index, provider in enumerate(submitted)
-        if index >= len(existing) or _slot_tuple(provider) != _slot_tuple(existing[index])
-    ]
+    # A slot already in the chain (at any position) was tested when it was added; the probe ignores reasoning effort,
+    # so a change to that alone tests nothing new either.
+    existing = {_probe_tuple(provider) for provider in current.config.providers(update.role)}
+    to_test = [(index, provider) for index, provider in enumerate(submitted) if _probe_tuple(provider) not in existing]
     if to_test:
         current_client = app.client.primary if isinstance(app.client, FallbackClient) else app.client
         results = await asyncio.gather(
@@ -364,7 +369,7 @@ async def update_models(request: Request):
         failures = [
             {"index": index, "error": result.error or "Provider test failed."}
             for (index, _), result in zip(to_test, results)
-            if not result.ok
+            if not result.ok and result.error != MISSING_KEY  # a new key variable is filled in after saving (see _check_keys)
         ]
         if failures:
             detail = "; ".join(f"{_slot_label(item['index'])}: {item['error']}" for item in failures)
@@ -397,8 +402,10 @@ async def test_provider(request: Request) -> TestResult:
 
 
 async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint) -> TestResult:
-    async def allowed() -> bool:
-        return not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
+    local = on_own_network(httpx.URL(provider.base_url).host or "")
+
+    async def allowed() -> bool:  # a local endpoint costs nothing, so the spend cap never blocks testing or saving it
+        return local or not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
 
     start = monotonic()
     try:
@@ -431,7 +438,7 @@ async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: Pr
     except ModelCallSkipped:
         error = "The daily spend cap has been reached."
     except MissingProviderKey:
-        error = "Set this provider's key in .env."
+        error = MISSING_KEY
     except (TimeoutError, httpx.TimeoutException):
         error = "Provider test timed out."
     except httpx.HTTPStatusError as exc:

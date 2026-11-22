@@ -324,13 +324,13 @@ class DesktopWorker:
         async def allowed() -> bool:
             return await self.app.dispatch.desktop_pause(chat_id, started_at) is None
 
+        body = {"name": skill.name, "description": skill.description, "body": skill.body}
         try:
-            with model_request("desktop", chat_id, allowed):
-                await check_model_allowed()
-                await self.app.proposals.create(
-                    "skill", f"Skill: {skill.name}",
-                    {"name": skill.name, "description": skill.description, "body": skill.body}, "desktop",
-                )
+            with model_request("desktop", chat_id, allowed):  # the drafting pass counts toward this task and the day
+                try:
+                    await self.app.proposals.create("skill", f"Skill: {skill.name}", dict(body), "desktop")
+                except ModelCallSkipped:  # a cap is reached: the owner still gets the skill, as the desktop wrote it
+                    await self.app.proposals.create("skill", f"Skill: {skill.name}", dict(body), "desktop", draft=False)
         except Exception as exc:
             log.warning("could not propose a desktop skill (%s)", type(exc).__name__)
 

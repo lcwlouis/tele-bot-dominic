@@ -294,13 +294,14 @@ async def test_existing_key_moves_to_a_new_host_only_by_hand(dashboard):
         two = await _save(client, "drafting", dict(COLLECTOR, api_key_env="NEW_KEY"),
                           [dict(PRIMARY, api_key_env="NEW_KEY")])
         assert two.status_code == 422
-        # a new name for one host passes key pairing (and save then requires its secret in .env to run the test call)
+        # a new name for one host passes key pairing and saves untested: its value goes into .env afterwards
+        # (it cannot hold one before, see above), and the slot cannot be called until it does
         from dom.config import ProviderEndpoint
         from dom.web.model_settings import _check_keys
 
         _check_keys(app.config, [ProviderEndpoint(**dict(COLLECTOR, api_key_env="NEW_KEY"))])
         new_key = await _save(client, "drafting", dict(COLLECTOR, api_key_env="NEW_KEY"))
-        assert new_key.status_code == 422 and "Set this provider's key in .env." in new_key.text
+        assert new_key.status_code == 200 and 'api_key_env = "NEW_KEY"' in path.read_text()
 
 
 @pytest.mark.parametrize("base_url", [
@@ -465,3 +466,42 @@ async def test_probe_omits_reasoning_uses_larger_budget_accepts_thinking_and_use
         })).json()
         assert res["ok"] is False and res["error"] == "The daily spend cap has been reached."
         assert slept == [2.0] and attempts == 2
+
+
+async def test_save_does_not_reprobe_a_slot_that_only_moved_or_changed_reasoning(dashboard):
+    app, path, browser = dashboard
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content)["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        other = dict(PRIMARY, model="other-model")
+        assert (await _save(client, "chat", PRIMARY, [other])).status_code == 200
+        assert seen == ["other-model"]
+        seen.clear()
+        assert (await _save(client, "chat", other, [PRIMARY])).status_code == 200  # swapped
+        assert (await _save(client, "chat", dict(other, reasoning_effort="low"), [PRIMARY])).status_code == 200
+        assert seen == []
+
+
+async def test_the_spend_cap_never_blocks_saving_a_local_endpoint(dashboard, monkeypatch):
+    app, path, browser = dashboard
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content)["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    async def over_cap(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(app.dispatch.usage, "over_cap", over_cap)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        assert (await _save(client, "chat", dict(PRIMARY, model="local-two"))).status_code == 200  # localhost
+        assert seen == ["local-two"]
+        cloud = await _save(client, "chat", dict(COLLECTOR, model="cloud-two"))
+        assert cloud.status_code == 422 and "spend cap" in cloud.text
