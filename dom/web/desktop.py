@@ -18,7 +18,7 @@ from websockets.exceptions import WebSocketException
 
 from dom.desktop.client import DEFAULT_RESOLUTION, PHONE_RESOLUTION, SandboxError, url_host
 from dom.desktop.sandbox import LocalSandbox
-from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
+from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE, ScreenBusy
 from dom.telegram import owner
 from dom.web.auth import same_origin
 from dom.web.model_settings import is_json
@@ -205,8 +205,7 @@ async def computer_action(request: Request, action: Literal["start", "stop"], co
             else:
                 message = await _change_computer(app, sandbox, action)
                 if sandbox.status() == "stopped":
-                    worker.screen_resolution = DEFAULT_RESOLUTION
-                    worker._needs_screen_restore = False
+                    worker.screen_reset()
     return render("desktop_state.html", context=await _context(app, lane, message))
 
 
@@ -351,6 +350,8 @@ async def viewer_screen(request: Request, container: str = ""):
         raise HTTPException(409, "Screen size can only change while idle or during a handoff.")
     try:
         resolution = await lane.worker.set_screen_mode(body["mode"] == "phone")
+    except ScreenBusy:
+        raise HTTPException(409, "Screen size can only change while idle or during a handoff.") from None
     except (SandboxError, TimeoutError, ValueError):
         raise HTTPException(502, "Could not resize the remote screen.") from None
     return JSONResponse({

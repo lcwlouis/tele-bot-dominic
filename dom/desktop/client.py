@@ -21,7 +21,22 @@ SCREENSHOT_LIMIT = 5_000_000
 EVALUATE_LIMIT = 4096
 DEFAULT_RESOLUTION = "1280x1024"
 PHONE_RESOLUTION = "800x600"
-VIEWER_RESOLUTIONS = frozenset({"800x600", "1024x768", "1280x720", "1280x800", "1280x1024"})
+# Allowed resolutions from agent-infra/sandbox BrowserConfigRequest (POST /v1/browser/config).
+VIEWER_RESOLUTIONS: dict[str, tuple[int, int]] = {
+    "640x480": (640, 480),
+    "800x600": (800, 600),
+    "1024x768": (1024, 768),
+    "1280x720": (1280, 720),
+    "1280x800": (1280, 800),
+    "1280x960": (1280, 960),
+    "1280x1024": (1280, 1024),
+    "1360x768": (1360, 768),
+    "1400x1050": (1400, 1050),
+    "1600x1200": (1600, 1200),
+    "1680x1050": (1680, 1050),
+    "1920x1080": (1920, 1080),
+    "1920x1200": (1920, 1200),
+}
 _HOST = re.compile(r"[a-z0-9.:-]{1,253}")
 _PASSWORD_FOCUS_JS = (
     "(() => {"
@@ -40,15 +55,22 @@ _PASSWORD_FOCUS_JS = (
     " && String(el.type || '').toLowerCase() === 'password');"
     "})()"
 )
+# Derive DISPLAY from the environment or the active Xvnc Unix socket (/tmp/.X11-unix/X<n>),
+# then clear both CLIPBOARD and PRIMARY selections and fail non-zero if no tool succeeds.
 _CLEAR_CLIPBOARD_SH = (
-    'd="${DISPLAY:-:90}"; '
+    'd="${DISPLAY:-}"; '
+    'if [ -z "$d" ]; then '
+    'for sock in /tmp/.X11-unix/X*; do '
+    'if [ -S "$sock" ]; then d=":${sock##*/X}"; break; fi; '
+    'done; '
+    'fi; '
+    '[ -n "$d" ] || { echo "no X11 display found" >&2; exit 2; }; '
     'if command -v xsel >/dev/null 2>&1; then '
-    'DISPLAY="$d" xsel -bc >/dev/null 2>&1 || true; '
-    'DISPLAY="$d" xsel -bp >/dev/null 2>&1 || true; '
+    'DISPLAY="$d" xsel -bc && DISPLAY="$d" xsel -pc; '
     'elif command -v xclip >/dev/null 2>&1; then '
-    'printf "" | DISPLAY="$d" xclip -selection clipboard -in >/dev/null 2>&1 || true; '
-    'printf "" | DISPLAY="$d" xclip -selection primary -in >/dev/null 2>&1 || true; '
-    'fi'
+    'printf "" | DISPLAY="$d" xclip -selection clipboard -in >/dev/null 2>&1 '
+    '&& printf "" | DISPLAY="$d" xclip -selection primary -in >/dev/null 2>&1; '
+    'else echo "neither xsel nor xclip is installed" >&2; exit 127; fi'
 )
 
 
@@ -162,9 +184,11 @@ class SandboxClient:
         return await self._json("browser/tabs")
 
     async def set_browser_resolution(self, resolution: str, *, timeout: int = 10) -> Any:
-        if resolution not in VIEWER_RESOLUTIONS:
+        dims = VIEWER_RESOLUTIONS.get(resolution)
+        if dims is None:
             raise ValueError(f"unsupported browser resolution: {resolution}")
-        return await self._json("browser/config", {"resolution": resolution}, timeout=timeout)
+        width, height = dims
+        return await self._json("browser/config", {"resolution": {"width": width, "height": height}}, timeout=timeout)
 
     async def is_password_focused(self, *, timeout: int = 5) -> bool:
         """Whether the active browser tab currently focuses an input[type=password].
@@ -181,8 +205,14 @@ class SandboxClient:
         return False
 
     async def clear_clipboard(self, *, timeout: int = 5) -> None:
-        """Clear X11 clipboard and primary selections inside the sandbox."""
-        await self._json("bash/exec", {"command": _CLEAR_CLIPBOARD_SH}, timeout=timeout)
+        """Clear X11 clipboard and primary selections inside the sandbox; raise SandboxError if the clear fails."""
+        result = await self._json("bash/exec", {"command": _CLEAR_CLIPBOARD_SH}, timeout=timeout)
+        if not isinstance(result, dict) or result.get("exit_code") != 0:
+            code = result.get("exit_code") if isinstance(result, dict) else None
+            stderr = result.get("stderr") if isinstance(result, dict) else None
+            detail = self.redact(stderr.strip())[:160] if isinstance(stderr, str) and stderr.strip() else ""
+            suffix = f": {detail}" if detail else ""
+            raise SandboxError(f"clipboard clear failed (exit code {code!r}{suffix})")
 
     async def current_url(self) -> str | None:
         """The URL of the browser's active tab, or None when no tab is marked active or the sandbox does not

@@ -77,6 +77,10 @@ class PlanBreach(Exception):
     """A self-directed task's browser left the plan's sites and the page could not be closed."""
 
 
+class ScreenBusy(SandboxError):
+    """The remote screen cannot be resized while a task is actively running."""
+
+
 @dataclass
 class Progress:
     steps: int = 0
@@ -126,6 +130,7 @@ class DesktopWorker:
         self._job: asyncio.Task | None = None
         self._stopping = 0  # cancels reserved but not finished: no new task may claim the container meanwhile
         self.control = asyncio.Lock()
+        self._screen_lock = asyncio.Lock()
         self._handoff: tuple[int, int, asyncio.Event] | None = None
         self.handoff_host: str | None = None  # the page the owner is asked to log in on
         self.handoff_reason: str | None = None
@@ -135,6 +140,8 @@ class DesktopWorker:
         self._needs_screen_restore: bool = getattr(sandbox, "stop", None) is None
         if hasattr(sandbox, "alert"):
             sandbox.alert = self._alert_owner
+        if hasattr(sandbox, "on_stop"):
+            sandbox.on_stop = self.screen_reset
 
     async def _alert_owner(self, text: str) -> None:
         if (owner_id := self.app.owner_id) is not None:
@@ -169,24 +176,41 @@ class DesktopWorker:
             "remaining_seconds": remaining,
         }
 
+    def screen_reset(self) -> None:
+        """Reset tracked screen state after a local container stops or restarts."""
+        self.screen_resolution = DEFAULT_RESOLUTION
+        self._needs_screen_restore = getattr(self.sandbox, "stop", None) is None
+
     async def set_screen_mode(self, phone: bool) -> str:
-        """Resize the sandbox display to phone mode (800x600) or desktop (1280x1024) without holding a lock."""
-        if not self.can_resize_screen():
-            raise SandboxError("screen size can only change while idle or during a handoff")
-        client = getattr(self.sandbox, "client", None)
-        setter = getattr(client, "set_browser_resolution", None)
-        if setter is None:
-            raise SandboxError("desktop is not ready")
-        target = PHONE_RESOLUTION if phone else DEFAULT_RESOLUTION
-        async with asyncio.timeout(10):
-            await setter(target, timeout=10)
-        self.screen_resolution = target
-        self._needs_screen_restore = target != DEFAULT_RESOLUTION
-        self.sandbox.touch()
-        return target
+        """Resize the sandbox display to phone mode (800x600) or desktop (1280x1024).
+        Serialised on `_screen_lock` (never `control`); if a handoff ends or a task starts while a
+        phone-mode resize is in flight, restores 1280x1024 before returning."""
+        async with self._screen_lock:
+            if not self.can_resize_screen():
+                raise ScreenBusy("screen size can only change while idle or during a handoff")
+            client = getattr(self.sandbox, "client", None)
+            setter = getattr(client, "set_browser_resolution", None)
+            if setter is None:
+                raise SandboxError("desktop is not ready")
+            target = PHONE_RESOLUTION if phone else DEFAULT_RESOLUTION
+            if target != DEFAULT_RESOLUTION:
+                self._needs_screen_restore = True
+            async with asyncio.timeout(10):
+                await setter(target, timeout=10)
+            self.screen_resolution = target
+            self._needs_screen_restore = target != DEFAULT_RESOLUTION
+            self.sandbox.touch()
+            if target != DEFAULT_RESOLUTION and not self.can_resize_screen():
+                await self._restore_screen_locked(client)
+                raise ScreenBusy("screen size can only change while idle or during a handoff")
+            return self.screen_resolution
 
     async def _restore_screen(self, client: SandboxClient | None = None) -> None:
-        """Restore the sandbox display to 1280x1024 outside any lock, bounded by a timeout."""
+        """Restore the sandbox display to 1280x1024, serialised on `_screen_lock` (never `control`)."""
+        async with self._screen_lock:
+            await self._restore_screen_locked(client)
+
+    async def _restore_screen_locked(self, client: SandboxClient | None = None) -> None:
         if self.screen_resolution == DEFAULT_RESOLUTION and not self._needs_screen_restore:
             return
         client = client or getattr(self.sandbox, "client", None)
@@ -214,7 +238,7 @@ class DesktopWorker:
             async with asyncio.timeout(5):
                 await clearer(timeout=5)
         except Exception as exc:
-            log.warning("could not clear desktop clipboard (%s)", type(exc).__name__)
+            log.warning("could not clear desktop clipboard (%s: %s)", type(exc).__name__, exc)
 
     async def _finish_handoff(self) -> None:
         await self._clear_clipboard()
@@ -267,8 +291,7 @@ class DesktopWorker:
             except SandboxError as exc:
                 log.warning("could not stop a stray desktop container (%s)", exc)
             else:
-                self.screen_resolution = DEFAULT_RESOLUTION
-                self._needs_screen_restore = False
+                self.screen_reset()
         chat_id = self.app.owner_id
         if rows is None:
             rows = await self.app.store.desktop_tasks(chat_id, active=True, container=self.container) if chat_id is not None else []
@@ -325,8 +348,7 @@ class DesktopWorker:
         except SandboxError as exc:
             log.warning("could not stop the desktop after a cancel (%s)", exc)
         else:
-            self.screen_resolution = DEFAULT_RESOLUTION
-            self._needs_screen_restore = False
+            self.screen_reset()
 
     async def resume(self, chat_id: int, task_id: int, steps: int) -> bool:
         async with self.control:

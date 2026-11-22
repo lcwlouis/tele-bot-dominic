@@ -167,9 +167,30 @@ zoomResetBtn.addEventListener("click", () => setZoom(1));
 // ---- Capture-phase touch handling: local pinch-zoom/pan + one-finger scroll ----
 let pinchState = null; // { dist, midX, midY }
 let singleTouch = null; // { x, y, startX, startY, moved, mode }
+let forwardedTouch = null; // first-finger touch that reached noVNC before a pinch started
+let cancellingGesture = false;
 
 function vncCanvas() {
     return screen.querySelector("canvas");
+}
+
+// Cancel an in-progress single-finger touch inside noVNC's GestureHandler without firing
+// a tap (onetap) or leaving its 1000ms longpress timer running when a second finger starts a pinch.
+function cancelNoVncGesture(touch) {
+    const canvas = vncCanvas();
+    if (!canvas || !touch) return;
+    const dummies = [-101, -102, -103].map((id) => ({ identifier: id, clientX: 0, clientY: 0 }));
+    const startEv = new Event("touchstart", { bubbles: true, cancelable: true });
+    startEv.changedTouches = dummies;
+    const cancelEv = new Event("touchcancel", { bubbles: true, cancelable: true });
+    cancelEv.changedTouches = [touch, ...dummies];
+    cancellingGesture = true;
+    try {
+        canvas.dispatchEvent(startEv);
+        canvas.dispatchEvent(cancelEv);
+    } finally {
+        cancellingGesture = false;
+    }
 }
 
 function dispatchRemoteWheel(clientX, clientY, deltaX, deltaY) {
@@ -194,8 +215,14 @@ function dispatchRemoteClick(clientX, clientY) {
 }
 
 viewport.addEventListener("touchstart", (event) => {
+    if (cancellingGesture) return;
     if (event.touches.length >= 2) {
-        // Intercept pinch/2-finger drag before noVNC so the remote browser never zooms.
+        // Reset any first-finger touch that already reached noVNC, then swallow pinch events
+        // so neither long-press nor remote browser zoom can fire.
+        if (forwardedTouch) {
+            cancelNoVncGesture(forwardedTouch);
+            forwardedTouch = null;
+        }
         event.preventDefault();
         event.stopImmediatePropagation();
         singleTouch = null;
@@ -218,10 +245,16 @@ viewport.addEventListener("touchstart", (event) => {
         event.stopImmediatePropagation();
         const t = event.touches[0];
         singleTouch = { x: t.clientX, y: t.clientY, startX: t.clientX, startY: t.clientY, moved: false, mode: inputMode };
+        return;
+    }
+    if (event.touches.length === 1) {
+        const t = event.touches[0];
+        forwardedTouch = { identifier: t.identifier, clientX: t.clientX, clientY: t.clientY };
     }
 }, { capture: true, passive: false });
 
 viewport.addEventListener("touchmove", (event) => {
+    if (cancellingGesture) return;
     if (pinchState && event.touches.length >= 2) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -260,10 +293,18 @@ viewport.addEventListener("touchmove", (event) => {
         } else if (singleTouch.mode === "scroll" && singleTouch.moved) {
             dispatchRemoteWheel(singleTouch.startX, singleTouch.startY, -dx * 1.4, -dy * 1.4);
         }
+    } else if (forwardedTouch && event.touches.length === 1) {
+        const t = event.touches[0];
+        if (t.identifier === forwardedTouch.identifier) {
+            forwardedTouch.clientX = t.clientX;
+            forwardedTouch.clientY = t.clientY;
+        }
     }
 }, { capture: true, passive: false });
 
 function endTouch(event) {
+    if (cancellingGesture) return;
+    if (event.touches.length === 0) forwardedTouch = null;
     if (pinchState) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -342,7 +383,7 @@ function connectVnc() {
         setConnState("connected", "Connected");
         reconnectBar.hidden = true;
         applyZoomPan();
-        checkPasswordFocus();
+        if (currentHandoff !== null) checkPasswordFocus();
     });
 
     instance.addEventListener("disconnect", (event) => {
@@ -376,7 +417,7 @@ document.addEventListener("visibilitychange", () => {
         if (!connected) {
             reconnectDelay = 1000;
             connectVnc();
-        } else {
+        } else if (currentHandoff !== null) {
             checkPasswordFocus();
         }
     }
@@ -712,4 +753,7 @@ setInterval(() => {
 }, 1000);
 
 setInterval(pollStatus, 4000);
-setInterval(checkPasswordFocus, 1500);
+// Poll password focus on a timer only during an active handoff; touch and key events still check on demand.
+setInterval(() => {
+    if (currentHandoff !== null) checkPasswordFocus();
+}, 1500);

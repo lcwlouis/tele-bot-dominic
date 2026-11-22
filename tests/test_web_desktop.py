@@ -847,11 +847,18 @@ async def test_remote_sandbox_crash_recovery_restores_resolution_and_clears_clip
     assert mock_client.clipboard_clears == 1
 
 
-async def test_sandbox_client_resolution_and_clipboard_api_calls():
+async def test_sandbox_client_resolution_and_clipboard_api_calls(caplog):
+    from dom.desktop.client import SandboxError
+
     seen = []
+    exit_code = 0
+    stderr = ""
 
     def handler(request):
-        seen.append((request.method, request.url.path, request.read().decode()))
+        body = request.read().decode()
+        seen.append((request.method, request.url.path, body))
+        if request.url.path == "/v1/bash/exec":
+            return httpx.Response(200, json={"success": True, "data": {"exit_code": exit_code, "stdout": "", "stderr": stderr}})
         return httpx.Response(200, json={"success": True, "data": {"ok": True}})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
@@ -861,8 +868,183 @@ async def test_sandbox_client_resolution_and_clipboard_api_calls():
         await client.clear_clipboard(timeout=5)
         with pytest.raises(ValueError, match="unsupported"):
             await client.set_browser_resolution("390x844")
-    assert seen[0] == ("POST", "/v1/browser/config", '{"resolution":"800x600"}')
-    assert seen[1] == ("POST", "/v1/browser/config", '{"resolution":"1280x1024"}')
-    assert seen[2][0] == "POST" and seen[2][1] == "/v1/bash/exec" and "xclip" in seen[2][2]
+
+        # Non-zero exit code (e.g. missing tool or no X11 display) must raise SandboxError, not be swallowed.
+        exit_code = 127
+        stderr = "neither xsel nor xclip is installed"
+        with pytest.raises(SandboxError, match="clipboard clear failed"):
+            await client.clear_clipboard(timeout=5)
+
+    assert seen[0] == ("POST", "/v1/browser/config", '{"resolution":{"width":800,"height":600}}')
+    assert seen[1] == ("POST", "/v1/browser/config", '{"resolution":{"width":1280,"height":1024}}')
+    assert seen[2][0] == "POST" and seen[2][1] == "/v1/bash/exec"
+    cmd = seen[2][2]
+    assert "xsel -bc" in cmd and "xsel -pc" in cmd
+    assert "xsel -bp" not in cmd and "|| true" not in cmd and ":90" not in cmd
+    assert "/tmp/.X11-unix/X*" in cmd
+
+
+async def test_resize_race_handoff_ends_while_resize_in_flight(make_app, monkeypatch):
+    app = make_app()
+    mock_client = MockSandboxClient(url="https://accounts.example.org/login")
+    in_phone_resize, release_phone_resize = asyncio.Event(), asyncio.Event()
+
+    async def gated_resize(resolution, *, timeout=10):
+        mock_client.resolutions.append((resolution, timeout))
+        if resolution == "800x600":
+            in_phone_resize.set()
+            await release_phone_resize.wait()
+        return {"resolution": resolution}
+
+    mock_client.set_browser_resolution = gated_resize
+    sandbox = ViewerSandbox(mock_client)
+    worker = await worker_for(
+        app, call("handoff", reason="Sign in"), call("finish", result="Done"), {"content": "invalid"},
+    )
+    worker.sandbox = sandbox
+    worker._needs_screen_restore = False
+    app.desktop_worker.lanes[app.desktop_worker.default].sandbox = sandbox
+    web = dashboard(app, monkeypatch)
+    headers = {"Authorization": f"Bearer {TOKEN}", "Origin": ORIGIN}
+
+    task_id = await worker.enqueue(OWNER, "Race test")
+    row = await wait_status(app, task_id, "waiting_owner")
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+        resize_req = asyncio.create_task(browser.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=headers))
+        await asyncio.wait_for(in_phone_resize.wait(), 2)
+
+        # Owner finishes handoff while phone-mode resize is still in flight; resume must not block on _screen_lock.
+        done = await asyncio.wait_for(
+            browser.post("/desktop/viewer/done", json={"task_id": task_id, "steps": row["steps"]}, headers=headers),
+            timeout=2,
+        )
+        assert done.status_code == 200 and done.json()["ok"] is True
+
+        release_phone_resize.set()
+        resize_resp = await resize_req
+        assert resize_resp.status_code == 409
+
+    await wait_task(worker)
+    assert worker.screen_resolution == "1280x1024"
+    assert mock_client.resolutions == [("800x600", 10), ("1280x1024", 10)]
+
+
+async def test_resize_race_task_starts_while_idle_resize_in_flight(make_app, monkeypatch):
+    app = make_app()
+    mock_client = MockSandboxClient()
+    in_phone_resize, release_phone_resize = asyncio.Event(), asyncio.Event()
+
+    async def gated_resize(resolution, *, timeout=10):
+        mock_client.resolutions.append((resolution, timeout))
+        if resolution == "800x600":
+            in_phone_resize.set()
+            await release_phone_resize.wait()
+        return {"resolution": resolution}
+
+    mock_client.set_browser_resolution = gated_resize
+    sandbox = ViewerSandbox(mock_client)
+    worker = await worker_for(app, call("finish", result="Done"), {"content": "invalid"})
+    worker.sandbox = sandbox
+    worker._needs_screen_restore = False
+    app.desktop_worker.lanes[app.desktop_worker.default].sandbox = sandbox
+    web = dashboard(app, monkeypatch)
+    headers = {"Authorization": f"Bearer {TOKEN}", "Origin": ORIGIN}
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+        resize_req = asyncio.create_task(browser.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=headers))
+        await asyncio.wait_for(in_phone_resize.wait(), 2)
+
+        # A new task starts while the idle phone-mode resize is still in flight.
+        await asyncio.wait_for(worker.enqueue(OWNER, "Run task"), timeout=2)
+        await asyncio.sleep(0.02)
+
+        release_phone_resize.set()
+        resize_resp = await resize_req
+        assert resize_resp.status_code == 409
+
+    await wait_task(worker)
+    assert worker.screen_resolution == "1280x1024"
+    assert mock_client.resolutions == [("800x600", 10), ("1280x1024", 10)]
+
+
+async def test_concurrent_screen_toggles_are_serialized(make_app, monkeypatch):
+    app = make_app()
+    mock_client = MockSandboxClient()
+    active = 0
+    max_active = 0
+    first_entered, release_first = asyncio.Event(), asyncio.Event()
+    order = []
+
+    async def slow_resize(resolution, *, timeout=10):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        order.append(("start", resolution))
+        if resolution == "800x600":
+            first_entered.set()
+            await release_first.wait()
+        order.append(("end", resolution))
+        active -= 1
+        return {"resolution": resolution}
+
+    mock_client.set_browser_resolution = slow_resize
+    sandbox = ViewerSandbox(mock_client)
+    worker = adopt(app, DesktopWorker(app, sandbox))
+    web = dashboard(app, monkeypatch)
+    headers = {"Authorization": f"Bearer {TOKEN}", "Origin": ORIGIN}
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+        r1 = asyncio.create_task(browser.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=headers))
+        await asyncio.wait_for(first_entered.wait(), 2)
+        r2 = asyncio.create_task(browser.post("/desktop/viewer/screen", json={"mode": "desktop"}, headers=headers))
+        await asyncio.sleep(0.02)
+        # Second toggle must wait for first; worker.control must remain unlocked.
+        assert max_active == 1
+        async with asyncio.timeout(1):
+            await worker.control.acquire()
+        worker.control.release()
+
+        release_first.set()
+        resp1, resp2 = await asyncio.gather(r1, r2)
+        assert resp1.status_code == 200 and resp2.status_code == 200
+
+    assert max_active == 1
+    assert order == [("start", "800x600"), ("end", "800x600"), ("start", "1280x1024"), ("end", "1280x1024")]
+    assert worker.screen_resolution == "1280x1024"
+
+
+async def test_local_sandbox_idle_stop_resets_worker_screen_state(make_app):
+    from dom.desktop.sandbox import LocalSandbox
+
+    app = make_app()
+    app.config = app.config.model_copy(update={"desktop_mode": "local"})
+    now = [100.0]
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"true\n", b""
+
+    async def fake_run(*args, **kwargs):
+        return FakeProc()
+
+    sandbox = LocalSandbox(app.config, run=fake_run, clock=lambda: now[0])
+    sandbox._status = "ready"
+    sandbox.client = MockSandboxClient()
+    fleet = DesktopFleet(app, sandbox_factory=lambda host, name: sandbox)
+    worker = fleet.lane("default").worker
+    await worker.set_screen_mode(True)
+    assert worker.screen_resolution == "800x600"
+
+    # Advance past idle timeout and trigger idle stop: worker.screen_reset() runs via on_stop.
+    now[0] += app.config.desktop.idle_minutes * 60 + 1
+    await sandbox.stop_if_idle()
+    assert sandbox.status() == "stopped"
+    assert worker.screen_resolution == "1280x1024"
+    assert worker._needs_screen_restore is False
+    await sandbox.close()
+
 
 
