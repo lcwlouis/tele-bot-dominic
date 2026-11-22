@@ -24,6 +24,7 @@ from dom.presence import Habits, Presence
 from dom.search import SearchClient
 from dom.skills import BODY_LIMIT, NAME_LIMIT, skills_list, view_text
 from dom.store import Store
+from dom.telegram.executor import FloodBudget, FloodBudgetExhausted, retry_telegram
 from dom.traits import AUTO, TASK_QUIET, clean_reason, global_preset_name
 from dom.usage import ModelCallSkipped, model_request
 
@@ -357,10 +358,17 @@ async def _write_brief(args: dict, ctx: TurnCtx) -> str:
     except OSError:
         return "error: could not save the brief"
     await app.store.record_owner_event(f"Dom wrote a core-change brief ({brief.filename})")
-    document = BufferedInputFile(brief.markdown.encode("utf-8"), filename=brief.filename)
+    data = brief.markdown.encode("utf-8")
     try:
-        await app.bot.send_document(ctx.chat_id, document, caption=f"Core-change brief: {brief.title}")
-    except TelegramAPIError:
+        await retry_telegram(
+            lambda: app.bot.send_document(
+                ctx.chat_id, BufferedInputFile(data, filename=brief.filename),
+                caption=f"Core-change brief: {brief.title}",
+            ),
+            sleep=app.sleep,
+            budget=FloodBudget(),
+        )
+    except (TelegramAPIError, FloodBudgetExhausted):
         return json.dumps({"filename": brief.filename, "error": "Saved the brief, but could not send the document."})
     return json.dumps({"filename": brief.filename})
 

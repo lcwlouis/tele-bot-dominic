@@ -1895,11 +1895,19 @@ class Store:
         ])
 
     async def delete_reminder(
-        self, chat_id: int | None, reminder_id: int, expected_created_at: str, event_text: str, event_at: str,
+        self,
+        chat_id: int | None,
+        reminder_id: int,
+        expected_created_at: str,
+        event_text: str,
+        event_at: str,
+        *,
+        retry_key: str | None = None,
     ) -> str:
-        """Verify identity and delete one reminder + record owner event in a single transaction."""
+        """Verify identity and delete one reminder, its retry KV row, and record owner event in a single transaction."""
         if chat_id is None:
             return "not_found"
+        kv_key = retry_key or f"reminder_retry:{reminder_id}"
 
         def delete() -> str:
             with self._tx() as conn:
@@ -1911,6 +1919,7 @@ class Store:
                 if not stamp_matches(row["created_at"], expected_created_at):
                     return "stale"
                 conn.execute("DELETE FROM reminders WHERE chat_id = ? AND id = ?", (str(chat_id), reminder_id))
+                conn.execute("DELETE FROM kv WHERE key = ?", (kv_key,))
                 self._insert_owner_event(conn, event_text, event_at)
             self._append_owner_event_transcript(event_text, event_at)
             return "deleted"

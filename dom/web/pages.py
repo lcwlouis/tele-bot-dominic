@@ -186,7 +186,7 @@ async def _today(app: App, now: datetime, start: datetime, end: datetime) -> lis
     tz = now.tzinfo
     turns, replies = await app.store.turn_counts(start, end)
     _, spent = await app.dispatch.usage.today(ZoneInfo(app.config.timezone))
-    reminders = await app.dispatch.reminders.active()
+    reminders = [row for row in await app.dispatch.reminders.active() if not row.get("undeliverable")]
     if reminders:
         due = datetime.fromisoformat(reminders[0]["due_at"]).astimezone(tz)
         text = reminders[0]["text"]

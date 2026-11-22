@@ -41,6 +41,7 @@ from dom.desktop.files import safe_filename
 from dom.desktop.sandbox import SELF_WORK, Refused
 from dom.desktop.worker import GuardRefused, PlanBreach, Progress
 from dom.home import PrivateAccessError
+from dom.telegram.executor import retry_telegram
 from dom.traits import decode
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
@@ -255,10 +256,14 @@ class SelfWork:
             log.warning("self-directed plan too long to announce; it will not run")
             return False
         buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"own:cancel:{row['id']}")] for row in rows]
+        markup = InlineKeyboardMarkup(inline_keyboard=buttons)
         try:
-            await app.bot.send_message(
-                owner, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            await retry_telegram(
+                lambda: app.bot.send_message(
+                    owner, text, reply_markup=markup,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                ),
+                sleep=app.sleep,
             )
         except Exception as exc:
             log.warning("could not announce self-directed tasks; they will not run (%s)", type(exc).__name__)
@@ -468,8 +473,12 @@ class SelfWork:
         else:
             text = f"Stopped {task}: {row['error']}."
         app = self.app
+        body = text[:1000]
         try:
-            await app.bot.send_message(app.owner_id, text[:1000], link_preview_options=LinkPreviewOptions(is_disabled=True))
+            await retry_telegram(
+                lambda: app.bot.send_message(app.owner_id, body, link_preview_options=LinkPreviewOptions(is_disabled=True)),
+                sleep=app.sleep,
+            )
         except Exception as exc:
             log.warning("could not report self-directed task %s (%s)", row["id"], type(exc).__name__)
         # What Dom remembers of the outcome. The worker's summary is untrusted web content, so it stays out of his history.

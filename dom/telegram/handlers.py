@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from aiogram import Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
     CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntity,
 )
@@ -273,7 +273,7 @@ async def handle_message(app: App, message: Message) -> None:
             args = msg.text.split()[1:]
             if len(args) == 2 and args[0].lower() == "delete":
                 if error := await _confirm_delete_plugin(app, args[1]):
-                    await app.bot.send_message(msg.chat_id, error)
+                    await _send(app, msg.chat_id, error)
             else:
                 await owner.show_plugins(app)
                 await owner.record_event(app, f"{_person(msg.sender_name)} ran /plugins")
@@ -283,13 +283,13 @@ async def handle_message(app: App, message: Message) -> None:
             args = msg.text.split()[1:]
             if len(args) == 2 and args[0].lower() == "retire":
                 _, reply = await owner.retire_skill(app, args[1])
-                await app.bot.send_message(msg.chat_id, reply)
+                await _send(app, msg.chat_id, reply)
             elif len(args) == 2 and args[0].lower() == "restore":
                 _, reply = await owner.restore_skill(app, args[1])
-                await app.bot.send_message(msg.chat_id, reply)
+                await _send(app, msg.chat_id, reply)
             elif len(args) == 2 and args[0].lower() == "delete":
                 if error := await _confirm_delete_skill(app, args[1]):
-                    await app.bot.send_message(msg.chat_id, error)
+                    await _send(app, msg.chat_id, error)
             else:
                 await owner.show_skills(app)
                 await owner.record_event(app, f"{_person(msg.sender_name)} ran /skills")
@@ -299,7 +299,7 @@ async def handle_message(app: App, message: Message) -> None:
             args = msg.text.split()[1:]
             if len(args) == 2 and args[0].lower() == "delete" and (task_id := _item_id(args[1])) is not None:
                 if error := await _confirm_delete_own_task(app, task_id):
-                    await app.bot.send_message(msg.chat_id, error)
+                    await _send(app, msg.chat_id, error)
             else:
                 await owner.show_own_work(app)
                 await owner.record_event(app, f"{_person(msg.sender_name)} ran /ownwork")
@@ -313,7 +313,7 @@ async def handle_message(app: App, message: Message) -> None:
             args = msg.text.split()[1:]
             if len(args) == 2 and args[0].lower() == "delete" and (task_id := _item_id(args[1])) is not None:
                 if error := await _confirm_delete_desktop_task(app, task_id):
-                    await app.bot.send_message(msg.chat_id, error)
+                    await _send(app, msg.chat_id, error)
             else:
                 await owner.show_tasks(app)
                 await owner.record_event(app, f"{_person(msg.sender_name)} ran /tasks")
@@ -349,7 +349,7 @@ async def handle_message(app: App, message: Message) -> None:
             args = msg.text.split()[1:]
             if len(args) == 2 and args[0].lower() == "delete" and (item_id := _item_id(args[1])) is not None:
                 if error := await _confirm_delete_reminder(app, item_id):
-                    await app.bot.send_message(msg.chat_id, error)
+                    await _send(app, msg.chat_id, error)
             elif len(args) == 1 and args[0].lower() == "all":
                 await owner.show_reminders(app, include_settled=True)
                 await owner.record_event(app, f"{who} ran /reminders all")
@@ -361,7 +361,7 @@ async def handle_message(app: App, message: Message) -> None:
             args = msg.text.split()[1:]
             if len(args) == 2 and args[0].lower() == "delete" and (item_id := _item_id(args[1])) is not None:
                 if error := await _confirm_delete_proposal(app, item_id):
-                    await app.bot.send_message(msg.chat_id, error)
+                    await _send(app, msg.chat_id, error)
             elif len(args) == 1 and args[0].lower() == "settled":
                 await owner.show_settled_proposals(app)
                 await owner.record_event(app, f"{who} ran /proposals settled")
@@ -614,12 +614,16 @@ def _item_id(raw: str) -> int | None:
 async def _settle_confirm(app: App, query: CallbackQuery, label: str) -> None:
     if query.message is None:
         return
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]])
     try:
-        await app.bot.edit_message_reply_markup(
-            chat_id=query.message.chat.id, message_id=query.message.message_id,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]]),
+        await retry_telegram(
+            lambda: app.bot.edit_message_reply_markup(
+                chat_id=query.message.chat.id, message_id=query.message.message_id,
+                reply_markup=markup,
+            ),
+            sleep=app.sleep,
         )
-    except TelegramBadRequest:
+    except (TelegramBadRequest, TelegramRetryAfter):  # the delete is done either way; a second tap answers "stale"
         log.info("could not settle confirmation buttons in chat %s", query.message.chat.id)
 
 
