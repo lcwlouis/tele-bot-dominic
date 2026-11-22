@@ -11,7 +11,9 @@
       <p>{{ manifest.description }} · {{ review.status }}</p>
       <p class="fog">SHA-256 <span class="num">{{ review.plugin.hash }}</span></p>
       {% if manifest.network %}<p class="kind">{{ NETWORK_NOTICE }}</p>{% endif %}
-      {% if review.surfaces_changed %}<p class="kind">Declared commands, panels, tools or network access changed since the approved version.</p>{% endif %}
+      {% if review.surfaces_changed %}<p class="kind">Declared commands, panels, tools, network access or storage changed since the approved version.</p>{% endif %}
+      {% if manifest.storage %}<p class="kind">{{ STORAGE_NOTICE }}</p>{% else %}<p class="fog">Storage off</p>{% endif %}
+      {% with trial = review.test_run, trial_pending = review.status != "disabled" %}{% include "plugin_trial.html" %}{% endwith %}
       <h4>Tools</h4>
       {% for tool in manifest.tools %}
       <p>{{ tool.name }} · {{ tool.scopes | join(", ") or "No scopes" }}</p>
@@ -63,7 +65,7 @@
   {% else %}
     {% if not context.rows %}
     <p class="fog">No plugins are installed.</p>
-    <p class="fog">Ask Dom in your DM to write a plugin for something he does often. You'll review the code here before it runs.</p>
+    <p class="fog">Ask Dom in your DM to write a plugin for something he does often. Review the code here before enabling it.</p>
     {% endif %}
     {% for row in context.rows %}
     {% set route = "/plugins/" ~ row.name ~ "/" ~ row.hash %}
@@ -71,6 +73,8 @@
       <h3>{{ row.name }}</h3>
       <p{% if row.status == "pending" %} class="kind"{% endif %}>{{ row.status }}{% if not row.available %} · Files unavailable{% endif %}</p>
       {% if row.network %}<p class="kind">{{ NETWORK_NOTICE }}</p>{% endif %}
+      {% if row.storage %}<p class="kind">{{ STORAGE_NOTICE }}</p>{% endif %}
+      {% with trial = row.test_run, trial_pending = row.available and row.status != "disabled" %}{% include "plugin_trial.html" %}{% endwith %}
       <div class="actions" hx-target="#plugins" hx-swap="outerHTML">
         {% if row.available %}<a href="{{ route }}">Review code</a>{% endif %}
         {% if row.status != "disabled" %}

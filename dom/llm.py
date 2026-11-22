@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
@@ -54,21 +55,30 @@ class ChatClient:
         body: dict = {"model": self.endpoint.model, "messages": messages}
         if tools:
             body["tools"] = tools
+        effort = self.endpoint.reasoning_effort
+        if effort is not None:
+            if self.host == "openrouter.ai" or (self.host or "").endswith(".openrouter.ai"):
+                body["reasoning"] = {"effort": effort}
+            else:
+                body["reasoning_effort"] = effort
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         url = f"{self.endpoint.base_url.rstrip('/')}/chat/completions"
+        kind = request_kind("chat")
 
         for delay in (None,) if once else (*RETRY_BACKOFF, None):
             await check_model_allowed()
-            turn_log.attempt(self.endpoint.model, request_kind("chat"), fallback=fallback)
-            with turn_log.timed("fallback_model" if fallback else "model"):
+            with turn_log.model_call(self.endpoint.model, kind, messages, tools, fallback=fallback) as call:
                 response = await self.http.post(
                     url, json=body, headers=headers, timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS),
                 )
+            if call is not None:
+                call.received(response)
             if self.usage is not None:
                 await self.usage.record_response(response, "chat", self.endpoint.model, self.host, fallback=fallback)
             if delay is None or not _retryable(response.status_code):
                 break
-            await self._sleep(delay)
+            with turn_log.timed("retry_backoff") if kind == "chat" else nullcontext():
+                await self._sleep(delay)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]
 

@@ -67,6 +67,7 @@ class App:
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | None = None
     gifs: GifSearch | None = None
+    draft_client: ChatClient | None = None
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
@@ -83,12 +84,17 @@ class App:
         def now() -> datetime:
             return datetime.now(timezone.utc)
 
-        self.plugin_runner = PluginRunner(home=self.home.root)
-        self.plugins = PluginRegistry(
-            self.home, self.store, on_change=lambda: owner.refresh_menu(self), is_running=self.plugin_runner.is_running,
-        )
+        self.plugin_runner = PluginRunner(home=self.home.root, store=self.store)
+        self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self), runner=self.plugin_runner)
         self.proposals = Proposals(self)
-        self.stickers = Stickers(self.home, self.bot, lambda: self.dispatch.now())
+        self.stickers = Stickers(
+            self.home,
+            self.bot,
+            lambda: self.dispatch.now(),
+            describer=lambda: self.media_describer,
+            spawn=lambda coro: self.dispatch._spawn(coro),
+            request_context=lambda: self.dispatch.sticker_media_request(),
+        )
         self.memory_import = MemoryImport(self)
         presence = Presence(self.store, ZoneInfo(self.config.timezone), Random(), now)
         if self.config.t3.enabled:

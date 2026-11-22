@@ -11,15 +11,19 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+import httpx
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MessageEntity
 
+from dom.agent import unfence
 from dom.config import replace_host
 from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.guard import check_local_private_text
-from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, validate_plugin
+from dom.memory_edit import apply_proposal as apply_memory_edit, format_summary as memory_edit_summary, prepare_proposal as prepare_memory_edit
+from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, Plugin, validate_name, validate_plugin
+from dom.plugins.trial import STORAGE_NOTICE, test_run_summary
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
-from dom.skills import Skill, skill_diff, skill_text, write_skill
+from dom.skills import BODY_LIMIT, Skill, skill_diff, skill_text, write_skill
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -30,6 +34,19 @@ REFLECTION_SOURCE = "reflection"
 REFLECTION_INTERVAL = timedelta(days=7)
 CARDS_KEY = "proposal-cards"  # {proposal id: [Telegram message ids of its cards with buttons]}
 SETTLED_LABELS = {"approved": "✅ Approved", "rejected": "❌ Rejected", "expired": "Expired"}
+PLUGIN_DRAFT_FORMAT = (
+    "Put plugin.toml in manifest_toml and main.py in files. The manifest starts with name, description and version. "
+    "The description must match the JSON description. Optional network, storage, timeout_seconds and memory_mb "
+    "go before [[tools]], [[commands]] and [[panels]]. Tools declare name, description, parameters (a JSON schema "
+    "of type object) and scopes. Commands declare name, description and scopes. Panels declare id and title. "
+    "Scopes are owner_dm, friend_dm or group, default owner_dm. Network plugins may only use owner_dm. "
+    "Use the standard library and _dom. Decorate each matching function with tool, command or panel and end "
+    "main.py with run(). Tools take keyword arguments and return text. Commands take text and scope and return "
+    "text. Panels take no arguments and return data with only title, paragraphs (list of text), items (pairs) "
+    "or table (columns and rows). An offline owner-only plugin can opt in with storage = true and use load_storage() "
+    "and save_storage(value) for one 64 KB JSON blob. Include a zero-argument self_test decorator for a function "
+    "that returns text or None and raises on failure. Trials use empty disposable state and no network."
+)
 
 
 class Refused(ValueError):
@@ -83,7 +100,9 @@ def summary(row: dict) -> str:
         files = [f"{path} ({size} bytes)" for path, size in body["files"].items()]
         network = NETWORK_NOTICE if body["network"] else "Network off"
         return "\n".join([
-            heading, body["description"], f"Tools: {', '.join(tools) or 'none'}",
+            heading, body["description"], STORAGE_NOTICE if body.get("storage") else "Storage off",
+            test_run_summary(body["test_run"]) if body.get("test_run") else "Test run pending.",
+            f"Tools: {', '.join(tools) or 'none'}",
             f"Commands: {', '.join(commands) or 'none'}", f"Panels: {', '.join(panels) or 'none'}", network,
             f"Files: {', '.join(files)}", f"Hash: {body['hash'][:12]}",
         ])
@@ -97,16 +116,28 @@ def summary(row: dict) -> str:
         if row["title"] == body["text"]:
             return f"#{row['id']} {body['file']}: {body['text']}"
         return f"{heading}\n{body['file']}: {body['text']}"
+    if row["kind"] == "memory_edit":
+        return memory_edit_summary(heading, body)
     return heading
 
 
 class Proposals:
     def __init__(self, app: App):
         self.app = app
+        self._draft_fallback_logged = False
 
     async def create(self, kind: str, title: str, body: dict, source: str, *, notify: bool = True) -> int:
+        from_brief = kind in ("plugin", "skill") and "brief" in body
+        if from_brief:
+            name, brief = body.get("name"), body.get("brief")
+            if kind == "plugin":
+                validate_name(name)
+            if not isinstance(name, str) or not isinstance(brief, str) or not brief.strip() or len(brief) > BODY_LIMIT:
+                raise ValueError(f"A draft needs a name and a brief of up to {BODY_LIMIT} characters.")
+            check_local_private_text(self.app.config, self.app.home, [name, brief])
+            body = await self._write_draft(kind, {"name": name, "brief": brief})
         if kind == "plugin":
-            body = await self._draft_plugin(body)
+            body = await self._draft_plugin(body, authored=from_brief)
             title = f"Plugin: {body['name']}"
         elif kind == "soul_edit":
             if not (isinstance(body.get("old"), str) and body["old"] and isinstance(body.get("new"), str)):
@@ -116,6 +147,12 @@ class Proposals:
         elif kind == "skill":
             skill = Skill(body.get("name"), body.get("description"), body.get("body"))
             check_local_private_text(self.app.config, self.app.home, [skill.name, skill.description, skill.body])
+            if self.app.draft_client is not None and not from_brief:
+                draft = await self._write_draft("skill", {
+                    "name": skill.name, "description": skill.description, "body": skill.body,
+                })
+                skill = Skill(draft.get("name"), draft.get("description"), draft.get("body"))
+                check_local_private_text(self.app.config, self.app.home, [skill.name, skill.description, skill.body])
             body = {
                 "name": skill.name, "description": skill.description, "body": skill.body,
                 "old": skill_text(self.app.home, skill.name), "new": skill.render(),
@@ -124,6 +161,8 @@ class Proposals:
             text, file = body.get("text"), body.get("file")
             if not isinstance(text, str) or not text.strip() or not isinstance(file, str) or file not in MEMORY_FILES:
                 raise ValueError("a memory fact needs a memory filename and text")
+        elif kind == "memory_edit":
+            title, body = prepare_memory_edit(self.app.config, self.app.home, body)
         elif kind == "lan_address":
             try:
                 body = {
@@ -142,7 +181,7 @@ class Proposals:
             await self._notify(proposal_id, kind, title, body)
         return proposal_id
 
-    async def _draft_plugin(self, body: dict) -> dict:
+    def _plugin_from_draft(self, body: dict) -> Plugin:
         name, description = body.get("name"), body.get("description")
         files, manifest = body.get("files"), body.get("manifest_toml")
         if (
@@ -157,9 +196,50 @@ class Proposals:
         if description != plugin.manifest.description:
             raise ValueError("The description must match plugin.toml.")
         check_local_private_text(self.app.config, self.app.home, [*texts, *texts.values()])
-        await self.app.plugins.draft(plugin)
+        return plugin
+
+    async def _write_draft(self, kind: str, seed: dict) -> dict:
+        client = self.app.draft_client
+        if client is None or (client.endpoint.api_key_env and not client.api_key):
+            if not self._draft_fallback_logged:
+                log.warning("Drafting model credentials unavailable; using the chat model for drafts.")
+                self._draft_fallback_logged = True
+            client = self.app.client
+        fields = (
+            "name, description, manifest_toml and files (a mapping from filenames to Python source)"
+            if kind == "plugin" else "name, description and body (a reusable procedure in Markdown)"
+        )
+        instructions = (
+            f"Write a {kind} for Dom's owner to review. Use the supplied brief and produce a complete "
+            f"JSON object with {fields}. Keep the name and requested behaviour. Use only public information. "
+            "Leave out personal data, private notes, chat history, memory and credentials. Return only the JSON object."
+        )
+        if kind == "plugin":
+            instructions += "\n" + PLUGIN_DRAFT_FORMAT
+        try:
+            reply = await client.complete([
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": json.dumps(seed)},
+            ], [], once=True)
+            content = reply["content"]
+            if not isinstance(content, str):
+                raise ValueError("The drafting model returned no text.")
+            draft = json.loads(unfence(content))
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, RecursionError):
+            raise ValueError(f"The drafting model could not return a {kind} draft.") from None
+        if not isinstance(draft, dict) or draft.get("name") != seed["name"]:
+            raise ValueError(f"The drafting model must return a {kind} with the requested name.")
+        return draft
+
+    async def _draft_plugin(self, body: dict, *, authored: bool) -> dict:
+        plugin = self._plugin_from_draft(body)
+        if self.app.draft_client is not None and not authored:
+            seed = {key: body[key] for key in ("name", "description", "manifest_toml", "files")}
+            plugin = self._plugin_from_draft(await self._write_draft("plugin", seed))
+        result = await self.app.plugins.draft(plugin)
         return {
-            "name": name, "description": description, "hash": plugin.hash, "network": plugin.manifest.network,
+            "name": plugin.manifest.name, "description": plugin.manifest.description, "hash": plugin.hash,
+            "network": plugin.manifest.network, "storage": plugin.manifest.storage, "test_run": result,
             "tools": [{"name": tool.name, "scopes": tool.scopes} for tool in plugin.manifest.tools],
             "commands": [{"name": c.name, "scopes": c.scopes} for c in plugin.manifest.commands],
             "panels": [{"id": panel.id, "title": panel.title} for panel in plugin.manifest.panels],
@@ -180,7 +260,9 @@ class Proposals:
         app = self.app
         text = summary(row)
         review = None
+        options = {}
         if row["kind"] == "plugin":
+            options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
             body = json.loads(row["body_json"])
             review = review_button(app, body)
             if review is None:
@@ -193,8 +275,13 @@ class Proposals:
                 if review is not None:
                     keyboard.insert(0, [review])
                 markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+            chunk = text[start:start + 2000]
+            entities = None
+            if row["kind"] == "memory_edit":  # model-written diff: shown verbatim, nothing in it becomes tappable
+                options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
+                entities = [MessageEntity(type="pre", offset=0, length=len(chunk.encode("utf-16-le")) // 2)]
             sent = await app.bot.send_message(
-                app.owner_id, text[start:start + 2000], disable_notification=True, reply_markup=markup,
+                app.owner_id, chunk, disable_notification=True, reply_markup=markup, entities=entities, **options,
             )
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):
@@ -340,6 +427,12 @@ class Proposals:
             result = home.memory_write(rel, "add", body["text"])
             if not result.ok:
                 raise Refused(f"{body['file']}: {result.error}")
+            return
+        if kind == "memory_edit":
+            try:
+                apply_memory_edit(self.app.config, self.app.home, body)
+            except ValueError as error:
+                raise Refused(str(error)) from None
             return
         if kind == "skill":
             try:

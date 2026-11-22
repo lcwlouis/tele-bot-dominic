@@ -12,6 +12,7 @@
         <option value="skill"{% if context.kind == "skill" %} selected{% endif %}>Skill</option>
         <option value="plugin"{% if context.kind == "plugin" %} selected{% endif %}>Plugin</option>
         <option value="memory_fact"{% if context.kind == "memory_fact" %} selected{% endif %}>Memory fact</option>
+        <option value="memory_edit"{% if context.kind == "memory_edit" %} selected{% endif %}>Memory edit</option>
         <option value="lan_address"{% if context.kind == "lan_address" %} selected{% endif %}>LAN address</option>
         <option value="chat_approval"{% if context.kind == "chat_approval" %} selected{% endif %}>Chat approval</option>
       </select>
@@ -83,6 +84,17 @@
     {% if card.body.places %}<p>Used in {{ card.body.places|join(", ") }}.</p>{% endif %}
     {% if card.body.macs %}<p class="fog">Device {{ card.body.macs|join(", ") }}</p>{% endif %}
     <p class="fog">Dom uses the new address after his next restart.</p>
+    {% elif card.kind == "memory_edit" %}
+    {% if card.changes %}
+    <div class="diff" aria-label="Proposed changes">
+      {% for line in card.changes %}
+      {% if line.startswith("---") or line.startswith("+++") or line.startswith("@@") %}<div class="fog">{{ line }}</div>
+      {% elif line.startswith("-") %}<del>{{ line }}</del>
+      {% elif line.startswith("+") %}<ins>{{ line }}</ins>
+      {% else %}<div>{{ line }}</div>{% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
     {% else %}<p>{{ card.body.file }}: {{ card.body.text }}</p>{% endif %}
     {% if card.kind != "plugin" %}
     <div class="actions" hx-target="#proposals" hx-swap="outerHTML">

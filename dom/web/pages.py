@@ -27,6 +27,7 @@ from dom.briefs import list_briefs, markdown_blocks
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE, validate_name as validate_plugin_name
+from dom.plugins.trial import STORAGE_NOTICE, test_run_detail
 from dom.presence import read_habits
 from dom.skills import skill_diff
 from dom.telegram import gate, owner
@@ -45,6 +46,8 @@ templates = Environment(
 )
 templates.filters.update(money=lambda amount: f"${amount:,.2f}", urlencode_query=urlencode)
 templates.globals["NETWORK_NOTICE"] = NETWORK_NOTICE
+templates.globals["STORAGE_NOTICE"] = STORAGE_NOTICE
+templates.globals["test_run_detail"] = test_run_detail
 WHO = "The owner"
 KINDS = {
     "chat": "Replies", "triage": "Triage", "media": "Photos and voice", "memory": "Memory",
@@ -251,6 +254,8 @@ def _proposal_label(kind: str, source: str) -> str:
     if kind == "memory_fact":
         service = source.partition("import:")[2]
         return f"Memory imported from {IMPORT_SERVICES.get(service, service)}" if service else "Memory fact"
+    if kind == "memory_edit":
+        return "Memory edit"
     if kind == "skill":
         return "Skill proposed after a desktop task" if source == "desktop" else "Skill proposal"
     if kind == "lan_address":
@@ -269,6 +274,13 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
             row["review_path"] = proposals.plugin_review_path(row["body"])
         if row["kind"] == "skill" and row["body"]["old"]:
             row["changes"] = skill_diff(row["body"]["old"], row["body"]["new"])[2:]
+        if row["kind"] == "memory_edit":
+            from dom.memory_edit import memory_diff
+
+            diff_text = row["body"].get("diff")
+            row["changes"] = diff_text.splitlines() if isinstance(diff_text, str) and diff_text else memory_diff(
+                row["body"]["file"], row["body"]["old"], row["body"]["new"],
+            )
         if (key := _import_key(row)) is not None:
             if key not in imports:
                 service = key[0].partition(":")[2]
@@ -345,11 +357,48 @@ async def _usage(app: App) -> dict:
     }
 
 
-def _timing(item: str) -> str:
-    """A trace entry "web_search@1893" as "Search 1.9 s" (the dashboard's compact timing chip)."""
-    what, _, ms = item.rpartition("@")
-    label = "Search" if what == "web_search" else what.replace("_", " ").capitalize()
-    return f"{label} {int(ms) / 1000:.1f} s"
+TURN_STAGES = {
+    "away_wait": "Asleep or offline",
+    "debounce": "Debounce",
+    "media_wait": "Media wait",
+    "lock_wait": "Lock wait",
+    "triage": "Jev triage",
+    "model": "Model",
+    "retry_backoff": "Retry backoff",
+    "tool": "Tools",
+    "guard": "Leak guard",
+    "typing": "Typing",
+    "send": "Sending",
+    "other": "Other time",
+}
+TIMING_STAGES = {"fallback_model": "model", "gif_search": "send"}
+TIMING_LABELS = {"fallback_model": "Fallback model", "web_search": "Search", "gif_search": "GIF lookup"}
+
+
+def _turn_timings(row: dict, trace: list[str]) -> None:
+    totals: dict[str, int] = defaultdict(int)
+    timings = []
+    for item in trace:
+        what, sep, value = item.rpartition("@")
+        if not sep or not value.isdecimal():
+            continue
+        ms = int(value)
+        stage = TIMING_STAGES.get(what, what if what in TURN_STAGES else "tool")
+        label = TIMING_LABELS.get(what, TURN_STAGES.get(what, what.replace("_", " ").capitalize()))
+        timings.append((label, ms))
+        totals[stage] += ms
+    if row["last_bubble_ms"] is not None:
+        other = row["last_bubble_ms"] - sum(totals.values())
+        if other > 0:
+            totals["other"] = other
+            timings.append((TURN_STAGES["other"], other))
+    offset = 0
+    segments = []
+    for stage, label in TURN_STAGES.items():
+        if ms := totals[stage]:
+            segments.append((stage, label, offset, ms))
+            offset += ms
+    row.update(timing=timings, segments=segments, bar_ms=offset, model_calls=json.loads(row["model_calls"]))
 
 
 async def _turns(app: App, chat: str = "") -> dict:
@@ -365,12 +414,13 @@ async def _turns(app: App, chat: str = "") -> dict:
         row["title"] = _title(known[key], app.owner_id)
         trace = json.loads(row["trace"])
         row["steps"] = [item for item in trace if "@" not in item]
-        row["timing"] = [_timing(item) for item in trace if "@" in item]
+        _turn_timings(row, trace)
     # The filter offers chats Dom is in, plus any that appear in the turns shown; a chat he left long ago does not
     # clutter it.
     offered = {*approved, *(row["chat_id"] for row in rows), chat}
     return {
-        "rows": rows, "chat": chat,
+        "rows": rows, "chat": chat, "stages": TURN_STAGES,
+        "visible_stages": {stage for row in rows for stage, _, _, _ in row["segments"]},
         "choices": [(key, _title(row, app.owner_id)) for key, row in known.items() if key in offered],
     }
 
@@ -452,6 +502,13 @@ async def edit_stickers(request: Request):
         message = await owner.change_sticker_set(app, data.get("action", [""])[0], data.get("name", [""])[0])
     except ValueError as exc:
         message = str(exc)
+    return render("chats.html", context=await _chats(app) | {"message": message})
+
+
+@router.post("/stickers/refresh", response_class=HTMLResponse)
+async def refresh_sticker_descriptions(request: Request):
+    app = owner_app(request)
+    message = await owner.refresh_sticker_descriptions(app)
     return render("chats.html", context=await _chats(app) | {"message": message})
 
 

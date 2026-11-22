@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -114,8 +113,7 @@ def prompt_fingerprint(messages: list[dict], schemas: list[dict]) -> str:
     the home endpoint's prefix cache to hold. When a turn's first call is slow, the part whose hash moved is why."""
 
     def short(value: object) -> str:
-        text = value if isinstance(value, str) else json.dumps(value, sort_keys=False, ensure_ascii=False)
-        return hashlib.blake2s(text.encode(), digest_size=3).hexdigest()
+        return turn_log.prompt_hash(value, digest_size=3)
 
     system = next((m.get("content") or "" for m in messages if m.get("role") == "system"), "")
     user = next((m.get("content") or "" for m in messages if m.get("role") == "user"), "")

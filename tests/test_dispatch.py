@@ -11,7 +11,7 @@ from aiogram.methods import SendMessage
 from dom.actions import Actions
 from dom.config import PresenceConfig
 from dom.dispatch import NO_ANSWER_NOTICE, Dispatcher
-from dom.jev import JevUnavailable
+from dom.jev import JevClient, JevUnavailable
 from dom.models import StoredMessage
 from dom.presence import Presence, parse_habits, read_habits
 from dom.telegram.handlers import handle_message
@@ -283,6 +283,96 @@ async def test_expired_offline_session_is_caught_up_on_tick(setup_dispatch):
     await dispatch.tick()
     await dispatch.tick()
     assert len(app.script.requests) == 1
+
+
+async def test_reply_records_debounce_lock_triage_guard_typing_and_each_send(setup_dispatch, monkeypatch, gated_sleep):
+    sleep, waits = gated_sleep
+    app, dispatch, clock = await setup_dispatch(sleep=sleep)
+    start = clock()
+    elapsed = lambda: (clock() - start).total_seconds()
+    monkeypatch.setattr("dom.dispatch.monotonic", elapsed)
+    monkeypatch.setattr("dom.turn_log.monotonic", elapsed)
+    app.config = app.config.model_copy(update={"leak_check": True})
+    app.script.contents[:] = [json.dumps({"bubbles": [{"text": "one"}, {"text": "and two"}]})]
+
+    def jev_reply(request):
+        questions = json.loads(request.content)["questions"]
+        if "leak" in questions:
+            clock.advance(milliseconds=350)
+            answers = {"leak": {"type": "score", "score": 0}}
+        else:
+            clock.advance(milliseconds=250)
+            answers = {"action": {"type": "choice", "choice": "reply", "confidence": 1}}
+        return httpx.Response(200, json={"answers": answers, "usage": {"input_tokens": 10, "output_tokens": 1}})
+
+    async def type_for(seconds):
+        clock.advance(seconds=seconds)
+
+    send = app.bot.send_message
+
+    async def send_message(*args, **kwargs):
+        clock.advance(milliseconds=100)
+        return await send(*args, **kwargs)
+
+    app.sleep = type_for
+    monkeypatch.setattr(app.bot, "send_message", send_message)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(jev_reply)) as http:
+        dispatch.jev = JevClient(http, "test", "test-jev", "http://localhost")
+        await dispatch.presence.go_online(GROUP, parse_habits(""))
+        async with app.locks[GROUP]:
+            await handle_message(app, tg().model_copy(update={"date": start}))
+            await asyncio.sleep(0)
+            clock.advance(seconds=1)
+            await handle_message(app, tg(msg_id=2).model_copy(update={"date": clock()}))
+            await asyncio.sleep(0)
+            clock.advance(seconds=4)
+            waits[-1][1].set()
+            await asyncio.sleep(0)
+            clock.advance(seconds=2)
+        await drain_dispatch(dispatch)
+
+    [row] = await app.store.recent_turns()
+    timings = [item for item in json.loads(row["trace"]) if "@" in item]
+    assert timings == [
+        "debounce@4000", "lock_wait@2000", "triage@250", "model@0", "guard@350",
+        "typing@375", "send@100", "typing@1000", "send@100",
+    ]
+    assert (row["first_bubble_ms"], row["last_bubble_ms"]) == (7075, 8175)
+    calls = json.loads(row["model_calls"])
+    assert [(call["kind"], call["duration_ms"]) for call in calls] == [("triage", 250), ("chat", 0), ("guard", 350)]
+    assert calls[0]["input_tokens"] == 10 and calls[-1]["cached_tokens"] is None
+
+
+async def test_catch_up_records_unavailable_time_for_its_own_chat(setup_dispatch):
+    app, dispatch, clock = await setup_dispatch()
+    clock.at = clock.at.replace(hour=2)
+    await dispatch.presence.wake(OWNER, parse_habits(""))
+    await handle_message(app, tg().model_copy(update={"date": clock()}))
+    await drain_dispatch(dispatch)
+    assert not turn_requests(app)
+
+    hours_away = 6
+    clock.advance(hours=hours_away)
+    await dispatch.tick()
+    [row] = await app.store.recent_turns(str(GROUP))
+    away_ms = hours_away * 60 * 60 * 1000
+    assert f"away_wait@{away_ms}" in json.loads(row["trace"])
+    assert row["first_bubble_ms"] == row["last_bubble_ms"] == away_ms
+
+
+@pytest.mark.parametrize(("age", "late"), [(59, False), (60, False), (61, True)])
+async def test_turn_note_is_qualitative_and_only_added_after_sixty_seconds(setup_dispatch, age, late):
+    app, dispatch, clock = await setup_dispatch()
+    await dispatch.presence.wake(GROUP, parse_habits(""))
+    message = tg().model_copy(update={"date": clock() - timedelta(seconds=age)})
+    await handle_message(app, message)
+    await drain_dispatch(dispatch)
+    [request] = turn_requests(app)
+    prompt = request["messages"][-1]["content"]
+    late_lines = [line for line in prompt.splitlines() if "you are answering late" in line]
+    assert late_lines == ([
+        "you are answering late. If it fits, you can give a reason from your life in your own words."
+    ] if late else [])
 
 
 @pytest.fixture

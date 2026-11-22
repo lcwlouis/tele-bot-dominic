@@ -140,10 +140,13 @@ async def run(home: Path) -> None:
             media_describer = (
                 MediaDescriber(ChatClient(media, media_key, http, usage=usage), bot) if media_key or not media.api_key_env else None
             )
+            drafting = config.models["drafting"]
+            drafting_key = config.secret(drafting.api_key_env) if drafting.api_key_env else None
             app = App(
                 config=config, home=Home(home), store=store, client=client,
                 bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id, media_describer=media_describer,
                 search_client=search_client(config, http, usage), gifs=gif_search(config, http),
+                draft_client=ChatClient(drafting, drafting_key, http, usage=usage),
             )
             await app.stickers.refresh()
             from dom.deletion import recover_deletions

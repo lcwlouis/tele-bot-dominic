@@ -188,6 +188,7 @@ async def test_plugin_retire_delete_mid_call_stale_and_menu_retry(make_app, brow
     await approve_surface_plugin(app, browser)
     row = await plugin_status(app)
     route = review_path(row)
+    app.store.write_plugin_storage("convert", row["hash"], '{"count": 2}')  # real plugin storage (PR #5)
 
     # Make set_my_commands fail during retire to verify background tick republish
     orig_set = app.bot.set_my_commands
@@ -248,6 +249,8 @@ async def test_plugin_retire_delete_mid_call_stale_and_menu_retry(make_app, brow
         manifest = _manifest(archive)
         assert manifest["rows"]["plugin"]["name"] == "convert"
         assert any(kv["key"] == "plugin-storage:convert" for kv in manifest["rows"]["kv"])
+        assert manifest["rows"]["storage"] == [{"name": "convert", "value_json": '{"count": 2}'}]
+        assert app.store._conn.execute("SELECT count(*) FROM plugin_storage").fetchone()[0] == 0
         assert (archive / "files" / "0" / "main.py").is_file()
         assert any("Deleted plugin convert" in e["text"] for e in await events(app))
 

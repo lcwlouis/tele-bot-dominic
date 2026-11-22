@@ -24,7 +24,17 @@ def test_defaults_when_minimal_toml(tmp_path):
     assert cfg.presence.seen_reaction is True
     assert cfg.timezone == "UTC"
     assert cfg.models["chat"].model == "some/model"
+    assert cfg.models["drafting"].model == "anthropic/claude-haiku-5.5"
+    assert cfg.models["drafting"].reasoning_effort == "low"
     assert cfg.home == tmp_path
+
+
+def test_drafting_can_use_a_compatible_endpoint_without_a_key_or_effort(tmp_path):
+    write(tmp_path, MINIMAL + '\n[models.drafting]\nbase_url = "https://example.test/v1"\nmodel = "draft"\n')
+    endpoint = load_config(tmp_path).models["drafting"]
+    assert endpoint.model == "draft"
+    assert endpoint.api_key_env is None
+    assert endpoint.reasoning_effort is None
 
 
 def test_seen_reaction_can_be_switched_off(tmp_path):
