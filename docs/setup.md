@@ -97,13 +97,15 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/pending` | Resends pending chat approval prompts. |
 | `/wake [chat_id]`, `/sleep [chat_id]` | Changes presence in the owner DM or a specified approved chat. |
 | `/preset` | Changes the persona preset for one chat, or for every chat with the "Everywhere" button, which can also be Auto so Dom picks his own daily vibe ([presets](presets.md)). A chat's own preset wins. |
-| `/proposals` | Shows pending changes for review. |
-| `/reminders` | Lists and cancels reminders. |
+| `/proposals` | Shows pending changes for review. Use `/proposals settled` to list settled cards or `/proposals delete <id>` to archive and delete one. |
+| `/reminders` | Lists, cancels and deletes reminders. Use `/reminders all` to include finished or cancelled ones, or `/reminders delete <id>`. |
+| `/skills` | Lists, retires, restores and deletes skills (`/skills retire <name>`, `/skills restore <name>`, `/skills delete <name>`). |
 | `/stickers` | Adds and removes sticker sets, by short name or share link. |
 | `/import` | Starts an owner-reviewed memory import. |
-| `/tasks` | Lists and cancels desktop tasks. |
+| `/tasks` | Lists, cancels and deletes finished desktop tasks (`/tasks delete <id>`). |
+| `/ownwork` | Lists, cancels and deletes finished self-directed tasks (`/ownwork delete <id>`). |
 | `/t3` | Shows T3 Code sign-in, linked machines and audit history ([T3 Code bridge](t3-bridge.md)). |
-| `/plugins` | Lists and disables plugins. |
+| `/plugins` | Lists, disables (retires) and deletes plugins (`/plugins delete <name>`). |
 | `/update` | Shows the newest `vX.Y.Z` release with its changelog and deploys it on your confirmation (see [Deploy on a Raspberry Pi](deploy-pi.md#update-to-a-new-release)). |
 
 In the owner DM Dom can also look for devices on your home network (`find_devices`:
@@ -144,5 +146,23 @@ and check `dom doctor` for a passing sandbox self-test. Ask Dom in the owner DM
 to draft a plugin, or place a plugin with `plugin.toml` and `main.py` under
 `<home>/plugins/<name>/`. Review the code on the dashboard's Plugins page, then
 approve the exact version there or from the card in the owner DM before Dom can use its tools, slash commands or dashboard panels. Network
-access is an explicit per-plugin permission. Use `/plugins` to inspect or disable
-installed plugins. See [Writing plugins](plugins.md) for the format and limits.
+access is an explicit per-plugin permission. Use `/plugins` or the Plugins page
+to retire (disable while keeping files) or delete installed plugins. Deleting a
+plugin moves its files and database snapshot into the deletion archive first,
+refuses while the plugin is mid-call, removes its database record and stored
+state, and refreshes the Telegram command menu.
+See [Writing plugins](plugins.md) for the format and limits.
+
+## Skills, reminders and history cleanup
+
+Approved skills live under `<home>/skills/<name>/SKILL.md`. On the dashboard's
+Memory page or with `/skills`, the owner can retire a skill (its files stay on
+disk, Dom stops listing or using it, and it stays retired across approved edits
+until explicitly restored) or delete it. Reminders can be cancelled or deleted
+on the dashboard's Reminders page and via `/reminders`. Finished desktop tasks,
+finished self-directed tasks (with their saved screenshots) and settled
+approval cards can be deleted from their dashboard pages and via `/tasks`,
+`/ownwork` and `/proposals`. Every delete moves the item's files and writes its
+database rows into `<backups>/deleted/<UTC time>-<kind>-<name or id>/` (pruned
+after 30 days or 50 entries), refuses if the item is active or changed since
+confirmation, and records an owner event in the owner DM history.

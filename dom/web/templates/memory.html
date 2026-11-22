@@ -97,4 +97,5 @@
       <button class="primary">Import</button>
     </form>
   </details>
+  {% if context.skills %}{% with context = context.skills %}{% include "skills.html" %}{% endwith %}{% endif %}
 </section>

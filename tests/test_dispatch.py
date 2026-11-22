@@ -72,7 +72,8 @@ async def test_asleep_flood_no_calls_single_catchup(setup_dispatch):
     assert not jev.calls
     assert len(turn_requests(app)) == 1
     note = turn_requests(app)[0]["messages"][-1]["content"]
-    assert "state: online" in note and "online minutes left: 15" in note
+    assert "state: online" in note and "availability: you're around for a bit longer" in note
+    assert "online minutes left" not in note
     assert "messages that arrived while away: 200" in note
     assert "you just came online" in note and "desktop: off" in note
     assert (await app.store.list_chats("approved"))[0]["last_read_msg_id"] == 200

@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -19,6 +20,7 @@ from zoneinfo import ZoneInfo
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from dom.agent import parse_actions
+from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.models import StoredMessage
 from dom.prompt import build_messages
 from dom.telegram.executor import FloodBudget, retry_telegram
@@ -169,6 +171,9 @@ class Reminders:
         except Exception:
             log.exception("could not clear retry state for reminder %s", reminder_id)
 
+    def is_delivering(self, reminder_id: int) -> bool:
+        return reminder_id in self._in_flight
+
     def _now(self) -> datetime:
         return self.app.dispatch.now().astimezone(timezone.utc)
 
@@ -200,6 +205,10 @@ class Reminders:
         owner = self.app.owner_id
         return await self.app.store.active_reminders(owner) if owner is not None else []
 
+    async def list_all(self, limit: int = 50) -> list[dict]:
+        owner = self.app.owner_id
+        return await self.app.store.list_reminders(owner, limit=limit) if owner is not None else []
+
     async def cancel(self, reminder_id: int) -> bool:
         app = self.app
         async with self._delivery_lock:
@@ -209,6 +218,53 @@ class Reminders:
         if changed:
             await app.store.record_owner_event(f"Cancelled reminder #{reminder_id}")
         return changed
+
+    async def delete(self, reminder_id: int, expected_created_at: str) -> tuple[bool, str]:
+        app = self.app
+        owner = app.owner_id
+        if owner is None:
+            return False, "There is no owner."
+        if not expected_created_at:
+            return False, STALE_MESSAGE
+        row = await app.store.get_reminder(owner, reminder_id)
+        if row is None:
+            return False, f"Reminder #{reminder_id} not found."
+        if not stamp_matches(row["created_at"], expected_created_at):
+            return False, STALE_MESSAGE
+        if self.is_delivering(reminder_id):
+            return False, f"Cannot delete reminder #{reminder_id} while it is being delivered."
+        event_at = datetime.now(timezone.utc).isoformat()
+        event_text = f"Deleted reminder #{reminder_id}"
+        try:
+            archive = await asyncio.to_thread(
+                stage_deletion,
+                app.home.root,
+                "reminder",
+                reminder_id,
+                event_text=event_text,
+                event_at=event_at,
+                rows={"reminder": row},
+            )
+        except (OSError, ValueError) as error:
+            log.warning("could not archive reminder %s: %s", reminder_id, type(error).__name__)
+            return False, "Could not archive reminder before deleting."
+        async with self._delivery_lock:
+            if self.is_delivering(reminder_id):
+                await asyncio.to_thread(archive.rollback)
+                return False, f"Cannot delete reminder #{reminder_id} while it is being delivered."
+            try:
+                result = await app.store.delete_reminder(owner, reminder_id, expected_created_at, event_text, event_at)
+            except sqlite3.Error as error:
+                log.warning("could not delete reminder %s: %s", reminder_id, type(error).__name__)
+                await asyncio.to_thread(archive.rollback)
+                return False, "Could not delete reminder."
+            if result != "deleted":
+                await asyncio.to_thread(archive.rollback)
+                return False, STALE_MESSAGE if result == "stale" else f"Reminder #{reminder_id} not found."
+            self._deliveries.pop(reminder_id, None)
+            await asyncio.to_thread(archive.commit)
+        await asyncio.to_thread(prune_deletions, app.home.root)
+        return True, f"Deleted reminder #{reminder_id}."
 
     async def _advance(self, row: dict, now: datetime) -> None:
         due = datetime.fromisoformat(row["due_at"])
@@ -272,11 +328,14 @@ class Reminders:
         app = self.app
         try:
             async with asyncio.timeout(MODEL_TIMEOUT):
+                prompt_cache = getattr(app.dispatch, "prompt_cache", None)
+                mem_text = prompt_cache.memory_text(app.home, app.dispatch.now())[0] if prompt_cache is not None else None
                 messages = build_messages(
                     app.home, "owner_dm", owner, [], "",
                     "Send one short in-character reminder using the reminder text below as content. "
                     "Include what the owner asked to remember.\n"
                     f"<reminder>{escape(text)}</reminder>",
+                    memory_text=mem_text,
                 )
                 with model_request("chat", owner, partial(app.dispatch.turn_allowed, owner, "owner_dm")):
                     await check_model_allowed()
