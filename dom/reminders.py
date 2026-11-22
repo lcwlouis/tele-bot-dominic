@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -15,6 +16,7 @@ from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
 from dom.agent import parse_actions
+from dom.backup import backup_before_delete
 from dom.models import StoredMessage
 from dom.prompt import build_messages
 from dom.usage import check_model_allowed, model_request
@@ -99,9 +101,13 @@ class Reminders:
     def __init__(self, app: App):
         self.app = app
         self._deliveries: dict[int, _Delivery] = {}
+        self._in_flight: set[int] = set()
         self._tick_lock = asyncio.Lock()
         self._delivery_lock = asyncio.Lock()
         self._started_at: datetime | None = None
+
+    def is_delivering(self, reminder_id: int) -> bool:
+        return reminder_id in self._in_flight
 
     def _now(self) -> datetime:
         return self.app.dispatch.now().astimezone(timezone.utc)
@@ -134,6 +140,10 @@ class Reminders:
         owner = self.app.owner_id
         return await self.app.store.active_reminders(owner) if owner is not None else []
 
+    async def list_all(self, limit: int = 50) -> list[dict]:
+        owner = self.app.owner_id
+        return await self.app.store.list_reminders(owner, limit=limit) if owner is not None else []
+
     async def cancel(self, reminder_id: int) -> bool:
         app = self.app
         async with self._delivery_lock:
@@ -142,6 +152,31 @@ class Reminders:
         if changed:
             await app.store.record_owner_event(f"Cancelled reminder #{reminder_id}")
         return changed
+
+    async def delete(self, reminder_id: int) -> tuple[bool, str]:
+        app = self.app
+        owner = app.owner_id
+        if owner is None:
+            return False, "There is no owner."
+        row = await app.store.get_reminder(owner, reminder_id)
+        if row is None:
+            return False, f"Reminder #{reminder_id} not found."
+        if self.is_delivering(reminder_id):
+            return False, f"Cannot delete reminder #{reminder_id} while it is being delivered."
+        try:
+            await backup_before_delete(app.home.root)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            log.warning("could not back up before deleting reminder %s: %s", reminder_id, type(error).__name__)
+            return False, "Could not take a backup before deleting."
+        async with self._delivery_lock:
+            if self.is_delivering(reminder_id):
+                return False, f"Cannot delete reminder #{reminder_id} while it is being delivered."
+            deleted = await app.store.delete_reminder(owner, reminder_id)
+            self._deliveries.pop(reminder_id, None)
+        if not deleted:
+            return False, f"Reminder #{reminder_id} not found."
+        await app.store.record_owner_event(f"Deleted reminder #{reminder_id}")
+        return True, f"Deleted reminder #{reminder_id}."
 
     async def _advance(self, row: dict, now: datetime) -> None:
         due = datetime.fromisoformat(row["due_at"])
@@ -213,6 +248,7 @@ class Reminders:
 
     async def _deliver(self, owner: int, row: dict, late: bool) -> None:
         app = self.app
+        self._in_flight.add(row["id"])
         delivery = self._deliveries.setdefault(row["id"], _Delivery())
         try:
             if not delivery.chunks:
@@ -236,6 +272,8 @@ class Reminders:
             log.exception("could not deliver reminder %s", row["id"])
             await self._failed(owner, row, delivery)
             return
+        finally:
+            self._in_flight.discard(row["id"])
         try:
             for message_id, chunk in zip(delivery.sent, delivery.chunks):
                 await app.store.record_new_message(StoredMessage(

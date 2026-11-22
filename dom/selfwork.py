@@ -20,6 +20,8 @@ import asyncio
 import json
 import logging
 import re
+import shutil
+import sqlite3
 from contextvars import Context
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -31,6 +33,7 @@ from zoneinfo import ZoneInfo
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from dom.agent import unfence
+from dom.backup import backup_before_delete
 from dom.desktop import network
 from dom.desktop import tools as desktop_tools
 from dom.desktop.client import SandboxError
@@ -313,6 +316,30 @@ class SelfWork:
             await asyncio.gather(self._job, return_exceptions=True)
         await self.app.store.record_owner_event(f"Cancelled self-directed task #{task_id}")
         return True
+
+    async def delete(self, task_id: int) -> tuple[bool, str]:
+        """Remove a finished self-directed task and its saved screenshots after taking a backup."""
+        row = await self.app.store.get_self_task(task_id)
+        if row is None:
+            return False, f"Task #{task_id} not found."
+        if row["status"] in ("planned", "running") or (self._running == task_id and self.busy()):
+            return False, f"Cannot delete task #{task_id} while it is {row['status']}."
+        folder = self.app.home.scoped(allow_private=False)._regular_path(f"{FILES_DIR}/{task_id}")
+        if folder.exists() and (folder.is_symlink() or not folder.is_dir()):
+            raise ValueError("Task files path must be a regular directory.")
+        try:
+            await backup_before_delete(self.app.home.root)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            log.warning("could not back up before deleting self-directed task %s: %s", task_id, type(error).__name__)
+            return False, "Could not take a backup before deleting."
+        if self._running == task_id and self.busy():
+            return False, f"Cannot delete task #{task_id} while it is running."
+        if not await self.app.store.delete_self_task(task_id):
+            return False, f"Cannot delete task #{task_id} while it is active."
+        if folder.exists():
+            await asyncio.to_thread(shutil.rmtree, folder)
+        await self.app.store.record_owner_event(f"Deleted self-directed task #{task_id}")
+        return True, f"Deleted task #{task_id}."
 
     async def close(self) -> None:
         if self.busy():

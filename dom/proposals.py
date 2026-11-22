@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import sqlite3
 from datetime import timedelta, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -12,6 +13,7 @@ from urllib.parse import urlsplit
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from dom.backup import backup_before_delete
 from dom.config import replace_host
 from dom.guard import check_local_private_text
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, validate_plugin
@@ -228,6 +230,30 @@ class Proposals:
 
     async def pending(self) -> list[dict]:
         return await self.app.store.pending_proposals()
+
+    async def settled(self, limit: int = 50) -> list[dict]:
+        return await self.app.store.settled_proposals(limit=limit)
+
+    async def delete(self, proposal_id: int) -> tuple[bool, str]:
+        app = self.app
+        row = await app.store.get_proposal(proposal_id)
+        if row is None:
+            return False, f"Proposal #{proposal_id} not found."
+        if row["status"] == "pending":
+            return False, f"Proposal #{proposal_id} is still pending. Approve or reject it before deleting."
+        try:
+            await backup_before_delete(app.home.root)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            log.warning("could not back up before deleting proposal %s: %s", proposal_id, type(error).__name__)
+            return False, "Could not take a backup before deleting."
+        if not await app.store.delete_settled_proposal(proposal_id):
+            return False, f"Proposal #{proposal_id} could not be deleted."
+        cards = await self._cards()
+        if str(proposal_id) in cards:
+            cards.pop(str(proposal_id), None)
+            await app.store.kv_set(CARDS_KEY, json.dumps(cards))
+        await app.store.record_owner_event(f"Deleted proposal #{proposal_id}")
+        return True, f"Deleted proposal #{proposal_id}."
 
     async def reflection_due(self) -> bool:
         since = self.app.dispatch.now().astimezone(timezone.utc) - REFLECTION_INTERVAL

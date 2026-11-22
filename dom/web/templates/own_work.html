@@ -37,6 +37,12 @@
     <div class="actions">
       <button class="link-danger" hx-post="/own-work/{{ task.id }}/cancel" hx-target="#own-work" hx-swap="outerHTML">Cancel #{{ task.id }}</button>
     </div>
+    {% else %}
+    <div class="actions">
+      <button class="link-danger" hx-post="/own-work/{{ task.id }}/delete"
+        hx-confirm="Delete task #{{ task.id }} and its screenshots? A backup is taken first."
+        hx-target="#own-work" hx-swap="outerHTML">Delete #{{ task.id }}</button>
+    </div>
     {% endif %}
   </article>
   {% endfor %}

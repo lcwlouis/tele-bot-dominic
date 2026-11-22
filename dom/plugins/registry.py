@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import shutil
+import sqlite3
 import tomllib
 from dataclasses import asdict
 from difflib import unified_diff
@@ -14,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from dom.backup import backup_before_delete
 from dom.home import Home
 from dom.plugins.manifest import (
     CommandManifest, Manifest, PanelManifest, Plugin, ToolManifest, read_plugin, validate_name,
@@ -31,11 +33,15 @@ def _surfaces(manifest: Manifest) -> tuple:
 
 
 class PluginRegistry:
-    def __init__(self, home: Home, store: Store, on_change: Callable[[], Awaitable[None]] | None = None):
+    def __init__(
+        self, home: Home, store: Store, on_change: Callable[[], Awaitable[None]] | None = None,
+        *, is_running: Callable[[str], bool] | None = None,
+    ):
         self.home = home.scoped(allow_private=False)
         self.store = store
         self.lock = asyncio.Lock()
-        self.on_change = on_change  # called after the owner approves, rejects or disables a plugin
+        self.on_change = on_change  # called after the owner approves, rejects, disables or deletes a plugin
+        self.is_running = is_running
 
     def _read_all(self) -> dict[str, Plugin]:
         found = {}
@@ -218,6 +224,45 @@ class PluginRegistry:
             label = {"approve": "Approved", "reject": "Rejected", "disable": "Disabled"}[decision]
             await self.store.record_owner_event(f"{label} plugin {name} ({digest[:12]})")
             return label
+
+    async def delete(self, name: str) -> str:
+        """Remove a plugin's files, DB row and stored state after taking a backup. Refuses if mid-call."""
+        validate_name(name)
+        async with self.lock:
+            if self.is_running is not None and self.is_running(name):
+                return f"Cannot delete plugin {name} while it is running."
+            in_db = any(row["name"] == name for row in await self.store.list_plugins())
+            target = self.home._regular_path(f"plugins/{name}")
+            on_disk = target.exists()
+            if not in_db and not on_disk:
+                return "Unknown plugin"
+            if on_disk and (target.is_symlink() or not target.is_dir()):
+                raise ValueError("The plugin path must be a regular directory.")
+        try:
+            await backup_before_delete(self.home.root)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            log.warning("could not back up before deleting plugin %s: %s", name, type(error).__name__)
+            return "Could not take a backup before deleting."
+        async with self.lock:
+            if self.is_running is not None and self.is_running(name):
+                return f"Cannot delete plugin {name} while it is running."
+            target = self.home._regular_path(f"plugins/{name}")
+            removed_files = False
+            if target.exists():
+                if target.is_symlink() or not target.is_dir():
+                    raise ValueError("The plugin path must be a regular directory.")
+                await asyncio.to_thread(shutil.rmtree, target)
+                removed_files = True
+            removed_db = await self.store.delete_plugin(name)
+            if not removed_db and not removed_files:
+                return "Unknown plugin"
+            await self.store.record_owner_event(f"Deleted plugin {name}")
+        if self.on_change is not None:
+            try:
+                await self.on_change()
+            except Exception:
+                log.exception("could not update after deleting plugin %s", name)
+        return "Deleted"
 
     async def entries(self, scope: str) -> list[tuple[Plugin, ToolManifest]]:
         unique: dict[str, tuple[Plugin, ToolManifest]] = {}

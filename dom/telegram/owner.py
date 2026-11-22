@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import secrets
+import sqlite3
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,10 +25,13 @@ from aiogram.types import (
     Message,
 )
 
-from dom import memory_import, proposals, release, traits
+from dom import memory_import, proposals, release, skills, traits
 from dom._version import VERSION
+from dom.backup import backup_before_delete
+from dom.desktop.files import discard_bound
+from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.plugins import surfaces
-from dom.plugins.manifest import NETWORK_NOTICE
+from dom.plugins.manifest import NETWORK_NOTICE, validate_name as validate_plugin_name
 from dom.traits import AUTO, GLOBAL_PRESET_KEY, ensure_pick, load_preset, vibe
 
 if TYPE_CHECKING:
@@ -312,12 +316,96 @@ async def show_tasks(app: App) -> None:
         f"#{row['id']} · {row['status'].replace('_', ' ')}{_container_tag(row)} · {_short(' '.join(row['brief'].split()), 120)}"
         for row in rows
     ]
-    buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"desktop:cancel:{row['id']}")]
-               for row in rows if row["status"] in ("queued", "running", "waiting_owner")]
+    buttons = [
+        [InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"desktop:cancel:{row['id']}")]
+        if row["status"] in DESKTOP_ACTIVE else
+        [InlineKeyboardButton(text=f"Delete #{row['id']}", callback_data=f"desktop:del:{row['id']}")]
+        for row in rows
+    ]
     await app.bot.send_message(
         app.owner_id, "\n".join(lines) or "No desktop tasks yet.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
     )
+
+
+async def delete_desktop_task(app: App, task_id: int) -> tuple[bool, str]:
+    """Delete one finished desktop task and any leftover staged inbox files after taking a backup."""
+    if app.owner_id is None:
+        return False, "There is no owner."
+    row = await app.store.get_desktop_task(app.owner_id, task_id)
+    if row is None:
+        return False, f"Desktop task #{task_id} not found."
+    if row["status"] in DESKTOP_ACTIVE:
+        return False, f"Cannot delete desktop task #{task_id} while it is {row['status'].replace('_', ' ')}."
+    try:
+        await backup_before_delete(app.home.root)
+    except (OSError, ValueError, sqlite3.Error) as error:
+        log.warning("could not back up before deleting desktop task %s: %s", task_id, type(error).__name__)
+        return False, "Could not take a backup before deleting."
+    if not await app.store.delete_desktop_task(app.owner_id, task_id):
+        return False, f"Cannot delete desktop task #{task_id} while it is active."
+    await asyncio.to_thread(discard_bound, app.home.root, task_id)
+    await record_event(app, f"Deleted desktop task #{task_id}")
+    return True, f"Deleted desktop task #{task_id}."
+
+
+async def retire_skill(app: App, name: str) -> tuple[bool, str]:
+    """Retire an approved skill: keep files on disk, stop Dom from listing or using it."""
+    try:
+        changed = await asyncio.to_thread(skills.retire_skill, app.home, name)
+    except FileNotFoundError:
+        return False, f"Skill {name} not found."
+    except ValueError as error:
+        return False, str(error)
+    if not changed:
+        return False, f"Skill {name} is already retired."
+    await record_event(app, f"Retired skill {name}")
+    return True, f"Retired skill {name}."
+
+
+async def restore_skill(app: App, name: str) -> tuple[bool, str]:
+    """Restore a retired skill so Dom can list and use it again."""
+    try:
+        changed = await asyncio.to_thread(skills.restore_skill, app.home, name)
+    except FileNotFoundError:
+        return False, f"Skill {name} not found."
+    except ValueError as error:
+        return False, str(error)
+    if not changed:
+        return False, f"Skill {name} is already active."
+    await record_event(app, f"Restored skill {name}")
+    return True, f"Restored skill {name}."
+
+
+async def delete_skill(app: App, name: str) -> tuple[bool, str]:
+    """Remove a skill's files from disk after taking a backup."""
+    skills._validate_name(name)
+    if not await asyncio.to_thread(skills.skill_exists, app.home, name):
+        return False, f"Skill {name} not found."
+    try:
+        await backup_before_delete(app.home.root)
+    except (OSError, ValueError, sqlite3.Error) as error:
+        log.warning("could not back up before deleting skill %s: %s", name, type(error).__name__)
+        return False, "Could not take a backup before deleting."
+    try:
+        removed = await asyncio.to_thread(skills.delete_skill_files, app.home, name)
+    except ValueError as error:
+        return False, str(error)
+    if not removed:
+        return False, f"Skill {name} not found."
+    await record_event(app, f"Deleted skill {name}")
+    return True, f"Deleted skill {name}."
+
+
+async def send_delete_confirm(app: App, prompt: str, yes_data: str, no_data: str) -> None:
+    """Send a two-button delete confirmation prompt in the owner's DM."""
+    if app.owner_id is None:
+        return
+    markup = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Yes, delete", callback_data=yes_data),
+        InlineKeyboardButton(text="Cancel", callback_data=no_data),
+    ]])
+    await app.bot.send_message(app.owner_id, prompt, reply_markup=markup)
 
 
 async def render_status(app: App) -> View:
@@ -468,8 +556,11 @@ async def show_plugins(app: App) -> None:
             name = row["name"]
             status = row["status"] + ("" if row["available"] else " · files unavailable")
             lines.append(f"{name} · {status}" + (f" · {NETWORK_NOTICE}" if row["network"] else ""))
+            row_buttons = []
             if row["status"] != "disabled":
-                buttons.append([InlineKeyboardButton(text=f"Disable {name}", callback_data=f"plugin:disable:{name}")])
+                row_buttons.append(InlineKeyboardButton(text=f"Disable {name}", callback_data=f"plugin:disable:{name}"))
+            row_buttons.append(InlineKeyboardButton(text=f"Delete {name}", callback_data=f"plugin:del:{name}"))
+            buttons.append(row_buttons)
         await app.bot.send_message(
             app.owner_id, "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
@@ -479,6 +570,17 @@ async def show_plugins(app: App) -> None:
 async def disable_plugin(app: App, name: str) -> str:
     row = next((row for row in await app.plugins.listing() if row["name"] == name), None)
     return await app.plugins.decide(name, row["hash"], "disable") if row else "Unknown plugin"
+
+
+async def delete_plugin(app: App, name: str) -> str:
+    try:
+        validate_plugin_name(name)
+    except ValueError:
+        return "Unknown plugin"
+    result = await app.plugins.delete(name)
+    if result == "Deleted":
+        await app.proposals.settle_cards()
+    return result
 
 
 async def show_proposals(app: App, page: int = 1) -> None:
@@ -541,10 +643,27 @@ async def approve_proposal_page(app: App, first: int, last: int) -> str:
     return f"Approved {approved}.{held}"
 
 
-async def show_reminders(app: App) -> None:
-    reminders = await app.dispatch.reminders.active()
+async def show_settled_proposals(app: App) -> None:
+    rows = await app.proposals.settled(limit=20)
+    if not rows:
+        await app.bot.send_message(app.owner_id, "No settled proposals.")
+        return
+    for start in range(0, len(rows), 10):
+        lines, buttons = [], []
+        for row in rows[start:start + 10]:
+            title = _short(" ".join(row["title"].split()), 120)
+            lines.append(f"#{row['id']} · {row['status']} · {title}")
+            buttons.append([InlineKeyboardButton(text=f"Delete #{row['id']}", callback_data=f"prop:del:{row['id']}")])
+        await app.bot.send_message(
+            app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            disable_notification=True,
+        )
+
+
+async def show_reminders(app: App, *, include_settled: bool = False) -> None:
+    reminders = await app.dispatch.reminders.list_all() if include_settled else await app.dispatch.reminders.active()
     if not reminders:
-        await app.bot.send_message(app.owner_id, "No active reminders.")
+        await app.bot.send_message(app.owner_id, "No reminders." if include_settled else "No active reminders.")
         return
     tz = ZoneInfo(app.config.timezone)
     for start in range(0, len(reminders), 10):
@@ -552,9 +671,16 @@ async def show_reminders(app: App) -> None:
         for row in reminders[start:start + 10]:
             due = datetime.fromisoformat(row["due_at"]).astimezone(tz)
             repeat = f", {row['repeat']}" if row["repeat"] else ""
+            status = f", {row['status']}" if row["status"] != "active" else ""
             preview = " ".join(row["text"].split())[:130]
-            lines.append(f"#{row['id']} {due:%Y-%m-%d %H:%M} ({row['importance']}{repeat}) {preview}")
-            buttons.append([InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"rem:cancel:{row['id']}")])
+            lines.append(f"#{row['id']} {due:%Y-%m-%d %H:%M} ({row['importance']}{repeat}{status}) {preview}")
+            if row["status"] == "active":
+                buttons.append([
+                    InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"rem:cancel:{row['id']}"),
+                    InlineKeyboardButton(text=f"Delete #{row['id']}", callback_data=f"rem:del:{row['id']}"),
+                ])
+            else:
+                buttons.append([InlineKeyboardButton(text=f"Delete #{row['id']}", callback_data=f"rem:del:{row['id']}")])
         await app.bot.send_message(
             app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )

@@ -119,12 +119,13 @@ async def _run_command(app: App, plugin: Plugin, name: str, text: str, scope: st
         return f"Not sent to /{name}: {error}" if owner else f"Not sent to /{name}."
     request = {"command": name, "args": text, "scope": scope}
     try:
-        folder = await app.plugins.approved_folder(plugin)
-        if folder is None:
-            return f"/{name} is no longer approved."
-        result = await asyncio.to_thread(
-            app.plugin_runner.run_request, folder, request, plugin.manifest, approved_hash=plugin.hash,
-        )
+        with app.plugin_runner.active(plugin.manifest.name):
+            folder = await app.plugins.approved_folder(plugin)
+            if folder is None:
+                return f"/{name} is no longer approved."
+            result = await asyncio.to_thread(
+                app.plugin_runner.run_request, folder, request, plugin.manifest, approved_hash=plugin.hash,
+            )
     except PluginBusy:
         return "Plugins are busy. Try again in a moment."
     except PluginsUnavailable:
@@ -213,12 +214,13 @@ async def run_panel(app: App, plugin: Plugin, panel: PanelManifest) -> tuple[Pan
     try:
         if not await asyncio.to_thread(app.plugin_runner.self_test):
             return None, "Plugins are unavailable: the sandbox check failed."
-        folder = await app.plugins.approved_folder(plugin)
-        if folder is None:
-            return None, "This plugin is no longer approved."
-        result = await asyncio.to_thread(
-            app.plugin_runner.run_request, folder, {"panel": panel.id}, plugin.manifest, approved_hash=plugin.hash,
-        )
+        with app.plugin_runner.active(plugin.manifest.name):
+            folder = await app.plugins.approved_folder(plugin)
+            if folder is None:
+                return None, "This plugin is no longer approved."
+            result = await asyncio.to_thread(
+                app.plugin_runner.run_request, folder, {"panel": panel.id}, plugin.manifest, approved_hash=plugin.hash,
+            )
     except PluginBusy:
         return None, "Plugins are busy. Refresh in a moment."
     except PluginError as error:

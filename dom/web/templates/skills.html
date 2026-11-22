@@ -1,0 +1,25 @@
+<div class="skills" id="skills">
+  <h3>Skills</h3>
+  {% if context.message %}<p class="notice" role="status">{{ context.message }}</p>{% endif %}
+  {% if not context.rows %}<p class="fog">No skills yet.</p>{% endif %}
+  {% for skill in context.rows %}
+  <article class="proposal" id="skill-{{ skill.name }}">
+    <h4>{{ skill.name }}{% if skill.retired %} <span class="fog">(retired)</span>{% endif %}</h4>
+    <p>{{ skill.description }}</p>
+    <details>
+      <summary>View procedure</summary>
+      <pre class="skill-text">{{ skill.body }}</pre>
+    </details>
+    <div class="actions" hx-target="#skills" hx-swap="outerHTML">
+      {% if skill.retired %}
+      <button class="primary" hx-post="/skills/{{ skill.name }}/restore">Restore</button>
+      {% else %}
+      <button class="quiet" hx-post="/skills/{{ skill.name }}/retire"
+        hx-confirm="Retire skill {{ skill.name }}? Its files stay on disk, and Dom stops using it until you restore it.">Retire</button>
+      {% endif %}
+      <button class="link-danger" hx-post="/skills/{{ skill.name }}/delete"
+        hx-confirm="Delete skill {{ skill.name }}? A backup is taken first, then its files are removed.">Delete</button>
+    </div>
+  </article>
+  {% endfor %}
+</div>

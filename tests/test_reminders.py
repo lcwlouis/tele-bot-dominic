@@ -208,8 +208,9 @@ async def test_reminders_command_has_owner_only_cancel_buttons(make_app):
     reminder_id = await add(app)
     await handlers.handle_message(app, tg(OWNER, OWNER, "/reminders"))
     (sent,) = app.bot.of("send", OWNER)
-    (button,) = sent[3]["reply_markup"].inline_keyboard[0]
+    button, delete_button = sent[3]["reply_markup"].inline_keyboard[0]
     assert button.text == f"Cancel #{reminder_id}" and button.callback_data == f"rem:cancel:{reminder_id}"
+    assert delete_button.text == f"Delete #{reminder_id}" and delete_button.callback_data == f"rem:del:{reminder_id}"
     await press(app, button.callback_data, FRIEND)
     assert len(await app.dispatch.reminders.active()) == 1
     await press(app, button.callback_data)
@@ -227,7 +228,8 @@ async def test_a_cancelled_reminder_shows_it_on_its_own_button_only(make_app):
     _, chat_id, message_id, edited = app.bot.of("markup")[-1]
     assert (chat_id, message_id) == (OWNER, 77)
     assert [[(b.text, b.callback_data) for b in row] for row in edited.inline_keyboard] == [
-        [(f"Cancelled #{first}", "noop")], [(f"Cancel #{second}", f"rem:cancel:{second}")],
+        [(f"Cancelled #{first}", "noop")],
+        [(f"Cancel #{second}", f"rem:cancel:{second}"), (f"Delete #{second}", f"rem:del:{second}")],
     ]
     await press(app, "noop")  # the settled button does nothing
     assert [r["id"] for r in await app.dispatch.reminders.active()] == [second]

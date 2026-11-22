@@ -1188,7 +1188,7 @@ class Store:
         return await self._run(enqueue)
 
     async def desktop_tasks(
-        self, chat_id: int, *, active: bool = False, container: str | None = None,
+        self, chat_id: int, *, active: bool = False, container: str | None = None, limit: int = 10,
     ) -> list[dict[str, Any]]:
         def select() -> list[dict[str, Any]]:
             if chat_id != self.owner_id:
@@ -1197,11 +1197,34 @@ class Store:
             if container is not None:
                 condition += " AND container = ?"
             return [dict(row) for row in self._conn.execute(
-                f"SELECT * FROM desktop_tasks WHERE chat_id = ? {condition} ORDER BY id DESC LIMIT 10",
-                (chat_id, *([container] if container is not None else [])),
+                f"SELECT * FROM desktop_tasks WHERE chat_id = ? {condition} ORDER BY id DESC LIMIT ?",
+                (chat_id, *([container] if container is not None else []), limit),
             )]
 
         return await self._run(select)
+
+    async def get_desktop_task(self, chat_id: int, task_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            if chat_id != self.owner_id:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM desktop_tasks WHERE id = ? AND chat_id = ?", (task_id, chat_id),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def delete_desktop_task(self, chat_id: int, task_id: int) -> bool:
+        def delete() -> bool:
+            if chat_id != self.owner_id:
+                return False
+            return self._conn.execute(
+                "DELETE FROM desktop_tasks WHERE id = ? AND chat_id = ? "
+                "AND status NOT IN ('queued', 'running', 'waiting_owner')",
+                (task_id, chat_id),
+            ).rowcount == 1
+
+        return await self._run(delete)
 
     async def update_desktop_task(
         self, task_id: int, chat_id: int, expected: tuple[str, ...], status: str, *,
@@ -1284,6 +1307,19 @@ class Store:
             (_now(), announced_before.isoformat()),
         ))
 
+    async def get_self_task(self, task_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM self_tasks WHERE id = ?", (task_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def delete_self_task(self, task_id: int) -> bool:
+        return await self._run(lambda: self._conn.execute(
+            "DELETE FROM self_tasks WHERE id = ? AND status NOT IN ('planned', 'running')",
+            (task_id,),
+        ).rowcount == 1)
+
     # ---- plugins ---------------------------------------------------------
 
     async def stage_plugins(self, manifests: list[tuple[str, str, str]]) -> None:
@@ -1345,6 +1381,30 @@ class Store:
 
         return await self._run(decide)
 
+    async def delete_plugin(self, name: str) -> bool:
+        """Remove a plugin's DB row, stored KV state, and reject any pending proposal for it."""
+        def delete() -> bool:
+            reviewed_prefix = f"plugin-reviewed:{name}:"
+            storage_prefix = f"plugin-storage:{name}:"
+            with self._tx() as conn:
+                cur = conn.execute("DELETE FROM plugins WHERE name = ?", (name,))
+                conn.execute(
+                    "DELETE FROM kv WHERE key IN (?, ?) OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ?",
+                    (
+                        f"plugin-files:{name}", f"plugin-storage:{name}",
+                        len(reviewed_prefix), reviewed_prefix,
+                        len(storage_prefix), storage_prefix,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE proposals SET status = 'rejected', decided_at = ? WHERE kind = 'plugin' "
+                    "AND status = 'pending' AND json_extract(body_json, '$.name') = ?",
+                    (_now(), name),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(delete)
+
     # ---- proposals and reminders -----------------------------------------
 
     async def create_proposal(
@@ -1404,6 +1464,28 @@ class Store:
             (at, before),
         )
 
+    async def get_proposal(self, proposal_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def settled_proposals(self, limit: int = 50) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT * FROM proposals WHERE status != 'pending' "
+                "ORDER BY COALESCE(decided_at, created_at) DESC, id DESC LIMIT ?",
+                (limit,),
+            )
+        ])
+
+    async def delete_settled_proposal(self, proposal_id: int) -> bool:
+        return await self._run(lambda: self._conn.execute(
+            "DELETE FROM proposals WHERE id = ? AND status != 'pending'",
+            (proposal_id,),
+        ).rowcount == 1)
+
     async def create_reminder(
         self, chat_id: int, text: str, due_at: str, importance: str, repeat: str, at: str, limit: int,
     ) -> int | None:
@@ -1442,6 +1524,36 @@ class Store:
             "WHERE id = ? AND status = 'active'",
             (fired_at, "active" if next_due else "done", next_due, reminder_id),
         )
+
+    async def get_reminder(self, chat_id: int | None, reminder_id: int) -> dict[str, Any] | None:
+        if chat_id is None:
+            return None
+
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute(
+                "SELECT * FROM reminders WHERE chat_id = ? AND id = ?", (str(chat_id), reminder_id),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def list_reminders(self, chat_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT * FROM reminders WHERE chat_id = ? "
+                "ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, "
+                "CASE WHEN status = 'active' THEN due_at END ASC, id DESC LIMIT ?",
+                (str(chat_id), limit),
+            )
+        ])
+
+    async def delete_reminder(self, chat_id: int | None, reminder_id: int) -> bool:
+        if chat_id is None:
+            return False
+        return await self._run(lambda: self._conn.execute(
+            "DELETE FROM reminders WHERE chat_id = ? AND id = ?",
+            (str(chat_id), reminder_id),
+        ).rowcount == 1)
 
     # ---- usage ------------------------------------------------------------
 
