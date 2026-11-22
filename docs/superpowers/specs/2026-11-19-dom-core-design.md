@@ -1,6 +1,6 @@
 # Dom core — design
 
-Status: phases 1–8 live on the Pi; v0.8.0 in progress (`docs/superpowers/plans/2026-11-20-v0.8.0-drift-zero.md`) · first written 2026-11-19, updated 2026-11-21 · replaces the uncommitted V2 attempt on `feat/v2-modernisation`
+Status: phases 1–8 live on the Pi; v0.8.0 released; v0.8.1 workstreams merged and in drift review, not yet tagged (`docs/superpowers/plans/2026-11-22-v0.8.1.md`; the Svelte dashboard, track F, is not merged) · first written 2026-11-19, updated 2026-11-22 · replaces the uncommitted V2 attempt on `feat/v2-modernisation`
 
 **Phases 3–7 are revised in `docs/superpowers/plans/2026-11-19-roadmap-phases-3-7.md`.** Where the two disagree, the roadmap wins.
 
@@ -48,11 +48,16 @@ side services: scheduler (reminders, heartbeat/daydream), web UI (FastAPI),
 - `fastapi` + `uvicorn` for the UI.
 - No agent framework. The loop is small and ours.
 
-**Models**, all through OpenAI-compatible endpoints:
-- Main chat model: any OpenAI-compatible endpoint in `[models.chat]`, with an optional `[models.chat_fallback]` used when the first is down. The author's instance uses the homelab model `default`, falling back to `deepseek/deepseek-v4.1-flash-1017` on OpenRouter.
+**Models**, all through OpenAI-compatible endpoints. Since v0.8.1 each role has a primary provider (a local endpoint or a cloud one) and an ordered chain of fallbacks (`[[models.<role>.fallbacks]]`), in `dom/llm.py` (`routed_client`):
+- `chat`: the main model. Its chain is its own providers, then `[models.fallback]`'s. An existing `[models.chat_fallback]` is read as `fallback`. The author's instance uses the homelab model `default`, falling back to `deepseek/deepseek-v4.1-flash-1017` on OpenRouter.
+- `media`: images, GIFs, video, voice, and each sticker's one-line description. It must work under the instance's OpenRouter zero-data-retention setting; the starter default is `perceptron/perceptron-mk1.5`.
+- `drafting`: skill and plugin drafts. The starter uses Claude Haiku 5.5 on OpenRouter with low thinking. Its chain is drafting, then chat, then fallback.
+- `search`: optional OpenRouter web search, a single provider.
+- `triage`: TypeSafe Jev via `POST /api/alpha/decisions` with `~typesafe/jev-latest`. This is a classifier, not a chat model, so it has no chain and the settings page shows it read-only.
 - A chat model may lack vision (the homelab one does). Anything visual goes through the media model.
-- Media: a model in `[models.media]` for images, GIFs, video and voice. It must work under the instance's OpenRouter zero-data-retention setting.
-- Triage: TypeSafe Jev via `POST /api/alpha/decisions` with `~typesafe/jev-latest`. This is not a chat model.
+- A provider that fails (connection error, 5xx or 429 after retries, or 401, 402, 403 or 404) hands over to the next one. The serving provider is recorded in the turn log and usage, and the spend cap is checked before every attempt.
+- Requests to an OpenRouter host (chat, media, drafting, search) send `provider: {zdr: true}`, so a model without a zero-data-retention endpoint fails instead of leaking. Other cloud providers are the owner's responsibility.
+- The owner sets providers on the dashboard's Settings page (`/api/models`, owner-only, same-origin JSON). A save is validated, revision-checked and probed: each added or changed slot gets one short real call (8 s timeout, no redirects), and any failure refuses the save with a per-slot error. A new key variable that is not in `.env` yet saves untested. `config.toml` is written atomically with a `.bak`, and routes apply without a restart. API keys stay in `.env`; the page shows only whether one is set.
 
 When Jev is down, the main model decides through a `no_response` action. The system never pretends to be Jev.
 
@@ -75,8 +80,8 @@ DOM_HOME/
     USER.md              the owner: preferences, how to help    ≤ 1,375 chars
     NOTES.md             assistant memory                       ≤ 2,200 chars
   skills/<name>/SKILL.md procedures; only name + description are in the prompt
-  plugins/{staging,active}/<name>/
-  state.db               SQLite
+  plugins/<name>/        one folder per plugin; status (pending, approved, disabled) lives in SQLite
+  state.db               SQLite (plugin status, storage blob and trial result included)
   transcripts/<chat_id>.jsonl
 ```
 
@@ -93,6 +98,10 @@ Things that leave `SOUL.md`:
 - file paths
 - privacy rules (now enforced in code)
 - prompt-injection handling (moved to code and the system frame)
+
+**Who writes notes.** Notes are written by the background memory pass (§7), never by a reply. Since v0.8.1 (W8, E41) the owner can turn on `memory_self_edit` (off by default). Then, in the owner's DM only, Dom has `propose_memory_edit` to propose an add, replace, remove or set on `private/USER.md`, `private/NOTES.md`, the journals, `memory/MEMORY.md`, and the people and chat notes. Each proposal is a diff with a one-line reason on an approval card (Telegram and dashboard); nothing is written until the owner approves, approval refuses a stale file, and these proposals are excluded from "Approve all". `SOUL.md`, `HABITS.md`, config, skills and plugins are out of scope.
+
+**Prompt cache.** Shared `MEMORY.md` is swapped into the prompt at most hourly. Per-chat notes are swapped only when the chat's window is trimmed or hourly. Between swaps the turn note carries a "notes updated since HH:MM" line, and `read_notes` returns the latest, scope-filtered like the prompt.
 
 **Limits.** When a memory write would go over its limit, the tool returns an error and the current content. Dom must then merge or prune, as Hermes does.
 
@@ -168,26 +177,41 @@ Edits are handled, including edits made while Dom was offline.
 1. **Build the prompt:**
    - stable prefix: system frame + SOUL + scope-filtered memory snapshot + tool schemas
    - then the XML chat window (last N messages with ids, sender ids, reply links, media descriptions)
-   - then a per-turn note: time, online-time-left, queued count, desktop status
+   - then a per-turn note: time, a coarse availability cue, messages that arrived while away, desktop status, and conditional lines (answering late, messages that came in mid-answer, a settled vibe, notes updated)
 2. **Run the loop:** the model calls tools until it returns the final JSON action list. That list contains:
    - `bubbles[]`, each with text, an optional `reply_to` and an optional `delete_after`
    - `react`
    - `no_response`
-3. **Guard check** (§5), then execute with humanlike timing.
+   - **Online window cue (E46).** The note gives no countdown. `online_window_note` maps the minutes left to one of four phrases (about to head off, heading off soon, around a bit longer, around a while), so Dom has no number to quote.
+   - **Machinery rule (E46).** The frame (`MACHINERY_RULE`, also in the in-voice report frame) tells Dom never to speak of online minutes left, restarts, versions, timings or tool names, and to give an in-life reason when wrapping up. In the owner's DM he may answer plainly when asked about his setup or why a reply was slow, or in assistant mode.
+3. **Guard check** (§5), then execute with humanlike timing. Since v0.8.1 Jev triages a message on arrival (typing, reaction and, in the owner DM, an "On it." line start then, and Jev judges whether the sender is done); a message that arrives before the first bubble restarts the attempt, and a later one gets a follow-up turn.
 4. **Log** everything to the store and the transcript.
 
-**Core tools.** Each one carries its own usage guidance in its description.
+**Core tools.** Each one carries its own usage guidance in its description. `enabled_tools` (`dom/tools.py`) keeps a fixed order for the prompt cache: shared tools first, owner-only tools last, so a group or friend's DM never sees an owner-only tool name and a tool that comes or goes reshapes only what follows it.
 
 | Tool | Scope |
 |---|---|
-| `web_search` | all |
-| ~~`memory`~~ replaced by the background memory pass (`dom/memory_pass.py`): after an online session ends, or when unprocessed messages are about to leave the chat window (since W17: when a trim would drop messages the pass has not read, the trim waits for the pass), one model call turns new messages into add / replace / remove ops on the scope's note files, limits enforced; `private/` files in `owner_dm` only. Replies never write notes. | all scopes |
 | `search_history` | FTS over the current chat; the owner can search all chats |
-| `skills_list` / `skill_view` / `skill_manage` | all |
-| `remind` | owner, plus whitelisted friends |
-| ~~`extend_online`~~ | removed in v0.8.1: Jev decides after a reply whether Dom stays online longer (`Dispatcher._stay_check`), within the same limits |
-| `desktop_*` | only when a desktop is connected (§9) |
-| `self_inspect` | read-only: version, enabled tools, plugins, desktop, models, recent errors |
+| `skills_list` / `skill_view` / `skill_manage` | all (`skill_manage` makes a proposal the owner approves) |
+| `read_notes` | all; the latest notes for the current scope, never `private/` outside the owner DM |
+| `web_search` | all; only when `[models.search]` is configured |
+| `switch_vibe` | all; only while the Everywhere preset is Auto, once a day, and refused where a chat pins its own preset |
+| `plugin_*` | per the plugin's declared scopes (§8) |
+| `remind` | owner DM only (friends no longer get it) |
+| `draft_plugin` | owner DM |
+| `write_brief` | owner DM (§8 tier 3) |
+| `self_inspect` | owner DM, read-only: version, repository, enabled tools, plugins, desktop, models, recent errors; `include_timings` adds recent reply timings |
+| `own_code` | owner DM, read-only: changelog, list, read and search of the installed code and docs |
+| `find_devices` | owner DM, read-only: LAN devices; a moved configured host becomes a `lan_address` proposal |
+| `task_mode` | owner DM: `start` or `end` assistant mode for planning, research or admin |
+| `propose_memory_edit` | owner DM, only when `memory_self_edit` is on (§4) |
+| `start_desktop_task` | owner DM, only when a desktop host is usable (§9) |
+| `coding_overview` / `coding_thread` / `coding_search` / `coding_send` | owner DM, only when the T3 bridge is available; `coding_send` asks the owner to confirm the exact text |
+| ~~`memory`~~ | replaced by the background memory pass (`dom/memory_pass.py`): after an online session ends, or when unprocessed messages are about to leave the chat window (since W17: when a trim would drop messages the pass has not read, the trim waits for the pass), one model call turns new messages into add / replace / remove ops on the scope's note files, limits enforced; `private/` files in `owner_dm` only. Replies never write notes. |
+| ~~`extend_online`~~ | removed in v0.8.1 (W4): after a reply, Jev decides whether Dom stays online longer (`Dispatcher._stay_check`: no, 10 or 30 minutes, within the same limits). The decision runs after the bubbles are out and is shown as "Jev after reply" in the timing view. |
+| ~~`desktop_*`~~ | replaced by `start_desktop_task`; the worker agent has its own tools (§9) |
+
+Dom does not pick a skill with a tool call first: Jev's arrival triage names the one approved skill that fits (or none) and its text goes into the turn note; `skill_view` stays as the fallback.
 
 Media is transcribed or described once by the media model when it arrives. The description is stored with the message.
 
@@ -197,9 +221,11 @@ Media is transcribed or described once by the media model when it arrives. The d
    - Reflection also proposes slider nudges, at most ±0.1 each time.
    - Reflection may *propose* `SOUL.md` edits. The owner approves them in DM or in the UI.
 2. **Plugins:**
-   - Dom drafts a plugin into `plugins/staging/`.
+   - Dom drafts a plugin (`draft_plugin`, owner DM; the draft comes from the `drafting` model, §3) into `plugins/<name>/`. Whether it is pending, approved or disabled is stored in SQLite, keyed by the hash of its exact bytes.
    - The owner reviews the full code, plus a diff on updates, on the dashboard's Plugins page (roadmap phase 6; the DM card links there). Only the owner activates it: a button in their DM, or the dashboard's approvals (owner-only, behind Cloudflare Access), which the phase 6 plan added and the owner accepted.
-   - Plugins run in a subprocess with an empty environment (no secrets) and talk over JSON-lines on stdio.
+   - **Trial run (W9).** Before the owner approves, the staged bytes are run once in the Bubblewrap sandbox with synthetic input, networking off and disposable storage: the plugin's `self_test`, else its first declared panel, command or tool. The result and elapsed time show on the Telegram approval card and the Plugins page. A failed or pending trial does not block approval; the owner decides.
+   - Plugins run in a Bubblewrap subprocess with an empty environment (no secrets) and talk over JSON-lines on stdio.
+   - **Storage (W9).** A plugin may declare `storage = true` if it is offline; that is part of what the owner reviews. It then keeps one JSON blob of at most 64 KiB (100 levels deep) through `_dom.load_storage` and `save_storage`. The blob lives in SQLite outside the sandbox, bound to the plugin's name, is shared across approved versions, and is saved only after a valid response. Such a plugin's tools and commands are `owner_dm` only. Deleting the plugin archives and removes its blob.
    - A plugin can add tools, Telegram slash commands and dashboard panels (owner decision E11, 2026-11-20). Commands reply with plain text; panels return structured data that Dom renders with its own templates. Plugins never ship HTML or JavaScript.
 3. **Core code:**
    - Dom writes an issue-style brief.
@@ -213,11 +239,11 @@ Media is transcribed or described once by the media model when it arrives. The d
 - `remote`: the same container on another host, such as the homelab, reached by URL + API key.
 - `off`: no desktop.
 
-**Dom always knows the status.** A health check sets `desktop: connected | starting | unavailable | off` in the per-turn note. `desktop_*` tools exist only when it is usable. Otherwise, Dom says in character that his computer isn't with him.
+**Dom always knows the status.** A health check sets `desktop: connected | starting | unavailable | off` in the per-turn note. `start_desktop_task` is offered only when it is usable. Otherwise, Dom says in character that his computer isn't with him.
 
 **Contents.** A real Linux box: Chromium, shell, Python/Jupyter, files. It holds no secrets.
 
-**Logins.** Dom calls `desktop_handoff(reason)`. The owner gets a link to the live view (VNC behind the UI's auth), logs in, and taps "done". Cookies stay in the container profile and never reach Dom's core.
+**Logins.** The task's worker calls `handoff` with a reason; Dom never asks for a password in chat. The owner gets a link to the live view (VNC behind the UI's auth), logs in, and taps "done". Cookies stay in the container profile and never reach Dom's core.
 
 **Candidates:** AIO Sandbox (`ghcr.io/agent-infra/sandbox`) and Cua (`ghcr.io/trycua/linux:24.04[-slim]`). Both have arm64 images.
 - **Chosen: AIO Sandbox, run lean** (`2026-11-19-desktop-spike-results.md`). Confirmed on the Pi: it runs there with the DOM-DESKTOP LAN firewall.
