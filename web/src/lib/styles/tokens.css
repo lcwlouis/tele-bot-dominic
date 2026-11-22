@@ -1,0 +1,112 @@
+/*
+  Dom's design tokens.
+
+  Colour is meaning, never decoration:
+    grape  = Dom himself, and things you can press
+    mint   = live (online, key set, test passed)
+    mango  = waiting on you
+    cherry = broken or destructive
+  A screen with no mango has nothing for you to do.
+
+  Each colour is light-dark(light, dark). The page follows the system theme;
+  data-theme="light" or "dark" on <html> pins one (Storybook uses this).
+*/
+
+:root {
+  color-scheme: light dark;
+
+  /* Colour */
+  --paper: light-dark(#f5f4f8, #16121f);
+  --surface: light-dark(#ffffff, #201b2d);
+  --surface-sunk: light-dark(#ebe8f2, #110e19);
+  --line: light-dark(#dcd7e7, #342d47);
+  --line-strong: light-dark(#a69dbd, #5a5075);
+  --ink: light-dark(#1e1a2b, #eeeaf7);
+  --ink-muted: light-dark(#5f5973, #a59eba);
+
+  --grape: light-dark(#5a32d6, #a98eff);
+  --grape-strong: light-dark(#4520b8, #c3b1ff);
+  --grape-ink: light-dark(#ffffff, #16121f);
+  --grape-soft: light-dark(#ece6ff, #2c2350);
+
+  --mint: light-dark(#0b7a52, #52e3ae);
+  --mint-fill: #2ed39a;
+  --mint-soft: light-dark(#dbf6ea, #133428);
+
+  --mango: light-dark(#8a5300, #ffc34d);
+  --mango-fill: #ffb627;
+  --mango-soft: light-dark(#fff0d3, #3a2b10);
+
+  /* Text on the fixed mint and mango fills, in both themes. */
+  --fill-ink: #1e1a2b;
+
+  --cherry: light-dark(#c42740, #ff7a8e);
+  --cherry-soft: light-dark(#fde3e8, #3d1a23);
+
+  /* Dom's speech bubble */
+  --bubble: light-dark(#5a32d6, #4a33a8);
+  --bubble-ink: light-dark(#ffffff, #f4f0ff);
+
+  --scrim: light-dark(rgb(30 26 43 / 0.45), rgb(5 3 10 / 0.65));
+  --shadow-pop: 0 14px 36px -14px light-dark(rgb(40 20 90 / 0.4), rgb(0 0 0 / 0.7));
+
+  /* Type */
+  --font-display: 'Unbounded', 'Atkinson Hyperlegible', system-ui, sans-serif;
+  --font-body: 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  /* 1.25 scale on a 16 px base */
+  --step--1: 0.8rem;
+  --step-0: 1rem;
+  --step-1: 1.25rem;
+  --step-2: 1.5625rem;
+  --step-3: 1.953rem;
+  --step-4: 2.441rem;
+
+  --leading-body: 1.5;
+  --leading-tight: 1.15;
+
+  /* Space: 4-based */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Shape. Radius follows hierarchy: panels, controls, small chips, and the bubble that is Dom talking. */
+  --radius-sm: 6px;
+  --radius-md: 14px;
+  --radius-pill: 999px;
+  --radius-bubble: 22px 22px 22px 6px;
+
+  /* Sizing */
+  --hit: 44px;
+  --nav-rail: 232px;
+  --tabbar: 64px;
+  --content-max: 1120px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 120ms;
+  --dur-med: 220ms;
+  --dur-slow: 420ms;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-med: 0ms;
+    --dur-slow: 0ms;
+  }
+}

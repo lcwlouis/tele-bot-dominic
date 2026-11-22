@@ -1,0 +1,55 @@
+name: Web
+
+on:
+  push:
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The screenshot baselines were made in this image, so fonts render the same here.
+    # Keep its version equal to the Playwright test package in web/package.json.
+    container: mcr.microsoft.com/playwright:v1.65.1-noble
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Type-check
+        run: npm run check
+      - name: Build
+        run: npm run build
+      - name: Build Storybook
+        run: npm run build-storybook -- --quiet
+      - name: Screenshots, CSP and accessibility
+        run: npx playwright test
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7
