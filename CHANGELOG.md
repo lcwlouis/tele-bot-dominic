@@ -6,6 +6,10 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-23
+
+Faster, and yours to control: replies start sooner, you pick the models, and you can clean up and approve.
+
 - Faster replies. Jev reads a message the moment it arrives, so "typing…", a reaction and, in your DM for a long request, a short "On it." start right away. When Jev is at least 70 % sure the sender is done, Dom skips the 2–6 s wait (never past 15 s). A message that lands before his first bubble restarts the answer with it included; one that lands later gets a follow-up that knows his earlier bubbles had not seen it. Typing time counts the time he already spent thinking, and task mode types twice as fast.
 - Fewer model calls. Jev picks the fitting skill while it triages, Dom is told when a vibe switch cannot work, and Jev decides after a reply whether he stays online longer (`extend_online` is gone). A reply written as plain prose is usually sent as it is, not asked for again; this sends the reply text to Jev (`docs/privacy.md`). Notes change in a chat's prompt only when its window is trimmed or hourly, with a "notes updated" line and a `read_notes` tool between, so more of each prompt is cached.
 - Where the time goes. The Turn log shows each reply's stages and cache use, and in your DM Dom can explain a slow reply when you ask.
