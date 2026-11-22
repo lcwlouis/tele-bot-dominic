@@ -230,7 +230,7 @@ async def leave_chat(app: App, chat_id: int, who: str) -> tuple[str, bool]:
             return "unknown chat", False
         title = display_title(chat, app.owner_id)
         try:
-            await app.bot.leave_chat(resolved)
+            await retry_telegram(lambda: app.bot.leave_chat(resolved), sleep=app.sleep)
             result = f"Dom left {title}"
         except (TelegramBadRequest, TelegramForbiddenError):
             result = f"Dom wasn't in {title} anymore"

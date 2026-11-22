@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 
 from dom import turn_log
+from dom.llm import openrouter_host
 from dom.usage import UsageRecorder, check_model_allowed, request_kind
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/alpha"  # [models.triage].base_url in the starter config
@@ -28,11 +29,14 @@ class JevClient:
         await check_model_allowed()
         kind = request_kind("triage")
         messages = [{"role": "user", "content": {"state": state, "questions": questions}}]
+        body: dict = {"model": self.model, "state": state, "questions": questions}
+        if openrouter_host(self.host):
+            body["provider"] = {"zdr": True}  # the account's zero-data-retention rule holds for the classifier too
         try:
             with turn_log.model_call(self.model, kind, messages, []) as call:
                 response = await self.http.post(
                     self.url,
-                    json={"model": self.model, "state": state, "questions": questions},
+                    json=body,
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     timeout=8,
                 )

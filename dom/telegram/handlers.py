@@ -398,12 +398,18 @@ async def handle_message(app: App, message: Message) -> None:
         decision = await gate.decide(app.store, msg, app.owner_id)
         if decision == "drop":
             return
-        if (
+        fetch_document = (
             owner_dm and message.document is not None and app.config.desktop_mode != "off"
             and _desktop_command(msg.text, app.bot_username) and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
-        ):
-            msg = await _receive_desktop_document(app, message, msg)
-        await _record(app, msg, describe_media=decision == "process", notify=decision == "process")
+        )
+        if not fetch_document:
+            await _record(app, msg, describe_media=decision == "process", notify=decision == "process")
+    if fetch_document:
+        # The download (up to 20 MB) and any message it sends wait outside the lock. Recording is idempotent per
+        # message, so an edit handled in the meantime (which recorded it first) is kept as it is.
+        msg = await _receive_desktop_document(app, message, msg)
+        async with app.ingest_locks[msg.chat_id]:
+            await _record(app, msg, describe_media=True, notify=True)
     if decision == "hold":
         kind = "chat" if msg.chat_type == "private" else "group"
         await gate.request_approval(
@@ -436,11 +442,22 @@ async def handle_edited_message(app: App, message: Message) -> None:
 _OVERRIDES = {"wake": "/wake", "sleep": "/sleep"}
 
 
+TOAST_MAX_WAIT = 3.0  # a callback query answer is worthless once Telegram has made the tap time out
+
+
 async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> None:
+    """Best-effort: the state change and the button edit that follow matter more than the acknowledgement, so no
+    failure here (expired callback, flood wait, network) is allowed to abort the handler."""
     try:
-        await app.bot.answer_callback_query(query.id, text=text)
-    except TelegramBadRequest:  # a turn can outlast the callback's validity; the edit that follows still matters
-        log.warning("could not answer callback %s", query.id)
+        try:
+            await app.bot.answer_callback_query(query.id, text=text)
+        except TelegramRetryAfter as exc:
+            if exc.retry_after > TOAST_MAX_WAIT:
+                raise
+            await app.sleep(exc.retry_after)
+            await app.bot.answer_callback_query(query.id, text=text)
+    except Exception as error:  # a turn can outlast the callback's validity
+        log.warning("could not answer callback %s (%s)", query.id, type(error).__name__)
 
 
 SETTLED = {"Approved": "✅ Approved", "Rejected": "❌ Rejected", "Cancelled": "Cancelled", "already handled": "Already handled"}

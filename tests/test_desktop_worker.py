@@ -646,3 +646,26 @@ async def test_sandbox_alert_retries_telegram_flood_with_app_sleep(make_app, mon
     await sandbox.alert("The LAN is reachable")
     assert slept == [3.0] and attempts == 2
     assert app.bot.of("send", OWNER)[-1][2] == "The LAN is reachable"
+
+
+async def test_recover_reports_and_settles_cards_without_holding_the_control_lock(make_app, monkeypatch):
+    app = make_app()
+    worker = await worker_for(app)
+    task_id = await app.store.enqueue_desktop_task(OWNER, "running", worker.container)
+    await app.store.update_desktop_task(task_id, OWNER, ("queued",), "running")
+    held = []
+    report, settle = app.dispatch.report_desktop_task, app.dispatch.settle_handoff_card
+
+    async def watched_report(row, files=()):
+        held.append(("report", worker.control.locked()))
+        return await report(row, files)
+
+    async def watched_settle(task, label):
+        held.append(("settle", worker.control.locked()))
+        return await settle(task, label)
+
+    monkeypatch.setattr(app.dispatch, "report_desktop_task", watched_report)
+    monkeypatch.setattr(app.dispatch, "settle_handoff_card", watched_settle)
+    await worker.recover()
+    assert held == [("report", False), ("settle", False)]
+    assert (await task_row(app, task_id))["status"] == "failed"

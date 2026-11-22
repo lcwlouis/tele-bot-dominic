@@ -38,7 +38,7 @@ async def test_decide_parses_choice_and_score(jev):
         assert request.headers["Authorization"] == "Bearer fake-key"
         assert set(request.extensions["timeout"].values()) == {8}
         assert json.loads(request.content) == {
-            "model": "~typesafe/jev-latest", "state": "recent chat", "questions": questions,
+            "model": "~typesafe/jev-latest", "state": "recent chat", "questions": questions, "provider": {"zdr": True},
         }
         return httpx.Response(200, json={"answers": answers})
 
@@ -153,6 +153,21 @@ async def test_decisions_url_is_built_from_the_triage_base_url(tmp_path):
         "https://openrouter.ai/api/alpha/decisions", "https://jev.test/alpha/decisions",
         "https://openrouter.ai/api/alpha/decisions",
     ]
+
+
+async def test_decisions_on_openrouter_ask_for_zero_data_retention_and_other_hosts_get_no_such_field():
+    bodies = {}
+
+    def respond(request):
+        bodies[request.url.host] = json.loads(request.content)
+        return httpx.Response(200, json={"answers": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        await JevClient(http, "fake-key", "m").decide("s", {})
+        await JevClient(http, "fake-key", "m", "https://jev.test/alpha").decide("s", {})
+    assert bodies["openrouter.ai"]["provider"] == {"zdr": True}
+    assert "provider" not in bodies["jev.test"]
+    assert bodies["openrouter.ai"]["model"] == "m" and bodies["openrouter.ai"]["state"] == "s"
 
 
 def test_every_emoji_jev_may_pick_is_an_allowed_reaction():

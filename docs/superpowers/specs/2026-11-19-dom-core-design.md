@@ -241,7 +241,7 @@ Media is transcribed or described once by the media model when it arrives. The d
 
 **Dom always knows the status.** A health check sets `desktop: connected | starting | unavailable | off` in the per-turn note. `start_desktop_task` is offered only when it is usable. Otherwise, Dom says in character that his computer isn't with him.
 
-**Contents.** A real Linux box: Chromium, shell, Python/Jupyter, files. It holds no secrets.
+**Contents.** A real Linux box: Chromium, shell, Python, files. It holds no secrets. Jupyter is switched off in the container (`DISABLE_JUPYTER`).
 
 **Logins.** The task's worker calls `handoff` with a reason; Dom never asks for a password in chat. The owner gets a link to the live view (VNC behind the UI's auth), logs in, and taps "done". Cookies stay in the container profile and never reach Dom's core.
 
@@ -271,13 +271,8 @@ Media is transcribed or described once by the media model when it arrives. The d
 
 - FastAPI serves a small single-page UI.
 - Auth: Cloudflare Access in front; Dom checks the Access JWT on every request. It binds to the Docker bridge address that the tunnel container reaches, never a LAN address. A dev token exists for local testing only.
-- Pages:
-  - chats and their presence state
-  - approvals: groups, plugins, soul edits, imports
-  - memory and soul editor, including "talk to Dom to edit his soul"
-  - desktop live view
-  - logs
-- The JARVIS look gets a dedicated design pass (Opus) after the pages work. The old `server.py` is a visual reference only.
+- Pages today: Now, Waiting for you, Reminders, Chats, Usage, Desktop, Plugins, Own work, Briefs, Memory, Turn log and Settings. Approvals (groups, plugins, soul edits, imports) live in Waiting for you; the desktop live view is on Desktop.
+- The JARVIS look is a separate track: the new dashboard design is built on its own and replaces these pages when it is ready. The old `server.py` is a visual reference only.
 
 ## 13. Salvage from V2
 

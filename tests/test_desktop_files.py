@@ -7,7 +7,7 @@ from dom.desktop.client import SandboxError
 from dom.desktop.files import bind_inbox, download_results, safe_filename, stage_inbox, upload_inbox
 from dom.desktop.worker import DesktopWorker
 from dom.home import Home
-from dom.telegram.handlers import handle_message
+from dom.telegram.handlers import handle_edited_message, handle_message
 from test_desktop_worker import Sandbox, adopt, call, task_row, wait_task, worker_for
 from test_usage import online
 from tghelpers import FRIEND, GROUP, OWNER, drain_dispatch, tg
@@ -353,3 +353,52 @@ async def test_images_go_as_photos_and_fall_back_to_files(make_app):
     ]
     await executor.send_files(Bot(), app.store, OWNER, files)
     assert sent == [("photo", "page.png"), ("document", "long-page.png"), ("document", "notes.txt"), ("document", "huge.jpg")]
+
+
+async def test_the_ingest_lock_is_free_during_a_document_download_and_the_messages_it_sends(make_app, monkeypatch):
+    app = make_app()
+    app.home = Home(app.home.root / 'home')
+    app.sandbox = Sandbox()
+    adopt(app, DesktopWorker(app, app.sandbox))
+    app.config = app.config.model_copy(update={"desktop_mode": "local"})
+    monkeypatch.setattr("dom.desktop.files.MAX_FILE_BYTES", 3)
+    held = []
+    send = app.bot.send_message
+
+    async def download(document, *, destination):
+        held.append(("download", app.ingest_locks[OWNER].locked()))
+        destination.write(b"1234")  # more than the limit, so the owner is told
+        return destination
+
+    async def watched_send(chat_id, text, **kw):
+        held.append(("send", app.ingest_locks[OWNER].locked()))
+        return await send(chat_id, text, **kw)
+
+    monkeypatch.setattr(app.bot, "download", download, raising=False)
+    monkeypatch.setattr(app.bot, "send_message", watched_send)
+    document = Document(file_id="file", file_unique_id="unique", file_name="a.pdf", file_size=2)
+    await handle_message(app, tg(OWNER, OWNER, text=None, msg_id=7, caption="/desktop", document=document))
+    assert held == [("download", False), ("send", False)]
+    assert await app.store.has_message(OWNER, 7)  # the message is still recorded, after the download
+
+
+async def test_an_edit_handled_during_the_download_is_kept_and_the_message_still_wakes_dom_once(make_app, monkeypatch):
+    app = make_app()
+    app.home = Home(app.home.root / 'home')
+    app.sandbox = Sandbox()
+    adopt(app, DesktopWorker(app, app.sandbox))
+    app.config = app.config.model_copy(update={"desktop_mode": "local"})
+    notified = []
+    monkeypatch.setattr(app.dispatch, "notify", notified.append)
+
+    async def download(document, *, destination):
+        # an edit of the same message is handled while the file comes down: the lock is free, so it records it
+        await handle_edited_message(app, tg(OWNER, OWNER, text=None, msg_id=8, caption="/desktop edited", document=document_in))
+        destination.write(b"data")
+        return destination
+
+    document_in = Document(file_id="file", file_unique_id="unique", file_name="a.pdf", file_size=4)
+    monkeypatch.setattr(app.bot, "download", download, raising=False)
+    await handle_message(app, tg(OWNER, OWNER, text=None, msg_id=8, caption="/desktop", document=document_in))
+    assert await app.store.has_message(OWNER, 8)
+    assert len(notified) == 1
