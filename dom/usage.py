@@ -48,7 +48,7 @@ class ModelCallSkipped(Exception):
 @dataclass(frozen=True)
 class _Request:
     kind: Kind
-    chat_id: int
+    chat_id: int | None
     allowed: Callable[[], Awaitable[bool]]
 
 
@@ -56,7 +56,7 @@ _request: ContextVar[_Request | None] = ContextVar("model_request", default=None
 
 
 @contextmanager
-def model_request(kind: Kind, chat_id: int, allowed: Callable[[], Awaitable[bool]]) -> Iterator[None]:
+def model_request(kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]]) -> Iterator[None]:
     """Carry request attribution and approval through tool rounds, retries and fallback."""
     token = _request.set(_Request(kind, chat_id, allowed))
     try:

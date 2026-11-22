@@ -49,6 +49,10 @@ _PART_TYPES = {
 _AUDIO_FORMATS = {"mpeg": "mp3", "mp4": "m4a", "x-m4a": "m4a", "x-wav": "wav"}
 
 
+class PermanentMediaSkip(Exception):
+    """Attachment cannot be described (oversize or no preview image) and should not be retried."""
+
+
 class MediaDescriber:
     def __init__(self, client: ChatClient, bot):
         self.client, self.bot = client, bot
@@ -59,12 +63,16 @@ class MediaDescriber:
     ) -> str | None:
         kind = media.get("kind")
         async with self._one_at_a_time:
-            return await self._describe(kind, media, request or nullcontext(), prompt)
+            try:
+                return await self._describe(kind, media, request or nullcontext(), prompt, propagate_skip=False)
+            except PermanentMediaSkip:
+                return None
 
     async def describe_sticker(
         self, media: dict, *, request: AsyncContextManager[None] | None = None,
     ) -> str | None:
-        return await self.describe(media, request=request, prompt=STICKER_PREVIEW_PROMPT)
+        async with self._one_at_a_time:
+            return await self._describe("sticker", media, request or nullcontext(), STICKER_PREVIEW_PROMPT, propagate_skip=True)
 
     async def describe_desktop(self, screenshot: bytes) -> str | None:
         if not screenshot or len(screenshot) > MAX_BYTES["photo"]:
@@ -81,18 +89,25 @@ class MediaDescriber:
 
     async def _describe(
         self, kind: str | None, media: dict, request: AsyncContextManager[None], prompt: str,
+        *, propagate_skip: bool = False,
     ) -> str | None:
         try:
             part_type = _PART_TYPES.get(kind)
             limit = MAX_BYTES.get(kind)
             size = media.get("file_size")
-            if part_type is None or limit is None or (size is not None and size > limit):
+            if part_type is None or limit is None:
+                return None
+            if size is not None and size > limit:
+                if propagate_skip:
+                    raise PermanentMediaSkip("attachment exceeds size limit")
                 return None
             mime = (media.get("mime") or DEFAULT_MIME[kind]).partition(";")[0].strip().lower()
             file_id = media["file_id"]
             if kind == "sticker" and mime != DEFAULT_MIME["sticker"]:
                 file_id = media.get("preview_file_id")
                 if not file_id:
+                    if propagate_skip:
+                        raise PermanentMediaSkip("animated sticker has no image preview")
                     raise ValueError("animated sticker has no image preview")
                 mime = "image/jpeg"
             downloaded = await self.bot.download(file_id)
@@ -101,6 +116,8 @@ class MediaDescriber:
             with downloaded:
                 data = downloaded.read(limit + 1)
             if len(data) > limit:
+                if propagate_skip:
+                    raise PermanentMediaSkip("downloaded attachment exceeds size limit")
                 return None
             if not data:
                 raise ValueError("empty attachment")
@@ -121,7 +138,13 @@ class MediaDescriber:
             if not isinstance(description, str) or not description.strip():
                 raise ValueError("no description returned")
             return description.strip()
+        except PermanentMediaSkip:
+            if propagate_skip:
+                raise
+            return None
         except ModelCallSkipped:
+            if propagate_skip:
+                raise
             return None
         except Exception as exc:
             detail = ""

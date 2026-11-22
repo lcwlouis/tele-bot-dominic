@@ -168,6 +168,15 @@ class Dispatcher:
         await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
 
     @asynccontextmanager
+    async def sticker_media_request(self) -> AsyncIterator[None]:
+        async def allowed() -> bool:
+            return not await self.usage.over_cap(self.app.config, self.app.bot)
+
+        with model_request("media", None, allowed):
+            await check_model_allowed()
+            yield
+
+    @asynccontextmanager
     async def _media_request(self, chat_id: int, *, lock_held: bool = False) -> AsyncIterator[None]:
         # Downloads stay outside the turn lock. The model call itself runs under it.
         with model_request("media", chat_id, partial(self.model_allowed, chat_id)):
@@ -607,7 +616,7 @@ class Dispatcher:
             with turn_log.timed("typing"):  # the typing delays and the sending
                 sent = await executor.perform(
                     app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
-                    thread_id=live.thread_id if live else None, stickers=app.stickers.by_emoji,
+                    thread_id=live.thread_id if live else None, stickers=app.stickers.sendable(),
                     gifs=app.gifs, ephemeral_recipient=recipient, ephemeral_in_chat=in_group, typed_already=thought,
                 )
             if actions.private and scope == "group" and not actions.no_response:
@@ -850,10 +859,8 @@ class Dispatcher:
                 'It goes at the top level, next to "bubbles", never inside a bubble: '
                 '{"private": true, "bubbles": [{"text": "..."}]}.'
             )
-        if not final_bot_turn:
-            await app.stickers.ensure_descriptions()
-            if sticker_note := app.stickers.turn_note():
-                note += f"\n{sticker_note}"
+        if not final_bot_turn and (sticker_note := app.stickers.turn_note()):
+            note += f"\n{sticker_note}"
         if not final_bot_turn and app.gifs is not None:
             note += f"\n{GIF_NOTE}"
         if scope == "owner_dm" and newest is not None and newest.media_json:

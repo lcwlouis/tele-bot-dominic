@@ -583,12 +583,15 @@ async def refresh_sticker_descriptions(app: App) -> str:
     if app.media_describer is None:
         return "Sticker descriptions unavailable: media model is not configured."
     try:
-        described, failed = await app.stickers.refresh_descriptions()
+        pending = await app.stickers.refresh_descriptions()
     except (OSError, ValueError) as error:
         result = str(error) if isinstance(error, ValueError) else "Sticker descriptions could not be refreshed."
     else:
-        suffix = f", {failed} failed" if failed else ""
-        result = f"Sticker descriptions refreshed ({described} described{suffix})."
+        if pending:
+            noun = "sticker" if pending == 1 else "stickers"
+            result = f"Sticker descriptions: describing {pending} {noun} in the background."
+        else:
+            result = "Sticker descriptions: no stickers to describe."
     await app.store.record_owner_event(result)
     return result
 
