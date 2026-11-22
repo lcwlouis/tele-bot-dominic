@@ -969,7 +969,7 @@ class Dispatcher:
         note += f"\n{online_window_note(minutes)}"
         if snap.stale_since is not None:
             since = snap.stale_since.astimezone(self.presence.tz)
-            note += f"\nnotes updated since {since:%H:%M}; call read_notes if you need the latest"
+            note += f"\nnotes updated since {since:%H:%M}; call read_notes only if your answer depends on something saved since then"
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
             sliders=sliders, preset=preset, memory_text=snap.memory_text, notes_blocks=snap.notes_blocks,

@@ -654,9 +654,9 @@ OWN_CODE_TOOL = Tool(
 async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     """Offered tools in cache-stable order: shared tools first, owner-only tools last.
 
-    Scopes stay separate (groups and friends' DMs never see owner-only tool names). Tools that
-    come and go (vibe switch, plugins, desktop, T3) append after the fixed shared/owner blocks so
-    they never reorder or reshape the shared prefix."""
+    Scopes stay separate (groups and friends' DMs never see owner-only tool names). The vibe switch
+    and shared plugins sit at the end of the shared block, and desktop, T3 and owner-only plugins at
+    the end of the owner block, so a change there reshapes only what follows it."""
     from dom.devices import FIND_DEVICES_TOOL
     from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 
