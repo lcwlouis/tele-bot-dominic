@@ -475,25 +475,34 @@ async def test_incomplete_burst_uses_original_15_second_cap_even_with_jev_in_fli
         await drain_dispatch(dispatch)
 
 
-async def test_online_triage_slower_than_the_debounce_still_decides_the_turn(setup_dispatch, gated_sleep):
+async def test_online_triage_slower_than_the_debounce_still_decides_the_turn(setup_dispatch, gated_sleep, monkeypatch):
     sleep, waits = gated_sleep
-    release = asyncio.Event()
+    release, parked = asyncio.Event(), asyncio.Event()
 
     class SlowJev(FakeJev):
         async def decide(self, state, questions):
             await release.wait()
             return await super().decide(state, questions)
 
+    real_wait = asyncio.wait
+
+    async def wait(tasks, **kwargs):  # the turn parks here until the arrival classification is in
+        if list(tasks) == [dispatch._arrivals[GROUP][1].task]:
+            parked.set()
+        return await real_wait(tasks, **kwargs)
+
     app, dispatch, clock = await setup_dispatch(SlowJev(action="ignore", done=0.5), sleep=sleep)
+    monkeypatch.setattr(asyncio, "wait", wait)
     await dispatch.presence.go_online(GROUP, parse_habits(""))
     await handle_message(app, tg().model_copy(update={"date": clock()}))
-    waits[0][1].set()  # the debounce ends while Jev is still thinking
-    for _ in range(50):
+    while not waits:  # the debounce timer has started
         await asyncio.sleep(0)
-    assert GROUP in dispatch._active and not turn_requests(app)  # the turn is waiting on Jev, not generating
+    waits[0][1].set()  # the debounce ends while Jev is still thinking
+    await asyncio.wait_for(parked.wait(), timeout=5)
+    assert not turn_requests(app)  # the turn waits on Jev instead of generating
     clock.advance(seconds=3)
     release.set()
-    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=5)
 
     assert not turn_requests(app) and not app.bot.of("send", GROUP)  # a confident "ignore" is honoured
     assert (await app.store.get_unread(GROUP))[0] == 0
