@@ -159,6 +159,8 @@ def routed_client(
     endpoints = config.providers(role)
     if role == "chat":
         endpoints += config.providers("fallback")
+    elif role == "drafting":  # drafts fall back to the chat route when no drafting provider can answer
+        endpoints += config.providers("chat") + config.providers("fallback")
     kind: Kind = "media" if role == "media" else "chat"
     providers = [
         ChatClient(endpoint, config.secret(endpoint.api_key_env) if endpoint.api_key_env else None, http,

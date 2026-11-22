@@ -33,7 +33,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `models.chat_fallback` | Optional | Legacy name for the backup chat role. |
 | `models.triage` | Built in | Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe. |
 | `models.media` | Built in | Attachment descriptions, transcriptions and desktop screenshot descriptions. |
-| `models.drafting` | Built in | Skill and plugin drafts. Uses the chat route if no drafting provider has the credentials it needs. |
+| `models.drafting` | Built in | Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort. |
 | `models.search` | Optional | OpenRouter web search. If the table is present, omitted fields use the starter search settings. |
 
 Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.

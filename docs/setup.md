@@ -121,6 +121,14 @@ matching Access team and audience in `[web]`. Dom validates the signed
 assertion too. The [dashboard deployment guide](deploy-dashboard.md) covers
 tunnel ingress and a loopback-only bearer token for local testing.
 
+The dashboard's Settings page edits the chat, fallback, media and drafting
+routes: a primary provider and an ordered fallback chain per role, each a local
+(OpenAI-compatible) or cloud endpoint. Test sends one short real call to a saved
+provider. Saving writes `config.toml` atomically, keeps `config.toml.bak` and
+applies to new calls without a restart. Keys stay in `.env`; the page shows only
+whether each key variable is set. The same JSON is at `GET/POST /api/models`
+and `POST /api/models/test`, owner only.
+
 ## Optional desktop
 
 Set `[desktop].mode` to `"local"` to use Docker on the Dom host. Read

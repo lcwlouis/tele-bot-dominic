@@ -118,7 +118,6 @@ def summary(row: dict) -> str:
 class Proposals:
     def __init__(self, app: App):
         self.app = app
-        self._draft_fallback_logged = False
 
     async def create(self, kind: str, title: str, body: dict, source: str, *, notify: bool = True) -> int:
         from_brief = kind in ("plugin", "skill") and "brief" in body
@@ -191,12 +190,7 @@ class Proposals:
         return plugin
 
     async def _write_draft(self, kind: str, seed: dict) -> dict:
-        client = self.app.draft_client
-        if client is None or not client.available:
-            if not self._draft_fallback_logged:
-                log.warning("Drafting model credentials unavailable; using the chat model for drafts.")
-                self._draft_fallback_logged = True
-            client = self.app.client
+        client = self.app.draft_client or self.app.client  # the drafting chain already ends in the chat route
         fields = (
             "name, description, manifest_toml and files (a mapping from filenames to Python source)"
             if kind == "plugin" else "name, description and body (a reusable procedure in Markdown)"

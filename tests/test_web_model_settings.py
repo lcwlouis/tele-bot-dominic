@@ -84,6 +84,9 @@ async def test_save_backs_up_config_and_applies_new_routes_without_restart(dashb
         initial = (await client.get(API)).json()
         assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting"}
         assert initial["roles"]["fallback"]["primary"]["key_set"] is True
+        assert initial["roles"]["chat"]["primary"]["kind"] == "local"
+        assert initial["roles"]["fallback"]["primary"]["kind"] == "cloud"
+        assert initial["triage"] == {"model": "classifier", "base_url": "https://classifier.example.test/decisions", "key_set": False}
         assert SECRET not in json.dumps(initial)
         update = {"revision": initial["revision"], "role": "media", "primary": route, "fallbacks": [BACKUP]}
         result = await client.post(API, headers=ORIGIN_HEADER, json=update)

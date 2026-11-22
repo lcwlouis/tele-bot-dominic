@@ -6,7 +6,7 @@ from threading import Event
 import httpx
 import pytest
 
-from dom.config import starter_config, validate_config
+from dom.config import ModelEndpoint, starter_config, validate_config
 from dom.llm import ChatClient, routed_client
 from dom.plugins import runner
 from dom.plugins.manifest import read_plugin
@@ -286,20 +286,41 @@ async def test_private_draft_brief_never_reaches_the_model(make_app):
     assert await app.proposals.pending() == []
 
 
-async def test_missing_drafting_key_uses_chat_model_and_accepts_fenced_json(make_app, caplog):
+async def test_missing_drafting_key_uses_chat_model_and_accepts_fenced_json(make_app, monkeypatch):
     plugin = {
         "name": "convert", "description": "Convert units", "files": {"main.py": "pass\n"}, "manifest_toml": MANIFEST,
     }
     skill = {"name": "brew", "description": "Make tea", "body": "Steep the leaves."}
     replies = [f"```json\n{json.dumps(reply)}\n```" for reply in (plugin, skill)]
     app = make_app(contents=replies)
-    endpoint = validate_config(app.home.root, {}).models["drafting"]
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail("used unkeyed drafter"))) as http:
-        app.draft_client = ChatClient(endpoint, None, http)
+    drafting = validate_config(app.home.root, {}).models["drafting"]
+    monkeypatch.delenv(drafting.api_key_env, raising=False)
+    config = app.config.model_copy(update={"models": {**app.config.models, "drafting": drafting}})
+    seen = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: seen.append(r.url.host) or app.script(r))) as http:
+        app.draft_client = routed_client(config, "drafting", http)
         for tool, name in ((DRAFT_PLUGIN_TOOL, "convert"), (SKILL_MANAGE_TOOL, "brew")):
             assert "id" in json.loads(await tool.handler({"name": name, "brief": "Write a practical example."}, ctx(app)))
     assert [request["model"] for request in app.script.requests] == ["m", "m"]
-    assert caplog.text.count("using the chat model for drafts") == 1
+    assert seen == ["llm.test"] * 2  # the unkeyed drafting provider is skipped without a request
+
+
+async def test_failing_drafting_provider_falls_back_to_the_chat_route(make_app):
+    skill = {"name": "brew", "description": "Make tea", "body": "Steep the leaves."}
+    app = make_app(contents=[json.dumps(skill)])
+    drafting = ModelEndpoint(base_url="http://localhost:9/v1", model="local/writer")
+    config = app.config.model_copy(update={"models": {**app.config.models, "drafting": drafting}})
+    hosts = []
+
+    def route(request):
+        hosts.append(request.url.host)
+        return httpx.Response(503) if request.url.host == "localhost" else app.script(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as http:
+        app.draft_client = routed_client(config, "drafting", http)
+        assert "id" in json.loads(await SKILL_MANAGE_TOOL.handler({"name": "brew", "brief": "Describe tea."}, ctx(app)))
+    assert hosts[-1] == "llm.test" and "localhost" in hosts
+    assert [request["model"] for request in app.script.requests] == ["m"]
 
 
 async def test_changed_code_needs_fresh_review_and_displays_diff(make_app, browser):

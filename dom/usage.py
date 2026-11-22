@@ -26,7 +26,7 @@ Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "gua
 log = logging.getLogger("dom.usage")
 
 
-def _on_own_network(host: str) -> bool:
+def on_own_network(host: str) -> bool:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
@@ -45,7 +45,7 @@ def local_hosts(config: Config) -> tuple[str, ...]:
     hosts = set()
     for _, endpoint in config.model_endpoints():
         url = httpx.URL(endpoint.base_url)
-        if url.host and _on_own_network(url.host):
+        if url.host and on_own_network(url.host):
             hosts.update((url.host, provider_address(url)))  # includes the host-only form in older usage rows
     return tuple(sorted(hosts))
 

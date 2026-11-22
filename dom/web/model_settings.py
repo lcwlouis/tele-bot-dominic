@@ -15,7 +15,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar
 from urllib.parse import urlsplit
 
 import httpx
@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from dom.config import MODEL_ROLES, Config, ModelRole, ProviderEndpoint, _replace_file, validate_config
 from dom.llm import ChatClient, FallbackClient, MissingProviderKey, openrouter_host
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
-from dom.usage import ModelCallSkipped, model_request
+from dom.usage import ModelCallSkipped, model_request, on_own_network
 from dom.web.pages import _bounded_stream, owner_app, panel
 
 if TYPE_CHECKING:
@@ -104,6 +104,15 @@ class ModelUpdate(BaseModel):
 
 
 class ProviderView(ProviderEndpoint):
+    kind: Literal["local", "cloud"]
+    key_set: bool
+
+
+class TriageView(BaseModel):
+    """Jev, the TypeSafe Decisions API: a classifier, shown here but not routable to a chat model."""
+
+    model: str
+    base_url: str
     key_set: bool
 
 
@@ -115,6 +124,7 @@ class RoleView(BaseModel):
 class ModelSettings(BaseModel):
     revision: str
     roles: dict[ModelRole, RoleView]
+    triage: TriageView
     restart_required: bool
 
 
@@ -191,6 +201,7 @@ def _provider_view(config: Config, endpoint: ProviderEndpoint) -> ProviderView:
         url = _validate_url(endpoint.base_url)
     except ValueError:
         url = ""
+    host = httpx.URL(url).host if url else ""
     variable = endpoint.api_key_env or None
     if variable and (not ENV_NAME.fullmatch(variable) or _looks_like_secret(variable)):
         variable = None
@@ -200,7 +211,7 @@ def _provider_view(config: Config, endpoint: ProviderEndpoint) -> ProviderView:
         key_set = False
     return ProviderView(
         base_url=url, model="" if _looks_like_secret(endpoint.model) else endpoint.model,
-        api_key_env=variable, key_set=key_set,
+        api_key_env=variable, key_set=key_set, kind="local" if host and on_own_network(host) else "cloud",
         reasoning_effort=endpoint.reasoning_effort,
     )
 
@@ -214,8 +225,10 @@ def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
             primary=_provider_view(config, primary) if primary else None,
             fallbacks=[_provider_view(config, provider) for provider in fallbacks],
         )
+    triage = _provider_view(config, config.models["triage"])
     return ModelSettings(
         revision=snapshot.revision, roles=roles,
+        triage=TriageView(model=triage.model, base_url=triage.base_url, key_set=triage.key_set),
         restart_required=any(config.providers(role) != app.config.providers(role) for role in MODEL_ROLES),
     )
 
