@@ -302,6 +302,7 @@ async def test_existing_key_moves_to_a_new_host_only_by_hand(dashboard):
     "http://collector.example.test/v1", "http://169." "254.169.254/v1", "https://169." "254.169.254/v1",
     "http://0.0.0.0:8000/v1", "https://224.0.0.1/v1", "http://[fe" "80::1]/v1", "http://[::ffff:169." "254.169.254]/v1",
     "http://8.8.8.8/v1", "http://openrouter.ai/api/v1",
+    "http://2852039166/v1", "http://0xa9fea9fe/v1",  # 169.254.169.254 in forms the resolver accepts
 ])
 async def test_base_url_must_be_https_or_local_and_never_link_local(dashboard, base_url):
     _, path, browser = dashboard
@@ -344,3 +345,20 @@ def test_fallbacks_are_rejected_on_triage_and_search(tmp_path):
     for name in ("triage", "search"):
         with pytest.raises(ValueError, match="cannot have fallbacks"):
             validate_config(tmp_path, {"models": {"chat": PRIMARY, name: extra}})
+
+
+async def test_a_key_with_a_value_never_gains_a_host_even_after_its_slot_is_removed(dashboard, monkeypatch):
+    """Re-check of PR #11: removing a key's only slot and re-adding the name under a new host laundered the key."""
+    from dom.web.model_settings import _address
+
+    _, path, browser = dashboard
+    monkeypatch.setenv("SOME_OTHER_SECRET", "unrelated-value")
+    async with browser() as client:
+        assert (await _save(client, "fallback", None)).status_code == 200  # BACKUP_KEY's only slot is gone
+        laundered = await _save(client, "media", dict(COLLECTOR, api_key_env="BACKUP_KEY"))
+        assert laundered.status_code == 422 and "already holds a value" in laundered.text
+        other = await _save(client, "media", dict(COLLECTOR, api_key_env="SOME_OTHER_SECRET"))
+        assert other.status_code == 422 and "unrelated-value" not in other.text
+        assert "BACKUP_KEY" not in path.read_text().split("[models.media]")[-1]
+    # a key paired with https on a host doesn't follow it to plain http there
+    assert _address("https://nas.lan/v1") != _address("http://nas.lan/v1")

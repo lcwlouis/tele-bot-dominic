@@ -132,15 +132,19 @@ whether each key variable is set. The same JSON is at `GET/POST /api/models`
 and `POST /api/models/test`, owner only.
 
 The page keeps secrets from leaving: a key variable can be used only for the
-host `config.toml` already pairs it with, or as a new name for one host (never
-the bot token, Jev's key or another instance credential). Pairing an existing
-key with a new host is a hand edit of `config.toml`. Base URLs must be HTTPS,
+host `config.toml` already pairs it with (same scheme, host and port), or as a
+new name for one host. A new name must not already hold a value and must not be
+the bot token, Jev's key or another instance credential, so add a new key's
+value to `.env` after saving. Pairing an existing key with a new host is a hand
+edit of `config.toml`. Base URLs must be HTTPS,
 except for `localhost`, private addresses and local names (single-label,
 `.local`, `.lan`, `.internal`, `.home.arpa`); link-local addresses are always
 refused. A chain holds at most five fallbacks. Each save keeps the previous file
 as `config.toml.bak`, and the first one as `config.toml.orig`. Before sending
 conversation data to a new cloud model, check it against your zero-data-retention
-policy; Dom does not check this for you.
+policy; Dom does not check this for you. Calls to local hosts that report no
+cost count as free against the desktop task cap, so don't route a paid provider
+through a local name.
 
 ## Optional desktop
 

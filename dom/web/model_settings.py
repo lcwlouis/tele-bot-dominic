@@ -112,8 +112,10 @@ class KeyPairing(ValueError):
 
 
 def _address(url: str) -> str | None:
+    """Scheme, host and port: a key paired with an https endpoint doesn't follow it to http on the same host."""
     try:
-        return provider_address(httpx.URL(url))
+        parsed = httpx.URL(url)
+        return f"{parsed.scheme}://{provider_address(parsed)}"
     except httpx.InvalidURL:
         return None
 
@@ -140,6 +142,10 @@ def _check_keys(disk: Config, providers: list[ProviderEndpoint]) -> None:
             raise KeyPairing(
                 "That key variable holds another credential and cannot be used for a provider here. "
                 "To use it anyway, edit config.toml by hand.")
+        if disk.secret(name):  # a variable that already holds a value never gains a host here (no laundering via remove + re-add)
+            raise KeyPairing(
+                "That key variable already holds a value, so it can't be pointed at a new host from the dashboard. "
+                "Use a new variable name and add its value to .env afterwards, or edit config.toml by hand.")
         if len(claimed.setdefault(name, set()) | {address}) > 1:
             raise KeyPairing("A new key variable can be used for one host only.")
         claimed[name].add(address)

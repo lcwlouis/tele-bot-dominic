@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import socket
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -26,24 +27,33 @@ Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "gua
 log = logging.getLogger("dom.usage")
 
 
-def unroutable_address(host: str) -> bool:
-    """An IP literal that is never a provider: link-local (169.254.x, cloud metadata), unspecified or multicast."""
+def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The address a host names literally, including forms the resolver accepts but ipaddress does not
+    (2852039166, 0xa9fea9fe, 017700000001), so they can't pass as single-label names."""
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        try:
+            address = ipaddress.IPv4Address(socket.inet_aton(host))
+        except (OSError, ValueError):
+            return None
+    return getattr(address, "ipv4_mapped", None) or address
+
+
+def unroutable_address(host: str) -> bool:
+    """An IP literal that is never a provider: link-local (169.254.x, cloud metadata), unspecified or multicast."""
+    address = _ip_literal(host)
+    if address is None:
         return False
-    address = getattr(address, "ipv4_mapped", None) or address
     return address.is_link_local or address.is_unspecified or address.is_multicast
 
 
 def on_own_network(host: str) -> bool:
     """Loopback, a private address, or a clearly local name (single-label, .local, .lan, .internal, .home.arpa)."""
     host = host.rstrip(".").lower()
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
+    address = _ip_literal(host)
+    if address is None:
         return "." not in host or host.endswith((".local", ".lan", ".internal", ".home.arpa"))
-    address = getattr(address, "ipv4_mapped", None) or address
     return (address.is_private or address.is_loopback) and not unroutable_address(host)
 
 
