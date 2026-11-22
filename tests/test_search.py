@@ -445,7 +445,7 @@ async def test_search_requires_config_and_key_except_searxng(tmp_path, monkeypat
         assert cfg.models["search"].model == ""
         client = search_client(cfg, http)
         assert client is not None and client.available is True
-        assert [p.provider for p in client.providers] == ["searxng", "tavily"]
+        assert [p.provider for p in client.providers] == ["searxng"]  # Tavily has no key, so it is left out
 
 
 @pytest.mark.parametrize(("base_url", "zdr"), [
@@ -467,3 +467,67 @@ async def test_search_sends_zdr_routing_only_for_openrouter(base_url, zdr):
         await SearchClient(endpoint, "fake", http).search("hello")
     body, = seen
     assert (body.get("provider") == {"zdr": True}) is zdr
+
+
+CHAT = {"base_url": "https://llm.example.test/v1", "model": "m"}
+
+
+@pytest.mark.parametrize("search", [
+    {"base_url": "https://openrouter.ai/api/v1"},
+    {"base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"},
+    {"base_url": "https://openrouter.ai/api/v1", "model": "custom/model"},
+])
+def test_pre_v082_search_tables_still_take_starter_defaults(tmp_path, search):
+    from dom.config import starter_config, validate_config
+
+    starter = starter_config()["models"]["search"]
+    endpoint = validate_config(tmp_path, {"models": {"chat": CHAT, "search": search}}).models["search"]
+    assert endpoint.model == search.get("model", starter["model"])
+    assert endpoint.api_key_env == starter["api_key_env"]
+
+
+def test_routed_client_leaves_out_providers_without_their_key(tmp_path, monkeypatch):
+    from dom.config import validate_config
+    from dom.search import routed_search_client
+
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    config = validate_config(tmp_path, {"models": {"chat": CHAT, "search": {
+        "provider": "searxng", "base_url": "http://192.0.2.10:8080",
+        "fallbacks": [{"provider": "tavily", "base_url": "https://api.tavily.com", "api_key_env": "TAVILY_API_KEY"}],
+    }}})
+    router = routed_search_client(config, httpx.AsyncClient())
+    assert [provider.provider for provider in router.providers] == ["searxng"]
+
+    only_keyless = validate_config(tmp_path, {"models": {"chat": CHAT, "search": {
+        "provider": "tavily", "base_url": "https://api.tavily.com", "api_key_env": "TAVILY_API_KEY",
+    }}})
+    assert routed_search_client(only_keyless, httpx.AsyncClient()) is None
+
+
+async def test_chain_stops_at_its_overall_deadline(monkeypatch):
+    import asyncio
+
+    from dom import search
+    from dom.search import SearchClient, SearchRouter
+
+    monkeypatch.setattr(search, "CHAIN_DEADLINE_SECONDS", 0.3)
+    monkeypatch.setattr(search, "SEARCH_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(search, "MIN_ATTEMPT_SECONDS", 0.05)
+    seen = []
+
+    async def hang(request):
+        seen.append(request.url.host)
+        await asyncio.sleep(5)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(hang)) as http:
+        router = SearchRouter(
+            SearchClient(SEARXNG_ENDPOINT, None, http),
+            SearchClient(DEEPSEEK_ENDPOINT, "ds-key", http),
+            SearchClient(TAVILY_ENDPOINT, "tv-key", http),
+        )
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        with pytest.raises(TimeoutError):
+            await router.search("python")
+        assert loop.time() - start < 0.6
+    assert seen == ["192.0.2.10", "api.deepseek.com"]

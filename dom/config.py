@@ -385,7 +385,8 @@ def validate_config(home: Path, raw: dict) -> Config:
         models.setdefault("fallback", models.pop("chat_fallback"))
     if "search" in models and isinstance(models["search"], dict):
         search_raw = models["search"]
-        if search_raw.get("provider") in (None, "openrouter") and "base_url" not in search_raw:
+        # An OpenRouter search table (the only kind before v0.8.2) keeps taking omitted fields from the starter.
+        if search_raw.get("provider") in (None, "openrouter"):
             models["search"] = {**defaults["search"], **search_raw}
     desktop = raw.get("desktop", {})
     mode = desktop.get("mode")

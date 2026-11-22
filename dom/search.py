@@ -19,6 +19,8 @@ CONNECT_TIMEOUT_SECONDS = 3
 SEARCH_TIMEOUT_SECONDS = 8  # fast fail-over on the reply path for JSON search APIs
 OPENROUTER_TIMEOUT_SECONDS = 15  # OpenRouter web runs search plus LLM synthesis
 TIMEOUT_SECONDS = OPENROUTER_TIMEOUT_SECONDS
+CHAIN_DEADLINE_SECONDS = 20  # the whole provider chain, so a dead chain cannot hold a reply for each provider's timeout
+MIN_ATTEMPT_SECONDS = 1
 MAX_RESULT = 2000
 MAX_RESULTS = 5
 MAX_TITLE = 120
@@ -428,9 +430,15 @@ class SearchRouter:
         return (await self.search_with_meta(query, timeout=timeout)).text
 
     async def search_with_meta(self, query: str, *, timeout: float | None = None) -> SearchOutcome:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (CHAIN_DEADLINE_SECONDS if timeout is None else timeout)
         for index, provider in enumerate(self.providers):
+            remaining = deadline - loop.time()
+            if index and remaining < MIN_ATTEMPT_SECONDS:
+                raise TimeoutError("search chain deadline reached")
+            own = provider._timeout(None)[0]
             try:
-                outcome = await provider.search_with_meta(query, fallback=index > 0, timeout=timeout)
+                outcome = await provider.search_with_meta(query, fallback=index > 0, timeout=min(own, remaining))
             except (MissingProviderKey, TimeoutError, httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
                 if index + 1 == len(self.providers):
                     raise
@@ -466,5 +474,6 @@ def routed_search_client(
         )
         for endpoint in endpoints
     ]
-    router = SearchRouter(providers[0], *providers[1:])
-    return router if router.available else None
+    # A provider without its key is left out, so its MissingProviderKey never hides the real error of the one before.
+    providers = [provider for provider in providers if provider.available]
+    return SearchRouter(providers[0], *providers[1:]) if providers else None
