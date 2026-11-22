@@ -98,7 +98,7 @@ class Openers:
             actions = await dispatch._compose_turn(
                 owner, "owner_dm", None, None, window, until, 0, False, habits, extra_note=NOTE,
             )
-        if actions.no_response or not (actions.bubbles or actions.sticker in app.stickers.by_emoji or (actions.gif and app.gifs)):
+        if actions.no_response or not (actions.bubbles or actions.sticker in app.stickers.sendable() or (actions.gif and app.gifs)):
             return
 
         async with dispatch._dispatch_slot(owner, wait_media=False):

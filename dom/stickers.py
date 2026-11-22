@@ -11,6 +11,7 @@ from collections.abc import Callable, Coroutine
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, AsyncContextManager
 
 from aiogram import Bot
@@ -26,7 +27,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 MAX_SETS = 10
 MAX_STICKERS = 120
-MAX_EMOJI = 40
+MAX_EMOJI = 40  # emoji offered in the turn note
+MAX_DESCRIPTIONS_PER_PASS = 40  # media-model calls in one background pass; the rest wait for the next pass
 MAX_DESCRIPTION_CHARS = 80
 MAX_CONSECUTIVE_DESC_FAILURES = 3
 DESCRIPTIONS_FILE = "sticker_descriptions.json"
@@ -123,7 +125,7 @@ class Stickers:
         self._describer_retry_at: datetime | None = None
         self.by_emoji: dict[str, list[str]] = {}
         self._loaded: dict[str, list[StickerItem]] = {}
-        self._reps: dict[str, StickerItem] = {}  # first sticker per emoji, up to MAX_EMOJI
+        self._variants: dict[str, list[StickerItem]] = {}  # every loaded sticker under its emoji
         self._descriptions: dict[str, str] = {}  # key -> description, or "" for permanent skip
         self._descriptions_loaded = False
         self._describe_task: asyncio.Task | None = None
@@ -169,15 +171,12 @@ class Stickers:
             log.warning("could not write %s", DESCRIPTIONS_FILE)
 
     def _rebuild_index(self) -> None:
-        index: dict[str, list[str]] = {}
-        reps: dict[str, StickerItem] = {}
+        variants: dict[str, list[StickerItem]] = {}
         for items in self._loaded.values():
             for item in items:
-                index.setdefault(item.emoji, []).append(item.file_id)
-                if item.emoji not in reps and len(reps) < MAX_EMOJI:
-                    reps[item.emoji] = item
-        self.by_emoji = index
-        self._reps = reps
+                variants.setdefault(item.emoji, []).append(item)
+        self.by_emoji = {emoji: [item.file_id for item in items] for emoji, items in variants.items()}
+        self._variants = variants
 
     async def _fetch(self, name: str) -> list[StickerItem] | None:
         try:
@@ -206,7 +205,13 @@ class Stickers:
             if not self._descriptions_loaded:
                 self._load_descriptions()
 
-    def _pending_representatives(self) -> list[StickerItem]:
+    def _described_candidates(self) -> list[StickerItem]:
+        """The stickers of the emoji the turn note offers, each emoji's first sticker before any second one, so a
+        capped pass covers every emoji before it covers more variants of one."""
+        rows = list(self._variants.values())[:MAX_EMOJI]
+        return [item for rank in zip_longest(*rows) for item in rank if item is not None]
+
+    def _pending(self) -> list[StickerItem]:
         if not self._descriptions_loaded:
             self._load_descriptions()
         now = self._now()
@@ -214,7 +219,7 @@ class Stickers:
             return []
         seen: set[str] = set()
         pending: list[StickerItem] = []
-        for item in self._reps.values():
+        for item in self._described_candidates():
             if item.key in seen or item.key in self._descriptions:
                 continue
             seen.add(item.key)
@@ -224,11 +229,11 @@ class Stickers:
         return pending
 
     def schedule_descriptions(self) -> int:
-        """Start the single background description task if needed. Returns the pending representative count."""
+        """Start the single background description task if needed. Returns the count of stickers still to describe."""
         describer = self._describer() if self._describer is not None else None
         if describer is None:
             return 0
-        pending = self._pending_representatives()
+        pending = self._pending()
         if not pending:
             return 0
         if self._describe_task is None or self._describe_task.done():
@@ -237,14 +242,15 @@ class Stickers:
 
     async def _run_descriptions(self) -> None:
         consecutive_failures = 0
+        calls = 0
         dirty = False
         try:
-            while True:
+            while calls < MAX_DESCRIPTIONS_PER_PASS:
                 describer = self._describer() if self._describer is not None else None
                 if describer is None:
                     return
                 async with self._lock:
-                    pending = self._pending_representatives()
+                    pending = self._pending()
                     item = pending[0] if pending else None
                 if item is None:
                     return
@@ -258,6 +264,7 @@ class Stickers:
                         dirty = False
                     continue
 
+                calls += 1
                 permanent_skip = False
                 spend_capped = False
                 raw: str | None = None
@@ -324,7 +331,7 @@ class Stickers:
             log.exception("could not refresh stickers")
 
     async def refresh_descriptions(self) -> int:
-        """Clear cached descriptions for active representatives and schedule a background refresh."""
+        """Clear cached descriptions of the stickers the turn note offers and schedule a background refresh."""
         async with self._lock:
             names = self._names()
         await self._refresh(names)
@@ -332,7 +339,7 @@ class Stickers:
             if not self._descriptions_loaded:
                 self._load_descriptions()
             removed = False
-            for item in self._reps.values():
+            for item in self._described_candidates():
                 if self._descriptions.pop(item.key, None) is not None:
                     removed = True
                 self._desc_retry_at.pop(item.key, None)
@@ -383,30 +390,43 @@ class Stickers:
             return f"Removed sticker set {name}"
 
     def sendable(self) -> dict[str, list[str]]:
-        """Sticker choices by emoji: the described representative when cached, else all loaded variants."""
+        """Sticker choices: every loaded sticker of an emoji under the emoji itself, and each described one of an emoji
+        with several stickers also alone under the emoji plus its number (📚2), which is how Dom picks the one whose
+        description he read."""
         if not self._descriptions_loaded:
             self._load_descriptions()
         result: dict[str, list[str]] = {}
-        for emoji, file_ids in self.by_emoji.items():
-            rep = self._reps.get(emoji)
-            if rep is not None and self._descriptions.get(rep.key):
-                result[emoji] = [rep.file_id]
-            else:
-                result[emoji] = file_ids
+        for emoji, items in self._variants.items():
+            result[emoji] = [item.file_id for item in items]
+            if len(items) > 1:
+                for number, item in enumerate(items, 1):
+                    if self._descriptions.get(item.key):
+                        result[f"{emoji}{number}"] = [item.file_id]
         return result
 
     def turn_note(self) -> str:
         if not self._descriptions_loaded:
             self._load_descriptions()
-        emojis = list(self.by_emoji)[:MAX_EMOJI]
+        emojis = list(self._variants)[:MAX_EMOJI]
         if not emojis:
             return ""
-        descs = {
-            emoji: desc
-            for emoji in emojis
-            if (rep := self._reps.get(emoji)) is not None and (desc := self._descriptions.get(rep.key))
-        }
-        if not descs:
-            return f'Optional action "sticker": choose one of these emoji to send after the bubbles: {", ".join(emojis)}'
-        items = [f"{emoji} ({descs[emoji]})" if emoji in descs else emoji for emoji in emojis]
-        return f'Optional action "sticker": choose one of these emoji to send after the bubbles: {"; ".join(items)}'
+        offered, described_any, numbered = [], False, False
+        for emoji in emojis:
+            items = self._variants[emoji]
+            described = [(n, desc) for n, item in enumerate(items, 1) if (desc := self._descriptions.get(item.key))]
+            if not described:
+                offered.append(emoji)
+                continue
+            described_any = True
+            if len(items) == 1:
+                offered.append(f"{emoji} ({described[0][1]})")
+            else:
+                numbered = True
+                offered.append(f"{emoji} ({'; '.join(f'{emoji}{n} {desc}' for n, desc in described)})")
+        note = (
+            'Optional action "sticker": choose one of these emoji to send after the bubbles: '
+            + ("; " if described_any else ", ").join(offered)
+        )
+        if numbered:
+            note += ". Write the emoji alone for any of its stickers, or an emoji with its number to send that exact one"
+        return note

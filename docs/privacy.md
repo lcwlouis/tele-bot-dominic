@@ -62,7 +62,9 @@ Cloudflare. Keep local bearer-token testing on loopback.
   before sending it to the drafting endpoint, or to the chat route if no
   drafting provider can answer.
 - **Media provider** receives supported attachments for transcription or
-  description, and screenshots when the desktop worker requests a description.
+  description, screenshots when the desktop worker requests a description, and
+  the sticker images from the sticker sets you list, to write the short previews
+  Dom reads when choosing a sticker.
 - **Web search** submits the query to `models.search.base_url` (OpenRouter by
   default). A query drafted in the owner DM can contain private context.
   Remove `[models.search]` to disable this tool.

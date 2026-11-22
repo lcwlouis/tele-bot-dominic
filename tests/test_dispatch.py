@@ -8,6 +8,7 @@ from aiogram.types import PhotoSize
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
 from aiogram.methods import SendMessage
 
+from dom import turn_log
 from dom.actions import Actions
 from dom.config import PresenceConfig
 from dom.dispatch import NO_ANSWER_NOTICE, Dispatcher
@@ -420,6 +421,9 @@ async def test_sender_done_can_skip_the_debounce(setup_dispatch, gated_sleep, co
     trace = json.loads(row["trace"])
     assert f"Jev done=yes confidence={confidence}" in trace
     assert row["first_bubble_ms"] == (0 if confidence >= 0.70 else 4000)
+    timings = {item.partition("@")[0] for item in trace if "@" in item}
+    # Waiting on Jev's verdict is triage time; only a debounce that really ran out is debounce time.
+    assert ("triage" in timings, "debounce" in timings) == (confidence >= 0.70, confidence < 0.70)
 
 
 async def test_incomplete_burst_uses_original_15_second_cap_even_with_jev_in_flight(setup_dispatch, gated_sleep):
@@ -518,6 +522,33 @@ async def test_new_message_cancels_generation_before_any_bubble(setup_dispatch, 
     assert "Restarted before sending" in json.loads(row["trace"])
     assert (await app.store.get_unread(GROUP))[0] == 0
     assert [m.reply_to_msg_id for m in await app.store.get_recent_chat_window(GROUP) if m.role == "assistant"] == [2]
+
+
+async def test_restarted_reply_keeps_the_earlier_attempts_stage_times(setup_dispatch, monkeypatch):
+    app, dispatch, _ = await setup_dispatch(FakeJev(done=1))
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    entered = asyncio.Event()
+    complete = app.client.complete
+
+    async def generate(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            with turn_log.model_call("slow-model", "chat", [{"role": "user", "content": "x"}], []):
+                await asyncio.Future()
+        return await complete(*args, **kwargs)
+
+    monkeypatch.setattr(app.client, "complete", generate)
+    await handle_message(app, tg(text="first thought"))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await handle_message(app, tg(msg_id=2, text="and a detail"))
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    [row] = await app.store.recent_turns()
+    trace = json.loads(row["trace"])
+    models = [call for call in json.loads(row["model_calls"]) if call["kind"] == "chat"]
+    # One model stage per model call, so the stage bar and the call list agree.
+    assert models[0]["model"] == "slow-model"
+    assert len([item for item in trace if item.startswith("model@")]) == len(models) >= 1
 
 
 async def test_incoming_during_typing_pause_replaces_unsent_reply(setup_dispatch, monkeypatch):

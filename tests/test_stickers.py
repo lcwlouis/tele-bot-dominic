@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from dom.actions import Actions, Bubble
 from dom.media import MAX_BYTES, MediaDescriber, STICKER_PREVIEW_PROMPT
-from dom.stickers import DESCRIPTIONS_FILE, MAX_EMOJI, PERMANENT_SKIP, Stickers
+from dom.stickers import DESCRIPTIONS_FILE, MAX_DESCRIPTIONS_PER_PASS, MAX_EMOJI, PERMANENT_SKIP, Stickers
 from dom.telegram import executor, handlers
 from test_owner_events import events
 from test_traits import put
@@ -311,9 +311,9 @@ async def test_two_turns_complete_immediately_during_cold_background_pass(make_a
     assert "📚 (Bookish cat)" in app.stickers.turn_note()
 
 
-async def test_big_set_caps_descriptions_at_max_emoji_representatives(make_app):
+async def test_big_set_caps_a_pass_and_describes_every_emoji_before_second_variants(make_app):
     app = make_app()
-    # 55 unique emoji, 2 stickers per emoji (110 stickers total).
+    # 55 unique emoji, 2 stickers per emoji (110 stickers total); only the first MAX_EMOJI emoji are offered.
     emoji = [chr(0x1F680 + i) for i in range(55)]
     items = [(e, f"file-{idx}-first") for idx, e in enumerate(emoji)] + [
         (e, f"file-{idx}-second") for idx, e in enumerate(emoji)
@@ -325,27 +325,36 @@ async def test_big_set_caps_descriptions_at_max_emoji_representatives(make_app):
     await app.stickers.change("add", SET)
     await drain_dispatch(app.dispatch)
 
-    assert len(downloads) == MAX_EMOJI == 40
-    assert len(calls) == MAX_EMOJI
+    assert len(downloads) == len(calls) == MAX_DESCRIPTIONS_PER_PASS == MAX_EMOJI
     assert all(fid.endswith("-first") for fid in downloads)
 
+    await app.stickers.refresh()  # the next pass describes the rest of the offered stickers
+    await drain_dispatch(app.dispatch)
+    assert len(downloads) == 2 * MAX_EMOJI and len(set(downloads)) == len(downloads)
+    assert not any(fid.startswith(f"file-{MAX_EMOJI}-") for fid in downloads)
 
-async def test_executor_sends_described_representative_matching_description(make_app):
-    app = make_app(contents=tuple('{"bubbles":[{"text":"Hi"}],"sticker":"📚"}' for _ in range(5)))
-    sticker_bot(app, {SET: [("📚", "file-rep"), ("📚", "file-alt-1"), ("📚", "file-alt-2")]})
-    describer, downloads, _ = make_describer({"file-rep": "Cat reading a big book, cozy"})
+
+async def test_every_variant_stays_sendable_and_each_one_is_described(make_app):
+    app = make_app(contents=tuple('{"bubbles":[{"text":"Hi"}],"sticker":"📚2"}' for _ in range(3)))
+    sticker_bot(app, {SET: [("📚", "file-rep"), ("📚", "file-alt-1"), ("📚", "file-alt-2"), ("🍵", "file-tea")]})
+    describer, downloads, _ = make_describer({
+        "file-rep": "Cat reading a big book, cozy", "file-alt-1": "Owl on a book stack", "file-alt-2": "Sleepy cat",
+    })
     app.media_describer = describer
 
     await app.stickers.change("add", SET)
     await drain_dispatch(app.dispatch)
-    assert downloads == ["file-rep"]
-    assert app.stickers.sendable()["📚"] == ["file-rep"]
+    assert sorted(downloads) == ["file-alt-1", "file-alt-2", "file-rep", "file-tea"]
+    sendable = app.stickers.sendable()
+    assert sendable["📚"] == ["file-rep", "file-alt-1", "file-alt-2"]  # none of them is lost once one is described
+    assert (sendable["📚1"], sendable["📚2"], sendable["📚3"]) == (["file-rep"], ["file-alt-1"], ["file-alt-2"])
+    note = app.stickers.turn_note()
+    assert "📚 (📚1 Cat reading a big book, cozy; 📚2 Owl on a book stack; 📚3 Sleepy cat)" in note
+    assert "🍵 (" in note and "with its number" in note
 
     await online(app)
-    for msg_id in range(1, 6):
-        await deliver(app, tg(msg_id=msg_id, text=f"msg {msg_id}"))
-    sent = [call[2] for call in app.bot.of("sticker")]
-    assert sent == ["file-rep"] * 5
+    await deliver(app, tg(msg_id=1, text="msg 1"))  # Dom picks the described variant he wants
+    assert [call[2] for call in app.bot.of("sticker")] == ["file-alt-1"]
 
 
 async def test_animated_video_and_oversize_stickers_and_permanent_skip_cache(make_app):
