@@ -25,9 +25,9 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dom.config import MODEL_ROLES, Config, ModelRole, ProviderEndpoint, _replace_file, validate_config
-from dom.llm import ChatClient, FallbackClient, MissingProviderKey, openrouter_host
+from dom.llm import ChatClient, FallbackClient, MissingProviderKey
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
-from dom.usage import ModelCallSkipped, model_request, on_own_network
+from dom.usage import ModelCallSkipped, model_request, on_own_network, provider_address, unroutable_address
 from dom.web.pages import _bounded_stream, owner_app, panel
 
 if TYPE_CHECKING:
@@ -37,6 +37,9 @@ router = APIRouter()
 API_PATH = "/api/models"
 JSON_POSTS = {API_PATH, API_PATH + "/test"}
 MAX_BODY = 32 * 1024
+MAX_FALLBACKS = 5
+URL_RULE = ("Use an HTTPS API base URL without credentials, a query or a fragment. "
+            "HTTP is accepted only for localhost, a private address or a local network name.")
 TEST_TIMEOUT = 8
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 REVISION = r"^[a-f0-9]{64}$"
@@ -49,7 +52,7 @@ def _looks_like_secret(value: str) -> bool:
 
 def _validate_url(value: str) -> str:
     if not value or any(char.isspace() or ord(char) < 32 or char in "\\?#" for char in value):
-        raise ValueError("Use an HTTP(S) API base URL without credentials, a query or a fragment.")
+        raise ValueError(URL_RULE)
     try:
         parts = urlsplit(value)
         port = parts.port
@@ -58,12 +61,13 @@ def _validate_url(value: str) -> str:
             parts.scheme in ("http", "https") and parts.hostname and parsed.host
             and parts.username is None and "%" not in parts.netloc and not parts.netloc.endswith(":")
             and (port is None or port > 0) and not _looks_like_secret(value)
-            and (parts.scheme == "https" or not openrouter_host(parsed.host))
+            and not unroutable_address(parsed.host)
+            and (parts.scheme == "https" or on_own_network(parsed.host))
         ):
             return value
     except (ValueError, httpx.InvalidURL):
         pass
-    raise ValueError("Use an HTTP(S) API base URL without credentials, a query or a fragment.")
+    raise ValueError(URL_RULE)
 
 
 class ProviderInput(ProviderEndpoint):
@@ -94,13 +98,51 @@ class ModelUpdate(BaseModel):
     revision: str = Field(pattern=REVISION)
     role: ModelRole
     primary: ProviderInput | None
-    fallbacks: list[ProviderInput]
+    fallbacks: list[ProviderInput] = Field(max_length=MAX_FALLBACKS)
 
     @model_validator(mode="after")
     def _primary_required(self) -> ModelUpdate:
         if self.primary is None and (self.role != "fallback" or self.fallbacks):
             raise ValueError("Only the fallback role may be left empty.")
         return self
+
+
+class KeyPairing(ValueError):
+    """A key variable would be sent to a host it was never paired with."""
+
+
+def _address(url: str) -> str | None:
+    try:
+        return provider_address(httpx.URL(url))
+    except httpx.InvalidURL:
+        return None
+
+
+def _check_keys(disk: Config, providers: list[ProviderEndpoint]) -> None:
+    """A key variable may go only to the host config.toml already pairs it with. A new name may be used for one
+    host, unless it names an instance credential (the bot token, Jev's key, a desktop key...) or another host's key.
+    Pairing an existing key with a new host stays a hand edit of config.toml."""
+    paired: dict[str, set[str | None]] = {}
+    for _, endpoint in disk.model_endpoints():
+        if endpoint.api_key_env:
+            paired.setdefault(endpoint.api_key_env, set()).add(_address(endpoint.base_url))
+    instance = disk.model_copy(update={"models": {}}).secret_names()
+    claimed: dict[str, set[str | None]] = {}
+    for provider in providers:
+        name, address = provider.api_key_env, _address(provider.base_url)
+        if not name or address in paired.get(name, ()):
+            continue
+        if name in paired:
+            raise KeyPairing(
+                "That key variable is already used for a different host. To pair an existing key with a new host, "
+                "edit config.toml by hand.")
+        if name in instance:
+            raise KeyPairing(
+                "That key variable holds another credential and cannot be used for a provider here. "
+                "To use it anyway, edit config.toml by hand.")
+        if len(claimed.setdefault(name, set()) | {address}) > 1:
+            raise KeyPairing("A new key variable can be used for one host only.")
+        claimed[name].add(address)
 
 
 class ProviderView(ProviderEndpoint):
@@ -167,6 +209,10 @@ def _check_revision(current: Snapshot, revision: str) -> None:
 
 def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     _check_revision(current, update.revision)
+    try:
+        _check_keys(current.config, [*([update.primary] if update.primary else []), *update.fallbacks])
+    except KeyPairing as exc:
+        raise HTTPException(422, str(exc)) from None
     home = current.config.home
     path = home / "config.toml"
     document = tomlkit.parse(current.text)
@@ -190,6 +236,8 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     if text != current.text:
         if path.read_bytes() != current.text.encode("utf-8"):
             raise HTTPException(409, "Configuration changed. Reload model settings and try again.")
+        if not (home / "config.toml.orig").exists():  # the file as it was before the first save from here
+            _replace_file(home / "config.toml.orig", current.text, mode=0o600)
         _replace_file(home / "config.toml.bak", current.text, mode=0o600)
         _replace_file(path, text)
     return saved
@@ -313,6 +361,7 @@ async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: Pr
             base_url=provider.base_url, model=provider.model, api_key_env=provider.api_key_env or None,
             reasoning_effort=provider.reasoning_effort,
         )
+        _check_keys(config, [provider])
         key = config.secret(provider.api_key_env) if provider.api_key_env else None
         client = ChatClient(provider, key, http, usage=app.dispatch.usage)
         async with asyncio.timeout(TEST_TIMEOUT):
@@ -328,6 +377,8 @@ async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: Pr
             reply = reply.replace(key, "[redacted]")
         for pattern in CREDENTIAL_PATTERNS:
             reply = pattern.sub("[redacted]", reply)
+    except KeyPairing as exc:
+        error = str(exc)
     except ValidationError:
         error = "Fix this provider's URL, model or key variable in settings."
     except ModelCallSkipped:

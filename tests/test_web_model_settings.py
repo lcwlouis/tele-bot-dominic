@@ -245,3 +245,102 @@ async def test_provider_timeout_does_not_hold_config_for_another_request(dashboa
             unblock.set()
         result = (await request).json()
         assert result["error"] == "Provider test timed out."
+
+
+COLLECTOR = {"base_url": "https://collector.example.test/v1", "model": "m"}
+
+
+async def _save(client, role, primary, fallbacks=()):
+    revision = (await client.get(API)).json()["revision"]
+    return await client.post(API, headers=ORIGIN_HEADER, json={
+        "revision": revision, "role": role, "primary": primary, "fallbacks": list(fallbacks),
+    })
+
+
+@pytest.mark.parametrize("name", ["TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY"])
+async def test_instance_secret_is_never_paired_with_a_new_host(dashboard, monkeypatch, name):
+    app, path, browser = dashboard
+    monkeypatch.setenv(name, "bot-token-value")
+    hosts = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        result = await _save(client, "media", dict(COLLECTOR, api_key_env=name))
+        assert result.status_code == 422 and "edit config.toml by hand" in result.text
+        assert "bot-token-value" not in result.text
+        assert path.read_text() == START
+        revision = (await client.get(API)).json()["revision"]
+        # nothing was saved, so there is no slot to test either
+        test = {"revision": revision, "role": "media", "index": 1}
+        assert (await client.post(API + "/test", headers=ORIGIN_HEADER, json=test)).status_code == 404
+    assert hosts == []  # no request reached the collector
+
+
+async def test_existing_key_moves_to_a_new_host_only_by_hand(dashboard):
+    _, path, browser = dashboard
+    async with browser() as client:
+        moved = dict(COLLECTOR, api_key_env="BACKUP_KEY")  # paired with fallback.example.test
+        result = await _save(client, "media", moved)
+        assert result.status_code == 422 and "edit config.toml by hand" in result.text
+        assert path.read_text() == START
+        # the same key on the host it is already paired with is accepted
+        again = await _save(client, "media", dict(BACKUP, model="other"))
+        assert again.status_code == 200
+        # one new key name for two hosts in one request is not
+        two = await _save(client, "drafting", dict(COLLECTOR, api_key_env="NEW_KEY"),
+                          [dict(PRIMARY, api_key_env="NEW_KEY")])
+        assert two.status_code == 422
+        # a new name for one host is fine
+        assert (await _save(client, "drafting", dict(COLLECTOR, api_key_env="NEW_KEY"))).status_code == 200
+
+
+@pytest.mark.parametrize("base_url", [
+    "http://collector.example.test/v1", "http://169." "254.169.254/v1", "https://169." "254.169.254/v1",
+    "http://0.0.0.0:8000/v1", "https://224.0.0.1/v1", "http://[fe" "80::1]/v1", "http://[::ffff:169." "254.169.254]/v1",
+    "http://8.8.8.8/v1", "http://openrouter.ai/api/v1",
+])
+async def test_base_url_must_be_https_or_local_and_never_link_local(dashboard, base_url):
+    _, path, browser = dashboard
+    async with browser() as client:
+        result = await _save(client, "chat", dict(PRIMARY, base_url=base_url))
+    assert result.status_code == 422 and path.read_text() == START
+
+
+@pytest.mark.parametrize(("base_url", "kind"), [
+    ("http://localhost:8000/v1", "local"), ("http://127.0.0.1:8000/v1", "local"), ("http://10." "1.2.3:8000/v1", "local"),
+    ("http://vllm:8000/v1", "local"), ("http://box." "lan/v1", "local"), ("http://box." "local/v1", "local"),
+    ("http://gpu." "internal/v1", "local"), ("http://gpu." "home.arpa/v1", "local"), ("http://[::1]:8000/v1", "local"),
+    ("https://llm.example.test/v1", "cloud"),
+])
+async def test_local_hosts_may_use_http_and_are_marked_local(dashboard, base_url, kind):
+    _, _, browser = dashboard
+    async with browser() as client:
+        result = await _save(client, "chat", dict(PRIMARY, base_url=base_url))
+    assert result.status_code == 200, result.text
+    assert result.json()["roles"]["chat"]["primary"]["kind"] == kind
+
+
+async def test_chain_is_capped_and_first_config_is_kept(dashboard):
+    _, path, browser = dashboard
+    extra = [dict(PRIMARY, model=f"m{n}") for n in range(6)]
+    async with browser() as client:
+        assert (await _save(client, "chat", PRIMARY, extra)).status_code == 422
+        assert (await _save(client, "chat", PRIMARY, extra[:5])).status_code == 200
+        first = path.with_name("config.toml.orig")
+        assert first.read_text() == START
+        assert (await _save(client, "chat", dict(PRIMARY, model="again"))).status_code == 200
+    assert first.read_text() == START  # the original is not overwritten
+    assert "m4" in path.with_name("config.toml.bak").read_text()
+
+
+def test_fallbacks_are_rejected_on_triage_and_search(tmp_path):
+    from dom.config import validate_config
+
+    extra = {"base_url": "https://llm.example.test/v1", "model": "m", "fallbacks": [PRIMARY]}
+    for name in ("triage", "search"):
+        with pytest.raises(ValueError, match="cannot have fallbacks"):
+            validate_config(tmp_path, {"models": {"chat": PRIMARY, name: extra}})

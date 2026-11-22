@@ -26,12 +26,25 @@ Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "gua
 log = logging.getLogger("dom.usage")
 
 
-def on_own_network(host: str) -> bool:
+def unroutable_address(host: str) -> bool:
+    """An IP literal that is never a provider: link-local (169.254.x, cloud metadata), unspecified or multicast."""
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        return host == "localhost" or host.endswith((".local", ".lan", ".home.arpa"))
-    return address.is_private or address.is_loopback
+        return False
+    address = getattr(address, "ipv4_mapped", None) or address
+    return address.is_link_local or address.is_unspecified or address.is_multicast
+
+
+def on_own_network(host: str) -> bool:
+    """Loopback, a private address, or a clearly local name (single-label, .local, .lan, .internal, .home.arpa)."""
+    host = host.rstrip(".").lower()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return "." not in host or host.endswith((".local", ".lan", ".internal", ".home.arpa"))
+    address = getattr(address, "ipv4_mapped", None) or address
+    return (address.is_private or address.is_loopback) and not unroutable_address(host)
 
 
 def provider_address(url: httpx.URL) -> str:

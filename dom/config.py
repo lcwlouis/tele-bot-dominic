@@ -278,6 +278,13 @@ class Config(BaseModel):
             raise ValueError("window_keep_tokens must be below window_budget_tokens")
         return self
 
+    @model_validator(mode="after")
+    def _fallbacks_only_on_roles(self) -> Config:
+        for name, endpoint in self.models.items():
+            if endpoint.fallbacks and name not in MODEL_ROLES:
+                raise ValueError(f"models.{name} cannot have fallbacks; only chat, fallback, media and drafting can")
+        return self
+
     def providers(self, role: ModelRole) -> tuple[ProviderEndpoint, ...]:
         primary = self.models.get(role)
         return (primary, *primary.fallbacks) if primary is not None else ()
