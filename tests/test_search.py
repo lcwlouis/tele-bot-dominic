@@ -142,3 +142,24 @@ async def test_search_requires_config_and_key(tmp_path, monkeypatch):
         client = search_client(load_config(tmp_path), http)
         assert client.endpoint.model == "deepseek/deepseek-v4.1-flash-1017"
         assert set(search_tool(client).scopes) == {"group", "owner_dm", "friend_dm"}
+
+
+@pytest.mark.parametrize(("base_url", "zdr"), [
+    ("https://openrouter.ai/api/v1", True),
+    ("https://api.openrouter.ai/v1", True),
+    ("https://search.example.org/v1", False),
+])
+async def test_search_sends_zdr_routing_only_for_openrouter(base_url, zdr):
+    from dom.search import SearchClient
+
+    seen = []
+
+    def respond(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=REPLY)
+
+    endpoint = ModelEndpoint(base_url=base_url, model="search-model")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        await SearchClient(endpoint, "fake", http).search("hello")
+    body, = seen
+    assert (body.get("provider") == {"zdr": True}) is zdr

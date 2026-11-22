@@ -125,7 +125,10 @@ class Proposals:
     def __init__(self, app: App):
         self.app = app
 
-    async def create(self, kind: str, title: str, body: dict, source: str, *, notify: bool = True) -> int:
+    async def create(
+        self, kind: str, title: str, body: dict, source: str, *, notify: bool = True, draft: bool = True,
+    ) -> int:
+        """`draft=False` proposes a skill as written, without the drafting model's pass."""
         from_brief = kind in ("plugin", "skill") and "brief" in body
         if from_brief:
             name, brief = body.get("name"), body.get("brief")
@@ -146,11 +149,11 @@ class Proposals:
         elif kind == "skill":
             skill = Skill(body.get("name"), body.get("description"), body.get("body"))
             check_local_private_text(self.app.config, self.app.home, [skill.name, skill.description, skill.body])
-            if self.app.draft_client is not None and not from_brief:
-                draft = await self._write_draft("skill", {
+            if draft and self.app.draft_client is not None and not from_brief:
+                drafted = await self._write_draft("skill", {
                     "name": skill.name, "description": skill.description, "body": skill.body,
                 })
-                skill = Skill(draft.get("name"), draft.get("description"), draft.get("body"))
+                skill = Skill(drafted.get("name"), drafted.get("description"), drafted.get("body"))
                 check_local_private_text(self.app.config, self.app.home, [skill.name, skill.description, skill.body])
             body = {
                 "name": skill.name, "description": skill.description, "body": skill.body,

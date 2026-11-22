@@ -554,3 +554,95 @@ async def test_the_log_in_card_drops_its_done_button_once_the_task_moves_on(make
     assert [[(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard] == [[("✅ Resumed", "noop")]]
     await app.dispatch.settle_handoff_card(7, "Task ended")  # settled once only
     assert len(app.bot.of("markup")) == 1
+
+
+async def test_publish_skill_records_desktop_usage_and_respects_caps(make_app):
+    from dom.config import ModelEndpoint
+
+    app = make_app()
+    app.config = app.config.model_copy(update={"daily_spend_cap_usd": 0})
+    draft_requests = []
+
+    def draft_handler(request):
+        draft_requests.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps({
+                "name": "drafted-skill", "description": "Drafted", "body": "Step 1.",
+            })}}],
+            "usage": {"cost": 0.05},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(draft_handler)) as http:
+        app.draft_client = ChatClient(
+            ModelEndpoint(base_url="https://draft.example.test/v1", model="draft-m"), None, http,
+            usage=app.dispatch.usage,
+        )
+        worker = await worker_for(
+            app,
+            call("propose_skill", name="drafted-skill", description="Drafted", body="Step 1."),
+            call("finish", result="Done"),
+            {"content": '{"bubbles":[{"text":"done"}]}'},
+        )
+        await worker.enqueue(OWNER, "Do the thing")
+        await wait_task(worker)
+
+    assert len(draft_requests) == 1
+    rows = await app.store._run(lambda: app.store._conn.execute("SELECT kind, chat_id, model FROM usage").fetchall())
+    assert [tuple(r) for r in rows] == [("desktop", OWNER, "draft-m")]
+    assert len(await app.proposals.pending()) == 1
+
+
+async def test_publish_skill_under_a_spend_cap_skips_only_the_drafting_pass(make_app):
+    from dom.config import ModelEndpoint
+    from dom.skills import Skill
+
+    app = make_app()
+    draft_requests = []
+
+    def draft_handler(request):
+        draft_requests.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(draft_handler)) as http:
+        app.draft_client = ChatClient(
+            ModelEndpoint(base_url="https://draft.example.test/v1", model="draft-m"), None, http,
+            usage=app.dispatch.usage,
+        )
+        worker = await worker_for(app)
+        row = {"id": 1, "chat_id": OWNER, "started_at": "2026-01-01T00:00:00+00:00", "created_at": "2026-01-01T00:00:00+00:00"}
+        await app.dispatch.usage.record("chat", "m", "example.org", {"cost": 1.5})
+        await worker._publish_skill(row, Skill("skipped-skill", "Desc", "Body"))
+
+    assert draft_requests == []  # no drafting call past the cap ...
+    [proposal] = await app.proposals.pending()  # ... but the owner still gets the skill as the desktop wrote it
+    assert proposal["title"] == "Skill: skipped-skill"
+
+
+async def test_sandbox_alert_retries_telegram_flood_with_app_sleep(make_app, monkeypatch):
+    from aiogram.exceptions import TelegramRetryAfter
+
+    app = make_app()
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    app.sleep = fake_sleep
+    sandbox = Sandbox()
+    sandbox.alert = None
+    DesktopWorker(app, sandbox)
+
+    attempts = 0
+    original_send = app.bot.send_message
+
+    async def flood_once(chat_id, text, **kw):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TelegramRetryAfter(method=None, message="flood", retry_after=3)
+        return await original_send(chat_id, text, **kw)
+
+    monkeypatch.setattr(app.bot, "send_message", flood_once)
+    await sandbox.alert("The LAN is reachable")
+    assert slept == [3.0] and attempts == 2
+    assert app.bot.of("send", OWNER)[-1][2] == "The LAN is reachable"
