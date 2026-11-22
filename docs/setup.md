@@ -34,10 +34,11 @@ Save the claim code printed by `init`. Edit `.env` and set
 Edit `config.toml` to set your IANA timezone and `SOUL.md` to describe your
 bot's voice and character.
 
-The starter configuration uses OpenRouter for chat, media, Jev triage and web
-search. You can point chat at a self-hosted OpenAI-compatible server that
-supports tool calling. For example, replace the `[models.chat]` table with
-the following and set `MODEL_API_KEY` in `.env` if the server requires it.
+The starter configuration uses OpenRouter for chat, media, `[models.drafting]`,
+Jev triage and web search. You can point chat at a self-hosted OpenAI-compatible
+server that supports tool calling. For example, replace the `[models.chat]`
+table with the following and set `MODEL_API_KEY` in `.env` if the server
+requires it.
 
 ```toml
 [models.chat]
@@ -46,10 +47,11 @@ model = "your-model-id"
 api_key_env = "MODEL_API_KEY"
 ```
 
-Omit `api_key_env` for a server without authentication. The media, triage and
-search endpoints keep their own settings and credentials. To disable web search,
-remove `[models.search]`. See the [configuration reference](configuration.md)
-for the optional chat fallback and all defaults.
+Omit `api_key_env` for a server without authentication. The media,
+`[models.drafting]`, triage and search endpoints keep their own settings and
+credentials. To disable web search, remove `[models.search]`. See the
+[configuration reference](configuration.md) for per-role fallback chains
+(`[[models.<role>.fallbacks]]` and `[models.fallback]`) and all defaults.
 
 ## Optional: GIFs
 
@@ -126,25 +128,30 @@ tunnel ingress and a loopback-only bearer token for local testing.
 The dashboard's Settings page edits the chat, fallback, media and drafting
 routes: a primary provider and an ordered fallback chain per role, each a local
 (OpenAI-compatible) or cloud endpoint. Test sends one short real call to a saved
-provider. Saving writes `config.toml` atomically, keeps `config.toml.bak` and
+provider. Saving tests each changed or added provider slot first, refuses the
+save if any fails, writes `config.toml` atomically, keeps `config.toml.bak` and
 applies to new calls without a restart. Keys stay in `.env`; the page shows only
 whether each key variable is set. The same JSON is at `GET/POST /api/models`
 and `POST /api/models/test`, owner only.
 
 The page keeps secrets from leaving: a key variable can be used only for the
-host `config.toml` already pairs it with (same scheme, host and port), or as a
+host `config.toml` already pairs it with (same scheme, host and port — including
+Jev/triage's key on its paired host such as `https://openrouter.ai`), or as a
 new name for one host. A new name must not already hold a value and must not be
-the bot token, Jev's key or another instance credential, so add a new key's
-value to `.env` after saving. Pairing an existing key with a new host is a hand
-edit of `config.toml`. Base URLs must be HTTPS,
-except for `localhost`, private addresses and local names (single-label,
-`.local`, `.lan`, `.internal`, `.home.arpa`); link-local addresses are always
-refused. A chain holds at most five fallbacks. Each save keeps the previous file
-as `config.toml.bak`, and the first one as `config.toml.orig`. Before sending
-conversation data to a new cloud model, check it against your zero-data-retention
-policy; Dom does not check this for you. Calls to local hosts that report no
-cost count as free against the desktop task cap, so don't route a paid provider
-through a local name.
+the bot token, a desktop key, `KLIPY_API_KEY`, or an unpaired `JEV_API_KEY`, so
+add a new key's value to `.env` after saving. Such a slot is saved untested (it cannot be called without
+its key); press Test once the key is in. Every other change is test-called before it is saved, and a failing
+slot is not saved. A local endpoint is never held back by the daily spend cap. Pairing an existing key with a new
+host is a hand edit of `config.toml`. Base URLs must be HTTPS, except for
+`localhost`, private addresses and local names (single-label, `.local`, `.lan`,
+`.internal`, `.home.arpa`); link-local addresses are always refused. A chain
+holds at most five fallbacks. Each save keeps the previous file as
+`config.toml.bak`, and the first one as `config.toml.orig`. For OpenRouter, Dom
+requests zero-data-retention (ZDR) routing automatically and Settings runs a real
+test call before saving (refusing models with no ZDR endpoint); for
+non-OpenRouter cloud providers, checking your zero-data-retention policy remains
+your responsibility. Calls to local hosts that report no cost count as free
+against the desktop task cap, so don't route a paid provider through a local name.
 
 ## Optional desktop
 

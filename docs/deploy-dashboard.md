@@ -93,5 +93,8 @@ random value of at least 32 characters under `DOM_DASHBOARD_TOKEN` in the
 environment or `DOM_HOME/.env`. Dom refuses to start if the token is shorter,
 if `bind` is not a loopback address, or if `access_team` or `access_aud` is
 also set. Each local request supplies that value as an
-`Authorization: Bearer <token>` header. POST requests also need
-`HX-Request: true` and the same-origin `Origin` or `Referer` header.
+`Authorization: Bearer <token>` header. Form POST requests also need
+`HX-Request: true` and the same-origin `Origin` or `Referer` header; the JSON
+model-settings API (`POST /api/models` and `POST /api/models/test`) instead
+requires `Content-Type: application/json` and a same-origin `Origin` header (no
+`HX-Request` needed, and `Referer` alone is rejected).

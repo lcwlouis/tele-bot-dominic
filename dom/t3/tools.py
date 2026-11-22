@@ -17,6 +17,7 @@ from dom.desktop.tools import untrusted
 from dom.t3.auth import TOKEN_FILE, command, connect_home
 from dom.t3.client import T3Client, T3Uncertain, T3Unavailable, read_token
 from dom.t3.service import BASE_DIR
+from dom.telegram.executor import FloodBudget, retry_telegram
 from dom.tools import Tool
 
 REACHABLE = "reachable"
@@ -100,7 +101,10 @@ class Bridge:
 
     async def notify(self, message):
         await self.app.store.record_owner_event(message)
-        await self.app.bot.send_message(self.app.owner_id, message)
+        await retry_telegram(
+            lambda: self.app.bot.send_message(self.app.owner_id, message),
+            sleep=self.app.sleep,
+        )
 
     async def machines(self, **audit):
         rows = await self.execute("environment list", lambda _: self.gateway().environments(), **audit)
@@ -191,14 +195,20 @@ class Bridge:
         self.pending = {key: item for key, item in self.pending.items() if item.until > now}
         audit_id = await self.audit("coding_send", display(machine["label"]), display(thread["title"]), text, "staged")
         self.pending[token] = Pending(audit_id, now + 600, machine, thread, text)
+        body = f'Send to {display(thread["title"])} on {display(machine["label"])}?\n\n{text}'
+        markup = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Send", callback_data=f"t3send:{token}"),
+            InlineKeyboardButton(text="Cancel", callback_data=f"t3cancel:{token}"),
+        ]])
         try:
-            await self.app.bot.send_message(
-                self.app.owner_id, f'Send to {display(thread["title"])} on {display(machine["label"])}?\n\n{text}',
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="Send", callback_data=f"t3send:{token}"),
-                    InlineKeyboardButton(text="Cancel", callback_data=f"t3cancel:{token}"),
-                ]]),
+            await retry_telegram(
+                lambda: self.app.bot.send_message(
+                    self.app.owner_id, body,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    reply_markup=markup,
+                ),
+                sleep=self.app.sleep,
+                budget=FloodBudget(),  # this runs inside a model turn: never hold the chat for a long flood wait
             )
         except Exception:
             self.pending.pop(token, None)
@@ -338,7 +348,10 @@ class Bridge:
         if await self.app.store.kv_get(key) == str(expires):
             return
         message = "Your T3 sign-in has expired." if expires <= time.time() else "Your T3 sign-in expires within three days."
-        await self.app.bot.send_message(self.app.owner_id, message, reply_markup=reconnect_button())
+        await retry_telegram(
+            lambda: self.app.bot.send_message(self.app.owner_id, message, reply_markup=reconnect_button()),
+            sleep=self.app.sleep,
+        )
         await self.app.store.kv_set(key, str(expires))
 
     async def show(self):
@@ -352,13 +365,21 @@ class Bridge:
         except T3Unavailable as exc:
             lines.append(str(exc))
         rows = await self.app.store.t3_history(self.app.owner_id)
-        await self.app.bot.send_message(self.app.owner_id, "\n".join(lines)[:3000], reply_markup=reconnect_button())
+        summary = "\n".join(lines)[:3000]
+        await retry_telegram(
+            lambda: self.app.bot.send_message(self.app.owner_id, summary, reply_markup=reconnect_button()),
+            sleep=self.app.sleep,
+        )
         if rows:
             table = ["UTC | Tool | Machine | Target | Outcome"]
             for row in rows:
                 values = (row["at"][:16], row["tool"][:30], row["machine"][:35], row["target"][:45], row["outcome"])
                 table.append(" | ".join(display(value) for value in values))
-            await self.app.bot.send_message(self.app.owner_id, "\n".join(table))
+            table_text = "\n".join(table)
+            await retry_telegram(
+                lambda: self.app.bot.send_message(self.app.owner_id, table_text),
+                sleep=self.app.sleep,
+            )
 
 
 def format_thread(result, note):

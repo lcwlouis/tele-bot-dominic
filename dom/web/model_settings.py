@@ -21,10 +21,11 @@ from urllib.parse import urlsplit
 import httpx
 import tomlkit
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dom.config import MODEL_ROLES, Config, ModelRole, ProviderEndpoint, _replace_file, validate_config
+from dom.doctor import _probe_hint, is_zdr_refusal
 from dom.llm import ChatClient, FallbackClient, MissingProviderKey
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.usage import ModelCallSkipped, model_request, on_own_network, provider_address, unroutable_address
@@ -121,9 +122,11 @@ def _address(url: str) -> str | None:
 
 
 def _check_keys(disk: Config, providers: list[ProviderEndpoint]) -> None:
-    """A key variable may go only to the host config.toml already pairs it with. A new name may be used for one
-    host, unless it names an instance credential (the bot token, Jev's key, a desktop key...) or another host's key.
-    Pairing an existing key with a new host stays a hand edit of config.toml."""
+    """A key variable may go only to the scheme://host:port that config.toml already pairs it with (so triage's
+    key is allowed on its paired host such as https://openrouter.ai, but not elsewhere). A new name may be used
+    for one host, unless it already holds a value, names a non-model instance credential (the bot token, desktop
+    keys, KLIPY_API_KEY, or an unpaired JEV_API_KEY), or belongs to another host. Pairing an existing key with a
+    new host stays a hand edit of config.toml."""
     paired: dict[str, set[str | None]] = {}
     for _, endpoint in disk.model_endpoints():
         if endpoint.api_key_env:
@@ -327,10 +330,51 @@ async def read_models(request: Request) -> ModelSettings:
     return _settings(app, _snapshot(app.config.home))
 
 
+def _slot_tuple(endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None]:
+    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, endpoint.reasoning_effort)
+
+
+MISSING_KEY = "Not tested: this provider's key variable has no value in .env yet. Add it, then press Test."
+
+
+def _probe_tuple(endpoint: ProviderEndpoint) -> tuple[str, str, str | None]:
+    return _slot_tuple(endpoint)[:3]
+
+
+def _slot_label(index: int) -> str:
+    return "Primary" if index == 0 else f"Fallback {index}"
+
+
 @router.post(API_PATH)
-async def update_models(request: Request) -> ModelSettings:
+async def update_models(request: Request):
     app = owner_app(request)
     update = await _input(request, ModelUpdate)
+    current = _snapshot(app.config.home)
+    _check_revision(current, update.revision)
+    submitted = [*([update.primary] if update.primary else []), *update.fallbacks]
+    try:
+        _check_keys(current.config, submitted)
+    except KeyPairing as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    # A slot already in the chain (at any position) was tested when it was added; the probe ignores reasoning effort,
+    # so a change to that alone tests nothing new either.
+    existing = {_probe_tuple(provider) for provider in current.config.providers(update.role)}
+    to_test = [(index, provider) for index, provider in enumerate(submitted) if _probe_tuple(provider) not in existing]
+    if to_test:
+        current_client = app.client.primary if isinstance(app.client, FallbackClient) else app.client
+        results = await asyncio.gather(
+            *(_probe(app, current_client.http, current.config, provider) for _, provider in to_test)
+        )
+        failures = [
+            {"index": index, "error": result.error or "Provider test failed."}
+            for (index, _), result in zip(to_test, results)
+            if not result.ok and result.error != MISSING_KEY  # a new key variable is filled in after saving (see _check_keys)
+        ]
+        if failures:
+            detail = "; ".join(f"{_slot_label(item['index'])}: {item['error']}" for item in failures)
+            return JSONResponse(status_code=422, content={"detail": detail, "errors": failures})
+
     # No await between reading, replacing the file, and publishing the new runtime snapshot.
     try:
         saved = _save(_snapshot(app.config.home), update)
@@ -358,8 +402,10 @@ async def test_provider(request: Request) -> TestResult:
 
 
 async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint) -> TestResult:
-    async def allowed() -> bool:
-        return not await app.dispatch.usage.over_cap(app.config, app.bot)
+    local = on_own_network(httpx.URL(provider.base_url).host or "")
+
+    async def allowed() -> bool:  # a local endpoint costs nothing, so the spend cap never blocks testing or saving it
+        return local or not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
 
     start = monotonic()
     try:
@@ -369,16 +415,18 @@ async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: Pr
         )
         _check_keys(config, [provider])
         key = config.secret(provider.api_key_env) if provider.api_key_env else None
-        client = ChatClient(provider, key, http, usage=app.dispatch.usage)
+        probe_endpoint = provider.model_copy(update={"reasoning_effort": None})
+        client = ChatClient(probe_endpoint, key, http, sleep=app.sleep, usage=app.dispatch.usage)
         async with asyncio.timeout(TEST_TIMEOUT):
             with model_request("chat", None, allowed):
                 message = await client.complete(
                     [{"role": "user", "content": "Reply with OK."}], [],
-                    once=True, max_tokens=32, timeout=TEST_TIMEOUT,
+                    once=True, max_tokens=256, timeout=TEST_TIMEOUT,
                 )
-        reply = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(reply, str) or not reply.strip():
+        if not isinstance(message, dict):
             raise ValueError
+        content = message.get("content")
+        reply = content if isinstance(content, str) and content.strip() else "OK"
         if key:
             reply = reply.replace(key, "[redacted]")
         for pattern in CREDENTIAL_PATTERNS:
@@ -390,11 +438,15 @@ async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: Pr
     except ModelCallSkipped:
         error = "The daily spend cap has been reached."
     except MissingProviderKey:
-        error = "Set this provider's key in .env."
+        error = MISSING_KEY
     except (TimeoutError, httpx.TimeoutException):
         error = "Provider test timed out."
     except httpx.HTTPStatusError as exc:
-        error = f"Provider returned HTTP {exc.response.status_code}."
+        error = (
+            _probe_hint(exc.response)
+            if is_zdr_refusal(exc.response)
+            else f"Provider returned HTTP {exc.response.status_code}."
+        )
     except (httpx.HTTPError, httpx.InvalidURL, OSError):
         error = "Could not reach the provider."
     except (KeyError, IndexError, TypeError, ValueError):

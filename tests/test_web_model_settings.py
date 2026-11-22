@@ -169,7 +169,7 @@ async def test_test_call_uses_only_saved_provider_and_blocks_redirects(dashboard
         assert request.url.host == "fallback.example.test"
         assert request.headers["Authorization"] == f"Bearer {SECRET}"
         assert json.loads(request.content) == {
-            "model": "backup-model", "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 32,
+            "model": "backup-model", "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 256,
         }
         if len(seen) == 1:
             return httpx.Response(302, headers={"Location": "https://other.example.test/v1"})
@@ -281,7 +281,7 @@ async def test_instance_secret_is_never_paired_with_a_new_host(dashboard, monkey
 
 
 async def test_existing_key_moves_to_a_new_host_only_by_hand(dashboard):
-    _, path, browser = dashboard
+    app, path, browser = dashboard
     async with browser() as client:
         moved = dict(COLLECTOR, api_key_env="BACKUP_KEY")  # paired with fallback.example.test
         result = await _save(client, "media", moved)
@@ -294,8 +294,14 @@ async def test_existing_key_moves_to_a_new_host_only_by_hand(dashboard):
         two = await _save(client, "drafting", dict(COLLECTOR, api_key_env="NEW_KEY"),
                           [dict(PRIMARY, api_key_env="NEW_KEY")])
         assert two.status_code == 422
-        # a new name for one host is fine
-        assert (await _save(client, "drafting", dict(COLLECTOR, api_key_env="NEW_KEY"))).status_code == 200
+        # a new name for one host passes key pairing and saves untested: its value goes into .env afterwards
+        # (it cannot hold one before, see above), and the slot cannot be called until it does
+        from dom.config import ProviderEndpoint
+        from dom.web.model_settings import _check_keys
+
+        _check_keys(app.config, [ProviderEndpoint(**dict(COLLECTOR, api_key_env="NEW_KEY"))])
+        new_key = await _save(client, "drafting", dict(COLLECTOR, api_key_env="NEW_KEY"))
+        assert new_key.status_code == 200 and 'api_key_env = "NEW_KEY"' in path.read_text()
 
 
 @pytest.mark.parametrize("base_url", [
@@ -363,3 +369,139 @@ async def test_a_key_with_a_value_never_gains_a_host_even_after_its_slot_is_remo
     # a key paired with https on a host doesn't follow it to plain http there
     nas = "nas." "lan"  # an example local name
     assert _address(f"https://{nas}/v1") != _address(f"http://{nas}/v1")
+
+
+async def test_save_probes_only_changed_or_added_slots_and_refuses_on_failure(dashboard):
+    app, path, browser = dashboard
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body["model"])
+        if body["model"] == "no-zdr-model":
+            return httpx.Response(404, json={"error": {"message": "No endpoints found matching ZDR"}})
+        if body["model"] == "broken-fallback":
+            return httpx.Response(503, json={"error": "unavailable"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        before_client = app.client
+        # Saving unchanged chat primary + a failing added fallback tests only the added fallback.
+        bad = await _save(client, "chat", PRIMARY, [dict(PRIMARY, model="broken-fallback")])
+        assert bad.status_code == 422
+        payload = bad.json()
+        assert payload["errors"] == [{"index": 1, "error": "Provider returned HTTP 503."}]
+        assert seen == ["broken-fallback"]
+        assert path.read_text() == START and not path.with_name("config.toml.bak").exists()
+        assert app.client is before_client
+
+        # OpenRouter 404 "no endpoints" / ZDR refusal returns a clear ZDR error per failing slot.
+        seen.clear()
+        zdr_fail = await _save(
+            client, "chat", dict(PRIMARY, model="no-zdr-model"), [dict(PRIMARY, model="broken-fallback")],
+        )
+        assert zdr_fail.status_code == 422
+        errors = zdr_fail.json()["errors"]
+        assert len(errors) == 2
+        assert errors[0]["index"] == 0 and "zero data retention" in errors[0]["error"]
+        assert errors[1] == {"index": 1, "error": "Provider returned HTTP 503."}
+        assert path.read_text() == START and app.client is before_client
+
+        # Removing the fallback needs no probe and saves immediately.
+        seen.clear()
+        assert (await _save(client, "fallback", None)).status_code == 200
+        assert seen == []
+
+
+async def test_probe_omits_reasoning_uses_larger_budget_accepts_thinking_and_uses_app_sleep(dashboard, monkeypatch):
+    from aiogram.exceptions import TelegramRetryAfter
+
+    app, _, browser = dashboard
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        # Thinking model returns empty content with reasoning field.
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "", "reasoning": "thinking"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        saved = await _save(
+            client, "drafting",
+            {"base_url": "https://openrouter.ai/api/v1", "model": "thinking-model", "reasoning_effort": "low"},
+        )
+        assert saved.status_code == 200, saved.text
+        body, = seen
+        assert body == {
+            "model": "thinking-model",
+            "messages": [{"role": "user", "content": "Reply with OK."}],
+            "max_tokens": 256,
+            "provider": {"zdr": True},
+        }
+        assert "reasoning" not in body and "reasoning_effort" not in body
+
+        # Also check sleep=app.sleep is passed to over_cap's flood retry when cap is reached.
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        app.sleep = fake_sleep
+        await app.dispatch.usage.record("chat", "other", "localhost", {"cost": 1.0})
+        attempts = 0
+        original_send = app.bot.send_message
+
+        async def flood_once(chat_id, text, **kw):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TelegramRetryAfter(method=None, message="flood", retry_after=2)
+            return await original_send(chat_id, text, **kw)
+
+        monkeypatch.setattr(app.bot, "send_message", flood_once)
+        revision = (await client.get(API)).json()["revision"]
+        res = (await client.post(API + "/test", headers=ORIGIN_HEADER, json={
+            "revision": revision, "role": "drafting", "index": 0,
+        })).json()
+        assert res["ok"] is False and res["error"] == "The daily spend cap has been reached."
+        assert slept == [2.0] and attempts == 2
+
+
+async def test_save_does_not_reprobe_a_slot_that_only_moved_or_changed_reasoning(dashboard):
+    app, path, browser = dashboard
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content)["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        other = dict(PRIMARY, model="other-model")
+        assert (await _save(client, "chat", PRIMARY, [other])).status_code == 200
+        assert seen == ["other-model"]
+        seen.clear()
+        assert (await _save(client, "chat", other, [PRIMARY])).status_code == 200  # swapped
+        assert (await _save(client, "chat", dict(other, reasoning_effort="low"), [PRIMARY])).status_code == 200
+        assert seen == []
+
+
+async def test_the_spend_cap_never_blocks_saving_a_local_endpoint(dashboard, monkeypatch):
+    app, path, browser = dashboard
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content)["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    async def over_cap(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(app.dispatch.usage, "over_cap", over_cap)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        assert (await _save(client, "chat", dict(PRIMARY, model="local-two"))).status_code == 200  # localhost
+        assert seen == ["local-two"]
+        cloud = await _save(client, "chat", dict(COLLECTOR, model="cloud-two"))
+        assert cloud.status_code == 422 and "spend cap" in cloud.text

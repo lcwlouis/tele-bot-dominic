@@ -69,7 +69,7 @@ Init creates the tables below. Omitted triage, media and drafting tables use the
 | `models.triage.model` | `"~typesafe/jev-latest"` | Provider model ID. |
 | `models.triage.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.media.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
-| `models.media.model` | `"qwen/qwen3.8-omni-flash"` | Provider model ID. |
+| `models.media.model` | `"perceptron/perceptron-mk1.5"` | Provider model ID. |
 | `models.media.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.search.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
 | `models.search.model` | `"deepseek/deepseek-v4.1-flash-1017"` | Provider model ID. |

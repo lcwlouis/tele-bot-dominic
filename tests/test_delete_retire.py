@@ -631,3 +631,118 @@ def test_prune_deletions_by_age_and_count_leaves_pending_alone(tmp_path):
     assert len(committed_remaining) == 50
     # All old ones were pruned
     assert not any("old-" in p.name for p in committed_remaining)
+
+
+# ---- Drift fixes: reminder retry KV cleanup + owner delete flow under TelegramRetryAfter ---
+
+
+async def test_reminder_delete_clears_and_archives_retry_kv_state(make_app):
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+
+    app = make_app()
+    before = _archives(app.home.root)
+    due = "2026-01-01T12:01"
+    rem_id = await app.dispatch.reminders.create(due, "Take meds", "critical")
+    row = await app.store.get_reminder(OWNER, rem_id)
+
+    orig_send = app.bot.send_message
+
+    async def blocked_send(chat_id, text, **kw):
+        raise TelegramForbiddenError(method=SendMessage(chat_id=OWNER, text="x"), message="Forbidden: bot was blocked")
+
+    app.bot.send_message = blocked_send
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+
+    retry_key = f"reminder_retry:{rem_id}"
+    saved_retry = await app.store.kv_get(retry_key)
+    assert saved_retry and json.loads(saved_retry)["undeliverable"] is True
+
+    # Delete clears reminder_retry:<id> in the same tx and captures it in the deletion archive.
+    ok, msg = await app.dispatch.reminders.delete(rem_id, row["created_at"])
+    assert ok and f"Deleted reminder #{rem_id}." in msg
+    assert await app.store.kv_get(retry_key) is None
+    (archive,) = _new_archives(app.home.root, before)
+    manifest = _manifest(archive)
+    assert manifest["rows"]["reminder"]["id"] == rem_id
+    assert manifest["rows"]["kv"] == [{"key": retry_key, "value": saved_retry}]
+
+    # A new critical reminder reusing the same SQLite ID does not inherit the old retry/undeliverable KV state.
+    app.bot.send_message = orig_send
+    reused = await app.dispatch.reminders.create("2026-01-01T12:05", "Take meds again", "critical")
+    assert reused == rem_id
+    app.dispatch.now.advance(minutes=4)
+    await app.dispatch.tick()
+    assert await app.dispatch.reminders.active() == []
+    assert any("Take meds again" in call[2] for call in app.bot.of("send", OWNER))
+
+
+async def test_owner_delete_flow_retries_on_telegram_retry_after(make_app):
+    from aiogram.exceptions import TelegramRetryAfter
+    from aiogram.methods import EditMessageReplyMarkup, SendMessage
+
+    app = make_app()
+    sleeps: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    app.sleep = record_sleep
+    orig_send = app.bot.send_message
+    orig_edit = app.bot.edit_message_reply_markup
+    send_fail = True
+    edit_fail = True
+
+    async def flaky_send(chat_id, text, **kw):
+        nonlocal send_fail
+        if send_fail:
+            send_fail = False
+            raise TelegramRetryAfter(
+                method=SendMessage(chat_id=OWNER, text="x"),
+                message="Flood control exceeded. Retry in 1 seconds",
+                retry_after=1,
+            )
+        return await orig_send(chat_id, text, **kw)
+
+    async def flaky_edit(chat_id=None, message_id=None, reply_markup=None, **kw):
+        nonlocal edit_fail
+        if edit_fail:
+            edit_fail = False
+            raise TelegramRetryAfter(
+                method=EditMessageReplyMarkup(chat_id=OWNER, message_id=1),
+                message="Flood control exceeded. Retry in 2 seconds",
+                retry_after=2,
+            )
+        return await orig_edit(chat_id=chat_id, message_id=message_id, reply_markup=reply_markup, **kw)
+
+    app.bot.send_message = flaky_send
+    app.bot.edit_message_reply_markup = flaky_edit
+
+    # Owner list & error sends under flood control.
+    for command in ("/skills", "/ownwork", "/proposals settled", "/skills delete missing"):
+        send_fail = True
+        await handlers.handle_message(app, tg(OWNER, OWNER, command))
+    assert any("No skills yet." in c[2] for c in app.bot.of("send", OWNER))
+    assert any("No self-directed tasks yet." in c[2] for c in app.bot.of("send", OWNER))
+    assert any("No settled proposals." in c[2] for c in app.bot.of("send", OWNER))
+    assert any("Skill missing not found." in c[2] for c in app.bot.of("send", OWNER))
+
+    # Delete confirm send + Cancel settle + Confirm settle all retry on TelegramRetryAfter so no live delete buttons remain.
+    rem_id = await app.dispatch.reminders.create("2026-06-01T12:00", "Flood test reminder")
+    send_fail = True
+    await handlers.handle_message(app, tg(OWNER, OWNER, f"/reminders delete {rem_id}"))
+    yes_btn, no_btn = app.bot.of("send", OWNER)[-1][3]["reply_markup"].inline_keyboard[0]
+
+    edit_fail = True
+    await press(app, no_btn.callback_data)
+    settled_cancel = app.bot.of("markup")[-1][3].inline_keyboard[0][0]
+    assert settled_cancel.text == "Cancelled" and settled_cancel.callback_data == "noop"
+    assert await app.store.get_reminder(OWNER, rem_id) is not None
+
+    edit_fail = True
+    await press(app, yes_btn.callback_data)
+    settled_del = app.bot.of("markup")[-1][3].inline_keyboard[0][0]
+    assert settled_del.text == f"Deleted #{rem_id}" and settled_del.callback_data == "noop"
+    assert await app.store.get_reminder(OWNER, rem_id) is None
+    assert sleeps.count(1.0) == 5 and sleeps.count(2.0) == 2

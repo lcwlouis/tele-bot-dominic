@@ -287,6 +287,13 @@ def test_probe_hint_accepts_different_error_bodies(body, zdr):
     assert ("zero data retention" in hint) is zdr
 
 
+def test_probe_hint_classifies_openrouter_404_no_endpoints_as_zdr():
+    hint = doctor._probe_hint(httpx.Response(404, json={"error": {"message": "No endpoints found that can handle the requested parameters."}}))
+    assert hint.startswith("HTTP 404:") and "zero data retention" in hint
+    other = doctor._probe_hint(httpx.Response(404, json={"error": {"message": "Model not found"}}))
+    assert other.startswith("HTTP 404:") and "zero data retention" not in other
+
+
 @pytest.mark.parametrize("policy", [False, True])
 def test_online_probe_hints_redact_provider_text(home, monkeypatch, capsys, policy):
     fake_key = "sk-" + "ExampleFakeKeyOnlyForTests"

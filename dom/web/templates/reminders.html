@@ -4,7 +4,7 @@
   {% if not context.rows %}<p class="fog">No reminders yet.</p>{% endif %}
   {% for row in context.rows %}
   <article class="proposal" id="reminder-{{ row.id }}">
-    <p><strong>#{{ row.id }}</strong> {{ row.due_local }} ({{ row.importance }}{% if row.repeat %}, {{ row.repeat }}{% endif %}{% if row.status != "active" %}, {{ row.status }}{% endif %})</p>
+    <p><strong>#{{ row.id }}</strong> {{ row.due_local }} ({{ row.importance }}{% if row.repeat %}, {{ row.repeat }}{% endif %}{% if row.status != "active" %}, {{ row.status }}{% elif row.undeliverable %}, undeliverable{% endif %})</p>
     <p>{{ row.text }}</p>
     <div class="actions" hx-target="#reminders" hx-swap="outerHTML">
       {% if row.status == "active" %}

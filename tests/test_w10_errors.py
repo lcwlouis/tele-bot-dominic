@@ -37,6 +37,7 @@ from test_owner_events import events
 from test_reminders import add as add_reminder
 from test_traits import put
 from test_usage import deliver, online
+from test_web_pages import browser, today_rows  # noqa: F401
 from tghelpers import FRIEND, GROUP, NOW, OWNER, Clock, FixedRandom, drain_dispatch, no_sleep, tg, turn_requests
 
 
@@ -867,3 +868,139 @@ async def test_critical_reminder_blocked_or_missing_marked_undeliverable_and_kep
     await app.dispatch.tick()
     assert send_attempts == 1
     assert len([e["text"] for e in await events(app) if "undeliverable" in e["text"]]) == 1
+
+
+async def test_undeliverable_critical_reminder_shown_in_dm_dashboard_and_excluded_from_home(make_app, browser):
+    from dom.telegram import owner
+
+    app = make_app()
+    orig_send = app.bot.send_message
+    rem_id = await app.dispatch.reminders.create("2026-01-01T12:01", "Take meds", "critical")
+
+    async def blocked_send(chat_id, text, **kw):
+        raise TelegramForbiddenError(method=SendMessage(chat_id=OWNER, text="x"), message="Forbidden: bot was blocked")
+
+    app.bot.send_message = blocked_send
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+
+    # Restore send so /reminders can render the undeliverable reminder.
+    app.bot.send_message = orig_send
+    await owner.show_reminders(app)
+    dm_text = app.bot.of("send", OWNER)[-1][2]
+    assert f"#{rem_id}" in dm_text and "undeliverable" in dm_text
+
+    async with browser(app) as client:
+        # Dashboard /reminders shows it as undeliverable.
+        rem_page = (await client.get("/reminders")).text
+        assert f"#{rem_id}" in rem_page and "(critical, undeliverable)" in rem_page
+
+        # Home page "Next reminder" excludes the undeliverable critical reminder.
+        assert today_rows((await client.get("/")).text)["Next reminder"] == "No reminders"
+
+        # When a later deliverable reminder exists, home shows the deliverable one.
+        await app.dispatch.reminders.create("2026-01-01T15:00", "Call the dentist", "normal")
+        assert today_rows((await client.get("/")).text)["Next reminder"] == "15:00 Call the dentist"
+
+
+async def test_remaining_telegram_send_paths_retry_on_flood_control(make_app):
+    from types import SimpleNamespace
+    from dom.plugins import surfaces
+    from dom.t3.tools import Bridge
+    from dom.tools import WRITE_BRIEF_TOOL, TurnCtx
+
+    app = make_app()
+    sleeps: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    app.sleep = record_sleep
+    orig_send = app.bot.send_message
+    fail_next = True
+
+    async def flaky_send(chat_id, text, **kw):
+        nonlocal fail_next
+        if fail_next:
+            fail_next = False
+            raise _retry_after(1)
+        return await orig_send(chat_id, text, **kw)
+
+    app.bot.send_message = flaky_send
+
+    # 1. plugins/surfaces._reply
+    fail_next = True
+    await surfaces._reply(app, OWNER, "plugin reply")
+    assert any(c[2] == "plugin reply" for c in app.bot.of("send", OWNER))
+
+    # 2. selfwork._announce and _report
+    now = app.dispatch.now()
+    rows = await app.store.add_self_tasks(
+        [{"goal": "Read docs", "why": "Learn", "tools": ["browse"], "sites": ["example.org"], "minutes": 5, "steps": 10}],
+        now, now,
+    )
+    fail_next = True
+    assert await app.self_work._announce("Trying something", rows, now) is True
+    fail_next = True
+    await app.self_work._report({**rows[0], "status": "failed", "error": "stopped"})
+    assert any("Stopped my own task" in c[2] for c in app.bot.of("send", OWNER))
+
+    # 3. memory_pass._tell_owner
+    fail_next = True
+    await MemoryPass(app)._tell_owner("likes oolong")
+    assert any("Noted: likes oolong" in c[2] for c in app.bot.of("send", OWNER))
+
+    # 4. t3/tools: notify, stage, remind, show
+    bridge = Bridge(app)
+    fail_next = True
+    await bridge.notify("t3 ping")
+    assert any(c[2] == "t3 ping" for c in app.bot.of("send", OWNER))
+
+    fail_next = True
+    res = await bridge.stage(
+        {"environmentId": "e1", "label": "dev"},
+        {"threadId": "t1", "title": "Fix bug"},
+        "hello thread",
+    )
+    assert res == "Confirmation sent to the owner."
+
+    bridge.token_path.write_text(json.dumps({"expires_at": 100.0}))
+    fail_next = True
+    await bridge.remind()
+    assert any("sign-in has expired" in c[2] for c in app.bot.of("send", OWNER))
+
+    bridge.client = SimpleNamespace(environments=lambda: [{"environmentId": "e1", "label": "dev", "status": "reachable"}])
+    fail_next = True
+    await bridge.show()
+    assert any("T3 bridge on" in c[2] for c in app.bot.of("send", OWNER))
+
+    # 5. tools._write_brief send_document retries under TelegramRetryAfter and handles FloodBudgetExhausted cleanly
+    sent_docs: list[tuple] = []
+    doc_error = {"retry_after": 1, "once": True}
+
+    async def flaky_send_document(chat_id, document, **kw):
+        if doc_error["once"]:
+            doc_error["once"] = False
+            raise _retry_after(doc_error["retry_after"])
+        sent_docs.append((chat_id, document.filename, kw.get("caption")))
+        return SimpleNamespace(message_id=9001)
+
+    app.bot.send_document = flaky_send_document
+    ctx = TurnCtx("owner_dm", OWNER, OWNER, app.home, app.store, OWNER, app=app)
+    brief_args = {
+        "title": "Retry brief send",
+        "problem": "Flood control can interrupt document delivery.",
+        "proposal": "Route brief document sends through retry_telegram.",
+        "acceptance": "Document is delivered after a transient flood wait.",
+    }
+    first = json.loads(await WRITE_BRIEF_TOOL.handler(brief_args, ctx))
+    assert "error" not in first and len(sent_docs) == 1
+
+    # Exceeding flood budget returns clean JSON error instead of raising.
+    doc_error["retry_after"] = 30
+    doc_error["once"] = True
+    second = json.loads(await WRITE_BRIEF_TOOL.handler(brief_args, ctx))
+    assert "error" in second and "could not send" in second["error"]
+
+    # Every retried path waited via app.sleep.
+    assert sleeps.count(1.0) >= 9
