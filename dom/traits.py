@@ -232,17 +232,30 @@ class SwitchRefused(ValueError):
     """Why Dom cannot change his vibe right now, in words he can act on."""
 
 
-async def switch_vibe(home: Home, store: Store, chat_id: int, name: object, reason: object, now: datetime) -> Preset:
-    """Dom's one extra switch of the day. Only in `auto`, only in a chat without its own preset, once per pick."""
+async def switch_blocker(home: Home, store: Store, chat_id: int, now: datetime) -> str | None:
+    """Why `switch_vibe` is refused in this chat whatever it is called with, or None when a call could succeed.
+
+    The state-dependent refusals live here only, so the tool and the turn note (which tells Dom up front, so he
+    stops making refused calls) can never disagree."""
     current = await vibe(home, store, now)
     if current.mode != "auto":
-        raise SwitchRefused("the owner has fixed your preset, so you cannot switch")
+        return "the owner has fixed your preset, so you cannot switch"
     if (await store.get_chat_personality(chat_id))[0]:
-        raise SwitchRefused("this chat has its own preset, so switching would change nothing here")
+        return "this chat has its own preset, so switching would change nothing here"
     if await task_mode(store, chat_id, now) is not None:
-        raise SwitchRefused("you are in task mode here; finish the task first, then switch")
+        return "you are in task mode here; finish the task first, then switch"
     if current.source == "switch":
-        raise SwitchRefused("you already switched today; wait for tomorrow's pick")
+        return "you already switched today; wait for tomorrow's pick"
+    if not any(current.preset is None or preset.name != current.preset.name for preset in vibe_choices(home)):
+        return "there is no other vibe to switch to"
+    return None
+
+
+async def switch_vibe(home: Home, store: Store, chat_id: int, name: object, reason: object, now: datetime) -> Preset:
+    """Dom's one extra switch of the day. Only in `auto`, only in a chat without its own preset, once per pick."""
+    if (blocked := await switch_blocker(home, store, chat_id, now)) is not None:
+        raise SwitchRefused(blocked)
+    current = await vibe(home, store, now)
     reason = clean_reason(reason)
     if not reason:
         raise SwitchRefused("give a short reason")

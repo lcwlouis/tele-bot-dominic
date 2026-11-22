@@ -1308,14 +1308,31 @@ class Store:
         self, at: datetime, chat_id: int, scope: Scope, calls: int, trace: list[str], model: str, fallback: bool,
         duration_ms: int, outcome: str, *, model_calls: list[dict] | None = None,
         first_bubble_ms: int | None = None, last_bubble_ms: int | None = None,
-    ) -> None:
-        await self._run(
+    ) -> int | None:
+        """Save one turn; returns its row id."""
+        cursor = await self._run(
             self._conn.execute,
             "INSERT INTO turns (at, chat_id, scope, calls, trace, model, fallback, duration_ms, outcome, "
             "model_calls, first_bubble_ms, last_bubble_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (at.astimezone(timezone.utc).isoformat(), str(chat_id), scope, calls, json.dumps(trace), model,
              int(fallback), duration_ms, outcome, json.dumps(model_calls or []), first_bubble_ms, last_bubble_ms),
         )
+        return cursor.lastrowid
+
+    async def extend_turn(self, turn_id: int, trace: list[str], model_calls: list[dict]) -> None:
+        """Add work done after the turn was saved (a Jev call once the bubbles were out) to its row."""
+        def extend() -> None:
+            with self._tx() as conn:
+                row = conn.execute("SELECT trace, model_calls FROM turns WHERE id = ?", (turn_id,)).fetchone()
+                if row is None:
+                    return
+                steps, calls = json.loads(row["trace"]), json.loads(row["model_calls"])
+                conn.execute(
+                    "UPDATE turns SET calls = calls + ?, trace = ?, model_calls = ? WHERE id = ?",
+                    (len(model_calls), json.dumps([*steps, *trace]), json.dumps([*calls, *model_calls]), turn_id),
+                )
+
+        await self._run(extend)
 
     async def turn_counts(self, start: datetime, end: datetime) -> tuple[int, int]:
         """Count turns and replies in the half-open interval [start, end)."""

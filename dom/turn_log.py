@@ -74,6 +74,7 @@ class TurnTrace:
     first_bubble_ms: int | None = None
     last_bubble_ms: int | None = None
     superseded: bool = False  # the next attempt carries this trace forward
+    row_id: int | None = None  # the saved turn row, so work done after the turn can be added to it
 
     def add_timing(self, what: str, elapsed_ms: int) -> None:
         self.timings.append(f"{what}@{elapsed_ms}")
@@ -194,7 +195,7 @@ async def capture(
     finally:
         if not trace.superseded and (trace.steps or trace.calls):
             try:
-                await store.record_turn(
+                trace.row_id = await store.record_turn(
                     at, chat_id, scope, trace.calls, [*trace.steps, *trace.timings], trace.model, trace.fallback,
                     round((monotonic() - start) * 1000), trace.outcome or "Stayed quiet",
                     model_calls=[asdict(call) for call in trace.model_calls],

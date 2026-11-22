@@ -213,6 +213,7 @@ main:not(.single) .turns .log { max-height: 28rem; overflow-y: auto; overscroll-
 .stage-typing { --stage-color: #56ae83; }
 .stage-send { --stage-color: #db94b8; }
 .stage-other { --stage-color: var(--fog); }
+.stage-after_reply { --stage-color: #7fbf9a; }
 .turn-calls { margin: var(--s2) 0 0; padding-left: var(--s5); }
 .turn-calls li + li { margin-top: var(--s2); }
 .turn-hashes { overflow-wrap: anywhere; color: var(--fog); }

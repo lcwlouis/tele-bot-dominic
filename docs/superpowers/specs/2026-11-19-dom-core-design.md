@@ -185,7 +185,7 @@ Edits are handled, including edits made while Dom was offline.
 | `search_history` | FTS over the current chat; the owner can search all chats |
 | `skills_list` / `skill_view` / `skill_manage` | all |
 | `remind` | owner, plus whitelisted friends |
-| `extend_online` | all |
+| ~~`extend_online`~~ | removed in v0.8.1: Jev decides after a reply whether Dom stays online longer (`Dispatcher._stay_check`), within the same limits |
 | `desktop_*` | only when a desktop is connected (§9) |
 | `self_inspect` | read-only: version, enabled tools, plugins, desktop, models, recent errors |
 

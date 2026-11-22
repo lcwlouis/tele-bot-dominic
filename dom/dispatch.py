@@ -8,13 +8,13 @@ import logging
 import re
 from collections import Counter, deque
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import partial
 from datetime import datetime, timedelta
 from time import monotonic
 from urllib.parse import urlencode, urlsplit
 from collections.abc import AsyncIterator, Coroutine
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, quoteattr
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -39,10 +39,11 @@ from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import PromptCache, build_messages, online_window_note, report_messages
 from dom.reflection import mood
 from dom.reminders import Reminders
+from dom.skills import skill_view, skills_list
 from dom.telegram import executor, gate
 from dom.tools import Tool, TurnCtx, enabled_tools
-from dom.traits import ASSISTANT, for_chat, keep_task_mode, task_mode
-from dom.triage import Triage, chat_state, persona_card, triage_offline, triage_online, triage_urgency
+from dom.traits import ASSISTANT, for_chat, keep_task_mode, switch_blocker, task_mode
+from dom.triage import Triage, chat_state, persona_card, triage_offline, triage_online, triage_stay, triage_urgency
 from dom.usage import ModelCallSkipped, Usage, check_model_allowed, local_hosts, model_request
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ ACK_INTERVAL = timedelta(minutes=1)
 ACK_LINES = ("On it.", "Give me a moment.", "Lemme take a look.")
 ACK_STATE = "reply_ack"
 MEDIA_WAIT_SECONDS = 15
+STAY_ASK_MINUTES = 10  # Jev is asked about staying longer only when the session is this close to ending
 LATE_REPLY = timedelta(seconds=60)
 ORPHAN_AGE = timedelta(seconds=10)  # an online chat's unread message this old lost its debounce
 TRIAGE_WINDOW = 15
@@ -129,6 +131,7 @@ class TurnAttempt:
     away: int = 0  # messages that came in while Dom was away, as the first attempt told the model
     credit: float = 0.0  # seconds "typing…" showed in attempts this one restarted
     shown: float = 0.0  # seconds it showed in this one
+    stay_check: bool = False  # a reply went out, so Jev owes the after-turn staying-online decision
 
     def commit(self) -> None:
         self.committed = True
@@ -208,6 +211,9 @@ class Dispatcher:
         self._admin: dict[int, bool] = {}
         self.prompt_cache = PromptCache()
         self._trim_seq: dict[int, int] = {}
+        self._stay_marks: dict[int, int] = {}  # chat -> the newest message whose staying-online decision was started
+        self._stay_running: set[int] = set()  # chats with a staying-online decision in flight
+        self._stay_pending: dict[int, int | None] = {}  # chat -> turn row of a reply that came in during that decision
         presence.on_session_end = self.request_memory_pass
 
     def notify(self, msg: IncomingMessage) -> None:
@@ -270,10 +276,13 @@ class Dispatcher:
                 return  # a newer message took over before this request started
             arrival.state = state
             card, xml = persona_card(self.app.home), self._triage_xml(chat_id, rows)
+            skills = await self._skill_choices() if state == "online" else []
             with turn_log.track(arrival.trace), model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
                 await check_model_allowed()
                 if state == "online":
-                    arrival.verdict = await triage_online(self.jev, card, xml, owner_dm=scope == "owner_dm")
+                    arrival.verdict = await triage_online(
+                        self.jev, card, xml, owner_dm=scope == "owner_dm", skills=skills,
+                    )
                     self._log_triage(arrival.verdict)
                 elif scope == "owner_dm":
                     arrival.urgency = await triage_urgency(self.jev, card, xml)
@@ -314,6 +323,33 @@ class Dispatcher:
     def _log_triage(verdict: Triage) -> None:
         turn_log.step(f"Jev action={verdict.action} confidence={verdict.confidence}")
         turn_log.step(f"Jev done={verdict.done} confidence={verdict.done_confidence}")
+        if verdict.skill:
+            turn_log.step(f"Jev skill={verdict.skill}")
+
+    async def _skill_choices(self) -> list[tuple[str, str]]:
+        """(name, description) of the approved skills Jev may pick from: the same list skills_list gives the model,
+        so a retired or missing skill is never a choice. Read off the event loop."""
+        try:
+            listed = await asyncio.to_thread(skills_list, self.app.home)
+        except Exception:
+            log.exception("could not list skills for triage")
+            return []
+        return [(skill["name"], skill["description"]) for skill in listed]
+
+    async def _skill_note(self, name: str) -> str:
+        """The picked skill's body for the turn note, read the way skill_view reads it (retired, missing or invalid is
+        nothing), or an empty string. Worded as the model's own know-how so he does not recite it as machinery."""
+        try:
+            body = await asyncio.to_thread(skill_view, self.app.home, name)
+        except (OSError, ValueError):
+            return ""
+        if not body:
+            return ""
+        return (
+            f"\n<skill name={quoteattr(name)}>\n{body}\n</skill>\n"
+            "The know-how above fits this conversation. Use it where it applies; it is already here, so there is "
+            "nothing to look up. It is simply what you know: never present it as a procedure, a skill or something you read."
+        )
 
     def _maybe_ack(self, arrival: Arrival) -> None:
         if self._ack_task is not None and not self._ack_task.done():
@@ -923,6 +959,14 @@ class Dispatcher:
                         trace.model = trace.model_calls[-1].model
         finally:
             del self._active[chat_id]
+            if (completed and attempt.stay_check and not trace.superseded and not self._closing
+                    and self._stay_marks.get(chat_id) != newest.msg_id):
+                self._stay_marks[chat_id] = newest.msg_id
+                if chat_id in self._stay_running:
+                    self._stay_pending[chat_id] = trace.row_id  # judged again, with this reply in, once the first is done
+                else:
+                    self._stay_running.add(chat_id)
+                    self._spawn(self._stay_checks(chat_id, trace.row_id))
             if trace.superseded:
                 self._interrupted.setdefault(chat_id, []).append(attempt)
             else:
@@ -938,6 +982,59 @@ class Dispatcher:
                     self._followups.pop(chat_id, None)
             if bot_key is not None:
                 self._bots_in_flight.remove(bot_key)
+
+    async def _stay_checks(self, chat_id: int, row_id: int | None) -> None:
+        """One staying-online decision at a time per chat, so two quick replies never add two extensions at once. A
+        reply that finished meanwhile gets one more decision afterwards, which sees the first one's extension."""
+        try:
+            while True:
+                await self._stay_check(chat_id, row_id)
+                if self._closing or chat_id not in self._stay_pending:
+                    return
+                row_id = self._stay_pending.pop(chat_id)
+        finally:
+            self._stay_running.discard(chat_id)
+            self._stay_pending.pop(chat_id, None)
+
+    async def _stay_check(self, chat_id: int, row_id: int | None) -> None:
+        """After a reply went out: Jev judges from the conversation whether Dom stays online longer, instead of the model
+        spending a call on it. Runs as its own task, so it never holds up the next turn, and with the same limits as ever
+        (Presence.extend_online: 30 minutes at a time, 2 hours a session, never into sleep). Asked only when the session is
+        about to end and could still be extended. Jev down, the spend cap or any failure leaves the session as it was."""
+        jev = self.jev
+        if jev is None:
+            return
+        try:
+            habits = self._habits()
+            left, room = await self.presence.stay_room(chat_id, habits)
+            if room <= 0 or left > STAY_ASK_MINUTES:
+                return
+            rows = await self.app.store.get_window_from(chat_id, None, TRIAGE_WINDOW * 2)
+            card, xml = persona_card(self.app.home), self._triage_xml(chat_id, rows)
+            trace, minutes = turn_log.TurnTrace(), 0
+            try:
+                with turn_log.track(trace), model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
+                    await check_model_allowed()
+                    minutes = await triage_stay(jev, card, xml)
+            except (JevUnavailable, ModelCallSkipped):
+                pass
+            if row_id is not None and trace.model_calls:
+                # Same row as the reply it followed, as Jev time after the last bubble (not chat, not typing).
+                spent = sum(call.duration_ms for call in trace.model_calls)
+                try:
+                    await self.app.store.extend_turn(
+                        row_id, [*trace.steps, f"Jev stay={minutes} minutes", f"after_reply@{spent}"],
+                        [asdict(call) for call in trace.model_calls],
+                    )
+                except Exception:
+                    log.exception("could not record the staying-online decision in chat %s", chat_id)
+            if minutes:
+                try:
+                    await self.presence.extend_online(chat_id, habits, minutes)
+                except ValueError:
+                    pass  # the session ended while Jev was thinking
+        except Exception:
+            log.exception("staying-online decision failed in chat %s", chat_id)
 
     def _drop_unanswered(self, chat_id: int, through: int) -> None:
         """A dispatch that will not answer: its arrivals are done, and an interrupted attempt must not leak into the
@@ -994,6 +1091,7 @@ class Dispatcher:
             arrival.feedback = False
         use_arrival = arrival is not None and (arrival.state == state or (arrival.task is not None and not arrival.task.done()))
 
+        picked: str | None = None  # the skill Jev chose for this conversation, for the turn note
         urgency = None
         if state != "online" and scope == "owner_dm" and not background and not count_wakes and self.jev is not None:
             if use_arrival:
@@ -1035,12 +1133,14 @@ class Dispatcher:
                 try:
                     triage = await triage_online(
                         self.jev, persona_card(self.app.home), self._triage_xml(chat_id, window), owner_dm=scope == "owner_dm",
+                        skills=await self._skill_choices(),
                     )
                 except JevUnavailable:
                     pass
                 if triage is not None:
                     self._log_triage(triage)
             if triage is not None:
+                picked = triage.skill
                 if triage.confident and triage.action == "ignore":
                     attempt.commit()
                     await self._mark_seen(chat_id, newest)
@@ -1062,6 +1162,8 @@ class Dispatcher:
                     await store.mark_chat_read(chat_id, newest.msg_id)
                     return
 
+        if picked is None and arrival is not None and arrival.state == "online" and arrival.verdict is not None:
+            picked = arrival.verdict.skill  # a follow-up or restart is not judged again, but its message was (if in already)
         if until is None:
             return
         await check_model_allowed()
@@ -1075,9 +1177,12 @@ class Dispatcher:
         with model_request("chat", chat_id, partial(self.model_allowed, chat_id)):
             answered, flood_limited = await self._run_turn(
                 chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
-                attempt, arrival, followup,
+                attempt, arrival, followup, picked,
             )
         attempt.commit()
+        # Once the bubbles are out Jev decides whether Dom stays longer (see _stay_check); the dispatch starts it only
+        # when this attempt finishes, so a cancelled and restarted attempt never starts it, and the last one does.
+        attempt.stay_check = answered and not flood_limited and not final_bot_turn and bot_depth is None
         if attempt.notices:
             self._spawn(self._send_coding_notice(chat_id, attempt.notices))
         if answered and attempt.reminder_ids:
@@ -1165,7 +1270,7 @@ class Dispatcher:
     async def _run_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
-        attempt: TurnAttempt, arrival: Arrival | None, followup: list[int],
+        attempt: TurnAttempt, arrival: Arrival | None, followup: list[int], skill: str | None = None,
     ) -> tuple[bool, bool]:
         """Run one turn and send its result; returns `(answered, flood_limited)`."""
         app = self.app
@@ -1195,7 +1300,7 @@ class Dispatcher:
         try:
             actions = await self._compose_turn(
                 chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
-                extra_note=note, attempt=attempt,
+                extra_note=note, attempt=attempt, skill=skill,
             )
             if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
                 turn_log.outcome("Held back: possible leak")
@@ -1482,7 +1587,7 @@ class Dispatcher:
     async def _compose_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage | None, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
-        *, extra_note: str = "", attempt: TurnAttempt | None = None,
+        *, extra_note: str = "", attempt: TurnAttempt | None = None, skill: str | None = None,
     ) -> Actions:
         app = self.app
         now = self.now().astimezone(self.presence.tz)
@@ -1552,9 +1657,14 @@ class Dispatcher:
             app.home, scope, chat_id, participants, self.now(), trim_seq=self._trim_seq.get(chat_id, 0),
         )
         note += f"\n{online_window_note(minutes)}"
+        offered = {tool.name for tool in tools if scope in tool.scopes}
+        if "switch_vibe" in offered and await switch_blocker(app.home, app.store, chat_id, self.now()) is not None:
+            note += "\nyour vibe is settled for now, so don't try to change it; carry on as you are and don't bring it up"
         if snap.stale_since is not None:
             since = snap.stale_since.astimezone(self.presence.tz)
             note += f"\nnotes updated since {since:%H:%M}; call read_notes only if your answer depends on something saved since then"
+        if skill is not None and "skill_view" in offered:  # offered exactly as skill_view offers it: by scope
+            note += await self._skill_note(skill)
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
             sliders=sliders, preset=preset, memory_text=snap.memory_text, notes_blocks=snap.notes_blocks,
