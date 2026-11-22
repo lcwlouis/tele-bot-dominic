@@ -127,6 +127,8 @@ def migrate_database(db_path: Path) -> int:
         current = conn.execute("PRAGMA user_version").fetchone()[0]
         pending = [(v, f) for v, f in MIGRATIONS if v > current]
         if not pending:
+            if current >= TOPIC_READS_VERSION:
+                _reconcile_topic_reads(conn)
             return current
 
         if db_path.stat().st_size > 0 and conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
@@ -163,9 +165,45 @@ def migrate_database(db_path: Path) -> int:
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
-        return conn.execute("PRAGMA user_version").fetchone()[0]
+        final = conn.execute("PRAGMA user_version").fetchone()[0]
+        if final >= TOPIC_READS_VERSION:
+            _reconcile_topic_reads(conn)
+        return final
     finally:
         conn.close()
+
+
+TOPIC_READS_VERSION = 22  # 0021_topic_reads_and_cooldowns
+
+
+def _reconcile_topic_reads(conn: sqlite3.Connection) -> None:
+    """Catch the per-topic read cursors up after older code ran on this database (a rollback to before topic
+    reads, then an upgrade again). This code always moves `chats.last_read_msg_id` together with a topic row, so a
+    chat cursor past every topic row can only mean older code marked the chat read: its topics, including ones that
+    first appeared meanwhile, are read up to that cursor. Without this, answered messages would turn unread again."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        behind = (
+            "SELECT c.chat_id, c.last_read_msg_id FROM chats c "
+            "WHERE c.last_read_msg_id IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM chat_topic_reads t WHERE t.chat_id = c.chat_id) "
+            "AND c.last_read_msg_id > (SELECT MAX(t.last_read_msg_id) FROM chat_topic_reads t WHERE t.chat_id = c.chat_id)"
+        )
+        for chat_id, cursor in conn.execute(behind).fetchall():
+            conn.execute(
+                "UPDATE chat_topic_reads SET last_read_msg_id = ?, updated_at = ? WHERE chat_id = ? AND last_read_msg_id < ?",
+                (cursor, now, chat_id, cursor),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO chat_topic_reads (chat_id, thread_id, last_read_msg_id, updated_at) "
+                "SELECT DISTINCT ?, COALESCE(thread_id, 0), ?, ? FROM messages WHERE chat_id = ?",
+                (chat_id, cursor, now, chat_id),
+            )
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _read_media_json(value: str | None) -> dict[str, Any]:

@@ -432,7 +432,8 @@ class Reminders:
                     lambda c=chunk: app.bot.send_message(owner, c), sleep=app.sleep, budget=budget,
                 )
                 delivery.sent.append(sent.message_id)
-                if row["importance"] == "critical":
+                # A reminder cancelled or deleted while this chunk was in flight must not get its retry state back.
+                if row["importance"] == "critical" and await app.store.reminder_is_active(reminder_id):
                     await self._save_retry_state(reminder_id, row["due_at"], delivery)
             async with self._delivery_lock:
                 if owner != app.owner_id or not await app.store.reminder_is_active(reminder_id):
