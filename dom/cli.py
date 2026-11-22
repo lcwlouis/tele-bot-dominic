@@ -133,6 +133,7 @@ async def run(home: Path) -> None:
                 media_describer=MediaDescriber(media, bot) if media.available else None,
                 search_client=search_client(config, http, usage), gifs=gif_search(config, http),
                 draft_client=routed_client(config, "drafting", http, usage),
+                escalation_client=routed_client(config, "escalation", http, usage),
             )
             await app.stickers.refresh()
             from dom.deletion import recover_deletions

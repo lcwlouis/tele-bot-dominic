@@ -61,6 +61,10 @@
     <h3>{{ role|capitalize }}</h3>
     {% if role == "fallback" %}<p>Chat tries this role after exhausting its own providers.</p>{% endif %}
     {% if role == "drafting" %}<p>Drafting tries the chat route (chat, then fallback) after its own providers.</p>{% endif %}
+    {% if role == "escalation" %}
+    <p>Used only after you approve a model switch for a task. Uses drafting providers when unset.</p>
+    {% if not route.primary %}<button type="button" data-test="0">Test</button>{% endif %}
+    {% endif %}
     {% if role == "search" %}
     <p>Search tries providers in order, falling through on errors and timeouts. Data retention by provider:</p>
     <ul>
@@ -79,7 +83,7 @@
       {% endif %}
     </div>
     <button type="button" data-add>{{ "Add fallback" if route.primary else "Set primary" }}</button>
-    {% if role in ("fallback", "search") %}<button type="button" data-clear{% if not route.primary %} hidden{% endif %}>Clear role</button>{% endif %}
+    {% if role in ("fallback", "search", "escalation") %}<button type="button" data-clear{% if not route.primary %} hidden{% endif %}>Clear role</button>{% endif %}
     {% if role == "search" %}<button type="button" data-test-chain{% if not route.primary %} hidden{% endif %}>Test chain</button>{% endif %}
     <button type="submit">Save {{ role }}</button>
     <output aria-live="polite"></output>

@@ -30,6 +30,7 @@ from dom.cross_chat import CrossChat
 from dom.agent import NoFinalAnswer, execute_tool_call, malformed_shape, parse_actions, run_turn
 from dom.desktop.sandbox import DEFAULT
 from dom.desktop.tools import untrusted
+from dom.escalation import Escalation
 from dom.gifs import GIF_NOTE
 from dom.capabilities import describe
 from dom.jev import JevClient, JevUnavailable
@@ -200,6 +201,7 @@ class Dispatcher:
         self.jobs.register("turn-log-retention", lambda local, habits: True, self._prune_turn_log)
         self.jobs.register("t3-maintenance", lambda local, habits: True, self._maintain_t3)
         self.openers = Openers(app, presence.rng)
+        self.escalation = Escalation(app, self._spawn)
         self.reminders = Reminders(app)
         self._heartbeat: asyncio.Task | None = None
         self._debounces: dict[int, asyncio.Task] = {}
@@ -2038,7 +2040,10 @@ class Dispatcher:
             if attempt is None:
                 actions = await run_turn(app.client, messages, tools, ctx, rescue=rescue)
             else:
-                actions = await run_turn(app.client, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool)
+                with self.escalation.turn(chat_id, scope) as escalation:
+                    actions = await run_turn(
+                        app.client, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool, escalation=escalation,
+                    )
         except ModelCallSkipped:
             raise
         except NoFinalAnswer:  # run_turn has logged why; record an owner event and answer waiting friends in character

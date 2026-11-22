@@ -56,6 +56,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (21, "0020_topics_and_migrations.sql"),
     (22, "0021_topic_reads_and_cooldowns.sql"),
     (23, "0022_cross_chat.sql"),
+    (24, "0023_escalation_usage.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 

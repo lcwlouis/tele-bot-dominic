@@ -82,7 +82,7 @@ async def test_save_backs_up_config_and_applies_new_routes_without_restart(dashb
     route = dict(PRIMARY, model="local-media")
     async with browser() as client:
         initial = (await client.get(API)).json()
-        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search"}
+        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search", "escalation"}
         assert initial["roles"]["search"] == {"primary": None, "fallbacks": []}
         assert {item["id"] for item in initial["search_providers"]} == {"searxng", "openrouter", "deepseek", "tavily"}
         assert initial["roles"]["fallback"]["primary"]["key_set"] is True
@@ -195,6 +195,48 @@ async def test_test_call_uses_only_saved_provider_and_blocks_redirects(dashboard
     assert usage_rows(app)[-1][:3] == ("chat", "backup-model", "fallback.example.test")
     assert usage_rows(app)[-1][-2] == 0.04
     assert path.read_text() == START
+
+
+async def test_escalation_settings_test_explicit_and_inherited_models(dashboard, monkeypatch):
+    app, path, browser = dashboard
+    monkeypatch.setenv("OPENROUTER_API_KEY", "example-openrouter-key")
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert request.url.host == "openrouter.ai" and body["provider"] == {"zdr": True}
+        seen.append(body["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        page = (await client.get("/settings")).text
+        assert 'data-role="escalation"' in page and "Uses drafting providers when unset." in page
+        settings = (await client.get(API)).json()
+        assert settings["roles"]["escalation"]["primary"] is None
+        test = {"revision": settings["revision"], "role": "escalation", "index": 0}
+        assert (await client.post(API + "/test", headers=ORIGIN_HEADER, json=test)).json()["ok"]
+
+        update = {
+            "revision": settings["revision"], "role": "escalation", "fallbacks": [],
+            "primary": {"base_url": "https://openrouter.ai/api/v1", "model": "bigger-model",
+                        "api_key_env": "OPENROUTER_API_KEY"},
+        }
+        saved = await client.post(API, headers=ORIGIN_HEADER, json=update)
+        assert saved.status_code == 200 and not saved.json()["restart_required"]
+        assert app.escalation_client.primary.endpoint.model == "bigger-model"
+        test["revision"] = saved.json()["revision"]
+        assert (await client.post(API + "/test", headers=ORIGIN_HEADER, json=test)).json()["ok"]
+
+        update.update(revision=test["revision"], primary=None)
+        cleared = await client.post(API, headers=ORIGIN_HEADER, json=update)
+        assert cleared.status_code == 200 and not cleared.json()["restart_required"]
+        assert app.escalation_client.primary.endpoint.model == "anthropic/claude-haiku-5.5"
+    assert "escalation" not in tomllib.loads(path.read_text())["models"]
+    assert seen == ["anthropic/claude-haiku-5.5", "bigger-model", "bigger-model"]
+    assert [(row[0], row[1], row[3]) for row in usage_rows(app)] == [
+        ("escalation", model, app.owner_id) for model in seen
+    ]
 
 
 async def test_probe_obeys_spend_cap_and_rejects_invalid_legacy_url(dashboard):
@@ -565,7 +607,7 @@ def _live_save(tmp_path, role, primary, fallbacks):
     return _save(current, update)
 
 
-@pytest.mark.parametrize("role", ["chat", "fallback", "media", "drafting", "search"])
+@pytest.mark.parametrize("role", ["chat", "fallback", "media", "drafting", "search", "escalation"])
 @pytest.mark.parametrize("operation", ["set", "set_with_fallbacks", "reorder"])
 def test_saving_any_role_survives_tables_split_by_another_section(tmp_path, role, operation):
     # The live file has [desktop] between its [models.*] tables and still carries the legacy chat_fallback.

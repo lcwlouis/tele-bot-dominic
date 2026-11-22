@@ -12,7 +12,7 @@ import httpx
 
 from dom import turn_log
 from dom.config import Config, ModelRole, ProviderEndpoint
-from dom.usage import Kind, UsageRecorder, check_model_allowed, provider_address, request_kind
+from dom.usage import Kind, UsageRecorder, check_model_allowed, model_failed, provider_address, request_kind
 
 TIMEOUT_SECONDS = 90
 CONNECT_TIMEOUT_SECONDS = 5  # an unreachable home lab should fail over fast
@@ -91,15 +91,24 @@ class ChatClient:
             await check_model_allowed()
             if not self.available:
                 raise MissingProviderKey("Set the provider's API key in .env.")
-            with turn_log.model_call(
-                self.endpoint.model, kind, messages, tools, fallback=fallback, host=self.address,
-            ) as call:
-                response = await self.http.post(
-                    url, json=body, headers=headers, follow_redirects=False,
-                    timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS)),
-                )
-                if call is not None:
-                    call.received(response)
+            try:
+                with turn_log.model_call(
+                    self.endpoint.model, kind, messages, tools, fallback=fallback, host=self.address,
+                ) as call:
+                    response = await self.http.post(
+                        url, json=body, headers=headers, follow_redirects=False,
+                        timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS)),
+                    )
+                    if call is not None:
+                        call.received(response)
+            except (httpx.TransportError, asyncio.CancelledError) as exc:
+                if isinstance(exc, httpx.TransportError):
+                    model_failed()
+                if kind == "escalation" and self.usage is not None:
+                    await self.usage.record_response(None, self.kind, self.endpoint.model, self.address, fallback=fallback)
+                raise
+            if not response.is_success:
+                model_failed()
             if self.usage is not None:
                 await self.usage.record_response(response, self.kind, self.endpoint.model, self.address, fallback=fallback)
             if delay is None or not _retryable(response.status_code):
@@ -161,7 +170,9 @@ def routed_client(
         endpoints += config.providers("fallback")
     elif role == "drafting":  # drafts fall back to the chat route when no drafting provider can answer
         endpoints += config.providers("chat") + config.providers("fallback")
-    kind: Kind = "media" if role == "media" else "chat"
+    elif role == "escalation":
+        endpoints = endpoints or config.providers("drafting")
+    kind: Kind = role if role in ("media", "escalation") else "chat"
     providers = [
         ChatClient(endpoint, config.secret(endpoint.api_key_env) if endpoint.api_key_env else None, http,
                    usage=usage, kind=kind)

@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 SearchProvider = Literal["searxng", "openrouter", "deepseek", "tavily"]
 SEARCH_PROVIDERS = get_args(SearchProvider)
 
-ModelRole = Literal["chat", "fallback", "media", "drafting", "search"]
+ModelRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation"]
 MODEL_ROLES = get_args(ModelRole)
 
 
@@ -291,9 +291,7 @@ class Config(BaseModel):
     def _fallbacks_only_on_roles(self) -> Config:
         for name, endpoint in self.models.items():
             if endpoint.fallbacks and name not in MODEL_ROLES:
-                raise ValueError(
-                    f"models.{name} cannot have fallbacks; only chat, fallback, media, drafting and search can"
-                )
+                raise ValueError(f"models.{name} cannot have fallbacks; supported roles: {', '.join(MODEL_ROLES)}")
             endpoints = (endpoint, *endpoint.fallbacks)
             if name != "search":
                 for item in endpoints:

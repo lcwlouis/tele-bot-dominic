@@ -152,6 +152,7 @@ button { font: 700 var(--t-sm)/1 var(--body); border-radius: 6px; padding: 10px 
 .bar-reflection { fill: #9bcec2; }
 .bar-guard { fill: #668692; }
 .bar-desktop { fill: #b8956a; }
+.bar-escalation { fill: #b58bd0; }
 .fallback-mark { fill: var(--amber); }
 .chart-key { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); list-style: none; padding: 0; margin: var(--s2) 0; font-size: var(--t-sm); }
 .chart-key svg { width: 10px; height: 10px; margin-right: var(--s1); }

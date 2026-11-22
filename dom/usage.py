@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from dom.config import Config
     from dom.store import Store
 
-Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop"]
+Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation"]
 log = logging.getLogger("dom.usage")
 
 
@@ -82,15 +82,19 @@ class _Request:
     kind: Kind
     chat_id: int | None
     allowed: Callable[[], Awaitable[bool]]
+    on_failure: Callable[[], None] | None
 
 
 _request: ContextVar[_Request | None] = ContextVar("model_request", default=None)
 
 
 @contextmanager
-def model_request(kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]]) -> Iterator[None]:
+def model_request(
+    kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]],
+    *, on_failure: Callable[[], None] | None = None,
+) -> Iterator[None]:
     """Carry request attribution and approval through tool rounds, retries and fallback."""
-    token = _request.set(_Request(kind, chat_id, allowed))
+    token = _request.set(_Request(kind, chat_id, allowed, on_failure))
     try:
         yield
     finally:
@@ -106,6 +110,12 @@ async def check_model_allowed() -> None:
     request = _request.get()
     if request is not None and not await request.allowed():
         raise ModelCallSkipped
+
+
+def model_failed() -> None:
+    request = _request.get()
+    if request is not None and request.on_failure is not None:
+        request.on_failure()
 
 
 def _tokens(value: object) -> int | None:
@@ -155,11 +165,11 @@ class UsageRecorder:
             log.exception("could not record %s usage; the model call is unaffected", kind)
 
     async def record_response(
-        self, response: httpx.Response, kind: Kind, model: str, host: str, *, fallback: bool = False,
+        self, response: httpx.Response | None, kind: Kind, model: str, host: str, *, fallback: bool = False,
         default_cost: float = 0.0,
     ) -> None:
         try:
-            payload = response.json()
+            payload = response.json() if response is not None else None
         except ValueError:
             payload = None
         request = _request.get()

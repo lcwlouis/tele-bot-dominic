@@ -136,8 +136,8 @@ class ModelUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_role_slots(self) -> ModelUpdate:
-        if self.primary is None and (self.role not in ("fallback", "search") or self.fallbacks):
-            raise ValueError("Only the fallback and search roles may be left empty.")
+        if self.primary is None and (self.role not in ("fallback", "search", "escalation") or self.fallbacks):
+            raise ValueError("Only fallback, search and escalation may be left empty.")
         if self.primary is not None:
             self.primary = _validate_slot_for_role(self.role, self.primary)
         self.fallbacks = [_validate_slot_for_role(self.role, provider) for provider in self.fallbacks]
@@ -494,6 +494,8 @@ async def test_provider(request: Request) -> TestResult:
     snapshot = _snapshot(app.config.home)
     _check_revision(snapshot, test.revision)
     providers = snapshot.config.providers(test.role)
+    if not providers and test.role == "escalation":
+        providers = snapshot.config.providers("drafting")
     current = app.client.primary if isinstance(app.client, FallbackClient) else app.client
     if test.role == "search" and test.index is None:
         if not providers:
@@ -624,8 +626,11 @@ async def _probe(
     if role == "search":
         return await _probe_search(app, http, config, provider)
     local = _is_local(provider.base_url)
+    escalation_owner = app.owner_id if role == "escalation" else None
 
     async def allowed() -> bool:  # a local endpoint costs nothing, so the spend cap never blocks testing or saving it
+        if escalation_owner is not None and not await app.dispatch.model_allowed(escalation_owner):
+            return False
         return local or not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
 
     start = monotonic()
@@ -640,9 +645,10 @@ async def _probe(
         _check_keys(config, [provider])
         key = config.secret(provider.api_key_env) if provider.api_key_env else None
         probe_endpoint = provider.model_copy(update={"reasoning_effort": None})
-        client = ChatClient(probe_endpoint, key, http, sleep=app.sleep, usage=app.dispatch.usage)
+        kind = "escalation" if role == "escalation" else "chat"
+        client = ChatClient(probe_endpoint, key, http, sleep=app.sleep, usage=app.dispatch.usage, kind=kind)
         async with asyncio.timeout(TEST_TIMEOUT):
-            with model_request("chat", None, allowed):
+            with model_request(kind, escalation_owner, allowed):
                 message = await client.complete(
                     [{"role": "user", "content": "Reply with OK."}], [],
                     once=True, max_tokens=256, timeout=TEST_TIMEOUT,
