@@ -217,6 +217,9 @@ def _desktop_command(text: str, bot_username: str | None) -> bool:
     return match is not None and (match[1] is None or match[1].lower() == (bot_username or "").lower())
 
 
+DOCUMENT_TIMEOUT = 60  # seconds a /desktop document may take to download while the owner DM's ingest waits
+
+
 async def _receive_desktop_document(app: App, message: Message, msg: IncomingMessage) -> IncomingMessage:
     document = message.document
     if document is None or msg.media is None:
@@ -225,7 +228,8 @@ async def _receive_desktop_document(app: App, message: Message, msg: IncomingMes
         if (document.file_size or 0) > desktop_files.MAX_FILE_BYTES:
             raise ValueError("Desktop documents can be at most 20 MB.")
         with desktop_files.BoundedFile() as content:
-            downloaded = await app.bot.download(document, destination=content)
+            async with asyncio.timeout(DOCUMENT_TIMEOUT):
+                downloaded = await app.bot.download(document, destination=content)
             if downloaded is None:
                 raise OSError("no document returned")
             name = desktop_files.stage_inbox(app.home.root, document.file_name, content.getvalue())
@@ -398,18 +402,14 @@ async def handle_message(app: App, message: Message) -> None:
         decision = await gate.decide(app.store, msg, app.owner_id)
         if decision == "drop":
             return
-        fetch_document = (
+        if (
             owner_dm and message.document is not None and app.config.desktop_mode != "off"
             and _desktop_command(msg.text, app.bot_username) and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
-        )
-        if not fetch_document:
-            await _record(app, msg, describe_media=decision == "process", notify=decision == "process")
-    if fetch_document:
-        # The download (up to 20 MB) and any message it sends wait outside the lock. Recording is idempotent per
-        # message, so an edit handled in the meantime (which recorded it first) is kept as it is.
-        msg = await _receive_desktop_document(app, message, msg)
-        async with app.ingest_locks[msg.chat_id]:
-            await _record(app, msg, describe_media=True, notify=True)
+        ):
+            # Under the ingest lock on purpose: the owner's next message must not be recorded, answered or marked
+            # read before this one. The download is bounded by DOCUMENT_TIMEOUT so the wait stays short.
+            msg = await _receive_desktop_document(app, message, msg)
+        await _record(app, msg, describe_media=decision == "process", notify=decision == "process")
     if decision == "hold":
         kind = "chat" if msg.chat_type == "private" else "group"
         await gate.request_approval(

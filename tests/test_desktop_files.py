@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -355,50 +356,50 @@ async def test_images_go_as_photos_and_fall_back_to_files(make_app):
     assert sent == [("photo", "page.png"), ("document", "long-page.png"), ("document", "notes.txt"), ("document", "huge.jpg")]
 
 
-async def test_the_ingest_lock_is_free_during_a_document_download_and_the_messages_it_sends(make_app, monkeypatch):
+async def test_a_follow_up_sent_during_a_document_download_is_recorded_after_it(make_app, monkeypatch):
+    """The download stays under the owner DM's ingest lock: a message sent meanwhile cannot be recorded, answered or
+    marked read before the /desktop message (review of PR #22)."""
     app = make_app()
     app.home = Home(app.home.root / 'home')
     app.sandbox = Sandbox()
     adopt(app, DesktopWorker(app, app.sandbox))
     app.config = app.config.model_copy(update={"desktop_mode": "local"})
-    monkeypatch.setattr("dom.desktop.files.MAX_FILE_BYTES", 3)
-    held = []
-    send = app.bot.send_message
+    started, release = asyncio.Event(), asyncio.Event()
 
     async def download(document, *, destination):
-        held.append(("download", app.ingest_locks[OWNER].locked()))
-        destination.write(b"1234")  # more than the limit, so the owner is told
-        return destination
-
-    async def watched_send(chat_id, text, **kw):
-        held.append(("send", app.ingest_locks[OWNER].locked()))
-        return await send(chat_id, text, **kw)
-
-    monkeypatch.setattr(app.bot, "download", download, raising=False)
-    monkeypatch.setattr(app.bot, "send_message", watched_send)
-    document = Document(file_id="file", file_unique_id="unique", file_name="a.pdf", file_size=2)
-    await handle_message(app, tg(OWNER, OWNER, text=None, msg_id=7, caption="/desktop", document=document))
-    assert held == [("download", False), ("send", False)]
-    assert await app.store.has_message(OWNER, 7)  # the message is still recorded, after the download
-
-
-async def test_an_edit_handled_during_the_download_is_kept_and_the_message_still_wakes_dom_once(make_app, monkeypatch):
-    app = make_app()
-    app.home = Home(app.home.root / 'home')
-    app.sandbox = Sandbox()
-    adopt(app, DesktopWorker(app, app.sandbox))
-    app.config = app.config.model_copy(update={"desktop_mode": "local"})
-    notified = []
-    monkeypatch.setattr(app.dispatch, "notify", notified.append)
-
-    async def download(document, *, destination):
-        # an edit of the same message is handled while the file comes down: the lock is free, so it records it
-        await handle_edited_message(app, tg(OWNER, OWNER, text=None, msg_id=8, caption="/desktop edited", document=document_in))
+        started.set()
+        await release.wait()
         destination.write(b"data")
         return destination
 
-    document_in = Document(file_id="file", file_unique_id="unique", file_name="a.pdf", file_size=4)
     monkeypatch.setattr(app.bot, "download", download, raising=False)
-    await handle_message(app, tg(OWNER, OWNER, text=None, msg_id=8, caption="/desktop", document=document_in))
-    assert await app.store.has_message(OWNER, 8)
-    assert len(notified) == 1
+    document = Document(file_id="file", file_unique_id="unique", file_name="a.pdf", file_size=4)
+    first = asyncio.create_task(handle_message(app, tg(OWNER, OWNER, text=None, msg_id=10, caption="/desktop", document=document)))
+    await asyncio.wait_for(started.wait(), 2)
+    second = asyncio.create_task(handle_message(app, tg(OWNER, OWNER, text="also page 2", msg_id=11)))
+    await asyncio.sleep(0.05)
+    assert not await app.store.has_message(OWNER, 11)  # waits behind the download
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 2)
+    rows = await app.store._run(lambda: app.store._conn.execute(
+        "SELECT msg_id, media_json FROM messages WHERE chat_id = ? AND msg_id IS NOT NULL ORDER BY id", (str(OWNER),)).fetchall())
+    assert [r[0] for r in rows] == [10, 11]
+    assert "desktop_inbox" in (rows[0][1] or "")
+
+
+async def test_a_stuck_document_download_gives_up_and_still_records_the_message(make_app, monkeypatch):
+    app = make_app()
+    app.home = Home(app.home.root / 'home')
+    app.sandbox = Sandbox()
+    adopt(app, DesktopWorker(app, app.sandbox))
+    app.config = app.config.model_copy(update={"desktop_mode": "local"})
+    monkeypatch.setattr("dom.telegram.handlers.DOCUMENT_TIMEOUT", 0.05)
+
+    async def download(document, *, destination):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(app.bot, "download", download, raising=False)
+    document = Document(file_id="file", file_unique_id="unique", file_name="a.pdf", file_size=4)
+    await asyncio.wait_for(handle_message(app, tg(OWNER, OWNER, text=None, msg_id=12, caption="/desktop", document=document)), 2)
+    assert await app.store.has_message(OWNER, 12)
+    assert any("Couldn't save the document" in c[2] for c in app.bot.of("send", OWNER))

@@ -56,7 +56,7 @@ side services: scheduler (reminders, heartbeat/daydream), web UI (FastAPI),
 - `triage`: TypeSafe Jev via `POST /api/alpha/decisions` with `~typesafe/jev-latest`. This is a classifier, not a chat model, so it has no chain and the settings page shows it read-only.
 - A chat model may lack vision (the homelab one does). Anything visual goes through the media model.
 - A provider that fails (connection error, 5xx or 429 after retries, or 401, 402, 403 or 404) hands over to the next one. The serving provider is recorded in the turn log and usage, and the spend cap is checked before every attempt.
-- Requests to an OpenRouter host (chat, media, drafting, search) send `provider: {zdr: true}`, so a model without a zero-data-retention endpoint fails instead of leaking. Other cloud providers are the owner's responsibility.
+- Requests to an OpenRouter host (chat, media, drafting, search, triage) send `provider: {zdr: true}`, so a model without a zero-data-retention endpoint fails instead of leaking. Other cloud providers are the owner's responsibility.
 - The owner sets providers on the dashboard's Settings page (`/api/models`, owner-only, same-origin JSON). A save is validated, revision-checked and probed: each added or changed slot gets one short real call (8 s timeout, no redirects), and any failure refuses the save with a per-slot error. A new key variable that is not in `.env` yet saves untested. `config.toml` is written atomically with a `.bak`, and routes apply without a restart. API keys stay in `.env`; the page shows only whether one is set.
 
 When Jev is down, the main model decides through a `no_response` action. The system never pretends to be Jev.
