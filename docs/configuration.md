@@ -21,6 +21,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `window_size` | `500` | Safety bound on the messages in one chat's window, for chats of very short messages: past it a trim also happens, down to 60% of it. Not the normal trigger. |
 | `daily_spend_cap_usd` | `1.0` | Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap. |
 | `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why. |
+| `memory_self_edit` | `false` | Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves. |
 | `leak_check` | `true` | Use Jev to screen eligible outbound text and network plugin calls for private information. |
 | `leak_threshold` | `1.2` | Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call. |
 

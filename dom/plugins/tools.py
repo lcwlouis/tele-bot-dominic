@@ -108,12 +108,13 @@ def _tool(app: App, plugin: Plugin, tool: ToolManifest) -> Tool:
                 return "error: plugin call skipped"
             # The registry lock covers only the approval check. The runner pins the hash again and refuses
             # to queue behind another plugin, so a slow plugin never stalls approvals or scans.
-            folder = await app.plugins.approved_folder(plugin)
-            if folder is None:
-                return "error: plugin changed or is no longer approved"
-            result = await asyncio.to_thread(
-                app.plugin_runner.run, folder, tool.name, args, plugin.manifest, approved_hash=plugin.hash,
-            )
+            with app.plugin_runner.active(plugin.manifest.name):
+                folder = await app.plugins.approved_folder(plugin)
+                if folder is None:
+                    return "error: plugin changed or is no longer approved"
+                result = await asyncio.to_thread(
+                    app.plugin_runner.run, folder, tool.name, args, plugin.manifest, approved_hash=plugin.hash,
+                )
         except PluginError as error:
             return untrusted(f"error: {error}", limit=WRAPPED_OUTPUT_LIMIT)
         except (OSError, ValueError, RuntimeError):

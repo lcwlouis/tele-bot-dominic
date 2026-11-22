@@ -175,3 +175,17 @@ These are the risks considered for commands and panels, and what Dom does.
   `plugin.toml`. Adding a command, widening its scopes or adding a panel is a
   new version that needs a fresh review, and the review page says when the
   declared surfaces changed since the approved version.
+
+## Retiring and deleting plugins
+
+- **Retire (disable).** From the Plugins page on the dashboard or `/plugins` in
+  the owner DM, retiring a plugin marks it disabled, keeps its files on disk,
+  removes its Telegram commands from the owner's `/` menu, hides its dashboard
+  panels, and stops Dom from offering its tools.
+- **Delete.** Deleting a plugin (with confirmation from the Plugins page or
+  `/plugins`) refuses if the plugin is currently mid-call or changed since
+  confirmation, moves the plugin folder and writes its database rows and stored
+  state into `<backups>/deleted/`, removes the database row and stored state,
+  settles any pending proposal for it, refreshes the Telegram command menu
+  (retrying on the next background tick if Telegram fails), and records an
+  owner event.

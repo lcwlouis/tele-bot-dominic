@@ -11,6 +11,7 @@ import signal
 import struct
 import subprocess
 import sys
+from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryFile, TemporaryDirectory
@@ -296,6 +297,27 @@ class PluginRunner:
         self.home = home.resolve()
         self.store = store
         self.last_failure: str | None = None  # why the last self-test failed, for self_inspect
+        self._active_lock = Lock()
+        self._active: dict[str, int] = {}
+
+    @contextmanager
+    def active(self, name: str):
+        """Mark plugin `name` as mid-call so concurrent deletion is refused."""
+        with self._active_lock:
+            self._active[name] = self._active.get(name, 0) + 1
+        try:
+            yield
+        finally:
+            with self._active_lock:
+                remaining = self._active.get(name, 1) - 1
+                if remaining > 0:
+                    self._active[name] = remaining
+                else:
+                    self._active.pop(name, None)
+
+    def is_running(self, name: str) -> bool:
+        with self._active_lock:
+            return self._active.get(name, 0) > 0
 
     def arguments(self, folder: Path, manifest: Manifest, *, filter_fd: int, network: bool = False) -> list[str]:
         executable = Path(sys.executable).resolve()
@@ -386,30 +408,31 @@ class PluginRunner:
         if not _PROCESS.acquire(blocking=False):
             raise PluginBusy("plugin busy, try again")
         try:
-            try:
-                snapshot = read_plugin(plugin_dir)
-                if snapshot.manifest != manifest or snapshot.hash != approved_hash:
-                    raise PluginError("Plugin changed since approval.")
-                if not manifest.storage:
-                    return self._invoke(snapshot, request, manifest.network, structured="panel" in request)
-                store = self.store
-                if store is None:
-                    raise PluginError("Plugin storage is unavailable.")
-                name = snapshot.manifest.name
-
-                def save(value: str) -> None:
-                    store.write_plugin_storage(name, approved_hash, value)
-
+            with self.active(manifest.name):
                 try:
-                    value = store.read_plugin_storage(name, approved_hash)
-                    return self._invoke(
-                        snapshot, {**request, "storage": json.loads(value) if value is not None else None},
-                        False, structured="panel" in request, save_storage=save,
-                    )
-                except ValueError as error:
-                    raise PluginError(str(error)) from None
-            except OSError:
-                raise PluginError("Could not start or read the plugin.") from None
+                    snapshot = read_plugin(plugin_dir)
+                    if snapshot.manifest != manifest or snapshot.hash != approved_hash:
+                        raise PluginError("Plugin changed since approval.")
+                    if not manifest.storage:
+                        return self._invoke(snapshot, request, manifest.network, structured="panel" in request)
+                    store = self.store
+                    if store is None:
+                        raise PluginError("Plugin storage is unavailable.")
+                    name = snapshot.manifest.name
+
+                    def save(value: str) -> None:
+                        store.write_plugin_storage(name, approved_hash, value)
+
+                    try:
+                        value = store.read_plugin_storage(name, approved_hash)
+                        return self._invoke(
+                            snapshot, {**request, "storage": json.loads(value) if value is not None else None},
+                            False, structured="panel" in request, save_storage=save,
+                        )
+                    except ValueError as error:
+                        raise PluginError(str(error)) from None
+                except OSError:
+                    raise PluginError("Could not start or read the plugin.") from None
         finally:
             _PROCESS.release()
 

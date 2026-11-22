@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Literal
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket
@@ -14,9 +16,10 @@ from websockets.exceptions import WebSocketException
 
 from dom.desktop.client import SandboxError
 from dom.desktop.sandbox import LocalSandbox
+from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.telegram import owner
 from dom.web.auth import same_origin
-from dom.web.pages import owner_app, panel, render
+from dom.web.pages import form, owner_app, panel, render
 
 router = APIRouter(prefix="/desktop")
 VNC_PATH = "/desktop/vnc/"
@@ -64,12 +67,30 @@ def _lane(app, name: str | None):
     return lane
 
 
+async def desktop_history_context(app, message: str = "") -> dict:
+    tz = ZoneInfo(app.config.timezone)
+
+    def local(stamp: str | None) -> str:
+        return f"{datetime.fromisoformat(stamp).astimezone(tz):%a %d %b %H:%M}" if stamp else ""
+
+    rows = [
+        {
+            **row,
+            "finished_local": local(row.get("finished_at") or row.get("created_at")),
+        }
+        for row in await app.store.desktop_tasks(app.owner_id, limit=20)
+        if row["status"] not in DESKTOP_ACTIVE
+    ]
+    return {"rows": rows, "message": message}
+
+
 async def _context(app, lane, message: str = "") -> dict:
+    history = await desktop_history_context(app)
     if lane is None:
         return {
             "enabled": False,
             "status": "off", "task": None, "handoff_host": None, "local": False, "message": message, "error": None,
-            "container": None, "q": "", "containers": [], "hosts": [],
+            "container": None, "q": "", "containers": [], "hosts": [], "history": history,
         }
     fleet = app.desktop_worker
     sandbox, status = lane.sandbox, lane.status()
@@ -123,6 +144,7 @@ async def _context(app, lane, message: str = "") -> dict:
         "q": _query(lane.name, fleet.default),
         "containers": containers,
         "hosts": hosts,
+        "history": history,
     }
 
 
@@ -178,6 +200,19 @@ async def computer_action(request: Request, action: Literal["start", "stop"], co
             else:
                 message = await _change_computer(app, sandbox, action)
     return render("desktop_state.html", context=await _context(app, lane, message))
+
+
+@router.post("/tasks/{task_id:int}/delete")
+async def desktop_delete_task(request: Request, task_id: int):
+    app = owner_app(request)
+    if not 0 < task_id < 2**63:
+        raise HTTPException(404)
+    expected = (await form(request)).get("expected", [""])[0]
+    ok, message = await owner.delete_desktop_task(app, task_id, expected)
+    response = render("desktop_history.html", context=await desktop_history_context(app, message))
+    if not ok:
+        response.status_code = 404 if "not found" in message else 409
+    return response
 
 
 @router.post("/tasks/{task_id:int}/{steps:int}/done")

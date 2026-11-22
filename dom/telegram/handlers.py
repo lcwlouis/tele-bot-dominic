@@ -21,6 +21,7 @@ from aiogram.types import (
 
 from dom.claim import try_claim
 from dom.config import MODEL_ROLES, Config, load_config
+from dom.deletion import STALE_MESSAGE, hash_matches, stamp_matches, stamp_token
 from dom.dispatch import Dispatcher
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
@@ -77,6 +78,7 @@ class App:
     plugin_runner: PluginRunner = field(init=False)
     self_work: SelfWork = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
+    menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
 
     def __post_init__(self) -> None:
         def now() -> datetime:
@@ -249,8 +251,39 @@ async def handle_message(app: App, message: Message) -> None:
     )
     if command == "/plugins":
         if owner_dm:
-            await owner.show_plugins(app)
-            await owner.record_event(app, f"{_person(msg.sender_name)} ran /plugins")
+            args = msg.text.split()[1:]
+            if len(args) == 2 and args[0].lower() == "delete":
+                if error := await _confirm_delete_plugin(app, args[1]):
+                    await app.bot.send_message(msg.chat_id, error)
+            else:
+                await owner.show_plugins(app)
+                await owner.record_event(app, f"{_person(msg.sender_name)} ran /plugins")
+        return
+    if command == "/skills":
+        if owner_dm:
+            args = msg.text.split()[1:]
+            if len(args) == 2 and args[0].lower() == "retire":
+                _, reply = await owner.retire_skill(app, args[1])
+                await app.bot.send_message(msg.chat_id, reply)
+            elif len(args) == 2 and args[0].lower() == "restore":
+                _, reply = await owner.restore_skill(app, args[1])
+                await app.bot.send_message(msg.chat_id, reply)
+            elif len(args) == 2 and args[0].lower() == "delete":
+                if error := await _confirm_delete_skill(app, args[1]):
+                    await app.bot.send_message(msg.chat_id, error)
+            else:
+                await owner.show_skills(app)
+                await owner.record_event(app, f"{_person(msg.sender_name)} ran /skills")
+        return
+    if command == "/ownwork":
+        if owner_dm:
+            args = msg.text.split()[1:]
+            if len(args) == 2 and args[0].lower() == "delete" and (task_id := _item_id(args[1])) is not None:
+                if error := await _confirm_delete_own_task(app, task_id):
+                    await app.bot.send_message(msg.chat_id, error)
+            else:
+                await owner.show_own_work(app)
+                await owner.record_event(app, f"{_person(msg.sender_name)} ran /ownwork")
         return
     if command == "/t3":
         if owner_dm:
@@ -258,8 +291,13 @@ async def handle_message(app: App, message: Message) -> None:
         return
     if command == "/tasks":
         if owner_dm:
-            await owner.show_tasks(app)
-            await owner.record_event(app, f"{_person(msg.sender_name)} ran /tasks")
+            args = msg.text.split()[1:]
+            if len(args) == 2 and args[0].lower() == "delete" and (task_id := _item_id(args[1])) is not None:
+                if error := await _confirm_delete_desktop_task(app, task_id):
+                    await app.bot.send_message(msg.chat_id, error)
+            else:
+                await owner.show_tasks(app)
+                await owner.record_event(app, f"{_person(msg.sender_name)} ran /tasks")
         return
     if command == "/import":
         if owner_dm:
@@ -289,12 +327,28 @@ async def handle_message(app: App, message: Message) -> None:
             await owner.edit_stickers(app, msg.text.split()[1:])
             return
         if command == "/reminders":
-            await owner.show_reminders(app)
-            await owner.record_event(app, f"{who} ran /reminders")
+            args = msg.text.split()[1:]
+            if len(args) == 2 and args[0].lower() == "delete" and (item_id := _item_id(args[1])) is not None:
+                if error := await _confirm_delete_reminder(app, item_id):
+                    await app.bot.send_message(msg.chat_id, error)
+            elif len(args) == 1 and args[0].lower() == "all":
+                await owner.show_reminders(app, include_settled=True)
+                await owner.record_event(app, f"{who} ran /reminders all")
+            else:
+                await owner.show_reminders(app)
+                await owner.record_event(app, f"{who} ran /reminders")
             return
         if command == "/proposals":
-            await owner.show_proposals(app)
-            await owner.record_event(app, f"{who} ran /proposals")
+            args = msg.text.split()[1:]
+            if len(args) == 2 and args[0].lower() == "delete" and (item_id := _item_id(args[1])) is not None:
+                if error := await _confirm_delete_proposal(app, item_id):
+                    await app.bot.send_message(msg.chat_id, error)
+            elif len(args) == 1 and args[0].lower() == "settled":
+                await owner.show_settled_proposals(app)
+                await owner.record_event(app, f"{who} ran /proposals settled")
+            else:
+                await owner.show_proposals(app)
+                await owner.record_event(app, f"{who} ran /proposals")
             return
         if command == "/preset":
             await owner.show_presets(app)
@@ -535,6 +589,121 @@ def _item_id(raw: str) -> int | None:
     return None
 
 
+async def _settle_confirm(app: App, query: CallbackQuery, label: str) -> None:
+    if query.message is None:
+        return
+    try:
+        await app.bot.edit_message_reply_markup(
+            chat_id=query.message.chat.id, message_id=query.message.message_id,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]]),
+        )
+    except TelegramBadRequest:
+        log.info("could not settle confirmation buttons in chat %s", query.message.chat.id)
+
+
+async def _confirm_delete_plugin(app: App, name: str, expected_hash: str | None = None) -> str | None:
+    from dom.plugins.manifest import validate_name
+
+    try:
+        validate_name(name)
+    except ValueError:
+        return "Unknown plugin"
+    row = next((r for r in await app.plugins.listing() if r["name"] == name), None)
+    if row is None:
+        return "Unknown plugin"
+    if expected_hash is not None and not hash_matches(row["hash"], expected_hash):
+        return STALE_MESSAGE
+    digest = row["hash"][:16]
+    await owner.send_delete_confirm(
+        app,
+        f"Delete plugin {name}? Its files and database state are moved to the deletion archive before removal.",
+        f"plugin:delyes:{name}:{digest}", f"plugin:delno:{name}",
+    )
+    return None
+
+
+async def _confirm_delete_skill(app: App, name: str, expected_hash: str | None = None) -> str | None:
+    from dom import skills
+
+    try:
+        skills._validate_name(name)
+        live_hash = await asyncio.to_thread(skills.skill_hash, app.home, name)
+    except (ValueError, FileNotFoundError):
+        return f"Skill {name} not found."
+    if expected_hash is not None and not hash_matches(live_hash, expected_hash):
+        return STALE_MESSAGE
+    yes_data = await owner.skill_callback(app, "delyes", name, live_hash)
+    no_data = await owner.skill_callback(app, "delno", name)
+    await owner.send_delete_confirm(
+        app,
+        f"Delete skill {name}? Its files are moved to the deletion archive before removal.",
+        yes_data, no_data,
+    )
+    return None
+
+
+async def _confirm_delete_reminder(app: App, reminder_id: int, expected_stamp: str | None = None) -> str | None:
+    row = await app.store.get_reminder(app.owner_id, reminder_id)
+    if row is None:
+        return f"Reminder #{reminder_id} not found."
+    if expected_stamp is not None and not stamp_matches(row["created_at"], expected_stamp):
+        return STALE_MESSAGE
+    token = stamp_token(row["created_at"])
+    await owner.send_delete_confirm(
+        app, f"Delete reminder #{reminder_id}? A copy is saved to the deletion archive.",
+        f"rem:delyes:{reminder_id}:{token}", f"rem:delno:{reminder_id}",
+    )
+    return None
+
+
+async def _confirm_delete_desktop_task(app: App, task_id: int, expected_stamp: str | None = None) -> str | None:
+    row = await app.store.get_desktop_task(app.owner_id, task_id) if app.owner_id is not None else None
+    if row is None:
+        return f"Desktop task #{task_id} not found."
+    if row["status"] in ("queued", "running", "waiting_owner"):
+        return f"Cannot delete desktop task #{task_id} while it is {row['status'].replace('_', ' ')}."
+    if expected_stamp is not None and not stamp_matches(row["created_at"], expected_stamp):
+        return STALE_MESSAGE
+    token = stamp_token(row["created_at"])
+    await owner.send_delete_confirm(
+        app, f"Delete desktop task #{task_id}? Its record and attachments are moved to the deletion archive.",
+        f"desktop:delyes:{task_id}:{token}", f"desktop:delno:{task_id}",
+    )
+    return None
+
+
+async def _confirm_delete_own_task(app: App, task_id: int, expected_stamp: str | None = None) -> str | None:
+    row = await app.store.get_self_task(task_id)
+    if row is None:
+        return f"Task #{task_id} not found."
+    if row["status"] in ("planned", "running"):
+        return f"Cannot delete task #{task_id} while it is {row['status']}."
+    if expected_stamp is not None and not stamp_matches(row["announced_at"], expected_stamp):
+        return STALE_MESSAGE
+    token = stamp_token(row["announced_at"])
+    await owner.send_delete_confirm(
+        app, f"Delete self-directed task #{task_id} and its screenshots? They are moved to the deletion archive.",
+        f"own:delyes:{task_id}:{token}", f"own:delno:{task_id}",
+    )
+    return None
+
+
+async def _confirm_delete_proposal(app: App, proposal_id: int, expected_stamp: str | None = None) -> str | None:
+    row = await app.store.get_proposal(proposal_id)
+    if row is None:
+        return f"Proposal #{proposal_id} not found."
+    if row["status"] == "pending":
+        return f"Proposal #{proposal_id} is still pending. Approve or reject it before deleting."
+    if expected_stamp is not None and not stamp_matches(row["created_at"], expected_stamp):
+        return STALE_MESSAGE
+    token = stamp_token(row["created_at"])
+    await owner.send_delete_confirm(
+        app, f"Delete settled proposal #{proposal_id}? A copy is saved to the deletion archive.",
+        f"prop:delyes:{proposal_id}:{token}", f"prop:delno:{proposal_id}",
+    )
+    return None
+
+
 async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
     action, _, payload = data.partition(":")
     if action == "all":
@@ -543,23 +712,35 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
         if first_id is not None and last_id is not None:
             await _toast(app, query, await owner.approve_proposal_page(app, first_id, last_id))
         return
-    proposal_id = _item_id(payload)
+    raw_id, _, token = payload.partition(":")
+    proposal_id = _item_id(raw_id)
     if proposal_id is None:
         return
-    if action in ("yes", "no"):
+    if action in ("yes", "no") and not token:
         outcome = await app.proposals.decide(proposal_id, action == "yes")
         await _toast(app, query, outcome)
         await _settle_button(app, query, outcome)
-    elif action == "page":
+    elif action == "page" and not token:
         await _toast(app, query)
         await owner.show_proposals(app, proposal_id)
         await owner.record_event(app, "Paged through pending proposals")
-    elif action == "show":
+    elif action == "show" and not token:
         row = next((row for row in await app.proposals.pending() if row["id"] == proposal_id), None)
         await _toast(app, query, None if row else "already handled")
         if row:
             await app.proposals.send(row)
             await owner.record_event(app, f"Viewed proposal #{proposal_id}")
+    elif action == "del":
+        error = await _confirm_delete_proposal(app, proposal_id, token or None)
+        await _toast(app, query, error)
+    elif action == "delyes":
+        ok, message = await app.proposals.delete(proposal_id, token)
+        await _toast(app, query, message)
+        if ok:
+            await _settle_confirm(app, query, f"Deleted #{proposal_id}")
+    elif action == "delno":
+        await _toast(app, query, "Cancelled")
+        await _settle_confirm(app, query, "Cancelled")
 
 
 async def handle_callback(app: App, query: CallbackQuery) -> None:
@@ -587,31 +768,58 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         return
     if action == "desktop":
         if (
-            app.desktop_worker is None or query.from_user.is_bot or query.message is None
+            query.from_user.is_bot or query.message is None
             or query.message.chat.id != owner_id or query.message.chat.type != "private"
         ):
             return
         decision, _, payload = raw_chat_id.partition(":")
-        raw_id, _, raw_steps = payload.partition(":")
+        raw_id, _, rest = payload.partition(":")
         task_id = _item_id(raw_id)
         if task_id is not None:
-            if decision == "cancel" and not raw_steps:
+            if decision == "cancel" and not rest and app.desktop_worker is not None:
                 changed = await app.desktop_worker.cancel(owner_id, task_id)
                 await _toast(app, query, "Cancelled" if changed else "already handled")
-            elif decision == "done" and (steps := _item_id(raw_steps)) is not None:
+            elif decision == "done" and app.desktop_worker is not None and (steps := _item_id(rest)) is not None:
                 changed = await app.desktop_worker.resume(owner_id, task_id, steps)
                 await _toast(app, query, "Resumed" if changed else "already handled")
+            elif decision == "del":
+                error = await _confirm_delete_desktop_task(app, task_id, rest or None)
+                await _toast(app, query, error)
+            elif decision == "delyes":
+                ok, message = await owner.delete_desktop_task(app, task_id, rest)
+                await _toast(app, query, message)
+                if ok:
+                    await _settle_confirm(app, query, f"Deleted #{task_id}")
+            elif decision == "delno":
+                await _toast(app, query, "Cancelled")
+                await _settle_confirm(app, query, "Cancelled")
         return
     if action == "own":
-        decision, _, raw_id = raw_chat_id.partition(":")
         if (
-            not query.from_user.is_bot and query.message is not None and query.message.chat.id == owner_id
-            and query.message.chat.type == "private" and decision == "cancel" and (item_id := _item_id(raw_id)) is not None
+            query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
         ):
-            changed = await app.self_work.cancel(item_id)
-            await _toast(app, query, "Cancelled" if changed else "already handled")
+            return
+        decision, _, payload = raw_chat_id.partition(":")
+        raw_id, _, token = payload.partition(":")
+        item_id = _item_id(raw_id)
+        if item_id is not None:
+            if decision == "cancel" and not token:
+                changed = await app.self_work.cancel(item_id)
+                await _toast(app, query, "Cancelled" if changed else "already handled")
+            elif decision == "del":
+                error = await _confirm_delete_own_task(app, item_id, token or None)
+                await _toast(app, query, error)
+            elif decision == "delyes":
+                ok, message = await app.self_work.delete(item_id, token)
+                await _toast(app, query, message)
+                if ok:
+                    await _settle_confirm(app, query, f"Deleted #{item_id}")
+            elif decision == "delno":
+                await _toast(app, query, "Cancelled")
+                await _settle_confirm(app, query, "Cancelled")
         return
-    if action in ("prop", "plugin"):
+    if action in ("prop", "plugin", "skill"):
         if (
             query.from_user.is_bot or query.message is None or query.message.chat.id != owner_id
             or query.message.chat.type != "private"
@@ -619,8 +827,45 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             return
         if action == "prop":
             await _handle_proposal(app, query, raw_chat_id)
+        elif action == "skill":
+            decision, _, payload = raw_chat_id.partition(":")
+            resolved = await owner.resolve_skill_callback(app, payload)
+            if decision == "delno":
+                await _toast(app, query, "Cancelled")
+                await _settle_confirm(app, query, "Cancelled")
+            elif resolved is None:
+                await _toast(app, query, "Unknown skill")
+            else:
+                name, digest = resolved
+                if decision == "retire":
+                    _, message = await owner.retire_skill(app, name)
+                    await _toast(app, query, message)
+                elif decision == "restore":
+                    _, message = await owner.restore_skill(app, name)
+                    await _toast(app, query, message)
+                elif decision == "del":
+                    error = await _confirm_delete_skill(app, name, digest or None)
+                    await _toast(app, query, error)
+                elif decision == "delyes":
+                    ok, message = await owner.delete_skill(app, name, digest)
+                    await _toast(app, query, message)
+                    if ok:
+                        await _settle_confirm(app, query, f"Deleted {name}")
         elif raw_chat_id.startswith("disable:"):
             await _toast(app, query, await owner.disable_plugin(app, raw_chat_id.removeprefix("disable:")))
+        elif raw_chat_id.startswith("del:"):
+            name, _, digest = raw_chat_id.removeprefix("del:").partition(":")
+            error = await _confirm_delete_plugin(app, name, digest or None)
+            await _toast(app, query, error)
+        elif raw_chat_id.startswith("delyes:"):
+            name, _, digest = raw_chat_id.removeprefix("delyes:").partition(":")
+            outcome = await owner.delete_plugin(app, name, digest)
+            await _toast(app, query, outcome)
+            if outcome == "Deleted":
+                await _settle_confirm(app, query, f"Deleted {name}")
+        elif raw_chat_id.startswith("delno:"):
+            await _toast(app, query, "Cancelled")
+            await _settle_confirm(app, query, "Cancelled")
         return
     if action == "update":
         if (
@@ -633,12 +878,30 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             await _toast(app, query, await owner.decide_update(app, decision, nonce))
         return
     if action == "rem":
-        decision, _, raw_id = raw_chat_id.partition(":")
-        if not query.from_user.is_bot and decision == "cancel" and (item_id := _item_id(raw_id)) is not None:
+        decision, _, payload = raw_chat_id.partition(":")
+        raw_id, _, token = payload.partition(":")
+        if (
+            query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
+            or (item_id := _item_id(raw_id)) is None
+        ):
+            return
+        if decision == "cancel" and not token:
             changed = await app.dispatch.reminders.cancel(item_id)
             outcome = "Cancelled" if changed else "already handled"
             await _toast(app, query, outcome)
             await _settle_button(app, query, outcome, f" #{item_id}")
+        elif decision == "del":
+            error = await _confirm_delete_reminder(app, item_id, token or None)
+            await _toast(app, query, error)
+        elif decision == "delyes":
+            ok, message = await app.dispatch.reminders.delete(item_id, token)
+            await _toast(app, query, message)
+            if ok:
+                await _settle_confirm(app, query, f"Deleted #{item_id}")
+        elif decision == "delno":
+            await _toast(app, query, "Cancelled")
+            await _settle_confirm(app, query, "Cancelled")
         return
     try:
         chat_id = int(raw_chat_id)

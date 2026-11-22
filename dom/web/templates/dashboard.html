@@ -16,7 +16,7 @@
     <a class="name" href="/">Dom</a>
     {% if active != "setup" %}
       {% for id, route, label in [
-        ("now", "/", "Now"), ("proposals", "/proposals", "Waiting for you"), ("chats", "/chats", "Chats"),
+        ("now", "/", "Now"), ("proposals", "/proposals", "Waiting for you"), ("reminders", "/reminders", "Reminders"), ("chats", "/chats", "Chats"),
         ("usage", "/usage", "Usage"), ("desktop", "/desktop", "Desktop"), ("plugins", "/plugins", "Plugins"), ("own_work", "/own-work", "Own work"), ("briefs", "/briefs", "Briefs"), ("memory", "/memory", "Memory"), ("turns", "/turns", "Turn log"), ("settings", "/settings", "Settings"),
       ] %}
       <a href="{{ route }}"{% if active == id %} aria-current="page"{% endif %}>{{ label }}</a>
@@ -29,6 +29,7 @@
     {% endif %}
     {% if active == "now" %}{% include "dial.html" %}{% endif %}
     {% if active in ("now", "proposals") %}{% with context = proposals %}{% include "proposals.html" %}{% endwith %}{% endif %}
+    {% if active in ("now", "reminders") %}{% with context = reminders %}{% include "reminders.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "chats") %}{% with context = chats %}{% include "chats.html" %}{% endwith %}{% endif %}
     {% if active == "now" %}{% with context = desktop %}{% include "desktop_tile.html" %}{% endwith %}{% endif %}
     {% if active in ("now", "usage") %}{% with context = usage %}{% include "usage.html" %}{% endwith %}{% endif %}

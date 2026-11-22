@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import logging
-from datetime import timedelta, timezone
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import httpx
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MessageEntity
 
 from dom.agent import unfence
 from dom.config import replace_host
+from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.guard import check_local_private_text
+from dom.memory_edit import apply_proposal as apply_memory_edit, format_summary as memory_edit_summary, prepare_proposal as prepare_memory_edit
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, Plugin, validate_name, validate_plugin
 from dom.plugins.trial import STORAGE_NOTICE, test_run_summary
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
@@ -112,6 +116,8 @@ def summary(row: dict) -> str:
         if row["title"] == body["text"]:
             return f"#{row['id']} {body['file']}: {body['text']}"
         return f"{heading}\n{body['file']}: {body['text']}"
+    if row["kind"] == "memory_edit":
+        return memory_edit_summary(heading, body)
     return heading
 
 
@@ -154,6 +160,8 @@ class Proposals:
             text, file = body.get("text"), body.get("file")
             if not isinstance(text, str) or not text.strip() or not isinstance(file, str) or file not in MEMORY_FILES:
                 raise ValueError("a memory fact needs a memory filename and text")
+        elif kind == "memory_edit":
+            title, body = prepare_memory_edit(self.app.config, self.app.home, body)
         elif kind == "lan_address":
             try:
                 body = {
@@ -261,9 +269,13 @@ class Proposals:
                 if review is not None:
                     keyboard.insert(0, [review])
                 markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+            chunk = text[start:start + 2000]
+            entities = None
+            if row["kind"] == "memory_edit":  # model-written diff: shown verbatim, nothing in it becomes tappable
+                options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
+                entities = [MessageEntity(type="pre", offset=0, length=len(chunk.encode("utf-16-le")) // 2)]
             sent = await app.bot.send_message(
-                app.owner_id, text[start:start + 2000], disable_notification=True, reply_markup=markup,
-                **options,
+                app.owner_id, chunk, disable_notification=True, reply_markup=markup, entities=entities, **options,
             )
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):
@@ -300,6 +312,54 @@ class Proposals:
 
     async def pending(self) -> list[dict]:
         return await self.app.store.pending_proposals()
+
+    async def settled(self, limit: int = 50) -> list[dict]:
+        return await self.app.store.settled_proposals(limit=limit)
+
+    async def delete(self, proposal_id: int, expected_created_at: str) -> tuple[bool, str]:
+        app = self.app
+        if not expected_created_at:
+            return False, STALE_MESSAGE
+        row = await app.store.get_proposal(proposal_id)
+        if row is None:
+            return False, f"Proposal #{proposal_id} not found."
+        if row["status"] == "pending":
+            return False, f"Proposal #{proposal_id} is still pending. Approve or reject it before deleting."
+        if not stamp_matches(row["created_at"], expected_created_at):
+            return False, STALE_MESSAGE
+        event_at = datetime.now(timezone.utc).isoformat()
+        event_text = f"Deleted proposal #{proposal_id}"
+        try:
+            archive = await asyncio.to_thread(
+                stage_deletion,
+                app.home.root,
+                "proposal",
+                proposal_id,
+                event_text=event_text,
+                event_at=event_at,
+                rows={"proposal": row},
+            )
+        except (OSError, ValueError) as error:
+            log.warning("could not archive proposal %s: %s", proposal_id, type(error).__name__)
+            return False, "Could not archive proposal before deleting."
+        try:
+            result = await app.store.delete_settled_proposal(
+                proposal_id, expected_created_at, event_text, event_at, cards_key=CARDS_KEY,
+            )
+        except sqlite3.Error as error:
+            log.warning("could not delete proposal %s: %s", proposal_id, type(error).__name__)
+            await asyncio.to_thread(archive.rollback)
+            return False, "Could not delete proposal."
+        if result != "deleted":
+            await asyncio.to_thread(archive.rollback)
+            if result == "stale":
+                return False, STALE_MESSAGE
+            if result == "pending":
+                return False, f"Proposal #{proposal_id} is still pending. Approve or reject it before deleting."
+            return False, f"Proposal #{proposal_id} not found."
+        await asyncio.to_thread(archive.commit)
+        await asyncio.to_thread(prune_deletions, app.home.root)
+        return True, f"Deleted proposal #{proposal_id}."
 
     async def reflection_due(self) -> bool:
         since = self.app.dispatch.now().astimezone(timezone.utc) - REFLECTION_INTERVAL
@@ -361,6 +421,12 @@ class Proposals:
             result = home.memory_write(rel, "add", body["text"])
             if not result.ok:
                 raise Refused(f"{body['file']}: {result.error}")
+            return
+        if kind == "memory_edit":
+            try:
+                apply_memory_edit(self.app.config, self.app.home, body)
+            except ValueError as error:
+                raise Refused(str(error)) from None
             return
         if kind == "skill":
             try:
