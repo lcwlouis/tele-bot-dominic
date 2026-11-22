@@ -11,7 +11,9 @@ from dom.plugins.surfaces import validate_panel
 from dom.skills import _visible
 
 STORAGE_NOTICE = "Storage enabled. This plugin has one 64 KB JSON blob for its owner-only calls."
-_LINK_PUNCTUATION = str.maketrans({".": "·", "。": "·", "．": "·", "｡": "·", ":": "∶", "@": "＠"})
+_LINK_PUNCTUATION = str.maketrans({  # look-alikes, so Telegram makes no links, mentions, hashtags, cashtags or commands
+    ".": "·", "。": "·", "．": "·", "｡": "·", ":": "∶", "@": "＠", "/": "∕", "#": "＃", "$": "＄",
+})
 _PREVIEW_LIMIT = 160
 
 

@@ -546,3 +546,11 @@ async def test_offline_plugin_arguments_are_not_leak_checked(make_app, browser, 
     app.jev = FakeJev(3)
     assert "done" in await tool.handler({"q": "anything"}, ctx(app))
     assert app.jev.scored == []
+
+
+def test_trial_preview_neutralises_links_commands_hashtags_and_cashtags():
+    from dom.plugins.trial import _preview
+
+    text = _preview("see https://example.com /start #tag $ABC @someone t.me/x\nNetwork off")
+    for token in ("https:", ".com", "/start", "#tag", "$ABC", "@someone", "t.me", "\n"):
+        assert token not in text
