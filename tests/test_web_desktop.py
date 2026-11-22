@@ -482,3 +482,387 @@ async def test_home_desktop_tile_handles_zero_floor_multiline_brief_error_and_un
 
         monkeypatch.setattr(app.store, "owner_id", None)
         assert (await client.get("/desktop/tile", headers=auth)).status_code == 409
+
+
+# ---- phone remote-desktop viewer (v0.8.2 W3) ------------------------------------------------------------
+
+
+class MockSandboxClient:
+    def __init__(self, *, url="https://login.example.org/signin", password_result=False):
+        self.url = url
+        self.password_result = password_result
+        self.resolutions = []
+        self.clipboard_clears = 0
+        self.password_calls = 0
+
+    def redact(self, text):
+        return text
+
+    async def current_url(self):
+        return self.url
+
+    async def set_browser_resolution(self, resolution, *, timeout=10):
+        self.resolutions.append((resolution, timeout))
+        return {"resolution": resolution}
+
+    async def is_password_focused(self, *, timeout=5):
+        self.password_calls += 1
+        return self.password_result
+
+    async def clear_clipboard(self, *, timeout=5):
+        self.clipboard_clears += 1
+
+
+class ViewerSandbox:
+    def __init__(self, client):
+        self.client = client
+        self._state = "ready"
+        self.touches = 0
+        self.stopped = 0
+
+    def status(self):
+        return self._state
+
+    async def ensure_running(self):
+        self._state = "ready"
+        return self.client
+
+    def in_use(self):
+        from contextlib import nullcontext
+        return nullcontext()
+
+    def touch(self):
+        self.touches += 1
+
+    async def stop(self):
+        self.stopped += 1
+        self._state = "stopped"
+
+
+class RemoteViewerSandbox:
+    def __init__(self, client):
+        self.client = client
+        self._state = "ready"
+        self.touches = 0
+
+    def status(self):
+        return self._state
+
+    async def ensure_running(self):
+        self._state = "ready"
+        return self.client
+
+    def in_use(self):
+        from contextlib import nullcontext
+        return nullcontext()
+
+    def touch(self):
+        self.touches += 1
+
+
+async def test_viewer_routes_require_owner_auth_and_csrf(make_app, monkeypatch):
+    app = make_app()
+    mock_client = MockSandboxClient()
+    sandbox = ViewerSandbox(mock_client)
+    adopt(app, DesktopWorker(app, sandbox))
+    web = dashboard(app, monkeypatch)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    json_origin = {"Origin": ORIGIN}
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
+        # Unauthenticated requests are rejected on every new route.
+        for path in ("/desktop/viewer/status", "/desktop/viewer/password-focus"):
+            assert (await client.get(path)).status_code == 403
+        for path, body in (
+            ("/desktop/viewer/screen", {"mode": "phone"}),
+            ("/desktop/viewer/done", {"task_id": 1, "steps": 1}),
+        ):
+            assert (await client.post(path, json=body, headers=json_origin)).status_code == 403
+
+        # Authenticated POSTs still enforce same-origin, Origin/HX-Request, JSON content-type, and method.
+        for path, body in (
+            ("/desktop/viewer/screen", {"mode": "phone"}),
+            ("/desktop/viewer/done", {"task_id": 1, "steps": 1}),
+        ):
+            for bad_headers in (
+                {},
+                {"Origin": "https://attacker.example.org"},
+                {"Referer": ORIGIN},
+                {"HX-Request": "true"},
+            ):
+                assert (await client.post(path, json=body, headers=auth | bad_headers)).status_code == 403
+            assert (await client.post(path, data={"mode": "phone"}, headers=auth | json_origin)).status_code == 403
+            assert (await client.post(path, data={"mode": "phone"}, headers=auth | POST_HEADERS)).status_code == 415
+            assert (await client.put(path, json=body, headers=auth | json_origin)).status_code == 403
+
+        # Unknown container rejected with 404.
+        assert (await client.get("/desktop/viewer/status?container=nope", headers=auth)).status_code == 404
+        assert (await client.get("/desktop/viewer/password-focus?container=nope", headers=auth)).status_code == 404
+        assert (await client.post("/desktop/viewer/screen?container=nope", json={"mode": "phone"}, headers=auth | json_origin)).status_code == 404
+
+        # Unclaimed Dom rejected with 409 on every new route.
+        monkeypatch.setattr(app.store, "owner_id", None)
+        assert (await client.get("/desktop/viewer/status", headers=auth)).status_code == 409
+        assert (await client.get("/desktop/viewer/password-focus", headers=auth)).status_code == 409
+        assert (await client.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=auth | json_origin)).status_code == 409
+        assert (await client.post("/desktop/viewer/done", json={"task_id": 1, "steps": 1}, headers=auth | json_origin)).status_code == 409
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"success": True, "data": True}, True),
+    ({"success": True, "data": {"result": True}}, True),
+    ({"success": True, "data": {"value": True}}, True),
+    ({"success": True, "data": False}, False),
+    ({"success": True, "data": "true"}, False),
+    ({"success": True, "data": 1}, False),
+    ({"success": True, "data": {"result": "true", "extra": "<script>alert(1)</script>"}}, False),
+    ({"success": True, "data": {"result": 1}}, False),
+    ({"success": False, "message": "boom"}, False),
+])
+async def test_password_focus_endpoint_treats_sandbox_as_hostile_and_returns_only_boolean(
+    make_app, monkeypatch, payload, expected,
+):
+    app = make_app()
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, request.content))
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = SandboxClient("https://sandbox.example.org", "secret-key", http)
+        sandbox = ViewerSandbox(client)
+        adopt(app, DesktopWorker(app, sandbox))
+        web = dashboard(app, monkeypatch)
+        auth = {"Authorization": f"Bearer {TOKEN}"}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+            resp = await browser.get("/desktop/viewer/password-focus", headers=auth)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert list(data.keys()) == ["password"]
+            assert type(data["password"]) is bool
+            assert data["password"] is expected
+    assert len(seen) == 1
+    assert seen[0][0] == "POST" and seen[0][1] == "/v1/browser/page/evaluate"
+
+
+async def test_password_focus_rejects_oversized_compressed_or_timed_out_sandbox_response(make_app, monkeypatch):
+    app = make_app()
+
+    def oversized(request):
+        return httpx.Response(200, content=b'{"success":true,"data":"' + b"x" * 5000 + b'"}')
+
+    def compressed(request):
+        return httpx.Response(200, content=b'{"success":true,"data":true}', headers={"content-encoding": "gzip"})
+
+    for handler in (oversized, compressed):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = SandboxClient("https://sandbox.example.org", "secret-key", http)
+            adopt(app, DesktopWorker(app, ViewerSandbox(client)))
+            web = dashboard(app, monkeypatch)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+                resp = await browser.get("/desktop/viewer/password-focus", headers={"Authorization": f"Bearer {TOKEN}"})
+                assert resp.status_code == 200
+                assert resp.json() == {"password": False}
+
+    # Hanging sandbox evaluation is bounded by a timeout and fails closed to False.
+    async def hang(*, timeout=5):
+        await asyncio.sleep(10)
+        return True
+
+    mock_client = MockSandboxClient()
+    mock_client.is_password_focused = hang
+    adopt(app, DesktopWorker(app, ViewerSandbox(mock_client)))
+    monkeypatch.setattr("dom.web.desktop.asyncio.timeout", lambda _: asyncio.timeout(0.05))
+    web = dashboard(app, monkeypatch)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+        resp = await browser.get("/desktop/viewer/password-focus", headers={"Authorization": f"Bearer {TOKEN}"})
+        assert resp.status_code == 200
+        assert resp.json() == {"password": False}
+
+
+async def test_phone_mode_resize_while_idle_and_refused_while_worker_active(make_app, monkeypatch):
+    app = make_app()
+    mock_client = MockSandboxClient()
+    sandbox = ViewerSandbox(mock_client)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_model():
+        entered.set()
+        await release.wait()
+        return call("finish", result="Done")
+
+    worker = await worker_for(app, slow_model, {"content": "invalid"})
+    worker.sandbox = sandbox
+    app.desktop_worker.lanes[app.desktop_worker.default].sandbox = sandbox
+    web = dashboard(app, monkeypatch)
+    headers = {"Authorization": f"Bearer {TOKEN}", "Origin": ORIGIN}
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+        # Idle container can switch to phone mode (800x600) and back to desktop (1280x1024).
+        r1 = await browser.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=headers)
+        assert r1.status_code == 200
+        assert r1.json() == {"ok": True, "mode": "phone", "resolution": "800x600", "phone_mode": True}
+        assert mock_client.resolutions == [("800x600", 10)]
+
+        # Invalid payloads are rejected.
+        assert (await browser.post("/desktop/viewer/screen", json={"mode": "portrait"}, headers=headers)).status_code == 422
+        assert (await browser.post("/desktop/viewer/screen", json={"mode": "phone", "extra": 1}, headers=headers)).status_code == 422
+
+        # Starting a new task automatically restores 1280x1024 before the worker runs, and blocks resize while running.
+        await worker.enqueue(OWNER, "Check site")
+        await asyncio.wait_for(entered.wait(), 2)
+        assert mock_client.resolutions[-1] == ("1280x1024", 10)
+        assert worker.screen_resolution == "1280x1024"
+
+        blocked = await browser.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=headers)
+        assert blocked.status_code == 409
+
+        release.set()
+        await wait_task(worker)
+
+        # Idle again: can switch to phone mode and back to desktop.
+        assert (await browser.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=headers)).status_code == 200
+        r2 = await browser.post("/desktop/viewer/screen", json={"mode": "desktop"}, headers=headers)
+        assert r2.status_code == 200
+        assert r2.json() == {"ok": True, "mode": "desktop", "resolution": "1280x1024", "phone_mode": False}
+
+
+@pytest.mark.parametrize("end_by", ["viewer_done", "timeout", "crash"])
+async def test_phone_mode_restores_1280x1024_and_clears_clipboard_on_done_timeout_or_crash(
+    make_app, monkeypatch, end_by,
+):
+    app = make_app()
+    mock_client = MockSandboxClient(url="https://accounts.example.org/login")
+    sandbox = ViewerSandbox(mock_client)
+    replies = [call("handoff", reason="Sign in please")]
+    if end_by == "viewer_done":
+        replies.extend([call("finish", result="Signed in"), {"content": "invalid"}])
+    else:
+        replies.append({"content": "invalid"})
+    worker = await worker_for(app, *replies, handoff_seconds=2 if end_by != "timeout" else 0.15)
+    worker.sandbox = sandbox
+    worker._needs_screen_restore = False
+    app.desktop_worker.lanes[app.desktop_worker.default].sandbox = sandbox
+    web = dashboard(app, monkeypatch)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    headers = auth | {"Origin": ORIGIN}
+
+    task_id = await worker.enqueue(OWNER, "Sign in task")
+    row = await wait_status(app, task_id, "waiting_owner")
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+        status = (await browser.get("/desktop/viewer/status", headers=auth)).json()
+        assert status["live_host"] == "accounts.example.org"
+        assert status["can_resize"] is True
+        assert status["handoff"]["task_id"] == task_id
+        assert status["handoff"]["steps"] == row["steps"]
+        assert status["handoff"]["reason"] == "Sign in please"
+        assert isinstance(status["handoff"]["remaining_seconds"], int)
+
+        # Viewer HTML contains Done, host, countdown, key bar, clipboard buttons, phone mode, no inline scripts/styles.
+        viewer = await browser.get("/desktop/vnc/index.html", headers=auth)
+        assert viewer.status_code == 200
+        assert 'id="done-btn"' in viewer.text
+        assert 'id="countdown"' in viewer.text
+        assert 'id="phone-mode-btn"' in viewer.text
+        assert 'id="copy-btn"' in viewer.text and 'id="paste-btn"' in viewer.text
+        assert 'id="mode-scroll"' in viewer.text
+        assert 'id="keybar"' in viewer.text
+        assert "<style" not in viewer.text and " style=" not in viewer.text
+        assert "<script>" not in viewer.text.replace('<script type="module" src', "")
+
+        # Enable phone mode during the handoff.
+        resized = await browser.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=headers)
+        assert resized.status_code == 200
+        assert worker.screen_resolution == "800x600"
+
+        if end_by == "viewer_done":
+            done = await browser.post(
+                "/desktop/viewer/done",
+                json={"task_id": task_id, "steps": row["steps"]},
+                headers=headers,
+            )
+            assert done.status_code == 200
+            assert done.json()["ok"] is True
+        elif end_by == "crash":
+            # Simulate an unexpected exception inside _wait_for_owner while phone mode is active.
+            async def boom(*args, **kwargs):
+                raise RuntimeError("unexpected crash")
+
+            worker._job.cancel()
+            await asyncio.gather(worker._job, return_exceptions=True)
+            await app.store.update_desktop_task(task_id, OWNER, ("waiting_owner",), "running")
+            worker.screen_resolution = "800x600"
+            worker._needs_screen_restore = True
+            monkeypatch.setattr(app.dispatch, "desktop_handoff", boom)
+            with pytest.raises(RuntimeError, match="unexpected crash"):
+                await worker._wait_for_owner(task_id, OWNER, row["steps"], "Sign in", "accounts.example.org", app.dispatch.now())
+
+    if end_by != "crash":
+        await wait_task(worker)
+
+    assert worker.screen_resolution == "1280x1024"
+    assert mock_client.resolutions == [("800x600", 10), ("1280x1024", 10)]
+    assert mock_client.clipboard_clears >= 1
+
+
+async def test_viewer_screen_resize_does_not_hold_worker_lock(make_app, monkeypatch):
+    app = make_app()
+    mock_client = MockSandboxClient()
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    async def slow_resize(resolution, *, timeout=10):
+        entered.set()
+        await gate.wait()
+        mock_client.resolutions.append((resolution, timeout))
+        return {"resolution": resolution}
+
+    mock_client.set_browser_resolution = slow_resize
+    sandbox = ViewerSandbox(mock_client)
+    worker = adopt(app, DesktopWorker(app, sandbox))
+    web = dashboard(app, monkeypatch)
+    headers = {"Authorization": f"Bearer {TOKEN}", "Origin": ORIGIN}
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as browser:
+        req = asyncio.create_task(browser.post("/desktop/viewer/screen", json={"mode": "phone"}, headers=headers))
+        await asyncio.wait_for(entered.wait(), 2)
+        async with asyncio.timeout(1):
+            await worker.control.acquire()
+        worker.control.release()
+        gate.set()
+        resp = await req
+        assert resp.status_code == 200
+
+
+async def test_remote_sandbox_crash_recovery_restores_resolution_and_clears_clipboard(make_app):
+    app = make_app()
+    mock_client = MockSandboxClient()
+    sandbox = RemoteViewerSandbox(mock_client)
+    worker = adopt(app, DesktopWorker(app, sandbox))
+    task_id = await app.store.enqueue_desktop_task(OWNER, "Remote login", "default")
+    await app.store.update_desktop_task(task_id, OWNER, ("queued",), "waiting_owner", error="Sign in")
+    await worker.recover()
+    assert mock_client.resolutions == [("1280x1024", 10)]
+    assert mock_client.clipboard_clears == 1
+
+
+async def test_sandbox_client_resolution_and_clipboard_api_calls():
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, request.read().decode()))
+        return httpx.Response(200, json={"success": True, "data": {"ok": True}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = SandboxClient("https://sandbox.example.org", "secret-key", http)
+        await client.set_browser_resolution("800x600", timeout=5)
+        await client.set_browser_resolution("1280x1024", timeout=5)
+        await client.clear_clipboard(timeout=5)
+        with pytest.raises(ValueError, match="unsupported"):
+            await client.set_browser_resolution("390x844")
+    assert seen[0] == ("POST", "/v1/browser/config", '{"resolution":"800x600"}')
+    assert seen[1] == ("POST", "/v1/browser/config", '{"resolution":"1280x1024"}')
+    assert seen[2][0] == "POST" and seen[2][1] == "/v1/bash/exec" and "xclip" in seen[2][2]
+
+

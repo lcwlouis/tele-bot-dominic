@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import posixpath
 import shlex
 from collections.abc import Awaitable, Callable
@@ -17,7 +18,7 @@ from typing import TYPE_CHECKING
 from dom.actions import SendFile
 from dom.agent import _well_formed
 from dom.desktop import tools
-from dom.desktop.client import SandboxClient, SandboxError, url_host
+from dom.desktop.client import DEFAULT_RESOLUTION, PHONE_RESOLUTION, SandboxClient, SandboxError, url_host
 from dom.desktop.sandbox import DEFAULT
 from dom.desktop.files import (
     OUTBOX_DIR, bind_inbox, discard_bound, download_results, drop_stale, inbox_dir, safe_filename, upload_inbox,
@@ -127,6 +128,11 @@ class DesktopWorker:
         self.control = asyncio.Lock()
         self._handoff: tuple[int, int, asyncio.Event] | None = None
         self.handoff_host: str | None = None  # the page the owner is asked to log in on
+        self.handoff_reason: str | None = None
+        self.handoff_deadline: float | None = None
+        self.screen_resolution: str = DEFAULT_RESOLUTION
+        # A remote sandbox survives Dom crashes; restore 1280x1024 on first task if needed.
+        self._needs_screen_restore: bool = getattr(sandbox, "stop", None) is None
         if hasattr(sandbox, "alert"):
             sandbox.alert = self._alert_owner
 
@@ -140,6 +146,79 @@ class DesktopWorker:
     def busy(self) -> bool:
         """A task is queued or running here, or the container is being stopped after a cancel."""
         return bool(self._stopping) or (self._job is not None and not self._job.done())
+
+    def in_handoff(self) -> bool:
+        return self._handoff is not None
+
+    def can_resize_screen(self) -> bool:
+        """Screen resizing is allowed only while the container is ready and either idle or in a handoff."""
+        return self.sandbox.status() == "ready" and (self.in_handoff() or not self.busy())
+
+    def handoff_state(self) -> dict | None:
+        if self._handoff is None:
+            return None
+        task_id, steps, _ = self._handoff
+        remaining = None
+        if self.handoff_deadline is not None:
+            remaining = max(0, math.ceil(self.handoff_deadline - asyncio.get_running_loop().time()))
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "reason": self.handoff_reason or "",
+            "host": self.handoff_host,
+            "remaining_seconds": remaining,
+        }
+
+    async def set_screen_mode(self, phone: bool) -> str:
+        """Resize the sandbox display to phone mode (800x600) or desktop (1280x1024) without holding a lock."""
+        if not self.can_resize_screen():
+            raise SandboxError("screen size can only change while idle or during a handoff")
+        client = getattr(self.sandbox, "client", None)
+        setter = getattr(client, "set_browser_resolution", None)
+        if setter is None:
+            raise SandboxError("desktop is not ready")
+        target = PHONE_RESOLUTION if phone else DEFAULT_RESOLUTION
+        async with asyncio.timeout(10):
+            await setter(target, timeout=10)
+        self.screen_resolution = target
+        self._needs_screen_restore = target != DEFAULT_RESOLUTION
+        self.sandbox.touch()
+        return target
+
+    async def _restore_screen(self, client: SandboxClient | None = None) -> None:
+        """Restore the sandbox display to 1280x1024 outside any lock, bounded by a timeout."""
+        if self.screen_resolution == DEFAULT_RESOLUTION and not self._needs_screen_restore:
+            return
+        client = client or getattr(self.sandbox, "client", None)
+        setter = getattr(client, "set_browser_resolution", None)
+        if setter is None:
+            self.screen_resolution = DEFAULT_RESOLUTION
+            self._needs_screen_restore = False
+            return
+        try:
+            async with asyncio.timeout(10):
+                await setter(DEFAULT_RESOLUTION, timeout=10)
+        except Exception as exc:
+            log.warning("could not restore desktop resolution to %s (%s)", DEFAULT_RESOLUTION, type(exc).__name__)
+        else:
+            self.screen_resolution = DEFAULT_RESOLUTION
+            self._needs_screen_restore = False
+
+    async def _clear_clipboard(self, client: SandboxClient | None = None) -> None:
+        """Clear the sandbox X11 clipboard outside any lock, bounded by a timeout."""
+        client = client or getattr(self.sandbox, "client", None)
+        clearer = getattr(client, "clear_clipboard", None)
+        if clearer is None:
+            return
+        try:
+            async with asyncio.timeout(5):
+                await clearer(timeout=5)
+        except Exception as exc:
+            log.warning("could not clear desktop clipboard (%s)", type(exc).__name__)
+
+    async def _finish_handoff(self) -> None:
+        await self._clear_clipboard()
+        await self._restore_screen()
 
     async def enqueue(
         self, chat_id: int, brief: str, container: str | None = None, *,
@@ -187,23 +266,31 @@ class DesktopWorker:
                 await stop()  # a container left by a previous process has no owner and no known API key
             except SandboxError as exc:
                 log.warning("could not stop a stray desktop container (%s)", exc)
+            else:
+                self.screen_resolution = DEFAULT_RESOLUTION
+                self._needs_screen_restore = False
         chat_id = self.app.owner_id
         if rows is None:
             rows = await self.app.store.desktop_tasks(chat_id, active=True, container=self.container) if chat_id is not None else []
             drop_stale(self.app.home.root, {row["id"] for row in rows if row["status"] == "queued"})
         if chat_id is None:
             return
+        had_handoff = False
         async with self.control:
             for row in rows:
                 if row["status"] == "queued":
                     self._launch(row["id"], chat_id)
                 else:
+                    if row["status"] == "waiting_owner":
+                        had_handoff = True
                     failed = await self.app.store.update_desktop_task(
                         row["id"], chat_id, ("running", "waiting_owner"), "failed", error="Dom restarted",
                     )
                     if failed:
                         await self._report(failed)
                         await self._settle_card(row["id"], "Task ended")
+        if had_handoff and getattr(self.sandbox, "stop", None) is None:
+            await self._finish_handoff()
 
     async def close(self) -> None:
         if self._job is not None:
@@ -221,7 +308,10 @@ class DesktopWorker:
             await self.app.store.record_owner_event(f"Cancelled desktop task #{task_id}")
             self._stopping += 1  # reserved under the lock; the wait for the sandbox lock happens outside it
         try:
-            await self._stop_sandbox()
+            if getattr(self.sandbox, "stop", None) is not None:
+                await self._stop_sandbox()
+            else:
+                await self._finish_handoff()
         finally:
             self._stopping -= 1
         await self._report(row)
@@ -234,6 +324,9 @@ class DesktopWorker:
             await stop()
         except SandboxError as exc:
             log.warning("could not stop the desktop after a cancel (%s)", exc)
+        else:
+            self.screen_resolution = DEFAULT_RESOLUTION
+            self._needs_screen_restore = False
 
     async def resume(self, chat_id: int, task_id: int, steps: int) -> bool:
         async with self.control:
@@ -244,7 +337,9 @@ class DesktopWorker:
             )
             if row is None:
                 return False
-            self._handoff[2].set()
+            _, _, done = self._handoff
+            self._handoff = None
+            done.set()
             await self.app.store.record_owner_event(f"Resumed desktop task #{task_id}")
         await self._settle_card(task_id, "✅ Resumed")
         return True
@@ -341,6 +436,7 @@ class DesktopWorker:
         deadline = asyncio.get_running_loop().time() + self.work_seconds
         async with asyncio.timeout_at(deadline):
             client = await self.sandbox.ensure_running()
+            await self._restore_screen(client)
             attached = await upload_inbox(self.app.home.root, client, task_id)
         brief = row["brief"]
         if attached:
@@ -617,10 +713,14 @@ class DesktopWorker:
         self, task_id: int, chat_id: int, steps: int, reason: str, host: str | None, observed: datetime,
     ) -> None:
         done = asyncio.Event()
+        deadline = asyncio.get_running_loop().time() + self.handoff_seconds
         self._handoff = (task_id, steps, done)
         self.handoff_host = host
+        self.handoff_reason = reason
+        self.handoff_deadline = deadline
+        cancelled = False
         try:
-            async with asyncio.timeout(self.handoff_seconds):
+            async with asyncio.timeout_at(deadline):
                 row = await self.app.store.update_desktop_task(
                     task_id, chat_id, ("running",), "waiting_owner", error=reason,
                 )
@@ -630,6 +730,13 @@ class DesktopWorker:
                 await done.wait()
         except TimeoutError:
             raise SandboxError("owner handoff timed out") from None
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
             self._handoff = None
             self.handoff_host = None
+            self.handoff_reason = None
+            self.handoff_deadline = None
+            if not cancelled:
+                await self._finish_handoff()

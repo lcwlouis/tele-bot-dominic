@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 from typing import Literal
 from urllib.parse import urlencode
@@ -10,21 +11,25 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket
+from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
-from dom.desktop.client import SandboxError
+from dom.desktop.client import DEFAULT_RESOLUTION, PHONE_RESOLUTION, SandboxError, url_host
 from dom.desktop.sandbox import LocalSandbox
 from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.telegram import owner
 from dom.web.auth import same_origin
-from dom.web.pages import form, owner_app, panel, render
+from dom.web.model_settings import is_json
+from dom.web.pages import _bounded_stream, form, owner_app, panel, render
 
 router = APIRouter(prefix="/desktop")
 VNC_PATH = "/desktop/vnc/"
 VNC_SOCKET = VNC_PATH + "websockify"
+VIEWER_JSON_POSTS = frozenset({"/desktop/viewer/screen", "/desktop/viewer/done"})
 _FRAME_LIMIT = 16 * 1024 * 1024
+_JSON_BODY_LIMIT = 1024
 
 
 def _query(name: str, default: str) -> str:
@@ -199,6 +204,9 @@ async def computer_action(request: Request, action: Literal["start", "stop"], co
                 message = "Cancel the current task before stopping the computer."
             else:
                 message = await _change_computer(app, sandbox, action)
+                if sandbox.status() == "stopped":
+                    worker.screen_resolution = DEFAULT_RESOLUTION
+                    worker._needs_screen_restore = False
     return render("desktop_state.html", context=await _context(app, lane, message))
 
 
@@ -228,11 +236,147 @@ async def desktop_done(request: Request, task_id: int, steps: int):
     return render("desktop_state.html", context=await _context(app, lane or _lane(app, ""), message))
 
 
+async def _json_body(request: Request, max_bytes: int = _JSON_BODY_LIMIT) -> dict:
+    if not is_json(request):
+        raise HTTPException(415, "Expected application/json.")
+    data = bytearray()
+    async for chunk in _bounded_stream(request, max_bytes):
+        data.extend(chunk)
+    try:
+        parsed = json.loads(data)
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON.") from None
+    if not isinstance(parsed, dict):
+        raise HTTPException(422, "Expected a JSON object.")
+    return parsed
+
+
+async def _viewer_status_payload(lane) -> dict:
+    if lane is None:
+        return {
+            "enabled": False,
+            "status": "off",
+            "container": "",
+            "resolution": DEFAULT_RESOLUTION,
+            "phone_mode": False,
+            "can_resize": False,
+            "live_host": None,
+            "handoff": None,
+        }
+    status = lane.status()
+    worker = lane.worker
+    handoff = worker.handoff_state()
+    live_host = handoff["host"] if handoff else None
+    client = getattr(lane.sandbox, "client", None)
+    if status == "ready" and client is not None:
+        read_url = getattr(client, "current_url", None)
+        if read_url is not None:
+            try:
+                async with asyncio.timeout(3):
+                    current = url_host(await read_url())
+                if current:
+                    live_host = current
+            except Exception:
+                pass
+    resolution = worker.screen_resolution if status == "ready" else DEFAULT_RESOLUTION
+    return {
+        "enabled": True,
+        "status": status,
+        "container": lane.name,
+        "resolution": resolution,
+        "phone_mode": resolution == PHONE_RESOLUTION,
+        "can_resize": worker.can_resize_screen(),
+        "live_host": live_host,
+        "handoff": handoff,
+    }
+
+
 @router.get("/vnc/index.html")
 async def vnc_viewer(request: Request, container: str = ""):
     # The page and its noVNC scripts are Dom's own files; only the websocket reaches the sandbox.
+    app = owner_app(request)
+    lane = _lane(app, container)
+    fleet = app.desktop_worker
+    q = _query(lane.name, fleet.default) if lane is not None and fleet is not None else ""
+    back_url = "/desktop?panel=1" if not q else f"/desktop{q}&panel=1"
+    status = lane.status() if lane is not None else "off"
+    handoff = lane.worker.handoff_state() if lane is not None else None
+    resolution = lane.worker.screen_resolution if lane is not None and status == "ready" else DEFAULT_RESOLUTION
+    return render(
+        "desktop_viewer.html",
+        container=lane.name if lane is not None else "",
+        q=q,
+        back_url=back_url,
+        status=status,
+        resolution=resolution,
+        phone_mode=resolution == PHONE_RESOLUTION,
+        can_resize=lane.worker.can_resize_screen() if lane is not None else False,
+        handoff=handoff,
+    )
+
+
+@router.get("/viewer/status")
+async def viewer_status(request: Request, container: str = ""):
     lane = _lane(owner_app(request), container)
-    return render("desktop_viewer.html", container=lane.name if lane is not None else "")
+    return JSONResponse(await _viewer_status_payload(lane))
+
+
+@router.get("/viewer/password-focus")
+async def viewer_password_focus(request: Request, container: str = ""):
+    """Report strictly whether the sandbox browser currently focuses input[type=password]."""
+    lane = _lane(owner_app(request), container)
+    focused = False
+    if lane is not None and lane.status() == "ready":
+        client = getattr(lane.sandbox, "client", None)
+        checker = getattr(client, "is_password_focused", None)
+        if checker is not None:
+            try:
+                async with asyncio.timeout(3):
+                    focused = (await checker(timeout=3)) is True
+            except Exception:
+                focused = False
+    return JSONResponse({"password": focused is True})
+
+
+@router.post("/viewer/screen")
+async def viewer_screen(request: Request, container: str = ""):
+    """Toggle between phone mode (800x600) and desktop (1280x1024) via the sandbox API."""
+    lane = _lane(owner_app(request), container)
+    if lane is None:
+        raise HTTPException(409, "The desktop is off.")
+    body = await _json_body(request)
+    if set(body) != {"mode"} or body["mode"] not in ("phone", "desktop"):
+        raise HTTPException(422, "Choose phone or desktop mode.")
+    if not lane.worker.can_resize_screen():
+        raise HTTPException(409, "Screen size can only change while idle or during a handoff.")
+    try:
+        resolution = await lane.worker.set_screen_mode(body["mode"] == "phone")
+    except (SandboxError, TimeoutError, ValueError):
+        raise HTTPException(502, "Could not resize the remote screen.") from None
+    return JSONResponse({
+        "ok": True,
+        "mode": body["mode"],
+        "resolution": resolution,
+        "phone_mode": resolution == PHONE_RESOLUTION,
+    })
+
+
+@router.post("/viewer/done")
+async def viewer_done(request: Request):
+    """Resume a waiting handoff from the full-page viewer."""
+    app = owner_app(request)
+    if app.desktop_worker is None:
+        raise HTTPException(409, "The desktop is off.")
+    body = await _json_body(request)
+    task_id = body.get("task_id")
+    steps = body.get("steps")
+    if set(body) != {"task_id", "steps"} or type(task_id) is not int or not 0 < task_id < 2**63 or type(steps) is not int or steps < 0:
+        raise HTTPException(422, "Invalid handoff confirmation.")
+    resumed = await app.desktop_worker.resume(app.owner_id, task_id, steps)
+    return JSONResponse({
+        "ok": resumed,
+        "message": "Task resumed." if resumed else "The handoff has already ended.",
+    })
 
 
 class NoRedirectConnection(connect):

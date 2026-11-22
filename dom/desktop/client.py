@@ -18,7 +18,38 @@ class SandboxError(RuntimeError):
 
 JSON_LIMIT = 2_000_000
 SCREENSHOT_LIMIT = 5_000_000
+EVALUATE_LIMIT = 4096
+DEFAULT_RESOLUTION = "1280x1024"
+PHONE_RESOLUTION = "800x600"
+VIEWER_RESOLUTIONS = frozenset({"800x600", "1024x768", "1280x720", "1280x800", "1280x1024"})
 _HOST = re.compile(r"[a-z0-9.:-]{1,253}")
+_PASSWORD_FOCUS_JS = (
+    "(() => {"
+    " let el = document.activeElement;"
+    " for (let i = 0; i < 8 && el; i++) {"
+    "   if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; }"
+    "   else if (String(el.tagName || '').toUpperCase() === 'IFRAME') {"
+    "     try {"
+    "       const next = el.contentDocument && el.contentDocument.activeElement;"
+    "       if (!next || next === el) break;"
+    "       el = next;"
+    "     } catch { break; }"
+    "   } else { break; }"
+    " }"
+    " return Boolean(el && String(el.tagName || '').toUpperCase() === 'INPUT'"
+    " && String(el.type || '').toLowerCase() === 'password');"
+    "})()"
+)
+_CLEAR_CLIPBOARD_SH = (
+    'd="${DISPLAY:-:90}"; '
+    'if command -v xsel >/dev/null 2>&1; then '
+    'DISPLAY="$d" xsel -bc >/dev/null 2>&1 || true; '
+    'DISPLAY="$d" xsel -bp >/dev/null 2>&1 || true; '
+    'elif command -v xclip >/dev/null 2>&1; then '
+    'printf "" | DISPLAY="$d" xclip -selection clipboard -in >/dev/null 2>&1 || true; '
+    'printf "" | DISPLAY="$d" xclip -selection primary -in >/dev/null 2>&1 || true; '
+    'fi'
+)
 
 
 def url_host(url: object) -> str | None:
@@ -129,6 +160,29 @@ class SandboxClient:
 
     async def browser_tabs(self) -> Any:
         return await self._json("browser/tabs")
+
+    async def set_browser_resolution(self, resolution: str, *, timeout: int = 10) -> Any:
+        if resolution not in VIEWER_RESOLUTIONS:
+            raise ValueError(f"unsupported browser resolution: {resolution}")
+        return await self._json("browser/config", {"resolution": resolution}, timeout=timeout)
+
+    async def is_password_focused(self, *, timeout: int = 5) -> bool:
+        """Whether the active browser tab currently focuses an input[type=password].
+        Treats the sandbox response as hostile input: only a literal JSON true returns True."""
+        response, content = await self._fetch(
+            "POST", "browser/page/evaluate",
+            limit=EVALUATE_LIMIT, timeout=timeout, json={"expression": _PASSWORD_FOCUS_JS},
+        )
+        data = self._check(response, content)
+        if data is True:
+            return True
+        if isinstance(data, dict):
+            return data.get("result") is True or data.get("value") is True
+        return False
+
+    async def clear_clipboard(self, *, timeout: int = 5) -> None:
+        """Clear X11 clipboard and primary selections inside the sandbox."""
+        await self._json("bash/exec", {"command": _CLEAR_CLIPBOARD_SH}, timeout=timeout)
 
     async def current_url(self) -> str | None:
         """The URL of the browser's active tab, or None when no tab is marked active or the sandbox does not
