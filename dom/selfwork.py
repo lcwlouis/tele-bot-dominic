@@ -260,7 +260,10 @@ class SelfWork:
         except Exception as exc:
             log.warning("could not announce self-directed tasks; they will not run (%s)", type(exc).__name__)
             return False
-        await app.store.record_owner_event(f"Dom planned self-directed tasks #{rows[0]['id']}–#{rows[-1]['id']}")
+        # Dom's own record of the plan, so he can talk about it later; the plan is his own text, never web content.
+        await app.store.record_owner_event("Dom planned self-directed tasks: " + "; ".join(
+            f"#{row['id']} {_clip(row['goal'], 120)} (why: {_clip(row['why'], 160)})" for row in rows
+        ))
         return True
 
     # ---- running (every scheduler tick) -----------------------------------------------------------------
@@ -412,4 +415,10 @@ class SelfWork:
             await app.bot.send_message(app.owner_id, text[:1000], link_preview_options=LinkPreviewOptions(is_disabled=True))
         except Exception as exc:
             log.warning("could not report self-directed task %s (%s)", row["id"], type(exc).__name__)
-        await app.store.record_owner_event(f"Self-directed task #{row['id']} {row['status']}")
+        # What Dom remembers of the outcome. The worker's summary is untrusted web content, so it stays out of his history.
+        if row["status"] == "done":
+            outcome = "done in part (it ran out of steps)" if row["error"] == PARTIAL else "done"
+            outcome += "; Dom sent the owner a summary of what the pages said, and the full result is on the dashboard"
+        else:
+            outcome = f"{row['status']}: {_clip(row['error'] or 'no reason given', 200)}"
+        await app.store.record_owner_event(f"Self-directed task #{row['id']} ({_clip(row['goal'], 120)}) {outcome}")

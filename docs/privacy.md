@@ -96,7 +96,9 @@ small research tasks of his own, each reading up to four named public sites in a
 separate `self-work` container. The owner's DM gets the plan before any task
 starts, and one short summary after it. Planning uses `SOUL.md` and the public
 journal; a task itself gets only its plan, nothing from private notes or chats,
-and it never messages anyone else. See
+and it never messages anyone else. The owner's DM history keeps a note of each
+plan (goals and reasons) and how each task ended, so Dom can talk about his own
+work; the summary of web content stays out of that history. See
 [Self-directed work](desktop.md#self-directed-work).
 
 ## Home network and T3 Code

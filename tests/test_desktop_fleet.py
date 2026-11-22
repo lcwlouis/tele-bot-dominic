@@ -619,3 +619,20 @@ async def test_a_remote_first_host_is_the_default_and_the_only_lane(make_app):
     studio = DesktopHost(name="studio", mode="remote", url="https://example.org", remote_isolation_confirmed=True)
     fleet = fleet_for(app, studio)
     assert list(fleet.lanes) == ["studio"] and fleet.default == "studio"
+
+
+async def test_a_refused_start_tells_the_model_nothing_was_queued(make_app):
+    """Live 2026-11-22: told the host runs one container at a time, Dom said the task was on a waiting list."""
+    from types import SimpleNamespace
+
+    from dom.tools import _start_desktop_task
+
+    app = make_app()
+    fleet = fleet_for(app)
+    await fleet.enqueue(OWNER, "one")
+    await fleet.enqueue(OWNER, "two", "second")
+    ctx = SimpleNamespace(scope="owner_dm", chat_id=OWNER, owner_id=OWNER, desktop=fleet)
+    result = await _start_desktop_task({"brief": "three", "container": "third"}, ctx)
+    assert result.startswith("Not started and not queued:")
+    assert "already runs its limit" in result
+    await settle(app, fleet)

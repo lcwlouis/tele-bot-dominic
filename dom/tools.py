@@ -202,8 +202,8 @@ async def _start_desktop_task(args: dict, ctx: TurnCtx) -> str:
         return "error: desktop tasks are available only in the owner's DM"
     try:
         task_id = await ctx.desktop.enqueue(ctx.chat_id, args.get("brief"), args.get("container"))
-    except ValueError as exc:
-        return str(exc)
+    except ValueError as exc:  # nothing waits for a slot, so say so: the model once told the owner it was "on the waiting list"
+        return f"Not started and not queued: {exc}. Tell the owner it did not start; they can ask again later."
     return json.dumps({"id": task_id})
 
 
