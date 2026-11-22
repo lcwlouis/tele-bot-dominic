@@ -24,10 +24,11 @@ import httpx
 from pydantic import BaseModel
 
 from dom.backup import ARCHIVE_NAME
-from dom.config import Config, DesktopConfig, ModelEndpoint, validate_config
+from dom.config import Config, DesktopConfig, ProviderEndpoint, validate_config
 from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
 from dom.home import LIMITS, MAX_SOUL, Home
 from dom.jev import JevClient, JevUnavailable
+from dom.llm import openrouter_host
 from dom.plugins.runner import PluginRunner
 from dom.selfwork import GUARD_KEY
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
@@ -210,7 +211,7 @@ def _unknown_config_keys(raw: dict) -> list[str]:
             args = get_args(annotation)
             if nested := submodel(annotation):
                 walk(f"{prefix}{name}.", value, nested)
-            elif get_origin(annotation) is list and (nested := submodel(args[0])) and isinstance(value, list):
+            elif get_origin(annotation) in (list, tuple) and (nested := submodel(args[0])) and isinstance(value, list):
                 for index, item in enumerate(value):
                     walk(f"{prefix}{name}[{index}].", item, nested)
             elif get_origin(annotation) is dict and (nested := submodel(args[1])) and isinstance(value, dict):
@@ -224,7 +225,7 @@ def _unknown_config_keys(raw: dict) -> list[str]:
 def _has_misplaced_api_key(config: Config) -> bool:
     names = (
         config.desktop.api_key_env, *(host.api_key_env for host in config.desktop_hosts),
-        *(endpoint.api_key_env for endpoint in config.models.values()),
+        *(endpoint.api_key_env for _, endpoint in config.model_endpoints()),
     )
     return any(
         len(name) > 64
@@ -237,7 +238,7 @@ def _has_misplaced_api_key(config: Config) -> bool:
 def _secrets(config: Config) -> Check:
     names = {
         BOT_TOKEN_ENV,
-        *(endpoint.api_key_env for endpoint in config.models.values() if endpoint.api_key_env),
+        *(endpoint.api_key_env for _, endpoint in config.model_endpoints() if endpoint.api_key_env),
         *(host.api_key_env for host in config.desktop_hosts if host.mode == "remote"),
     }
     try:
@@ -339,8 +340,8 @@ def _probe_hint(response: httpx.Response) -> str:
     return f"HTTP {response.status_code}: Check the endpoint URL, model ID and key."
 
 
-async def _model(http: httpx.AsyncClient, name: str, endpoint: ModelEndpoint, key: str | None) -> Check:
-    label = "models." + (name if ENV_NAME.fullmatch(name) else "<custom>")
+async def _model(http: httpx.AsyncClient, name: str, endpoint: ProviderEndpoint, key: str | None) -> Check:
+    label = "models." + (name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.fallbacks\[\d+\])?", name) else "<custom>")
     if endpoint.api_key_env and not key:
         return Check("warn", label, "Set the model endpoint's secret to run its online probe.")
     try:
@@ -356,10 +357,14 @@ async def _model(http: httpx.AsyncClient, name: str, endpoint: ModelEndpoint, ke
             if (answers["check"] or {}).get("choice") not in ("yes", "no"):
                 raise ValueError
         else:
+            url = httpx.URL(endpoint.base_url)
+            body = {"model": endpoint.model, "messages": [{"role": "user", "content": "Say OK"}], "max_tokens": 1}
+            if openrouter_host(url.host):
+                body["provider"] = {"zdr": True}
             response = await http.post(
                 endpoint.base_url.rstrip("/") + "/chat/completions",
                 headers={"Authorization": f"Bearer {key}"} if key else {},
-                json={"model": endpoint.model, "messages": [{"role": "user", "content": "Say OK"}], "max_tokens": 1},
+                json=body, follow_redirects=False,
             )
             response.raise_for_status()
             if not isinstance(response.json()["choices"][0]["message"], dict):
@@ -397,7 +402,7 @@ async def _online(config: Config) -> list[Check]:
         else:
             checks.append(Check("warn", "Telegram", "Set TELEGRAM_BOT_TOKEN to run the online probes."))
         openrouter_keys = {}
-        for name, endpoint in config.models.items():
+        for name, endpoint in config.model_endpoints():
             variable = endpoint.api_key_env
             key = config.secret(variable) if variable else None
             checks.append(await _model(http, name, endpoint, key))

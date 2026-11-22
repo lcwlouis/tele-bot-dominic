@@ -168,3 +168,37 @@ def test_mode_off_disables_listed_hosts(tmp_path):
     write(tmp_path, MINIMAL + '\n[desktop]\nmode = "off"\n[[desktop.hosts]]\nname = "pi"\nmode = "local"\n')
     config = load_config(tmp_path)
     assert config.desktop_mode == "off" and config.desktop_hosts == []
+
+
+def test_legacy_chat_fallback_is_loaded_as_a_role_without_rewriting_the_file(tmp_path):
+    text = MINIMAL + """
+[models.chat_fallback]
+base_url = "https://backup.example.test/v1"
+model = "backup"
+api_key_env = "BACKUP_KEY"
+"""
+    write(tmp_path, text)
+    cfg = load_config(tmp_path)
+    assert cfg.providers("chat")[0].model == "some/model"
+    assert cfg.providers("fallback")[0].model == "backup"
+    assert "chat_fallback" not in cfg.models
+    assert cfg.providers("drafting")[0].model == "anthropic/claude-haiku-5.5"
+    assert cfg.models["triage"].model == "~typesafe/jev-latest"
+    assert (tmp_path / "config.toml").read_text() == text
+
+
+def test_nested_fallback_secrets_and_addresses_are_discovered(tmp_path):
+    from dom.config import host_places, replace_host
+    import tomllib
+
+    text = MINIMAL + """
+[[models.chat.fallbacks]]
+base_url = "http://192.0.2.4:8000/v1"
+model = "local-backup"
+api_key_env = "BACKUP_KEY"
+"""
+    write(tmp_path, text)
+    assert host_places(tomllib.loads(text))["192.0.2.4"] == ["models.chat.fallbacks[0].base_url"]
+    assert "BACKUP_KEY" in load_config(tmp_path).secret_names()
+    replace_host(tmp_path, "192.0.2.4", "192.0.2.5")
+    assert load_config(tmp_path).providers("chat")[1].base_url == "http://192.0.2.5:8000/v1"

@@ -10,7 +10,7 @@ import logging
 from contextlib import nullcontext
 from typing import AsyncContextManager
 
-from dom.llm import ChatClient
+from dom.llm import ChatClient, FallbackClient
 from dom.usage import ModelCallSkipped
 
 log = logging.getLogger("dom.media")
@@ -54,7 +54,7 @@ class PermanentMediaSkip(Exception):
 
 
 class MediaDescriber:
-    def __init__(self, client: ChatClient, bot):
+    def __init__(self, client: ChatClient | FallbackClient, bot):
         self.client, self.bot = client, bot
         self._one_at_a_time = asyncio.Semaphore(1)  # one file in memory at once, across all chats
 

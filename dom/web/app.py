@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from dom.web.auth import Auth, request_origin, same_origin
 from dom.web.desktop import VNC_PATH, VNC_SOCKET, router as desktop_router
+from dom.web.model_settings import JSON_POSTS, is_json, router as model_settings_router
 from dom.web.pages import router
 
 if TYPE_CHECKING:
@@ -54,7 +55,10 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
         if identity is None:
             response = PlainTextResponse("Forbidden", status_code=403)
         elif request.method not in ("GET", "HEAD") and not (
-            request.method == "POST" and request.headers.get("HX-Request") == "true"
+            request.method == "POST" and (
+                request.headers.get("HX-Request") == "true"
+                or (request.url.path in JSON_POSTS and is_json(request) and "Origin" in request.headers)
+            )
             and same_origin(request, identity)
         ):
             response = PlainTextResponse("Forbidden", status_code=403)
@@ -83,6 +87,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.state.auth = auth
     web.include_router(router)
     web.include_router(desktop_router)
+    web.include_router(model_settings_router)
     web.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
     return web

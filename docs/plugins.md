@@ -78,8 +78,8 @@ elapsed time. Approval remains available while a trial is pending or after it
 fails. Refresh the Plugins page to see the latest result.
 
 Dom uses the `[models.drafting]` endpoint for plugin and skill drafts. The
-starter uses Claude Haiku 5.5 on OpenRouter with low thinking. When the drafting
-key is missing, Dom uses the chat model. See
+starter uses Claude Haiku 5.5 on OpenRouter with low thinking. When no drafting
+provider can answer (missing key or provider down), Dom uses the chat route. See
 [Configuration](configuration.md#models) for endpoint and thinking settings.
 
 ## Commands

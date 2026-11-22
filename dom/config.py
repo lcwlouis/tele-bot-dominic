@@ -6,16 +6,23 @@ import copy
 import ipaddress
 import os
 import re
+import stat
+import tempfile
 import tomllib
+from collections.abc import Iterator
 from importlib import resources
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class ModelEndpoint(BaseModel):
+ModelRole = Literal["chat", "fallback", "media", "drafting"]
+MODEL_ROLES = get_args(ModelRole)
+
+
+class ProviderEndpoint(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     base_url: str = Field(description="Provider API base URL, including its API version path.")
@@ -24,6 +31,10 @@ class ModelEndpoint(BaseModel):
     reasoning_effort: Literal["low", "medium"] | None = Field(
         None, description="Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default.",
     )
+
+
+class ModelEndpoint(ProviderEndpoint):
+    fallbacks: tuple[ProviderEndpoint, ...] = Field((), description="Additional providers to try in order when this role's primary fails.")
 
 
 class OpenersConfig(BaseModel):
@@ -267,6 +278,24 @@ class Config(BaseModel):
             raise ValueError("window_keep_tokens must be below window_budget_tokens")
         return self
 
+    @model_validator(mode="after")
+    def _fallbacks_only_on_roles(self) -> Config:
+        for name, endpoint in self.models.items():
+            if endpoint.fallbacks and name not in MODEL_ROLES:
+                raise ValueError(f"models.{name} cannot have fallbacks; only chat, fallback, media and drafting can")
+        return self
+
+    def providers(self, role: ModelRole) -> tuple[ProviderEndpoint, ...]:
+        primary = self.models.get(role)
+        return (primary, *primary.fallbacks) if primary is not None else ()
+
+    def model_endpoints(self) -> Iterator[tuple[str, ProviderEndpoint]]:
+        for name, endpoint in self.models.items():
+            yield name, endpoint
+            if name in MODEL_ROLES:
+                for index, provider in enumerate(endpoint.fallbacks):
+                    yield f"{name}.fallbacks[{index}]", provider
+
     @property
     def desktop_hosts(self) -> list[DesktopHost]:
         """The hosts Dom may use: the [[desktop.hosts]] tables, or one host made from the single-desktop keys."""
@@ -291,7 +320,7 @@ class Config(BaseModel):
                         names.add(item)
                     else:
                         walk(item)
-            elif isinstance(value, list):
+            elif isinstance(value, (list, tuple)):
                 for item in value:
                     walk(item)
 
@@ -330,6 +359,8 @@ def validate_config(home: Path, raw: dict) -> Config:
     defaults = starter_config()["models"]
     models = {key: defaults[key] for key in ("triage", "media", "drafting")}
     models.update(raw.get("models", {}))
+    if "chat_fallback" in models:
+        models.setdefault("fallback", models.pop("chat_fallback"))
     if "search" in models:
         models["search"] = {**defaults["search"], **models["search"]}
     desktop = raw.get("desktop", {})
@@ -371,10 +402,20 @@ def save_owner(home: Path, owner_id: int) -> None:
         raise ValueError("owner_id was not saved to config.toml")
 
 
-def _replace_file(path: Path, text: str) -> None:
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(text)
-    os.replace(temp, path)
+def _replace_file(path: Path, text: str, *, mode: int | None = None) -> None:
+    if mode is None:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as file:
+        temp = Path(file.name)
+        try:
+            os.fchmod(file.fileno(), mode)
+            file.write(text.encode("utf-8"))
+            file.flush()
+            os.fsync(file.fileno())
+            file.close()
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
 
 
 def _url_hosts(raw: dict):
@@ -382,6 +423,10 @@ def _url_hosts(raw: dict):
     for name, endpoint in (raw.get("models") or {}).items():
         if isinstance(endpoint, dict) and isinstance(endpoint.get("base_url"), str):
             yield f"models.{name}.base_url", endpoint, "base_url"
+        if isinstance(endpoint, dict) and isinstance(endpoint.get("fallbacks"), list):
+            for index, provider in enumerate(endpoint["fallbacks"]):
+                if isinstance(provider, dict) and isinstance(provider.get("base_url"), str):
+                    yield f"models.{name}.fallbacks[{index}].base_url", provider, "base_url"
     desktop = raw.get("desktop") or {}
     if isinstance(desktop.get("url"), str):
         yield "desktop.url", desktop, "url"
