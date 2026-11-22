@@ -34,11 +34,20 @@ def _on_own_network(host: str) -> bool:
     return address.is_private or address.is_loopback
 
 
+def provider_address(url: httpx.URL) -> str:
+    """Identify the provider's host and optional port without credentials."""
+    return url.netloc.decode("ascii")
+
+
 def local_hosts(config: Config) -> tuple[str, ...]:
     """Hosts of the configured model endpoints on the owner's own network (a home-lab vLLM, say). Their calls cost
     nothing, so a desktop task's dollar ceiling must not price them from tokens."""
-    hosts = {httpx.URL(endpoint.base_url).host for endpoint in config.models.values()}
-    return tuple(sorted(host for host in hosts if host and _on_own_network(host)))
+    hosts = set()
+    for _, endpoint in config.model_endpoints():
+        url = httpx.URL(endpoint.base_url)
+        if url.host and _on_own_network(url.host):
+            hosts.update((url.host, provider_address(url)))  # includes the host-only form in older usage rows
+    return tuple(sorted(hosts))
 
 
 class ModelCallSkipped(Exception):

@@ -447,7 +447,7 @@ async def test_calls_to_a_model_on_the_owners_own_network_are_free_for_the_ceili
         "media": ModelEndpoint(base_url="http://localhost:9000/v1", model="y"),
     }
     app.config = app.config.model_copy(update={"models": models})
-    assert local_hosts(app.config) == ("127.0.0.1", "localhost")
+    assert local_hosts(app.config) == ("127.0.0.1", "127.0.0.1:8080", "localhost", "localhost:9000")
     started = "2026-01-01T00:00:00+00:00"
     now = datetime.now(timezone.utc).isoformat()
     await app.store.record_usage(now, "desktop", "default", "127.0.0.1", OWNER, 240000, 5000, 0, 0)

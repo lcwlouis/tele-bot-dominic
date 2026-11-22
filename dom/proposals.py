@@ -192,7 +192,7 @@ class Proposals:
 
     async def _write_draft(self, kind: str, seed: dict) -> dict:
         client = self.app.draft_client
-        if client is None or (client.endpoint.api_key_env and not client.api_key):
+        if client is None or not client.available:
             if not self._draft_fallback_logged:
                 log.warning("Drafting model credentials unavailable; using the chat model for drafts.")
                 self._draft_fallback_logged = True

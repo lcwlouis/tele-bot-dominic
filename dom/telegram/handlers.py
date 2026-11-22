@@ -20,14 +20,14 @@ from aiogram.types import (
 )
 
 from dom.claim import try_claim
-from dom.config import Config, load_config
+from dom.config import MODEL_ROLES, Config, load_config
 from dom.dispatch import Dispatcher
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
 from dom.t3.tools import Bridge
 from dom.home import Home
 from dom.jev import JevClient
-from dom.llm import ChatClient
+from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.media import MediaDescriber
 from dom.memory_import import MemoryImport
 from dom.models import IncomingMessage, StoredMessage
@@ -54,7 +54,7 @@ class App:
     config: Config
     home: Home
     store: Store
-    client: ChatClient
+    client: ChatClient | FallbackClient
     bot: Any
     bot_username: str
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
@@ -66,7 +66,7 @@ class App:
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | None = None
     gifs: GifSearch | None = None
-    draft_client: ChatClient | None = None
+    draft_client: ChatClient | FallbackClient | None = None
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
@@ -105,6 +105,26 @@ class App:
     @property
     def owner_id(self) -> int | None:
         return self.store.owner_id
+
+    def apply_model_routes(self, saved: Config) -> None:
+        """Swap the configured routes for new calls. In-flight completions keep their current chain."""
+        models = {name: endpoint for name, endpoint in self.config.models.items() if name not in MODEL_ROLES}
+        models.update({name: saved.models[name] for name in MODEL_ROLES if name in saved.models})
+        config = self.config.model_copy(update={"models": models})
+        current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
+        chat, media, draft = (routed_client(config, role, current.http, current.usage)
+                              for role in ("chat", "media", "drafting"))
+        if isinstance(self.client, FallbackClient):
+            chat.last_model = self.client.last_model
+            chat.last_fallback_at = self.client.last_fallback_at
+        if media.available:
+            if self.media_describer is None:
+                self.media_describer = MediaDescriber(media, self.bot)
+            else:
+                self.media_describer.client = media
+        else:
+            self.media_describer = None
+        self.config, self.client, self.draft_client = config, chat, draft
 
 
 # ---- owner events ------------------------------------------------------------------

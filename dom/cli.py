@@ -23,7 +23,7 @@ from dom.home import Home, init_home
 from dom.gifs import GifSearch
 from dom.importer import import_v2
 from dom.jev import JevClient
-from dom.llm import ChatClient, FallbackClient
+from dom.llm import FallbackClient, routed_client
 from dom.media import MediaDescriber
 from dom.search import SearchClient
 from dom.store import Store
@@ -54,12 +54,7 @@ def model_api_key(config: Config, name: str = "chat") -> str | None:
 def chat_client(
     config: Config, http: httpx.AsyncClient, usage: UsageRecorder | None = None,
 ) -> FallbackClient:
-    """The chat model, with `[models.chat_fallback]` (if configured) used when it is down."""
-    primary = ChatClient(config.models["chat"], model_api_key(config), http, usage=usage)
-    fallback = None
-    if "chat_fallback" in config.models:
-        fallback = ChatClient(config.models["chat_fallback"], model_api_key(config, "chat_fallback"), http, usage=usage)
-    return FallbackClient(primary, fallback)
+    return routed_client(config, "chat", http, usage)
 
 
 def search_client(
@@ -135,18 +130,13 @@ async def run(home: Path) -> None:
             triage = config.models["triage"]
             triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
             jev = JevClient(http, triage_key, triage.model, triage.base_url, usage=usage) if triage_key else None
-            media = config.models["media"]
-            media_key = config.secret(media.api_key_env) if media.api_key_env else None
-            media_describer = (
-                MediaDescriber(ChatClient(media, media_key, http, usage=usage), bot) if media_key or not media.api_key_env else None
-            )
-            drafting = config.models["drafting"]
-            drafting_key = config.secret(drafting.api_key_env) if drafting.api_key_env else None
+            media = routed_client(config, "media", http, usage)
             app = App(
                 config=config, home=Home(home), store=store, client=client,
-                bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id, media_describer=media_describer,
+                bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id,
+                media_describer=MediaDescriber(media, bot) if media.available else None,
                 search_client=search_client(config, http, usage), gifs=gif_search(config, http),
-                draft_client=ChatClient(drafting, drafting_key, http, usage=usage),
+                draft_client=routed_client(config, "drafting", http, usage),
             )
             await app.stickers.refresh()
             await app.plugins.cleanup_drafts()
