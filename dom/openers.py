@@ -57,7 +57,7 @@ class Openers:
             return
         self._running = True
         try:
-            with app.dispatch._protect_send() as commit:
+            with app.dispatch.protect_send() as commit:
                 async with turn_log.capture(app.store, now, owner, "owner_dm"):
                     await self._maybe(owner, now, commit)
         except ModelCallSkipped:

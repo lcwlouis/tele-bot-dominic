@@ -50,6 +50,40 @@ def test_discovery_combines_dns_sd_names_and_neighbour_addresses():
     assert found.notes == []
 
 
+def test_collect_lists_dom_once_across_host_interfaces_and_skips_bridges():
+    own_host = "dompi" + LOCAL
+    remote_host = "nas" + LOCAL
+    avahi = (
+        f"=;eth0;IPv4;Dom\\032Pi;_ssh._tcp;local;{own_host};192.0.2.10;22;\n"
+        f"=;wlan0;IPv4;Dom\\032WiFi;_sftp-ssh._tcp;local;{own_host};192.0.2.11;22;\n"
+        f"=;tailscale0;IPv4;Dom\\032VPN;_ssh._tcp;local;{own_host};198.51.100.5;22;\n"
+        f"=;docker0;IPv4;Dom\\032Docker;_ssh._tcp;local;{own_host};198.51.100.1;22;\n"
+        f"=;br-0123456789ab;IPv4;Dom\\032Bridge;_ssh._tcp;local;{own_host};198.51.100.2;22;\n"
+        f"=;veth1234;IPv4;Dom\\032Veth;_ssh._tcp;local;{own_host};198.51.100.3;22;\n"
+        f"=;lo;IPv4;Dom\\032Loopback;_ssh._tcp;local;{own_host};127.0.0.1;22;\n"
+        f"=;eth0;IPv4;Model\\032Box;_http._tcp;local;{HOST};192.0.2.20;8080;\n"
+        f"=;eth0;IPv4;NAS;_smb._tcp;local;{remote_host};192.0.2.30;445;\n"
+        f"=;eth0;IPv4;NAS;_smb._tcp;local;{remote_host};192.0.2.31;445;\n"
+    )
+    found = devices.collect(run=fake_run(avahi), local_host="dompi")
+    by_address = {device.address: device for device in found.devices}
+    # Dom's own host is listed once (preferring eth0 over wlan0/tailscale0), bridges and loopback are skipped,
+    # and distinct/remote LAN devices stay intact.
+    assert sorted(by_address) == ["192.0.2.10", "192.0.2.20", "192.0.2.30", "192.0.2.31"]
+    assert {own_host, "Dom Pi", "Dom WiFi", "Dom VPN"} <= by_address["192.0.2.10"].names
+
+    # Even if Avahi renamed the local host with a numeric suffix, local_addresses still collapses Dom to one entry.
+    renamed = "dompi-2" + LOCAL
+    avahi_renamed = (
+        f"=;eth0;IPv4;Dom;_ssh._tcp;local;{renamed};192.0.2.10;22;\n"
+        f"=;wlan0;IPv4;Dom;_ssh._tcp;local;{renamed};192.0.2.11;22;\n"
+    )
+    found_renamed = devices.collect(
+        run=fake_run(avahi_renamed), local_host="dompi", local_addresses={"192.0.2.10", "192.0.2.11"},
+    )
+    assert [device.address for device in found_renamed.devices] == ["192.0.2.10"]
+
+
 def test_missing_tools_are_reported_not_fatal():
     found = devices.collect(run=fake_run(neighbours=[{"dst": OLD, "dev": "eth0", "lladdr": MAC, "state": ["STALE"]}],
                                          missing=("avahi-browse",)))

@@ -79,8 +79,78 @@ class MigrationTests(unittest.TestCase):
             names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
             self.assertTrue({"chats", "people_identities", "scheduled_jobs", "messages", "messages_fts",
                              "messages_ai", "messages_ad", "messages_au", "pending_turns",
-                             "idx_messages_chat_msg_unique", "self_tasks", "plugin_storage", "chat_migrations"} <= names)
+                             "idx_messages_chat_msg_unique", "self_tasks", "plugin_storage", "chat_migrations",
+                             "chat_topic_reads"} <= names)
+            chat_cols = {r[1] for r in conn.execute("PRAGMA table_info(chats)")}
+            self.assertIn("group_no_answer_at", chat_cols)
             conn.close()
+
+    def test_v21_migration_adds_topic_reads_and_group_cooldown_preserving_read_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "state.db"
+            with sqlite3.connect(db) as conn:
+                for _, filename in [(version, name) for version, name in MIGRATIONS if version <= 21]:
+                    conn.executescript((MIGRATIONS_DIR / filename).read_text())
+                conn.execute(
+                    "INSERT INTO chats (chat_id, chat_type, visibility_scope, authorization_status, last_read_msg_id, updated_at) "
+                    "VALUES ('-100', 'supergroup', 'chat:-100', 'approved', 15, 't')"
+                )
+                conn.executemany(
+                    "INSERT INTO messages (chat_id, msg_id, thread_id, role, visibility_scope, text, created_at) "
+                    "VALUES ('-100', ?, ?, 'user', 'chat:-100', ?, 't')",
+                    [(10, None, "old general"), (12, 77, "old topic"), (20, 77, "unread topic")],
+                )
+            self.assertEqual(migrate_database(db), TARGET_VERSION)
+            self.assertTrue(db.with_name("state.db.v21.bak").exists())
+            store = Store(Path(d), owner_id=OWNER_ID)
+            try:
+                topics = asyncio.run(store.get_unread_topics("-100"))
+                self.assertEqual([(tid, count, m.msg_id) for tid, count, m in topics], [(77, 1, 20)])
+            finally:
+                store.close()
+
+    def test_rollback_then_upgrade_does_not_turn_answered_messages_unread(self):
+        """v0.8.1 (no topic reads) running on the migrated DB moves only chats.last_read_msg_id; on the next start
+        the topic cursors catch up, including a topic that first appeared meanwhile (review of PR #27)."""
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "state.db"
+            with sqlite3.connect(db) as conn:
+                for _, filename in [(version, name) for version, name in MIGRATIONS if version <= 21]:
+                    conn.executescript((MIGRATIONS_DIR / filename).read_text())
+                conn.execute(
+                    "INSERT INTO chats (chat_id, chat_type, visibility_scope, authorization_status, last_read_msg_id, updated_at) "
+                    "VALUES ('-100', 'supergroup', 'chat:-100', 'approved', 10, 't')"
+                )
+                conn.executemany(
+                    "INSERT INTO messages (chat_id, msg_id, thread_id, role, visibility_scope, text, created_at) "
+                    "VALUES ('-100', ?, ?, 'user', 'chat:-100', ?, 't')",
+                    [(10, None, "answered before the upgrade")],
+                )
+            self.assertEqual(migrate_database(db), TARGET_VERSION)
+            with sqlite3.connect(db) as conn:  # the rollback: older code answers 11-15 and marks only the chat cursor
+                conn.executemany(
+                    "INSERT INTO messages (chat_id, msg_id, thread_id, role, visibility_scope, text, created_at) "
+                    "VALUES ('-100', ?, ?, 'user', 'chat:-100', ?, 't')",
+                    [(11, None, "a"), (12, None, "b"), (13, 88, "new topic"), (15, None, "c")],
+                )
+                conn.execute("UPDATE chats SET last_read_msg_id = 15 WHERE chat_id = '-100'")
+            self.assertEqual(migrate_database(db), TARGET_VERSION)  # the upgrade again
+            store = Store(Path(d), owner_id=OWNER_ID)
+            try:
+                self.assertEqual(asyncio.run(store.get_unread_topics("-100")), [])
+            finally:
+                store.close()
+            with sqlite3.connect(db) as conn:  # and a later message is still unread as normal
+                conn.execute(
+                    "INSERT INTO messages (chat_id, msg_id, thread_id, role, visibility_scope, text, created_at) "
+                    "VALUES ('-100', 16, NULL, 'user', 'chat:-100', 'new', 't')"
+                )
+            store = Store(Path(d), owner_id=OWNER_ID)
+            try:
+                topics = asyncio.run(store.get_unread_topics("-100"))
+                self.assertEqual([(tid, count, m.msg_id) for tid, count, m in topics], [(None, 1, 16)])
+            finally:
+                store.close()
 
     def test_self_work_migration_keeps_the_previous_schema_usable(self):
         """0015 only adds a table: a database at version 15 gains self_tasks and keeps its rows."""

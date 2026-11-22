@@ -148,8 +148,17 @@ class Reminders:
                 retry_at = datetime.fromisoformat(data["retry_at"])
             except ValueError:
                 retry_at = None
+        raw_chunks = data.get("chunks")
+        chunks = [c for c in raw_chunks if isinstance(c, str)] if isinstance(raw_chunks, list) else []
+        raw_sent = data.get("sent")
+        sent = [m for m in raw_sent if isinstance(m, int)] if isinstance(raw_sent, list) else []
+        if not sent or len(sent) > len(chunks):
+            # Only restore saved chunks once at least one chunk was sent; otherwise a restart re-evaluates `(late)`.
+            chunks, sent = [], []
         return _Delivery(
             due_at=due_at,
+            chunks=chunks,
+            sent=sent,
             failures=int(data.get("failures") or 0),
             retry_at=retry_at,
             owner_notified=bool(data.get("owner_notified")),
@@ -163,11 +172,22 @@ class Reminders:
             "retry_at": delivery.retry_at.isoformat() if delivery.retry_at else None,
             "owner_notified": delivery.owner_notified,
             "undeliverable": delivery.undeliverable,
+            "chunks": list(delivery.chunks) if delivery.sent else [],
+            "sent": list(delivery.sent),
         }
+
+        async def persist() -> None:
+            try:
+                await self.app.store.kv_set(self._retry_key(reminder_id), json.dumps(payload))
+            except Exception:
+                log.exception("could not persist retry state for reminder %s", reminder_id)
+
+        task = asyncio.create_task(persist())
         try:
-            await self.app.store.kv_set(self._retry_key(reminder_id), json.dumps(payload))
-        except Exception:
-            log.exception("could not persist retry state for reminder %s", reminder_id)
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
 
     async def _clear_retry_state(self, reminder_id: int) -> None:
         try:
@@ -386,7 +406,11 @@ class Reminders:
                 return
             delivery = self._deliveries.get(reminder_id)
             if delivery is None or delivery.due_at != row["due_at"]:
-                delivery = _Delivery(due_at=row["due_at"])
+                saved = (
+                    await self._load_retry_state(reminder_id, row["due_at"])
+                    if row["importance"] == "critical" else None
+                )
+                delivery = saved if saved is not None else _Delivery(due_at=row["due_at"])
                 self._deliveries[reminder_id] = delivery
             self._in_flight.add(reminder_id)
 
@@ -408,6 +432,9 @@ class Reminders:
                     lambda c=chunk: app.bot.send_message(owner, c), sleep=app.sleep, budget=budget,
                 )
                 delivery.sent.append(sent.message_id)
+                # A reminder cancelled or deleted while this chunk was in flight must not get its retry state back.
+                if row["importance"] == "critical" and await app.store.reminder_is_active(reminder_id):
+                    await self._save_retry_state(reminder_id, row["due_at"], delivery)
             async with self._delivery_lock:
                 if owner != app.owner_id or not await app.store.reminder_is_active(reminder_id):
                     self._deliveries.pop(reminder_id, None)

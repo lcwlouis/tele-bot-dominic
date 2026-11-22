@@ -54,6 +54,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (19, "0018_plugin_storage.sql"),
     (20, "0019_memory_edit_proposals.sql"),
     (21, "0020_topics_and_migrations.sql"),
+    (22, "0021_topic_reads_and_cooldowns.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -71,6 +72,19 @@ _MESSAGE_COLUMNS = (
     "is_bot, role, visibility_scope, text, media_json, is_edited, original_seen_before_edit, "
     "previous_seen_text, is_deleted, created_at, updated_at"
 )
+_MESSAGE_COLUMNS_M = ", ".join(f"m.{col.strip()}" for col in _MESSAGE_COLUMNS.split(","))
+_UNREAD_SQL = (
+    "m.msg_id > CASE "
+    "WHEN EXISTS (SELECT 1 FROM chat_topic_reads ctr_any WHERE ctr_any.chat_id = m.chat_id) "
+    "THEN COALESCE((SELECT ctr.last_read_msg_id FROM chat_topic_reads ctr "
+    "WHERE ctr.chat_id = m.chat_id AND ctr.thread_id = COALESCE(m.thread_id, 0)), 0) "
+    "ELSE COALESCE((SELECT c.last_read_msg_id FROM chats c WHERE c.chat_id = m.chat_id), 0) "
+    "END"
+)
+
+
+def _topic_key(thread_id: int | None) -> int:
+    return 0 if thread_id is None else int(thread_id)
 
 
 def _now() -> str:
@@ -113,6 +127,8 @@ def migrate_database(db_path: Path) -> int:
         current = conn.execute("PRAGMA user_version").fetchone()[0]
         pending = [(v, f) for v, f in MIGRATIONS if v > current]
         if not pending:
+            if current >= TOPIC_READS_VERSION:
+                _reconcile_topic_reads(conn)
             return current
 
         if db_path.stat().st_size > 0 and conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
@@ -149,9 +165,45 @@ def migrate_database(db_path: Path) -> int:
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
-        return conn.execute("PRAGMA user_version").fetchone()[0]
+        final = conn.execute("PRAGMA user_version").fetchone()[0]
+        if final >= TOPIC_READS_VERSION:
+            _reconcile_topic_reads(conn)
+        return final
     finally:
         conn.close()
+
+
+TOPIC_READS_VERSION = 22  # 0021_topic_reads_and_cooldowns
+
+
+def _reconcile_topic_reads(conn: sqlite3.Connection) -> None:
+    """Catch the per-topic read cursors up after older code ran on this database (a rollback to before topic
+    reads, then an upgrade again). This code always moves `chats.last_read_msg_id` together with a topic row, so a
+    chat cursor past every topic row can only mean older code marked the chat read: its topics, including ones that
+    first appeared meanwhile, are read up to that cursor. Without this, answered messages would turn unread again."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        behind = (
+            "SELECT c.chat_id, c.last_read_msg_id FROM chats c "
+            "WHERE c.last_read_msg_id IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM chat_topic_reads t WHERE t.chat_id = c.chat_id) "
+            "AND c.last_read_msg_id > (SELECT MAX(t.last_read_msg_id) FROM chat_topic_reads t WHERE t.chat_id = c.chat_id)"
+        )
+        for chat_id, cursor in conn.execute(behind).fetchall():
+            conn.execute(
+                "UPDATE chat_topic_reads SET last_read_msg_id = ?, updated_at = ? WHERE chat_id = ? AND last_read_msg_id < ?",
+                (cursor, now, chat_id, cursor),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO chat_topic_reads (chat_id, thread_id, last_read_msg_id, updated_at) "
+                "SELECT DISTINCT ?, COALESCE(thread_id, 0), ?, ? FROM messages WHERE chat_id = ?",
+                (chat_id, cursor, now, chat_id),
+            )
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _read_media_json(value: str | None) -> dict[str, Any]:
@@ -430,14 +482,15 @@ class Store:
                     chat_id, chat_type, visibility_scope, is_sleeping, sleep_until,
                     is_offline, offline_until, online_until, last_read_msg_id, updated_at,
                     authorization_status, title, invited_by_handle, approval_prompt_sent,
-                    traits_json, bot_depth, memory_cursor_msg_id, preset
-                ) VALUES (?, 'supergroup', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+                    traits_json, bot_depth, memory_cursor_msg_id, preset, group_no_answer_at
+                ) VALUES (?, 'supergroup', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
                 """,
                 (
                     new_id, new_scope, old_row["is_sleeping"], old_row["sleep_until"],
                     old_row["is_offline"], old_row["offline_until"], old_row["online_until"], now,
                     old_row["authorization_status"], effective_title, old_row["invited_by_handle"],
                     old_row["approval_prompt_sent"], old_row["traits_json"], old_row["preset"],
+                    old_row["group_no_answer_at"],
                 ),
             )
             # Mark the old group row left so background polling and approved chat lists follow the supergroup,
@@ -968,10 +1021,11 @@ class Store:
 
         await self._run(commit)
 
-    async def record_chat_event(self, chat_id: int | str, text: str) -> None:
+    async def record_chat_event(self, chat_id: int | str, text: str, *, thread_id: int | None = None) -> None:
         """A one-line note for Dom in one chat's history (no msg_id, never unread). Only the main model sees it."""
         await self.record_new_message(StoredMessage(
-            chat_id=str(chat_id), role="event", visibility_scope=self.visibility_for(chat_id), text=text, created_at=_now(),
+            chat_id=str(chat_id), role="event", visibility_scope=self.visibility_for(chat_id), text=text,
+            thread_id=thread_id, created_at=_now(),
         ))
 
     async def has_message(self, chat_id: int | str, msg_id: int) -> bool:
@@ -1025,12 +1079,13 @@ class Store:
             ).fetchone()
             dom_saw_original = dom_was_online_and_read is True
             if chat is not None:
+                topic_last_read = self._topic_last_read(conn, chat_id, row["thread_id"])
                 dom_saw_original = (
                     dom_saw_original
                     or (
                         dom_was_online_and_read is None and not chat["is_offline"] and not chat["is_sleeping"]
                     )
-                    or (chat["last_read_msg_id"] is not None and msg_id <= chat["last_read_msg_id"])
+                    or (topic_last_read is not None and msg_id <= topic_last_read)
                 )
 
             seen_before = bool(row["original_seen_before_edit"])
@@ -1089,56 +1144,202 @@ class Store:
         self._append_transcript(chat_id, "message_deleted", msg_ids=sorted(hit), deleted_at=now)
         return count
 
-    async def mark_chat_read(self, chat_id: str, up_to_msg_id: int) -> None:
-        await self._run(self._mark_chat_read, str(chat_id), up_to_msg_id)
+    def _seed_topic_reads(self, conn: sqlite3.Connection, chat_id: str, now: str) -> None:
+        if conn.execute("SELECT 1 FROM chat_topic_reads WHERE chat_id = ? LIMIT 1", (chat_id,)).fetchone() is not None:
+            return
+        row = conn.execute("SELECT last_read_msg_id FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        if row is None or row["last_read_msg_id"] is None:
+            return
+        last_read = row["last_read_msg_id"]
+        conn.execute(
+            "INSERT OR IGNORE INTO chat_topic_reads (chat_id, thread_id, last_read_msg_id, updated_at) "
+            "VALUES (?, 0, ?, ?)",
+            (chat_id, last_read, now),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO chat_topic_reads (chat_id, thread_id, last_read_msg_id, updated_at) "
+            "SELECT DISTINCT chat_id, thread_id, ?, ? FROM messages WHERE chat_id = ? AND thread_id IS NOT NULL",
+            (last_read, now, chat_id),
+        )
 
-    def _mark_chat_read(self, chat_id: str, up_to_msg_id: int) -> None:
+    def _topic_last_read(self, conn: sqlite3.Connection, chat_id: str, thread_id: int | None) -> int | None:
+        if conn.execute("SELECT 1 FROM chat_topic_reads WHERE chat_id = ? LIMIT 1", (chat_id,)).fetchone() is not None:
+            row = conn.execute(
+                "SELECT last_read_msg_id FROM chat_topic_reads WHERE chat_id = ? AND thread_id = ?",
+                (chat_id, _topic_key(thread_id)),
+            ).fetchone()
+            return row[0] if row is not None else 0
+        row = conn.execute("SELECT last_read_msg_id FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        return row[0] if row is not None else None
+
+    async def mark_chat_read(
+        self, chat_id: int | str, up_to_msg_id: int, *, thread_id: int | None = None,
+    ) -> None:
+        await self._run(self._mark_chat_read, str(chat_id), up_to_msg_id, thread_id)
+
+    def _mark_chat_read(self, chat_id: str, up_to_msg_id: int, thread_id: int | None = None) -> None:
+        now = _now()
+        topic = _topic_key(thread_id)
         with self._tx() as conn:
             self._ensure_chat(conn, chat_id)
+            self._seed_topic_reads(conn, chat_id, now)
+            conn.execute(
+                "INSERT INTO chat_topic_reads (chat_id, thread_id, last_read_msg_id, catch_up_pending, updated_at) "
+                "VALUES (?, ?, ?, 0, ?) "
+                "ON CONFLICT(chat_id, thread_id) DO UPDATE SET "
+                "last_read_msg_id = MAX(chat_topic_reads.last_read_msg_id, excluded.last_read_msg_id), "
+                "catch_up_pending = 0, updated_at = excluded.updated_at",
+                (chat_id, topic, up_to_msg_id, now),
+            )
             conn.execute(
                 "UPDATE chats SET last_read_msg_id = MAX(COALESCE(last_read_msg_id, 0), ?), updated_at = ? "
                 "WHERE chat_id = ?",
-                (up_to_msg_id, _now(), chat_id),
+                (up_to_msg_id, now, chat_id),
+            )
+
+    async def set_catch_up_pending(
+        self, chat_id: int | str, thread_id: int | None, pending: bool,
+    ) -> None:
+        await self._run(self._set_catch_up_pending, str(chat_id), thread_id, pending)
+
+    def _set_catch_up_pending(self, chat_id: str, thread_id: int | None, pending: bool) -> None:
+        now = _now()
+        topic = _topic_key(thread_id)
+        with self._tx() as conn:
+            self._ensure_chat(conn, chat_id)
+            if pending:
+                self._seed_topic_reads(conn, chat_id, now)
+                conn.execute(
+                    "INSERT INTO chat_topic_reads (chat_id, thread_id, last_read_msg_id, catch_up_pending, updated_at) "
+                    "VALUES (?, ?, 0, 1, ?) "
+                    "ON CONFLICT(chat_id, thread_id) DO UPDATE SET catch_up_pending = 1, updated_at = excluded.updated_at",
+                    (chat_id, topic, now),
+                )
+            else:
+                conn.execute(
+                    "UPDATE chat_topic_reads SET catch_up_pending = 0, updated_at = ? "
+                    "WHERE chat_id = ? AND thread_id = ?",
+                    (now, chat_id, topic),
+                )
+
+    async def clear_chat_catch_up_pending(self, chat_id: int | str) -> None:
+        await self._run(self._clear_chat_catch_up_pending, str(chat_id))
+
+    def _clear_chat_catch_up_pending(self, chat_id: str) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE chat_topic_reads SET catch_up_pending = 0, updated_at = ? WHERE chat_id = ?",
+                (_now(), chat_id),
+            )
+
+    async def is_catch_up_pending(self, chat_id: int | str, thread_id: int | None = None) -> bool:
+        return await self._run(self._is_catch_up_pending, str(chat_id), thread_id)
+
+    def _is_catch_up_pending(self, chat_id: str, thread_id: int | None) -> bool:
+        row = self._conn.execute(
+            "SELECT catch_up_pending FROM chat_topic_reads WHERE chat_id = ? AND thread_id = ?",
+            (chat_id, _topic_key(thread_id)),
+        ).fetchone()
+        return bool(row[0]) if row is not None else False
+
+    async def get_group_no_answer_at(self, chat_id: int | str) -> datetime | None:
+        return await self._run(self._get_group_no_answer_at, str(chat_id))
+
+    def _get_group_no_answer_at(self, chat_id: str) -> datetime | None:
+        row = self._conn.execute("SELECT group_no_answer_at FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        if row is None or not row[0]:
+            return None
+        try:
+            instant = datetime.fromisoformat(row[0])
+        except ValueError:
+            return None
+        return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
+
+    async def set_group_no_answer_at(self, chat_id: int | str, at: datetime) -> None:
+        await self._run(self._set_group_no_answer_at, str(chat_id), at.astimezone(timezone.utc).isoformat())
+
+    def _set_group_no_answer_at(self, chat_id: str, at: str) -> None:
+        with self._tx() as conn:
+            self._ensure_chat(conn, chat_id)
+            conn.execute(
+                "UPDATE chats SET group_no_answer_at = ?, updated_at = ? WHERE chat_id = ?",
+                (at, _now(), chat_id),
             )
 
     # ---- reading ----------------------------------------------------------
 
-    async def get_unread(self, chat_id: int | str) -> tuple[int, StoredMessage | None]:
-        return await self._run(self._get_unread, str(chat_id))
+    @staticmethod
+    def _thread_filter(thread_id: int | None, filter_thread: bool, alias: str = "m") -> tuple[str, tuple[Any, ...]]:
+        if not filter_thread:
+            return "", ()
+        if thread_id is None:
+            return f" AND {alias}.thread_id IS NULL", ()
+        return f" AND {alias}.thread_id = ?", (thread_id,)
 
-    def _get_unread(self, chat_id: str) -> tuple[int, StoredMessage | None]:
-        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+    async def get_unread(
+        self, chat_id: int | str, *, thread_id: int | None = None, filter_thread: bool = False,
+    ) -> tuple[int, StoredMessage | None]:
+        return await self._run(self._get_unread, str(chat_id), thread_id, filter_thread)
+
+    def _get_unread(
+        self, chat_id: str, thread_id: int | None = None, filter_thread: bool = False,
+    ) -> tuple[int, StoredMessage | None]:
+        hide = "" if self._is_owner_chat(chat_id) else f" AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        t_sql, t_args = self._thread_filter(thread_id, filter_thread)
         row = self._conn.execute(
-            f"SELECT {_MESSAGE_COLUMNS}, COUNT(*) OVER () AS unread_count FROM messages "
-            "WHERE chat_id = ? AND is_deleted = 0 AND role = 'user' "
-            "AND msg_id > COALESCE((SELECT last_read_msg_id FROM chats WHERE chat_id = ?), 0)"
-            f"{hide} ORDER BY msg_id DESC LIMIT 1",
-            (chat_id, chat_id),
+            f"SELECT {_MESSAGE_COLUMNS_M}, COUNT(*) OVER () AS unread_count FROM messages m "
+            f"WHERE m.chat_id = ? AND m.is_deleted = 0 AND m.role = 'user' AND {_UNREAD_SQL}{hide}{t_sql} "
+            "ORDER BY m.msg_id DESC LIMIT 1",
+            (chat_id, *t_args),
         ).fetchone()
         return (row["unread_count"], _row_to_message(row)) if row is not None else (0, None)
 
-    async def has_unread_human(self, chat_id: int | str) -> bool:
-        return await self._run(self._has_unread_human, str(chat_id))
+    async def get_unread_topics(self, chat_id: int | str) -> list[tuple[int | None, int, StoredMessage]]:
+        """Unread messages grouped by forum topic (`None` for General/non-forum), ordered by earliest unread msg_id."""
+        return await self._run(self._get_unread_topics, str(chat_id))
 
-    def _has_unread_human(self, chat_id: str) -> bool:
+    def _get_unread_topics(self, chat_id: str) -> list[tuple[int | None, int, StoredMessage]]:
+        hide = "" if self._is_owner_chat(chat_id) else f" AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        rows = self._conn.execute(
+            f"SELECT {_MESSAGE_COLUMNS_M} FROM messages m "
+            f"WHERE m.chat_id = ? AND m.is_deleted = 0 AND m.role = 'user' AND {_UNREAD_SQL}{hide} "
+            "ORDER BY m.msg_id ASC",
+            (chat_id,),
+        ).fetchall()
+        grouped: dict[int | None, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(row["thread_id"], []).append(row)
+        return [(tid, len(items), _row_to_message(items[-1])) for tid, items in grouped.items()]
+
+    async def has_unread_human(
+        self, chat_id: int | str, *, thread_id: int | None = None, filter_thread: bool = False,
+    ) -> bool:
+        return await self._run(self._has_unread_human, str(chat_id), thread_id, filter_thread)
+
+    def _has_unread_human(self, chat_id: str, thread_id: int | None = None, filter_thread: bool = False) -> bool:
+        t_sql, t_args = self._thread_filter(thread_id, filter_thread)
         return self._conn.execute(
-            "SELECT 1 FROM messages WHERE chat_id = ? AND is_deleted = 0 AND role = 'user' AND is_bot = 0 "
-            "AND msg_id > COALESCE((SELECT last_read_msg_id FROM chats WHERE chat_id = ?), 0) LIMIT 1",
-            (chat_id, chat_id),
+            f"SELECT 1 FROM messages m WHERE m.chat_id = ? AND m.is_deleted = 0 AND m.role = 'user' "
+            f"AND m.is_bot = 0 AND {_UNREAD_SQL}{t_sql} LIMIT 1",
+            (chat_id, *t_args),
         ).fetchone() is not None
 
-    async def get_unread_media_to_describe(self, chat_id: int | str, limit: int) -> list[tuple[int, dict]]:
+    async def get_unread_media_to_describe(
+        self, chat_id: int | str, limit: int, *, thread_id: int | None = None, filter_thread: bool = False,
+    ) -> list[tuple[int, dict]]:
         """(msg_id, media) of undescribed attachments from people among the last `limit` unread messages."""
-        return await self._run(self._get_unread_media_to_describe, str(chat_id), limit)
+        return await self._run(self._get_unread_media_to_describe, str(chat_id), limit, thread_id, filter_thread)
 
-    def _get_unread_media_to_describe(self, chat_id: str, limit: int) -> list[tuple[int, dict]]:
-        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+    def _get_unread_media_to_describe(
+        self, chat_id: str, limit: int, thread_id: int | None = None, filter_thread: bool = False,
+    ) -> list[tuple[int, dict]]:
+        hide = "" if self._is_owner_chat(chat_id) else f" AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        t_sql, t_args = self._thread_filter(thread_id, filter_thread)
         rows = self._conn.execute(
-            "SELECT msg_id, media_json, is_bot FROM messages "
-            "WHERE chat_id = ? AND is_deleted = 0 AND role = 'user' "
-            "AND msg_id > COALESCE((SELECT last_read_msg_id FROM chats WHERE chat_id = ?), 0)"
-            f"{hide} ORDER BY msg_id DESC LIMIT ?",
-            (chat_id, chat_id, limit),
+            "SELECT m.msg_id, m.media_json, m.is_bot FROM messages m "
+            f"WHERE m.chat_id = ? AND m.is_deleted = 0 AND m.role = 'user' AND {_UNREAD_SQL}{hide}{t_sql} "
+            "ORDER BY m.msg_id DESC LIMIT ?",
+            (chat_id, *t_args, limit),
         ).fetchall()
         found = []
         for row in reversed(rows):
@@ -1162,19 +1363,31 @@ class Store:
 
     async def get_recent_chat_window(
         self, chat_id: int | str, limit: int = 35, *, through_id: int | None = None,
+        thread_id: int | None = None, filter_thread: bool = False,
     ) -> list[StoredMessage]:
-        return await self._run(self._get_recent_chat_window, str(chat_id), limit, through_id)
+        return await self._run(self._get_recent_chat_window, str(chat_id), limit, through_id, thread_id, filter_thread)
 
-    def _window_where(self, chat_id: str, through_id: int | None) -> tuple[str, tuple]:
+    def _window_where(
+        self, chat_id: str, through_id: int | None,
+        *, thread_id: int | None = None, filter_thread: bool = False,
+    ) -> tuple[str, tuple]:
         # Rows labelled private (e.g. from a legacy import) never enter another chat's window.
         hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
-        return (
-            f"chat_id = ? AND is_deleted = 0{hide} AND (? IS NULL OR role != 'user' OR id <= ?)",
-            (chat_id, through_id, through_id),
-        )
+        where = f"chat_id = ? AND is_deleted = 0{hide} AND (? IS NULL OR role != 'user' OR id <= ?)"
+        args: tuple[Any, ...] = (chat_id, through_id, through_id)
+        if filter_thread:
+            if thread_id is None:
+                where += " AND thread_id IS NULL"
+            else:
+                where += " AND (thread_id = ? OR (role = 'event' AND thread_id IS NULL))"
+                args += (thread_id,)
+        return where, args
 
-    def _get_recent_chat_window(self, chat_id: str, limit: int, through_id: int | None) -> list[StoredMessage]:
-        where, args = self._window_where(chat_id, through_id)
+    def _get_recent_chat_window(
+        self, chat_id: str, limit: int, through_id: int | None,
+        thread_id: int | None = None, filter_thread: bool = False,
+    ) -> list[StoredMessage]:
+        where, args = self._window_where(chat_id, through_id, thread_id=thread_id, filter_thread=filter_thread)
         rows = self._conn.execute(
             f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY id DESC LIMIT ?",
             (*args, max(0, limit)),
@@ -1183,14 +1396,16 @@ class Store:
 
     async def get_window_from(
         self, chat_id: int | str, start: tuple[int, str] | None, limit: int, *, through_id: int | None = None,
+        thread_id: int | None = None, filter_thread: bool = False,
     ) -> list[StoredMessage]:
         """The model's chat window in arrival order, anchored by row ID even if that row was edited or deleted."""
-        return await self._run(self._get_window_from, str(chat_id), start, limit, through_id)
+        return await self._run(self._get_window_from, str(chat_id), start, limit, through_id, thread_id, filter_thread)
 
     def _get_window_from(
         self, chat_id: str, start: tuple[int, str] | None, limit: int, through_id: int | None,
+        thread_id: int | None = None, filter_thread: bool = False,
     ) -> list[StoredMessage]:
-        where, args = self._window_where(chat_id, through_id)
+        where, args = self._window_where(chat_id, through_id, thread_id=thread_id, filter_thread=filter_thread)
         if start is not None:
             where += " AND id >= ?"
             args += (start[0],)

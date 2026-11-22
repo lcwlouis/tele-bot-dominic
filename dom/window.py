@@ -42,8 +42,8 @@ def estimate_tokens(message: StoredMessage) -> int:
     return -(-size // 3)
 
 
-def _key(chat_id: int) -> str:
-    return f"window:{chat_id}"
+def _key(chat_id: int, thread_id: int | None = None) -> str:
+    return f"window:{chat_id}" if thread_id is None else f"window:{chat_id}:{thread_id}"
 
 
 @dataclass(frozen=True)
@@ -54,20 +54,23 @@ class Window:
     trim_seq: int = 0  # increments on every trim so the prompt cache knows when to swap notes
 
 
-async def _state(store: Store, chat_id: int) -> tuple[tuple[int, str] | None, int, int]:
+async def _state(store: Store, chat_id: int, thread_id: int | None = None) -> tuple[tuple[int, str] | None, int, int]:
     try:
-        raw = json.loads(await store.kv_get(_key(chat_id)) or "{}")
+        raw = json.loads(await store.kv_get(_key(chat_id, thread_id)) or "{}")
         start = (int(raw["id"]), str(raw["at"])) if "id" in raw else None
         return start, max(0, int(raw.get("fixed", DEFAULT_FIXED))), max(0, int(raw.get("trims", 0)))
     except (ValueError, TypeError, AttributeError, KeyError):
         return None, DEFAULT_FIXED, 0
 
 
-async def _save(store: Store, chat_id: int, start: tuple[int, str] | None, fixed: int, trims: int = 0) -> None:
+async def _save(
+    store: Store, chat_id: int, start: tuple[int, str] | None, fixed: int, trims: int = 0,
+    thread_id: int | None = None,
+) -> None:
     state: dict[str, int | str] = {"fixed": fixed} if start is None else {"id": start[0], "at": start[1], "fixed": fixed}
     if trims:
         state["trims"] = trims
-    await store.kv_set(_key(chat_id), json.dumps(state))
+    await store.kv_set(_key(chat_id, thread_id), json.dumps(state))
 
 
 def _drop_count(rows: list[StoredMessage], tokens: int, config: Config) -> int:
@@ -81,11 +84,13 @@ def _drop_count(rows: list[StoredMessage], tokens: int, config: Config) -> int:
     return dropped
 
 
-async def load(store: Store, chat_id: int, config: Config, *, through_id: int | None = None) -> Window:
-    """The messages the model reads for this chat, trimming first if the prompt has reached its budget."""
-    start, fixed, trims = await _state(store, chat_id)
+async def load(
+    store: Store, chat_id: int, config: Config, *, through_id: int | None = None, thread_id: int | None = None,
+) -> Window:
+    """The messages the model reads for this chat (or forum topic), trimming first if the prompt has reached its budget."""
+    start, fixed, trims = await _state(store, chat_id, thread_id)
     limit = config.window_size * (FETCH_FACTOR if start else 1)  # with no start yet, begin from the newest `window_size`
-    rows = await store.get_window_from(chat_id, start, limit, through_id=through_id)
+    rows = await store.get_window_from(chat_id, start, limit, through_id=through_id, thread_id=thread_id, filter_thread=True)
     tokens = fixed + sum(estimate_tokens(message) for message in rows)
     if tokens < config.window_budget_tokens and len(rows) <= config.window_size:
         return Window(rows, tokens, trim_seq=trims)
@@ -97,16 +102,18 @@ async def load(store: Store, chat_id: int, config: Config, *, through_id: int | 
         return Window(rows, tokens, blocked=True, trim_seq=trims)
     first = rows[dropped]
     trims += 1
-    await _save(store, chat_id, (first.id, first.created_at), fixed, trims)
+    await _save(store, chat_id, (first.id, first.created_at), fixed, trims, thread_id)
     log.info("trimmed chat %s: dropped %d messages (about %d tokens)", chat_id, dropped, tokens)
     return Window(rows[dropped:], tokens - sum(estimate_tokens(m) for m in rows[:dropped]), trim_seq=trims)
 
 
-async def measure(store: Store, chat_id: int, sent: list[StoredMessage], prompt_tokens: int) -> None:
+async def measure(
+    store: Store, chat_id: int, sent: list[StoredMessage], prompt_tokens: int, *, thread_id: int | None = None,
+) -> None:
     """Remember how much of a real prompt was not the window: its reported size minus the window's estimate."""
     if prompt_tokens <= 0:
         return
-    start, _, trims = await _state(store, chat_id)
+    start, _, trims = await _state(store, chat_id, thread_id)
     if start is None and sent:  # the first turn of a chat: from here the window starts where this one did
         start = (sent[0].id, sent[0].created_at)
-    await _save(store, chat_id, start, max(0, prompt_tokens - sum(estimate_tokens(m) for m in sent)), trims)
+    await _save(store, chat_id, start, max(0, prompt_tokens - sum(estimate_tokens(m) for m in sent)), trims, thread_id)

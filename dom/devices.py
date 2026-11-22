@@ -14,6 +14,7 @@ import ipaddress
 import json
 import logging
 import re
+import socket
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
@@ -32,10 +33,12 @@ KNOWN_KEY = "devices:known"
 SOURCE = "find_devices"
 BROWSE = ["avahi-browse", "--all", "--resolve", "--terminate", "--parsable"]
 NEIGHBOURS = ["ip", "-j", "neigh", "show"]
+LOCAL_ADDRS = ["ip", "-j", "-4", "addr", "show"]
 TIMEOUT = 15
 MAX_DEVICES = 100
 SKIPPED_INTERFACES = ("docker", "br-", "veth")  # container bridges, not the LAN
 DEAD = {"FAILED", "INCOMPLETE"}
+_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
 _ESCAPE = re.compile(r"\\(\d{3})")
 
 
@@ -71,9 +74,56 @@ def _command(run, args: list[str], missing: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def collect(run=subprocess.run) -> Discovery:
+def _local_mdns_name(hostname: str) -> str:
+    base = hostname.strip().rstrip(".").lower()
+    if not base:
+        return ""
+    return base if base.endswith(".local") else f"{base.split('.')[0]}.local"
+
+
+def _local_ipv4s() -> set[str]:
+    """Best-effort non-loopback IPv4 addresses assigned to this host's own interfaces."""
+    try:
+        listing = _command(subprocess.run, LOCAL_ADDRS, "")
+        addrs: set[str] = set()
+        for iface in json.loads(listing or "[]"):
+            for info in iface.get("addr_info") or []:
+                local = info.get("local", "")
+                if _ipv4(local) and not ipaddress.IPv4Address(local).is_loopback:
+                    addrs.add(local)
+        return addrs
+    except (LookupError, ValueError, OSError, AttributeError):
+        return set()
+
+
+def _primary_ipv4() -> str | None:
+    """Preferred outbound IPv4 address of this host (no packet is sent)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.0.2.1", 80))
+            addr = sock.getsockname()[0]
+            return addr if _ipv4(addr) else None
+    except OSError:
+        return None
+
+
+def _local_rank(address: str, ifaces: set[str], primary: str | None) -> tuple[int, int, int, ipaddress.IPv4Address]:
+    ip = ipaddress.IPv4Address(address)
+    lan = ip.is_private and not ip.is_loopback and not ip.is_link_local and ip not in _CGNAT
+    iface_rank = (
+        0 if any(name.startswith(("eth", "en")) for name in ifaces)
+        else 1 if any(name.startswith("wl") for name in ifaces)
+        else 2
+    )
+    return (0 if address == primary else 1, 0 if lan else 1, iface_rank, ip)
+
+
+def collect(
+    run=subprocess.run, *, local_host: str | None = None, local_addresses: set[str] | None = None,
+) -> Discovery:
     """IPv4 devices with their mDNS names and MAC addresses, from avahi-browse and `ip neigh`."""
     found: dict[str, Device] = {}
+    interfaces: dict[str, set[str]] = {}
     notes = []
     try:
         browse = _command(run, BROWSE, "mDNS unavailable: avahi-browse is not installed (sudo apt install avahi-utils)")
@@ -81,7 +131,11 @@ def collect(run=subprocess.run) -> Discovery:
             parts = line.split(";")
             if len(parts) < 9 or parts[0] != "=" or parts[2] != "IPv4" or not _ipv4(parts[7]):
                 continue
-            device = found.setdefault(parts[7], Device(parts[7]))
+            interface, address = parts[1], parts[7]
+            if interface == "lo" or interface.startswith(SKIPPED_INTERFACES) or ipaddress.IPv4Address(address).is_loopback:
+                continue
+            device = found.setdefault(address, Device(address))
+            interfaces.setdefault(address, set()).add(interface)
             service = _ESCAPE.sub(lambda match: chr(int(match[1])), parts[3])
             device.names.update(name for name in (parts[6], service) if name)
     except LookupError as note:
@@ -97,6 +151,23 @@ def collect(run=subprocess.run) -> Discovery:
             found.setdefault(address, Device(address)).macs.add(mac.lower())
     except (LookupError, ValueError, AttributeError) as note:
         notes.append(str(note) if isinstance(note, LookupError) else "could not read the neighbour table")
+
+    own_name = _local_mdns_name(local_host if local_host is not None else socket.gethostname())
+    own_ips = set(local_addresses) if local_addresses is not None else (_local_ipv4s() if run is subprocess.run else set())
+    own = [
+        addr for addr, dev in found.items()
+        if addr in own_ips or (own_name and any(name.lower() == own_name for name in dev.names))
+    ]
+    if len(own) > 1:
+        primary = _primary_ipv4() if (run is subprocess.run and local_addresses is None) else None
+        keep = min(own, key=lambda addr: _local_rank(addr, interfaces.get(addr, set()), primary))
+        keeper = found[keep]
+        for addr in own:
+            if addr != keep:
+                other = found.pop(addr)
+                keeper.names.update(other.names)
+                keeper.macs.update(other.macs)
+
     ordered = sorted(found.values(), key=lambda device: ipaddress.IPv4Address(device.address))
     return Discovery(ordered, notes)
 
