@@ -42,7 +42,7 @@ class ModelCall:
     fallback: bool
     system_hash: str
     tools_hash: str
-    user_hash: str
+    user_hash: str | None  # None for media and search: their user turn carries the attachment itself
     user_prefix_hash: str | None
     duration_ms: int = 0
     status: int | str = ""
@@ -78,6 +78,7 @@ class TurnTrace:
 
 
 _current: ContextVar[TurnTrace | None] = ContextVar("turn_trace", default=None)
+_inside_timed: ContextVar[bool] = ContextVar("inside_timed", default=False)  # a timed() block already counts nested calls
 
 
 @contextmanager
@@ -99,9 +100,11 @@ def timed(what: str):
     """Record how long the block took in the existing what@ms trace."""
     trace = _current.get()
     start = monotonic()
+    token = _inside_timed.set(True)
     try:
         yield
     finally:
+        _inside_timed.reset(token)
         if trace is not None:
             trace.add_timing(what, round((monotonic() - start) * 1000))
 
@@ -121,12 +124,13 @@ def model_call(model: str, kind: str, messages: list[dict], tools: list[dict], *
         kind, model, fallback,
         prompt_hash([m for m in messages if m.get("role") in ("system", "developer")]),
         prompt_hash(tools),
-        prompt_hash(users),
+        # Media and search users carry base64 attachments (up to ~13 MB): hashing them would stall the event loop.
+        None if kind in ("media", "search") else prompt_hash(users),
         prompt_hash(head) if marker else None,
     )
     trace.model_calls.append(call)
     trace.calls += 1
-    if kind == "chat" or not trace.model:
+    if kind == "chat" or (not trace.model and kind == "triage"):
         trace.model = model
     trace.fallback |= fallback
     if kind in ("triage", "guard"):
@@ -140,7 +144,9 @@ def model_call(model: str, kind: str, messages: list[dict], tools: list[dict], *
         raise
     finally:
         call.duration_ms = round((monotonic() - start) * 1000)
-        if kind == "chat":
+        if _inside_timed.get():
+            pass  # e.g. a plugin tool's leak-guard call: the enclosing tool timing already covers it
+        elif kind == "chat":
             trace.add_timing("fallback_model" if fallback else "model", call.duration_ms)
         elif kind in ("triage", "guard"):
             trace.add_timing(kind, call.duration_ms)

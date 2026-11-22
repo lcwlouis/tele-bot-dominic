@@ -259,7 +259,7 @@ class Dispatcher:
         await self.sleep(delay)
         # A new message may cancel the timer, but must never cancel a turn in progress.
         self._debounces.pop(chat_id)
-        first = self._first_notify.pop(chat_id)
+        first = self._first_notify.pop(chat_id, None)
         await self._decide(chat_id, debounce_started=first)
 
     def start(self) -> None:
