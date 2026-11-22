@@ -196,7 +196,7 @@ class Usage(UsageRecorder):
         ]
         return [day for day, _, _ in bounds], await self.store.usage_by_day(bounds)
 
-    async def over_cap(self, config: Config, bot) -> bool:
+    async def over_cap(self, config: Config, bot, *, sleep=None) -> bool:
         cap = config.daily_spend_cap_usd
         if cap == 0:
             return False
@@ -214,8 +214,11 @@ class Usage(UsageRecorder):
                 "Change `daily_spend_cap_usd` in config.toml."
             )
             try:
+                from dom.telegram.executor import retry_telegram
+
                 await self.store.record_owner_event(text)
-                await bot.send_message(owner_id, text)
+                kw = {"sleep": sleep} if sleep is not None else {}
+                await retry_telegram(lambda: bot.send_message(owner_id, text), **kw)
             except Exception:
                 log.exception("could not send or record the owner's daily spend cap notice")
         return True

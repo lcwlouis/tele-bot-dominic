@@ -274,8 +274,13 @@ class Proposals:
             if row["kind"] == "memory_edit":  # model-written diff: shown verbatim, nothing in it becomes tappable
                 options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
                 entities = [MessageEntity(type="pre", offset=0, length=len(chunk.encode("utf-16-le")) // 2)]
-            sent = await app.bot.send_message(
-                app.owner_id, chunk, disable_notification=True, reply_markup=markup, entities=entities, **options,
+            from dom.telegram.executor import retry_telegram
+
+            sent = await retry_telegram(
+                lambda c=chunk, m=markup, e=entities, o=dict(options): app.bot.send_message(
+                    app.owner_id, c, disable_notification=True, reply_markup=m, entities=e, **o,
+                ),
+                sleep=app.sleep,
             )
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):
@@ -304,7 +309,14 @@ class Proposals:
             markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]])
             for message_id in cards[key]:
                 try:
-                    await app.bot.edit_message_reply_markup(chat_id=app.owner_id, message_id=message_id, reply_markup=markup)
+                    from dom.telegram.executor import retry_telegram
+
+                    await retry_telegram(
+                        lambda mid=message_id, m=markup: app.bot.edit_message_reply_markup(
+                            chat_id=app.owner_id, message_id=mid, reply_markup=m,
+                        ),
+                        sleep=app.sleep,
+                    )
                 except TelegramAPIError:  # too old, deleted, or already showing it
                     log.info("could not settle the card of proposal %s", key)
         if settled:

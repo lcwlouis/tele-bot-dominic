@@ -19,6 +19,7 @@ class StoredMessage(BaseModel):
     chat_id: str
     msg_id: int | None = None
     reply_to_msg_id: int | None = None
+    thread_id: int | None = None
     sender_user_id: int | None = None
     sender_handle: str = ""
     sender_name: str = ""

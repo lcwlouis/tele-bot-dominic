@@ -176,6 +176,24 @@ class Home:
         path = self._regular_path(rel)
         return path.read_text() if path.is_file() else ""
 
+    def move_chat_notes(self, old_chat_id: int | str, new_chat_id: int | str) -> bool:
+        """Copy a migrated group's chat notes file to the new chat id when the destination is empty.
+        Leaves the old file intact so any in-flight pass on the old id never loses its file."""
+        old_id, new_id = str(old_chat_id), str(new_chat_id)
+        if old_id == new_id:
+            return False
+        with _MEMORY_WRITE_LOCK:
+            home = self.scoped(allow_private=False)
+            old_path = home._regular_path(f"memory/chats/{old_id}.md")
+            if not old_path.is_file():
+                return False
+            new_path = home._regular_path(f"memory/chats/{new_id}.md")
+            if new_path.exists() and new_path.read_text(encoding="utf-8").strip():
+                return False
+            old_text = old_path.read_text(encoding="utf-8")
+            home._write_regular(f"memory/chats/{new_id}.md", old_text)
+            return True
+
     def _regular_path(self, rel: str) -> Path:
         path = self._resolve(rel)
         if path != self.root.resolve().joinpath(*PurePosixPath(rel).parts):
