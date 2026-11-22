@@ -106,6 +106,10 @@ class Presence:
         self._session_start: dict[int, datetime] = {}  # lost on restart; extensions then count from the next one
         self.on_session_end: Callable[[int], None] | None = None  # an online session ended (expired, slept, offline)
 
+    def migrate_session(self, old_chat_id: int, new_chat_id: int) -> None:
+        if old_chat_id in self._session_start:
+            self._session_start[new_chat_id] = self._session_start.pop(old_chat_id)
+
     def _session_ended(self, chat_id) -> None:
         if self.on_session_end is not None:
             self.on_session_end(int(chat_id))

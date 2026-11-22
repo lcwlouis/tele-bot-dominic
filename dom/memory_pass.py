@@ -113,13 +113,13 @@ class MemoryPass:
         messages, or the chat is not approved); True when the model was asked. A model failure raises and
         leaves the cursor, so the same messages are offered again next time.
 
-        The turn lock is held only to read the chat and the notes; it is released during the model call so
-        replies in the chat are not stalled behind it. Approval is checked again before anything is written."""
+        The chat lock is held only to read the chat and notes. The spend check and model call run after it
+        is released. Approval is checked again before anything is written."""
         app, store = self.app, self.app.store
         async with app.locks[chat_id]:
             batch = await store.get_memory_batch(chat_id, BATCH_SIZE)
             messages = [m for m in batch if m.role != "event"]
-            if not messages or not await app.dispatch.model_allowed(chat_id):
+            if not messages:
                 return False
             scope = store.scope_for(chat_id, "private" if chat_id > 0 else "group")
             home = app.home.scoped(allow_private=scope == "owner_dm")

@@ -303,7 +303,7 @@ class SelfWork:
         states = dict(zip(chats, (state for state, _ in app.dispatch.peek_presence(rows))))
         if states[app.owner_id] == "asleep":
             return "asleep"
-        if any(state == "online" for state in states.values()) or any(lock.locked() for lock in app.locks.values()):
+        if any(state == "online" for state in states.values()) or app.dispatch.turn_running():
             return "in a conversation"
         fleet = app.desktop_worker
         if fleet is None:

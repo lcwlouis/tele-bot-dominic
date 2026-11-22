@@ -317,7 +317,10 @@ async def test_a_task_waits_for_its_delay_and_for_dom_to_be_awake_and_idle(make_
     assert await app.self_work.wait_reason() == "in a conversation"  # online in the owner's DM
     await app.store.set_presence(OWNER, online_until=None, is_sleeping=False, sleep_until=None)
     async with app.locks[FRIEND]:
-        assert await app.self_work.wait_reason() == "in a conversation"  # a turn is running somewhere
+        assert await app.self_work.wait_reason() is None
+    async with app.dispatch._dispatch_slot(FRIEND, wait_media=False):
+        assert not app.locks[FRIEND].locked()
+        assert await app.self_work.wait_reason() == "in a conversation"
     app.desktop_worker.lane().worker._stopping = 1
     assert await app.self_work.wait_reason() == "the desktop is busy"
     app.desktop_worker.lane().worker._stopping = 0
