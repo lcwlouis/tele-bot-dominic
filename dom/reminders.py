@@ -3,7 +3,8 @@
 A reminder is advanced only after every chunk of it was sent, so a crash between send and advance can duplicate a
 reminder, never lose one. A failed delivery is retried with a growing delay: non-critical reminders are cancelled
 after MAX_ATTEMPTS, while critical reminders persist retry state, keep retrying (notifying the owner once after
-MAX_ATTEMPTS), and stay active marked undeliverable if the destination is gone."""
+MAX_ATTEMPTS), and stay active marked undeliverable if the destination is gone, retried every UNDELIVERABLE_RETRY
+until one delivery clears the mark."""
 
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ IMPORTANCE = ("critical", "normal", "casual")
 REPEATS = ("", "daily", "weekdays", "weekly")
 MAX_ATTEMPTS = 10
 MAX_BACKOFF_MINUTES = 60
+UNDELIVERABLE_RETRY = timedelta(hours=6)  # a critical reminder is never given up; a gone destination is tried this slowly
 RETRY_STATE_PREFIX = "reminder_retry:"
 _UNDELIVERABLE = re.compile(
     r"chat not found|user not found|user is deactivated|bot was blocked|can't initiate conversation", re.IGNORECASE,
@@ -330,7 +332,7 @@ class Reminders:
             pending = []
             for row in await self.active():
                 due = datetime.fromisoformat(row["due_at"])
-                if due > now or row["importance"] == "casual" or row.get("undeliverable"):
+                if due > now or row["importance"] == "casual":
                     continue
                 delivery = self._deliveries.get(row["id"])
                 if delivery is not None and delivery.due_at != row["due_at"]:
@@ -339,11 +341,8 @@ class Reminders:
                 if delivery is None and row["importance"] == "critical":
                     if (saved := await self._load_retry_state(row["id"], row["due_at"])) is not None:
                         self._deliveries[row["id"]] = delivery = saved
-                if delivery is not None:
-                    if delivery.undeliverable:
-                        continue
-                    if delivery.retry_at and delivery.retry_at > now:
-                        continue
+                if delivery is not None and delivery.retry_at and delivery.retry_at > now:
+                    continue
                 missed = self._started_at is not None and due < self._started_at
                 if row["importance"] == "normal" and asleep and not missed:
                     continue
@@ -382,7 +381,6 @@ class Reminders:
             if (
                 reminder_id in self._in_flight
                 or owner != app.owner_id
-                or row.get("undeliverable")
                 or not await app.store.reminder_is_active(reminder_id)
             ):
                 return
@@ -390,8 +388,6 @@ class Reminders:
             if delivery is None or delivery.due_at != row["due_at"]:
                 delivery = _Delivery(due_at=row["due_at"])
                 self._deliveries[reminder_id] = delivery
-            if delivery.undeliverable:
-                return
             self._in_flight.add(reminder_id)
 
         try:
@@ -445,7 +441,7 @@ class Reminders:
         if row["importance"] == "critical":
             if _is_destination_gone(exc):
                 delivery.undeliverable = True
-                delivery.retry_at = None
+                delivery.retry_at = self._now() + UNDELIVERABLE_RETRY
                 should_notify = not delivery.owner_notified
                 delivery.owner_notified = True
                 try:

@@ -581,3 +581,55 @@ async def test_chats_falls_back_to_plain_text_when_rich_messages_are_refused(two
     assert chat_id == OWNER and text.startswith("Dom's chats\n") and "• Book Club · 3 members" in text
     assert buttons(kw["reply_markup"])[0] == [("🚪 Leave Book Club", f"leave:{FRIEND_GROUP}")]
     assert sum("rich" in r.getMessage().lower() for r in caplog.records) == 1
+
+
+def _flood(wait):
+    from aiogram.exceptions import TelegramRetryAfter
+
+    return TelegramRetryAfter(method=LeaveChat(chat_id=1), message="Flood control", retry_after=wait)
+
+
+async def test_leaving_waits_out_a_flood_limit(two_approved_one_pending):
+    app = two_approved_one_pending
+    real, failures = app.bot.leave_chat, [_flood(1)]
+
+    async def flaky(chat_id, **kw):
+        if failures:
+            raise failures.pop()
+        return await real(chat_id, **kw)
+
+    app.bot.leave_chat = flaky
+    app.bot.calls.clear()
+    await handlers.handle_callback(app, callback(app, OWNER, f"leaveyes:{FRIEND_GROUP}"))
+    assert app.bot.of("leave") == [("leave", FRIEND_GROUP)]
+    assert await auth_status(app, FRIEND_GROUP) == "left"
+
+
+@pytest.mark.parametrize("failure", [lambda: _flood(60), lambda: _flood(0), lambda: TelegramBadRequest(
+    method=LeaveChat(chat_id=1), message="query is too old"), lambda: TimeoutError("network")])
+async def test_a_failed_toast_never_aborts_the_handler(two_approved_one_pending, failure):
+    app = two_approved_one_pending
+
+    async def failing(callback_query_id, text=None, **kw):
+        raise failure()
+
+    app.bot.answer_callback_query = failing
+    app.bot.calls.clear()
+    await handlers.handle_callback(app, callback(app, OWNER, f"leaveyes:{FRIEND_GROUP}"))
+    assert await auth_status(app, FRIEND_GROUP) == "left"
+    text, _ = only_replacement(app)  # the stale buttons were still replaced
+    assert text.startswith("**Dom's chats**") and "Book Club" not in text
+
+
+async def test_a_short_flood_limit_on_the_toast_is_retried_once(two_approved_one_pending):
+    app = two_approved_one_pending
+    answers, failures = [], [_flood(1)]
+
+    async def flaky(callback_query_id, text=None, **kw):
+        if failures:
+            raise failures.pop()
+        answers.append(text)
+
+    app.bot.answer_callback_query = flaky
+    await handlers.handle_callback(app, callback(app, OWNER, f"leaveyes:{FRIEND_GROUP}"))
+    assert answers == ["Dom left Book Club"]

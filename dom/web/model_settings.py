@@ -225,18 +225,23 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     home = current.config.home
     path = home / "config.toml"
     document = tomlkit.parse(current.text)
-    models = document["models"]
-    if "chat_fallback" in models:
-        legacy = models.pop("chat_fallback")
-        if "fallback" not in models:
-            models["fallback"] = legacy
+
+    def models():
+        # A fresh view per step: when other tables sit between the [models.*] ones, tomlkit's view of them goes stale
+        # after a write (it forgets a key it just inserted), so one view must never span two writes.
+        return document["models"]
+
+    if "chat_fallback" in models():
+        legacy = models().pop("chat_fallback")
+        if update.role != "fallback" and "fallback" not in models():
+            models()["fallback"] = legacy
     if update.primary is None:
-        models.pop(update.role, None)
+        models().pop(update.role, None)
     else:
         primary = update.primary.model_dump(exclude_none=True)
         if update.fallbacks:
             primary["fallbacks"] = [provider.model_dump(exclude_none=True) for provider in update.fallbacks]
-        models[update.role] = primary
+        models()[update.role] = primary
 
     text = tomlkit.dumps(document)
     saved = Snapshot(validate_config(home, tomllib.loads(text)), text)

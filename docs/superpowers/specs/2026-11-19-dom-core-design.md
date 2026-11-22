@@ -56,7 +56,7 @@ side services: scheduler (reminders, heartbeat/daydream), web UI (FastAPI),
 - `triage`: TypeSafe Jev via `POST /api/alpha/decisions` with `~typesafe/jev-latest`. This is a classifier, not a chat model, so it has no chain and the settings page shows it read-only.
 - A chat model may lack vision (the homelab one does). Anything visual goes through the media model.
 - A provider that fails (connection error, 5xx or 429 after retries, or 401, 402, 403 or 404) hands over to the next one. The serving provider is recorded in the turn log and usage, and the spend cap is checked before every attempt.
-- Requests to an OpenRouter host (chat, media, drafting, search) send `provider: {zdr: true}`, so a model without a zero-data-retention endpoint fails instead of leaking. Other cloud providers are the owner's responsibility.
+- Requests to an OpenRouter host (chat, media, drafting, search, triage) send `provider: {zdr: true}`, so a model without a zero-data-retention endpoint fails instead of leaking. Other cloud providers are the owner's responsibility.
 - The owner sets providers on the dashboard's Settings page (`/api/models`, owner-only, same-origin JSON). A save is validated, revision-checked and probed: each added or changed slot gets one short real call (8 s timeout, no redirects), and any failure refuses the save with a per-slot error. A new key variable that is not in `.env` yet saves untested. `config.toml` is written atomically with a `.bak`, and routes apply without a restart. API keys stay in `.env`; the page shows only whether one is set.
 
 When Jev is down, the main model decides through a `no_response` action. The system never pretends to be Jev.
@@ -241,7 +241,7 @@ Media is transcribed or described once by the media model when it arrives. The d
 
 **Dom always knows the status.** A health check sets `desktop: connected | starting | unavailable | off` in the per-turn note. `start_desktop_task` is offered only when it is usable. Otherwise, Dom says in character that his computer isn't with him.
 
-**Contents.** A real Linux box: Chromium, shell, Python/Jupyter, files. It holds no secrets.
+**Contents.** A real Linux box: Chromium, shell, Python, files. It holds no secrets. Jupyter is switched off in the container (`DISABLE_JUPYTER`).
 
 **Logins.** The task's worker calls `handoff` with a reason; Dom never asks for a password in chat. The owner gets a link to the live view (VNC behind the UI's auth), logs in, and taps "done". Cookies stay in the container profile and never reach Dom's core.
 
@@ -271,13 +271,8 @@ Media is transcribed or described once by the media model when it arrives. The d
 
 - FastAPI serves a small single-page UI.
 - Auth: Cloudflare Access in front; Dom checks the Access JWT on every request. It binds to the Docker bridge address that the tunnel container reaches, never a LAN address. A dev token exists for local testing only.
-- Pages:
-  - chats and their presence state
-  - approvals: groups, plugins, soul edits, imports
-  - memory and soul editor, including "talk to Dom to edit his soul"
-  - desktop live view
-  - logs
-- The JARVIS look gets a dedicated design pass (Opus) after the pages work. The old `server.py` is a visual reference only.
+- Pages today: Now, Waiting for you, Reminders, Chats, Usage, Desktop, Plugins, Own work, Briefs, Memory, Turn log and Settings. Approvals (groups, plugins, soul edits, imports) live in Waiting for you; the desktop live view is on Desktop.
+- The JARVIS look is a separate track: the new dashboard design is built on its own and replaces these pages when it is ready. The old `server.py` is a visual reference only.
 
 ## 13. Salvage from V2
 

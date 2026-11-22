@@ -1004,3 +1004,45 @@ async def test_remaining_telegram_send_paths_retry_on_flood_control(make_app):
 
     # Every retried path waited via app.sleep.
     assert sleeps.count(1.0) >= 9
+
+
+async def test_an_undeliverable_critical_reminder_is_retried_slowly_until_one_delivery_clears_it(make_app):
+    app = make_app()
+    reminder_id = await app.dispatch.reminders.create("2026-01-01T12:01", "Take meds", "critical")
+    gone, attempts = True, 0
+    real_send = app.bot.send_message
+
+    async def send(chat_id, text, **kw):
+        nonlocal attempts
+        attempts += 1
+        if gone:
+            raise TelegramForbiddenError(method=SendMessage(chat_id=OWNER, text="x"), message="Forbidden: bot was blocked by the user")
+        return await real_send(chat_id, text, **kw)
+
+    app.bot.send_message = send
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+    assert attempts == 1 and (await app.dispatch.reminders.active())[0]["undeliverable"] == 1
+
+    app.dispatch.now.advance(hours=5)  # inside the slow cadence: left alone
+    await app.dispatch.tick()
+    assert attempts == 1
+
+    app.dispatch.now.advance(hours=2)  # past it: tried again, still gone, still active, no second owner event
+    await app.dispatch.tick()
+    assert attempts == 2
+    assert (await app.dispatch.reminders.active())[0]["undeliverable"] == 1
+    assert len([e["text"] for e in await events(app) if "undeliverable" in e["text"]]) == 1
+
+    app.dispatch.reminders = Reminders(app)  # a restart keeps the cadence
+    app.dispatch.now.advance(hours=1)
+    await app.dispatch.tick()
+    assert attempts == 2
+
+    gone = False  # the owner unblocked the bot
+    app.dispatch.now.advance(hours=6)
+    await app.dispatch.tick()
+    assert attempts == 3
+    assert await app.dispatch.reminders.active() == []  # delivered: finished, and the mark went with it
+    row = await app.store.get_reminder(OWNER, reminder_id)
+    assert row["status"] != "active" and not row["undeliverable"]
