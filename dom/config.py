@@ -21,6 +21,9 @@ class ModelEndpoint(BaseModel):
     base_url: str = Field(description="Provider API base URL, including its API version path.")
     model: str = Field(description="Provider model ID.")
     api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for a compatible endpoint without authentication.")
+    reasoning_effort: Literal["low", "medium"] | None = Field(
+        None, description="Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default.",
+    )
 
 
 class OpenersConfig(BaseModel):
@@ -254,6 +257,7 @@ class Config(BaseModel):
     t3: T3Config = Field(default_factory=T3Config)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why.")
+    memory_self_edit: bool = Field(False, description="Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves.")
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_threshold: float = Field(1.2, ge=0, le=3, description="Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call.")
 
@@ -324,7 +328,7 @@ def load_config(home: Path) -> Config:
 def validate_config(home: Path, raw: dict) -> Config:
     """Apply starter defaults and validate an instance's parsed TOML table."""
     defaults = starter_config()["models"]
-    models = {key: defaults[key] for key in ("triage", "media")}
+    models = {key: defaults[key] for key in ("triage", "media", "drafting")}
     models.update(raw.get("models", {}))
     if "search" in models:
         models["search"] = {**defaults["search"], **models["search"]}

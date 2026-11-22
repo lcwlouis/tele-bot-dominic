@@ -16,12 +16,18 @@ from pathlib import Path
 from tempfile import TemporaryFile, TemporaryDirectory
 from threading import Lock
 from time import monotonic
+from typing import TYPE_CHECKING, Callable
 
 from dom.plugins.manifest import Manifest, Plugin, read_plugin
+
+if TYPE_CHECKING:
+    from dom.store import Store
 
 log = logging.getLogger(__name__)
 
 MAX_OUTPUT = 16 * 1024
+MAX_STORAGE = 64 * 1024
+MAX_STORAGE_DEPTH = 100
 TMP_BYTES = 8 * 1024 * 1024  # size of the plugin's /tmp tmpfs
 FILE_BYTES = 1024 * 1024  # RLIMIT_FSIZE: largest file a plugin can write
 OPEN_FILES = 32  # RLIMIT_NOFILE; no clone, so no process limit is needed
@@ -120,11 +126,41 @@ def parse_output(data: bytes, *, structured: bool = False) -> str | dict:
     raise PluginError("Invalid plugin protocol response.")
 
 
-def exchange(process: subprocess.Popen, request: bytes, timeout: int, *, structured: bool = False) -> str | dict:
+def _invalid_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant {value}.")
+
+
+def _storage_json(data: bytes) -> str:
+    if len(data) > MAX_STORAGE:
+        raise PluginError("Plugin storage exceeded 64 KB.")
+    try:
+        value = json.loads(data.decode("utf-8"), parse_constant=_invalid_json_constant)
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        size = len(encoded.encode("utf-8"))
+    except (ValueError, RecursionError):
+        raise PluginError("Plugin storage must be valid JSON.") from None
+    if size > MAX_STORAGE:
+        raise PluginError("Plugin storage exceeded 64 KB.")
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, (dict, list)):
+            if depth >= MAX_STORAGE_DEPTH:
+                raise PluginError("Plugin storage exceeded 100 nested objects or arrays.")
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
+    return encoded
+
+
+def exchange(
+    process: subprocess.Popen, request: bytes, timeout: int, *, structured: bool = False,
+    save_storage: Callable[[str], None] | None = None,
+) -> str | dict:
     """Bound both pipe I/O and exit time, without buffering unlimited output."""
     output = bytearray()
     sent = 0
     deadline = monotonic() + timeout
+    limit = MAX_OUTPUT + (MAX_STORAGE + 1 if save_storage is not None else 0)
     try:
         with selectors.DefaultSelector() as selector:
             for stream, event in ((process.stdin, selectors.EVENT_WRITE), (process.stdout, selectors.EVENT_READ)):
@@ -145,14 +181,24 @@ def exchange(process: subprocess.Popen, request: bytes, timeout: int, *, structu
                             selector.unregister(key.fileobj)
                             key.fileobj.close()
                     else:
-                        chunk = os.read(key.fd, MAX_OUTPUT + 1 - len(output))
+                        chunk = os.read(key.fd, limit + 1 - len(output))
                         if not chunk:
                             selector.unregister(key.fileobj)
                         output.extend(chunk)
-                        if len(output) > MAX_OUTPUT:
+                        if len(output) > limit:
+                            if save_storage is not None and output.find(b"\n", 0, MAX_OUTPUT) >= 0:
+                                raise PluginError("Plugin storage exceeded 64 KB.")
                             raise PluginError("Plugin output exceeded 16 KB.")
         if process.wait(timeout=max(0, deadline - monotonic())) != 0:
             raise PluginError("Plugin process failed.")
+        if save_storage is not None:
+            first, separator, stored = bytes(output).partition(b"\n")
+            result = parse_output(first + separator, structured=structured)
+            if stored:
+                if not stored.endswith(b"\n") or b"\n" in stored[:-1]:
+                    raise PluginError("Invalid plugin storage response.")
+                save_storage(_storage_json(stored[:-1]))
+            return result
         return parse_output(bytes(output), structured=structured)
     except subprocess.TimeoutExpired:
         raise PluginError("Plugin timed out.") from None
@@ -245,9 +291,10 @@ def _seccomp(network: bool, machine: str | None = None) -> bytes:
 
 
 class PluginRunner:
-    def __init__(self, bwrap: str = "/usr/bin/bwrap", *, home: Path):
+    def __init__(self, bwrap: str = "/usr/bin/bwrap", *, home: Path, store: Store | None = None):
         self.bwrap = Path(bwrap)
         self.home = home.resolve()
+        self.store = store
         self.last_failure: str | None = None  # why the last self-test failed, for self_inspect
 
     def arguments(self, folder: Path, manifest: Manifest, *, filter_fd: int, network: bool = False) -> list[str]:
@@ -343,20 +390,62 @@ class PluginRunner:
                 snapshot = read_plugin(plugin_dir)
                 if snapshot.manifest != manifest or snapshot.hash != approved_hash:
                     raise PluginError("Plugin changed since approval.")
-                line = json.dumps(request, allow_nan=False) + "\n"
-                return self._execute_locked(
-                    snapshot, line.encode("utf-8"), manifest.network, structured="panel" in request,
-                )
+                if not manifest.storage:
+                    return self._invoke(snapshot, request, manifest.network, structured="panel" in request)
+                store = self.store
+                if store is None:
+                    raise PluginError("Plugin storage is unavailable.")
+                name = snapshot.manifest.name
+
+                def save(value: str) -> None:
+                    store.write_plugin_storage(name, approved_hash, value)
+
+                try:
+                    value = store.read_plugin_storage(name, approved_hash)
+                    return self._invoke(
+                        snapshot, {**request, "storage": json.loads(value) if value is not None else None},
+                        False, structured="panel" in request, save_storage=save,
+                    )
+                except ValueError as error:
+                    raise PluginError(str(error)) from None
             except OSError:
                 raise PluginError("Could not start or read the plugin.") from None
         finally:
             _PROCESS.release()
 
+    def trial(self, snapshot: Plugin, sample: dict) -> dict:
+        """Run staged bytes offline with synthetic arguments and disposable empty state."""
+        if not self.self_test():
+            raise PluginsUnavailable("Plugins are unavailable because the sandbox could not be verified.")
+        if not _PROCESS.acquire(blocking=False):
+            raise PluginBusy("plugin busy, try again")
+        try:
+            request = {**sample, "trial": True}
+            if snapshot.manifest.storage:
+                request["storage"] = None
+                return self._invoke(snapshot, request, False, structured=True, save_storage=lambda value: None)
+            return self._invoke(snapshot, request, False, structured=True)
+        except OSError:
+            raise PluginError("Could not start the plugin test.") from None
+        finally:
+            _PROCESS.release()
+
+    def _invoke(
+        self, snapshot: Plugin, request: dict, network: bool, *, structured: bool,
+        save_storage: Callable[[str], None] | None = None,
+    ) -> str | dict:
+        line = json.dumps(request, allow_nan=False, separators=(",", ":")) + "\n"
+        options = {"save_storage": save_storage} if save_storage is not None else {}
+        return self._execute_locked(snapshot, line.encode("utf-8"), network, structured=structured, **options)
+
     def _execute(self, snapshot: Plugin, request: bytes, network: bool) -> str:
         with _PROCESS:
             return self._execute_locked(snapshot, request, network)
 
-    def _execute_locked(self, snapshot: Plugin, request: bytes, network: bool, *, structured: bool = False) -> str | dict:
+    def _execute_locked(
+        self, snapshot: Plugin, request: bytes, network: bool, *, structured: bool = False,
+        save_storage: Callable[[str], None] | None = None,
+    ) -> str | dict:
         # Materialize only the bytes we hashed. Edits to the live plugin cannot change this bind.
         with TemporaryDirectory(prefix="dom-plugin-") as directory, TemporaryFile() as sandbox_filter, \
                 TemporaryFile() as errors:
@@ -376,7 +465,9 @@ class PluginRunner:
                 env={}, start_new_session=True, pass_fds=(sandbox_filter.fileno(),),
             )
             try:
-                return exchange(process, request, snapshot.manifest.timeout_seconds, structured=structured)
+                return exchange(
+                    process, request, snapshot.manifest.timeout_seconds, structured=structured, save_storage=save_storage,
+                )
             except PluginError as error:
                 errors.seek(0)
                 detail = errors.read(500).decode("utf-8", "replace").strip()

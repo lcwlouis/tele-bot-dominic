@@ -21,6 +21,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `window_size` | `500` | Safety bound on the messages in one chat's window, for chats of very short messages: past it a trim also happens, down to 60% of it. Not the normal trigger. |
 | `daily_spend_cap_usd` | `1.0` | Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap. |
 | `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why. |
+| `memory_self_edit` | `false` | Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves. |
 | `leak_check` | `true` | Use Jev to screen eligible outbound text and network plugin calls for private information. |
 | `leak_threshold` | `1.2` | Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call. |
 
@@ -33,6 +34,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `models.triage` | Built in | Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe. |
 | `models.media` | Built in | Attachment descriptions, transcriptions and desktop screenshot descriptions. |
 | `models.search` | Optional | OpenRouter web search. If the table is present, omitted fields use the starter search settings. |
+| `models.drafting` | Built in | Endpoint for plugin and skill drafts. Defaults to Claude Haiku 5.5 with low thinking and uses the chat model if the drafting key is missing. |
 
 Each `[models.<name>]` table uses the following keys. Use HTTPS for a provider on a different host.
 
@@ -41,10 +43,11 @@ Each `[models.<name>]` table uses the following keys. Use HTTPS for a provider o
 | `models.<name>.base_url` | Required | Provider API base URL, including its API version path. |
 | `models.<name>.model` | Required | Provider model ID. |
 | `models.<name>.api_key_env` | Unset | Secret variable name. Leave unset for a compatible endpoint without authentication. |
+| `models.<name>.reasoning_effort` | Unset | Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default. |
 
 ### Starter model settings
 
-Init creates the four tables below. Omitted triage and media tables use these defaults. A hand-written config must supply `[models.chat]`. Omitting `[models.search]` disables search.
+Init creates the five tables below. Omitted triage, media and drafting tables use these defaults. A hand-written config must supply `[models.chat]`. Omitting `[models.search]` disables search.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -60,6 +63,10 @@ Init creates the four tables below. Omitted triage and media tables use these de
 | `models.search.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
 | `models.search.model` | `"deepseek/deepseek-v4.1-flash-1017"` | Provider model ID. |
 | `models.search.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
+| `models.drafting.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
+| `models.drafting.model` | `"anthropic/claude-haiku-5.5"` | Provider model ID. |
+| `models.drafting.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
+| `models.drafting.reasoning_effort` | `"low"` | Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default. |
 
 ## Optional secrets
 

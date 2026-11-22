@@ -1,14 +1,19 @@
 import asyncio
 import json
 from datetime import timedelta
+from threading import Event
 
+import httpx
 import pytest
 
+from dom.config import starter_config, validate_config
+from dom.llm import ChatClient
 from dom.plugins import runner
+from dom.plugins.manifest import read_plugin
 from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 from dom.presence import read_habits
 from dom.telegram import handlers
-from dom.tools import TurnCtx
+from dom.tools import SKILL_MANAGE_TOOL, TurnCtx
 from dom.jev import JevUnavailable
 from test_guard import FakeJev
 from test_owner_events import events, press
@@ -92,6 +97,201 @@ async def test_draft_proposal_and_review_gate(make_app, browser):
     assert (await status(app))["approved_hash"] == row["hash"]
     assert app.bot.of("answer")[-1][2] == "Approved"
     assert any("Reviewed plugin" in row["text"] for row in await events(app))
+
+
+async def test_failed_trial_and_storage_are_visible_without_blocking_approval(make_app, browser, monkeypatch):
+    app = make_app()
+    trials = []
+
+    def trial(plugin, sample):
+        trials.append((plugin.hash, sample))
+        raise runner.PluginError("<example> failed\nNetwork off\nHash: spoof\nhttps://example.test/path " + "x" * 200)
+
+    monkeypatch.setattr(app.plugin_runner, "trial", trial)
+    proposal = await draft(app, manifest=MANIFEST.replace('version = "1"', 'version = "1"\nstorage = true'))
+    row = await status(app)
+    route = review_path(row)
+    card, = app.bot.of("send", OWNER)
+    assert all(text in card[2] for text in ("Storage enabled", "Test run failed", "ms", "<example> failed"))
+    preview, = [line for line in card[2].splitlines() if line.startswith("Plugin said")]
+    assert preview.startswith('Plugin said: "<example> failed Network off Hash∶ spoof https∶∕∕example·test∕path')
+    assert len(preview) < 180 and preview.endswith('…"')
+    assert card[2].splitlines().count("Network off") == 1
+    assert "https://example.test/path" not in card[2]
+    assert card[3]["link_preview_options"].is_disabled and card[3]["parse_mode"] is None
+    async with browser(app) as client:
+        for path in ("/plugins", route):
+            page = (await client.get(path)).text
+            assert all(text in page for text in ("Storage enabled", "Test run failed", "ms", "&lt;example&gt; failed"))
+            assert "Plugin said: &#34;&lt;example&gt; failed Network off Hash∶ spoof https∶∕∕example·test∕path" in page
+            assert "<example>" not in page and "https://example.test/path" not in page
+        await review_code(client, route)
+    await press(app, f"prop:yes:{proposal}")
+    assert (await status(app))["status"] == "approved"
+    assert trials == [(row["hash"], {"tool": "length", "args": {}})]
+
+
+async def test_disk_plugin_is_tested_for_each_staged_hash(make_app, monkeypatch):
+    app = make_app()
+    folder = app.home.root / "plugins" / "convert"
+    folder.mkdir(parents=True)
+    (folder / "plugin.toml").write_text(MANIFEST)
+    path = folder / "main.py"
+    path.write_text("pass\n")
+    hashes = []
+
+    def trial(plugin, _):
+        hashes.append(plugin.hash)
+        return {"output": "sample passed", "self_test": False}
+
+    monkeypatch.setattr(app.plugin_runner, "trial", trial)
+    await app.plugins.scan()
+    first, = await app.plugins.listing()
+    assert first["test_run"]["output"] == "sample passed"
+    assert first["status"] == "pending" and len(hashes) == 1
+    await app.plugins.listing()
+    path.write_text("# revised\n")
+    assert await app.plugins.approved() == []
+    await app.plugins.scan()
+    second, = await app.plugins.listing()
+    assert hashes == [first["hash"], second["hash"]]
+    assert first["hash"] != second["hash"]
+
+
+async def test_review_and_approval_return_while_trial_is_running(make_app, browser, monkeypatch):
+    app = make_app()
+    folder = app.home.root / "plugins" / "convert"
+    folder.mkdir(parents=True)
+    (folder / "plugin.toml").write_text(MANIFEST)
+    (folder / "main.py").write_text("pass\n")
+    plugin = read_plugin(folder)
+    route = f"/plugins/convert/{plugin.hash}"
+    started, release = Event(), Event()
+
+    def trial(*_):
+        started.set()
+        assert release.wait(10)
+        return {"output": "finished later", "self_test": True}
+
+    monkeypatch.setattr(app.plugin_runner, "trial", trial)
+    assert await app.plugins.approved() == []
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        async with browser(app) as client:
+            review = await asyncio.wait_for(client.get(route), 2)
+            assert "Test run pending." in review.text
+            await asyncio.wait_for(review_code(client, route), 2)
+            approved = await asyncio.wait_for(client.post(f"{route}/approve", headers=POST_HEADERS), 2)
+            assert approved.status_code == 200 and "Test run pending." in approved.text
+            entries = await asyncio.wait_for(app.plugins.entries("owner_dm"), 2)
+            assert len(entries) == 1 and entries[0][0].hash == plugin.hash
+    finally:
+        release.set()
+        await app.plugins.scan()
+    assert (await app.plugins.review("convert", plugin.hash))["test_run"]["output"] == "finished later"
+
+
+@pytest.mark.parametrize("error_type", [runner.PluginBusy, runner.PluginsUnavailable, RuntimeError])
+async def test_temporary_and_unexpected_trial_errors_are_safe_to_retry(make_app, monkeypatch, error_type):
+    app = make_app()
+
+    def interrupted(*_):
+        raise error_type("interrupted")
+
+    monkeypatch.setattr(app.plugin_runner, "trial", interrupted)
+    await draft(app)
+    await app.plugins.scan()
+    row = await status(app)
+    assert row["test_run_json"] is None
+    assert "Test run pending." in app.bot.of("send", OWNER)[-1][2]
+
+    await app.store.set_plugin_status(row["name"], row["hash"], "approved")
+    monkeypatch.setattr(app.plugin_runner, "trial", lambda *_: {"output": "retried", "self_test": True})
+    await app.plugins.scan()
+    assert json.loads((await status(app))["test_run_json"])["output"] == "retried"
+
+
+async def test_storage_previously_ignored_by_manifest_parser_needs_review(make_app):
+    app = make_app()
+    folder = app.home.root / "plugins" / "convert"
+    folder.mkdir(parents=True)
+    (folder / "plugin.toml").write_text(MANIFEST.replace('version = "1"', 'version = "1"\nstorage = true'))
+    (folder / "main.py").write_text("pass\n")
+    digest = read_plugin(folder).hash
+    await app.store.stage_plugins([("convert", digest, '{"network": false}')])
+    await app.store.set_plugin_status("convert", digest, "approved")
+    await app.plugins.mark_reviewed("convert", digest)
+    assert await app.plugins.approved() == []
+    assert (await app.plugins.review("convert", digest))["reviewed"] is False
+    assert (await status(app))["status"] == "pending"
+
+
+@pytest.mark.parametrize("effort", ["low", "medium"])
+async def test_drafting_model_receives_public_briefs_and_authors_plugin_and_skill(make_app, monkeypatch, effort):
+    app = make_app()
+    url = starter_config()["models"]["drafting"]["base_url"]
+    app.config = validate_config(app.home.root, {"models": {"drafting": {
+        "base_url": url, "model": "example/writer", "api_key_env": "DRAFT_KEY", "reasoning_effort": effort,
+    }}})
+    requests = []
+    plugin = {
+        "name": "convert", "description": "Convert units",
+        "files": {"main.py": "# generated by the drafting model\n"}, "manifest_toml": MANIFEST,
+    }
+    skill = {"name": "brew", "description": "Make tea", "body": "Steep the leaves."}
+    key = "example-key"
+
+    def complete(request):
+        requests.append(json.loads(request.content))
+        assert request.headers["Authorization"] == f"Bearer {key}"
+        reply = plugin if len(requests) == 1 else skill
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(reply)}}]})
+
+    trial = {"output": "trial output", "self_test": True}
+    monkeypatch.setattr(app.plugin_runner, "trial", lambda *_: trial)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(complete)) as http:
+        app.draft_client = ChatClient(app.config.models["drafting"], key, http)
+        for tool, args in (
+            (DRAFT_PLUGIN_TOOL, {"name": "convert", "brief": "Write a unit converter."}),
+            (SKILL_MANAGE_TOOL, {"name": "brew", "brief": "Describe how to brew tea."}),
+        ):
+            assert "id" in json.loads(await tool.handler(args, ctx(app)))
+            assert json.loads(requests[-1]["messages"][1]["content"]) == args
+    assert len(requests) == 2
+    assert all(req["model"] == "example/writer" and req["reasoning"] == {"effort": effort} for req in requests)
+    assert app.script.requests == []
+    assert app.home.read("plugins/convert/main.py") == plugin["files"]["main.py"]
+    plugin_row, skill_row = await app.proposals.pending()
+    assert json.loads(plugin_row["body_json"])["test_run"]["output"] == "trial output"
+    assert json.loads(skill_row["body_json"])["body"] == skill["body"]
+
+
+async def test_private_draft_brief_never_reaches_the_model(make_app):
+    app = make_app()
+    app.home.scoped(allow_private=True)._write_regular("private/NOTES.md", "- Confidential sample phrase\n")
+    endpoint = validate_config(app.home.root, {}).models["drafting"]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail("reached drafting model"))) as http:
+        app.draft_client = ChatClient(endpoint, "example-key", http)
+        for tool in (DRAFT_PLUGIN_TOOL, SKILL_MANAGE_TOOL):
+            result = await tool.handler({"name": "example", "brief": "Confidential sample phrase"}, ctx(app))
+            assert result.startswith("error:") and "private" in result
+    assert await app.proposals.pending() == []
+
+
+async def test_missing_drafting_key_uses_chat_model_and_accepts_fenced_json(make_app, caplog):
+    plugin = {
+        "name": "convert", "description": "Convert units", "files": {"main.py": "pass\n"}, "manifest_toml": MANIFEST,
+    }
+    skill = {"name": "brew", "description": "Make tea", "body": "Steep the leaves."}
+    replies = [f"```json\n{json.dumps(reply)}\n```" for reply in (plugin, skill)]
+    app = make_app(contents=replies)
+    endpoint = validate_config(app.home.root, {}).models["drafting"]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail("used unkeyed drafter"))) as http:
+        app.draft_client = ChatClient(endpoint, None, http)
+        for tool, name in ((DRAFT_PLUGIN_TOOL, "convert"), (SKILL_MANAGE_TOOL, "brew")):
+            assert "id" in json.loads(await tool.handler({"name": name, "brief": "Write a practical example."}, ctx(app)))
+    assert [request["model"] for request in app.script.requests] == ["m", "m"]
+    assert caplog.text.count("using the chat model for drafts") == 1
 
 
 async def test_changed_code_needs_fresh_review_and_displays_diff(make_app, browser):
@@ -241,6 +441,7 @@ async def test_network_notice_is_shown_wherever_a_plugin_is_listed(make_app, bro
 
 
 async def approved_tool(app, browser, monkeypatch, manifest=MANIFEST):
+    monkeypatch.setattr(app.plugin_runner, "trial", lambda *_: {"output": "sample passed", "self_test": True})
     await draft(app, manifest=manifest)
     route = review_path(await status(app))
     async with browser(app) as client:
@@ -345,3 +546,12 @@ async def test_offline_plugin_arguments_are_not_leak_checked(make_app, browser, 
     app.jev = FakeJev(3)
     assert "done" in await tool.handler({"q": "anything"}, ctx(app))
     assert app.jev.scored == []
+
+
+def test_trial_preview_neutralises_links_commands_hashtags_and_cashtags():
+    from dom.plugins.trial import _preview
+
+    mention = chr(64) + "someone"  # built at runtime so the public-data scan doesn't read it as a handle
+    text = _preview(f"see https://example.com /start #tag $ABC {mention} t.me/x\nNetwork off")
+    for token in ("https:", ".com", "/start", "#tag", "$ABC", mention, "t.me", "\n"):
+        assert token not in text
