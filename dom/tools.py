@@ -21,7 +21,7 @@ from dom.guard import check_local_private_text
 from dom.home import Home
 from dom.models import Scope
 from dom.presence import Habits, Presence
-from dom.search import SearchClient
+from dom.search import SearchClient, SearchRouter
 from dom.skills import BODY_LIMIT, NAME_LIMIT, skills_list, view_text
 from dom.store import Store
 from dom.telegram.executor import FloodBudget, FloodBudgetExhausted, retry_telegram
@@ -139,7 +139,7 @@ REMIND_TOOL = Tool(
 )
 
 
-def _web_search_tool(client: SearchClient) -> Tool:
+def _web_search_tool(client: SearchClient | SearchRouter) -> Tool:
     calls = 0
 
     async def web_search(args: dict, ctx: TurnCtx) -> str:
@@ -323,7 +323,7 @@ def _is_owner_only(tool: Tool) -> bool:
     return tool.scopes == _OWNER_ONLY_SCOPE
 
 
-def _shared_core_tools(search: SearchClient | None = None) -> list[Tool]:
+def _shared_core_tools(search: SearchClient | SearchRouter | None = None) -> list[Tool]:
     tools = [
         SEARCH_HISTORY_TOOL,
         SKILLS_LIST_TOOL,
@@ -336,7 +336,7 @@ def _shared_core_tools(search: SearchClient | None = None) -> list[Tool]:
     return tools
 
 
-def core_tools(search: SearchClient | None = None, desktop: DesktopFleet | None = None) -> list[Tool]:
+def core_tools(search: SearchClient | SearchRouter | None = None, desktop: DesktopFleet | None = None) -> list[Tool]:
     tools = _shared_core_tools(search)
     tools.append(REMIND_TOOL)
     if desktop is not None and desktop.available():
@@ -546,7 +546,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
         "desktop": desktop_status(app, "owner_dm"),
         "gifs": "on" if app.gifs is not None else "off (set KLIPY_API_KEY in .env to turn them on)",
         "desktop_hosts": desktop_hosts(app),
-        "models": {kind: endpoint.model for kind, endpoint in app.config.models.items()},
+        "models": {kind: endpoint.model or endpoint.provider or "" for kind, endpoint in app.config.models.items()},
         "last_errors": await app.store.recent_turn_errors(),
         "preset": {
             "everywhere": await global_preset_name(app.store),

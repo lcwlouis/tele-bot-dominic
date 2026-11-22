@@ -16,7 +16,7 @@ MODEL_ROLES = {
     "triage": ("Built in", "Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe."),
     "media": ("Built in", "Attachment descriptions, transcriptions, desktop screenshot descriptions and previews of the sticker images in your listed sticker sets."),
     "drafting": ("Built in", "Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort."),
-    "search": ("Optional", "OpenRouter web search. If the table is present, omitted fields use the starter search settings."),
+    "search": ("Optional", "Web search role with ordered provider fallback: `searxng` (self-hosted JSON API), `openrouter` (OpenRouter web plugin with ZDR), `deepseek` (DeepSeek Search API) and `tavily` (Tavily Search API). If `[models.search]` omits `base_url` with no other provider set, it uses the starter OpenRouter search settings."),
 }
 
 
@@ -63,7 +63,7 @@ def render() -> str:
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
         "A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.",
         table(fields(ProviderEndpoint, "models.<name>.")),
-        "Chat, fallback, media and drafting can also list additional providers.",
+        "Chat, fallback, media, drafting and search can also list additional providers.",
         table(fields(ModelEndpoint, "models.<name>.", exclude=ProviderEndpoint.model_fields.keys())),
         "Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. "
         "Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. "

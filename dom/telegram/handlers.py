@@ -40,7 +40,7 @@ from dom.plugins.runner import PluginRunner
 from dom.gifs import GifSearch
 from dom.stickers import Stickers
 from dom.store import Store
-from dom.search import SearchClient
+from dom.search import SearchClient, SearchRouter, routed_search_client
 from dom.selfwork import SelfWork
 from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
@@ -66,7 +66,7 @@ class App:
     jev: JevClient | None = None
     bot_id: int | None = None
     media_describer: MediaDescriber | None = None
-    search_client: SearchClient | None = None
+    search_client: SearchClient | SearchRouter | None = None
     gifs: GifSearch | None = None
     draft_client: ChatClient | FallbackClient | None = None
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
@@ -127,6 +127,7 @@ class App:
                 self.media_describer.client = media
         else:
             self.media_describer = None
+        self.search_client = routed_search_client(config, current.http, current.usage)
         self.config, self.client, self.draft_client = config, chat, draft
 
 

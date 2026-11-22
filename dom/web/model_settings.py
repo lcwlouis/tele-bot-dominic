@@ -3,7 +3,9 @@
 GET /api/models returns ModelSettings. POST /api/models replaces one ModelUpdate
 role and returns ModelSettings. POST /api/models/test takes ProviderTest and
 returns TestResult. Index 0 is the role's primary, followed by its own fallbacks.
-Both POSTs take the GET revision so a stale page cannot modify or test a moved slot.
+For search, omitting index (null) tests the saved chain in order and reports
+which provider answered. Both POSTs take the GET revision so a stale page cannot
+modify or test a moved slot.
 """
 
 from __future__ import annotations
@@ -24,9 +26,19 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from dom.config import MODEL_ROLES, Config, ModelRole, ProviderEndpoint, _replace_file, validate_config
+from dom.config import (
+    MODEL_ROLES,
+    SEARCH_PROVIDERS,
+    Config,
+    ModelRole,
+    ProviderEndpoint,
+    SearchProvider,
+    _replace_file,
+    validate_config,
+)
 from dom.doctor import _probe_hint, is_zdr_refusal
 from dom.llm import ChatClient, FallbackClient, MissingProviderKey
+from dom.search import PROVIDER_INFO, SearchClient, search_provider_kind
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.usage import ModelCallSkipped, model_request, on_own_network, provider_address, unroutable_address
 from dom.web.pages import _bounded_stream, owner_app, panel
@@ -82,7 +94,7 @@ class ProviderInput(ProviderEndpoint):
     @field_validator("model")
     @classmethod
     def _model(cls, value: str) -> str:
-        if not value or any(char.isspace() or not char.isprintable() for char in value) or _looks_like_secret(value):
+        if any(char.isspace() or not char.isprintable() for char in value) or _looks_like_secret(value):
             raise ValueError("Enter a model ID without spaces or credentials.")
         return value
 
@@ -94,6 +106,27 @@ class ProviderInput(ProviderEndpoint):
         return value
 
 
+def _validate_slot_for_role(role: ModelRole, slot: ProviderInput) -> ProviderInput:
+    if role != "search":
+        if slot.provider is not None:
+            raise ValueError("Only the search role accepts a search provider type.")
+        if not slot.model:
+            raise ValueError("Enter a model ID without spaces or credentials.")
+        return slot
+    kind = search_provider_kind(slot)
+    if slot.reasoning_effort is not None:
+        raise ValueError("Search providers do not take a reasoning effort.")
+    if kind == "openrouter":
+        if not slot.model:
+            raise ValueError("Enter a model ID without spaces or credentials.")
+    else:
+        if slot.model:
+            raise ValueError("Leave model ID empty for SearXNG, DeepSeek web search and Tavily.")
+    if kind in ("deepseek", "tavily") and not slot.api_key_env:
+        raise ValueError("Enter an API key variable for this cloud search provider.")
+    return slot.model_copy(update={"provider": kind})
+
+
 class ModelUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: str = Field(pattern=REVISION)
@@ -102,9 +135,12 @@ class ModelUpdate(BaseModel):
     fallbacks: list[ProviderInput] = Field(max_length=MAX_FALLBACKS)
 
     @model_validator(mode="after")
-    def _primary_required(self) -> ModelUpdate:
-        if self.primary is None and (self.role != "fallback" or self.fallbacks):
-            raise ValueError("Only the fallback role may be left empty.")
+    def _validate_role_slots(self) -> ModelUpdate:
+        if self.primary is None and (self.role not in ("fallback", "search") or self.fallbacks):
+            raise ValueError("Only the fallback and search roles may be left empty.")
+        if self.primary is not None:
+            self.primary = _validate_slot_for_role(self.role, self.primary)
+        self.fallbacks = [_validate_slot_for_role(self.role, provider) for provider in self.fallbacks]
         return self
 
 
@@ -154,9 +190,24 @@ def _check_keys(disk: Config, providers: list[ProviderEndpoint]) -> None:
         claimed[name].add(address)
 
 
+class SearchProviderInfo(BaseModel):
+    id: SearchProvider
+    label: str
+    default_base_url: str
+    default_api_key_env: str
+    needs_model: bool
+    needs_key: bool
+    data_retention: str
+    policy_url: str | None = None
+    policy_label: str | None = None
+
+
 class ProviderView(ProviderEndpoint):
     kind: Literal["local", "cloud"]
     key_set: bool
+    data_retention: str | None = None
+    policy_url: str | None = None
+    policy_label: str | None = None
 
 
 class TriageView(BaseModel):
@@ -176,6 +227,7 @@ class ModelSettings(BaseModel):
     revision: str
     roles: dict[ModelRole, RoleView]
     triage: TriageView
+    search_providers: list[SearchProviderInfo]
     restart_required: bool
 
 
@@ -183,7 +235,13 @@ class ProviderTest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: str = Field(pattern=REVISION)
     role: ModelRole
-    index: int = Field(ge=0)
+    index: int | None = Field(None, ge=0)
+
+    @model_validator(mode="after")
+    def _index_required_except_search(self) -> ProviderTest:
+        if self.role != "search" and self.index is None:
+            raise ValueError("Choose a provider slot to test.")
+        return self
 
 
 class TestResult(BaseModel):
@@ -191,6 +249,7 @@ class TestResult(BaseModel):
     latency_ms: int
     reply: str | None = None
     error: str | None = None
+    provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +275,13 @@ def _check_revision(current: Snapshot, revision: str) -> None:
         raise HTTPException(409, "Configuration changed. Reload model settings and try again.")
 
 
+def _dump_slot(role: ModelRole, provider: ProviderInput) -> dict:
+    data = provider.model_dump(exclude_none=True)
+    if role == "search" and search_provider_kind(provider) != "openrouter":
+        data.pop("model", None)
+    return data
+
+
 def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     _check_revision(current, update.revision)
     try:
@@ -238,9 +304,9 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     if update.primary is None:
         models().pop(update.role, None)
     else:
-        primary = update.primary.model_dump(exclude_none=True)
+        primary = _dump_slot(update.role, update.primary)
         if update.fallbacks:
-            primary["fallbacks"] = [provider.model_dump(exclude_none=True) for provider in update.fallbacks]
+            primary["fallbacks"] = [_dump_slot(update.role, provider) for provider in update.fallbacks]
         models()[update.role] = primary
 
     text = tomlkit.dumps(document)
@@ -257,7 +323,7 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     return saved
 
 
-def _provider_view(config: Config, endpoint: ProviderEndpoint) -> ProviderView:
+def _provider_view(config: Config, endpoint: ProviderEndpoint, *, role: str = "") -> ProviderView:
     # Older hand-written files may include a credential where the settings API expects a name or URL.
     try:
         url = _validate_url(endpoint.base_url)
@@ -271,11 +337,37 @@ def _provider_view(config: Config, endpoint: ProviderEndpoint) -> ProviderView:
         key_set = bool(variable and config.secret(variable))
     except (OSError, ValueError):
         key_set = False
+    search_kind = search_provider_kind(endpoint) if role == "search" else None
+    info = PROVIDER_INFO[search_kind] if search_kind else None
     return ProviderView(
-        base_url=url, model="" if _looks_like_secret(endpoint.model) else endpoint.model,
-        api_key_env=variable, key_set=key_set, kind="local" if host and on_own_network(host) else "cloud",
+        base_url=url,
+        model="" if _looks_like_secret(endpoint.model) else endpoint.model,
+        api_key_env=variable,
+        key_set=key_set,
+        kind="local" if host and on_own_network(host) else "cloud",
         reasoning_effort=endpoint.reasoning_effort,
+        provider=search_kind,
+        data_retention=info.data_retention if info else None,
+        policy_url=info.policy_url if info else None,
+        policy_label=info.policy_label if info else None,
     )
+
+
+def _search_provider_infos() -> list[SearchProviderInfo]:
+    return [
+        SearchProviderInfo(
+            id=info.id,
+            label=info.label,
+            default_base_url=info.default_base_url,
+            default_api_key_env=info.default_api_key_env,
+            needs_model=info.needs_model,
+            needs_key=info.needs_key,
+            data_retention=info.data_retention,
+            policy_url=info.policy_url,
+            policy_label=info.policy_label,
+        )
+        for info in (PROVIDER_INFO[name] for name in SEARCH_PROVIDERS)
+    ]
 
 
 def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
@@ -284,13 +376,15 @@ def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
     for role in MODEL_ROLES:
         primary, *fallbacks = config.providers(role) or (None,)
         roles[role] = RoleView(
-            primary=_provider_view(config, primary) if primary else None,
-            fallbacks=[_provider_view(config, provider) for provider in fallbacks],
+            primary=_provider_view(config, primary, role=role) if primary else None,
+            fallbacks=[_provider_view(config, provider, role=role) for provider in fallbacks],
         )
     triage = _provider_view(config, config.models["triage"])
     return ModelSettings(
-        revision=snapshot.revision, roles=roles,
+        revision=snapshot.revision,
+        roles=roles,
         triage=TriageView(model=triage.model, base_url=triage.base_url, key_set=triage.key_set),
+        search_providers=_search_provider_infos(),
         restart_required=any(config.providers(role) != app.config.providers(role) for role in MODEL_ROLES),
     )
 
@@ -318,7 +412,7 @@ async def _input(request: Request, model: type[Input]) -> Input:
             error = exc.errors(include_input=False, include_context=False, include_url=False)[0]
             detail = error["msg"]
             if error["type"] == "literal_error":
-                detail = "Choose a supported role or reasoning effort."
+                detail = "Choose a supported role, search provider or reasoning effort."
         raise HTTPException(422, detail) from None
 
 
@@ -335,15 +429,12 @@ async def read_models(request: Request) -> ModelSettings:
     return _settings(app, _snapshot(app.config.home))
 
 
-def _slot_tuple(endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None]:
-    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, endpoint.reasoning_effort)
+def _probe_tuple(role: ModelRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None]:
+    kind = search_provider_kind(endpoint) if role == "search" else None
+    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind)
 
 
 MISSING_KEY = "Not tested: this provider's key variable has no value in .env yet. Add it, then press Test."
-
-
-def _probe_tuple(endpoint: ProviderEndpoint) -> tuple[str, str, str | None]:
-    return _slot_tuple(endpoint)[:3]
 
 
 def _slot_label(index: int) -> str:
@@ -364,12 +455,16 @@ async def update_models(request: Request):
 
     # A slot already in the chain (at any position) was tested when it was added; the probe ignores reasoning effort,
     # so a change to that alone tests nothing new either.
-    existing = {_probe_tuple(provider) for provider in current.config.providers(update.role)}
-    to_test = [(index, provider) for index, provider in enumerate(submitted) if _probe_tuple(provider) not in existing]
+    existing = {_probe_tuple(update.role, provider) for provider in current.config.providers(update.role)}
+    to_test = [
+        (index, provider)
+        for index, provider in enumerate(submitted)
+        if _probe_tuple(update.role, provider) not in existing
+    ]
     if to_test:
         current_client = app.client.primary if isinstance(app.client, FallbackClient) else app.client
         results = await asyncio.gather(
-            *(_probe(app, current_client.http, current.config, provider) for _, provider in to_test)
+            *(_probe(app, current_client.http, current.config, provider, role=update.role) for _, provider in to_test)
         )
         failures = [
             {"index": index, "error": result.error or "Provider test failed."}
@@ -399,24 +494,148 @@ async def test_provider(request: Request) -> TestResult:
     snapshot = _snapshot(app.config.home)
     _check_revision(snapshot, test.revision)
     providers = snapshot.config.providers(test.role)
+    current = app.client.primary if isinstance(app.client, FallbackClient) else app.client
+    if test.role == "search" and test.index is None:
+        if not providers:
+            raise HTTPException(404, "There are no saved search providers to test.")
+        return await _probe_search_chain(app, current.http, snapshot.config, providers)
+    assert test.index is not None
     if test.index >= len(providers):
         raise HTTPException(404, "There is no saved provider at that position.")
     provider = providers[test.index]
-    current = app.client.primary if isinstance(app.client, FallbackClient) else app.client
-    return await _probe(app, current.http, snapshot.config, provider)
+    return await _probe(app, current.http, snapshot.config, provider, role=test.role)
 
 
-async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint) -> TestResult:
-    local = on_own_network(httpx.URL(provider.base_url).host or "")
+def _redact(text: str, key: str | None) -> str:
+    if key:
+        text = text.replace(key, "[redacted]")
+    for pattern in CREDENTIAL_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    return text
+
+
+def _is_local(base_url: str) -> bool:
+    try:
+        host = httpx.URL(base_url).host
+    except httpx.InvalidURL:
+        return False
+    return bool(host and on_own_network(host))
+
+
+async def _probe_search(
+    app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint, *, fallback: bool = False,
+) -> TestResult:
+    local = _is_local(provider.base_url)
+
+    async def allowed() -> bool:  # a local endpoint costs nothing, so the spend cap never blocks testing or saving it
+        return local or not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
+
+    kind = search_provider_kind(provider)
+    start = monotonic()
+    try:
+        validated = _validate_slot_for_role(
+            "search",
+            ProviderInput(
+                base_url=provider.base_url,
+                model=provider.model,
+                api_key_env=provider.api_key_env or None,
+                reasoning_effort=provider.reasoning_effort,
+                provider=provider.provider,
+            ),
+        )
+        _check_keys(config, [validated])
+        key = config.secret(validated.api_key_env) if validated.api_key_env else None
+        client = SearchClient(validated, key, http, usage=app.dispatch.usage)
+        async with asyncio.timeout(TEST_TIMEOUT):
+            with model_request("search", None, allowed):
+                outcome = await client.search_with_meta("test", fallback=fallback, timeout=TEST_TIMEOUT)
+        detail = (
+            f"Answered by {outcome.label} ({outcome.result_count} results)"
+            if outcome.result_count is not None
+            else f"Answered by {outcome.label}"
+        )
+        reply = _redact(detail, key)
+    except KeyPairing as exc:
+        error = str(exc)
+    except (ValidationError, ValueError) as exc:
+        if isinstance(exc, ValueError) and not isinstance(exc, ValidationError) and "SearXNG" in str(exc):
+            error = "SearXNG did not return valid JSON results. Check that format=json is enabled."
+        elif isinstance(exc, ValidationError):
+            error = "Fix this provider's URL, model or key variable in settings."
+        else:
+            error = "Provider did not return valid search results."
+    except ModelCallSkipped:
+        error = "The daily spend cap has been reached."
+    except MissingProviderKey:
+        error = MISSING_KEY
+    except (TimeoutError, httpx.TimeoutException):
+        error = "Provider test timed out."
+    except httpx.HTTPStatusError as exc:
+        if kind == "searxng" and exc.response.status_code == 403:
+            error = "SearXNG returned HTTP 403. Enable JSON format (formats: [html, json]) in SearXNG settings.yml."
+        elif is_zdr_refusal(exc.response):
+            error = _probe_hint(exc.response)
+        else:
+            error = f"Provider returned HTTP {exc.response.status_code}."
+    except (httpx.HTTPError, httpx.InvalidURL, OSError):
+        error = "Could not reach the provider."
+    except (KeyError, IndexError, TypeError):
+        error = "Provider did not return valid search results."
+    else:
+        return TestResult(
+            ok=True,
+            latency_ms=round((monotonic() - start) * 1000),
+            reply=reply[:2000],
+            provider=outcome.provider,
+        )
+    return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=error, provider=kind)
+
+
+async def _probe_search_chain(
+    app: App, http: httpx.AsyncClient, config: Config, providers: tuple[ProviderEndpoint, ...],
+) -> TestResult:
+    start = monotonic()
+    last: TestResult | None = None
+    for index, provider in enumerate(providers):
+        result = await _probe_search(app, http, config, provider, fallback=index > 0)
+        if result.ok:
+            slot = _slot_label(index)
+            reply = f"{result.reply} ({slot})" if result.reply else f"Answered ({slot})"
+            return TestResult(
+                ok=True,
+                latency_ms=round((monotonic() - start) * 1000),
+                reply=reply[:2000],
+                provider=result.provider,
+            )
+        last = result
+        if result.error == "The daily spend cap has been reached.":
+            break
+    return TestResult(
+        ok=False,
+        latency_ms=round((monotonic() - start) * 1000),
+        error=last.error if last else "No search provider answered.",
+        provider=last.provider if last else None,
+    )
+
+
+async def _probe(
+    app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint, *, role: ModelRole = "chat",
+) -> TestResult:
+    if role == "search":
+        return await _probe_search(app, http, config, provider)
+    local = _is_local(provider.base_url)
 
     async def allowed() -> bool:  # a local endpoint costs nothing, so the spend cap never blocks testing or saving it
         return local or not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
 
     start = monotonic()
     try:
-        ProviderInput(
-            base_url=provider.base_url, model=provider.model, api_key_env=provider.api_key_env or None,
-            reasoning_effort=provider.reasoning_effort,
+        _validate_slot_for_role(
+            role,
+            ProviderInput(
+                base_url=provider.base_url, model=provider.model, api_key_env=provider.api_key_env or None,
+                reasoning_effort=provider.reasoning_effort,
+            ),
         )
         _check_keys(config, [provider])
         key = config.secret(provider.api_key_env) if provider.api_key_env else None
@@ -431,15 +650,15 @@ async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: Pr
         if not isinstance(message, dict):
             raise ValueError
         content = message.get("content")
-        reply = content if isinstance(content, str) and content.strip() else "OK"
-        if key:
-            reply = reply.replace(key, "[redacted]")
-        for pattern in CREDENTIAL_PATTERNS:
-            reply = pattern.sub("[redacted]", reply)
+        reply = _redact(content if isinstance(content, str) and content.strip() else "OK", key)
     except KeyPairing as exc:
         error = str(exc)
-    except ValidationError:
-        error = "Fix this provider's URL, model or key variable in settings."
+    except (ValidationError, ValueError) as exc:
+        error = (
+            "Fix this provider's URL, model or key variable in settings."
+            if isinstance(exc, ValidationError) or "model ID" in str(exc) or "search provider" in str(exc)
+            else "Provider did not return a valid text reply."
+        )
     except ModelCallSkipped:
         error = "The daily spend cap has been reached."
     except MissingProviderKey:
@@ -454,7 +673,7 @@ async def _probe(app: App, http: httpx.AsyncClient, config: Config, provider: Pr
         )
     except (httpx.HTTPError, httpx.InvalidURL, OSError):
         error = "Could not reach the provider."
-    except (KeyError, IndexError, TypeError, ValueError):
+    except (KeyError, IndexError, TypeError):
         error = "Provider did not return a valid text reply."
     else:
         return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=reply[:2000])

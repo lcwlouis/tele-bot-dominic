@@ -65,9 +65,15 @@ Cloudflare. Keep local bearer-token testing on loopback.
   description, screenshots when the desktop worker requests a description, and
   the sticker images from the sticker sets you list, to write the short previews
   Dom reads when choosing a sticker.
-- **Web search** submits the query to `models.search.base_url` (OpenRouter by
-  default). A query drafted in the owner DM can contain private context.
-  Remove `[models.search]` to disable this tool.
+- **Web search** tries the providers configured under `[models.search]` and
+  `[[models.search.fallbacks]]` in order. Self-hosted **SearXNG** keeps queries
+  on your own network until SearXNG forwards them to its configured upstream
+  engines. **OpenRouter web** requests `provider.zdr` under your OpenRouter key.
+  **DeepSeek web search** (`api.deepseek.com/v1/tools/search`) and **Tavily**
+  (`api.tavily.com/search`) send queries to their cloud search APIs under each
+  provider's own data policy. A query drafted in the owner DM can contain
+  private context. Remove `[models.search]` (or clear the Search role in
+  Settings) to disable this tool.
 - **KLIPY** (GIF search, only with `KLIPY_API_KEY`) receives the short search query Dom wrote, from the Dom
   host. It sees no chat, user or owner identifier. Outside the owner DM the query goes through the outbound
   leak check when that is on. Telegram then fetches the chosen file from KLIPY. See [GIFs](gifs.md).
