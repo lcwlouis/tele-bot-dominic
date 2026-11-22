@@ -45,7 +45,7 @@ async def test_effective_traits_precedence_and_stable_prefix(make_app):
 
     group, owner = await prompt("group", GROUP), await prompt("owner_dm", OWNER)
     assert group[0] == owner[0]
-    assert group[1]["content"].startswith("Personality sliders")
+    assert group[1]["content"].index("<chat_window/>") < group[1]["content"].index("Personality sliders")
     assert '<preset name="a">First &amp; overlay.</preset>' in group[1]["content"]
     assert '<preset name="b">Second overlay.</preset>' in owner[1]["content"]
     assert "<preset " not in group[0]["content"]

@@ -175,6 +175,36 @@ async def test_dynamic_tools_coming_and_going_do_not_reshape_shared_part(make_ap
 # ---- W5: prompt hashes stay stable until trim / hourly refresh ------------------------------
 
 
+async def test_same_chat_keeps_the_prefix_with_unchanged_notes_and_a_new_preset(make_app):
+    app = make_app(contents=(FINAL, FINAL))
+    await app.store.set_chat_auth_status(OWNER, "approved")
+    await app.dispatch.presence.wake(OWNER, parse_habits(""))
+    _write(app, "private/NOTES.md", "- unchanged note")
+    _write(app, "presets/a.md", "---\ntraits:\n  humor: 0.2\n---\nUnderstated.")
+    _write(app, "presets/b.md", "---\ntraits:\n  humor: 0.8\n---\nPlayful.")
+
+    for n, preset in enumerate(("a", "b"), start=1):
+        await app.store.set_chat_preset(OWNER, preset)
+        app.dispatch.now.advance(minutes=1)
+        await app.store.record_new_message(_msg(n))
+        await app.dispatch.tick()
+        await drain_dispatch(app.dispatch)
+
+    first, second = turn_requests(app)
+    assert first["tools"] == second["tools"]
+    assert first["messages"][0] == second["messages"][0]
+    first_prefix, _, first_suffix = first["messages"][1]["content"].partition("<chat_window")
+    second_prefix, _, second_suffix = second["messages"][1]["content"].partition("<chat_window")
+    assert first_prefix.encode() == second_prefix.encode()
+    assert "unchanged note" in first_prefix
+    assert "msg-1" in first_suffix and "humor=0.2" in first_suffix and "Understated." in first_suffix
+    assert "msg-2" in second_suffix and "humor=0.8" in second_suffix and "Playful." in second_suffix
+    calls = [json.loads(row["model_calls"])[0] for row in await app.store.recent_turns(str(OWNER))]
+    assert len(calls) == 2
+    assert calls[0]["user_prefix_hash"] == calls[1]["user_prefix_hash"]
+    assert calls[0]["user_hash"] != calls[1]["user_hash"]
+
+
 async def test_hashes_hold_when_notes_and_memory_change_until_trim_and_hour(make_app):
     app = make_app(contents=(FINAL, FINAL, FINAL, FINAL))
     app.config = app.config.model_copy(update={"window_budget_tokens": 2200, "window_keep_tokens": 1300})

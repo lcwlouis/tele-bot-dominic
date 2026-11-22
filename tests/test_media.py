@@ -246,24 +246,24 @@ async def test_animated_sticker_uses_image_preview():
 async def test_new_message_restarts_debounce_while_dispatch_waits_for_media(media_app):
     allow_media = asyncio.Event()
     app, bot, _ = await media_app(wait=allow_media)
-    delays = []
+    delays = asyncio.Queue()
 
     async def sleep(_):
         ready = asyncio.Event()
-        delays.append(ready)
+        delays.put_nowait(ready)
         await ready.wait()
 
     app.dispatch.sleep = sleep
     await handle_message(app, photo_message())
     await bot.started.wait()
-    delays[0].set()
+    first_dispatch = app.dispatch._debounces[GROUP]
+    (await asyncio.wait_for(delays.get(), timeout=2)).set()
     await asyncio.sleep(0)
-    first_dispatch = next(task for task in app.dispatch._tasks if task not in app.dispatch._media_tasks[GROUP])
     await handle_message(app, tg(msg_id=2, text="here's another message"))
     allow_media.set()
     await first_dispatch
     assert not app.script.requests
-    delays[1].set()
+    (await asyncio.wait_for(delays.get(), timeout=2)).set()
     await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 1
     assert "here's another message" in app.script.requests[0]["messages"][-1]["content"]

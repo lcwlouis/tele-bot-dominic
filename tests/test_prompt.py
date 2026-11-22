@@ -72,9 +72,10 @@ def test_layout_and_order(home):
     )]
     assert order == sorted(order)
     assert "- world fact" in prefix
-    assert msgs[1]["content"].startswith("Personality sliders (0 to 1): humor=0.5, emoji=0.25")
+    notes, _, tail = msgs[1]["content"].partition("<chat_window>W</chat_window>")
+    assert PRIVATE_USER in notes and PRIVATE_NOTES in notes
+    assert tail == "\n\nPersonality sliders (0 to 1): humor=0.5, emoji=0.25\n\nTURN"
     assert "JOURNAL-NEVER-LOADED" not in blob(msgs)
-    assert msgs[1]["content"].endswith("<chat_window>W</chat_window>\n\nTURN")
 
 
 def test_prefix_identical_across_turns(home):
@@ -91,6 +92,13 @@ def test_people_notes_only_for_participants(home):
     assert "stranger note" not in notes
     assert "running joke" in notes  # this chat's notes
     assert notes.count('<file path="memory/people/222.md">') == 1
+
+
+def test_unchanged_people_notes_keep_their_order_when_the_window_changes(home):
+    first = build(home, participants=[222, 111], window="<chat_window>first</chat_window>")
+    second = build(home, participants=[111, 444, 222], window="<chat_window>second</chat_window>")
+    assert first[1]["content"].split("<chat_window>", 1)[0] == second[1]["content"].split("<chat_window>", 1)[0]
+    assert '<file path="memory/people/444.md">' not in second[1]["content"]
 
 
 def test_chat_notes_only_for_this_chat(home):

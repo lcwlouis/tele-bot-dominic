@@ -296,22 +296,16 @@ async def test_jev_unavailable_falls_back(setup_dispatch, unavailable):
     assert len(app.script.requests) == 1
 
 
-async def test_debounce_coalesces_burst(setup_dispatch):
-    waits = []
-
-    async def sleep(seconds):
-        assert seconds == 4
-        gate = asyncio.Event()
-        waits.append(gate)
-        await gate.wait()
-
+async def test_debounce_coalesces_burst(setup_dispatch, gated_sleep):
+    sleep, waits = gated_sleep
     app, dispatch, _ = await setup_dispatch(sleep=sleep)
     await dispatch.presence.go_online(GROUP, parse_habits(""))
     for msg_id in range(1, 4):
         await handle_message(app, tg(msg_id=msg_id, text=f"line {msg_id}"))
-        await asyncio.sleep(0)
-    assert len(waits) == 3 and not app.script.requests
-    waits[-1].set()
+        await wait_for_sleeps(waits, msg_id)
+    assert [seconds for seconds, _ in waits] == [3, 3, 3]
+    assert not app.script.requests
+    waits[-1][1].set()
     await drain_dispatch(dispatch)
     assert len(app.script.requests) == 1
     assert "line 3" in app.script.requests[0]["messages"][-1]["content"]
@@ -385,12 +379,12 @@ async def test_reply_records_debounce_lock_triage_guard_typing_and_each_send(set
         async with app.locks[GROUP]:
             await handle_message(app, tg().model_copy(update={"date": start}))
             await dispatch._arrivals[GROUP][1].task
-            await asyncio.sleep(0)
+            await wait_for_sleeps(waits, 1)
             clock.advance(seconds=1)
             await handle_message(app, tg(msg_id=2).model_copy(update={"date": clock()}))
             await dispatch._arrivals[GROUP][2].task
-            await asyncio.sleep(0)
-            clock.advance(seconds=4)
+            await wait_for_sleeps(waits, 2)
+            clock.advance(seconds=3)
             waits[-1][1].set()
             await asyncio.sleep(0)
             clock.advance(seconds=2)
@@ -399,9 +393,9 @@ async def test_reply_records_debounce_lock_triage_guard_typing_and_each_send(set
     [row] = await app.store.recent_turns()
     timings = [item for item in json.loads(row["trace"]) if "@" in item]
     assert timings == [
-        "debounce@4250", "lock_wait@2000", "model@0", "guard@350", "send@100", "typing@1000", "send@100",
+        "debounce@3250", "lock_wait@2000", "model@0", "guard@350", "send@100", "typing@1000", "send@100",
     ]
-    assert (row["first_bubble_ms"], row["last_bubble_ms"]) == (6700, 7800)
+    assert (row["first_bubble_ms"], row["last_bubble_ms"]) == (5700, 6800)
     calls = json.loads(row["model_calls"])
     assert [(call["kind"], call["duration_ms"]) for call in calls] == [
         ("triage", 250), ("triage", 250), ("chat", 0), ("guard", 350),
@@ -453,14 +447,46 @@ def gated_sleep():
     return sleep, waits
 
 
+async def wait_for_sleeps(waits, count):
+    async with asyncio.timeout(2):
+        while len(waits) < count:
+            await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize(("state", "expected_high"), [("online", 4), ("offline", 6), ("asleep", 6)])
+async def test_sender_wait_uses_presence_range(setup_dispatch, gated_sleep, monkeypatch, state, expected_high):
+    sleep, waits = gated_sleep
+    app, dispatch, clock = await setup_dispatch(sleep=sleep)
+    if state == "online":
+        await dispatch.presence.go_online(GROUP, parse_habits(""))
+    elif state == "asleep":
+        clock.at = clock.at.replace(hour=2)
+    draws = []
+
+    def uniform(lo, hi):
+        draws.append((lo, hi))
+        return hi
+
+    monkeypatch.setattr(dispatch.presence.rng, "uniform", uniform)
+    await handle_message(app, tg())
+    await wait_for_sleeps(waits, 1)
+    assert draws == [(2, expected_high)]
+    assert waits[0][0] == expected_high
+    waits[0][1].set()
+    await drain_dispatch(dispatch)
+
+
 async def test_debounce_stops_restarting_after_fifteen_seconds(setup_dispatch, gated_sleep):
     sleep, waits = gated_sleep
     app, dispatch, clock = await setup_dispatch(sleep=sleep)
     await dispatch.presence.go_online(GROUP, parse_habits(""))
-    for msg_id in range(1, 5):
+    for msg_id in range(1, 4):
         await handle_message(app, tg(msg_id=msg_id, text=f"line {msg_id}"))
-        await asyncio.sleep(0)
+        await wait_for_sleeps(waits, msg_id)
         clock.advance(seconds=5)
+    timer = dispatch._debounces[GROUP]
+    await handle_message(app, tg(msg_id=4, text="line 4"))
+    assert dispatch._debounces[GROUP] is timer
     assert len(waits) == 3  # the fourth message arrived at the 15 s cap and did not restart the timer
     waits[-1][1].set()
     await drain_dispatch(dispatch)
@@ -473,11 +499,11 @@ async def test_debounce_delay_is_shortened_to_the_cap(setup_dispatch, gated_slee
     app, dispatch, clock = await setup_dispatch(sleep=sleep)
     await dispatch.presence.go_online(GROUP, parse_habits(""))
     await handle_message(app, tg(msg_id=1))
-    await asyncio.sleep(0)
+    await wait_for_sleeps(waits, 1)
     clock.advance(seconds=13)
     await handle_message(app, tg(msg_id=2))
-    await asyncio.sleep(0)
-    assert [seconds for seconds, _ in waits] == [4, 2]
+    await wait_for_sleeps(waits, 2)
+    assert [seconds for seconds, _ in waits] == [3, 2]
     waits[-1][1].set()
     await drain_dispatch(dispatch)
 
@@ -492,9 +518,10 @@ async def test_sender_done_can_skip_the_debounce(setup_dispatch, gated_sleep, co
     await dispatch._arrivals[GROUP][1].task
 
     if confidence < 0.70:
+        await wait_for_sleeps(waits, 1)
         assert len(waits) == 1 and not turn_requests(app)
         assert app.bot.of("action", GROUP)  # typing starts during the debounce
-        clock.advance(seconds=4)
+        clock.advance(seconds=3)
         waits[0][1].set()
     await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
 
@@ -502,7 +529,7 @@ async def test_sender_done_can_skip_the_debounce(setup_dispatch, gated_sleep, co
     [row] = await app.store.recent_turns()
     trace = json.loads(row["trace"])
     assert f"Jev done=yes confidence={confidence}" in trace
-    assert row["first_bubble_ms"] == (0 if confidence >= 0.70 else 4000)
+    assert row["first_bubble_ms"] == (0 if confidence >= 0.70 else 3000)
     timings = {item.partition("@")[0] for item in trace if "@" in item}
     # Waiting on Jev's verdict is triage time; only a debounce that really ran out is debounce time.
     assert ("triage" in timings, "debounce" in timings) == (confidence >= 0.70, confidence < 0.70)
@@ -523,8 +550,8 @@ async def test_incomplete_burst_uses_original_15_second_cap_even_with_jev_in_fli
     for msg_id, advance in enumerate([0, 4, 4, 5], start=1):
         clock.advance(seconds=advance)
         await handle_message(app, tg(msg_id=msg_id, text=f"fragment {msg_id}").model_copy(update={"date": clock()}))
-        await asyncio.sleep(0)
-    assert [delay for delay, _ in waits] == [4, 4, 4, 2]
+        await wait_for_sleeps(waits, msg_id)
+    assert [delay for delay, _ in waits] == [3, 3, 3, 2]
     timer = dispatch._debounces[GROUP]
     clock.advance(seconds=2)
     waits[-1][1].set()
@@ -559,8 +586,7 @@ async def test_online_triage_slower_than_the_debounce_still_decides_the_turn(set
     monkeypatch.setattr(asyncio, "wait", wait)
     await dispatch.presence.go_online(GROUP, parse_habits(""))
     await handle_message(app, tg().model_copy(update={"date": clock()}))
-    while not waits:  # the debounce timer has started
-        await asyncio.sleep(0)
+    await wait_for_sleeps(waits, 1)
     waits[0][1].set()  # the debounce ends while Jev is still thinking
     await asyncio.wait_for(parked.wait(), timeout=5)
     assert not turn_requests(app)  # the turn waits on Jev instead of generating
@@ -631,6 +657,38 @@ async def test_restarted_reply_keeps_the_earlier_attempts_stage_times(setup_disp
     # One model stage per model call, so the stage bar and the call list agree.
     assert models[0]["model"] == "slow-model"
     assert len([item for item in trace if item.startswith("model@")]) == len(models) >= 1
+
+
+@pytest.mark.parametrize(("reply_time", "first_pause"), [(0.5, [1.5]), (2.0, []), (3.0, [])])
+async def test_first_bubble_uses_elapsed_reply_time_when_indicator_fails(
+    setup_dispatch, monkeypatch, reply_time, first_pause,
+):
+    app, dispatch, clock = await setup_dispatch(chat_id=OWNER)
+    await dispatch.presence.go_online(OWNER, parse_habits(""))
+    app.script.contents[:] = [json.dumps({"bubbles": [{"text": "x" * 16}, {"text": "y" * 16}]})]
+    started = clock()
+    monkeypatch.setattr("dom.dispatch.monotonic", lambda: (clock() - started).total_seconds())
+    complete = app.client.complete
+    pauses = []
+
+    async def finish_reply(*args, **kwargs):
+        clock.advance(seconds=reply_time)
+        return await complete(*args, **kwargs)
+
+    async def fail_typing(*args, **kwargs):
+        raise OSError("typing is temporarily unavailable")
+
+    async def sleep(seconds):
+        pauses.append((len(app.bot.of("send", OWNER)), seconds))
+        clock.advance(seconds=seconds)
+
+    monkeypatch.setattr(app.client, "complete", finish_reply)
+    monkeypatch.setattr(app.bot, "send_chat_action", fail_typing)
+    monkeypatch.setattr(app, "sleep", sleep)
+    await deliver(app, chat_id=OWNER, sender=OWNER)
+
+    assert pauses == [(0, seconds) for seconds in first_pause] + [(1, 2.0)]
+    assert [call[2] for call in app.bot.of("send", OWNER)] == ["x" * 16, "y" * 16]
 
 
 async def test_incoming_during_typing_pause_replaces_unsent_reply(setup_dispatch, monkeypatch):
@@ -795,12 +853,11 @@ async def test_restart_of_a_catch_up_turn_stays_a_catch_up_turn(setup_dispatch, 
         entered, _ = hold_first_generation(app, monkeypatch)
     for msg_id in range(1, 6):  # the fifth unread message wakes Dom
         await handle_message(app, tg(msg_id=msg_id, text=f"while you were out {msg_id}").model_copy(update={"date": clock()}))
-        await asyncio.sleep(0)
+        await wait_for_sleeps(waits, msg_id)
     waits[-1][1].set()
     await asyncio.wait_for(entered.wait(), timeout=2)
     await handle_message(app, tg(msg_id=6, text="and one more").model_copy(update={"date": clock()}))
-    while len(waits) < 6:
-        await asyncio.sleep(0)
+    await wait_for_sleeps(waits, 6)
     waits[-1][1].set()
     await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
 
@@ -987,7 +1044,7 @@ async def test_background_poll_does_not_skip_a_chat_with_an_overdue_debounce(set
     sleep, waits = gated_sleep
     app, dispatch, clock = await setup_dispatch(sleep=sleep)
     await handle_message(app, tg())
-    await asyncio.sleep(0)
+    await wait_for_sleeps(waits, 1)
     await dispatch.tick()
     assert not app.script.requests  # the debounce is still within its cap
     clock.advance(seconds=20)

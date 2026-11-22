@@ -102,9 +102,10 @@ def _read_chat_notes(
             notes[rel] = _read_note(private, rel)
     chat_rel = f"memory/chats/{chat_id}.md"
     notes[chat_rel] = _read_note(public, chat_rel)
-    for uid in dict.fromkeys(participant_ids):
+    for uid in sorted(set(participant_ids)):
         rel = f"memory/people/{uid}.md"
-        notes[rel] = _read_note(public, rel)
+        if content := _read_note(public, rel):
+            notes[rel] = content
     return notes
 
 
@@ -218,8 +219,9 @@ def build_messages(
 ) -> list[dict]:
     """OpenAI chat messages for one turn.
 
-    Message 0 is the stable prefix (identical across turns until memory refreshes), message 1 (user)
-    holds this chat's notes, its participants' notes, the chat window and the turn note.
+    Message 0 holds shared context. Message 1 starts with this chat's and its participants' notes,
+    then the chat window. Live persona and turn context follow the window so they cannot invalidate
+    its cached prefix.
     The private/ boundary is enforced by Home: it refuses private reads unless opened for owner_dm.
     """
     home = home.scoped(allow_private=False)
@@ -251,5 +253,5 @@ def build_messages(
         {"role": "system", "content": "\n\n".join(prefix)},
         # One system message only: Qwen-family chat templates reject a second one. The notes vary per
         # chat, so they belong after the stable prefix anyway.
-        {"role": "user", "content": "\n\n".join([*persona, *notes, window_xml, turn_note])},
+        {"role": "user", "content": "\n\n".join([*notes, window_xml, *persona, turn_note])},
     ]
