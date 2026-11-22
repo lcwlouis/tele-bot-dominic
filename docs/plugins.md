@@ -153,7 +153,9 @@ These are the risks considered for commands and panels, and what Dom does.
   removes its Telegram commands from the owner's `/` menu, hides its dashboard
   panels, and stops Dom from offering its tools.
 - **Delete.** Deleting a plugin (with confirmation from the Plugins page or
-  `/plugins`) takes a backup of Dom's home first, refuses if the plugin is
-  currently mid-call, removes the plugin folder, its database row and its stored
-  state, settles any pending proposal for it, refreshes the Telegram command
-  menu, and records an owner event.
+  `/plugins`) refuses if the plugin is currently mid-call or changed since
+  confirmation, moves the plugin folder and writes its database rows and stored
+  state into `<backups>/deleted/`, removes the database row and stored state,
+  settles any pending proposal for it, refreshes the Telegram command menu
+  (retrying on the next background tick if Telegram fails), and records an
+  owner event.

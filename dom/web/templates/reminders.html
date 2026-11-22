@@ -11,8 +11,12 @@
       <button class="quiet" hx-post="/reminders/{{ row.id }}/cancel"
         hx-confirm="Cancel reminder #{{ row.id }}?">Cancel</button>
       {% endif %}
-      <button class="link-danger" hx-post="/reminders/{{ row.id }}/delete"
-        hx-confirm="Delete reminder #{{ row.id }}? A backup is taken first.">Delete</button>
+      <form class="inline-form" method="post" action="/reminders/{{ row.id }}/delete"
+        hx-post="/reminders/{{ row.id }}/delete"
+        hx-confirm="Delete reminder #{{ row.id }}? A copy is saved to the deletion archive.">
+        <input type="hidden" name="expected" value="{{ row.created_at }}">
+        <button class="link-danger">Delete</button>
+      </form>
     </div>
   </article>
   {% endfor %}

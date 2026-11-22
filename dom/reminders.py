@@ -16,7 +16,7 @@ from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
 from dom.agent import parse_actions
-from dom.backup import backup_before_delete
+from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.models import StoredMessage
 from dom.prompt import build_messages
 from dom.usage import check_model_allowed, model_request
@@ -153,29 +153,51 @@ class Reminders:
             await app.store.record_owner_event(f"Cancelled reminder #{reminder_id}")
         return changed
 
-    async def delete(self, reminder_id: int) -> tuple[bool, str]:
+    async def delete(self, reminder_id: int, expected_created_at: str) -> tuple[bool, str]:
         app = self.app
         owner = app.owner_id
         if owner is None:
             return False, "There is no owner."
+        if not expected_created_at:
+            return False, STALE_MESSAGE
         row = await app.store.get_reminder(owner, reminder_id)
         if row is None:
             return False, f"Reminder #{reminder_id} not found."
+        if not stamp_matches(row["created_at"], expected_created_at):
+            return False, STALE_MESSAGE
         if self.is_delivering(reminder_id):
             return False, f"Cannot delete reminder #{reminder_id} while it is being delivered."
+        event_at = datetime.now(timezone.utc).isoformat()
+        event_text = f"Deleted reminder #{reminder_id}"
         try:
-            await backup_before_delete(app.home.root)
-        except (OSError, ValueError, sqlite3.Error) as error:
-            log.warning("could not back up before deleting reminder %s: %s", reminder_id, type(error).__name__)
-            return False, "Could not take a backup before deleting."
+            archive = await asyncio.to_thread(
+                stage_deletion,
+                app.home.root,
+                "reminder",
+                reminder_id,
+                event_text=event_text,
+                event_at=event_at,
+                rows={"reminder": row},
+            )
+        except (OSError, ValueError) as error:
+            log.warning("could not archive reminder %s: %s", reminder_id, type(error).__name__)
+            return False, "Could not archive reminder before deleting."
         async with self._delivery_lock:
             if self.is_delivering(reminder_id):
+                await asyncio.to_thread(archive.rollback)
                 return False, f"Cannot delete reminder #{reminder_id} while it is being delivered."
-            deleted = await app.store.delete_reminder(owner, reminder_id)
+            try:
+                result = await app.store.delete_reminder(owner, reminder_id, expected_created_at, event_text, event_at)
+            except sqlite3.Error as error:
+                log.warning("could not delete reminder %s: %s", reminder_id, type(error).__name__)
+                await asyncio.to_thread(archive.rollback)
+                return False, "Could not delete reminder."
+            if result != "deleted":
+                await asyncio.to_thread(archive.rollback)
+                return False, STALE_MESSAGE if result == "stale" else f"Reminder #{reminder_id} not found."
             self._deliveries.pop(reminder_id, None)
-        if not deleted:
-            return False, f"Reminder #{reminder_id} not found."
-        await app.store.record_owner_event(f"Deleted reminder #{reminder_id}")
+            await asyncio.to_thread(archive.commit)
+        await asyncio.to_thread(prune_deletions, app.home.root)
         return True, f"Deleted reminder #{reminder_id}."
 
     async def _advance(self, row: dict, now: datetime) -> None:

@@ -478,7 +478,8 @@ async def delete_proposal(request: Request, proposal_id: int, kind: str = "", so
     app = owner_app(request)
     if not 0 < proposal_id < 2**63:
         raise HTTPException(404)
-    ok, message = await app.proposals.delete(proposal_id)
+    expected = (await form(request)).get("expected", [""])[0]
+    ok, message = await app.proposals.delete(proposal_id, expected)
     response = render("proposals.html", context=await _proposals(app, kind, source) | {"message": message})
     if not ok:
         response.status_code = 404 if "not found" in message else 409
@@ -584,7 +585,8 @@ async def plugin_delete(request: Request, name: str):
         validate_plugin_name(name)
     except ValueError:
         raise HTTPException(404) from None
-    message = await owner.delete_plugin(app, name)
+    expected = (await form(request)).get("expected", [""])[0]
+    message = await owner.delete_plugin(app, name, expected)
     response = render("plugins.html", context={
         "rows": await app.plugins.listing(), "panels": await _plugin_panels(app), "message": message,
     })
@@ -654,7 +656,8 @@ async def delete_own_work(request: Request, task_id: int):
     app = owner_app(request)
     if not 0 < task_id < 2**63:
         raise HTTPException(404)
-    ok, message = await app.self_work.delete(task_id)
+    expected = (await form(request)).get("expected", [""])[0]
+    ok, message = await app.self_work.delete(task_id, expected)
     response = render("own_work.html", context=await _own_work(app, message))
     if not ok:
         response.status_code = 404 if "not found" in message else 409
@@ -690,7 +693,8 @@ async def delete_reminder_page(request: Request, reminder_id: int):
     app = owner_app(request)
     if not 0 < reminder_id < 2**63:
         raise HTTPException(404)
-    ok, message = await app.dispatch.reminders.delete(reminder_id)
+    expected = (await form(request)).get("expected", [""])[0]
+    ok, message = await app.dispatch.reminders.delete(reminder_id, expected)
     response = render("reminders.html", context=await _reminders(app, message))
     if not ok:
         response.status_code = 404 if "not found" in message else 409
@@ -709,8 +713,12 @@ async def skill_action(request: Request, name: str, action: Literal["retire", "r
         skills._validate_name(name)
     except ValueError:
         raise HTTPException(404) from None
-    handler = {"retire": owner.retire_skill, "restore": owner.restore_skill, "delete": owner.delete_skill}[action]
-    ok, message = await handler(app, name)
+    if action == "delete":
+        expected = (await form(request)).get("expected", [""])[0]
+        ok, message = await owner.delete_skill(app, name, expected)
+    else:
+        handler = {"retire": owner.retire_skill, "restore": owner.restore_skill}[action]
+        ok, message = await handler(app, name)
     response = render("skills.html", context=await _skills(app, message))
     if not ok:
         response.status_code = 404 if "not found" in message else 409

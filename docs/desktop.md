@@ -258,8 +258,9 @@ is awake and idle: your DM is not asleep, no chat is online or mid-reply, and no
 desktop task is running. A task that has not started within a day expires, and the
 next night's plan replaces any leftovers. Results, with any screenshots, appear on
 the Own work page; your DM gets one short summary. Finished tasks (and their
-saved screenshots) can be deleted from the Own work page after a backup;
-planned or running tasks must be cancelled first. A task that runs out of steps
+saved screenshots) can be deleted from the Own work page or with `/ownwork`
+after moving them into the deletion archive; planned or running tasks must be
+cancelled first. A task that runs out of steps
 gets one last call to report what it found; with a report it ends as done, marked
 partial, and keeps the screenshots it names. Self-directed tasks never message
 anyone else.

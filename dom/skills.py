@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import unicodedata
 from dataclasses import dataclass
 from difflib import unified_diff
+from hashlib import sha256
 from xml.sax.saxutils import escape
 
 from dom.home import Home
@@ -17,6 +19,7 @@ DESCRIPTION_LIMIT = 200
 BODY_LIMIT = 4000
 PROMPT_LIMIT = 30  # skills named in the prompt; skills_list shows the rest
 RETIRED_MARKER = ".retired"
+SKILL_LOCK = threading.Lock()
 _NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 _READ_LIMIT = 4 * (BODY_LIMIT + DESCRIPTION_LIMIT + NAME_LIMIT) + 300
 
@@ -121,6 +124,18 @@ def skill_exists(home: Home, name: str) -> bool:
     return folder.is_dir() and not folder.is_symlink()
 
 
+def content_hash(text: str) -> str:
+    return sha256(text.encode("utf-8")).hexdigest()
+
+
+def skill_hash(home: Home, name: str) -> str:
+    """SHA-256 hex digest of an existing skill's SKILL.md, or FileNotFoundError if absent."""
+    text = skill_text(home, name)
+    if not text:
+        raise FileNotFoundError(f"Skill {name} not found.")
+    return content_hash(text)
+
+
 def skills_inventory(home: Home) -> list[dict[str, object]]:
     """Every valid skill on disk, active and retired, for owner management."""
     public = home.scoped(allow_private=False)
@@ -140,6 +155,7 @@ def skills_inventory(home: Home) -> list[dict[str, object]]:
                     "name": skill.name,
                     "description": skill.description,
                     "body": skill.body,
+                    "hash": content_hash(text),
                     "retired": is_retired(public, name),
                 })
         except (OSError, ValueError):
@@ -181,53 +197,54 @@ def prompt_block(home: Home) -> str:
 
 
 def write_skill(home: Home, skill: Skill, expected: str) -> None:
-    home = home.scoped(allow_private=False)
-    if skill_text(home, skill.name) != expected:
-        raise ValueError("The skill changed since this proposal was created.")
-    home._write_regular(_rel(skill.name), skill.render())
-    marker = home._regular_path(_retired_rel(skill.name))
-    if marker.is_file():
-        marker.unlink()
+    with SKILL_LOCK:
+        home = home.scoped(allow_private=False)
+        if skill_text(home, skill.name) != expected:
+            raise ValueError("The skill changed since this proposal was created.")
+        home._write_regular(_rel(skill.name), skill.render())
 
 
 def retire_skill(home: Home, name: str) -> bool:
     """Turn off an existing skill while keeping its files on disk. False if already retired."""
-    public = home.scoped(allow_private=False)
-    text = skill_text(public, name)
-    if not text:
-        raise FileNotFoundError(f"Skill {name} not found.")
-    _parse(name, text)
-    if is_retired(public, name):
-        return False
-    public._write_regular(_retired_rel(name), "retired\n")
-    return True
+    with SKILL_LOCK:
+        public = home.scoped(allow_private=False)
+        text = skill_text(public, name)
+        if not text:
+            raise FileNotFoundError(f"Skill {name} not found.")
+        _parse(name, text)
+        if is_retired(public, name):
+            return False
+        public._write_regular(_retired_rel(name), "retired\n")
+        return True
 
 
 def restore_skill(home: Home, name: str) -> bool:
     """Re-enable a retired skill. False if it is not retired."""
-    public = home.scoped(allow_private=False)
-    text = skill_text(public, name)
-    if not text:
-        raise FileNotFoundError(f"Skill {name} not found.")
-    _parse(name, text)
-    marker = public._regular_path(_retired_rel(name))
-    if not marker.is_file():
-        return False
-    marker.unlink()
-    return True
+    with SKILL_LOCK:
+        public = home.scoped(allow_private=False)
+        text = skill_text(public, name)
+        if not text:
+            raise FileNotFoundError(f"Skill {name} not found.")
+        _parse(name, text)
+        marker = public._regular_path(_retired_rel(name))
+        if not marker.is_file():
+            return False
+        marker.unlink()
+        return True
 
 
 def delete_skill_files(home: Home, name: str) -> bool:
-    """Remove a skill's folder from disk. Callers must take a backup first."""
-    _validate_name(name)
-    public = home.scoped(allow_private=False)
-    folder = public._regular_path(f"skills/{name}")
-    if not folder.exists():
-        return False
-    if folder.is_symlink() or not folder.is_dir():
-        raise ValueError("Skill path must be a regular directory.")
-    shutil.rmtree(folder)
-    return True
+    """Remove a skill's folder from disk."""
+    with SKILL_LOCK:
+        _validate_name(name)
+        public = home.scoped(allow_private=False)
+        folder = public._regular_path(f"skills/{name}")
+        if not folder.exists():
+            return False
+        if folder.is_symlink() or not folder.is_dir():
+            raise ValueError("Skill path must be a regular directory.")
+        shutil.rmtree(folder)
+        return True
 
 
 def skill_diff(old: str, new: str) -> list[str]:

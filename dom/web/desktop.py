@@ -19,7 +19,7 @@ from dom.desktop.sandbox import LocalSandbox
 from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.telegram import owner
 from dom.web.auth import same_origin
-from dom.web.pages import owner_app, panel, render
+from dom.web.pages import form, owner_app, panel, render
 
 router = APIRouter(prefix="/desktop")
 VNC_PATH = "/desktop/vnc/"
@@ -207,7 +207,8 @@ async def desktop_delete_task(request: Request, task_id: int):
     app = owner_app(request)
     if not 0 < task_id < 2**63:
         raise HTTPException(404)
-    ok, message = await owner.delete_desktop_task(app, task_id)
+    expected = (await form(request)).get("expected", [""])[0]
+    ok, message = await owner.delete_desktop_task(app, task_id, expected)
     response = render("desktop_history.html", context=await desktop_history_context(app, message))
     if not ok:
         response.status_code = 404 if "not found" in message else 409

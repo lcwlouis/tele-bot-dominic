@@ -204,13 +204,16 @@ async def test_casual_appears_once_in_actual_owner_turn_note_and_never_sends_alo
 
 
 async def test_reminders_command_has_owner_only_cancel_buttons(make_app):
+    from dom.deletion import stamp_token
+
     app = make_app()
     reminder_id = await add(app)
+    row = await app.store.get_reminder(OWNER, reminder_id)
     await handlers.handle_message(app, tg(OWNER, OWNER, "/reminders"))
     (sent,) = app.bot.of("send", OWNER)
     button, delete_button = sent[3]["reply_markup"].inline_keyboard[0]
     assert button.text == f"Cancel #{reminder_id}" and button.callback_data == f"rem:cancel:{reminder_id}"
-    assert delete_button.text == f"Delete #{reminder_id}" and delete_button.callback_data == f"rem:del:{reminder_id}"
+    assert delete_button.text == f"Delete #{reminder_id}" and delete_button.callback_data == f"rem:del:{reminder_id}:{stamp_token(row['created_at'])}"
     await press(app, button.callback_data, FRIEND)
     assert len(await app.dispatch.reminders.active()) == 1
     await press(app, button.callback_data)
@@ -220,8 +223,11 @@ async def test_reminders_command_has_owner_only_cancel_buttons(make_app):
 
 
 async def test_a_cancelled_reminder_shows_it_on_its_own_button_only(make_app):
+    from dom.deletion import stamp_token
+
     app = make_app()
     first, second = await add(app), await add(app)
+    second_row = await app.store.get_reminder(OWNER, second)
     await handlers.handle_message(app, tg(OWNER, OWNER, "/reminders"))
     markup = app.bot.of("send", OWNER)[-1][3]["reply_markup"]
     await press(app, f"rem:cancel:{first}", markup=markup)
@@ -229,7 +235,7 @@ async def test_a_cancelled_reminder_shows_it_on_its_own_button_only(make_app):
     assert (chat_id, message_id) == (OWNER, 77)
     assert [[(b.text, b.callback_data) for b in row] for row in edited.inline_keyboard] == [
         [(f"Cancelled #{first}", "noop")],
-        [(f"Cancel #{second}", f"rem:cancel:{second}"), (f"Delete #{second}", f"rem:del:{second}")],
+        [(f"Cancel #{second}", f"rem:cancel:{second}"), (f"Delete #{second}", f"rem:del:{second}:{stamp_token(second_row['created_at'])}")],
     ]
     await press(app, "noop")  # the settled button does nothing
     assert [r["id"] for r in await app.dispatch.reminders.active()] == [second]

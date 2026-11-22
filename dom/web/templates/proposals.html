@@ -101,8 +101,12 @@
       <span class="kind">{{ card.label }} ({{ card.status }})</span>
       <p>#{{ card.id }} {{ card.title }}</p>
       <div class="actions" hx-target="#proposals" hx-swap="outerHTML">
-        <button class="link-danger" hx-post="/proposals/{{ card.id }}/delete?{{ query }}"
-          hx-confirm="Delete settled proposal #{{ card.id }}? A backup is taken first.">Delete</button>
+        <form class="inline-form" method="post" action="/proposals/{{ card.id }}/delete?{{ query }}"
+          hx-post="/proposals/{{ card.id }}/delete?{{ query }}"
+          hx-confirm="Delete settled proposal #{{ card.id }}? A copy is saved to the deletion archive.">
+          <input type="hidden" name="expected" value="{{ card.created_at }}">
+          <button class="link-danger">Delete</button>
+        </form>
       </div>
     </article>
     {% endfor %}

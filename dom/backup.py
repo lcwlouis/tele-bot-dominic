@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 import shutil
@@ -99,11 +98,6 @@ def backup(home: Path, *, keep: int = 7, destination: Path | None = None) -> Pat
     for old in others[keep - 1:]:
         old.unlink(missing_ok=True)
     return archive
-
-
-async def backup_before_delete(home: Path) -> Path:
-    """Take a home backup off the event loop before removing files or records."""
-    return await asyncio.to_thread(backup, home)
 
 
 def _safe_members(tar: tarfile.TarFile) -> list[tarfile.TarInfo]:

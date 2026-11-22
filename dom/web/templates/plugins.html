@@ -52,8 +52,12 @@
           <button class="danger" hx-post="{{ route }}/disable"
             hx-confirm="Retire plugin {{ manifest.name }}? Its files stay on disk, and its tools, commands and panels turn off.">Retire</button>
         {% endif %}
-        <button class="link-danger" hx-post="/plugins/{{ manifest.name }}/delete"
-          hx-confirm="Delete plugin {{ manifest.name }}? A backup is taken first, then its files, database record and stored state are removed.">Delete</button>
+        <form class="inline-form" method="post" action="/plugins/{{ manifest.name }}/delete"
+          hx-post="/plugins/{{ manifest.name }}/delete"
+          hx-confirm="Delete plugin {{ manifest.name }}? Its files and database state are moved to the deletion archive before removal.">
+          <input type="hidden" name="expected" value="{{ review.plugin.hash }}">
+          <button class="link-danger">Delete</button>
+        </form>
       </div>
     </article>
   {% else %}
@@ -73,8 +77,12 @@
         <button class="danger" hx-post="{{ route }}/disable"
           hx-confirm="Retire plugin {{ row.name }}? Its files stay on disk, and its tools, commands and panels turn off.">Retire</button>
         {% endif %}
-        <button class="link-danger" hx-post="/plugins/{{ row.name }}/delete"
-          hx-confirm="Delete plugin {{ row.name }}? A backup is taken first, then its files, database record and stored state are removed.">Delete</button>
+        <form class="inline-form" method="post" action="/plugins/{{ row.name }}/delete"
+          hx-post="/plugins/{{ row.name }}/delete"
+          hx-confirm="Delete plugin {{ row.name }}? Its files and database state are moved to the deletion archive before removal.">
+          <input type="hidden" name="expected" value="{{ row.hash }}">
+          <button class="link-danger">Delete</button>
+        </form>
       </div>
     </article>
     {% endfor %}

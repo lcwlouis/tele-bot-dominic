@@ -9,8 +9,12 @@
     {% if row.result %}<p class="fog">{{ row.result }}</p>{% endif %}
     {% if row.error %}<p class="notice">{{ row.error }}</p>{% endif %}
     <div class="actions" hx-target="#desktop-history" hx-swap="outerHTML">
-      <button class="link-danger" hx-post="/desktop/tasks/{{ row.id }}/delete"
-        hx-confirm="Delete desktop task #{{ row.id }}? A backup is taken first.">Delete</button>
+      <form class="inline-form" method="post" action="/desktop/tasks/{{ row.id }}/delete"
+        hx-post="/desktop/tasks/{{ row.id }}/delete"
+        hx-confirm="Delete desktop task #{{ row.id }}? Its record and attachments are moved to the deletion archive.">
+        <input type="hidden" name="expected" value="{{ row.created_at }}">
+        <button class="link-danger">Delete</button>
+      </form>
     </div>
   </article>
   {% endfor %}
