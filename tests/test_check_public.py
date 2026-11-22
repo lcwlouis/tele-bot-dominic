@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -70,6 +71,95 @@ Use owner@example.org or {noreply}.
     result = scan(repository)
     assert result.returncode == 0
     assert "Public data check passed" in result.stdout
+
+
+AT = "@"
+# Shaped like an npm scope (lowercase, no underscore) so only the declared-package rule can let it through.
+NPM_SHAPED_HANDLE = AT + "unlisteddemo"
+MANIFEST = json.dumps({
+    "name": "dashboard",
+    "devDependencies": {f"{AT}sveltejs/vite-plugin-svelte": "7.3.1", f"{AT}storybook/svelte-vite": "10.6.7"},
+}, indent=2)
+LOCK = json.dumps({"packages": {
+    "": {"devDependencies": {f"{AT}storybook/svelte-vite": "10.6.7"}},
+    f"node_modules/{AT}storybook/svelte-vite": {
+        "resolved": f"https://registry.npmjs.org/{AT}storybook/svelte-vite/-/svelte-vite-10.6.7.tgz",
+        "peerDependencies": {f"{AT}types/react": "*"},
+    },
+}}, indent=2)
+
+
+def test_dashboard_app_syntax_is_not_a_handle(repository):
+    track(repository, "web/package.json", MANIFEST)
+    track(repository, "web/package-lock.json", LOCK)
+    track(repository, "web/.storybook/main.ts", (
+        f"import type {{ StorybookConfig }} from '{AT}storybook/svelte-vite';\n"
+        f"const framework = dirname(require.resolve('{AT}storybook/svelte-vite/package.json'));\n"
+    ))
+    track(repository, "web/src/Card.svelte", (
+        f"<script>\n  import {{ svelte }} from '{AT}sveltejs/vite-plugin-svelte';\n</script>\n"
+        f"{{{AT}render children()}}\n{{{AT}const open = true}}\n<div {{{AT}attach tip}}></div>\n"
+        f"<style>\n  {AT}media (min-width: 960px) {{}}\n  {AT}keyframes pop {{}}\n</style>\n"
+    ))
+    result = scan(repository)
+    assert result.returncode == 0, result.stdout
+
+
+def test_npm_names_pass_only_when_declared_and_in_npm_syntax(repository):
+    handle = NPM_SHAPED_HANDLE
+    track(repository, "web/package.json", MANIFEST.replace('"name": "dashboard"', f'"name": "dashboard", "{handle}/x": "1"'))
+    track(repository, "web/src/lib/api/fixtures.ts", f"export const title = '{handle}/photos';")
+    track(repository, "web/src/main.ts", (
+        f"// import x from '{handle}/kit';\n"
+        f"import x from '{handle}/kit';\n"
+        f"const label = 'see {AT}sveltejs/vite-plugin-svelte';\n"
+    ))
+    track(repository, "web/src/Chat.svelte", f"<p>{handle}/news</p>")
+    result = scan(repository)
+    assert result.returncode == 1
+    for finding in (
+        "web/package.json:2:", "web/src/lib/api/fixtures.ts:1:", "web/src/main.ts:1:", "web/src/main.ts:2:",
+        "web/src/main.ts:3:", "web/src/Chat.svelte:1:",
+    ):
+        assert f"{finding} Telegram handle" in result.stdout
+
+
+def test_lockfile_is_scanned(repository):
+    track(repository, "web/package.json", MANIFEST)
+    track(repository, "web/package-lock.json", LOCK.replace(
+        '"packages": {', f'"note": "{PLANTED["Telegram ID"]}", "funding": "{NPM_SHAPED_HANDLE}/x", "packages": {{',
+    ))
+    result = scan(repository)
+    assert result.returncode == 1
+    assert "web/package-lock.json:2: Telegram ID" in result.stdout
+    assert "web/package-lock.json:2: Telegram handle" in result.stdout
+
+
+def test_svelte_exemptions_apply_only_to_svelte_syntax(repository):
+    tag = AT + "render"
+    track(repository, "web/src/Chat.svelte", (
+        f'<script>\n  const tip = "{{{tag}}}";\n</script>\n'
+        f'<p title="{{{tag}}}">hi</p>\n'
+        f"<!-- {{{tag}}} -->\n"
+        f"<p>{{'{AT}media'}}</p>\n"
+        f"{{{tag} children()}}\n"
+    ))
+    result = scan(repository)
+    assert result.returncode == 1
+    for line in (2, 4, 5, 6):
+        assert f"web/src/Chat.svelte:{line}: Telegram handle" in result.stdout
+    assert "web/src/Chat.svelte:7:" not in result.stdout
+
+
+def test_dashboard_exemptions_do_not_hide_real_handles(repository):
+    handle = PLANTED["Telegram handle"]
+    track(repository, "web/src/Chat.svelte", f"<p>{handle}</p>\n<p>{{{handle}}}</p>")
+    track(repository, "docs/notes.md", f"{handle}/photos")
+    result = scan(repository)
+    assert result.returncode == 1
+    assert "web/src/Chat.svelte:1: Telegram handle" in result.stdout
+    assert "web/src/Chat.svelte:2: Telegram handle" in result.stdout
+    assert "docs/notes.md:1: Telegram handle" in result.stdout
 
 
 def test_allowlisted_cidr_only_accepts_the_exact_generic_network(repository):
