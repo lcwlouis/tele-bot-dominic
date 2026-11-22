@@ -14,21 +14,57 @@
   </form>
   {% endif %}
   {% if not context.rows %}<p class="fog">No turns yet{% if context.chat %} for this chat{% endif %}. Dom replies when someone messages him.</p>{% endif %}
+  {% macro duration(ms) -%}
+    {%- if ms < 1000 -%}{{ ms }} ms{%- else -%}{{ '%.1f'|format(ms / 1000) }} s{%- endif -%}
+  {%- endmacro %}
+  {% if context.visible_stages %}
+  <ul class="turn-legend">
+    {% for stage, label in context.stages.items() if stage in context.visible_stages %}
+    <li><span class="stage-{{ stage }}" aria-hidden="true"></span>{{ label }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
   <ol class="log">
     {% for turn in context.rows %}
     <li>
-      <time datetime="{{ turn.at }}" title="{{ turn.time.strftime('%Y-%m-%d %H:%M %Z') }}">{{ turn.time.strftime('%H:%M') }}</time>
-      <span class="{{ 'held' if turn.outcome.startswith('Held back') or turn.outcome == 'Turn failed' else 'what' }}">{{ turn.title }} · {{ turn.outcome }}</span>
-      <div class="chips">
-        {% for step in turn.steps %}
-        <span>{{ "Search" if step == "web_search" else step|replace("_", " ")|capitalize }}</span>
-        {% endfor %}
-        {% for item in turn.timing %}<span class="num">{{ item }}</span>{% endfor %}
-        {% if turn.model %}<span>{{ turn.model }}</span>{% endif %}
-        {% if turn.fallback %}<span class="fallback">Fallback</span>{% endif %}
-        <span class="num">{{ turn.calls }} {{ "call" if turn.calls == 1 else "calls" }}</span>
-        <span class="num">{{ turn.duration_ms }} ms</span>
-      </div>
+      <details>
+        <summary>
+          <time datetime="{{ turn.at }}" title="{{ turn.time.strftime('%Y-%m-%d %H:%M %Z') }}">{{ turn.time.strftime('%H:%M') }}</time>
+          <span class="{{ 'held' if turn.outcome.startswith('Held back') or turn.outcome == 'Turn failed' else 'what' }}">{{ turn.title }} · {{ turn.outcome }}</span>
+          {% if turn.first_bubble_ms is not none %}
+          <span class="num turn-totals">First bubble {{ duration(turn.first_bubble_ms) }} · Last bubble {{ duration(turn.last_bubble_ms) }}</span>
+          {% else %}
+          <span class="num turn-totals">Turn {{ duration(turn.duration_ms) }}</span>
+          {% endif %}
+          {% if turn.segments %}
+          <svg class="turn-bar" viewBox="0 0 {{ turn.bar_ms }} 10" preserveAspectRatio="none" role="img" aria-label="Stage durations">
+            {% for stage, label, x, ms in turn.segments %}
+            <rect class="stage-{{ stage }}" x="{{ x }}" width="{{ ms }}" height="10"><title>{{ label }} {{ duration(ms) }}</title></rect>
+            {% endfor %}
+          </svg>
+          {% endif %}
+        </summary>
+        <div class="chips">
+          {% for step in turn.steps %}
+          <span>{{ "Search" if step == "web_search" else step|replace("_", " ")|capitalize }}</span>
+          {% endfor %}
+          {% for label, ms in turn.timing %}<span class="num">{{ label }} {{ duration(ms) }}</span>{% endfor %}
+          {% if turn.model %}<span>{{ turn.model }}</span>{% endif %}
+          {% if turn.fallback %}<span class="fallback">Fallback</span>{% endif %}
+          <span class="num">{{ turn.calls }} {{ "call" if turn.calls == 1 else "calls" }}</span>
+        </div>
+        {% if turn.model_calls %}
+        <ol class="turn-calls">
+          {% for call in turn.model_calls %}
+          <li>
+            <div>{{ context.stages.get(call.kind, call.kind|capitalize) }} · {{ call.model }}{% if call.fallback %} · Fallback{% endif %} · {{ duration(call.duration_ms) }}{% if call.status %} · {{ call.status }}{% endif %}</div>
+            <div class="num">Input {{ call.input_tokens if call.input_tokens is not none else '—' }} · Output {{ call.output_tokens if call.output_tokens is not none else '—' }} · Cached {{ call.cached_tokens if call.cached_tokens is not none else '—' }} tokens</div>
+            <div class="turn-hashes">System <code>{{ call.system_hash }}</code> · Tools <code>{{ call.tools_hash }}</code> · User <code>{{ call.user_hash }}</code>{% if call.user_prefix_hash %} · User prefix <code>{{ call.user_prefix_hash }}</code>{% endif %}</div>
+          </li>
+          {% endfor %}
+        </ol>
+        {% endif %}
+      </details>
     </li>
     {% endfor %}
   </ol>

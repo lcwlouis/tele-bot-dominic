@@ -339,11 +339,48 @@ async def _usage(app: App) -> dict:
     }
 
 
-def _timing(item: str) -> str:
-    """A trace entry "web_search@1893" as "Search 1.9 s" (the dashboard's compact timing chip)."""
-    what, _, ms = item.rpartition("@")
-    label = "Search" if what == "web_search" else what.replace("_", " ").capitalize()
-    return f"{label} {int(ms) / 1000:.1f} s"
+TURN_STAGES = {
+    "away_wait": "Asleep or offline",
+    "debounce": "Debounce",
+    "media_wait": "Media wait",
+    "lock_wait": "Lock wait",
+    "triage": "Jev triage",
+    "model": "Model",
+    "retry_backoff": "Retry backoff",
+    "tool": "Tools",
+    "guard": "Leak guard",
+    "typing": "Typing",
+    "send": "Sending",
+    "other": "Other time",
+}
+TIMING_STAGES = {"fallback_model": "model", "gif_search": "send"}
+TIMING_LABELS = {"fallback_model": "Fallback model", "web_search": "Search", "gif_search": "GIF lookup"}
+
+
+def _turn_timings(row: dict, trace: list[str]) -> None:
+    totals: dict[str, int] = defaultdict(int)
+    timings = []
+    for item in trace:
+        what, sep, value = item.rpartition("@")
+        if not sep or not value.isdecimal():
+            continue
+        ms = int(value)
+        stage = TIMING_STAGES.get(what, what if what in TURN_STAGES else "tool")
+        label = TIMING_LABELS.get(what, TURN_STAGES.get(what, what.replace("_", " ").capitalize()))
+        timings.append((label, ms))
+        totals[stage] += ms
+    if row["last_bubble_ms"] is not None:
+        other = row["last_bubble_ms"] - sum(totals.values())
+        if other > 0:
+            totals["other"] = other
+            timings.append((TURN_STAGES["other"], other))
+    offset = 0
+    segments = []
+    for stage, label in TURN_STAGES.items():
+        if ms := totals[stage]:
+            segments.append((stage, label, offset, ms))
+            offset += ms
+    row.update(timing=timings, segments=segments, bar_ms=offset, model_calls=json.loads(row["model_calls"]))
 
 
 async def _turns(app: App, chat: str = "") -> dict:
@@ -359,12 +396,13 @@ async def _turns(app: App, chat: str = "") -> dict:
         row["title"] = _title(known[key], app.owner_id)
         trace = json.loads(row["trace"])
         row["steps"] = [item for item in trace if "@" not in item]
-        row["timing"] = [_timing(item) for item in trace if "@" in item]
+        _turn_timings(row, trace)
     # The filter offers chats Dom is in, plus any that appear in the turns shown; a chat he left long ago does not
     # clutter it.
     offered = {*approved, *(row["chat_id"] for row in rows), chat}
     return {
-        "rows": rows, "chat": chat,
+        "rows": rows, "chat": chat, "stages": TURN_STAGES,
+        "visible_stages": {stage for row in rows for stage, _, _, _ in row["segments"]},
         "choices": [(key, _title(row, app.owner_id)) for key, row in known.items() if key in offered],
     }
 
