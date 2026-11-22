@@ -106,7 +106,7 @@ def test_frame_does_not_offer_memory_editing():
     assert "memory tool" not in FRAME
     assert "propose_memory_edit" not in FRAME  # owner-only tool names never leak into the shared prefix
     assert "do not edit them yourself" in FRAME
-    assert "propose a change for the owner to approve" in FRAME
+    assert "suggest a change for the owner to approve" in FRAME and "tool" not in FRAME.split("Never speak")[0]
 
 
 def test_frame_prefix_stays_cache_stable_across_scopes(home):

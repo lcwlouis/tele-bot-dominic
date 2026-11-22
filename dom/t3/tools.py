@@ -17,7 +17,7 @@ from dom.desktop.tools import untrusted
 from dom.t3.auth import TOKEN_FILE, command, connect_home
 from dom.t3.client import T3Client, T3Uncertain, T3Unavailable, read_token
 from dom.t3.service import BASE_DIR
-from dom.telegram.executor import retry_telegram
+from dom.telegram.executor import FloodBudget, retry_telegram
 from dom.tools import Tool
 
 REACHABLE = "reachable"
@@ -208,6 +208,7 @@ class Bridge:
                     reply_markup=markup,
                 ),
                 sleep=self.app.sleep,
+                budget=FloodBudget(),  # this runs inside a model turn: never hold the chat for a long flood wait
             )
         except Exception:
             self.pending.pop(token, None)

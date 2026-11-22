@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from aiogram import Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
     CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntity,
 )
@@ -623,7 +623,7 @@ async def _settle_confirm(app: App, query: CallbackQuery, label: str) -> None:
             ),
             sleep=app.sleep,
         )
-    except TelegramBadRequest:
+    except (TelegramBadRequest, TelegramRetryAfter):  # the delete is done either way; a second tap answers "stale"
         log.info("could not settle confirmation buttons in chat %s", query.message.chat.id)
 
 
