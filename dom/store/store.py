@@ -51,6 +51,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (16, "0015_self_work.sql"),
     (17, "0016_turn_timings.sql"),
     (19, "0018_plugin_storage.sql"),
+    (20, "0019_memory_edit_proposals.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 

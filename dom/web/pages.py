@@ -254,6 +254,8 @@ def _proposal_label(kind: str, source: str) -> str:
     if kind == "memory_fact":
         service = source.partition("import:")[2]
         return f"Memory imported from {IMPORT_SERVICES.get(service, service)}" if service else "Memory fact"
+    if kind == "memory_edit":
+        return "Memory edit"
     if kind == "skill":
         return "Skill proposed after a desktop task" if source == "desktop" else "Skill proposal"
     if kind == "lan_address":
@@ -272,6 +274,13 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
             row["review_path"] = proposals.plugin_review_path(row["body"])
         if row["kind"] == "skill" and row["body"]["old"]:
             row["changes"] = skill_diff(row["body"]["old"], row["body"]["new"])[2:]
+        if row["kind"] == "memory_edit":
+            from dom.memory_edit import memory_diff
+
+            diff_text = row["body"].get("diff")
+            row["changes"] = diff_text.splitlines() if isinstance(diff_text, str) and diff_text else memory_diff(
+                row["body"]["file"], row["body"]["old"], row["body"]["new"],
+            )
         if (key := _import_key(row)) is not None:
             if key not in imports:
                 service = key[0].partition(":")[2]

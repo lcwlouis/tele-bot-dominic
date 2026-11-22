@@ -498,6 +498,8 @@ async def show_proposals(app: App, page: int = 1) -> None:
         controls = proposals.buttons(row["id"], numbered=len(shown) > 1)
         if preview != text:
             preview += "…"
+            if row["kind"] == "memory_edit":  # never approve a note edit without seeing the whole diff
+                controls = [button for button in controls if not button.callback_data.startswith("prop:yes:")]
             controls.append(InlineKeyboardButton(text=f"Details #{row['id']}", callback_data=f"prop:show:{row['id']}"))
         if row["kind"] == "plugin" and (review := proposals.review_button(app, json.loads(row["body_json"]))):
             controls.append(review)
@@ -529,6 +531,9 @@ async def approve_proposal_page(app: App, first: int, last: int) -> str:
     bulk = [row for row in rows if row["kind"] in BULK_KINDS]
     souls = sum(row["kind"] == "soul_edit" for row in rows)
     held = (" 1 soul edit needs its own Approve." if souls == 1 else f" {souls} soul edits need their own Approve.") if souls else ""
+    edits = sum(row["kind"] == "memory_edit" for row in rows)
+    if edits:
+        held += " 1 memory edit needs its own Approve." if edits == 1 else f" {edits} memory edits need their own Approve."
     if any(row["kind"] == "plugin" for row in rows):
         held += " Plugins need their own review and approval."
     results = [await app.proposals.decide(row["id"], True) for row in bulk]

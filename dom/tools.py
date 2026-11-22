@@ -548,6 +548,7 @@ OWN_CODE_TOOL = Tool(
 
 async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     from dom.devices import FIND_DEVICES_TOOL
+    from dom.memory_edit import PROPOSE_MEMORY_EDIT_TOOL
     from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 
     tools = core_tools(app.search_client, app.desktop_worker)
@@ -556,6 +557,8 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
 
         tools.extend(TOOLS)
     tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL, FIND_DEVICES_TOOL, TASK_MODE_TOOL))
+    if scope == "owner_dm" and app.config.memory_self_edit:
+        tools.append(PROPOSE_MEMORY_EDIT_TOOL)
     if await global_preset_name(app.store) == AUTO:
         tools.append(SWITCH_VIBE_TOOL)
     return [tool for tool in tools if scope in tool.scopes] + await offered(app, scope)
