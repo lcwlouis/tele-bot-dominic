@@ -109,7 +109,7 @@ def test_frame_does_not_offer_memory_editing():
 
 SELF_DESCRIPTION = (
     "When someone asks about you — your personality, settings or abilities — answer in your own words like a "
-    "person would; give exact numbers or internal names only when asked for them."
+    "person would."
 )
 
 

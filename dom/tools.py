@@ -51,6 +51,7 @@ class TurnCtx:
     desktop: DesktopFleet | None = None
     app: App | None = None
     t3_notes: list[str] = field(default_factory=list)
+    participant_ids: tuple[int, ...] = ()
 
     def is_owner_dm(self) -> bool:
         return (
@@ -312,10 +313,58 @@ SKILL_MANAGE_TOOL = Tool(
 )
 
 
-def core_tools(search: SearchClient | None = None, desktop: DesktopFleet | None = None) -> list[Tool]:
-    tools = [SEARCH_HISTORY_TOOL, EXTEND_ONLINE_TOOL, REMIND_TOOL, SKILLS_LIST_TOOL, SKILL_VIEW_TOOL, SKILL_MANAGE_TOOL]
+async def _read_notes(args: dict, ctx: TurnCtx) -> str:
+    from dom.prompt import read_fresh_notes
+
+    allow_private = (
+        ctx.scope == "owner_dm"
+        and ctx.owner_id is not None
+        and ctx.chat_id == ctx.owner_id
+        and (ctx.sender_id is None or ctx.sender_id == ctx.owner_id)
+        and (ctx.app is None or ctx.app.owner_id == ctx.owner_id)
+    )
+    participants = list(ctx.participant_ids)
+    if ctx.sender_id is not None and ctx.sender_id not in participants:
+        participants.append(ctx.sender_id)
+    return read_fresh_notes(ctx.home, ctx.scope, ctx.chat_id, participants, allow_private=allow_private)
+
+
+READ_NOTES_TOOL = Tool(
+    name="read_notes",
+    description=(
+        "Read the latest saved notes for this chat, its participants, and shared memory from disk. "
+        "Use when the turn note says notes were updated since your prompt was built and you need fresh details."
+    ),
+    schema={"type": "object", "properties": {}, "additionalProperties": False},
+    handler=_read_notes,
+    scopes=set(ALL_SCOPES),
+)
+
+
+_OWNER_ONLY_SCOPE = frozenset({"owner_dm"})
+
+
+def _is_owner_only(tool: Tool) -> bool:
+    return tool.scopes == _OWNER_ONLY_SCOPE
+
+
+def _shared_core_tools(search: SearchClient | None = None) -> list[Tool]:
+    tools = [
+        SEARCH_HISTORY_TOOL,
+        EXTEND_ONLINE_TOOL,
+        SKILLS_LIST_TOOL,
+        SKILL_VIEW_TOOL,
+        SKILL_MANAGE_TOOL,
+        READ_NOTES_TOOL,
+    ]
     if search is not None:
         tools.append(_web_search_tool(search))
+    return tools
+
+
+def core_tools(search: SearchClient | None = None, desktop: DesktopFleet | None = None) -> list[Tool]:
+    tools = _shared_core_tools(search)
+    tools.append(REMIND_TOOL)
     if desktop is not None and desktop.available():
         tools.append(START_DESKTOP_TASK)
     return tools
@@ -451,6 +500,48 @@ TASK_MODE_TOOL = Tool(
 )
 
 
+def _turn_timing_summary(row: dict) -> dict:
+    try:
+        trace = json.loads(row.get("trace") or "[]")
+    except ValueError:
+        trace = []
+    stages: dict[str, int] = {}
+    for item in trace:
+        if isinstance(item, str) and "@" in item:
+            what, _, val = item.rpartition("@")
+            if val.isdecimal():
+                stages[what] = stages.get(what, 0) + int(val)
+    try:
+        raw_calls = json.loads(row.get("model_calls") or "[]")
+    except ValueError:
+        raw_calls = []
+    calls = [
+        {
+            "kind": call.get("kind"),
+            "model": call.get("model"),
+            "fallback": bool(call.get("fallback")),
+            "duration_ms": call.get("duration_ms"),
+            "status": call.get("status"),
+            "input_tokens": call.get("input_tokens"),
+            "output_tokens": call.get("output_tokens"),
+            "cached_tokens": call.get("cached_tokens"),
+        }
+        for call in raw_calls if isinstance(call, dict)
+    ]
+    return {
+        "at": row["at"],
+        "scope": row["scope"],
+        "model": row["model"],
+        "fallback": bool(row["fallback"]),
+        "outcome": row["outcome"],
+        "duration_ms": row["duration_ms"],
+        "first_bubble_ms": row.get("first_bubble_ms"),
+        "last_bubble_ms": row.get("last_bubble_ms"),
+        "stages_ms": stages,
+        "model_calls": calls,
+    }
+
+
 async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
     from dom.capabilities import desktop_hosts, desktop_status
     from dom.plugins.manifest import SCOPES
@@ -462,7 +553,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
     enabled = {scope: [tool.name for tool in await enabled_tools(app, scope)] for scope in SCOPES}
     today = await vibe(app.home, app.store, app.dispatch.now())
     task = await task_mode(app.store, ctx.chat_id, app.dispatch.now())
-    return json.dumps({
+    payload: dict[str, object] = {
         "version": VERSION,
         "repository": app.config.update.repo_url,
         "changelog_latest": own_code.latest_release(own_code.installed_base()),
@@ -490,7 +581,12 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
                 for row in await app.store.list_chats("approved") if row["preset"]
             ],
         },
-    })
+    }
+    if args.get("include_timings") is True:
+        raw_limit = args.get("limit", 10)
+        limit = max(1, min(raw_limit if type(raw_limit) is int else 10, 20))
+        payload["recent_timings"] = [_turn_timing_summary(row) for row in await app.store.recent_turns(limit=limit)]
+    return json.dumps(payload)
 
 
 SELF_INSPECT_TOOL = Tool(
@@ -498,10 +594,18 @@ SELF_INSPECT_TOOL = Tool(
     description=(
         "Read Dom's version, public repository URL, newest changelog entry, available tools by chat scope, approved plugins, desktop status, whether GIFs are on, "
         "models, the preset used everywhere with the chats that override it, and recent errors. "
+        "Pass include_timings=true only when the owner asks why a reply was slow to inspect recent reply timings from the turn log. "
         "When someone asks about you, answer in your own words like a person would; "
         "give exact numbers or internal names only when asked for them."
     ),
-    schema={"type": "object", "properties": {}, "additionalProperties": False},
+    schema={
+        "type": "object",
+        "properties": {
+            "include_timings": {"type": "boolean", "default": False},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10},
+        },
+        "additionalProperties": False,
+    },
     handler=_self_inspect,
     scopes={"owner_dm"},
 )
@@ -547,18 +651,39 @@ OWN_CODE_TOOL = Tool(
 
 
 async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
+    """Offered tools in cache-stable order: shared tools first, owner-only tools last.
+
+    Scopes stay separate (groups and friends' DMs never see owner-only tool names). The vibe switch
+    and shared plugins sit at the end of the shared block, and desktop, T3 and owner-only plugins at
+    the end of the owner block, so a change there reshapes only what follows it."""
     from dom.devices import FIND_DEVICES_TOOL
     from dom.memory_edit import PROPOSE_MEMORY_EDIT_TOOL
     from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
 
-    tools = core_tools(app.search_client, app.desktop_worker)
-    if scope == "owner_dm" and app.t3 is not None and app.t3.available():
+    shared: list[Tool] = [tool for tool in _shared_core_tools(app.search_client) if scope in tool.scopes]
+    if await global_preset_name(app.store) == AUTO and scope in SWITCH_VIBE_TOOL.scopes:
+        shared.append(SWITCH_VIBE_TOOL)
+    plugin_tools = sorted(await offered(app, scope), key=lambda tool: tool.name)
+    shared.extend(tool for tool in plugin_tools if not _is_owner_only(tool))
+    if scope != "owner_dm":
+        return shared
+
+    owner_only: list[Tool] = [
+        REMIND_TOOL,
+        DRAFT_PLUGIN_TOOL,
+        WRITE_BRIEF_TOOL,
+        SELF_INSPECT_TOOL,
+        OWN_CODE_TOOL,
+        FIND_DEVICES_TOOL,
+        TASK_MODE_TOOL,
+    ]
+    if app.config.memory_self_edit:  # a setting, so it changes rarely; sits before the tools that come and go
+        owner_only.append(PROPOSE_MEMORY_EDIT_TOOL)
+    if app.desktop_worker is not None and app.desktop_worker.available():
+        owner_only.append(START_DESKTOP_TASK)
+    if app.t3 is not None and app.t3.available():
         from dom.t3.tools import TOOLS
 
-        tools.extend(TOOLS)
-    tools.extend((DRAFT_PLUGIN_TOOL, WRITE_BRIEF_TOOL, SELF_INSPECT_TOOL, OWN_CODE_TOOL, FIND_DEVICES_TOOL, TASK_MODE_TOOL))
-    if scope == "owner_dm" and app.config.memory_self_edit:
-        tools.append(PROPOSE_MEMORY_EDIT_TOOL)
-    if await global_preset_name(app.store) == AUTO:
-        tools.append(SWITCH_VIBE_TOOL)
-    return [tool for tool in tools if scope in tool.scopes] + await offered(app, scope)
+        owner_only.extend(TOOLS)
+    owner_only.extend(tool for tool in plugin_tools if _is_owner_only(tool))
+    return shared + owner_only

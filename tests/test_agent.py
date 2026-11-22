@@ -92,14 +92,14 @@ async def test_tool_call_then_final_actions(env):
 async def test_replies_cannot_write_notes(env, scope):
     root, _, _ = env
     assert {t.name for t in core_tools()} == {
-        "search_history", "extend_online", "remind", "skills_list", "skill_view", "skill_manage",
+        "search_history", "extend_online", "remind", "skills_list", "skill_view", "skill_manage", "read_notes",
     }
     script = Script(
         reply(tool_calls=[call("memory", {"file": "MEMORY.md", "op": "add", "text": "pwned"})]),
         reply(content=json.dumps(FINAL)),
     )
     await run_turn(make_client(script), [], core_tools(), ctx_for(env, scope=scope, chat_id=OWNER, sender=OWNER))
-    expected = {"search_history", "extend_online", "skills_list", "skill_view", "skill_manage"}
+    expected = {"search_history", "extend_online", "skills_list", "skill_view", "skill_manage", "read_notes"}
     if scope == "owner_dm":
         expected.add("remind")
     assert {t["function"]["name"] for t in script.requests[0]["tools"]} == expected

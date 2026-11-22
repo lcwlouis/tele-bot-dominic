@@ -195,11 +195,14 @@ class Reminders:
         app = self.app
         try:
             async with asyncio.timeout(MODEL_TIMEOUT):
+                prompt_cache = getattr(app.dispatch, "prompt_cache", None)
+                mem_text = prompt_cache.memory_text(app.home, app.dispatch.now())[0] if prompt_cache is not None else None
                 messages = build_messages(
                     app.home, "owner_dm", owner, [], "",
                     "Send one short in-character reminder using the reminder text below as content. "
                     "Include what the owner asked to remember.\n"
                     f"<reminder>{escape(text)}</reminder>",
+                    memory_text=mem_text,
                 )
                 with model_request("chat", owner, partial(app.dispatch.turn_allowed, owner, "owner_dm")):
                     await check_model_allowed()

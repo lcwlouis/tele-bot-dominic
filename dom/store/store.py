@@ -1155,11 +1155,12 @@ class Store:
 
         return await self._run(count)
 
-    async def recent_turns(self, chat_id: str | None = None) -> list[dict[str, Any]]:
+    async def recent_turns(self, chat_id: str | None = None, *, limit: int = 200) -> list[dict[str, Any]]:
+        capped = max(1, min(limit, 200))
         return await self._run(lambda: [
             dict(row) for row in self._conn.execute(
-                "SELECT * FROM turns WHERE (? IS NULL OR chat_id = ?) ORDER BY at DESC, id DESC LIMIT 200",
-                (chat_id, chat_id),
+                "SELECT * FROM turns WHERE (? IS NULL OR chat_id = ?) ORDER BY at DESC, id DESC LIMIT ?",
+                (chat_id, chat_id, capped),
             )
         ])
 

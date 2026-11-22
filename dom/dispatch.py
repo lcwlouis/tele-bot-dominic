@@ -35,7 +35,7 @@ from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
 from dom.presence import Habits, Presence, State, read_habits
-from dom.prompt import build_messages, report_messages
+from dom.prompt import PromptCache, build_messages, online_window_note, report_messages
 from dom.reflection import mood
 from dom.reminders import Reminders
 from dom.telegram import executor, gate
@@ -116,6 +116,8 @@ class Dispatcher:
         # Whether Dom is an admin in a group, which Telegram needs for ephemeral bubbles. Kept from my_chat_member
         # updates (note_admin), else asked once per group; a group not known yet is asked on its next owner turn.
         self._admin: dict[int, bool] = {}
+        self.prompt_cache = PromptCache()
+        self._trim_seq: dict[int, int] = {}
         presence.on_session_end = self.request_memory_pass
 
     def notify(self, msg: IncomingMessage) -> None:
@@ -623,6 +625,7 @@ class Dispatcher:
         window = await chat_window.load(
             self.app.store, chat_id, self.app.config, through_id=newest.id if newest is not None else None,
         )
+        self._trim_seq[chat_id] = window.trim_seq
         if window.blocked:
             self.request_memory_pass(chat_id)
         return window.rows
@@ -901,7 +904,7 @@ class Dispatcher:
         tools = await enabled_tools(app, scope)
         note = (
             f"It is {now:%A %Y-%m-%d %H:%M} ({app.config.timezone}). You are in {where} ({scope}).\n"
-            f"state: online\nonline minutes left: {minutes:.1f}\n"
+            f"state: online\n"
             f"messages that arrived while away: {away_count}\n{describe(app, scope, tools)}"
         )
         if any(tool.name.startswith("plugin_") for tool in tools):
@@ -960,14 +963,21 @@ class Dispatcher:
         sliders, preset = await for_chat(app.home, app.store, chat_id, self.now())
         if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:
             note += "\nyou are answering late. If it fits, you can give a reason from your life in your own words."
+        snap = self.prompt_cache.snapshot(
+            app.home, scope, chat_id, participants, self.now(), trim_seq=self._trim_seq.get(chat_id, 0),
+        )
+        note += f"\n{online_window_note(minutes)}"
+        if snap.stale_since is not None:
+            since = snap.stale_since.astimezone(self.presence.tz)
+            note += f"\nnotes updated since {since:%H:%M}; call read_notes only if your answer depends on something saved since then"
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
-            sliders=sliders, preset=preset,
+            sliders=sliders, preset=preset, memory_text=snap.memory_text, notes_blocks=snap.notes_blocks,
         )
         ctx = TurnCtx(
             scope, chat_id, sender_id, app.home, app.store, app.owner_id, self.presence, habits,
             model_allowed=partial(self.turn_allowed, chat_id, scope), reminders=self.reminders,
-            desktop=app.desktop_worker, app=app,
+            desktop=app.desktop_worker, app=app, participant_ids=tuple(dict.fromkeys(participants)),
         )
         usage_mark = await app.store.last_usage_id()
         rescue = None if self.jev is None else partial(self._rescue, chat_id, scope, window, {t.name for t in tools})
