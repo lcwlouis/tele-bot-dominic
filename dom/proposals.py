@@ -16,6 +16,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPrevie
 from dom.agent import unfence
 from dom.config import replace_host
 from dom.guard import check_local_private_text
+from dom.memory_edit import apply_proposal as apply_memory_edit, format_summary as memory_edit_summary, prepare_proposal as prepare_memory_edit
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, Plugin, validate_name, validate_plugin
 from dom.plugins.trial import STORAGE_NOTICE, test_run_summary
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
@@ -112,6 +113,8 @@ def summary(row: dict) -> str:
         if row["title"] == body["text"]:
             return f"#{row['id']} {body['file']}: {body['text']}"
         return f"{heading}\n{body['file']}: {body['text']}"
+    if row["kind"] == "memory_edit":
+        return memory_edit_summary(heading, body)
     return heading
 
 
@@ -155,6 +158,8 @@ class Proposals:
             text, file = body.get("text"), body.get("file")
             if not isinstance(text, str) or not text.strip() or not isinstance(file, str) or file not in MEMORY_FILES:
                 raise ValueError("a memory fact needs a memory filename and text")
+        elif kind == "memory_edit":
+            title, body = prepare_memory_edit(self.app.config, self.app.home, body)
         elif kind == "lan_address":
             try:
                 body = {
@@ -367,6 +372,12 @@ class Proposals:
             result = home.memory_write(rel, "add", body["text"])
             if not result.ok:
                 raise Refused(f"{body['file']}: {result.error}")
+            return
+        if kind == "memory_edit":
+            try:
+                apply_memory_edit(self.app.config, self.app.home, body)
+            except ValueError as error:
+                raise Refused(str(error)) from None
             return
         if kind == "skill":
             try:

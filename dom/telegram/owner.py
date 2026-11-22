@@ -529,6 +529,9 @@ async def approve_proposal_page(app: App, first: int, last: int) -> str:
     bulk = [row for row in rows if row["kind"] in BULK_KINDS]
     souls = sum(row["kind"] == "soul_edit" for row in rows)
     held = (" 1 soul edit needs its own Approve." if souls == 1 else f" {souls} soul edits need their own Approve.") if souls else ""
+    edits = sum(row["kind"] == "memory_edit" for row in rows)
+    if edits:
+        held += " 1 memory edit needs its own Approve." if edits == 1 else f" {edits} memory edits need their own Approve."
     if any(row["kind"] == "plugin" for row in rows):
         held += " Plugins need their own review and approval."
     results = [await app.proposals.decide(row["id"], True) for row in bulk]
