@@ -59,6 +59,24 @@ async def cursor(app, chat_id):
     return await app.store.get_memory_cursor(chat_id)
 
 
+async def test_spend_cap_notice_runs_outside_the_chat_lock(make_app, monkeypatch):
+    app = make_app()
+    await approve(app, GROUP)
+    await put(app, GROUP, 1, "unread by the memory pass")
+    await app.dispatch.usage.record("chat", "mock", "example.org", {"cost": 1})
+    send = app.bot.send_message
+    lock_states = []
+
+    async def notice(*args, **kwargs):
+        lock_states.append(app.locks[GROUP].locked())
+        return await send(*args, **kwargs)
+
+    monkeypatch.setattr(app.bot, "send_message", notice)
+    assert not await MemoryPass(app).run(GROUP)
+    assert lock_states == [False]
+    assert not app.script.requests and await cursor(app, GROUP) == 0
+
+
 @pytest_asyncio.fixture
 async def group(make_app):
     app = make_app(contents=())
