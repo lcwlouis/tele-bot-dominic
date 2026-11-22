@@ -313,6 +313,7 @@ def test_online_probe_hints_redact_provider_text(home, monkeypatch, capsys, poli
     ("OPENROUTER_API_KEY", "lowercase_env"),
     ("OPENROUTER_API_KEY", "X" * 65),
     ("OPENROUTER_API_KEY", "sk-or-v1-" + "A" * 32),
+    ("OPENROUTER_API_KEY", "tvly-" + "T" * 24),
     ("OPENROUTER_API_KEY", "gsk_" + "B" * 24),
     ("OPENROUTER_API_KEY", "hf_" + "C" * 24),
     ("OPENROUTER_API_KEY", "abcd_" + "D" * 20),
@@ -423,3 +424,29 @@ def test_self_directed_work_reports_the_last_guard_verification(home, monkeypatc
     change_config(home, "[self_work]\nenabled = true", "[self_work]\nenabled = false")
     main(["doctor", str(home)])
     assert "ok self-directed work: Off." in capsys.readouterr().out
+
+
+async def test_doctor_probes_searxng_deepseek_and_tavily_search_providers():
+    from dom.config import ProviderEndpoint
+    from dom.doctor import _model
+
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, str(request.url)))
+        if request.url.host == "192.0.2.10":
+            if request.url.port == 4030:
+                return httpx.Response(403, text="json disabled")
+            return httpx.Response(200, json={"results": [{"title": "ok", "url": "https://a.example", "content": "hi"}]})
+        return httpx.Response(200, json={"results": [{"title": "ok", "url": "https://a.example", "snippet": "hi", "content": "hi"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        ok_sx = await _model(http, "search", ProviderEndpoint(provider="searxng", base_url="http://192.0.2.10:8080"), None)
+        bad_sx = await _model(http, "search", ProviderEndpoint(provider="searxng", base_url="http://192.0.2.10:4030"), None)
+        ok_ds = await _model(http, "search.fallbacks[0]", ProviderEndpoint(provider="deepseek", base_url="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"), "k")
+        ok_tv = await _model(http, "search.fallbacks[1]", ProviderEndpoint(provider="tavily", base_url="https://api.tavily.com", api_key_env="TAVILY_API_KEY"), "k")
+    assert ok_sx.status == "ok" and bad_sx.status == "fail" and "formats: [html, json]" in bad_sx.detail
+    assert ok_ds.status == "ok" and ok_tv.status == "ok"
+    assert ("GET", "http://192.0.2.10:8080/search?q=test&format=json") in seen
+    assert ("POST", "https://api.deepseek.com/v1/tools/search") in seen
+    assert ("POST", "https://api.tavily.com/search") in seen

@@ -28,8 +28,9 @@ from dom.config import Config, DesktopConfig, ProviderEndpoint, validate_config
 from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
 from dom.home import LIMITS, MAX_SOUL, Home
 from dom.jev import JevClient, JevUnavailable
-from dom.llm import openrouter_host
+from dom.llm import MissingProviderKey, openrouter_host
 from dom.plugins.runner import PluginRunner
+from dom.search import SearchClient, search_provider_kind
 from dom.selfwork import GUARD_KEY
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.store.store import TARGET_VERSION
@@ -364,6 +365,8 @@ async def _model(http: httpx.AsyncClient, name: str, endpoint: ProviderEndpoint,
             )
             if (answers["check"] or {}).get("choice") not in ("yes", "no"):
                 raise ValueError
+        elif (name == "search" or name.startswith("search.")) and search_provider_kind(endpoint) != "openrouter":
+            await SearchClient(endpoint, key, http).search("test", timeout=8)
         else:
             url = httpx.URL(endpoint.base_url)
             body = {"model": endpoint.model, "messages": [{"role": "user", "content": "Say OK"}], "max_tokens": 1}
@@ -377,7 +380,11 @@ async def _model(http: httpx.AsyncClient, name: str, endpoint: ProviderEndpoint,
             response.raise_for_status()
             if not isinstance(response.json()["choices"][0]["message"], dict):
                 raise ValueError
+    except MissingProviderKey:
+        return Check("warn", label, "Set the search provider's secret to run its online probe.")
     except httpx.HTTPStatusError as error:
+        if (name == "search" or name.startswith("search.")) and search_provider_kind(endpoint) == "searxng" and error.response.status_code == 403:
+            return Check("fail", label, "HTTP 403: enable JSON format (formats: [html, json]) in SearXNG settings.yml.")
         return Check("fail", label, _probe_hint(error.response))
     except (httpx.HTTPError, httpx.InvalidURL, JevUnavailable, KeyError, IndexError, TypeError, ValueError):
         return Check("fail", label, "Probe failed. Check the endpoint URL, model ID, key and connectivity.")

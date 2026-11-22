@@ -156,6 +156,7 @@ class UsageRecorder:
 
     async def record_response(
         self, response: httpx.Response, kind: Kind, model: str, host: str, *, fallback: bool = False,
+        default_cost: float = 0.0,
     ) -> None:
         try:
             payload = response.json()
@@ -163,6 +164,8 @@ class UsageRecorder:
             payload = None
         request = _request.get()
         usage = response_usage(payload)
+        if default_cost and "cost" not in usage:
+            usage = {**usage, "cost": default_cost}
         if kind == "chat" and usage:
             input_tokens, output_tokens, cached_tokens = token_counts(usage)
             log.info(

@@ -82,7 +82,9 @@ async def test_save_backs_up_config_and_applies_new_routes_without_restart(dashb
     route = dict(PRIMARY, model="local-media")
     async with browser() as client:
         initial = (await client.get(API)).json()
-        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting"}
+        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search"}
+        assert initial["roles"]["search"] == {"primary": None, "fallbacks": []}
+        assert {item["id"] for item in initial["search_providers"]} == {"searxng", "openrouter", "deepseek", "tavily"}
         assert initial["roles"]["fallback"]["primary"]["key_set"] is True
         assert initial["roles"]["chat"]["primary"]["kind"] == "local"
         assert initial["roles"]["fallback"]["primary"]["kind"] == "cloud"
@@ -344,13 +346,20 @@ async def test_chain_is_capped_and_first_config_is_kept(dashboard):
     assert "m4" in path.with_name("config.toml.bak").read_text()
 
 
-def test_fallbacks_are_rejected_on_triage_and_search(tmp_path):
+def test_fallbacks_are_rejected_on_triage_and_allowed_on_search(tmp_path):
     from dom.config import validate_config
 
     extra = {"base_url": "https://llm.example.test/v1", "model": "m", "fallbacks": [PRIMARY]}
-    for name in ("triage", "search"):
-        with pytest.raises(ValueError, match="cannot have fallbacks"):
-            validate_config(tmp_path, {"models": {"chat": PRIMARY, name: extra}})
+    with pytest.raises(ValueError, match="cannot have fallbacks"):
+        validate_config(tmp_path, {"models": {"chat": PRIMARY, "triage": extra}})
+    cfg = validate_config(tmp_path, {"models": {
+        "chat": PRIMARY,
+        "search": {
+            "provider": "searxng", "base_url": "http://localhost:8080",
+            "fallbacks": [{"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "model": "m"}],
+        },
+    }})
+    assert [p.provider for p in cfg.providers("search")] == ["searxng", "openrouter"]
 
 
 async def test_a_key_with_a_value_never_gains_a_host_even_after_its_slot_is_removed(dashboard, monkeypatch):
@@ -556,7 +565,7 @@ def _live_save(tmp_path, role, primary, fallbacks):
     return _save(current, update)
 
 
-@pytest.mark.parametrize("role", ["chat", "fallback", "media", "drafting"])
+@pytest.mark.parametrize("role", ["chat", "fallback", "media", "drafting", "search"])
 @pytest.mark.parametrize("operation", ["set", "set_with_fallbacks", "reorder"])
 def test_saving_any_role_survives_tables_split_by_another_section(tmp_path, role, operation):
     # The live file has [desktop] between its [models.*] tables and still carries the legacy chat_fallback.
@@ -571,7 +580,9 @@ def test_saving_any_role_survives_tables_split_by_another_section(tmp_path, role
     assert "chat_fallback" not in models
     assert models[role]["model"] == primary["model"]
     assert [item["model"] for item in models[role].get("fallbacks", [])] == [item["model"] for item in fallbacks]
-    assert models["triage"]["model"] == "classifier" and models["search"]["model"] == "search-model"
+    assert models["triage"]["model"] == "classifier"
+    if role != "search":
+        assert models["search"]["model"] == "search-model"
     assert ("# Keep this comment." in saved.text) == (role != "media")  # replacing a role rewrites its own table
     assert "# Instance options." in saved.text
     assert tomllib.loads(saved.text)["desktop"] == {"enabled": False} and tomllib.loads(saved.text)["t3"] == {"note": "kept"}
@@ -584,3 +595,128 @@ def test_clearing_the_fallback_role_removes_the_legacy_table_too(tmp_path):
     assert "fallback" not in models and "chat_fallback" not in models
     assert models["chat"]["model"] == "chat-model" and models["media"]["model"] == "media-model"
     assert "# Keep this comment." in saved.text and tomllib.loads(saved.text)["web"] == {"port": 8080}
+
+
+async def test_search_settings_round_trip_test_and_data_retention_display(dashboard):
+    app, path, browser = dashboard
+    searx = {"provider": "searxng", "base_url": "http://127.0.0.1:8888", "model": ""}
+    openrouter = {
+        "provider": "openrouter", "base_url": "https://fallback.example.test/v1",
+        "model": "search-web", "api_key_env": "BACKUP_KEY",
+    }
+    deepseek = {
+        "provider": "deepseek", "base_url": "https://api.deepseek.com/v1",
+        "model": "", "api_key_env": "DEEPSEEK_API_KEY",
+    }
+    tavily = {
+        "provider": "tavily", "base_url": "https://api.tavily.com",
+        "model": "", "api_key_env": "TAVILY_API_KEY",
+    }
+    searx_down = False
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, str(request.url)))
+        if request.url.host == "127.0.0.1":
+            if searx_down:
+                raise httpx.ConnectError("down", request=request)
+            return httpx.Response(200, json={"results": [{"title": "A", "url": "https://a.example", "content": "ok"}]})
+        if request.url.host == "fallback.example.test":
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Answer"}}]})
+        pytest.fail(f"unexpected request to {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        page = (await client.get("/settings")).text
+        assert 'data-role="search"' in page
+        assert "https://www.tavily.com/privacy" in page and "Tavily data policy" in page
+        assert "Zero data retention" in page and "Self-hosted" in page
+
+        # Save full chain: SearXNG + OpenRouter web (probed) + DeepSeek + Tavily (unset keys save untested).
+        saved = await _save(client, "search", searx, [openrouter, deepseek, tavily])
+        assert saved.status_code == 200, saved.text
+        data = saved.json()
+        assert data["restart_required"] is False
+        assert data["roles"]["search"]["primary"]["provider"] == "searxng"
+        assert data["roles"]["search"]["primary"]["kind"] == "local"
+        assert [p["provider"] for p in data["roles"]["search"]["fallbacks"]] == ["openrouter", "deepseek", "tavily"]
+        assert data["roles"]["search"]["fallbacks"][2]["policy_url"] == "https://www.tavily.com/privacy"
+        assert app.search_client is not None
+        assert [p.provider for p in app.search_client.providers] == ["searxng", "openrouter", "deepseek", "tavily"]
+
+        # Round-trip reload from disk.
+        reloaded = load_config(path.parent)
+        assert [p.provider for p in reloaded.providers("search")] == ["searxng", "openrouter", "deepseek", "tavily"]
+        assert "model" not in tomllib.loads(path.read_text())["models"]["search"]
+
+        # Test individual slot reports which provider answered.
+        revision = data["revision"]
+        slot0 = (await client.post(API + "/test", headers=ORIGIN_HEADER, json={
+            "revision": revision, "role": "search", "index": 0,
+        })).json()
+        assert slot0["ok"] is True and slot0["provider"] == "searxng" and "SearXNG" in slot0["reply"]
+
+        # Test chain falls through when SearXNG is down and reports OpenRouter answered.
+        searx_down = True
+        chain = (await client.post(API + "/test", headers=ORIGIN_HEADER, json={
+            "revision": revision, "role": "search", "index": None,
+        })).json()
+        assert chain["ok"] is True and chain["provider"] == "openrouter"
+        assert "OpenRouter web" in chain["reply"] and "Fallback 1" in chain["reply"]
+
+        # Clearing the search role removes it and disables app.search_client live.
+        cleared = await _save(client, "search", None, [])
+        assert cleared.status_code == 200
+        assert cleared.json()["roles"]["search"] == {"primary": None, "fallbacks": []}
+        assert app.search_client is None
+        assert "search" not in tomllib.loads(path.read_text())["models"]
+
+
+async def test_search_settings_validation_and_searxng_403_hint(dashboard):
+    app, path, browser = dashboard
+
+    def handler(request):
+        return httpx.Response(403, text="Forbidden")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        # SearXNG 403 gives actionable JSON format hint and refuses save.
+        bad_searx = await _save(client, "search", {"provider": "searxng", "base_url": "http://127.0.0.1:8888", "model": ""})
+        assert bad_searx.status_code == 422 and "formats: [html, json]" in bad_searx.text
+        assert path.read_text() == START
+
+        # Invalid field combinations are rejected.
+        for role, slot in (
+            ("chat", dict(PRIMARY, provider="searxng")),
+            ("search", {"provider": "searxng", "base_url": "http://127.0.0.1:8888", "model": "not-allowed"}),
+            ("search", {"provider": "tavily", "base_url": "https://api.tavily.com", "model": ""}),
+            ("search", {"provider": "deepseek", "base_url": "https://api.deepseek.com/v1", "model": ""}),
+            ("search", {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "model": ""}),
+            ("search", {"provider": "searxng", "base_url": "http://127.0.0.1:8888", "model": "", "reasoning_effort": "low"}),
+        ):
+            res = await _save(client, role, slot)
+            assert res.status_code == 422, (role, slot, res.text)
+    assert path.read_text() == START
+
+
+async def test_search_settings_spend_cap_allows_local_searxng_blocks_cloud_search(dashboard, monkeypatch):
+    app, _, browser = dashboard
+
+    def handler(request):
+        if request.url.host == "127.0.0.1":
+            return httpx.Response(200, json={"results": []})
+        pytest.fail("cloud search should be blocked by spend cap")
+
+    async def over_cap(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(app.dispatch.usage, "over_cap", over_cap)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        local_save = await _save(client, "search", {"provider": "searxng", "base_url": "http://127.0.0.1:8888", "model": ""})
+        assert local_save.status_code == 200, local_save.text
+        cloud_save = await _save(client, "search", {
+            "provider": "openrouter", "base_url": "https://fallback.example.test/v1",
+            "model": "web", "api_key_env": "BACKUP_KEY",
+        })
+        assert cloud_save.status_code == 422 and "spend cap" in cloud_save.text

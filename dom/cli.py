@@ -25,7 +25,7 @@ from dom.importer import import_v2
 from dom.jev import JevClient
 from dom.llm import FallbackClient, routed_client
 from dom.media import MediaDescriber
-from dom.search import SearchClient
+from dom.search import SearchRouter, routed_search_client
 from dom.store import Store
 from dom.t3 import auth as t3_auth, service as t3_service
 from dom.t3.client import T3Unavailable
@@ -59,12 +59,8 @@ def chat_client(
 
 def search_client(
     config: Config, http: httpx.AsyncClient, usage: UsageRecorder | None = None,
-) -> SearchClient | None:
-    endpoint = config.models.get("search")
-    if endpoint is None or not endpoint.api_key_env:
-        return None
-    key = config.secret(endpoint.api_key_env)
-    return SearchClient(endpoint, key, http, usage=usage) if key else None
+) -> SearchRouter | None:
+    return routed_search_client(config, http, usage)
 
 
 def gif_search(config: Config, http: httpx.AsyncClient) -> GifSearch | None:

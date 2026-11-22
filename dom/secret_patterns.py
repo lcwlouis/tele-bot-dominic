@@ -4,6 +4,7 @@ import re
 
 API_KEY = re.compile(
     r"(?<![\w-])(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{16,}|"
+    r"tvly-[A-Za-z0-9_-]{16,}|"
     r"(?:gsk|hf)_[A-Za-z0-9_-]{16,}|[a-z]{2,4}_[A-Za-z0-9]{20,})(?![\w-])"
 )
 BEARER_TOKEN = re.compile(r"\bbearer[ \t]+([A-Za-z0-9._~+/-]+=*)(?![\w._~+/=-])", re.IGNORECASE)

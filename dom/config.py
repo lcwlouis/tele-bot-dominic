@@ -18,7 +18,10 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-ModelRole = Literal["chat", "fallback", "media", "drafting"]
+SearchProvider = Literal["searxng", "openrouter", "deepseek", "tavily"]
+SEARCH_PROVIDERS = get_args(SearchProvider)
+
+ModelRole = Literal["chat", "fallback", "media", "drafting", "search"]
 MODEL_ROLES = get_args(ModelRole)
 
 
@@ -26,10 +29,16 @@ class ProviderEndpoint(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     base_url: str = Field(description="Provider API base URL, including its API version path.")
-    model: str = Field(description="Provider model ID.")
+    model: str = Field(
+        "",
+        description="Provider model ID. Required for chat, fallback, media, drafting, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily.",
+    )
     api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for a compatible endpoint without authentication.")
     reasoning_effort: Literal["low", "medium"] | None = Field(
         None, description="Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default.",
+    )
+    provider: SearchProvider | None = Field(
+        None, description="Search provider for models.search: searxng, openrouter, deepseek or tavily.",
     )
 
 
@@ -282,7 +291,20 @@ class Config(BaseModel):
     def _fallbacks_only_on_roles(self) -> Config:
         for name, endpoint in self.models.items():
             if endpoint.fallbacks and name not in MODEL_ROLES:
-                raise ValueError(f"models.{name} cannot have fallbacks; only chat, fallback, media and drafting can")
+                raise ValueError(
+                    f"models.{name} cannot have fallbacks; only chat, fallback, media, drafting and search can"
+                )
+            endpoints = (endpoint, *endpoint.fallbacks)
+            if name != "search":
+                for item in endpoints:
+                    if item.provider is not None:
+                        raise ValueError(f"models.{name} cannot set provider; only models.search can")
+                    if not item.model:
+                        raise ValueError(f"models.{name} requires a model ID")
+            else:
+                for item in endpoints:
+                    if (item.provider or "openrouter") == "openrouter" and not item.model:
+                        raise ValueError("OpenRouter search requires a model ID")
         return self
 
     def providers(self, role: ModelRole) -> tuple[ProviderEndpoint, ...]:
@@ -361,8 +383,10 @@ def validate_config(home: Path, raw: dict) -> Config:
     models.update(raw.get("models", {}))
     if "chat_fallback" in models:
         models.setdefault("fallback", models.pop("chat_fallback"))
-    if "search" in models:
-        models["search"] = {**defaults["search"], **models["search"]}
+    if "search" in models and isinstance(models["search"], dict):
+        search_raw = models["search"]
+        if search_raw.get("provider") in (None, "openrouter") and "base_url" not in search_raw:
+            models["search"] = {**defaults["search"], **search_raw}
     desktop = raw.get("desktop", {})
     mode = desktop.get("mode")
     if mode is None:

@@ -1,12 +1,61 @@
 "use strict";
 
-function providerFields(row) {
+function providerFields(row, role) {
+  if (role === "search") {
+    const select = row.querySelector("[name=provider]");
+    const option = select?.selectedOptions[0];
+    const needsModel = option?.dataset.needsModel === "true";
+    return {
+      provider: select.value,
+      base_url: row.querySelector("[name=base_url]").value,
+      model: needsModel ? row.querySelector("[name=model]").value : "",
+      api_key_env: row.querySelector("[name=api_key_env]").value || null,
+    };
+  }
   return {
     base_url: row.querySelector("[name=base_url]").value,
     model: row.querySelector("[name=model]").value,
     api_key_env: row.querySelector("[name=api_key_env]").value || null,
     reasoning_effort: row.querySelector("[name=reasoning_effort]").value || null,
   };
+}
+
+function syncSearchRow(row, fillDefaults) {
+  const select = row.querySelector("[name=provider]");
+  if (!select) return;
+  const options = [...select.options];
+  const option = select.selectedOptions[0];
+  if (!option) return;
+  const needsModel = option.dataset.needsModel === "true";
+  const modelField = row.querySelector("[data-model-field]");
+  const modelInput = row.querySelector("[name=model]");
+  if (modelField && modelInput) {
+    modelField.hidden = !needsModel;
+    modelInput.required = needsModel;
+    if (!needsModel) modelInput.value = "";
+  }
+  if (fillDefaults) {
+    const knownUrls = new Set(options.map((item) => item.dataset.defaultUrl || ""));
+    const knownKeys = new Set(options.map((item) => item.dataset.defaultKey || ""));
+    const urlInput = row.querySelector("[name=base_url]");
+    const keyInput = row.querySelector("[name=api_key_env]");
+    if (urlInput && knownUrls.has(urlInput.value)) urlInput.value = option.dataset.defaultUrl || "";
+    if (keyInput && knownKeys.has(keyInput.value)) keyInput.value = option.dataset.defaultKey || "";
+  }
+  const note = row.querySelector("[data-retention-note]");
+  if (note) {
+    note.replaceChildren();
+    if (option.dataset.retention) note.append(document.createTextNode(option.dataset.retention));
+    if (option.dataset.policyUrl) {
+      note.append(document.createTextNode(" "));
+      const link = document.createElement("a");
+      link.href = option.dataset.policyUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = option.dataset.policyLabel || "Data policy";
+      note.append(link);
+    }
+  }
 }
 
 async function sendModelSettings(path, body) {
@@ -50,17 +99,21 @@ function editModelSettings(form) {
   providers.forEach((row, index) => {
     row.querySelector("legend").textContent = index === 0 ? "Primary" : `Fallback ${index}`;
     row.querySelector("[data-remove]").hidden = index === 0;
-    row.querySelector("[data-move-up]").hidden = index < 2;
+    row.querySelector("[data-move-up]").hidden = index < 1;
   });
   form.querySelector("[data-add]").textContent = providers.length ? "Add fallback" : "Set primary";
   const clear = form.querySelector("[data-clear]");
   if (clear) clear.hidden = providers.length === 0;
-  for (const button of form.querySelectorAll("[data-test]")) button.disabled = true;
+  for (const button of form.querySelectorAll("[data-test], [data-test-chain]")) button.disabled = true;
 }
 
 document.addEventListener("input", (event) => {
   const form = event.target.closest("#model-settings form");
-  if (form) editModelSettings(form);
+  if (!form) return;
+  if (event.target.matches("[data-search-provider] [name=provider]")) {
+    syncSearchRow(event.target.closest("[data-provider]"), true);
+  }
+  editModelSettings(form);
 });
 
 document.addEventListener("click", async (event) => {
@@ -70,8 +123,11 @@ document.addEventListener("click", async (event) => {
   const providers = form.querySelector("[data-providers]");
   const row = button.closest("[data-provider]");
   if (button.hasAttribute("data-add")) {
-    providers.append(document.querySelector("#provider-fields").content.cloneNode(true));
-    providers.lastElementChild.querySelector("input").focus();
+    const templateId = form.dataset.role === "search" ? "#search-provider-fields" : "#provider-fields";
+    providers.append(document.querySelector(templateId).content.cloneNode(true));
+    const added = providers.lastElementChild;
+    if (form.dataset.role === "search") syncSearchRow(added, true);
+    added.querySelector("input, select").focus();
   } else if (button.hasAttribute("data-remove")) {
     row.remove();
   } else if (button.hasAttribute("data-move-up")) {
@@ -79,15 +135,16 @@ document.addEventListener("click", async (event) => {
     if (!button.hidden) button.focus();
   } else if (button.hasAttribute("data-clear")) {
     providers.replaceChildren();
-  } else if (button.hasAttribute("data-test")) {
+  } else if (button.hasAttribute("data-test") || button.hasAttribute("data-test-chain")) {
     const output = form.querySelector("output");
     button.disabled = true;
     output.textContent = "Testing…";
+    const index = button.hasAttribute("data-test-chain") ? null : Number(button.dataset.test);
     try {
       const { ok, latency_ms, reply, error } = await sendModelSettings("/api/models/test", {
         revision: form.closest("#model-settings").dataset.revision,
         role: form.dataset.role,
-        index: Number(button.dataset.test),
+        index,
       });
       output.textContent = `${latency_ms} ms · ${ok ? reply : error}`;
     } catch (error) {
@@ -106,7 +163,8 @@ document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const panel = form.closest("#model-settings");
   const output = form.querySelector("output");
-  const [primary = null, ...fallbacks] = [...form.querySelectorAll("[data-provider]")].map(providerFields);
+  const [primary = null, ...fallbacks] = [...form.querySelectorAll("[data-provider]")]
+    .map((row) => providerFields(row, form.dataset.role));
   const submit = form.querySelector("[type=submit]");
   submit.disabled = true;
   clearSlotErrors(form);
