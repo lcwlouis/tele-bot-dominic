@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import logging
-from datetime import timedelta, timezone
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
@@ -15,6 +17,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPrevie
 
 from dom.agent import unfence
 from dom.config import replace_host
+from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.guard import check_local_private_text
 from dom.memory_edit import apply_proposal as apply_memory_edit, format_summary as memory_edit_summary, prepare_proposal as prepare_memory_edit
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, Plugin, validate_name, validate_plugin
@@ -315,6 +318,54 @@ class Proposals:
 
     async def pending(self) -> list[dict]:
         return await self.app.store.pending_proposals()
+
+    async def settled(self, limit: int = 50) -> list[dict]:
+        return await self.app.store.settled_proposals(limit=limit)
+
+    async def delete(self, proposal_id: int, expected_created_at: str) -> tuple[bool, str]:
+        app = self.app
+        if not expected_created_at:
+            return False, STALE_MESSAGE
+        row = await app.store.get_proposal(proposal_id)
+        if row is None:
+            return False, f"Proposal #{proposal_id} not found."
+        if row["status"] == "pending":
+            return False, f"Proposal #{proposal_id} is still pending. Approve or reject it before deleting."
+        if not stamp_matches(row["created_at"], expected_created_at):
+            return False, STALE_MESSAGE
+        event_at = datetime.now(timezone.utc).isoformat()
+        event_text = f"Deleted proposal #{proposal_id}"
+        try:
+            archive = await asyncio.to_thread(
+                stage_deletion,
+                app.home.root,
+                "proposal",
+                proposal_id,
+                event_text=event_text,
+                event_at=event_at,
+                rows={"proposal": row},
+            )
+        except (OSError, ValueError) as error:
+            log.warning("could not archive proposal %s: %s", proposal_id, type(error).__name__)
+            return False, "Could not archive proposal before deleting."
+        try:
+            result = await app.store.delete_settled_proposal(
+                proposal_id, expected_created_at, event_text, event_at, cards_key=CARDS_KEY,
+            )
+        except sqlite3.Error as error:
+            log.warning("could not delete proposal %s: %s", proposal_id, type(error).__name__)
+            await asyncio.to_thread(archive.rollback)
+            return False, "Could not delete proposal."
+        if result != "deleted":
+            await asyncio.to_thread(archive.rollback)
+            if result == "stale":
+                return False, STALE_MESSAGE
+            if result == "pending":
+                return False, f"Proposal #{proposal_id} is still pending. Approve or reject it before deleting."
+            return False, f"Proposal #{proposal_id} not found."
+        await asyncio.to_thread(archive.commit)
+        await asyncio.to_thread(prune_deletions, app.home.root)
+        return True, f"Deleted proposal #{proposal_id}."
 
     async def reflection_due(self) -> bool:
         since = self.app.dispatch.now().astimezone(timezone.utc) - REFLECTION_INTERVAL

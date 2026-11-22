@@ -20,6 +20,8 @@ import asyncio
 import json
 import logging
 import re
+import shutil
+import sqlite3
 from contextvars import Context
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -31,6 +33,7 @@ from zoneinfo import ZoneInfo
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from dom.agent import unfence
+from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.desktop import network
 from dom.desktop import tools as desktop_tools
 from dom.desktop.client import SandboxError
@@ -313,6 +316,60 @@ class SelfWork:
             await asyncio.gather(self._job, return_exceptions=True)
         await self.app.store.record_owner_event(f"Cancelled self-directed task #{task_id}")
         return True
+
+    async def delete(self, task_id: int, expected_announced_at: str) -> tuple[bool, str]:
+        """Archive and remove a finished self-directed task and its saved screenshots."""
+        if not expected_announced_at:
+            return False, STALE_MESSAGE
+        row = await self.app.store.get_self_task(task_id)
+        if row is None:
+            return False, f"Task #{task_id} not found."
+        if row["status"] in ("planned", "running") or (self._running == task_id and self.busy()):
+            return False, f"Cannot delete task #{task_id} while it is {row['status']}."
+        if not stamp_matches(row["announced_at"], expected_announced_at):
+            return False, STALE_MESSAGE
+        folder = self.app.home.scoped(allow_private=False)._regular_path(f"{FILES_DIR}/{task_id}")
+        if folder.exists() and (folder.is_symlink() or not folder.is_dir()):
+            raise ValueError("Task files path must be a regular directory.")
+        event_at = datetime.now(timezone.utc).isoformat()
+        event_text = f"Deleted self-directed task #{task_id}"
+        archive = None
+        try:
+            archive = await asyncio.to_thread(
+                stage_deletion,
+                self.app.home.root,
+                "self_task",
+                task_id,
+                event_text=event_text,
+                event_at=event_at,
+                rows={"self_task": row},
+                sources=[folder] if folder.exists() else [],
+            )
+            await asyncio.to_thread(archive.move_in)
+        except (OSError, ValueError) as error:
+            if archive is not None:
+                await asyncio.to_thread(archive.rollback)
+            log.warning("could not archive self-directed task %s: %s", task_id, type(error).__name__)
+            return False, "Could not archive task before deleting."
+        if self._running == task_id and self.busy():
+            await asyncio.to_thread(archive.rollback)
+            return False, f"Cannot delete task #{task_id} while it is running."
+        try:
+            result = await self.app.store.delete_self_task(task_id, expected_announced_at, event_text, event_at)
+        except sqlite3.Error as error:
+            log.warning("could not delete self-directed task %s: %s", task_id, type(error).__name__)
+            await asyncio.to_thread(archive.rollback)
+            return False, "Could not delete task."
+        if result != "deleted":
+            await asyncio.to_thread(archive.rollback)
+            if result == "stale":
+                return False, STALE_MESSAGE
+            if result == "active":
+                return False, f"Cannot delete task #{task_id} while it is active."
+            return False, f"Task #{task_id} not found."
+        await asyncio.to_thread(archive.commit)
+        await asyncio.to_thread(prune_deletions, self.app.home.root)
+        return True, f"Deleted task #{task_id}."
 
     async def close(self) -> None:
         if self.busy():

@@ -21,12 +21,12 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
-from dom import memory_import, proposals, selfwork, traits
+from dom import memory_import, proposals, selfwork, skills, traits
 from dom.agent import unfence
 from dom.briefs import list_briefs, markdown_blocks
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.plugins import surfaces
-from dom.plugins.manifest import NETWORK_NOTICE
+from dom.plugins.manifest import NETWORK_NOTICE, validate_name as validate_plugin_name
 from dom.plugins.trial import STORAGE_NOTICE, test_run_detail
 from dom.presence import read_habits
 from dom.skills import skill_diff
@@ -306,9 +306,15 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
                 "first": gate.first_line(chat.get("first_text")),
             })
     count = len(pending_chats) + sum(len(card["facts"]) if "facts" in card else 1 for card in cards)
+    settled_rows = await app.proposals.settled()
+    settled = [
+        _proposal_body(raw) | {"label": _proposal_label(raw["kind"], raw["source"])}
+        for raw in settled_rows
+        if (not kind or raw["kind"] == kind) and (not source or raw["source"] == source)
+    ]
     return {
-        "cards": cards, "pending_chats": pending_chats, "count": count,
-        "kind": kind, "source": source, "sources": sorted({row["source"] for row in rows}),
+        "cards": cards, "pending_chats": pending_chats, "settled": settled, "count": count,
+        "kind": kind, "source": source, "sources": sorted({row["source"] for row in (*rows, *settled_rows)}),
     }
 
 
@@ -430,7 +436,8 @@ async def index(request: Request):
     return render(
         "dashboard.html", active="now", dial=await _dial(app, chats["rows"]), chats=chats,
         desktop=await web_desktop.desktop_context(app),
-        proposals=await _proposals(app), usage=await _usage(app), memory=await _memory(app), turns=await _turns(app),
+        proposals=await _proposals(app), reminders=await _reminders(app), usage=await _usage(app),
+        memory=await _memory(app), turns=await _turns(app),
         plugin_panels=await _plugin_panels(app), own_work=await _own_work(app),
     )
 
@@ -520,6 +527,19 @@ async def decide_pending_chat(
     response = render("proposals.html", context=await _proposals(app, kind, source) | {"message": message})
     if chat is not None:
         response.headers["X-Dom-Decided"] = "true"
+    return response
+
+
+@router.post("/proposals/{proposal_id:int}/delete", response_class=HTMLResponse)
+async def delete_proposal(request: Request, proposal_id: int, kind: str = "", source: str = ""):
+    app = owner_app(request)
+    if not 0 < proposal_id < 2**63:
+        raise HTTPException(404)
+    expected = (await form(request)).get("expected", [""])[0]
+    ok, message = await app.proposals.delete(proposal_id, expected)
+    response = render("proposals.html", context=await _proposals(app, kind, source) | {"message": message})
+    if not ok:
+        response.status_code = 404 if "not found" in message else 409
     return response
 
 
@@ -615,10 +635,32 @@ async def plugin_reviewed(request: Request, name: str, digest: str):
     return render("plugins.html", context={"review": review, "message": "Review recorded."})
 
 
-@router.post("/plugins/{name}/{digest}/{decision}", response_class=HTMLResponse)
-async def plugin_action(request: Request, name: str, digest: str, decision: Literal["approve", "reject", "disable"]):
+@router.post("/plugins/{name}/delete", response_class=HTMLResponse)
+async def plugin_delete(request: Request, name: str):
     app = owner_app(request)
-    message = await app.plugins.decide(name, digest, decision)
+    try:
+        validate_plugin_name(name)
+    except ValueError:
+        raise HTTPException(404) from None
+    expected = (await form(request)).get("expected", [""])[0]
+    message = await owner.delete_plugin(app, name, expected)
+    response = render("plugins.html", context={
+        "rows": await app.plugins.listing(), "panels": await _plugin_panels(app), "message": message,
+    })
+    if message == "Unknown plugin":
+        response.status_code = 404
+    elif message != "Deleted":
+        response.status_code = 409
+    return response
+
+
+@router.post("/plugins/{name}/{digest}/{decision}", response_class=HTMLResponse)
+async def plugin_action(
+    request: Request, name: str, digest: str, decision: Literal["approve", "reject", "disable", "retire"],
+):
+    app = owner_app(request)
+    actual = "disable" if decision == "retire" else decision
+    message = await app.plugins.decide(name, digest, actual)
     await app.proposals.settle_cards()  # the plugin's Telegram card, if any, stops offering Approve
     response = render("plugins.html", context={
         "rows": await app.plugins.listing(), "panels": await _plugin_panels(app), "message": message,
@@ -664,6 +706,80 @@ async def cancel_own_work(request: Request, task_id: int):
     app = owner_app(request)
     message = f"Cancelled task #{task_id}." if await app.self_work.cancel(task_id) else f"Task #{task_id} had already finished."
     return render("own_work.html", context=await _own_work(app, message))
+
+
+@router.post("/own-work/{task_id:int}/delete", response_class=HTMLResponse)
+async def delete_own_work(request: Request, task_id: int):
+    app = owner_app(request)
+    if not 0 < task_id < 2**63:
+        raise HTTPException(404)
+    expected = (await form(request)).get("expected", [""])[0]
+    ok, message = await app.self_work.delete(task_id, expected)
+    response = render("own_work.html", context=await _own_work(app, message))
+    if not ok:
+        response.status_code = 404 if "not found" in message else 409
+    return response
+
+
+async def _reminders(app: App, message: str = "") -> dict:
+    tz = ZoneInfo(app.config.timezone)
+    rows = [{
+        **row,
+        "due_local": f"{datetime.fromisoformat(row['due_at']).astimezone(tz):%Y-%m-%d %H:%M}",
+    } for row in await app.dispatch.reminders.list_all()]
+    return {"rows": rows, "message": message}
+
+
+@router.get("/reminders", response_class=HTMLResponse)
+async def reminders_page(request: Request):
+    return panel(request, "reminders", **await _reminders(owner_app(request)))
+
+
+@router.post("/reminders/{reminder_id:int}/cancel", response_class=HTMLResponse)
+async def cancel_reminder_page(request: Request, reminder_id: int):
+    app = owner_app(request)
+    if not 0 < reminder_id < 2**63:
+        raise HTTPException(404)
+    changed = await app.dispatch.reminders.cancel(reminder_id)
+    message = f"Cancelled reminder #{reminder_id}." if changed else f"Reminder #{reminder_id} is no longer active."
+    return render("reminders.html", context=await _reminders(app, message))
+
+
+@router.post("/reminders/{reminder_id:int}/delete", response_class=HTMLResponse)
+async def delete_reminder_page(request: Request, reminder_id: int):
+    app = owner_app(request)
+    if not 0 < reminder_id < 2**63:
+        raise HTTPException(404)
+    expected = (await form(request)).get("expected", [""])[0]
+    ok, message = await app.dispatch.reminders.delete(reminder_id, expected)
+    response = render("reminders.html", context=await _reminders(app, message))
+    if not ok:
+        response.status_code = 404 if "not found" in message else 409
+    return response
+
+
+async def _skills(app: App, message: str = "") -> dict:
+    rows = await asyncio.to_thread(skills.skills_inventory, app.home)
+    return {"rows": rows, "message": message}
+
+
+@router.post("/skills/{name}/{action}", response_class=HTMLResponse)
+async def skill_action(request: Request, name: str, action: Literal["retire", "restore", "delete"]):
+    app = owner_app(request)
+    try:
+        skills._validate_name(name)
+    except ValueError:
+        raise HTTPException(404) from None
+    if action == "delete":
+        expected = (await form(request)).get("expected", [""])[0]
+        ok, message = await owner.delete_skill(app, name, expected)
+    else:
+        handler = {"retire": owner.retire_skill, "restore": owner.restore_skill}[action]
+        ok, message = await handler(app, name)
+    response = render("skills.html", context=await _skills(app, message))
+    if not ok:
+        response.status_code = 404 if "not found" in message else 409
+    return response
 
 
 @router.get("/own-work/{task_id:int}/files/{name}")
@@ -745,6 +861,7 @@ async def _memory(app: App, file: str = MEMORY, *, soul_chat: bool = False) -> d
         "limit": MAX_SOUL if file == SOUL else limit_for(file), "soul_chat": soul_chat,
         "content": content, "version": content_version(content),
         "import_services": IMPORT_SERVICES,
+        "skills": await _skills(app),
     }
 
 

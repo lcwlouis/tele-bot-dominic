@@ -314,6 +314,10 @@ class Dispatcher:
         await self.app.store.prune_turn_history(self.now() - timedelta(days=30))
 
     async def _background_jobs(self) -> None:
+        if self.app.menu_dirty:
+            from dom.telegram import owner
+
+            await owner.refresh_menu(self.app)
         await self.app.stickers.refresh()
         await self.jobs.tick()
         await self.openers.maybe(self.now())
@@ -342,6 +346,10 @@ class Dispatcher:
             self._polls.pop(chat_id, None)
 
     async def tick(self) -> None:
+        if self.app.menu_dirty:
+            from dom.telegram import owner
+
+            await owner.refresh_menu(self.app)
         await asyncio.gather(self.reminders.tick(), *(await self._poll_chats()))
 
     def _habits(self) -> Habits:
