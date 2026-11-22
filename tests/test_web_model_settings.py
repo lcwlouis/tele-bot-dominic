@@ -302,7 +302,7 @@ async def test_existing_key_moves_to_a_new_host_only_by_hand(dashboard):
     "http://collector.example.test/v1", "http://169." "254.169.254/v1", "https://169." "254.169.254/v1",
     "http://0.0.0.0:8000/v1", "https://224.0.0.1/v1", "http://[fe" "80::1]/v1", "http://[::ffff:169." "254.169.254]/v1",
     "http://8.8.8.8/v1", "http://openrouter.ai/api/v1",
-    "http://28520" "39166/v1", "http://0xa9fe" "a9fe/v1",  # 169.254.169.254 in forms the resolver accepts
+    "http://28520" "39166/v1", "http://0xa9fe" "a9fe/v1",  # the cloud metadata address, in forms the resolver accepts
 ])
 async def test_base_url_must_be_https_or_local_and_never_link_local(dashboard, base_url):
     _, path, browser = dashboard
