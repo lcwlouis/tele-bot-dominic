@@ -672,6 +672,19 @@ async def test_flood_limited_arrival_reaction_leaves_the_message_unread(make_app
 # ---- 9. Text fallback for failed sticker or GIF -----------------------------------------------
 
 
+async def test_a_numbered_or_wordy_sticker_never_reaches_the_chat_as_text(make_app):
+    app = make_app()
+    # an unknown number for an emoji that is not loaded: the bare emoji, never "📚9"
+    await executor.perform(app.bot, app.store, GROUP, 1, Actions(sticker="📚9"), stickers={"🍵": ["file-c"]}, sleep=no_sleep)
+    assert [c[2] for c in app.bot.of("send", GROUP)] == ["📚"]
+    app.bot.calls.clear()
+    # words after the emoji: nothing is sent at all
+    sent = await executor.perform(
+        app.bot, app.store, GROUP, 1, Actions(sticker="📚2 Owl on a book stack"), stickers={}, sleep=no_sleep,
+    )
+    assert len(sent) == 0 and app.bot.of("send", GROUP) == []
+
+
 async def test_failed_sticker_only_sends_emoji_fallback(make_app):
     app = make_app()
     sent = await executor.perform(

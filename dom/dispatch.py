@@ -39,6 +39,7 @@ from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import PromptCache, build_messages, online_window_note, report_messages
 from dom.reflection import mood
 from dom.reminders import Reminders
+from dom.stickers import resolve_sticker
 from dom.skills import skill_view, skills_list
 from dom.telegram import executor, gate
 from dom.tools import Tool, TurnCtx, enabled_tools
@@ -461,7 +462,7 @@ class Dispatcher:
     @asynccontextmanager
     async def sticker_media_request(self) -> AsyncIterator[None]:
         async def allowed() -> bool:
-            return not await self.usage.over_cap(self.app.config, self.app.bot)
+            return not await self.usage.over_cap(self.app.config, self.app.bot, sleep=self.app.sleep)
 
         with model_request("media", None, allowed):
             await check_model_allowed()
@@ -933,7 +934,9 @@ class Dispatcher:
                 trace.add_timing("triage" if waits.early else "debounce", waited)
             if waits.media_ms is not None:
                 trace.add_timing("media_wait", waits.media_ms)
-            if waits.lock_ms is not None:
+            if waits.lock_ms is not None and not self._interrupted.get(chat_id):
+                # On a restart the slot was held by the attempt being replaced, finishing a tool: that time is already
+                # in its timings, which are merged in below, so counting the wait too would show it twice.
                 trace.add_timing("lock_wait", waits.lock_ms)
             async with turn_log.capture(store, self.now(), chat_id, scope, trace=trace):
                 try:
@@ -1367,7 +1370,7 @@ class Dispatcher:
             if (
                 attempt.committed and newest.is_bot and newest.sender_user_id is not None
                 and actions is not None and not actions.no_response
-                and (actions.bubbles or actions.sticker in app.stickers.sendable() or (actions.gif and app.gifs))
+                and (actions.bubbles or resolve_sticker(app.stickers.sendable(), actions.sticker) or (actions.gif and app.gifs))
             ):
                 now = self.now()
                 self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}

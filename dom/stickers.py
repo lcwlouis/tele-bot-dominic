@@ -9,6 +9,7 @@ import re
 import tomllib
 from collections.abc import Callable, Coroutine
 from contextlib import nullcontext
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import zip_longest
@@ -389,7 +390,7 @@ class Stickers:
             self._rebuild_index()
             return f"Removed sticker set {name}"
 
-    def sendable(self) -> dict[str, list[str]]:
+    def sendable(self) -> dict[str, list[str]]:  # see resolve_sticker for how a pick is looked up
         """Sticker choices: every loaded sticker of an emoji under the emoji itself, and each described one of an emoji
         with several stickers also alone under the emoji plus its number (📚2), which is how Dom picks the one whose
         description he read."""
@@ -428,5 +429,40 @@ class Stickers:
             + ("; " if described_any else ", ").join(offered)
         )
         if numbered:
-            note += ". Write the emoji alone for any of its stickers, or an emoji with its number to send that exact one"
+            note += ('. Put the emoji alone in "sticker" for any of its stickers, or the emoji with its number in "sticker" '
+                     "for that exact one; never write these in a bubble")
         return note
+
+
+_NUMBERED = re.compile(r"^(?P<emoji>\D+?)\s*\d+$")
+
+
+def plain_emoji(text: str) -> bool:
+    """Short text with no letters, digits or spaces: safe to send on its own when a sticker cannot be."""
+    return 0 < len(text) <= 8 and not any(ch.isalnum() or ch.isspace() for ch in text)
+
+
+def resolve_sticker(stickers: Mapping[str, Sequence[str]] | None, raw: str | None) -> tuple[Sequence[str], str] | None:
+    """What Dom wrote in "sticker" -> (stickers to pick from, the plain emoji), or None when nothing matches.
+
+    A numbered pick (📚2) that is not on offer (out of range, not described yet) falls back to any sticker of that
+    emoji. The emoji returned never carries the number, so it is what gets stored and, failing everything, sent."""
+    key = (raw or "").strip()
+    if not key:
+        return None
+    table = stickers or {}
+    match = _NUMBERED.match(key)
+    base = match["emoji"].strip() if match else key
+    if key in table:
+        return table[key], base
+    if base in table:
+        return table[base], base
+    return None
+
+
+def sticker_fallback(raw: str | None) -> str | None:
+    """The text to send when a sticker could not be: the bare emoji, never a number or words."""
+    key = (raw or "").strip()
+    match = _NUMBERED.match(key)
+    base = match["emoji"].strip() if match else key
+    return base if plain_emoji(base) else None
