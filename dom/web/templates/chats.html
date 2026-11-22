@@ -79,5 +79,10 @@
       <button class="quiet" name="action" value="add">Add</button>
       <button class="link-danger" name="action" value="remove">Remove</button>
     </form>
+    {% if context.stickers %}
+    <form class="inline-form" method="post" action="/stickers/refresh" hx-post="/stickers/refresh" hx-target="#chats" hx-swap="outerHTML">
+      <button class="quiet">Refresh descriptions</button>
+    </form>
+    {% endif %}
   </details>
 </section>

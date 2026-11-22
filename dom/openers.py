@@ -128,7 +128,7 @@ class Openers:
 
             sent_ids = await executor.perform(
                 app.bot, store, owner, None, actions, sleep=app.sleep, now=dispatch.now, on_sent=on_sent,
-                stickers=app.stickers.by_emoji, gifs=app.gifs,
+                stickers=app.stickers.sendable(), gifs=app.gifs,
             )
             if sent_ids:
                 turn_log.outcome("Texted first")
