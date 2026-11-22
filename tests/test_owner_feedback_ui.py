@@ -54,3 +54,13 @@ async def test_a_stranger_dm_card_shows_the_telegram_id_and_first_message(make_a
         html = (await client.get("/proposals")).text
     assert f"Telegram ID {STRANGER}" in html
     assert "First message: hey, Fran here from the climbing gym" in html and "second message" not in html
+
+
+async def test_a_group_card_shows_its_telegram_id_too(make_app, browser):  # noqa: F811
+    from tghelpers import GROUP
+
+    app = make_app()
+    await deliver(app, tg(chat_id=GROUP, sender=STRANGER, text="hi all"))
+    async with browser(app) as client:
+        html = (await client.get("/proposals")).text
+    assert f"Telegram ID {GROUP}" in html

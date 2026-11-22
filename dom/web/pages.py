@@ -288,8 +288,8 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
                 "label": "Group approval" if is_group else "Stranger DM approval",
                 "title": owner.display_title(chat, app.owner_id),
                 "detail": " ".join(part for part in (
-                (f"Invited by {who}." if is_group else f"From {who}.") if who else "",
-                "" if is_group else f"Telegram ID {chat_id}.",
+                    (f"Invited by {who}." if is_group else f"From {who}.") if who else "",
+                    f"Telegram ID {chat_id}.",
                 ) if part),
                 "first": gate.first_line(chat.get("first_text")),
             })
