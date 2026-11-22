@@ -35,6 +35,17 @@ async function open(page: Page, hash: string): Promise<string[]> {
   return problems;
 }
 
+/** Accessibility violations axe finds in the page as it is now. */
+async function axeViolations(page: Page): Promise<string[]> {
+  // evaluate() runs outside the page's CSP, so axe needs no script tag.
+  await page.evaluate(AXE);
+  return page.evaluate(async () => {
+    const axe = (window as unknown as { axe: { run: () => Promise<{ violations: { id: string; nodes: { target: string[] }[] }[] }> } }).axe;
+    const result = await axe.run();
+    return result.violations.map((item) => `${item.id}: ${item.nodes.map((node) => node.target.join(' ')).join(', ')}`);
+  });
+}
+
 /** Interactions that put each page in the state worth a baseline. */
 async function prepare(page: Page, name: string) {
   if (name === 'chats') await page.getByRole('button', { name: /Book club/ }).click();
@@ -65,16 +76,10 @@ test.describe('accessibility', () => {
     for (const target of PAGES) {
       test(`${target.name} has no axe violations, ${theme}`, async ({ page }) => {
         await page.emulateMedia({ colorScheme: theme });
-        await open(page, target.hash);
+        const problems = await open(page, target.hash);
         await prepare(page, target.name);
-        // evaluate() runs outside the page's CSP, so axe needs no script tag.
-        await page.evaluate(AXE);
-        const violations = await page.evaluate(async () => {
-          const axe = (window as unknown as { axe: { run: () => Promise<{ violations: { id: string; nodes: { target: string[] }[] }[] }> } }).axe;
-          const result = await axe.run();
-          return result.violations.map((item) => `${item.id}: ${item.nodes.map((node) => node.target.join(' ')).join(', ')}`);
-        });
-        expect(violations).toEqual([]);
+        expect(await axeViolations(page)).toEqual([]);
+        expect(problems).toEqual([]);
       });
     }
   }
@@ -89,7 +94,7 @@ test('the app shows a way home for an unknown route', async ({ page }) => {
 });
 
 test('a slider change and a confirmed leave both report back', async ({ page }) => {
-  await open(page, '#/chats');
+  const problems = await open(page, '#/chats');
   await page.getByRole('button', { name: /Sunday league/ }).click();
   const sarcasm = page.getByRole('slider', { name: 'Sarcasm' });
   await sarcasm.focus();
@@ -99,13 +104,16 @@ test('a slider change and a confirmed leave both report back', async ({ page }) 
   await page.getByRole('button', { name: 'Leave group' }).click();
   const dialog = page.getByRole('dialog', { name: 'Leave Sunday league?' });
   await expect(dialog).toBeVisible();
+  expect(await axeViolations(page)).toEqual([]);
   await dialog.getByRole('button', { name: 'Leave group' }).click();
   await expect(page.getByRole('status').getByText('Left Sunday league')).toBeVisible();
   await expect(page.getByRole('button', { name: /Sunday league/ })).toHaveCount(0);
+  expect(await axeViolations(page)).toEqual([]);
+  expect(problems).toEqual([]);
 });
 
 test('testing a model shows the result, and a missing key says how to fix it', async ({ page }) => {
-  await open(page, '#/settings');
+  const problems = await open(page, '#/settings');
   await page.getByRole('button', { name: 'Test Drafting model' }).click();
   await expect(page.getByText('ANTHROPIC_API_KEY is not set in .env')).toBeVisible();
   await expect(page.getByText("Add ANTHROPIC_API_KEY to Dom's .env, then restart him.")).toBeVisible();
@@ -113,4 +121,6 @@ test('testing a model shows the result, and a missing key says how to fix it', a
   await expect(memory).toHaveAttribute('aria-checked', 'false');
   await memory.click();
   await expect(memory).toHaveAttribute('aria-checked', 'true');
+  expect(await axeViolations(page)).toEqual([]);
+  expect(problems).toEqual([]);
 });

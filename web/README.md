@@ -12,7 +12,7 @@ The Pi never runs Node. Builds happen on a dev machine or in GitHub Actions.
 Node 24 (see `.nvmrc`). From this folder:
 
 ```sh
-npm ci
+npm ci --ignore-scripts
 npm run dev              # http://localhost:5173, hot reload, fixture data
 npm run check            # svelte-check: types and Svelte warnings (warnings fail)
 npm run build            # static files in dist/
@@ -36,16 +36,18 @@ Making them on a Mac gives different font rendering and CI would fail. To run or
 
 ```sh
 npm run build
+PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
 # compare against the baselines
 docker run --rm --platform linux/amd64 -v "$PWD/..":/work -v /work/web/node_modules -w /work/web \
-  mcr.microsoft.com/playwright:v1.65.1-noble bash -c "npm ci && npx playwright test"
+  "$PLAYWRIGHT_IMAGE" bash -c "npm ci --ignore-scripts && npx playwright test"
 # accept a deliberate visual change
 docker run --rm --platform linux/amd64 -v "$PWD/..":/work -v /work/web/node_modules -w /work/web \
-  mcr.microsoft.com/playwright:v1.65.1-noble bash -c "npm ci && npx playwright test --update-snapshots"
+  "$PLAYWRIGHT_IMAGE" bash -c "npm ci --ignore-scripts && npx playwright test --update-snapshots"
 ```
 
-The second `-v` keeps the container's Linux `node_modules` away from yours. Keep the image tag equal to
-the `@playwright/test` version in `package.json` and in `.github/workflows/web.yml`.
+The second `-v` keeps the container's Linux `node_modules` away from yours. The image is pinned by digest,
+the same one `.github/workflows/web.yml` uses; keep its tag equal to the Playwright test package version in
+`package.json`, and when you move either, update both and remake the baselines.
 
 `npx playwright test` on a Mac is fine for the CSP, accessibility and interaction checks; expect
 the screenshot comparisons to differ.
