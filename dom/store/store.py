@@ -53,6 +53,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (17, "0016_turn_timings.sql"),
     (19, "0018_plugin_storage.sql"),
     (20, "0019_memory_edit_proposals.sql"),
+    (21, "0020_topics_and_migrations.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -66,7 +67,7 @@ _ADD_COLUMN_RE = re.compile(
     r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)", re.IGNORECASE
 )
 _MESSAGE_COLUMNS = (
-    "id, chat_id, msg_id, reply_to_msg_id, sender_user_id, sender_handle, sender_name, "
+    "id, chat_id, msg_id, reply_to_msg_id, thread_id, sender_user_id, sender_handle, sender_name, "
     "is_bot, role, visibility_scope, text, media_json, is_edited, original_seen_before_edit, "
     "previous_seen_text, is_deleted, created_at, updated_at"
 )
@@ -222,6 +223,7 @@ def _row_to_message(row: sqlite3.Row) -> StoredMessage:
         chat_id=row["chat_id"],
         msg_id=row["msg_id"],
         reply_to_msg_id=row["reply_to_msg_id"],
+        thread_id=row["thread_id"],
         sender_user_id=row["sender_user_id"],
         sender_handle=row["sender_handle"] or "",
         sender_name=row["sender_name"] or "",
@@ -346,6 +348,118 @@ class Store:
             "WHERE chat_id = ? AND msg_id = ? AND is_deleted = 0 ORDER BY id DESC LIMIT 1",
             (chat_id, msg_id),
         ).fetchone()
+
+    # ---- chat migrations --------------------------------------------------
+
+    def _resolve_chat_id(self, chat_id: str) -> str:
+        """Follow any supergroup migration mapping from `chat_id` to the current chat id."""
+        current = str(chat_id)
+        seen = {current}
+        while True:
+            row = self._conn.execute(
+                "SELECT new_chat_id FROM chat_migrations WHERE old_chat_id = ?", (current,),
+            ).fetchone()
+            if row is None:
+                return current
+            nxt = row[0]
+            if nxt in seen:
+                return current
+            seen.add(nxt)
+            current = nxt
+
+    def _chat_id_aliases(self, chat_id: str) -> set[str]:
+        """Return `chat_id` plus any old chat ids that migrated to it (for read-only history search)."""
+        canonical = self._resolve_chat_id(chat_id)
+        rows = self._conn.execute(
+            "SELECT old_chat_id FROM chat_migrations WHERE new_chat_id = ?", (canonical,),
+        ).fetchall()
+        return {str(chat_id), canonical, *(row[0] for row in rows)}
+
+    async def resolve_chat_id(self, chat_id: int | str) -> str:
+        """Return the current chat id for `chat_id`, following any recorded supergroup migration."""
+        return await self._run(self._resolve_chat_id, str(chat_id))
+
+    async def migrate_chat(
+        self, old_chat_id: int | str, new_chat_id: int | str, *, title: str = "",
+    ) -> tuple[str, str]:
+        """Record a group -> supergroup alias and carry approval/settings/presence to `new_chat_id` ONLY when
+        the destination is new/empty. Never rewrites message history or cursors.
+
+        Returns `(outcome, title)` where outcome is `'migrated'`, `'conflict'`, `'already'`, or `'unknown'`."""
+        return await self._run(self._migrate_chat, str(old_chat_id), str(new_chat_id), title)
+
+    def _migrate_chat(self, old_id: str, new_id: str, title: str) -> tuple[str, str]:
+        if old_id == new_id:
+            return "already", ""
+        now = _now()
+        with self._tx() as conn:
+            existing_map = conn.execute(
+                "SELECT new_chat_id FROM chat_migrations WHERE old_chat_id = ?", (old_id,),
+            ).fetchone()
+            if existing_map is not None:
+                return "already", ""
+
+            old_row = conn.execute("SELECT * FROM chats WHERE chat_id = ?", (old_id,)).fetchone()
+            if old_row is None:
+                return "unknown", ""
+
+            effective_title = title or old_row["title"] or new_id
+            new_row = conn.execute("SELECT * FROM chats WHERE chat_id = ?", (new_id,)).fetchone()
+            new_has_messages = (
+                conn.execute("SELECT 1 FROM messages WHERE chat_id = ? LIMIT 1", (new_id,)).fetchone() is not None
+            )
+            if new_row is not None or new_has_messages:
+                # Destination already exists (approved, pending, or has messages): refuse to merge and leave both intact.
+                return "conflict", effective_title
+
+            # Record the alias old -> new (and flatten any chain X -> old to X -> new).
+            conn.execute(
+                "INSERT INTO chat_migrations (old_chat_id, new_chat_id, migrated_at) VALUES (?, ?, ?)",
+                (old_id, new_id, now),
+            )
+            conn.execute(
+                "UPDATE chat_migrations SET new_chat_id = ?, migrated_at = ? WHERE new_chat_id = ? AND old_chat_id != ?",
+                (new_id, now, old_id, new_id),
+            )
+
+            # Create the new supergroup row carrying approval, settings, and presence, with a fresh window and cursors.
+            new_scope = self.visibility_for(new_id)
+            conn.execute(
+                """
+                INSERT INTO chats (
+                    chat_id, chat_type, visibility_scope, is_sleeping, sleep_until,
+                    is_offline, offline_until, online_until, last_read_msg_id, updated_at,
+                    authorization_status, title, invited_by_handle, approval_prompt_sent,
+                    traits_json, bot_depth, memory_cursor_msg_id, preset
+                ) VALUES (?, 'supergroup', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+                """,
+                (
+                    new_id, new_scope, old_row["is_sleeping"], old_row["sleep_until"],
+                    old_row["is_offline"], old_row["offline_until"], old_row["online_until"], now,
+                    old_row["authorization_status"], effective_title, old_row["invited_by_handle"],
+                    old_row["approval_prompt_sent"], old_row["traits_json"], old_row["preset"],
+                ),
+            )
+            # Mark the old group row left so background polling and approved chat lists follow the supergroup,
+            # while leaving old messages, cursors, and in-flight work on the old id completely untouched.
+            conn.execute(
+                "UPDATE chats SET authorization_status = 'left', updated_at = ? WHERE chat_id = ?",
+                (now, old_id),
+            )
+            # Seed the new supergroup history with one event line noting the upgrade.
+            self._insert_message(
+                conn,
+                StoredMessage(
+                    chat_id=new_id,
+                    role="event",
+                    visibility_scope=new_scope,
+                    text=f"This group was upgraded to a supergroup (previous chat ID {old_id}).",
+                    created_at=now,
+                ),
+            )
+
+        self._append_transcript(new_id, "chat_migrated", old_chat_id=old_id, new_chat_id=new_id)
+        return "migrated", effective_title
 
     # ---- chat authorization and pending turns ----------------------------
 
@@ -725,6 +839,7 @@ class Store:
             sender_user_id=msg.sender_user_id,
             msg_id=msg.msg_id,
             reply_to_msg_id=msg.reply_to_msg_id,
+            thread_id=msg.thread_id,
             role=msg.role,
             is_bot=msg.is_bot,
             text=msg.text,
@@ -737,13 +852,13 @@ class Store:
         cur = conn.execute(
             """
             INSERT INTO messages (
-                chat_id, msg_id, reply_to_msg_id, sender_user_id, sender_handle, sender_name,
+                chat_id, msg_id, reply_to_msg_id, thread_id, sender_user_id, sender_handle, sender_name,
                 is_bot, role, visibility_scope, text, media_json, is_edited,
                 original_seen_before_edit, previous_seen_text, is_deleted, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
-                msg.chat_id, msg.msg_id, msg.reply_to_msg_id, msg.sender_user_id,
+                msg.chat_id, msg.msg_id, msg.reply_to_msg_id, msg.thread_id, msg.sender_user_id,
                 msg.sender_handle, msg.sender_name, int(msg.is_bot), msg.role,
                 msg.visibility_scope, msg.text, msg.media_json, int(msg.is_edited),
                 int(msg.original_seen_before_edit), msg.previous_seen_text,
@@ -1729,9 +1844,16 @@ class Store:
 
     async def finish_reminder(self, reminder_id: int, fired_at: str, next_due: str | None) -> None:
         await self._run(self._conn.execute,
-            "UPDATE reminders SET fired_at = ?, status = ?, due_at = COALESCE(?, due_at) "
+            "UPDATE reminders SET fired_at = ?, status = ?, due_at = COALESCE(?, due_at), undeliverable = 0 "
             "WHERE id = ? AND status = 'active'",
             (fired_at, "active" if next_due else "done", next_due, reminder_id),
+        )
+
+    async def set_reminder_undeliverable(self, reminder_id: int, undeliverable: bool = True) -> None:
+        await self._run(
+            self._conn.execute,
+            "UPDATE reminders SET undeliverable = ? WHERE id = ? AND status = 'active'",
+            (int(undeliverable), reminder_id),
         )
 
     async def get_reminder(self, chat_id: int | None, reminder_id: int) -> dict[str, Any] | None:
@@ -1924,8 +2046,10 @@ class Store:
         )
         params: list[Any] = [match]
         if not self._is_owner_chat(requester_chat_id):  # the owner's DM searches every chat
-            sql += f" AND m.chat_id = ? AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
-            params.append(requester_chat_id)
+            aliases = sorted(self._chat_id_aliases(requester_chat_id))
+            marks = ",".join("?" * len(aliases))
+            sql += f" AND m.chat_id IN ({marks}) AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+            params.extend(aliases)
         sql += " ORDER BY messages_fts.rank LIMIT ?"
         params.append(max(1, min(limit, 100)))
         return [dict(r) for r in self._conn.execute(sql, params)]

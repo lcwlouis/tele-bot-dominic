@@ -44,6 +44,7 @@ from dom.search import SearchClient
 from dom.selfwork import SelfWork
 from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
+from dom.telegram.executor import retry_telegram
 
 CHAT_TYPES = ("private", "group", "supergroup")
 
@@ -136,6 +137,7 @@ async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = Fals
             chat_id=str(msg.chat_id),
             msg_id=msg.msg_id,
             reply_to_msg_id=msg.reply_to,
+            thread_id=msg.thread_id,
             sender_user_id=msg.sender_id,
             sender_handle=msg.sender_handle or "",
             sender_name=msg.sender_name,
@@ -162,14 +164,18 @@ def _claim_code(text: str, username: str) -> str | None:
     return parts[1] if len(parts) > 1 else ""
 
 
+async def _send(app: App, chat_id: int, text: str, **kw: Any) -> Any:
+    return await retry_telegram(lambda: app.bot.send_message(chat_id, text, **kw), sleep=app.sleep)
+
+
 async def _handle_claim(app: App, msg: IncomingMessage, code: str) -> None:
     if try_claim(app.config.home, app.config, msg.sender_id, msg.chat_type, code):
         await app.store.set_owner(msg.sender_id)
         app.config = load_config(app.config.home)
-        await app.bot.send_message(msg.chat_id, "Done: you are my owner now. Other chats will ask you before I talk in them.")
+        await _send(app, msg.chat_id, "Done: you are my owner now. Other chats will ask you before I talk in them.")
         await owner.refresh_menu(app)
     elif msg.chat_type == "private":
-        await app.bot.send_message(msg.chat_id, "That code did not work.")
+        await _send(app, msg.chat_id, "That code did not work.")
 
 
 def _is_own_message(app: App, msg: IncomingMessage) -> bool:
@@ -202,19 +208,30 @@ async def _receive_desktop_document(app: App, message: Message, msg: IncomingMes
                 raise OSError("no document returned")
             name = desktop_files.stage_inbox(app.home.root, document.file_name, content.getvalue())
     except ValueError as error:
-        await app.bot.send_message(msg.chat_id, str(error))
+        await _send(app, msg.chat_id, str(error))
         return msg
     except Exception as error:
         log.warning("could not stage a desktop document (%s)", type(error).__name__)
-        await app.bot.send_message(msg.chat_id, "Couldn't save the document for the desktop.")
+        await _send(app, msg.chat_id, "Couldn't save the document for the desktop.")
         return msg
     received = f"file received: inbox/{name}"
     await owner.record_event(app, received)
     return msg.model_copy(update={"media": {**msg.media, "desktop_inbox": name}})
 
 
+async def _handle_migration(app: App, old_chat_id: int, new_chat_id: int, title: str) -> None:
+    """Handle Telegram's group -> supergroup migration service messages via the shared migration helper."""
+    await app.dispatch.migrate_chat(old_chat_id, new_chat_id, title=title)
+
+
 async def handle_message(app: App, message: Message) -> None:
     if message.chat.type not in CHAT_TYPES:
+        return
+    if message.migrate_to_chat_id is not None:
+        await _handle_migration(app, message.chat.id, message.migrate_to_chat_id, message.chat.title or "")
+        return
+    if message.migrate_from_chat_id is not None:
+        await _handle_migration(app, message.migrate_from_chat_id, message.chat.id, message.chat.title or "")
         return
     msg = to_incoming(message)
     if _is_own_message(app, msg):
@@ -283,24 +300,24 @@ async def handle_message(app: App, message: Message) -> None:
         if owner_dm:
             response, event, code = await owner.import_memory(app, message, msg.text)
             await owner.record_event(app, event)
-            await app.bot.send_message(msg.chat_id, response)
+            await _send(app, msg.chat_id, response)
             if code:  # its own message as one code block: one tap copies it with its line breaks
-                await app.bot.send_message(msg.chat_id, code, entities=[
+                await _send(app, msg.chat_id, code, entities=[
                     MessageEntity(type="pre", offset=0, length=len(code.encode("utf-16-le")) // 2),
                 ])
         return
     if owner_dm:
         who = _person(msg.sender_name)
         if command == "/pending":
-            await gate.resend_pending(app.bot, app.store, app.owner_id)
+            await gate.resend_pending(app.bot, app.store, app.owner_id, sleep=app.sleep)
             await owner.record_event(app, f"{who} ran /pending: {await owner.pending_summary(app)}")
             return
         if command == "/status":
-            await owner.send_view(app.bot, msg.chat_id, await owner.render_status(app))
+            await owner.send_view(app.bot, msg.chat_id, await owner.render_status(app), sleep=app.sleep)
             await owner.record_event(app, f"{who} ran /status: {await owner.status_summary(app)}")
             return
         if command == "/chats":
-            await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app))
+            await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app), sleep=app.sleep)
             await owner.record_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
             return
         if command == "/stickers":
@@ -346,11 +363,11 @@ async def handle_message(app: App, message: Message) -> None:
             if len(parts) <= 2:
                 result = await owner.override_chat(app, target, command, who)
                 if result is None:
-                    await app.bot.send_message(msg.chat_id, "unknown chat")
+                    await _send(app, msg.chat_id, "unknown chat")
                 elif result.spend_paused:
-                    await app.bot.send_message(msg.chat_id, result.message)
+                    await _send(app, msg.chat_id, result.message)
                 elif len(parts) == 1:
-                    await app.bot.send_message(msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
+                    await _send(app, msg.chat_id, "Dom is up." if command == "/wake" else "Dom is asleep.")
             return
     # Core commands are handled above, so an approved plugin can never shadow one.
     if command is not None and await surfaces.handle_command(app, message, msg, command):
@@ -372,6 +389,7 @@ async def handle_message(app: App, message: Message) -> None:
         await gate.request_approval(
             app.bot, app.store, app.owner_id, msg.chat_id,
             msg.chat_title or msg.sender_name, kind, msg.sender_handle or msg.sender_name, msg.text,
+            sleep=app.sleep,
         )
         return
 
@@ -449,8 +467,12 @@ async def _settle_button(app: App, query: CallbackQuery, outcome: str, suffix: s
     if not rows:  # the tapped message's keyboard is unknown: show the outcome alone
         keyboard = [[InlineKeyboardButton(text=f"{label}{suffix}", callback_data="noop")]]
     try:
-        await app.bot.edit_message_reply_markup(
-            chat_id=message.chat.id, message_id=message.message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        await retry_telegram(
+            lambda: app.bot.edit_message_reply_markup(
+                chat_id=message.chat.id, message_id=message.message_id,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            ),
+            sleep=app.sleep,
         )
     except TelegramBadRequest:  # too old to edit, or already showing it; the toast still told the owner
         log.info("could not mark the handled button in chat %s", message.chat.id)
@@ -461,16 +483,16 @@ async def _replace_with_prompt(app: App, query: CallbackQuery, text: str, markup
     if query.message is None:
         return
     chat_id = query.message.chat.id
-    await app.bot.send_message(chat_id, text, reply_markup=markup)
-    await owner.delete_message(app.bot, chat_id, query.message.message_id)
+    await retry_telegram(lambda: app.bot.send_message(chat_id, text, reply_markup=markup), sleep=app.sleep)
+    await owner.delete_message(app.bot, chat_id, query.message.message_id, sleep=app.sleep)
 
 
 async def _refresh_status(app: App, query: CallbackQuery) -> None:
     if query.message is None:
         return
     chat_id = query.message.chat.id
-    await owner.send_view(app.bot, chat_id, await owner.render_status(app))
-    await owner.delete_message(app.bot, chat_id, query.message.message_id)
+    await owner.send_view(app.bot, chat_id, await owner.render_status(app), sleep=app.sleep)
+    await owner.delete_message(app.bot, chat_id, query.message.message_id, sleep=app.sleep)
 
 
 async def _handle_override(app: App, query: CallbackQuery, action: str, raw_chat_id: str) -> None:
@@ -542,7 +564,7 @@ async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str)
         text = await owner.set_global_preset(app, name, _person(query.from_user.full_name))
         await _toast(app, query, None if text else "preset unavailable")
         if text:
-            await app.bot.send_message(owner_id, text)
+            await _send(app, owner_id, text)
         return
     chat = await owner.approved_chat(app, raw_id)
     if chat is None:
@@ -558,7 +580,7 @@ async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str)
         await _toast(app, query, "preset or chat unavailable")
         return
     await _toast(app, query)
-    await app.bot.send_message(owner_id, text)
+    await _send(app, owner_id, text)
 
 
 def _item_id(raw: str) -> int | None:
@@ -892,8 +914,11 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
     chat, label = await owner.decide_pending_chat(app, chat_id, action, _person(query.from_user.full_name))
     await _toast(app, query, label)  # a tap from before a restart is too old to answer, but the card still updates
     if chat is not None and query.message is not None:
-        await app.bot.edit_message_text(
-            f"{label}: {chat['title'] or chat_id}", chat_id=query.message.chat.id, message_id=query.message.message_id
+        await retry_telegram(
+            lambda: app.bot.edit_message_text(
+                f"{label}: {chat['title'] or chat_id}", chat_id=query.message.chat.id, message_id=query.message.message_id,
+            ),
+            sleep=app.sleep,
         )
 
 
@@ -905,7 +930,10 @@ async def _note_removed(app: App, update: ChatMemberUpdated, owner_id: int) -> N
     await app.store.set_chat_auth_status(chat["chat_id"], "left")
     title = update.chat.title or chat["title"] or chat["chat_id"]
     own_choice = update.new_chat_member.status == "left" and update.from_user.id == app.bot_id
-    await app.bot.send_message(owner_id, f"Dom left {title}" if own_choice else f"Dom was removed from {title}")
+    await retry_telegram(
+        lambda: app.bot.send_message(owner_id, f"Dom left {title}" if own_choice else f"Dom was removed from {title}"),
+        sleep=app.sleep,
+    )
 
 
 async def handle_my_chat_member(app: App, update: ChatMemberUpdated) -> None:
@@ -924,7 +952,8 @@ async def handle_my_chat_member(app: App, update: ChatMemberUpdated) -> None:
     if (await app.store.get_chat_auth_status(update.chat.id))["authorization_status"] in ("left", "ignored"):
         await app.store.set_chat_auth_status(update.chat.id, "pending_approval", approval_prompt_sent=False)
     await gate.request_approval(
-        app.bot, app.store, owner_id, update.chat.id, update.chat.title or str(update.chat.id), "group", inviter
+        app.bot, app.store, owner_id, update.chat.id, update.chat.title or str(update.chat.id), "group", inviter,
+        sleep=app.sleep,
     )
 
 

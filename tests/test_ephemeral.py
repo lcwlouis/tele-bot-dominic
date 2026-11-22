@@ -99,15 +99,18 @@ async def test_ineligible_private_action_never_sends_ephemerally_or_falls_back_t
         assert sent[0][3].get("ephemeral_message_parameters") is None
 
 
-@pytest.mark.parametrize("sender,enabled", [(OWNER, False), (FRIEND, True)])
-async def test_dropping_an_ineligible_private_group_reply_tells_the_owner(make_app, sender, enabled):
+@pytest.mark.parametrize("sender,enabled,reason", [
+    (OWNER, False, "ephemeral replies are off"),
+    (FRIEND, True, "it was a friend's turn"),
+])
+async def test_dropping_an_ineligible_private_group_reply_tells_the_owner(make_app, sender, enabled, reason):
     app = make_app(contents=('{"private":true,"bubbles":[{"text":"A reply."}]}',))
     app.config = app.config.model_copy(update={"ephemeral_replies": enabled})
     await online(app, GROUP)
     await deliver(app, tg(GROUP, sender))
     assert app.bot.of("send", GROUP) == []
     assert [event["text"] for event in await events(app)] == [
-        "Held back a private reply in The Group: it wasn't eligible",
+        f"Held back a private reply in The Group: {reason}",
     ]
 
 

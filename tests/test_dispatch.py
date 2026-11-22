@@ -730,10 +730,15 @@ async def test_the_owner_is_told_when_no_model_could_answer(setup_dispatch, capl
     assert "no usable final answer" in caplog.text and "[malformed malformed]" in caplog.text
 
 
-async def test_a_friend_is_not_sent_the_notice_but_the_message_is_marked_seen(setup_dispatch):
+async def test_a_friend_gets_an_in_character_line_and_owner_gets_an_event(setup_dispatch):
+    from dom.dispatch import FRIEND_NO_ANSWER_LINE
+
     app, _, _ = await online_with(setup_dispatch, "prose", "more prose", chat_id=FRIEND)
     await deliver(app, 5, chat_id=FRIEND, sender=FRIEND)
-    assert not app.bot.of("send") and seen(app) == [(5, "👀")]
+    assert [call[2] for call in app.bot.of("send", FRIEND)] == [FRIEND_NO_ANSWER_LINE]
+    assert not app.bot.of("react")
+    events = [row.text for row in await app.store.get_recent_chat_window(OWNER) if row.role == "event"]
+    assert any("no usable final answer" in text for text in events)
 
 
 async def test_a_proactive_turn_that_cannot_answer_stays_quiet(setup_dispatch):
