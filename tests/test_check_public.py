@@ -72,6 +72,30 @@ Use owner@example.org or {noreply}.
     assert "Public data check passed" in result.stdout
 
 
+def test_dashboard_app_syntax_is_not_a_handle(repository):
+    at = "@"
+    track(repository, "web/package.json", f'{{"devDependencies": {{"{at}sveltejs/vite-plugin-svelte": "7.3.1"}}}}')
+    track(repository, "web/src/main.ts", f"import type {{ Meta }} from '{at}storybook/svelte-vite';")
+    track(repository, "web/src/Card.svelte", (
+        f"{{{at}render children()}}\n{{{at}const open = true}}\n"
+        f"<style>{at}media (min-width: 960px) {{}} {at}keyframes pop {{}}</style>\n"
+    ))
+    track(repository, "web/package-lock.json", PLANTED["Telegram ID"])
+    result = scan(repository)
+    assert result.returncode == 0, result.stdout
+
+
+def test_dashboard_exemptions_do_not_hide_real_handles(repository):
+    handle = PLANTED["Telegram handle"]
+    track(repository, "web/src/Chat.svelte", f"<p>{handle}</p>\n<p>{{{handle}}}</p>")
+    track(repository, "docs/notes.md", f"{handle}/photos")
+    result = scan(repository)
+    assert result.returncode == 1
+    assert "web/src/Chat.svelte:1: Telegram handle" in result.stdout
+    assert "web/src/Chat.svelte:2: Telegram handle" in result.stdout
+    assert "docs/notes.md:1: Telegram handle" in result.stdout
+
+
 def test_allowlisted_cidr_only_accepts_the_exact_generic_network(repository):
     address = PLANTED["private IPv4"]
     track(repository, "config.toml", f'gateway = "{address}/16"\n')

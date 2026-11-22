@@ -34,9 +34,13 @@ EXAMPLE_EMAIL_DOMAIN = re.compile(r"(?:[a-z0-9-]+\.)*example\.[a-z0-9-]+")
 DOC_NETWORKS = tuple(map(ipaddress.IPv4Network, ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")))
 CARRIER_NAT = ipaddress.IPv4Network("100.64.0.0/10")
 VENDORED = ("dom/web/static/novnc/", "dom/web/static/fonts/")
-EXCLUDED = {"uv.lock", "dom/web/static/htmx.min.js"}
+EXCLUDED = {"uv.lock", "web/package-lock.json", "dom/web/static/htmx.min.js"}
 POLICY_PATH = Path("scripts/check_public.toml")
 CSS_RULES = {"charset", "container", "import", "keyframes", "layer", "media", "namespace", "starting", "supports"}
+# The dashboard app (web/) names npm packages by scope (an at sign, the scope, a slash) and uses Svelte template
+# tags (an at sign straight after "{"). Neither is a Telegram handle.
+NPM_SCOPE = re.compile(r"@[a-z0-9][a-z0-9._~-]*/")
+SVELTE_TAGS = {"attach", "const", "debug", "render"}
 
 
 def decorators(content: str) -> set[tuple[int, int]]:
@@ -112,7 +116,11 @@ def categories(
         handle = match.group().lower()
         if (line_number, match.start()) in python_decorators:
             continue
-        if path.suffix in (".css", ".html") and handle[1:] in CSS_RULES:
+        if path.suffix in (".css", ".html", ".svelte") and handle[1:] in CSS_RULES:
+            continue
+        if path.suffix == ".svelte" and handle[1:] in SVELTE_TAGS and line[:match.start()].endswith("{"):
+            continue
+        if path.parts[0] == "web" and NPM_SCOPE.match(line, match.start()):
             continue
         if fixtures and handle in allow["test_handles"]:
             continue
