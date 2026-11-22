@@ -30,6 +30,7 @@ FINAL_REQUEST = (
 )
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 Rescue = Callable[[str | None], Awaitable[Salvaged | None]]  # plain prose in, bubbles out (dom.salvage), or None
+ToolRunner = Callable[[dict, dict[str, Tool], TurnCtx], Awaitable[str]]
 
 
 log = logging.getLogger("dom.agent")
@@ -132,7 +133,7 @@ def _well_formed(calls: object) -> bool:
     )
 
 
-async def _run_tool_call(call: dict, offered: dict[str, Tool], ctx: TurnCtx) -> str:
+async def execute_tool_call(call: dict, offered: dict[str, Tool], ctx: TurnCtx) -> str:
     function = call["function"]
     tool = offered.get(function.get("name", ""))
     if tool is None:
@@ -159,6 +160,7 @@ async def run_turn(
     ctx: TurnCtx,
     max_steps: int = 6,
     rescue: Rescue | None = None,
+    run_tool: ToolRunner = execute_tool_call,
 ) -> Actions:
     """Run one turn. Dom never sends raw model text: only valid actions leave this function.
 
@@ -190,7 +192,7 @@ async def run_turn(
                 turn_log.step("unavailable tool")
             messages.append(reply)
             for call in calls:
-                result = await _run_tool_call(call, offered, ctx)
+                result = await run_tool(call, offered, ctx)
                 messages.append({"role": "tool", "tool_call_id": str(call.get("id") or ""), "content": result})
             # After tool results the model tends to answer in prose, so say the format again here.
             messages.append({"role": "user", "content": TOOLS_DONE})

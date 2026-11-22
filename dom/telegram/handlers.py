@@ -146,7 +146,7 @@ def _command_name(text: str, username: str) -> str | None:
     return name if not target or target.lower() == username.lower() else None
 
 
-async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = False) -> None:
+async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = False, notify: bool = False) -> None:
     new_media = (
         describe_media and app.media_describer is not None and msg.media is not None
         and not await app.store.has_message(msg.chat_id, msg.msg_id)
@@ -168,9 +168,11 @@ async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = Fals
             created_at=msg.date.isoformat(),
         )
     )
-    await app.store.set_chat_title(msg.chat_id, msg.chat_title)
     if new_media:
-        await app.dispatch.describe_media(msg)
+        app.dispatch.describe_media(msg)
+    if notify:
+        app.dispatch.notify(msg)
+    await app.store.set_chat_title(msg.chat_id, msg.chat_title)
 
 
 def _claim_code(text: str, username: str) -> str | None:
@@ -401,9 +403,7 @@ async def handle_message(app: App, message: Message) -> None:
             and _desktop_command(msg.text, app.bot_username) and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
         ):
             msg = await _receive_desktop_document(app, message, msg)
-        await _record(app, msg, describe_media=decision == "process")
-        if decision == "process":
-            app.dispatch.notify(msg)
+        await _record(app, msg, describe_media=decision == "process", notify=decision == "process")
     if decision == "hold":
         kind = "chat" if msg.chat_type == "private" else "group"
         await gate.request_approval(

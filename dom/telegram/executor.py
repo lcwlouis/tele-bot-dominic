@@ -32,6 +32,11 @@ MAX_TYPING_SECONDS = 20  # typing time keeps scaling with length up to this; at 
 MAX_REPLY_TYPING_SECONDS = 30  # all of one reply's typing, the time already shown while thinking included
 BUBBLE_GAP_SECONDS = 1.0  # once that is spent, each later bubble still follows a short pause
 TYPING_REFRESH_SECONDS = 4  # Telegram's typing indicator lapses after about 5 seconds
+TYPING_EXPIRY_SECONDS = 5
+GROUP_QUIP_CHARS = 32
+GROUP_QUIP_SECONDS = 0.6
+TYPING_CPS = 8.0
+ASSISTANT_TYPING_CPS = 16.0
 MAX_FLOOD_RETRIES = 3  # bounded retries on TelegramRetryAfter
 MAX_FLOOD_WAIT_SECONDS = 10.0  # total flood-wait budget per reply so a chat lock is never held for long
 _background: set[asyncio.Task] = set()  # keeps scheduled deletions alive until they run
@@ -128,6 +133,40 @@ async def _type_for(bot, chat_id: int, seconds: float, thread_id: int | None, sl
         seconds -= TYPING_REFRESH_SECONDS
 
 
+class TypingIndicator:
+    """Refresh Telegram's cosmetic indicator and count the time it was actually visible. A flooded or failed send
+    stops the refreshing; the indicator lapses by itself a few seconds later."""
+
+    def __init__(
+        self, bot, chat_id: int, thread_id: int | None, clock=monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ):
+        self.clock = clock
+        self._shown_at: float | None = None
+        self._previous = 0.0
+        self._task = asyncio.create_task(self._keep(bot, chat_id, thread_id, sleep))
+
+    async def _keep(self, bot, chat_id: int, thread_id: int | None, sleep) -> None:
+        while True:
+            if not await _send_typing(bot, chat_id, thread_id):
+                return
+            self._previous = self.seconds
+            self._shown_at = self.clock()
+            await sleep(TYPING_REFRESH_SECONDS)
+
+    @property
+    def seconds(self) -> float:
+        if self._shown_at is None:
+            return self._previous
+        return self._previous + min(self.clock() - self._shown_at, TYPING_EXPIRY_SECONDS)
+
+    def stop(self) -> float:
+        self._previous = self.seconds
+        self._shown_at = None
+        self._task.cancel()
+        return self._previous
+
+
 @asynccontextmanager
 async def typing_while(
     bot,
@@ -139,20 +178,11 @@ async def typing_while(
     """Show "typing" while Dom is still working out his reply (the model calls), so a slow answer does not look
     like a crash. The indicator is cosmetic: a flooded or failed send stops refreshing, and it lapses by itself a few
     seconds after the block ends if Dom decides to say nothing."""
-
-    async def keep() -> None:
-        while True:
-            if not await _send_typing(bot, chat_id, thread_id):
-                return
-            await sleep(TYPING_REFRESH_SECONDS)
-
-    task = asyncio.create_task(keep())
+    indicator = TypingIndicator(bot, chat_id, thread_id, sleep=sleep)
     try:
-        yield
+        yield indicator
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        indicator.stop()
 
 
 async def _delete_later(bot, store: Store, chat_id: int, message_id: int, delay: float, sleep) -> None:
@@ -185,6 +215,7 @@ async def _tell_owner_held_back(store: Store, chat_id: int, why: str) -> None:
 async def _private_reply_to_dm(
     bot, store: Store, chat_id: int, texts: list[str], reason: str,
     *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, budget: FloodBudget | None = None,
+    on_sent: Callable[[int], Awaitable[None]] | None = None,
 ) -> list[int]:
     """Telegram refused an owner-only bubble in the group (it allows them only from a group admin). Sending it there
     in public would leak what was meant for the owner alone, so it goes to the owner's DM instead, with why. It stays
@@ -204,6 +235,8 @@ async def _private_reply_to_dm(
                 )
             turn_log.bubble_sent()
             sent_ids.append(sent.message_id)
+            if on_sent is not None:
+                await on_sent(sent.message_id)
     except FloodBudgetExhausted:
         log.warning("private reply fallback to owner's DM hit flood budget for chat %s", chat_id)
         return sent_ids
@@ -238,7 +271,7 @@ async def perform(
     trigger_msg_id: int | None,
     actions: Actions,
     *,
-    typing_cps: float = 8.0,
+    typing_cps: float = TYPING_CPS,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     thread_id: int | None = None,
     now: Callable[[], datetime] | None = None,
@@ -250,7 +283,8 @@ async def perform(
     ephemeral_ineligible_reason: str | None = None,
     link_previews: bool = True,
     record: bool = True,
-    typed_already: float = 0.0,
+    typed_already: float | None = None,
+    before_send: Callable[[], None] | None = None,
     flood_budget: float = MAX_FLOOD_WAIT_SECONDS,
 ) -> PerformResult:
     """Send the bubbles, reaction, sticker and GIF; returns the sent message ids. no_response does nothing at all."""
@@ -268,14 +302,19 @@ async def perform(
             await _tell_owner_held_back(store, chat_id, why)
             return PerformResult()
         if not ephemeral_in_chat:  # Dom is not an admin there, so Telegram would refuse: straight to the DM
+            if actions.bubbles and before_send is not None:
+                before_send()
             moved = await _private_reply_to_dm(
-                bot, store, chat_id, [b.text for b in actions.bubbles], "BOT_NOT_ADMIN", sleep=sleep, budget=flood,
+                bot, store, chat_id, [b.text for b in actions.bubbles], "BOT_NOT_ADMIN",
+                sleep=sleep, budget=flood, on_sent=on_sent,
             )
             return PerformResult(moved, flood_limited=flood.exhausted)
         parameters = EphemeralMessageParameters(receiver_user_id=ephemeral_recipient)
         # Keep these bubbles out of the group's history and skip public side effects.
         sent_ids: list[int] = []
         for bubble in actions.bubbles:
+            if before_send is not None:
+                before_send()
             try:
                 with turn_log.timed("send"):
                     sent = await retry_telegram(
@@ -290,11 +329,14 @@ async def perform(
                 log.warning("ephemeral send failed in chat %s: %s", chat_id, error.message)
                 rest = actions.bubbles[len(sent_ids):]
                 moved = await _private_reply_to_dm(
-                    bot, store, chat_id, [b.text for b in rest], error.message, sleep=sleep, budget=flood,
+                    bot, store, chat_id, [b.text for b in rest], error.message,
+                    sleep=sleep, budget=flood, on_sent=on_sent,
                 )
                 return PerformResult(sent_ids + moved, flood_limited=flood.exhausted)
             turn_log.bubble_sent()
             sent_ids.append(sent.message_id)
+            if on_sent is not None:
+                await on_sent(sent.message_id)
         return PerformResult(sent_ids)
 
     reaction_result: bool | None = None
@@ -308,20 +350,31 @@ async def perform(
     sent_ids = []
     # "typing" already showed while Dom thought, so that time counts against the reply's budget; a long reply in
     # many bubbles would otherwise keep the friend waiting minutes after it was written.
-    budget = max(0.0, MAX_REPLY_TYPING_SECONDS - typed_already)
+    budget = max(0.0, MAX_REPLY_TYPING_SECONDS - (typed_already or 0.0))
     for index, bubble in enumerate(actions.bubbles):
-        seconds = min(len(bubble.text) / typing_cps, MAX_TYPING_SECONDS, budget)
+        human_time = len(bubble.text) / typing_cps
+        if index == 0 and typed_already is not None:
+            if chat_id < 0 and len(bubble.text) <= GROUP_QUIP_CHARS:
+                human_time = min(human_time, GROUP_QUIP_SECONDS)
+            human_time = max(0.0, human_time - typed_already)  # the friend already watched "typing…" while Dom thought
+        seconds = min(human_time, MAX_TYPING_SECONDS, budget)
         budget -= seconds
         if index > 0:
             seconds = max(seconds, BUBBLE_GAP_SECONDS)
-        with turn_log.timed("typing"):
-            await _type_for(bot, chat_id, seconds, thread_id, sleep)
+        if seconds > 0:
+            with turn_log.timed("typing"):
+                if index == 0 and typed_already is not None:
+                    await sleep(seconds)  # the caller's indicator keeps refreshing in parallel until the send
+                else:
+                    await _type_for(bot, chat_id, seconds, thread_id, sleep)
         reply = (
             ReplyParameters(message_id=bubble.reply_to, allow_sending_without_reply=True)
             if bubble.reply_to is not None
             else None
         )
         options = {} if link_previews else {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+        if before_send is not None:
+            before_send()
         try:
             with turn_log.timed("send"):
                 sent = await retry_telegram(
@@ -343,7 +396,7 @@ async def perform(
                 StoredMessage(
                     chat_id=str(chat_id),
                     msg_id=sent.message_id,
-                    reply_to_msg_id=bubble.reply_to,
+                    reply_to_msg_id=bubble.reply_to if bubble.reply_to is not None else trigger_msg_id,
                     thread_id=thread_id,
                     is_bot=True,
                     role="assistant",
@@ -368,11 +421,13 @@ async def perform(
             sticker_failed = True
         else:
             picked = choice(choices)
+            if before_send is not None:
+                before_send()
             try:
                 sticker_id = await _send_media(
                     lambda p=picked: bot.send_sticker(chat_id, p, message_thread_id=thread_id),
                     store, chat_id, "sticker", {"kind": "sticker", "emoji": actions.sticker}, now, on_sent,
-                    thread_id=thread_id, sleep=sleep, record=record, budget=flood,
+                    thread_id=thread_id, sleep=sleep, record=record, budget=flood, trigger_msg_id=trigger_msg_id,
                 )
             except FloodBudgetExhausted:
                 return PerformResult(
@@ -396,11 +451,13 @@ async def perform(
             except Exception:
                 log.exception("gif search crashed in chat %s", chat_id)
         if url:
+            if before_send is not None:
+                before_send()
             try:
                 gif_id = await _send_media(
                     lambda u=url: bot.send_animation(chat_id, u, message_thread_id=thread_id),
                     store, chat_id, "gif", {"kind": "gif", "query": actions.gif}, now, on_sent,
-                    thread_id=thread_id, sleep=sleep, record=record, budget=flood,
+                    thread_id=thread_id, sleep=sleep, record=record, budget=flood, trigger_msg_id=trigger_msg_id,
                 )
             except FloodBudgetExhausted:
                 return PerformResult(
@@ -420,6 +477,8 @@ async def perform(
     if not sent_ids and not actions.bubbles and (sticker_failed or gif_failed):
         fallback_text = actions.sticker if sticker_failed and actions.sticker else f"*{actions.gif}*"
         options = {} if link_previews else {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+        if before_send is not None:
+            before_send()
         try:
             with turn_log.timed("send"):
                 sent = await retry_telegram(
@@ -436,8 +495,8 @@ async def perform(
         turn_log.bubble_sent()
         if record:
             await store.record_new_message(StoredMessage(
-                chat_id=str(chat_id), msg_id=sent.message_id, thread_id=thread_id, is_bot=True, role="assistant",
-                visibility_scope=store.visibility_for(chat_id), text=fallback_text,
+                chat_id=str(chat_id), msg_id=sent.message_id, reply_to_msg_id=trigger_msg_id, thread_id=thread_id,
+                is_bot=True, role="assistant", visibility_scope=store.visibility_for(chat_id), text=fallback_text,
                 created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
             ))
         sent_ids.append(sent.message_id)
@@ -458,7 +517,7 @@ async def _send_media(
     sending: Callable[[], Awaitable], store: Store, chat_id: int, kind: str, media: dict,
     now: Callable[[], datetime] | None, on_sent: Callable[[int], Awaitable[None]] | None,
     *, thread_id: int | None = None, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, record: bool = True,
-    budget: FloodBudget | None = None,
+    budget: FloodBudget | None = None, trigger_msg_id: int | None = None,
 ) -> int | None:
     """Await one media send and record it; a Telegram refusal is logged and means nothing was sent."""
     try:
@@ -470,8 +529,8 @@ async def _send_media(
     turn_log.bubble_sent()
     if record:
         await store.record_new_message(StoredMessage(
-            chat_id=str(chat_id), msg_id=sent.message_id, thread_id=thread_id, is_bot=True, role="assistant",
-            visibility_scope=store.visibility_for(chat_id), text=f"[{kind}]", media_json=json.dumps(media),
+            chat_id=str(chat_id), msg_id=sent.message_id, reply_to_msg_id=trigger_msg_id, thread_id=thread_id,
+            is_bot=True, role="assistant", visibility_scope=store.visibility_for(chat_id), text=f"[{kind}]", media_json=json.dumps(media),
             created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
         ))
     if on_sent is not None:

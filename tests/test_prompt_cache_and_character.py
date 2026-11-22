@@ -209,7 +209,9 @@ async def test_hashes_hold_when_notes_and_memory_change_until_trim_and_hour(make
     # Push past budget to trigger a window trim on Turn 3 (still within 1 hour of Turn 1).
     for n in range(3, 25):
         await app.store.record_new_message(_msg(n, size=350))
-    await app.store.advance_memory_cursor(OWNER, 24)
+    # The window is in arrival order, so Dom's own earlier bubbles (the fake bot numbers them from 5001) sit among
+    # the rows a trim would drop, and the memory pass must have read past them too.
+    await app.store.advance_memory_cursor(OWNER, 5002)
     app.dispatch.now.advance(minutes=5)
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)

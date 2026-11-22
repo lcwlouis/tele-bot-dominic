@@ -361,7 +361,38 @@ async def test_time_spent_thinking_counts_against_the_reply_typing_budget(store)
 
     actions = Actions(bubbles=[Bubble(text="a" * 100), Bubble(text="b" * 16), Bubble(text="c" * 16)])
     await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep, typed_already=25.0)
-    assert sleeps == [4, 1.0, 1.0, 1.0]  # 5 s left of the budget, then a short pause before each later bubble
+    # the first bubble's full typing time is already covered; the others type at the same pace within what is left
+    assert sleeps == [2.0, 2.0]
+
+
+@pytest.mark.parametrize(("chat", "length", "thinking", "pace", "expected"), [
+    (OWNER, 80, 1, executor.TYPING_CPS, (9.0, 15.0)),  # 10 s to type, 1 s already shown; then 120 characters
+    (OWNER, 80, 17, executor.TYPING_CPS, (0.0, 13.0)),  # a slow generation adds nothing; the rest of the 30 s remains
+    (OWNER, 80, 1, executor.ASSISTANT_TYPING_CPS, (4.0, 7.5)),
+    (GROUP, 24, 0, executor.TYPING_CPS, (0.6, 15.0)),  # a short group quip goes out fast
+    (OWNER, 400, 29, executor.TYPING_CPS, (1.0, 1.0)),  # the reply cap is spent: the short gap only
+])
+async def test_adaptive_typing_subtracts_thinking_and_paces_later_bubbles(store, chat, length, thinking, pace, expected):
+    bot, spent = FakeBot(), ([], [])
+
+    async def sleep(seconds):
+        spent[len(bot.of("send", chat))].append(seconds)
+
+    actions = Actions(bubbles=[Bubble(text="x" * length), Bubble(text="y" * 120)])
+    await executor.perform(bot, store, chat, 1, actions, sleep=sleep, typing_cps=pace, typed_already=thinking)
+    assert tuple(sum(group) for group in spent) == pytest.approx(expected)
+
+
+async def _instant(_seconds):
+    return None
+
+
+async def test_the_gap_between_bubbles_shows_typing_but_the_first_bubble_relies_on_the_callers_indicator(store):
+    bot = FakeBot()
+    actions = Actions(bubbles=[Bubble(text="x" * 40), Bubble(text="y" * 40)])
+    await executor.perform(bot, store, OWNER, 1, actions, sleep=_instant, typed_already=1.0)
+    kinds = [call[0] for call in bot.calls]
+    assert kinds[0] == "send" and kinds[-1] == "send" and "action" in kinds[1:-1]
 
 
 async def test_typing_shows_while_dom_thinks_and_stops_after(monkeypatch):

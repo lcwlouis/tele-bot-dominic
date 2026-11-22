@@ -100,7 +100,7 @@ async def test_low_confidence_not_confident(jev):
         }})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
-        assert await triage_online(jev(http), "friendly", "<chat_window/>") == Triage("react", "👍", None, False)
+        assert await triage_online(jev(http), "friendly", "<chat_window/>") == Triage("react", "👍", None, False, 0.69)
 
 
 async def test_offline_asks_only_for_kapoh(jev):

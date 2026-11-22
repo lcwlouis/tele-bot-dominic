@@ -150,6 +150,28 @@ async def test_the_model_sees_the_assistant_preset_and_a_task_note_then_the_quie
     assert "task_mode" in str(request["tools"])
 
 
+async def test_task_mode_uses_the_faster_typing_pace(make_app, monkeypatch):
+    from dom.telegram import executor
+
+    app = make_app(contents=(json.dumps({"bubbles": [{"text": "x" * 80}]}),) * 2)
+    install(app)
+    await approve(app, OWNER)
+    await app.dispatch.presence.wake(OWNER, parse_habits(""))
+    monkeypatch.setattr("dom.dispatch.monotonic", lambda: 0)
+    pauses = []
+
+    async def sleep(seconds):
+        pauses.append(seconds)
+
+    app.sleep = sleep
+    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, msg_id=1))
+    await drain_dispatch(app.dispatch)
+    await go(app)
+    await handlers.handle_message(app, tg(chat_id=OWNER, sender=OWNER, msg_id=2))
+    await drain_dispatch(app.dispatch)
+    assert pauses == [80 / executor.TYPING_CPS, 80 / executor.ASSISTANT_TYPING_CPS]
+
+
 async def test_self_inspect_and_the_dashboard_show_task_mode(make_app, browser):  # noqa: F811
     app = make_app()
     install(app)

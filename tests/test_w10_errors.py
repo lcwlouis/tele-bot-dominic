@@ -183,8 +183,11 @@ async def test_flood_budget_releases_lock_and_leaves_newer_messages_unread(make_
     app.bot.send_message = flaky_send
 
     await handlers.handle_message(app, tg(GROUP, FRIEND, text="first", msg_id=1))
-    first_task = app.dispatch._debounces[GROUP]
-    await first_task
+    async def turn_one_finished() -> None:
+        while not (bubble2_attempts == 2 and GROUP not in app.dispatch._active):
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(turn_one_finished(), timeout=5)
 
     # Only bubble 1 was sent, total flood wait stayed within 10s (slept 6s once, refused second 6s wait).
     assert [c[2] for c in app.bot.of("send", GROUP)] == ["one"]
@@ -649,6 +652,21 @@ async def test_failed_triage_reaction_is_not_logged_as_sent(make_app):
     await deliver(app, tg(GROUP, FRIEND, text="cool", msg_id=6))
     [turn] = await app.store.recent_turns(str(GROUP))
     assert turn["outcome"] == "Reaction failed"
+
+
+async def test_flood_limited_arrival_reaction_leaves_the_message_unread(make_app):
+    app = make_app()
+    app.dispatch.jev = FakeJev("react", confidence=0.95)
+    await online(app, GROUP)
+
+    async def limited(chat_id, message_id, reaction=None, **kw):
+        raise _retry_after(60)  # longer than the reply's flood budget
+
+    app.bot.set_message_reaction = limited
+    await deliver(app, tg(GROUP, FRIEND, text="cool", msg_id=6))
+    [turn] = await app.store.recent_turns(str(GROUP))
+    assert turn["outcome"] == "Flood limited"
+    assert (await app.store.get_unread(GROUP))[0] == 1
 
 
 # ---- 9. Text fallback for failed sticker or GIF -----------------------------------------------
