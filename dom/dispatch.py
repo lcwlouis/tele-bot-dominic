@@ -74,9 +74,11 @@ BOT_REPLY_INTERVAL = timedelta(seconds=10)
 BOT_DEDUP_WINDOW = timedelta(seconds=60)
 MAX_TURN_FAILURES = 3  # consecutive failures after which a chat's unread messages are given up on
 # Telegram errors that a retry cannot fix: Dom is out of the chat, may not write there, or the topic is closed or gone.
+_TOPIC_GONE = re.compile(r"topic_closed|thread not found", re.IGNORECASE)
 _CHAT_GONE = re.compile(
     r"chat not found|kicked|not a member|not enough rights|have no rights|topic_closed|thread not found", re.IGNORECASE,
 )
+CODING_NOTICE_FLOOD_BUDGET = 3.0  # bounded so shutdown (`close()`) never stalls on a long flood wait
 MEMORY_PASS_INTERVAL = timedelta(minutes=5)  # per chat
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 NO_ANSWER_NOTICE = "Sorry, I couldn't put a reply together just now. Could you send that again?"
@@ -87,13 +89,24 @@ SPEND_CAP_LINE_KEY = "spend_cap_line:"
 
 
 @dataclass
+class _MigratedReply:
+    actions: Actions
+    ephemeral_recipient: int | None
+    ephemeral_ineligible_reason: str | None
+    typing_cps: float
+
+
+@dataclass
 class QueueWaits:
     start: datetime
     debounce_until: datetime | None
     media_ms: int | None = None
     lock_ms: int | None = None
     through: int | None = None
+    thread_id: int | None = None
     early: bool = False  # Jev's verdict ended the debounce, so the wait since the first message was Jev's triage
+    migrated_reply: _MigratedReply | None = None
+    migrated_notices: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -120,6 +133,7 @@ class TurnAttempt:
     msg_id: int
     trace: turn_log.TurnTrace
     started: datetime
+    thread_id: int | None = None
     committed: bool = False
     later: list[int] = field(default_factory=list)
     tool_results: dict[tuple[str, str, int], str] = field(default_factory=dict)
@@ -199,7 +213,7 @@ class Dispatcher:
         self._tasks: set[asyncio.Task] = set()
         self._polls: dict[int, asyncio.Task] = {}
         self._loop: asyncio.Task | None = None
-        self._failures: dict[int, int] = {}
+        self._failures: dict[tuple[int, int], int] = {}
         self._media_times: dict[int, deque[datetime]] = {}
         self._bot_replies: dict[tuple[int, int], datetime] = {}  # (chat_id, bot_id) -> last reply
         self._bots_in_flight: set[tuple[int, int]] = set()
@@ -226,7 +240,10 @@ class Dispatcher:
             return
         self._latest[chat_id] = msg
         attempt = self._active.get(chat_id)
-        if attempt is not None and msg.msg_id > attempt.msg_id and not attempt.trace.superseded:
+        if (
+            attempt is not None and attempt.thread_id == msg.thread_id
+            and msg.msg_id > attempt.msg_id and not attempt.trace.superseded
+        ):
             restarts = len(self._interrupted.get(chat_id, ()))
             if attempt.committed or restarts >= MAX_RESTARTS or attempt.task not in self._tasks:
                 attempt.later.append(msg.msg_id)
@@ -238,7 +255,7 @@ class Dispatcher:
         if self.jev is not None:
             arrivals = self._arrivals.setdefault(chat_id, {})
             previous_arrival = arrivals.get(latest.msg_id) if latest is not None else None
-            if previous_arrival is not None and (
+            if previous_arrival is not None and previous_arrival.msg.thread_id == msg.thread_id and (
                 attempt is None or attempt.msg_id != latest.msg_id or attempt.trace.superseded
             ):
                 previous_arrival.stop_typing()
@@ -264,17 +281,21 @@ class Dispatcher:
             scope = store.scope_for(chat_id, msg.chat_type)
             if (state == "asleep" and scope != "owner_dm") or (state == "offline" and scope == "friend_dm"):
                 return
-            count, newest = await store.get_unread(chat_id)
+            if state == "online" and await store.is_catch_up_pending(chat_id, msg.thread_id):
+                return  # a flood-limited catch-up is waiting to retry as a catch-up, not a plain online turn
+            count, newest = await store.get_unread(chat_id, thread_id=msg.thread_id, filter_thread=True)
             if newest is None or newest.msg_id != msg.msg_id:
                 return
-            if state == "offline" and count >= habits.wake_after_messages:
+            if state == "offline" and (await store.get_unread(chat_id))[0] >= habits.wake_after_messages:
                 return
             if msg.is_bot:
-                if state != "online" or not await store.has_unread_human(chat_id):
+                if state != "online" or not await store.has_unread_human(chat_id, thread_id=msg.thread_id, filter_thread=True):
                     return  # the bot-only depth, deduplication and cooldown checks run first
             if msg.media:
                 await self._wait_media(chat_id)  # judge the description, not "[photo]"; text pays nothing
-            rows = await store.get_window_from(chat_id, None, TRIAGE_WINDOW * 2, through_id=newest.id)
+            rows = await store.get_window_from(
+                chat_id, None, TRIAGE_WINDOW * 2, through_id=newest.id, thread_id=msg.thread_id, filter_thread=True,
+            )
             if self._latest.get(chat_id) is not msg:
                 return  # a newer message took over before this request started
             arrival.state = state
@@ -377,7 +398,7 @@ class Dispatcher:
             if (attempt is not None and attempt.committed) or msg.msg_id not in self._arrivals.get(msg.chat_id, {}):
                 return
             # An acknowledgement is deliberately independent of the generation it precedes.
-            with self._protect_send() as commit:
+            with self.protect_send() as commit:
                 commit()
                 index = self._next_ack
                 self._last_ack = now
@@ -497,8 +518,14 @@ class Dispatcher:
 
     async def _describe_unread_media(self, chat_id: int) -> None:
         """Describe what arrived while Dom was away, within the same media wait budget."""
+        active = self._active.get(chat_id)
+
         async def describe_all() -> None:
-            pending = await self.app.store.get_unread_media_to_describe(chat_id, CATCH_UP_MEDIA)
+            pending = await self.app.store.get_unread_media_to_describe(
+                chat_id, CATCH_UP_MEDIA,
+                thread_id=active.thread_id if active is not None else None,
+                filter_thread=active is not None,
+            )
             if pending:
                 with turn_log.timed("media_wait"):
                     for msg_id, media in pending:
@@ -525,7 +552,7 @@ class Dispatcher:
         return task
 
     @contextmanager
-    def _protect_send(self) -> Iterator[Callable[[], None]]:
+    def protect_send(self) -> Iterator[Callable[[], None]]:
         """Let a background job commit its current send through shutdown."""
         task = asyncio.current_task()
         try:
@@ -717,16 +744,20 @@ class Dispatcher:
                 arrival.task.cancel()
         for task in self._media_tasks.pop(old_chat_id, ()):
             task.cancel()
-        self._discard_interrupted(old_chat_id)
+        self._discard_interrupted(old_chat_id, notice_chat_id=new_chat_id)
         for state in (self._first_notify, self._latest, self._followups, self._trim_seq, self._stay_marks,
-                      self._stay_pending, self._polls, self._failures, self._media_times, self._arrival_media,
+                      self._stay_pending, self._polls, self._media_times, self._arrival_media,
                       self._memory_last):
             state.pop(old_chat_id, None)
+        self._failures = {key: count for key, count in self._failures.items() if key[0] != old_chat_id}
         self._bot_replies = {key: at for key, at in self._bot_replies.items() if key[0] != old_chat_id}
         if old_chat_id in self._admin:
             self._admin.setdefault(new_chat_id, self._admin.pop(old_chat_id))
         if old_chat_id in self._group_no_answer_at:
-            self._group_no_answer_at[new_chat_id] = self._group_no_answer_at.pop(old_chat_id)
+            cooldown = self._group_no_answer_at.pop(old_chat_id)
+            self._group_no_answer_at[new_chat_id] = cooldown
+            if await self.app.store.get_group_no_answer_at(new_chat_id) is None:
+                await self.app.store.set_group_no_answer_at(new_chat_id, cooldown)
         if old_chat_id in self._reactions_off:
             self._reactions_off.discard(old_chat_id)
             self._reactions_off.add(new_chat_id)
@@ -750,13 +781,16 @@ class Dispatcher:
         """The owner's /wake or /sleep. False if the chat is unknown or not approved; that lookup never
         creates a chat row."""
         chat_id = int(await self.app.store.resolve_chat_id(chat_id))
+        waits: QueueWaits | None = None
         try:
-            async with self._dispatch_slot(chat_id, wait_media=command == "/wake") as waits:
+            async with self._dispatch_slot(chat_id, wait_media=command == "/wake") as slot_waits:
+                waits = slot_waits
                 if not await self.app.store.is_chat_approved(chat_id):
                     return False
                 habits = self._habits()
                 if command == "/sleep":
                     self._discard_interrupted(chat_id)
+                    await self.app.store.clear_chat_catch_up_pending(chat_id)
                     await self.presence.sleep(chat_id, habits)
                     return True
                 await self.presence.wake(chat_id, habits)
@@ -764,7 +798,7 @@ class Dispatcher:
                 return True
         except TelegramMigrateToChat as exc:
             log.info("chat %s migrated to %s during override", chat_id, exc.migrate_to_chat_id)
-            await self.migrate_chat(chat_id, exc.migrate_to_chat_id)
+            await self._handle_mid_reply_migration(chat_id, exc.migrate_to_chat_id, waits)
             return True
 
     @asynccontextmanager
@@ -813,12 +847,48 @@ class Dispatcher:
                 waits.lock_ms = elapsed
             yield waits
 
+    async def _handle_mid_reply_migration(
+        self, old_chat_id: int, new_chat_id: int, waits: QueueWaits | None,
+    ) -> None:
+        outcome = await self.migrate_chat(old_chat_id, new_chat_id)
+        if outcome not in ("migrated", "already"):
+            return
+        target_id = int(await self.app.store.resolve_chat_id(old_chat_id))
+        if target_id == old_chat_id:
+            return
+        if waits is not None and waits.migrated_notices:
+            notes, waits.migrated_notices = waits.migrated_notices, []
+            self._spawn(self._send_coding_notice(target_id, notes), committed=True)
+        if waits is None or waits.migrated_reply is None or self._closing:
+            return
+        reply = waits.migrated_reply
+        waits.migrated_reply = None
+        app = self.app
+        async with self._dispatch_slot(target_id, wait_media=False):
+            if not await self._approved(target_id):
+                return
+            in_group = reply.ephemeral_recipient is None or await self._is_admin(target_id)
+            with self.protect_send() as commit:
+                try:
+                    await executor.perform(
+                        app.bot, app.store, target_id, None, reply.actions, sleep=app.sleep,
+                        thread_id=None, stickers=app.stickers.sendable(), gifs=app.gifs,
+                        ephemeral_recipient=reply.ephemeral_recipient, ephemeral_in_chat=in_group,
+                        ephemeral_ineligible_reason=reply.ephemeral_ineligible_reason,
+                        typed_already=executor.MAX_REPLY_TYPING_SECONDS, typing_cps=reply.typing_cps,
+                        before_send=commit,
+                    )
+                except Exception:
+                    log.warning("could not deliver migrated reply in chat %s", target_id, exc_info=True)
+
     async def _decide(
         self, chat_id: int, *, background: bool = False, debounce_started: datetime | None = None,
         early: bool = False,
     ) -> None:
+        waits: QueueWaits | None = None
         try:
-            async with self._dispatch_slot(chat_id, debounce_started=debounce_started, early=early) as waits:
+            async with self._dispatch_slot(chat_id, debounce_started=debounce_started, early=early) as slot_waits:
+                waits = slot_waits
                 # A newer message can restart the timer while we wait for media or the turn lock.
                 if self._debounce_pending(chat_id):
                     return
@@ -829,7 +899,7 @@ class Dispatcher:
                 await self._guarded_dispatch(chat_id, self._habits(), waits, background=background)
         except TelegramMigrateToChat as exc:
             log.info("chat %s migrated to %s during dispatch", chat_id, exc.migrate_to_chat_id)
-            await self.migrate_chat(chat_id, exc.migrate_to_chat_id)
+            await self._handle_mid_reply_migration(chat_id, exc.migrate_to_chat_id, waits)
         except Exception:
             log.exception("could not decide on chat %s", chat_id)
 
@@ -863,33 +933,99 @@ class Dispatcher:
         except Exception:
             log.exception("could not send spend cap line in chat %s", chat_id)
 
+    async def _persist_catch_up_pending(self, chat_id: int, thread_id: int | None, pending: bool) -> None:
+        task = asyncio.create_task(self.app.store.set_catch_up_pending(chat_id, thread_id, pending))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
     async def _guarded_dispatch(
         self, chat_id: int, habits: Habits, waits: QueueWaits, **kwargs: bool,
     ) -> None:
-        """Run a dispatch; a chat whose turns keep failing is given up on instead of retried forever."""
-        try:
-            with model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
-                await self._dispatch(chat_id, habits, waits, **kwargs)
-        except ModelCallSkipped:
-            await self._maybe_send_spend_cap_line(chat_id)
+        """Run a dispatch (per unread forum topic when applicable); a topic or chat whose turns keep failing is
+        given up on instead of retried forever."""
+        store = self.app.store
+        background = bool(kwargs.get("background", False))
+        catch_up = bool(kwargs.get("catch_up", False))
+        state, until = await self.presence.state(chat_id, habits)
+        if state == "asleep" and (background or chat_id != self.app.owner_id):
+            if (latest := self._latest.get(chat_id)) is not None:
+                self._drop_unanswered(chat_id, latest.msg_id)
             return
-        except TelegramMigrateToChat:
-            self._failures.pop(chat_id, None)
-            raise
-        except Exception as exc:
-            log.exception("turn failed in chat %s", chat_id)
-            gone = isinstance(exc, TelegramForbiddenError) or (
-                isinstance(exc, TelegramBadRequest) and _CHAT_GONE.search(str(exc)) is not None
-            )
-            failures = self._failures[chat_id] = self._failures.get(chat_id, 0) + 1
-            if gone or failures >= MAX_TURN_FAILURES:
-                log.warning("giving up on the unread messages in chat %s (%s)", chat_id, type(exc).__name__)
-                self._failures.pop(chat_id, None)
-                if waits.through is not None:
-                    await self.app.store.mark_chat_read(chat_id, waits.through)
-                    await self._tell_owner_gave_up(chat_id, exc, gone)
-        else:
-            self._failures.pop(chat_id, None)
+        if background and state == "offline" and until is not None and until > self.now():
+            for arrival in self._arrivals.get(chat_id, {}).values():
+                arrival.stop_typing()  # Dom went offline after the indicator started; nothing will answer now
+            self._discard_interrupted(chat_id)
+            return
+        unread_topics = await store.get_unread_topics(chat_id)
+        if not unread_topics:
+            if (latest := self._latest.get(chat_id)) is not None:
+                self._drop_unanswered(chat_id, latest.msg_id)
+            return
+        total_unread = sum(c for _, c, _ in unread_topics)
+        if state != "online" and not background and not catch_up and len(unread_topics) > 1:
+            latest = self._latest.get(chat_id)
+            trigger_tid = latest.thread_id if latest is not None else unread_topics[-1][0]
+            unread_topics.sort(key=lambda item: item[0] != trigger_tid)
+
+        initial_state = state
+        batch_catch_up = catch_up
+        for idx, (topic_thread_id, topic_count, topic_newest) in enumerate(unread_topics):
+            pending_catch_up = await store.is_catch_up_pending(chat_id, topic_thread_id)
+            topic_catch_up = batch_catch_up or pending_catch_up
+            waits.through = topic_newest.msg_id
+            waits.thread_id = topic_thread_id
+            fkey = (chat_id, 0 if topic_thread_id is None else topic_thread_id)
+            try:
+                with model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
+                    woke, new_until, flood_limited = await self._dispatch(
+                        chat_id, habits, waits, state, until, topic_thread_id, topic_count, topic_newest,
+                        total_unread=total_unread, background=background, catch_up=topic_catch_up,
+                    )
+            except ModelCallSkipped:
+                await self._maybe_send_spend_cap_line(chat_id)
+                return
+            except TelegramMigrateToChat:
+                self._failures = {k: v for k, v in self._failures.items() if k[0] != chat_id}
+                raise
+            except Exception as exc:
+                log.exception("turn failed in chat %s", chat_id)
+                topic_gone = isinstance(exc, TelegramBadRequest) and _TOPIC_GONE.search(str(exc)) is not None
+                chat_gone = not topic_gone and (
+                    isinstance(exc, TelegramForbiddenError)
+                    or (isinstance(exc, TelegramBadRequest) and _CHAT_GONE.search(str(exc)) is not None)
+                )
+                failures = self._failures[fkey] = self._failures.get(fkey, 0) + 1
+                if chat_gone:
+                    log.warning("giving up on the unread messages in chat %s (%s)", chat_id, type(exc).__name__)
+                    self._failures = {k: v for k, v in self._failures.items() if k[0] != chat_id}
+                    for rem_tid, _, rem_newest in unread_topics[idx:]:
+                        await store.mark_chat_read(chat_id, rem_newest.msg_id, thread_id=rem_tid)
+                    await self._tell_owner_gave_up(chat_id, exc, True)
+                    return
+                if topic_gone or failures >= MAX_TURN_FAILURES:
+                    log.warning("giving up on the unread messages in chat %s (%s)", chat_id, type(exc).__name__)
+                    self._failures.pop(fkey, None)
+                    await store.mark_chat_read(chat_id, topic_newest.msg_id, thread_id=topic_thread_id)
+                    await self._tell_owner_gave_up(chat_id, exc, topic_gone)
+                    continue
+                return
+            else:
+                self._failures.pop(fkey, None)
+
+            if woke:
+                if state != "online":
+                    batch_catch_up = True
+                state, until = "online", new_until
+            elif state != "online":
+                return  # stayed offline/asleep; do not evaluate other topics
+            if flood_limited:
+                if topic_catch_up or batch_catch_up or initial_state != "online":
+                    for rem_tid, _, _ in unread_topics[idx + 1:]:
+                        await self._persist_catch_up_pending(chat_id, rem_tid, True)
+                return
 
     async def _tell_owner_gave_up(self, chat_id: int, exc: Exception, gone: bool) -> None:
         """Unread messages were given up on: the owner hears why rather than meeting silence. In his own DM a plain
@@ -915,51 +1051,45 @@ class Dispatcher:
 
     async def _dispatch(
         self, chat_id: int, habits: Habits, waits: QueueWaits,
-        *, background: bool = False, catch_up: bool = False,
-    ) -> None:
+        state: State, until: datetime | None, topic_thread_id: int | None, count: int, newest: StoredMessage,
+        *, total_unread: int, background: bool = False, catch_up: bool = False,
+    ) -> tuple[bool, datetime | None, bool]:
+        """Dispatch one topic (General uses `topic_thread_id=None`). Returns `(is_online, until, flood_limited)`."""
         store = self.app.store
-        state, until = await self.presence.state(chat_id, habits)
-        if state == "asleep" and (background or chat_id != self.app.owner_id):
-            if (latest := self._latest.get(chat_id)) is not None:
-                self._drop_unanswered(chat_id, latest.msg_id)
-            return
-        if background and state == "offline" and until is not None and until > self.now():
-            for arrival in self._arrivals.get(chat_id, {}).values():
-                arrival.stop_typing()  # Dom went offline after the indicator started; nothing will answer now
-            self._discard_interrupted(chat_id)
-            return
-        count, newest = await store.get_unread(chat_id)
-        if newest is None:
-            if (latest := self._latest.get(chat_id)) is not None:
-                self._drop_unanswered(chat_id, latest.msg_id)
-            return
-        waits.through = newest.msg_id
-        if background and state == "online" and self.now() - datetime.fromisoformat(newest.created_at) < ORPHAN_AGE:
-            return  # a message that fresh still has its debounce
+        if background and state == "online" and not catch_up and self.now() - datetime.fromisoformat(newest.created_at) < ORPHAN_AGE:
+            return True, until, False  # a message that fresh still has its debounce
 
         # A human among the unread messages makes this an ordinary turn; the bots are just context.
-        bots_only = newest.is_bot and not await store.has_unread_human(chat_id)
+        bots_only = newest.is_bot and not await store.has_unread_human(
+            chat_id, thread_id=topic_thread_id, filter_thread=True,
+        )
         bot_key = (chat_id, newest.sender_user_id) if bots_only and newest.sender_user_id is not None else None
         bot_depth = None
         if bots_only:
             bot_depth = await store.get_bot_depth(chat_id)
             if bot_depth > BOT_DEPTH_LIMIT or await self._suppress_bot(chat_id, newest):
-                await store.mark_chat_read(chat_id, newest.msg_id)
-                self._drop_unanswered(chat_id, newest.msg_id)
-                return
+                await store.mark_chat_read(chat_id, newest.msg_id, thread_id=topic_thread_id)
+                self._drop_unanswered(chat_id, newest.msg_id, thread_id=topic_thread_id, filter_thread=True)
+                return state == "online", until, False
 
-        # If ingress got ahead of our unread snapshot, the newer dispatch already owns these messages.
-        if not catch_up and (latest := self._latest.get(chat_id)) is not None and latest.msg_id > newest.msg_id:
-            return
+        # If ingress got ahead of our unread snapshot in the same topic, the newer dispatch already owns these messages.
+        if (
+            not catch_up and (latest := self._latest.get(chat_id)) is not None
+            and latest.thread_id == topic_thread_id and latest.msg_id > newest.msg_id
+        ):
+            return state == "online", until, False
 
         media_traces = self._take_arrival_media(chat_id, newest.msg_id)
         if bot_key is not None:
             self._bots_in_flight.add(bot_key)
         message_at = datetime.fromisoformat(newest.created_at)
         trace = turn_log.TurnTrace(message_at=message_at, now=self.now)
-        attempt = self._active[chat_id] = TurnAttempt(asyncio.current_task(), newest.msg_id, trace, waits.start)
+        attempt = self._active[chat_id] = TurnAttempt(
+            asyncio.current_task(), newest.msg_id, trace, waits.start, thread_id=topic_thread_id,
+        )
         resumed = False
-        if prior := self._interrupted.get(chat_id):
+        prior = self._interrupted.get(chat_id)
+        if prior and prior[-1].thread_id == topic_thread_id:
             attempt.tool_results = prior[-1].tool_results
             attempt.notices, prior[-1].notices = prior[-1].notices, []
             attempt.credit = prior[-1].credit + prior[-1].shown
@@ -972,6 +1102,10 @@ class Dispatcher:
         followup = [msg_id for msg_id in self._followups.get(chat_id, ()) if msg_id <= newest.msg_id]
         completed = False
         restarting = False
+        migrating = False
+        woke = state == "online"
+        new_until = until
+        flood_limited = False
         try:
             scope = store.scope_for(chat_id, "group" if chat_id < 0 else "private")
             if (state != "online" or catch_up) and message_at < waits.start:
@@ -996,14 +1130,14 @@ class Dispatcher:
                 trace.add_timing("lock_wait", waits.lock_ms)
             async with turn_log.capture(store, self.now(), chat_id, scope, trace=trace):
                 try:
-                    await self._respond(
-                        chat_id, habits, state, until, count, newest, background, catch_up, bot_depth,
-                        attempt, arrival, followup, waits.start + DEBOUNCE_CAP, resumed,
+                    woke, new_until, flood_limited = await self._respond(
+                        chat_id, habits, state, until, count, total_unread, newest, background, catch_up, bot_depth,
+                        attempt, arrival, followup, waits.start + DEBOUNCE_CAP, resumed, waits,
                     )
                     attempt.commit()
                     completed = True
                 finally:
-                    arrivals = self._take_arrivals(chat_id, newest.msg_id)
+                    arrivals = self._take_arrivals(chat_id, newest.msg_id, thread_id=topic_thread_id, filter_thread=True)
                     # Arrival work overlaps the debounce. Keep its call durations without adding them to the queue time.
                     calls = [call for item in [*(a.trace for a in arrivals), *media_traces]
                              for call in item.model_calls if call.status]
@@ -1012,14 +1146,21 @@ class Dispatcher:
                     trace.calls += len(calls)
                     if not trace.superseded:
                         interrupted = self._interrupted.get(chat_id, ())
-                        trace.steps[:0] = ["Restarted before sending"] * len(interrupted)
-                        trace.steps[:0] = [step for item in interrupted for step in item.trace.steps]
-                        trace.model_calls[:0] = [call for item in interrupted for call in item.trace.model_calls]
-                        trace.timings[:0] = [timing for item in interrupted for timing in item.trace.timings]
-                        trace.calls += sum(item.trace.calls for item in interrupted)
-                        trace.fallback |= any(item.trace.fallback for item in interrupted)
+                        if interrupted and interrupted[-1].thread_id == topic_thread_id:
+                            trace.steps[:0] = ["Restarted before sending"] * len(interrupted)
+                            trace.steps[:0] = [step for item in interrupted for step in item.trace.steps]
+                            trace.model_calls[:0] = [call for item in interrupted for call in item.trace.model_calls]
+                            trace.timings[:0] = [timing for item in interrupted for timing in item.trace.timings]
+                            trace.calls += sum(item.trace.calls for item in interrupted)
+                            trace.fallback |= any(item.trace.fallback for item in interrupted)
                     if not trace.model and trace.model_calls:
                         trace.model = trace.model_calls[-1].model
+        except TelegramMigrateToChat:
+            migrating = True
+            if attempt.notices:
+                waits.migrated_notices.extend(attempt.notices)
+                attempt.notices = []
+            raise
         except asyncio.CancelledError:
             restarting = trace.superseded and not self._closing
             raise
@@ -1035,7 +1176,10 @@ class Dispatcher:
             if trace.superseded:
                 self._interrupted.setdefault(chat_id, []).append(attempt)
             else:
-                self._discard_interrupted(chat_id)
+                if not migrating:
+                    prior_int = self._interrupted.get(chat_id)
+                    if prior_int and prior_int[-1].thread_id == topic_thread_id:
+                        self._discard_interrupted(chat_id)
                 pending = self._followups.get(chat_id, [])
                 if completed:
                     pending = [msg_id for msg_id in pending if msg_id > newest.msg_id]
@@ -1047,15 +1191,18 @@ class Dispatcher:
                     self._followups.pop(chat_id, None)
             if bot_key is not None:
                 self._bots_in_flight.remove(bot_key)
-            if not restarting:
+            if not restarting and not migrating:
                 self._finish_notices(chat_id, attempt)
             if attempt.delivered and attempt.reminder_ids:
                 # Settle the reminder before the next prompt can pick it up again.
+                # Trade-off accepted: `delivered` flips on the first bubble, so a later bubble failing still
+                # consumes the casual reminder rather than risking repeating it on the next turn.
                 consume = self._spawn(self.reminders.consume(attempt.reminder_ids), committed=True)
                 try:
                     await asyncio.shield(consume)
                 except Exception:
                     log.exception("could not settle the casual reminders delivered in chat %s", chat_id)
+        return woke, new_until, flood_limited
 
     async def _stay_checks(self, chat_id: int, row_id: int | None) -> None:
         """One staying-online decision at a time per chat, so two quick replies never add two extensions at once. A
@@ -1111,24 +1258,32 @@ class Dispatcher:
         except Exception:
             log.exception("staying-online decision failed in chat %s", chat_id)
 
-    def _drop_unanswered(self, chat_id: int, through: int) -> None:
+    def _drop_unanswered(
+        self, chat_id: int, through: int, *, thread_id: int | None = None, filter_thread: bool = False,
+    ) -> None:
         """A dispatch that will not answer: its arrivals are done, and an interrupted attempt must not leak into the
         next, unrelated turn or count against its restart cap."""
-        self._take_arrivals(chat_id, through)
+        self._take_arrivals(chat_id, through, thread_id=thread_id, filter_thread=filter_thread)
         self._discard_interrupted(chat_id)
 
-    def _discard_interrupted(self, chat_id: int) -> None:
+    def _discard_interrupted(self, chat_id: int, *, notice_chat_id: int | None = None) -> None:
+        target = chat_id if notice_chat_id is None else notice_chat_id
         for attempt in self._interrupted.pop(chat_id, ()):
-            self._finish_notices(chat_id, attempt)
+            self._finish_notices(target, attempt)
 
     def _finish_notices(self, chat_id: int, attempt: TurnAttempt) -> None:
         if attempt.notices:
             notes, attempt.notices = attempt.notices, []
             self._spawn(self._send_coding_notice(chat_id, notes), committed=True)
 
-    def _take_arrivals(self, chat_id: int, through: int) -> list[Arrival]:
+    def _take_arrivals(
+        self, chat_id: int, through: int, *, thread_id: int | None = None, filter_thread: bool = False,
+    ) -> list[Arrival]:
         arrivals = self._arrivals.get(chat_id, {})
-        selected = [arrivals.pop(msg_id) for msg_id in list(arrivals) if msg_id <= through]
+        selected = [
+            arrivals.pop(msg_id) for msg_id in list(arrivals)
+            if msg_id <= through and (not filter_thread or arrivals[msg_id].msg.thread_id == thread_id)
+        ]
         if not arrivals:
             self._arrivals.pop(chat_id, None)
         for arrival in selected:
@@ -1149,21 +1304,23 @@ class Dispatcher:
 
     async def _respond(
         self, chat_id: int, habits: Habits, state: State, until: datetime | None,
-        count: int, newest: StoredMessage, background: bool, catch_up: bool, bot_depth: int | None,
+        count: int, total_unread: int, newest: StoredMessage, background: bool, catch_up: bool, bot_depth: int | None,
         attempt: TurnAttempt, arrival: Arrival | None, followup: list[int], deadline: datetime, resumed: bool,
-    ) -> None:
+        waits: QueueWaits,
+    ) -> tuple[bool, datetime | None, bool]:
         store = self.app.store
+        topic_thread_id = newest.thread_id
         final_bot_turn = bot_depth == BOT_DEPTH_LIMIT
         latest = self._latest.get(chat_id)
         live = latest if latest is not None and latest.msg_id == newest.msg_id else None
         chat_type = live.chat_type if live else ("group" if chat_id < 0 else "private")
         scope = store.scope_for(chat_id, chat_type)
         window = await self._window(chat_id, newest)
-        count_wakes = state == "offline" and count >= habits.wake_after_messages
+        count_wakes = state == "offline" and total_unread >= habits.wake_after_messages
         resume_wake = resumed and catch_up
         if (state == "offline" and not background and not count_wakes and not resume_wake
                 and (scope == "friend_dm" or self.jev is None)):
-            return
+            return False, until, False
         await check_model_allowed()
 
         # Classification runs in parallel with the debounce. A slow or failed provider cannot hold
@@ -1191,7 +1348,7 @@ class Dispatcher:
 
         if state == "asleep":
             if not resume_wake and (urgency is None or urgency < ASLEEP_URGENCY):
-                return
+                return False, until, False
         elif state == "offline":
             wake = resume_wake or background or count_wakes or (
                 urgency is not None and urgency >= OFFLINE_URGENCY
@@ -1207,7 +1364,7 @@ class Dispatcher:
                         pass
                 wake = triage is not None and triage.kapoh is not None and triage.kapoh >= habits.kapoh_wake
             if not wake:
-                return
+                return False, until, False
         elif not catch_up and not followup and not resumed and not final_bot_turn and self.jev is not None:
             if use_arrival:
                 triage = arrival.verdict
@@ -1227,23 +1384,23 @@ class Dispatcher:
                 if triage.confident and triage.action == "ignore":
                     attempt.commit()
                     await self._mark_seen(chat_id, newest)
-                    await store.mark_chat_read(chat_id, newest.msg_id)
-                    return
+                    await store.mark_chat_read(chat_id, newest.msg_id, thread_id=topic_thread_id)
+                    return True, until, False
                 if triage.confident and triage.action == "react" and triage.emoji:
                     attempt.commit()
                     result = await (arrival.reaction if arrival is not None and arrival.reaction is not None else
                                     self._perform_reaction(chat_id, newest.msg_id, triage.emoji))
                     if result.flood_limited:
                         turn_log.outcome("Flood limited")
-                        return
+                        return True, until, True
                     if result.reacted:
                         turn_log.outcome(f"Reacted {triage.emoji[:16]}")
                     else:
                         turn_log.outcome("Reaction failed")
                         if result.reaction_result is False:
                             self._reactions_off.add(chat_id)
-                    await store.mark_chat_read(chat_id, newest.msg_id)
-                    return
+                    await store.mark_chat_read(chat_id, newest.msg_id, thread_id=topic_thread_id)
+                    return True, until, False
 
         catch_up = catch_up or state != "online"
         attempt.answering, attempt.catch_up, attempt.away = True, catch_up, count if catch_up else 0
@@ -1255,18 +1412,18 @@ class Dispatcher:
         if picked is None and arrival is not None and arrival.state == "online" and arrival.verdict is not None:
             picked = arrival.verdict.skill  # a follow-up or restart is not judged again, but its message was (if in already)
         if until is None:
-            return
+            return False, until, False
         await check_model_allowed()
         if catch_up:
             await self._describe_unread_media(chat_id)
             window = await self._window(chat_id, newest)
             await check_model_allowed()
         if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
-            return
+            return True, until, False
         with model_request("chat", chat_id, partial(self.model_allowed, chat_id)):
             answered, flood_limited = await self._run_turn(
                 chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
-                attempt, arrival, followup, picked,
+                attempt, arrival, followup, picked, waits,
             )
         attempt.commit()
         attempt.delivered |= answered
@@ -1277,18 +1434,23 @@ class Dispatcher:
             # Mark read only up to what this turn actually covered when something went out; newer messages (and
             # untouched messages when nothing went out) stay unread for a later turn.
             if answered and not attempt.read:
-                await store.mark_chat_read(chat_id, newest.msg_id)
-            return
+                await store.mark_chat_read(chat_id, newest.msg_id, thread_id=topic_thread_id)
+            elif not answered and catch_up:
+                await self._persist_catch_up_pending(chat_id, topic_thread_id, True)
+            return True, until, True
         if not answered:
             await self._mark_seen(chat_id, newest)
         if not attempt.read:
-            await store.mark_chat_read(chat_id, newest.msg_id)
+            await store.mark_chat_read(chat_id, newest.msg_id, thread_id=topic_thread_id)
+        return True, until, False
 
     async def _window(self, chat_id: int, newest: StoredMessage | None = None) -> list[StoredMessage]:
         """The messages for this turn's prompt (see dom.window). A trim that would drop notes-unread messages waits
         for a memory pass, so the pass and the trim reach the prompt cache in the same turn."""
         window = await chat_window.load(
-            self.app.store, chat_id, self.app.config, through_id=newest.id if newest is not None else None,
+            self.app.store, chat_id, self.app.config,
+            through_id=newest.id if newest is not None else None,
+            thread_id=newest.thread_id if newest is not None else None,
         )
         self._trim_seq[chat_id] = window.trim_seq
         if window.blocked:
@@ -1357,6 +1519,7 @@ class Dispatcher:
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
         attempt: TurnAttempt, arrival: Arrival | None, followup: list[int], skill: str | None = None,
+        waits: QueueWaits | None = None,
     ) -> tuple[bool, bool]:
         """Run one turn and send its result; returns `(answered, flood_limited)`."""
         app = self.app
@@ -1380,7 +1543,7 @@ class Dispatcher:
         async def on_sent(_msg_id: int) -> None:
             attempt.delivered = True
             if not attempt.read:
-                await app.store.mark_chat_read(chat_id, newest.msg_id)
+                await app.store.mark_chat_read(chat_id, newest.msg_id, thread_id=thread_id)
                 attempt.read = True
 
         actions = None
@@ -1396,14 +1559,27 @@ class Dispatcher:
             recipient = self._ephemeral_recipient(scope, newest)
             in_group = recipient is None or await self._is_admin(chat_id)
             ineligible_reason = None if recipient is not None else self._ephemeral_ineligible_reason(scope, newest)
+            typing_cps = executor.ASSISTANT_TYPING_CPS if attempt.assistant else executor.TYPING_CPS
+
+            def on_migrate(remaining: Actions) -> None:
+                if waits is not None and not remaining.no_response and (
+                    remaining.bubbles or remaining.sticker or remaining.gif
+                ):
+                    waits.migrated_reply = _MigratedReply(
+                        actions=remaining,
+                        ephemeral_recipient=recipient,
+                        ephemeral_ineligible_reason=ineligible_reason,
+                        typing_cps=typing_cps,
+                    )
+
             sent = await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
                 thread_id=thread_id, stickers=app.stickers.sendable(),
                 gifs=app.gifs, ephemeral_recipient=recipient, ephemeral_in_chat=in_group,
                 ephemeral_ineligible_reason=ineligible_reason, typed_already=attempt.credit + typing.seconds,
                 reply_elapsed=monotonic() - reply_started,
-                typing_cps=executor.ASSISTANT_TYPING_CPS if attempt.assistant else executor.TYPING_CPS,
-                before_send=before_send, on_sent=on_sent,
+                typing_cps=typing_cps,
+                before_send=before_send, on_sent=on_sent, on_migrate=on_migrate,
             )
             if sent.reaction_result is False:
                 self._reactions_off.add(chat_id)
@@ -1426,13 +1602,14 @@ class Dispatcher:
                         await app.store.record_owner_event(f"Reply in {where} stopped early ({detail})")
                     except Exception:
                         log.exception("could not record flood-limit owner event in chat %s", chat_id)
-                return bool(sent) or sent.reacted, True
+                return bool(sent), True
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
                 if sent:  # the bubbles stay out of the group's history, so say here that the owner was answered
                     await app.store.record_chat_event(
                         chat_id, "You answered the owner's latest message here privately; only he saw it. "
                         "Don't repeat that answer to the group.",
+                        thread_id=thread_id,
                     )
             elif sent:
                 bubbles = len(actions.bubbles)
@@ -1620,11 +1797,14 @@ class Dispatcher:
                 await app.store.record_owner_event(f"Dom reported desktop task #{task_id}")
             await executor.send_files(app.bot, app.store, chat_id, files, sleep=app.sleep)
 
-    async def _measure_prompt(self, chat_id: int, window: list[StoredMessage], usage_mark: int) -> None:
+    async def _measure_prompt(
+        self, chat_id: int, window: list[StoredMessage], usage_mark: int, *, thread_id: int | None = None,
+    ) -> None:
         """Learn the real size of the prompt just sent, from the first model call's reported input tokens."""
         try:
             await chat_window.measure(
                 self.app.store, chat_id, window, await self.app.store.first_chat_input_tokens(chat_id, usage_mark),
+                thread_id=thread_id,
             )
         except Exception:
             log.exception("could not measure the prompt in chat %s", chat_id)
@@ -1667,9 +1847,19 @@ class Dispatcher:
         if scope == "group" and self._directly_addressed(newest, window):
             now = self.now()
             last = self._group_no_answer_at.get(chat_id)
+            if last is None:
+                last = await app.store.get_group_no_answer_at(chat_id)
+                if last is not None:
+                    self._group_no_answer_at[chat_id] = last
             if last is not None and now - last < GROUP_NO_ANSWER_COOLDOWN:
                 return Actions(no_response=True)
             self._group_no_answer_at[chat_id] = now
+            save = asyncio.create_task(app.store.set_group_no_answer_at(chat_id, now))
+            try:
+                await asyncio.shield(save)
+            except asyncio.CancelledError:
+                await save
+                raise
             return Actions(bubbles=[Bubble(text=FRIEND_NO_ANSWER_LINE, reply_to=newest.msg_id)])
         return Actions(no_response=True)
 
@@ -1784,7 +1974,9 @@ class Dispatcher:
             if attempt is not None:
                 attempt.notices.extend(ctx.t3_notes)
             try:
-                await self._measure_prompt(chat_id, window, usage_mark)
+                await self._measure_prompt(
+                    chat_id, window, usage_mark, thread_id=newest.thread_id if newest is not None else None,
+                )
             finally:
                 if attempt is None and ctx.t3_notes:
                     notice = self._spawn(self._send_coding_notice(chat_id, ctx.t3_notes), committed=True)
@@ -1805,6 +1997,7 @@ class Dispatcher:
             await executor.retry_telegram(
                 lambda: self.app.bot.send_message(chat_id, f"🔎 Checked your coding work: {note}"[:1800]),
                 sleep=self.app.sleep,
+                budget=executor.FloodBudget(remaining=CODING_NOTICE_FLOOD_BUDGET),
             )
         except Exception:
             log.warning("Could not deliver T3 turn notification.")

@@ -143,6 +143,49 @@ async def test_migration_reserves_both_turn_slots_and_clears_the_old_chat(setup_
     assert dispatch._admin[new] is True
 
 
+async def test_migration_flushes_pending_coding_notice_to_new_chat_id(setup_dispatch):
+    from dom.dispatch import TurnAttempt
+
+    old, new = GROUP, -10667
+    app, dispatch, clock = await setup_dispatch(chat_id=old)
+    interrupted = TurnAttempt(
+        asyncio.current_task(), 1, turn_log.TurnTrace(), clock(), notices=["checked progress"],
+    )
+    dispatch._interrupted[old] = [interrupted]
+    assert await dispatch.migrate_chat(old, new) == "migrated"
+    await drain_dispatch(dispatch)
+    assert app.bot.of("send", old) == []
+    assert [c[2] for c in app.bot.of("send", new)] == ["🔎 Checked your coding work: checked progress"]
+
+
+async def test_close_bounds_coding_notice_flood_wait(setup_dispatch):
+    from aiogram.exceptions import TelegramRetryAfter
+
+    app, dispatch, _ = await setup_dispatch(chat_id=OWNER)
+    slept: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    async def long_flood(chat_id, text, **kw):
+        raise TelegramRetryAfter(
+            method=SendMessage(chat_id=chat_id, text=text),
+            message="Flood control exceeded. Retry in 60 seconds",
+            retry_after=60,
+        )
+
+    app.sleep = record_sleep
+    app.bot.send_message = long_flood
+    dispatch._spawn(dispatch._send_coding_notice(OWNER, ["checked progress"]), committed=True)
+    await asyncio.wait_for(dispatch.close(), timeout=2)
+    assert slept == []
+
+
+def test_protect_send_is_public(setup_dispatch):
+    assert hasattr(Dispatcher, "protect_send")
+    assert not hasattr(Dispatcher, "_protect_send")
+
+
 async def test_asleep_flood_no_calls_single_catchup(setup_dispatch):
     jev = FakeJev()
     app, dispatch, clock = await setup_dispatch(jev)

@@ -13,14 +13,14 @@ from random import choice
 from time import monotonic
 from typing import Awaitable, Callable, TypeVar
 
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramMigrateToChat, TelegramRetryAfter
 from aiogram.types import (
     BufferedInputFile, EphemeralMessageParameters, LinkPreviewOptions, ReactionTypeEmoji, ReplyParameters,
 )
 from pydantic import ValidationError
 
 from dom import turn_log
-from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, SendFile, split_text, utf16_len
+from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, SendFile, split_text, utf16_len
 from dom.gifs import GifSearch
 from dom.models import StoredMessage
 from dom.store import Store
@@ -265,6 +265,10 @@ def _pack(texts: list[str]) -> list[str]:
     return messages
 
 
+def _strip_reply_to(bubbles: Sequence[Bubble]) -> list[Bubble]:
+    return [b.model_copy(update={"reply_to": None}) for b in bubbles]
+
+
 async def perform(
     bot,
     store: Store,
@@ -287,6 +291,7 @@ async def perform(
     typed_already: float | None = None,
     reply_elapsed: float = 0.0,
     before_send: Callable[[], None] | None = None,
+    on_migrate: Callable[[Actions], None] | None = None,
     flood_budget: float = MAX_FLOOD_WAIT_SECONDS,
 ) -> PerformResult:
     """Send the bubbles, reaction, sticker and GIF; returns the sent message ids. no_response does nothing at all."""
@@ -314,7 +319,7 @@ async def perform(
         parameters = EphemeralMessageParameters(receiver_user_id=ephemeral_recipient)
         # Keep these bubbles out of the group's history and skip public side effects.
         sent_ids: list[int] = []
-        for bubble in actions.bubbles:
+        for index, bubble in enumerate(actions.bubbles):
             if before_send is not None:
                 before_send()
             try:
@@ -325,6 +330,10 @@ async def perform(
                         ),
                         sleep=sleep, budget=flood,
                     )
+            except TelegramMigrateToChat:
+                if on_migrate is not None:
+                    on_migrate(Actions(private=True, bubbles=_strip_reply_to(actions.bubbles[index:])))
+                raise
             except FloodBudgetExhausted:
                 return PerformResult(sent_ids, flood_limited=True)
             except TelegramAPIError as error:
@@ -341,13 +350,26 @@ async def perform(
                 await on_sent(sent.message_id)
         return PerformResult(sent_ids)
 
+    committed = False
+    reaction_done = False
     reaction_result: bool | None = None
-    if actions.react and trigger_msg_id is not None:
-        reaction_result = await react(bot, chat_id, trigger_msg_id, actions.react, sleep=sleep, budget=flood)
-        if flood.exhausted:
-            return PerformResult([], reacted=False, reaction_result=None, flood_limited=True)
-        if not reaction_result:
-            log.warning("reaction %r not sent in chat %s (result=%s)", actions.react, chat_id, reaction_result)
+
+    async def enter_send_boundary() -> bool:
+        """Cross the send boundary once, then send any chosen reaction so a restart before sending cannot react twice."""
+        nonlocal committed, reaction_done, reaction_result
+        if not committed:
+            committed = True
+            if before_send is not None:
+                before_send()
+        if not reaction_done:
+            reaction_done = True
+            if actions.react and trigger_msg_id is not None:
+                reaction_result = await react(bot, chat_id, trigger_msg_id, actions.react, sleep=sleep, budget=flood)
+                if flood.exhausted:
+                    return False
+                if not reaction_result:
+                    log.warning("reaction %r not sent in chat %s (result=%s)", actions.react, chat_id, reaction_result)
+        return True
 
     sent_ids = []
     # "typing" already showed while Dom thought, so that time counts against the reply's budget; a long reply in
@@ -376,9 +398,9 @@ async def perform(
             else None
         )
         options = {} if link_previews else {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
-        if before_send is not None:
-            before_send()
         try:
+            if not await enter_send_boundary():
+                return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
             with turn_log.timed("send"):
                 sent = await retry_telegram(
                     lambda b=bubble, r=reply, o=options: bot.send_message(
@@ -386,6 +408,14 @@ async def perform(
                     ),
                     sleep=sleep, budget=flood,
                 )
+        except TelegramMigrateToChat:
+            if on_migrate is not None:
+                on_migrate(Actions(
+                    bubbles=_strip_reply_to(actions.bubbles[index:]),
+                    sticker=actions.sticker,
+                    gif=actions.gif,
+                ))
+            raise
         except FloodBudgetExhausted:
             return PerformResult(
                 sent_ids,
@@ -425,14 +455,18 @@ async def perform(
             sticker_failed = True
         else:
             picked = choice(choices)
-            if before_send is not None:
-                before_send()
             try:
+                if not await enter_send_boundary():
+                    return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
                 sticker_id = await _send_media(
                     lambda p=picked: bot.send_sticker(chat_id, p, message_thread_id=thread_id),
                     store, chat_id, "sticker", {"kind": "sticker", "emoji": emoji}, now, on_sent,
                     thread_id=thread_id, sleep=sleep, record=record, budget=flood, trigger_msg_id=trigger_msg_id,
                 )
+            except TelegramMigrateToChat:
+                if on_migrate is not None:
+                    on_migrate(Actions(sticker=actions.sticker, gif=actions.gif))
+                raise
             except FloodBudgetExhausted:
                 return PerformResult(
                     sent_ids,
@@ -455,14 +489,18 @@ async def perform(
             except Exception:
                 log.exception("gif search crashed in chat %s", chat_id)
         if url:
-            if before_send is not None:
-                before_send()
             try:
+                if not await enter_send_boundary():
+                    return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
                 gif_id = await _send_media(
                     lambda u=url: bot.send_animation(chat_id, u, message_thread_id=thread_id),
                     store, chat_id, "gif", {"kind": "gif", "query": actions.gif}, now, on_sent,
                     thread_id=thread_id, sleep=sleep, record=record, budget=flood, trigger_msg_id=trigger_msg_id,
                 )
+            except TelegramMigrateToChat:
+                if on_migrate is not None:
+                    on_migrate(Actions(gif=actions.gif))
+                raise
             except FloodBudgetExhausted:
                 return PerformResult(
                     sent_ids,
@@ -484,14 +522,18 @@ async def perform(
         fallback_text = sticker_fallback(actions.sticker) if sticker_failed and actions.sticker else f"*{actions.gif}*"
     if fallback_text:
         options = {} if link_previews else {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
-        if before_send is not None:
-            before_send()
         try:
+            if not await enter_send_boundary():
+                return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
             with turn_log.timed("send"):
                 sent = await retry_telegram(
                     lambda t=fallback_text, o=options: bot.send_message(chat_id, t, message_thread_id=thread_id, **o),
                     sleep=sleep, budget=flood,
                 )
+        except TelegramMigrateToChat:
+            if on_migrate is not None:
+                on_migrate(Actions(bubbles=[Bubble(text=fallback_text)]))
+            raise
         except FloodBudgetExhausted:
             return PerformResult(
                 sent_ids,
@@ -510,6 +552,10 @@ async def perform(
         media_fallback = True
         if on_sent is not None:
             await on_sent(sent.message_id)
+
+    if not reaction_done and actions.react and trigger_msg_id is not None:
+        if not await enter_send_boundary():
+            return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
 
     return PerformResult(
         sent_ids,
@@ -530,6 +576,8 @@ async def _send_media(
     try:
         with turn_log.timed("send"):
             sent = await retry_telegram(sending, sleep=sleep, budget=budget)
+    except TelegramMigrateToChat:
+        raise
     except TelegramAPIError:
         log.warning("%s send failed in chat %s", kind, chat_id)
         return None
@@ -562,6 +610,8 @@ async def react(
                 lambda: bot.set_message_reaction(chat_id, msg_id, reaction=[ReactionTypeEmoji(emoji=emoji)]),
                 sleep=sleep, budget=budget,
             )
+    except TelegramMigrateToChat:
+        raise
     except (TelegramBadRequest, ValidationError):
         log.warning("reaction %r rejected in chat %s", emoji, chat_id)
         return False

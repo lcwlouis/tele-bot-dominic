@@ -28,6 +28,7 @@ from dom.dispatch import (
     Dispatcher,
 )
 from dom.memory_pass import MemoryPass
+from dom.models import StoredMessage
 from dom.presence import Presence, parse_habits
 from dom.reminders import Reminders
 from dom.telegram import executor, handlers
@@ -1046,3 +1047,361 @@ async def test_an_undeliverable_critical_reminder_is_retried_slowly_until_one_de
     assert await app.dispatch.reminders.active() == []  # delivered: finished, and the mark went with it
     row = await app.store.get_reminder(OWNER, reminder_id)
     assert row["status"] != "active" and not row["undeliverable"]
+
+
+# ---- 11. v0.8.2 W6 edge cases left from v0.8.1 reviews ----------------------------------------
+
+
+async def test_forum_catchup_scopes_prompt_unread_and_reply_per_topic_including_general(make_app):
+    app = make_app(contents=(
+        json.dumps({"bubbles": [{"text": "reply general"}]}),
+        json.dumps({"bubbles": [{"text": "reply alpha"}]}),
+        json.dumps({"bubbles": [{"text": "reply beta"}]}),
+    ))
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    app.dispatch.now.at = app.dispatch.now.at.replace(hour=2)  # asleep
+
+    general_msg = tg(GROUP, FRIEND, text="general question", msg_id=10).model_copy(
+        update={"date": app.dispatch.now(), "message_thread_id": None, "is_topic_message": False},
+    )
+    alpha_msg = tg(GROUP, FRIEND, text="alpha topic question", msg_id=11).model_copy(
+        update={"date": app.dispatch.now(), "message_thread_id": 77, "is_topic_message": True},
+    )
+    beta_msg = tg(GROUP, FRIEND, text="beta topic question", msg_id=12).model_copy(
+        update={"date": app.dispatch.now(), "message_thread_id": 88, "is_topic_message": True},
+    )
+    for message in (general_msg, alpha_msg, beta_msg):
+        await handlers.handle_message(app, message)
+    assert app.bot.of("send", GROUP) == []
+
+    # Simulate restart and wake up 6 hours later for catch-up.
+    clock = Clock(app.dispatch.now() + timedelta(hours=6))
+    presence = Presence(app.store, app.dispatch.presence.tz, FixedRandom(), clock)
+    app.dispatch = Dispatcher(app, presence, None, no_sleep, clock)
+    await app.dispatch.tick()
+
+    requests = turn_requests(app)
+    assert len(requests) == 3
+    prompts = [req["messages"][-1]["content"] for req in requests]
+    assert "general question" in prompts[0] and "alpha topic" not in prompts[0] and "beta topic" not in prompts[0]
+    assert "alpha topic question" in prompts[1] and "general question" not in prompts[1] and "beta topic" not in prompts[1]
+    assert "beta topic question" in prompts[2] and "general question" not in prompts[2] and "alpha topic" not in prompts[2]
+
+    sent = app.bot.of("send", GROUP)
+    assert [(c[2], c[3]["message_thread_id"]) for c in sent] == [
+        ("reply general", None),
+        ("reply alpha", 77),
+        ("reply beta", 88),
+    ]
+    assert await app.store.get_unread(GROUP) == (0, None)
+
+
+async def test_forum_marking_one_topic_read_leaves_earlier_unread_topics_unread(make_app):
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    await online(app, GROUP)
+
+    # Record unread messages in General (msg 10) and Topic 77 (msg 20).
+    for msg_id, thread_id, is_topic, text in [
+        (10, None, False, "waiting in general"),
+        (20, 77, True, "newer in topic 77"),
+    ]:
+        await app.store.record_new_message(
+            StoredMessage(
+                chat_id=str(GROUP), msg_id=msg_id, thread_id=thread_id, sender_user_id=FRIEND,
+                visibility_scope=app.store.visibility_for(GROUP), text=text,
+                created_at=app.dispatch.now().isoformat(),
+            )
+        )
+    # Mark ONLY Topic 77 read up to msg 20: General msg 10 must remain unread!
+    await app.store.mark_chat_read(GROUP, 20, thread_id=77)
+    topics = await app.store.get_unread_topics(GROUP)
+    assert [(tid, count, msg.msg_id) for tid, count, msg in topics] == [(None, 1, 10)]
+
+    # TOPIC_CLOSED on Topic 77 gives up on Topic 77 only, still answering General.
+    await app.store.record_new_message(
+        StoredMessage(
+            chat_id=str(GROUP), msg_id=21, thread_id=77, sender_user_id=FRIEND,
+            visibility_scope=app.store.visibility_for(GROUP), text="closed topic ping",
+            created_at=(app.dispatch.now() - timedelta(seconds=30)).isoformat(),
+        )
+    )
+    real_send = app.bot.send_message
+
+    async def closed_77(chat_id, text, **kw):
+        if kw.get("message_thread_id") == 77:
+            raise TelegramBadRequest(method=SendMessage(chat_id=chat_id, text=text), message="Bad Request: TOPIC_CLOSED")
+        return await real_send(chat_id, text, **kw)
+
+    app.bot.send_message = closed_77
+    app.dispatch.now.advance(seconds=30)
+    await app.dispatch.tick()
+    assert [(c[2], c[3]["message_thread_id"]) for c in app.bot.of("send", GROUP)] == [("hey", None)]
+    assert await app.store.get_unread(GROUP) == (0, None)
+
+
+@pytest.mark.parametrize("mid_multi_bubble", [False, True])
+async def test_supergroup_upgrade_mid_reply_delivers_remaining_reply_in_new_chat(make_app, mid_multi_bubble):
+    old_id, new_id = -556, -10556
+    payload = (
+        json.dumps({"bubbles": [{"text": "bubble one", "reply_to": 1}, {"text": "bubble two"}]})
+        if mid_multi_bubble
+        else json.dumps({"bubbles": [{"text": "hello migrated", "reply_to": 1}]})
+    )
+    app = make_app(contents=(payload,))
+    await online(app, old_id)
+    real_send = app.bot.send_message
+
+    async def migrate_on_send(chat_id, text, **kw):
+        if chat_id == old_id and (not mid_multi_bubble or text == "bubble two"):
+            raise TelegramMigrateToChat(
+                method=SendMessage(chat_id=chat_id, text=text),
+                message="Bad Request: group chat was upgraded to a supergroup chat",
+                migrate_to_chat_id=new_id,
+            )
+        return await real_send(chat_id, text, **kw)
+
+    app.bot.send_message = migrate_on_send
+    await deliver(app, tg(old_id, FRIEND, text="hello before upgrade", msg_id=1))
+
+    assert await app.store.resolve_chat_id(old_id) == str(new_id)
+    assert await app.store.is_chat_approved(new_id) is True
+    assert not app.locks[old_id].locked() and not app.locks[new_id].locked()
+    if mid_multi_bubble:
+        assert [c[2] for c in app.bot.of("send", old_id)] == ["bubble one"]
+        assert [c[2] for c in app.bot.of("send", new_id)] == ["bubble two"]
+    else:
+        assert app.bot.of("send", old_id) == []
+        sent_new = app.bot.of("send", new_id)
+        assert [c[2] for c in sent_new] == ["hello migrated"]
+        assert sent_new[0][3].get("reply_parameters") is None
+    new_window = await app.store.get_recent_chat_window(new_id)
+    expected_text = "bubble two" if mid_multi_bubble else "hello migrated"
+    assert any(m.role == "assistant" and m.text == expected_text for m in new_window)
+
+
+async def test_supergroup_upgrade_mid_override_wake_delivers_reply_in_new_chat(make_app):
+    old_id, new_id = -558, -10558
+    app = make_app(contents=(json.dumps({"bubbles": [{"text": "woke up in new chat"}]}),))
+    await app.store.set_chat_auth_status(old_id, "approved", title="Wake Crew")
+    await handlers.handle_message(app, tg(old_id, FRIEND, text="wake up!", msg_id=1))
+    real_send = app.bot.send_message
+
+    async def migrate_on_old(chat_id, text, **kw):
+        if chat_id == old_id:
+            raise TelegramMigrateToChat(
+                method=SendMessage(chat_id=chat_id, text=text),
+                message="Bad Request: group chat was upgraded to a supergroup chat",
+                migrate_to_chat_id=new_id,
+            )
+        return await real_send(chat_id, text, **kw)
+
+    app.bot.send_message = migrate_on_old
+    assert await app.dispatch.override(old_id, "/wake") is True
+    assert [c[2] for c in app.bot.of("send", new_id)] == ["woke up in new chat"]
+
+
+@pytest.mark.parametrize("cancel_mid_send", [False, True])
+async def test_critical_reminder_does_not_resend_chunk_one_after_restart_mid_send(make_app, cancel_mid_send):
+    app = make_app()
+    text = "".join(chr(ord("a") + i) * 2000 for i in range(4)) + "z" * 1000
+    await app.dispatch.reminders.create("2026-01-01T12:01", text, "critical", "")
+    real_send = app.bot.send_message
+    attempts: list[str] = []
+    chunk2_started = asyncio.Event()
+
+    async def fail_or_hang_second(chat_id, msg_text, **kw):
+        attempts.append(msg_text)
+        if len(attempts) == 2:
+            if cancel_mid_send:
+                chunk2_started.set()
+                await asyncio.Future()
+            raise OSError("network dropped after chunk 1")
+        return await real_send(chat_id, msg_text, **kw)
+
+    app.bot.send_message = fail_or_hang_second
+    app.dispatch.now.advance(minutes=1)
+    if cancel_mid_send:
+        task = asyncio.create_task(app.dispatch.reminders.tick())
+        await asyncio.wait_for(chunk2_started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await app.dispatch.tick()
+    assert len(app.bot.of("send", OWNER)) == 1
+    assert len(attempts) == 2
+
+    # Process restarts mid-send (fresh Reminders instance with empty memory).
+    app.dispatch.reminders = Reminders(app)
+    app.dispatch.now.advance(minutes=1)
+    await app.dispatch.tick()
+
+    sent = [c[2] for c in app.bot.of("send", OWNER)]
+    assert len(sent) == 5
+    assert "".join(sent) == f"hey\n⏰ {text}"
+    assert len(attempts) == 6  # chunk 1 once, chunk 2 failed/cancelled once + succeeded once, chunks 3..5 once each
+    assert len(app.script.requests) == 1  # never re-styled after restart
+    assert await app.dispatch.reminders.active() == []
+
+
+async def test_group_no_answer_cooldown_survives_restart_and_migration(make_app):
+    old_id, new_id = -557, -10557
+    app = make_app(contents=("prose", "prose") * 6)
+    await online(app, old_id)
+
+    await deliver(app, tg(old_id, FRIEND, text="@dombot help?", msg_id=10))
+    assert [c[2] for c in app.bot.of("send", old_id)] == [FRIEND_NO_ANSWER_LINE]
+
+    # Simulate process restart with a fresh Dispatcher.
+    app.bot.calls.clear()
+    clock = Clock(app.dispatch.now() + timedelta(minutes=5))
+    presence = Presence(app.store, app.dispatch.presence.tz, FixedRandom(), clock)
+    app.dispatch = Dispatcher(app, presence, None, no_sleep, clock)
+    await deliver(app, tg(old_id, FRIEND, text="@dombot still there?", msg_id=11))
+    assert app.bot.of("send", old_id) == []
+
+    # Migrate to supergroup and restart again: cooldown still applies within 30 minutes.
+    assert await app.dispatch.migrate_chat(old_id, new_id, title="Crew") == "migrated"
+    clock = Clock(clock() + timedelta(minutes=5))
+    presence = Presence(app.store, app.dispatch.presence.tz, FixedRandom(), clock)
+    app.dispatch = Dispatcher(app, presence, None, no_sleep, clock)
+    await deliver(app, tg(new_id, FRIEND, text="@dombot after upgrade?", msg_id=12, chat_type="supergroup"))
+    assert app.bot.of("send", new_id) == []
+
+    # Once 30 minutes pass from the original fallback, directly addressed failure replies again.
+    clock.advance(minutes=25)
+    await online(app, new_id)
+    await deliver(app, tg(new_id, FRIEND, text="@dombot now?", msg_id=13, chat_type="supergroup"))
+    assert [c[2] for c in app.bot.of("send", new_id)] == [FRIEND_NO_ANSWER_LINE]
+
+
+async def test_flood_limited_catchup_sending_nothing_retries_as_catchup_not_online_turn(make_app):
+    jev = FakeJev("ignore", confidence=1.0)
+    app = make_app()
+    clock = Clock(NOW.replace(hour=2))
+    presence = Presence(app.store, app.dispatch.presence.tz, FixedRandom(), clock)
+    app.dispatch = Dispatcher(app, presence, jev, no_sleep, clock)
+    await app.store.set_chat_auth_status(GROUP, "approved")
+
+    for msg_id in (1, 2):
+        await handlers.handle_message(
+            app, tg(GROUP, FRIEND, text=f"offline msg {msg_id}", msg_id=msg_id).model_copy(update={"date": clock()}),
+        )
+    await drain_dispatch(app.dispatch)
+    assert not app.bot.of("send", GROUP)
+
+    real_send = app.bot.send_message
+    flood = {"on": True}
+
+    async def maybe_flood(chat_id, text, **kw):
+        if flood["on"]:
+            raise _retry_after(60)
+        return await real_send(chat_id, text, **kw)
+
+    app.bot.send_message = maybe_flood
+    clock.advance(hours=6)
+    await app.dispatch.tick()
+
+    # Dom is now online, nothing went out, messages remain unread.
+    assert (await app.dispatch.presence.state(GROUP, parse_habits("")))[0] == "online"
+    assert app.bot.of("send", GROUP) == []
+    assert (await app.store.get_unread(GROUP))[0] == 2
+
+    # Even after a restart while still online, the retry runs as a catch-up so Jev cannot ignore the backlog.
+    flood["on"] = False
+    clock.advance(minutes=1)
+    presence2 = Presence(app.store, app.dispatch.presence.tz, FixedRandom(), clock)
+    app.dispatch = Dispatcher(app, presence2, jev, no_sleep, clock)
+    await app.dispatch.tick()
+
+    assert jev.calls == []  # Jev online triage was skipped!
+    assert [c[2] for c in app.bot.of("send", GROUP)] == ["hey"]
+    assert (await app.store.get_unread(GROUP))[0] == 0
+    note = turn_requests(app)[-1]["messages"][-1]["content"]
+    assert "messages that arrived while away: 2" in note and "you just came online" in note
+
+
+async def test_reaction_with_flood_limited_first_bubble_does_not_mark_read(make_app):
+    payload = json.dumps({"react": "🔥", "bubbles": [{"text": "hello after react"}]})
+    app = make_app(contents=(payload, payload))
+    await online(app, GROUP)
+    real_send = app.bot.send_message
+    flood = {"on": True}
+
+    async def maybe_flood(chat_id, text, **kw):
+        if flood["on"]:
+            raise _retry_after(60)
+        return await real_send(chat_id, text, **kw)
+
+    app.bot.send_message = maybe_flood
+    await deliver(
+        app, tg(GROUP, FRIEND, text="great news!", msg_id=10).model_copy(update={"date": app.dispatch.now()}),
+    )
+
+    # Reaction went out, first bubble hit flood limit -> NOT marked read!
+    assert len(app.bot.of("react", GROUP)) == 1
+    assert app.bot.of("send", GROUP) == []
+    assert (await app.store.get_unread(GROUP))[0] == 1
+    [turn] = await app.store.recent_turns(str(GROUP))
+    assert turn["outcome"] == "Flood limited"
+
+    # Once flood clears, next tick delivers the reply and marks read.
+    flood["on"] = False
+    app.dispatch.now.advance(seconds=30)
+    await app.dispatch.tick()
+    assert [c[2] for c in app.bot.of("send", GROUP)] == ["hello after react"]
+    assert (await app.store.get_unread(GROUP))[0] == 0
+
+
+async def test_model_reaction_runs_after_send_boundary_so_restart_cannot_react_twice(make_app, monkeypatch):
+    app = make_app(contents=(
+        json.dumps({"react": "🔥", "bubbles": [{"text": "obsolete"}]}),
+        json.dumps({"react": "🔥", "bubbles": [{"text": "updated"}]}),
+    ))
+    app.dispatch.jev = FakeJev(done=1)
+    await online(app, OWNER)
+    typing_started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def pause_typing(_):
+        if not typing_started.is_set():
+            typing_started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+    monkeypatch.setattr(app, "sleep", pause_typing)
+    await handlers.handle_message(app, tg(OWNER, OWNER, text="first", msg_id=1))
+    await asyncio.wait_for(typing_started.wait(), timeout=2)
+    # No reaction has been sent yet while paused before the send boundary!
+    assert app.bot.of("react", OWNER) == []
+
+    await handlers.handle_message(app, tg(OWNER, OWNER, text="second", msg_id=2))
+    await asyncio.wait_for(drain_dispatch(app.dispatch), timeout=2)
+
+    assert cancelled.is_set()
+    assert [c[2] for c in app.bot.of("send", OWNER)] == ["updated"]
+    # Reacted exactly once (on the final non-restarted attempt, to msg 2).
+    assert [(c[1], c[2], c[3][0].emoji) for c in app.bot.of("react", OWNER)] == [(OWNER, 2, "🔥")]
+
+    # Reaction-only turn: send boundary commits before set_message_reaction so an in-flight reaction cannot restart.
+    app.bot.calls.clear()
+    app.script.contents[:] = [json.dumps({"react": "👍"}), json.dumps({"bubbles": [{"text": "got msg 4"}]})]
+    reacting, release_react = asyncio.Event(), asyncio.Event()
+    real_react = app.bot.set_message_reaction
+
+    async def slow_react(chat_id, message_id, **kw):
+        reacting.set()
+        await release_react.wait()
+        return await real_react(chat_id, message_id, **kw)
+
+    monkeypatch.setattr(app, "sleep", no_sleep)
+    monkeypatch.setattr(app.bot, "set_message_reaction", slow_react)
+    await handlers.handle_message(app, tg(OWNER, OWNER, text="third", msg_id=3))
+    await asyncio.wait_for(reacting.wait(), timeout=2)
+    await handlers.handle_message(app, tg(OWNER, OWNER, text="fourth", msg_id=4))
+    release_react.set()
+    await asyncio.wait_for(drain_dispatch(app.dispatch), timeout=2)
+    assert [(c[1], c[2], c[3][0].emoji) for c in app.bot.of("react", OWNER)] == [(OWNER, 3, "👍")]
+    assert [c[2] for c in app.bot.of("send", OWNER)] == ["got msg 4"]
