@@ -661,6 +661,34 @@ async def test_restart_keeps_an_answer_jev_already_chose_when_a_thank_you_arrive
     assert (await app.store.get_unread(GROUP))[0] == 0
 
 
+async def test_a_second_restart_before_the_model_still_keeps_the_chosen_answer(setup_dispatch, monkeypatch):
+    """Re-check of PR #12: a restart cancelled again before reaching the model used to forget the answer was chosen."""
+    app, dispatch, _ = await setup_dispatch(JudgesEachMessage())
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    entered, _ = hold_first_generation(app, monkeypatch)
+    window_calls, in_restart, release = [], asyncio.Event(), asyncio.Event()
+    real_window = dispatch._window
+
+    async def window(*args, **kwargs):
+        window_calls.append(1)
+        if len(window_calls) == 2:  # the first restart: hold it before the model so a third message lands
+            in_restart.set()
+            await release.wait()
+        return await real_window(*args, **kwargs)
+
+    monkeypatch.setattr(dispatch, "_window", window)
+    await handle_message(app, tg(text="can you send me the address?"))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await handle_message(app, tg(msg_id=2, text="thanks!"))
+    await asyncio.wait_for(in_restart.wait(), timeout=2)
+    await handle_message(app, tg(msg_id=3, text="oh and sorry"))
+    release.set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    assert app.bot.of("send", GROUP)  # still answered, not marked read in silence
+    assert (await app.store.get_unread(GROUP))[0] == 0
+
+
 async def test_restart_of_a_catch_up_turn_stays_a_catch_up_turn(setup_dispatch, gated_sleep, monkeypatch):
     sleep, waits = gated_sleep
     app, dispatch, clock = await setup_dispatch(FakeJev(action="ignore"), sleep=sleep)

@@ -872,6 +872,8 @@ class Dispatcher:
             resumed = prior[-1].answering
             if resumed:  # the restarted answer was already chosen: a newer message must not turn it into a skip
                 catch_up, count = catch_up or prior[-1].catch_up, prior[-1].away
+                # and so does this attempt, even if it is itself restarted before reaching the model
+                attempt.answering, attempt.catch_up, attempt.away = True, catch_up, count if catch_up else 0
         arrival = self._arrivals.get(chat_id, {}).get(newest.msg_id)
         followup = [msg_id for msg_id in self._followups.get(chat_id, ()) if msg_id <= newest.msg_id]
         completed = False
