@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from random import Random
@@ -41,7 +41,7 @@ def _timestamp(value: str) -> datetime:
 class Openers:
     def __init__(self, app: App, rng: Random):
         self.app, self.rng = app, rng
-        self._lock = asyncio.Lock()
+        self._running = False
 
     def _day(self, now: datetime) -> str:
         return now.astimezone(ZoneInfo(self.app.config.timezone)).date().isoformat()
@@ -53,18 +53,21 @@ class Openers:
     async def maybe(self, now: datetime) -> None:
         app = self.app
         owner = app.owner_id
-        if not app.config.openers.enabled or owner is None or owner <= 0:
+        if self._running or not app.config.openers.enabled or owner is None or owner <= 0:
             return
-        async with self._lock:
-            try:
+        self._running = True
+        try:
+            with app.dispatch._protect_send() as commit:
                 async with turn_log.capture(app.store, now, owner, "owner_dm"):
-                    await self._maybe(owner, now)
-            except ModelCallSkipped:
-                return
-            except Exception:
-                log.exception("owner opener failed")
+                    await self._maybe(owner, now, commit)
+        except ModelCallSkipped:
+            return
+        except Exception:
+            log.exception("owner opener failed")
+        finally:
+            self._running = False
 
-    async def _maybe(self, owner: int, now: datetime) -> None:
+    async def _maybe(self, owner: int, now: datetime, commit: Callable[[], None]) -> None:
         app = self.app
         dispatch, store = app.dispatch, app.store
         allowed = partial(dispatch.turn_allowed, owner, "owner_dm")
@@ -129,7 +132,7 @@ class Openers:
 
             sent_ids = await executor.perform(
                 app.bot, store, owner, None, actions, sleep=app.sleep, now=dispatch.now, on_sent=on_sent,
-                stickers=app.stickers.sendable(), gifs=app.gifs,
+                stickers=app.stickers.sendable(), gifs=app.gifs, before_send=commit,
             )
             if sent_ids:
                 turn_log.outcome("Texted first")

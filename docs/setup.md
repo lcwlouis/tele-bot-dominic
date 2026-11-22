@@ -141,7 +141,7 @@ new name for one host. A new name must not already hold a value and must not be
 the bot token, a desktop key, `KLIPY_API_KEY`, or an unpaired `JEV_API_KEY`, so
 add a new key's value to `.env` after saving. Such a slot is saved untested (it cannot be called without
 its key); press Test once the key is in. Every other change is test-called before it is saved, and a failing
-slot is not saved. A local endpoint is never held back by the daily spend cap. Pairing an existing key with a new
+slot is not saved. Testing or saving a local endpoint is never held back by the daily spend cap. Pairing an existing key with a new
 host is a hand edit of `config.toml`. Base URLs must be HTTPS, except for
 `localhost`, private addresses and local names (single-label, `.local`, `.lan`,
 `.internal`, `.home.arpa`); link-local addresses are always refused. A chain

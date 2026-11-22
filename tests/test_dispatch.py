@@ -9,14 +9,15 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.methods import SendMessage
 
 from dom import turn_log
-from dom.actions import Actions
+from dom.actions import Actions, Bubble
 from dom.config import PresenceConfig
-from dom.dispatch import NO_ANSWER_NOTICE, Dispatcher
+from dom.dispatch import NO_ANSWER_NOTICE, Arrival, Dispatcher
 from dom.jev import JevClient, JevUnavailable
 from dom.models import StoredMessage
 from dom.telegram import executor
 from dom.presence import Presence, parse_habits, read_habits
-from dom.telegram.handlers import handle_message
+from dom.telegram.handlers import handle_message, to_incoming
+from dom.usage import ModelCallSkipped
 from tghelpers import FRIEND, GROUP, OWNER, Clock, FixedRandom, drain_dispatch, no_sleep, tg, turn_requests
 
 
@@ -59,6 +60,87 @@ def setup_dispatch(make_app):
 async def deliver(app, msg_id=1, **kwargs):
     await handle_message(app, tg(msg_id=msg_id, **kwargs))
     await drain_dispatch(app.dispatch)
+
+
+@pytest.mark.parametrize("cancel_caller", [False, True])
+async def test_migration_reserves_both_turn_slots_and_clears_the_old_chat(setup_dispatch, monkeypatch, cancel_caller):
+    old, new = GROUP, -10666
+    app, dispatch, clock = await setup_dispatch(chat_id=old)
+    release_old, release_new, release_migration = (asyncio.Event() for _ in range(3))
+    saving, old_entered, new_entered = (asyncio.Event() for _ in range(3))
+    stopped = asyncio.Event()
+
+    class Typing:
+        stop = stopped.set
+
+    msg = to_incoming(tg())
+    dispatch._arrivals[old] = {msg.msg_id: Arrival(msg, typing=Typing())}
+    dispatch._latest[old] = msg
+    dispatch._first_notify[old] = clock()
+    debounce = dispatch._debounces[old] = dispatch._spawn(asyncio.Event().wait())
+    dispatch._interrupted[old] = []
+    dispatch._followups[old] = [msg.msg_id]
+    dispatch._trim_seq[old] = 2
+    dispatch._stay_marks[old] = msg.msg_id
+    dispatch._stay_pending[old] = None
+    stay = dispatch._stay_running[old] = dispatch._spawn(asyncio.Event().wait())
+    dispatch._group_no_answer_at[old] = clock()
+    dispatch.note_admin(old, True)
+    dispatch.prompt_cache.snapshot(app.home, "group", old, [], clock())
+
+    real_migrate = app.store.migrate_chat
+
+    async def save(*args, **kwargs):
+        saving.set()
+        await release_migration.wait()
+        return await real_migrate(*args, **kwargs)
+
+    async def turn(chat_id, entered, release):
+        async with dispatch._dispatch_slot(chat_id, wait_media=False):
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(app.store, "migrate_chat", save)
+    turns = [asyncio.create_task(turn(old, old_entered, release_old)),
+             asyncio.create_task(turn(new, new_entered, release_new))]
+    await asyncio.wait_for(asyncio.gather(old_entered.wait(), new_entered.wait()), timeout=2)
+    migration = asyncio.create_task(dispatch.migrate_chat(old, new))
+    try:
+        await asyncio.sleep(0)
+        assert not saving.is_set()
+        release_new.set()
+        await turns[1]
+        assert not saving.is_set()
+        release_old.set()
+        await asyncio.wait_for(saving.wait(), timeout=2)
+
+        if cancel_caller:
+            migration.cancel()
+            await asyncio.sleep(0)
+        old_entered.clear()
+        new_entered.clear()
+        turns.extend([asyncio.create_task(turn(old, old_entered, release_old)),
+                      asyncio.create_task(turn(new, new_entered, release_new))])
+        await asyncio.sleep(0)
+        assert not old_entered.is_set() and not new_entered.is_set()
+    finally:
+        release_old.set()
+        release_new.set()
+        release_migration.set()
+        await asyncio.wait_for(asyncio.gather(migration, *turns, return_exceptions=True), timeout=2)
+
+    if cancel_caller:
+        assert migration.cancelled()
+    else:
+        assert migration.result() == "migrated"
+    assert await app.store.resolve_chat_id(old) == str(new)
+    assert stopped.is_set() and debounce.cancelled() and stay.cancelled()
+    for state in (dispatch._arrivals, dispatch._latest, dispatch._first_notify, dispatch._debounces,
+                  dispatch._interrupted, dispatch._followups, dispatch._trim_seq, dispatch._stay_marks,
+                  dispatch._stay_pending, dispatch._stay_running, dispatch._group_no_answer_at, dispatch._admin):
+        assert old not in state
+    assert (old, "group") not in dispatch.prompt_cache._notes
+    assert dispatch._admin[new] is True
 
 
 async def test_asleep_flood_no_calls_single_catchup(setup_dispatch):
@@ -696,10 +778,21 @@ async def test_a_second_restart_before_the_model_still_keeps_the_chosen_answer(s
     assert (await app.store.get_unread(GROUP))[0] == 0
 
 
-async def test_restart_of_a_catch_up_turn_stays_a_catch_up_turn(setup_dispatch, gated_sleep, monkeypatch):
+@pytest.mark.parametrize("during_media", [False, True])
+async def test_restart_of_a_catch_up_turn_stays_a_catch_up_turn(setup_dispatch, gated_sleep, monkeypatch, during_media):
     sleep, waits = gated_sleep
     app, dispatch, clock = await setup_dispatch(FakeJev(action="ignore"), sleep=sleep)
-    entered, _ = hold_first_generation(app, monkeypatch)
+    if during_media:
+        entered = asyncio.Event()
+
+        async def describe_unread_media(chat_id):
+            if not entered.is_set():
+                entered.set()
+                await asyncio.Future()
+
+        monkeypatch.setattr(dispatch, "_describe_unread_media", describe_unread_media)
+    else:
+        entered, _ = hold_first_generation(app, monkeypatch)
     for msg_id in range(1, 6):  # the fifth unread message wakes Dom
         await handle_message(app, tg(msg_id=msg_id, text=f"while you were out {msg_id}").model_copy(update={"date": clock()}))
         await asyncio.sleep(0)
@@ -716,6 +809,60 @@ async def test_restart_of_a_catch_up_turn_stays_a_catch_up_turn(setup_dispatch, 
     note = turn_requests(app)[-1]["messages"][-1]["content"]
     assert "messages that arrived while away: 5" in note and "you just came online" in note
     assert (await app.store.get_unread(GROUP))[0] == 0
+
+
+@pytest.mark.parametrize("error", [RuntimeError, ModelCallSkipped, asyncio.CancelledError])
+async def test_coding_notice_survives_a_failed_reply(setup_dispatch, monkeypatch, error):
+    app, dispatch, _ = await setup_dispatch(chat_id=OWNER)
+    await dispatch.presence.go_online(OWNER, parse_habits(""))
+
+    async def compose(client, messages, tools, ctx, **kwargs):
+        ctx.t3_notes.append("checked progress")
+        raise error()
+
+    monkeypatch.setattr("dom.dispatch.run_turn", compose)
+    await deliver(app, chat_id=OWNER, sender=OWNER)
+
+    assert [call[2] for call in app.bot.of("send", OWNER)] == ["🔎 Checked your coding work: checked progress"]
+
+
+@pytest.mark.parametrize("finishes", [False, True])
+async def test_restart_delivers_each_coding_notice_once(setup_dispatch, monkeypatch, finishes):
+    app, dispatch, _ = await setup_dispatch(chat_id=OWNER)
+    await dispatch.presence.go_online(OWNER, parse_habits(""))
+    entered, successor = asyncio.Event(), asyncio.Event()
+    release = asyncio.Event()
+
+    async def compose(client, messages, tools, ctx, **kwargs):
+        if not entered.is_set():
+            ctx.t3_notes.append("checked progress")
+            entered.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                if not finishes:
+                    raise
+                return Actions(no_response=True)
+        successor.set()
+        await release.wait()
+        ctx.t3_notes.append("checked logs")
+        return Actions(bubbles=[Bubble(text="hey")])
+
+    monkeypatch.setattr("dom.dispatch.run_turn", compose)
+    await handle_message(app, tg(chat_id=OWNER, sender=OWNER))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await handle_message(app, tg(chat_id=OWNER, sender=OWNER, msg_id=2))
+    await asyncio.wait_for(successor.wait(), timeout=2)
+    already_sent = [call[2] for call in app.bot.of("send", OWNER)]
+    release.set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    if finishes:
+        assert already_sent == ["🔎 Checked your coding work: checked progress"]
+        assert [call[2] for call in app.bot.of("send", OWNER)][1:] == ["hey", "🔎 Checked your coding work: checked logs"]
+    else:
+        assert not already_sent
+        assert [call[2] for call in app.bot.of("send", OWNER)] == ["hey", "🔎 Checked your coding work: checked progress; checked logs"]
 
 
 async def test_typing_already_shown_before_a_restart_still_counts(setup_dispatch, monkeypatch):

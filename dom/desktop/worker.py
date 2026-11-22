@@ -299,6 +299,7 @@ class DesktopWorker:
         if chat_id is None:
             return
         had_handoff = False
+        ended = []
         async with self.control:
             for row in rows:
                 if row["status"] == "queued":
@@ -310,8 +311,10 @@ class DesktopWorker:
                         row["id"], chat_id, ("running", "waiting_owner"), "failed", error="Dom restarted",
                     )
                     if failed:
-                        await self._report(failed)
-                        await self._settle_card(row["id"], "Task ended")
+                        ended.append(failed)
+        for failed in ended:  # the messages go out after the lock is released, as in cancel() and resume()
+            await self._report(failed)
+            await self._settle_card(failed["id"], "Task ended")
         if had_handoff and getattr(self.sandbox, "stop", None) is None:
             await self._finish_handoff()
 

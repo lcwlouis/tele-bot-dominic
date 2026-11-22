@@ -505,3 +505,82 @@ async def test_the_spend_cap_never_blocks_saving_a_local_endpoint(dashboard, mon
         assert seen == ["local-two"]
         cloud = await _save(client, "chat", dict(COLLECTOR, model="cloud-two"))
         assert cloud.status_code == 422 and "spend cap" in cloud.text
+
+
+LIVE_SHAPE = """\
+# Instance options.
+[models.chat]
+base_url = "http://localhost:8000/v1"
+model = "chat-model"
+
+[models.chat_fallback]
+base_url = "https://fallback.example.test/v1"
+model = "backup-model"
+api_key_env = "BACKUP_KEY"
+
+[models.triage]
+base_url = "https://classifier.example.test/decisions"
+model = "classifier"
+
+[models.media]
+base_url = "http://localhost:8001/v1"
+model = "media-model"  # Keep this comment.
+
+[desktop]
+enabled = false
+
+[models.search]
+base_url = "https://search.example.test/v1"
+model = "search-model"
+
+[web]
+port = 8080
+
+[t3]
+note = "kept"
+
+[openers]
+note = "kept"
+"""
+OTHER = {"base_url": "http://localhost:8002/v1", "model": "other-model"}
+
+
+def _live_save(tmp_path, role, primary, fallbacks):
+    from dom.config import validate_config
+    from dom.web.model_settings import ModelUpdate, Snapshot, _save
+
+    (tmp_path / "config.toml").write_text(LIVE_SHAPE)
+    config = validate_config(tmp_path, tomllib.loads(LIVE_SHAPE))
+    current = Snapshot(config, LIVE_SHAPE)
+    update = ModelUpdate(revision=current.revision, role=role, primary=primary, fallbacks=fallbacks)
+    return _save(current, update)
+
+
+@pytest.mark.parametrize("role", ["chat", "fallback", "media", "drafting"])
+@pytest.mark.parametrize("operation", ["set", "set_with_fallbacks", "reorder"])
+def test_saving_any_role_survives_tables_split_by_another_section(tmp_path, role, operation):
+    # The live file has [desktop] between its [models.*] tables and still carries the legacy chat_fallback.
+    first, second = dict(PRIMARY, model="first"), dict(OTHER, model="second")
+    primary, fallbacks = {
+        "set": (first, []),
+        "set_with_fallbacks": (first, [second]),
+        "reorder": (second, [first, dict(BACKUP)]),
+    }[operation]
+    saved = _live_save(tmp_path, role, primary, fallbacks)
+    models = tomllib.loads(saved.text)["models"]
+    assert "chat_fallback" not in models
+    assert models[role]["model"] == primary["model"]
+    assert [item["model"] for item in models[role].get("fallbacks", [])] == [item["model"] for item in fallbacks]
+    assert models["triage"]["model"] == "classifier" and models["search"]["model"] == "search-model"
+    assert ("# Keep this comment." in saved.text) == (role != "media")  # replacing a role rewrites its own table
+    assert "# Instance options." in saved.text
+    assert tomllib.loads(saved.text)["desktop"] == {"enabled": False} and tomllib.loads(saved.text)["t3"] == {"note": "kept"}
+    assert (tmp_path / "config.toml").read_text() == saved.text
+
+
+def test_clearing_the_fallback_role_removes_the_legacy_table_too(tmp_path):
+    saved = _live_save(tmp_path, "fallback", None, [])
+    models = tomllib.loads(saved.text)["models"]
+    assert "fallback" not in models and "chat_fallback" not in models
+    assert models["chat"]["model"] == "chat-model" and models["media"]["model"] == "media-model"
+    assert "# Keep this comment." in saved.text and tomllib.loads(saved.text)["web"] == {"port": 8080}

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 
 import httpx
@@ -119,6 +120,33 @@ async def test_opener_waits_while_the_owner_has_unread_messages(make_app):
     await app.store.mark_chat_read(OWNER, 100)
     await openers.maybe(now())
     assert len(app.script.requests) == 1
+
+
+async def test_shutdown_finishes_an_opener_that_started_sending(make_app, monkeypatch):
+    app = make_app()
+    openers, now = always_try(app)
+    sent, release = asyncio.Event(), asyncio.Event()
+    send = app.bot.send_message
+
+    async def send_then_pause(*args, **kwargs):
+        result = await send(*args, **kwargs)
+        sent.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(app.bot, "send_message", send_then_pause)
+    opener = app.dispatch._spawn(openers.maybe(now()))
+    await asyncio.wait_for(sent.wait(), timeout=2)
+    closing = asyncio.create_task(app.dispatch.close())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(closing, timeout=2)
+
+    assert not opener.cancelled()
+    assert len(app.bot.of("send", OWNER)) == 1
+    [stored] = await app.store.get_recent_chat_window(OWNER)
+    assert await app.store.kv_get("opener:last_msg_id") == str(stored.msg_id)
+    assert await app.store.kv_get("opener:sent") == f"{openers._day(now())}/1"
 
 
 async def test_opener_no_response_counts_as_attempt_only(make_app):

@@ -154,6 +154,11 @@ class PromptCache:
         self._memory: _MemorySnap | None = None
         self._notes: dict[tuple[int, Scope], _NotesSnap] = {}
 
+    def clear_chat(self, chat_id: int) -> None:
+        for key in list(self._notes):
+            if key[0] == chat_id:
+                del self._notes[key]
+
     def memory_text(self, home: Home, now: datetime) -> tuple[str, datetime | None]:
         """Cached MEMORY.md text plus the snapshot timestamp if disk has newer content, else None."""
         live = _read_note(home.scoped(allow_private=False), "memory/MEMORY.md")

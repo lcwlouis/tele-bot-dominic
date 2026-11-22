@@ -535,8 +535,7 @@ async def test_a_reply_during_a_stay_decision_waits_for_it(setup_dispatch, first
     jev = Gated()
     app, dispatch, _ = await setup_dispatch(jev)
     until = await online_for(dispatch, 5)
-    dispatch._stay_running.add(GROUP)
-    task = asyncio.create_task(dispatch._stay_checks(GROUP, None))
+    task = dispatch._stay_running[GROUP] = asyncio.create_task(dispatch._stay_checks(GROUP, None))
     await asyncio.wait_for(asked.wait(), timeout=2)
     dispatch._stay_pending[GROUP] = None  # what a second reply finishing now records
     release.set()

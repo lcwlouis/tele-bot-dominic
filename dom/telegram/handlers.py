@@ -217,6 +217,9 @@ def _desktop_command(text: str, bot_username: str | None) -> bool:
     return match is not None and (match[1] is None or match[1].lower() == (bot_username or "").lower())
 
 
+DOCUMENT_TIMEOUT = 60  # seconds a /desktop document may take to download while the owner DM's ingest waits
+
+
 async def _receive_desktop_document(app: App, message: Message, msg: IncomingMessage) -> IncomingMessage:
     document = message.document
     if document is None or msg.media is None:
@@ -225,7 +228,8 @@ async def _receive_desktop_document(app: App, message: Message, msg: IncomingMes
         if (document.file_size or 0) > desktop_files.MAX_FILE_BYTES:
             raise ValueError("Desktop documents can be at most 20 MB.")
         with desktop_files.BoundedFile() as content:
-            downloaded = await app.bot.download(document, destination=content)
+            async with asyncio.timeout(DOCUMENT_TIMEOUT):
+                downloaded = await app.bot.download(document, destination=content)
             if downloaded is None:
                 raise OSError("no document returned")
             name = desktop_files.stage_inbox(app.home.root, document.file_name, content.getvalue())
@@ -402,6 +406,8 @@ async def handle_message(app: App, message: Message) -> None:
             owner_dm and message.document is not None and app.config.desktop_mode != "off"
             and _desktop_command(msg.text, app.bot_username) and decision == "process" and not await app.store.has_message(msg.chat_id, msg.msg_id)
         ):
+            # Under the ingest lock on purpose: the owner's next message must not be recorded, answered or marked
+            # read before this one. The download is bounded by DOCUMENT_TIMEOUT so the wait stays short.
             msg = await _receive_desktop_document(app, message, msg)
         await _record(app, msg, describe_media=decision == "process", notify=decision == "process")
     if decision == "hold":
@@ -436,11 +442,22 @@ async def handle_edited_message(app: App, message: Message) -> None:
 _OVERRIDES = {"wake": "/wake", "sleep": "/sleep"}
 
 
+TOAST_MAX_WAIT = 3.0  # a callback query answer is worthless once Telegram has made the tap time out
+
+
 async def _toast(app: App, query: CallbackQuery, text: str | None = None) -> None:
+    """Best-effort: the state change and the button edit that follow matter more than the acknowledgement, so no
+    failure here (expired callback, flood wait, network) is allowed to abort the handler."""
     try:
-        await app.bot.answer_callback_query(query.id, text=text)
-    except TelegramBadRequest:  # a turn can outlast the callback's validity; the edit that follows still matters
-        log.warning("could not answer callback %s", query.id)
+        try:
+            await app.bot.answer_callback_query(query.id, text=text)
+        except TelegramRetryAfter as exc:
+            if exc.retry_after > TOAST_MAX_WAIT:
+                raise
+            await app.sleep(exc.retry_after)
+            await app.bot.answer_callback_query(query.id, text=text)
+    except Exception as error:  # a turn can outlast the callback's validity
+        log.warning("could not answer callback %s (%s)", query.id, type(error).__name__)
 
 
 SETTLED = {"Approved": "✅ Approved", "Rejected": "❌ Rejected", "Cancelled": "Cancelled", "already handled": "Already handled"}

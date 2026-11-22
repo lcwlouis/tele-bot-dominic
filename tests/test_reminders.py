@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from dom.llm import FallbackClient
+from dom.actions import Actions, Bubble
 from dom.telegram import handlers
 from test_owner_events import events, press
 from test_usage import chat, deliver, online
@@ -201,6 +202,56 @@ async def test_casual_appears_once_in_actual_owner_turn_note_and_never_sends_alo
     assert "reminder: Check the kettle" in first["messages"][-1]["content"]
     assert "reminder: Check the kettle" not in second["messages"][-1]["content"]
     assert await app.dispatch.reminders.active() == []
+
+
+@pytest.mark.parametrize("during_reply", [False, True])
+async def test_shutdown_drains_coding_notices_and_delivered_casual_reminders(make_app, monkeypatch, during_reply):
+    app = make_app()
+    await add(app, "casual")
+    await online(app, OWNER)
+    app.dispatch.now.advance(minutes=1)
+    consume_started, notice_started, release = (asyncio.Event() for _ in range(3))
+    reply_delivered, release_reply = asyncio.Event(), asyncio.Event()
+    consume = app.dispatch.reminders.consume
+    send = app.bot.send_message
+
+    async def compose(client, messages, tools, ctx, **kwargs):
+        assert "reminder: Check the kettle" in messages[-1]["content"]
+        ctx.t3_notes.append("checked progress")
+        return Actions(bubbles=[Bubble(text="Check the kettle")])
+
+    async def pause_consume(ids):
+        consume_started.set()
+        await release.wait()
+        await consume(ids)
+
+    async def pause_send(chat_id, text, **kwargs):
+        if text.startswith("🔎"):
+            notice_started.set()
+            await release.wait()
+        result = await send(chat_id, text, **kwargs)
+        if during_reply and text == "Check the kettle":
+            reply_delivered.set()
+            await release_reply.wait()
+        return result
+
+    monkeypatch.setattr("dom.dispatch.run_turn", compose)
+    monkeypatch.setattr(app.dispatch.reminders, "consume", pause_consume)
+    monkeypatch.setattr(app.bot, "send_message", pause_send)
+    await handlers.handle_message(app, tg(OWNER, OWNER))
+    side_effects_started = asyncio.gather(consume_started.wait(), notice_started.wait())
+    await asyncio.wait_for(reply_delivered.wait() if during_reply else side_effects_started, timeout=2)
+    closing = asyncio.create_task(app.dispatch.close())
+    await asyncio.sleep(0)
+    release_reply.set()
+    if during_reply:
+        await asyncio.wait_for(side_effects_started, timeout=2)
+        assert not closing.done()
+    release.set()
+    await asyncio.wait_for(closing, timeout=2)
+
+    assert await app.dispatch.reminders.active() == []
+    assert [c[2] for c in app.bot.of("send", OWNER)] == ["Check the kettle", "🔎 Checked your coding work: checked progress"]
 
 
 async def test_reminders_command_has_owner_only_cancel_buttons(make_app):
