@@ -219,7 +219,8 @@ async def test_a_due_trim_asks_for_a_pass_and_the_trim_follows_it_in_the_next_tu
     await drain_dispatch(app.dispatch)
     assert first_id(turn_requests(app)[2]) == trimmed  # the start holds still between trims
     for request in turn_requests(app):  # the turn note stays after the window
-        assert re.search(r"</chat_window>\n\nIt is [^<]*state: online[^<]*$", request["messages"][-1]["content"])
+        tail = request["messages"][-1]["content"].split("</chat_window>", 1)[1]
+        assert re.search(r"\n\nIt is [^<]*state: online[^<]*$", tail)
 
 
 def first_id(request):

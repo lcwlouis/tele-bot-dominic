@@ -285,6 +285,7 @@ async def perform(
     link_previews: bool = True,
     record: bool = True,
     typed_already: float | None = None,
+    reply_elapsed: float = 0.0,
     before_send: Callable[[], None] | None = None,
     flood_budget: float = MAX_FLOOD_WAIT_SECONDS,
 ) -> PerformResult:
@@ -357,7 +358,8 @@ async def perform(
         if index == 0 and typed_already is not None:
             if chat_id < 0 and len(bubble.text) <= GROUP_QUIP_CHARS:
                 human_time = min(human_time, GROUP_QUIP_SECONDS)
-            human_time = max(0.0, human_time - typed_already)  # the friend already watched "typing…" while Dom thought
+            # Reply time counts even when the indicator was late or failed. It overlaps visible typing.
+            human_time = max(0.0, human_time - max(typed_already, reply_elapsed))
         seconds = min(human_time, MAX_TYPING_SECONDS, budget)
         budget -= seconds
         if index > 0:

@@ -245,14 +245,14 @@ class Dispatcher:
             arrival = arrivals[msg.msg_id] = Arrival(msg)
             arrival.task = self._spawn(self._triage_arrival(arrival))
 
-        waited = self.now() - self._first_notify.setdefault(chat_id, self.now())
+        received = self.now()
+        first = self._first_notify.setdefault(chat_id, received)
         previous = self._debounces.get(chat_id)
         if previous is not None:
-            if waited >= DEBOUNCE_CAP:
+            if received - first >= DEBOUNCE_CAP:
                 return  # the pending timer fires on its own and sees this message
             previous.cancel()
-        delay = min(self.presence.rng.uniform(2, 6), max(0, (DEBOUNCE_CAP - waited).total_seconds()))
-        self._debounces[chat_id] = self._spawn(self._after_debounce(chat_id, delay))
+        self._debounces[chat_id] = self._spawn(self._after_debounce(chat_id, received, first + DEBOUNCE_CAP))
 
     async def _triage_arrival(self, arrival: Arrival) -> None:
         msg = arrival.msg
@@ -533,8 +533,15 @@ class Dispatcher:
         finally:
             self._committed_tasks.discard(task)
 
-    async def _after_debounce(self, chat_id: int, delay: float) -> None:
-        await self.sleep(delay)
+    async def _after_debounce(self, chat_id: int, received: datetime, cap: datetime) -> None:
+        try:
+            online = await self.presence.is_online(chat_id, self._habits())
+        except Exception:
+            log.exception("could not check presence for the sender wait in chat %s", chat_id)
+            online = False
+        delay = self.presence.rng.uniform(2, 4 if online else 6)
+        deadline = min(cap, received + timedelta(seconds=delay))
+        await self.sleep(max(0.0, (deadline - self.now()).total_seconds()))
         # A new message may cancel the timer, but must never cancel a turn in progress.
         self._debounces.pop(chat_id)
         first = self._first_notify.pop(chat_id, None)
@@ -1378,6 +1385,7 @@ class Dispatcher:
 
         actions = None
         try:
+            reply_started = monotonic()
             actions = await self._compose_turn(
                 chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
                 extra_note=note, attempt=attempt, skill=skill,
@@ -1393,6 +1401,7 @@ class Dispatcher:
                 thread_id=thread_id, stickers=app.stickers.sendable(),
                 gifs=app.gifs, ephemeral_recipient=recipient, ephemeral_in_chat=in_group,
                 ephemeral_ineligible_reason=ineligible_reason, typed_already=attempt.credit + typing.seconds,
+                reply_elapsed=monotonic() - reply_started,
                 typing_cps=executor.ASSISTANT_TYPING_CPS if attempt.assistant else executor.TYPING_CPS,
                 before_send=before_send, on_sent=on_sent,
             )
