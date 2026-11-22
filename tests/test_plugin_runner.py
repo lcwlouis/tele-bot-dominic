@@ -95,6 +95,7 @@ def test_host_accepts_a_full_utf8_storage_blob_with_an_independent_result_limit(
     (b'{"ok":true,"result":"ok"}\nNaN\n', "valid JSON"),
     (b'{"ok":true,"result":"ok"}\n{"x":NaN,"x":2}\n', "valid JSON"),
     (b'{"ok":true,"result":"ok"}\n"\\ud800"\n', "valid JSON"),
+    (b'{"ok":true,"result":"ok"}\n' + b"[" * 101 + b"0" + b"]" * 101 + b"\n", "100 nested"),
     (b'{"ok":true,"result":"ok"}\nnull\nnull\n', "storage response"),
     (b'{"ok":true,"result":"ok"}\n"' + b"x" * runner.MAX_STORAGE + b'"\n', "storage exceeded 64 KB"),
     (b'{"ok":true,"result":"' + b"x" * runner.MAX_OUTPUT + b'"}\nnull\n', "output exceeded 16 KB"),

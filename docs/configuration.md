@@ -33,7 +33,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `models.triage` | Built in | Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe. |
 | `models.media` | Built in | Attachment descriptions, transcriptions and desktop screenshot descriptions. |
 | `models.search` | Optional | OpenRouter web search. If the table is present, omitted fields use the starter search settings. |
-| `models.drafting` | Built in | Endpoint for plugin and skill drafts. The default is Claude Haiku 5.5 with low thinking. |
+| `models.drafting` | Built in | Endpoint for plugin and skill drafts. Defaults to Claude Haiku 5.5 with low thinking and uses the chat model if the drafting key is missing. |
 
 Each `[models.<name>]` table uses the following keys. Use HTTPS for a provider on a different host.
 

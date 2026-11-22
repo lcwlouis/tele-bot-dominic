@@ -265,6 +265,11 @@ def length(action="increment"):
         save_storage("x" * 65536)
     elif action == "invalid":
         save_storage({"x": float("nan")})
+    elif action == "deep":
+        nested = []
+        for _ in range(100):
+            nested = [nested]
+        save_storage(nested)
     else:
         save_storage({"count": count})
     return str(count)
@@ -306,6 +311,8 @@ async def test_storage_round_trip_is_per_plugin_and_trials_discard_writes(tmp_pa
             call(first, action="oversize")
         with pytest.raises(PluginError, match="JSON"):
             call(first, action="invalid")
+        with pytest.raises(PluginError, match="100 nested"):
+            call(first, action="deep")
         assert call(first) == "3"
         await store.drop_plugin_storage("convert")
         assert call(first) == "1"

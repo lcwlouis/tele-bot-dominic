@@ -40,7 +40,7 @@ DRAFT_PLUGIN_TOOL = Tool(
     name="draft_plugin",
     description=(
         "Request a Python plugin draft for owner review. Describe what it should do, the agent tools, Telegram "
-        "commands or dashboard panels it needs, and whether it needs offline storage or network access. "
+        "commands or dashboard panels it needs, and whether it needs owner-only offline storage or network access. "
         "Use only public information. Leave out private notes, chat history, memory and credentials."
     ),
     schema={

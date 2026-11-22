@@ -48,7 +48,8 @@ Cloudflare. Keep local bearer-token testing on loopback.
   update. An external provider may therefore receive owner DM content.
 - **Drafting model** receives the public brief or candidate for a plugin or
   skill. Dom screens it for instance credentials and verbatim private notes
-  before sending it to `models.drafting.base_url`.
+  before sending it to the drafting endpoint, or to the chat endpoint if the
+  drafting key is missing.
 - **Media provider** receives supported attachments for transcription or
   description, and screenshots when the desktop worker requests a description.
 - **Web search** submits the query to `models.search.base_url` (OpenRouter by
@@ -88,7 +89,7 @@ environment, a bounded scratch filesystem and restricted system calls. Dom
 probes isolation before running a plugin. Staging trials use synthetic input
 and empty disposable state in an offline sandbox. Live calls require approval of
 the exact code version. Offline plugins may opt in to one persistent JSON blob
-shared by their own tools, commands and panels across chat scopes.
+shared by their owner-only tools, commands and panels.
 A network-enabled plugin can send what
 it receives to external services, and its commands work only in the owner DM.
 Dom screens tool arguments and command text for known secrets and verbatim owner

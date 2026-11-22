@@ -58,10 +58,11 @@ declared names. A plugin can declare up to ten commands and five panels.
 With `storage = true`, an offline plugin can import `load_storage` and
 `save_storage` from `_dom`. `load_storage()` returns the current JSON value or
 `None` on the first call. Pass the full replacement to `save_storage(value)`.
-Dom validates the JSON and limits it to 64 KiB of UTF-8. The replacement is saved
-after the sandbox finishes and returns a valid response. All calls to the same
-plugin share this blob across chats, surfaces and approved versions. Account for
-the scopes of every surface that can read it. The database stays outside the sandbox.
+Dom limits the JSON to 64 KiB of UTF-8 and 100 levels of objects or arrays.
+The replacement is saved after the sandbox finishes and returns a valid response.
+The plugin's tools and commands must be scoped to `owner_dm`, and its panels run
+on the owner dashboard. These calls share the blob across approved versions.
+The database stays outside the sandbox.
 
 ## Trial runs
 
@@ -73,10 +74,12 @@ first scope. A tool receives an empty argument object.
 
 The trial uses the live sandbox limits with networking off and empty, disposable
 storage. The owner's approval card and the Plugins page show the result and
-elapsed time. Approval remains available after a failed test.
+elapsed time. Approval remains available while a trial is pending or after it
+fails. Refresh the Plugins page to see the latest result.
 
 Dom uses the `[models.drafting]` endpoint for plugin and skill drafts. The
-starter uses Claude Haiku 5.5 on OpenRouter with low thinking. See
+starter uses Claude Haiku 5.5 on OpenRouter with low thinking. When the drafting
+key is missing, Dom uses the chat model. See
 [Configuration](configuration.md#models) for endpoint and thinking settings.
 
 ## Commands

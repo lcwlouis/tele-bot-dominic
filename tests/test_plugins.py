@@ -41,6 +41,16 @@ def test_storage_is_an_offline_opt_in():
         Manifest.parse(manifest.replace("storage = true", "storage = true\nnetwork = true"))
 
 
+@pytest.mark.parametrize("scope", ["group", "friend_dm"])
+@pytest.mark.parametrize("surface", ["tool", "command"])
+def test_storage_surfaces_are_owner_only(scope, surface):
+    manifest = MANIFEST.replace('version = "1"', 'version = "1"\nstorage = true')
+    if surface == "command":
+        manifest += '\n[[commands]]\nname = "echo"\ndescription = "Echo"\n'
+    with pytest.raises(ValueError, match='storage.*owner_dm'):
+        Manifest.parse(manifest + f'scopes = ["owner_dm", "{scope}"]\n')
+
+
 @pytest.mark.parametrize(("old", "new"), [
     ('"convert"', '"c"'),
     ('"convert"', '"Convert"'),

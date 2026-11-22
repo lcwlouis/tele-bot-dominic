@@ -13,6 +13,7 @@ import httpx
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
+from dom.agent import unfence
 from dom.config import replace_host
 from dom.guard import check_local_private_text
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, Plugin, validate_name, validate_plugin
@@ -38,8 +39,8 @@ PLUGIN_DRAFT_FORMAT = (
     "Use the standard library and _dom. Decorate each matching function with tool, command or panel and end "
     "main.py with run(). Tools take keyword arguments and return text. Commands take text and scope and return "
     "text. Panels take no arguments and return data with only title, paragraphs (list of text), items (pairs) "
-    "or table (columns and rows). An offline plugin can opt in with storage = true and use load_storage() and "
-    "save_storage(value) for one 64 KB JSON blob. Include a zero-argument self_test decorator for a function "
+    "or table (columns and rows). An offline owner-only plugin can opt in with storage = true and use load_storage() "
+    "and save_storage(value) for one 64 KB JSON blob. Include a zero-argument self_test decorator for a function "
     "that returns text or None and raises on failure. Trials use empty disposable state and no network."
 )
 
@@ -96,7 +97,7 @@ def summary(row: dict) -> str:
         network = NETWORK_NOTICE if body["network"] else "Network off"
         return "\n".join([
             heading, body["description"], STORAGE_NOTICE if body.get("storage") else "Storage off",
-            test_run_summary(body["test_run"]) if body.get("test_run") else "Test run unavailable.",
+            test_run_summary(body["test_run"]) if body.get("test_run") else "Test run pending.",
             f"Tools: {', '.join(tools) or 'none'}",
             f"Commands: {', '.join(commands) or 'none'}", f"Panels: {', '.join(panels) or 'none'}", network,
             f"Files: {', '.join(files)}", f"Hash: {body['hash'][:12]}",
@@ -117,6 +118,7 @@ def summary(row: dict) -> str:
 class Proposals:
     def __init__(self, app: App):
         self.app = app
+        self._draft_fallback_logged = False
 
     async def create(self, kind: str, title: str, body: dict, source: str, *, notify: bool = True) -> int:
         from_brief = kind in ("plugin", "skill") and "brief" in body
@@ -190,10 +192,11 @@ class Proposals:
 
     async def _write_draft(self, kind: str, seed: dict) -> dict:
         client = self.app.draft_client
-        if client is None:
-            raise ValueError("The drafting model is unavailable.")
-        if client.endpoint.api_key_env and not client.api_key:
-            raise ValueError(f"Set {client.endpoint.api_key_env} to use the drafting model.")
+        if client is None or (client.endpoint.api_key_env and not client.api_key):
+            if not self._draft_fallback_logged:
+                log.warning("Drafting model credentials unavailable; using the chat model for drafts.")
+                self._draft_fallback_logged = True
+            client = self.app.client
         fields = (
             "name, description, manifest_toml and files (a mapping from filenames to Python source)"
             if kind == "plugin" else "name, description and body (a reusable procedure in Markdown)"
@@ -210,7 +213,10 @@ class Proposals:
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": json.dumps(seed)},
             ], [], once=True)
-            draft = json.loads(reply["content"])
+            content = reply["content"]
+            if not isinstance(content, str):
+                raise ValueError("The drafting model returned no text.")
+            draft = json.loads(unfence(content))
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, RecursionError):
             raise ValueError(f"The drafting model could not return a {kind} draft.") from None
         if not isinstance(draft, dict) or draft.get("name") != seed["name"]:
@@ -246,7 +252,9 @@ class Proposals:
         app = self.app
         text = summary(row)
         review = None
+        options = {}
         if row["kind"] == "plugin":
+            options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
             body = json.loads(row["body_json"])
             review = review_button(app, body)
             if review is None:
@@ -261,7 +269,7 @@ class Proposals:
                 markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
             sent = await app.bot.send_message(
                 app.owner_id, text[start:start + 2000], disable_notification=True, reply_markup=markup,
-                link_preview_options=LinkPreviewOptions(is_disabled=True) if row["kind"] == "plugin" else None,
+                **options,
             )
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):

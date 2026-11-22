@@ -15,7 +15,7 @@ MODEL_ROLES = {
     "triage": ("Built in", "Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe."),
     "media": ("Built in", "Attachment descriptions, transcriptions and desktop screenshot descriptions."),
     "search": ("Optional", "OpenRouter web search. If the table is present, omitted fields use the starter search settings."),
-    "drafting": ("Built in", "Endpoint for plugin and skill drafts. The default is Claude Haiku 5.5 with low thinking."),
+    "drafting": ("Built in", "Endpoint for plugin and skill drafts. Defaults to Claude Haiku 5.5 with low thinking and uses the chat model if the drafting key is missing."),
 }
 
 

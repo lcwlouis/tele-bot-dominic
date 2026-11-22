@@ -139,9 +139,10 @@ class Manifest:
         commands, panels = _commands(data.get("commands", [])), _panels(data.get("panels", []))
         if not (parsed or commands or panels):
             raise ValueError("Manifest must declare at least one tool, command or panel.")
-        # A network plugin reaches the local network too, so only the owner may trigger it.
-        if network and any(item.scopes != ("owner_dm",) for item in (*parsed, *commands)):
-            raise ValueError('A plugin with network access can only offer tools and commands in the "owner_dm" scope.')
+        # Only the owner may trigger calls that can reach the local network or share persistent state.
+        if (network or storage) and any(item.scopes != ("owner_dm",) for item in (*parsed, *commands)):
+            capability = "network access" if network else "storage"
+            raise ValueError(f'A plugin with {capability} can only offer tools and commands in the "owner_dm" scope.')
         return cls(name, description, version, tuple(parsed), network,
                    _integer(data, "timeout_seconds", 10, 1, 30), _integer(data, "memory_mb", 64, 16, 256),
                    commands, panels, storage)

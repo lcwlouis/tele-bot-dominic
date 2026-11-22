@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 
 MAX_OUTPUT = 16 * 1024
 MAX_STORAGE = 64 * 1024
+MAX_STORAGE_DEPTH = 100
 TMP_BYTES = 8 * 1024 * 1024  # size of the plugin's /tmp tmpfs
 FILE_BYTES = 1024 * 1024  # RLIMIT_FSIZE: largest file a plugin can write
 OPEN_FILES = 32  # RLIMIT_NOFILE; no clone, so no process limit is needed
@@ -140,6 +141,14 @@ def _storage_json(data: bytes) -> str:
         raise PluginError("Plugin storage must be valid JSON.") from None
     if size > MAX_STORAGE:
         raise PluginError("Plugin storage exceeded 64 KB.")
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, (dict, list)):
+            if depth >= MAX_STORAGE_DEPTH:
+                raise PluginError("Plugin storage exceeded 100 nested objects or arrays.")
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
     return encoded
 
 
