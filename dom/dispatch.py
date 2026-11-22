@@ -39,6 +39,7 @@ from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import PromptCache, build_messages, online_window_note, report_messages
 from dom.reflection import mood
 from dom.reminders import Reminders
+from dom.stickers import resolve_sticker
 from dom.skills import skill_view, skills_list
 from dom.telegram import executor, gate
 from dom.tools import Tool, TurnCtx, enabled_tools
@@ -92,6 +93,7 @@ class QueueWaits:
     media_ms: int | None = None
     lock_ms: int | None = None
     through: int | None = None
+    early: bool = False  # Jev's verdict ended the debounce, so the wait since the first message was Jev's triage
 
 
 @dataclass
@@ -312,7 +314,7 @@ class Dispatcher:
         if verdict.ready and (timer := self._debounces.pop(chat_id, None)) is not None:
             timer.cancel()
             first = self._first_notify.pop(chat_id)
-            self._spawn(self._decide(chat_id, debounce_started=first))
+            self._spawn(self._decide(chat_id, debounce_started=first, early=True))
 
     async def _perform_reaction(self, chat_id: int, msg_id: int, emoji: str) -> executor.PerformResult:
         return await executor.perform(
@@ -381,7 +383,7 @@ class Dispatcher:
             self._next_ack = (index + 1) % len(ACK_LINES)
             await executor.perform(
                 self.app.bot, store, msg.chat_id, msg.msg_id, Actions(bubbles=[Bubble(text=ACK_LINES[index])]),
-                typed_already=executor.MAX_REPLY_TYPING_SECONDS,
+                typed_already=executor.MAX_REPLY_TYPING_SECONDS, sleep=self.app.sleep,
                 thread_id=msg.thread_id,
             )
             await store.kv_set(ACK_STATE, json.dumps([index, now.isoformat()]))
@@ -460,7 +462,7 @@ class Dispatcher:
     @asynccontextmanager
     async def sticker_media_request(self) -> AsyncIterator[None]:
         async def allowed() -> bool:
-            return not await self.usage.over_cap(self.app.config, self.app.bot)
+            return not await self.usage.over_cap(self.app.config, self.app.bot, sleep=self.app.sleep)
 
         with model_request("media", None, allowed):
             await check_model_allowed()
@@ -726,11 +728,11 @@ class Dispatcher:
 
     @asynccontextmanager
     async def _dispatch_slot(
-        self, chat_id: int, *, debounce_started: datetime | None = None, wait_media: bool = True,
+        self, chat_id: int, *, debounce_started: datetime | None = None, wait_media: bool = True, early: bool = False,
     ) -> AsyncIterator[QueueWaits]:
         """Carry pre-dispatch waits forward only if this attempt takes the unread messages."""
         now = self.now()
-        waits = QueueWaits(debounce_started or now, now if debounce_started is not None else None)
+        waits = QueueWaits(debounce_started or now, now if debounce_started is not None else None, early=early)
         if wait_media:
             started = monotonic()
             waiting = bool(self._media_tasks.get(chat_id))
@@ -758,9 +760,10 @@ class Dispatcher:
 
     async def _decide(
         self, chat_id: int, *, background: bool = False, debounce_started: datetime | None = None,
+        early: bool = False,
     ) -> None:
         try:
-            async with self._dispatch_slot(chat_id, debounce_started=debounce_started) as waits:
+            async with self._dispatch_slot(chat_id, debounce_started=debounce_started, early=early) as waits:
                 # A newer message can restart the timer while we wait for media or the turn lock.
                 if self._debounce_pending(chat_id):
                     return
@@ -927,10 +930,13 @@ class Dispatcher:
                 if offline:
                     trace.add_timing("away_wait", turn_log.milliseconds(offline))
             if waits.debounce_until is not None:
-                trace.add_timing("debounce", turn_log.milliseconds(waits.debounce_until - max(waits.start, message_at)))
+                waited = turn_log.milliseconds(waits.debounce_until - max(waits.start, message_at))
+                trace.add_timing("triage" if waits.early else "debounce", waited)
             if waits.media_ms is not None:
                 trace.add_timing("media_wait", waits.media_ms)
-            if waits.lock_ms is not None:
+            if waits.lock_ms is not None and not self._interrupted.get(chat_id):
+                # On a restart the slot was held by the attempt being replaced, finishing a tool: that time is already
+                # in its timings, which are merged in below, so counting the wait too would show it twice.
                 trace.add_timing("lock_wait", waits.lock_ms)
             async with turn_log.capture(store, self.now(), chat_id, scope, trace=trace):
                 try:
@@ -953,6 +959,7 @@ class Dispatcher:
                         trace.steps[:0] = ["Restarted before sending"] * len(interrupted)
                         trace.steps[:0] = [step for item in interrupted for step in item.trace.steps]
                         trace.model_calls[:0] = [call for item in interrupted for call in item.trace.model_calls]
+                        trace.timings[:0] = [timing for item in interrupted for timing in item.trace.timings]
                         trace.calls += sum(item.trace.calls for item in interrupted)
                         trace.fallback |= any(item.trace.fallback for item in interrupted)
                     if not trace.model and trace.model_calls:
@@ -1363,7 +1370,7 @@ class Dispatcher:
             if (
                 attempt.committed and newest.is_bot and newest.sender_user_id is not None
                 and actions is not None and not actions.no_response
-                and (actions.bubbles or actions.sticker in app.stickers.by_emoji or (actions.gif and app.gifs))
+                and (actions.bubbles or resolve_sticker(app.stickers.sendable(), actions.sticker) or (actions.gif and app.gifs))
             ):
                 now = self.now()
                 self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}

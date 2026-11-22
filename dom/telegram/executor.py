@@ -24,6 +24,7 @@ from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, SendFile, split_text, utf1
 from dom.gifs import GifSearch
 from dom.models import StoredMessage
 from dom.store import Store
+from dom.stickers import resolve_sticker, sticker_fallback
 
 T = TypeVar("T")
 
@@ -415,7 +416,8 @@ async def perform(
 
     sticker_failed = False
     if actions.sticker:
-        choices = (stickers or {}).get(actions.sticker)
+        resolved = resolve_sticker(stickers, actions.sticker)
+        choices, emoji = resolved if resolved else ((), actions.sticker)
         if not choices:
             log.warning("unknown sticker emoji %r in chat %s", actions.sticker, chat_id)
             sticker_failed = True
@@ -426,7 +428,7 @@ async def perform(
             try:
                 sticker_id = await _send_media(
                     lambda p=picked: bot.send_sticker(chat_id, p, message_thread_id=thread_id),
-                    store, chat_id, "sticker", {"kind": "sticker", "emoji": actions.sticker}, now, on_sent,
+                    store, chat_id, "sticker", {"kind": "sticker", "emoji": emoji}, now, on_sent,
                     thread_id=thread_id, sleep=sleep, record=record, budget=flood, trigger_msg_id=trigger_msg_id,
                 )
             except FloodBudgetExhausted:
@@ -474,8 +476,11 @@ async def perform(
             gif_failed = True
 
     media_fallback = False
+    fallback_text = None
     if not sent_ids and not actions.bubbles and (sticker_failed or gif_failed):
-        fallback_text = actions.sticker if sticker_failed and actions.sticker else f"*{actions.gif}*"
+        # A failed sticker falls back to its bare emoji only (never "📚2" or words); a failed GIF to its query.
+        fallback_text = sticker_fallback(actions.sticker) if sticker_failed and actions.sticker else f"*{actions.gif}*"
+    if fallback_text:
         options = {} if link_previews else {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         if before_send is not None:
             before_send()

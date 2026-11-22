@@ -77,7 +77,9 @@
     {% endif %}
     {% elif card.kind == "plugin" %}
     <p>{{ card.body.description }}</p>
-    {% if card.body.network %}<p class="kind">This plugin can reach the internet</p>{% endif %}
+    {% if card.body.network %}<p class="kind">{{ NETWORK_NOTICE }}</p>{% endif %}
+    {% if card.body.storage %}<p class="kind">{{ STORAGE_NOTICE }}</p>{% else %}<p class="fog">Storage off</p>{% endif %}
+    {% with trial = card.body.test_run, trial_pending = true %}{% include "plugin_trial.html" %}{% endwith %}
     <div class="actions"><a href="{{ card.review_path }}">Review code</a></div>
     {% elif card.kind == "lan_address" %}
     <p><code>{{ card.body.old }}</code> → <code>{{ card.body.new }}</code>{% if card.body.name %} ({{ card.body.name }}){% endif %}</p>

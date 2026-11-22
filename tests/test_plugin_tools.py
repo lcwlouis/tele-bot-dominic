@@ -6,6 +6,7 @@ from threading import Event
 import httpx
 import pytest
 
+from dom import proposals
 from dom.config import ModelEndpoint, starter_config, validate_config
 from dom.llm import ChatClient, routed_client
 from dom.plugins import runner
@@ -189,6 +190,37 @@ async def test_review_and_approval_return_while_trial_is_running(make_app, brows
         release.set()
         await app.plugins.scan()
     assert (await app.plugins.review("convert", plugin.hash))["test_run"]["output"] == "finished later"
+
+
+@pytest.mark.parametrize("key", ["network", "storage"])  # a plugin cannot have both
+async def test_pending_cards_show_the_current_trial_notices_and_storage(make_app, browser, monkeypatch, key):
+    from dom.plugins.manifest import NETWORK_NOTICE
+    from dom.plugins.trial import STORAGE_NOTICE
+
+    notice = {"network": NETWORK_NOTICE, "storage": STORAGE_NOTICE}[key]
+    app = make_app()
+    calls = []
+
+    def trial(*_):
+        calls.append(1)
+        if len(calls) == 1:
+            raise runner.PluginBusy("busy")
+        return {"output": "later result", "self_test": True}
+
+    monkeypatch.setattr(app.plugin_runner, "trial", trial)
+    manifest = MANIFEST.replace('version = "1"', f'version = "1"\n{key} = true')
+    await draft(app, manifest=manifest)
+    assert "Test run pending." in app.bot.of("send", OWNER)[-1][2]
+    await app.plugins.scan()  # the retried trial lands in the plugin row, not in the proposal body
+
+    item, = await app.proposals.pending()
+    card = proposals.summary(item)
+    assert "Test run passed" in card and "later result" in card and "Test run pending" not in card
+    assert notice in card
+    async with browser(app) as client:
+        page = (await client.get("/proposals")).text
+    assert "Test run passed" in page and "later result" in page and "Test run pending" not in page
+    assert notice in page
 
 
 @pytest.mark.parametrize("error_type", [runner.PluginBusy, runner.PluginsUnavailable, RuntimeError])

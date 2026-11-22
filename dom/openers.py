@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from dom import turn_log
 from dom.presence import read_habits
+from dom.stickers import resolve_sticker
 from dom.telegram import executor
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
@@ -98,7 +99,7 @@ class Openers:
             actions = await dispatch._compose_turn(
                 owner, "owner_dm", None, None, window, until, 0, False, habits, extra_note=NOTE,
             )
-        if actions.no_response or not (actions.bubbles or actions.sticker in app.stickers.by_emoji or (actions.gif and app.gifs)):
+        if actions.no_response or not (actions.bubbles or resolve_sticker(app.stickers.sendable(), actions.sticker) or (actions.gif and app.gifs)):
             return
 
         async with dispatch._dispatch_slot(owner, wait_media=False):

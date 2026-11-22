@@ -325,11 +325,26 @@ class Proposals:
         if settled:
             await app.store.kv_set(CARDS_KEY, json.dumps({key: ids for key, ids in cards.items() if key not in settled}))
 
+    async def _current(self, rows: list[dict]) -> list[dict]:
+        """A plugin card shows the plugin row's own trial result, which a later test run updates; the copy taken when
+        the draft was proposed would otherwise say "Test run pending." for good."""
+        if not any(row["kind"] == "plugin" for row in rows):
+            return rows
+        plugins = {plugin["name"]: plugin for plugin in await self.app.store.list_plugins()}
+        current = []
+        for row in rows:
+            body = json.loads(row["body_json"]) if row["kind"] == "plugin" else None
+            if body is not None and (plugin := plugins.get(body.get("name"))) and plugin["hash"] == body.get("hash"):
+                body["test_run"] = json.loads(plugin["test_run_json"] or "null")
+                row = {**row, "body_json": json.dumps(body)}
+            current.append(row)
+        return current
+
     async def pending(self) -> list[dict]:
-        return await self.app.store.pending_proposals()
+        return await self._current(await self.app.store.pending_proposals())
 
     async def settled(self, limit: int = 50) -> list[dict]:
-        return await self.app.store.settled_proposals(limit=limit)
+        return await self._current(await self.app.store.settled_proposals(limit=limit))
 
     async def delete(self, proposal_id: int, expected_created_at: str) -> tuple[bool, str]:
         app = self.app
