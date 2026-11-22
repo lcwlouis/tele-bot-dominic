@@ -188,7 +188,7 @@ async def leavable_chat(app: App, chat_id: int) -> dict | None:
 
 
 async def leave_chat(app: App, chat_id: int, who: str) -> tuple[str, bool]:
-    async with app.locks[chat_id]:
+    async with app.dispatch._dispatch_slot(chat_id, wait_media=False):
         chat = await leavable_chat(app, chat_id)
         if chat is None:
             return "unknown chat", False

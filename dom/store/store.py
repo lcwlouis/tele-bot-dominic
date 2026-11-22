@@ -998,7 +998,7 @@ class Store:
     def _get_recent_chat_window(self, chat_id: str, limit: int, through_id: int | None) -> list[StoredMessage]:
         where, args = self._window_where(chat_id, through_id)
         rows = self._conn.execute(
-            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY id DESC LIMIT ?",
             (*args, max(0, limit)),
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]
@@ -1006,8 +1006,7 @@ class Store:
     async def get_window_from(
         self, chat_id: int | str, start: tuple[int, str] | None, limit: int, *, through_id: int | None = None,
     ) -> list[StoredMessage]:
-        """The messages of a chat from `start` (a message's row id and created_at, which stay valid even if that
-        row is later deleted or edited) up to the newest, oldest first; at most the newest `limit` of them."""
+        """The model's chat window in arrival order, anchored by row ID even if that row was edited or deleted."""
         return await self._run(self._get_window_from, str(chat_id), start, limit, through_id)
 
     def _get_window_from(
@@ -1015,10 +1014,10 @@ class Store:
     ) -> list[StoredMessage]:
         where, args = self._window_where(chat_id, through_id)
         if start is not None:
-            where += " AND (julianday(created_at), id) >= (julianday(?), ?)"
-            args += (start[1], start[0])
+            where += " AND id >= ?"
+            args += (start[0],)
         rows = self._conn.execute(
-            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY id DESC LIMIT ?",
             (*args, max(0, limit)),
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]

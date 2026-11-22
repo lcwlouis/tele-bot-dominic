@@ -15,6 +15,14 @@ _ACTION_CRITERIA = {
     "react": "Just react with an emoji; acknowledgement is enough.",
     "ignore": "Stay silent; nothing for him here.",
 }
+_DONE_CRITERIA = {
+    "yes": "The latest message completes the thought or request. Dom can answer now.",
+    "no": "The sender looks likely to send a continuation, more details or an attachment shortly.",
+}
+_LONG_CRITERIA = {
+    "yes": "The latest request needs research, a tool, a task or substantial thinking.",
+    "no": "A quick conversational answer is enough, or the sender has not made a request yet.",
+}
 # Only choices supported by Telegram's ReactionTypeEmoji.
 _EMOJI_CRITERIA = {
     "🤣": "Something is funny.",
@@ -55,6 +63,23 @@ class Triage:
     emoji: str | None
     kapoh: float | None
     confident: bool
+    confidence: float | None = None
+    done: str | None = None
+    done_confidence: float | None = None
+    likely_long: bool = False
+
+    @property
+    def ready(self) -> bool:
+        return self.done == "yes" and _confident(self.done_confidence)
+
+
+def _confidence(answer: dict) -> float | None:
+    value = answer.get("confidence")
+    return value if type(value) in (int, float) and 0 <= value <= 1 else None
+
+
+def _confident(value: float | None) -> bool:
+    return value is not None and value >= 0.70
 
 
 def persona_card(home: Home) -> str:
@@ -71,8 +96,8 @@ def chat_state(card: str, window_xml: str) -> str:
     return f"Dom's persona:\n{card}\n\nRecent messages:\n{window_xml}"
 
 
-async def triage_online(jev: JevClient, card: str, window_xml: str) -> Triage:
-    answers = await jev.decide(chat_state(card, window_xml), {
+async def triage_online(jev: JevClient, card: str, window_xml: str, *, owner_dm: bool = False) -> Triage:
+    questions = {
         "action": {
             "type": "choice",
             "instructions": "What should Dom do with the newest messages?",
@@ -83,17 +108,30 @@ async def triage_online(jev: JevClient, card: str, window_xml: str) -> Triage:
             "instructions": "Which emoji best fits a reaction to the newest message?",
             "criteria": _EMOJI_CRITERIA,
         },
-    })
+        "done": {
+            "type": "choice",
+            "instructions": "Is the sender done with this thought? Judge from the messages alone.",
+            "criteria": _DONE_CRITERIA,
+        },
+    }
+    if owner_dm:
+        questions["long"] = {"type": "choice", "instructions": "Will this take a while?", "criteria": _LONG_CRITERIA}
+    answers = await jev.decide(chat_state(card, window_xml), questions)
     action_answer = answers.get("action") or {}
     emoji_answer = answers.get("emoji") or {}
     action = action_answer.get("choice")
     emoji = emoji_answer.get("choice")
-    confidence = action_answer.get("confidence")
+    done_answer = answers.get("done") or {}
+    long_answer = answers.get("long") or {}
+    done = done_answer.get("choice")
+    confidence = _confidence(action_answer)
     return Triage(
         action if action in tuple(_ACTION_CRITERIA) else None,
         emoji if emoji in tuple(_EMOJI_CRITERIA) else None,
         None,
-        type(confidence) in (int, float) and 0.70 <= confidence <= 1,
+        _confident(confidence), confidence,
+        done if done in tuple(_DONE_CRITERIA) else None, _confidence(done_answer),
+        long_answer.get("choice") == "yes" and _confident(_confidence(long_answer)),
     )
 
 

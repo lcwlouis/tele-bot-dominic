@@ -19,9 +19,10 @@ from tghelpers import FRIEND, GROUP, OWNER, Clock, FixedRandom, drain_dispatch, 
 
 
 class FakeJev:
-    def __init__(self, action="reply", confidence=1, kapoh=0, failure=None, urgency=None):
+    def __init__(self, action="reply", confidence=1, kapoh=0, failure=None, urgency=None, done=None, long=False):
         self.action, self.confidence, self.kapoh = action, confidence, kapoh
         self.failure, self.urgency = failure, urgency
+        self.done, self.long = done, long
         self.calls = []
 
     async def decide(self, state, questions):
@@ -35,6 +36,8 @@ class FakeJev:
         return {
             "action": {"type": "choice", "choice": self.action, "confidence": self.confidence},
             "emoji": {"type": "choice", "choice": "👍"},
+            "done": {"type": "choice", "choice": "yes", "confidence": self.done} if self.done is not None else None,
+            "long": {"type": "choice", "choice": "yes", "confidence": 1} if self.long else None,
         }
 
 
@@ -175,9 +178,8 @@ async def test_online_ignore_confident_no_model_call(setup_dispatch):
         await handle_message(app, tg(msg_id=msg_id))
     ready.set()
     await drain_dispatch(dispatch)
-    assert len(jev.calls) == 1
-    assert jev.calls[0][0].count("<msg ") == 15
-    assert 'id="6"' in jev.calls[0][0] and 'id="5"' not in jev.calls[0][0]
+    assert jev.calls[-1][0].count("<msg ") == 15
+    assert 'id="6"' in jev.calls[-1][0] and 'id="5"' not in jev.calls[-1][0]
     assert not app.script.requests
     assert not app.bot.calls  # a group gets no seen reaction
 
@@ -321,9 +323,11 @@ async def test_reply_records_debounce_lock_triage_guard_typing_and_each_send(set
         await dispatch.presence.go_online(GROUP, parse_habits(""))
         async with app.locks[GROUP]:
             await handle_message(app, tg().model_copy(update={"date": start}))
+            await dispatch._arrivals[GROUP][1].task
             await asyncio.sleep(0)
             clock.advance(seconds=1)
             await handle_message(app, tg(msg_id=2).model_copy(update={"date": clock()}))
+            await dispatch._arrivals[GROUP][2].task
             await asyncio.sleep(0)
             clock.advance(seconds=4)
             waits[-1][1].set()
@@ -334,12 +338,13 @@ async def test_reply_records_debounce_lock_triage_guard_typing_and_each_send(set
     [row] = await app.store.recent_turns()
     timings = [item for item in json.loads(row["trace"]) if "@" in item]
     assert timings == [
-        "debounce@4000", "lock_wait@2000", "triage@250", "model@0", "guard@350",
-        "typing@375", "send@100", "typing@1000", "send@100",
+        "debounce@4250", "lock_wait@2000", "model@0", "guard@350", "send@100", "typing@1000", "send@100",
     ]
-    assert (row["first_bubble_ms"], row["last_bubble_ms"]) == (7075, 8175)
+    assert (row["first_bubble_ms"], row["last_bubble_ms"]) == (6700, 7800)
     calls = json.loads(row["model_calls"])
-    assert [(call["kind"], call["duration_ms"]) for call in calls] == [("triage", 250), ("chat", 0), ("guard", 350)]
+    assert [(call["kind"], call["duration_ms"]) for call in calls] == [
+        ("triage", 250), ("triage", 250), ("chat", 0), ("guard", 350),
+    ]
     assert calls[0]["input_tokens"] == 10 and calls[-1]["cached_tokens"] is None
 
 
@@ -414,6 +419,243 @@ async def test_debounce_delay_is_shortened_to_the_cap(setup_dispatch, gated_slee
     assert [seconds for seconds, _ in waits] == [4, 2]
     waits[-1][1].set()
     await drain_dispatch(dispatch)
+
+
+@pytest.mark.parametrize("confidence", [0.69, 0.70])
+async def test_sender_done_can_skip_the_debounce(setup_dispatch, gated_sleep, confidence):
+    sleep, waits = gated_sleep
+    jev = FakeJev(done=confidence)
+    app, dispatch, clock = await setup_dispatch(jev, sleep=sleep)
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    await handle_message(app, tg().model_copy(update={"date": clock()}))
+    await dispatch._arrivals[GROUP][1].task
+
+    if confidence < 0.70:
+        assert len(waits) == 1 and not turn_requests(app)
+        assert app.bot.of("action", GROUP)  # typing starts during the debounce
+        clock.advance(seconds=4)
+        waits[0][1].set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    assert len(turn_requests(app)) == 1
+    [row] = await app.store.recent_turns()
+    trace = json.loads(row["trace"])
+    assert f"Jev done=yes confidence={confidence}" in trace
+    assert row["first_bubble_ms"] == (0 if confidence >= 0.70 else 4000)
+
+
+async def test_incomplete_burst_uses_original_15_second_cap_even_with_jev_in_flight(setup_dispatch, gated_sleep):
+    sleep, waits = gated_sleep
+    blocked = asyncio.Event()
+
+    class SlowJev(FakeJev):
+        async def decide(self, state, questions):
+            if 'id="4"' in state:
+                await blocked.wait()
+            return await super().decide(state, questions)
+
+    app, dispatch, clock = await setup_dispatch(SlowJev(), sleep=sleep)
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    for msg_id, advance in enumerate([0, 4, 4, 5], start=1):
+        clock.advance(seconds=advance)
+        await handle_message(app, tg(msg_id=msg_id, text=f"fragment {msg_id}").model_copy(update={"date": clock()}))
+        await asyncio.sleep(0)
+    assert [delay for delay, _ in waits] == [4, 4, 4, 2]
+    timer = dispatch._debounces[GROUP]
+    clock.advance(seconds=2)
+    waits[-1][1].set()
+    try:
+        await asyncio.wait_for(timer, timeout=2)
+        [request] = turn_requests(app)
+        assert "fragment 4" in request["messages"][-1]["content"]
+        [row] = await app.store.recent_turns()
+        assert row["first_bubble_ms"] == 2000
+    finally:
+        blocked.set()
+        await drain_dispatch(dispatch)
+
+
+async def test_online_triage_slower_than_the_debounce_still_decides_the_turn(setup_dispatch, gated_sleep):
+    sleep, waits = gated_sleep
+    release = asyncio.Event()
+
+    class SlowJev(FakeJev):
+        async def decide(self, state, questions):
+            await release.wait()
+            return await super().decide(state, questions)
+
+    app, dispatch, clock = await setup_dispatch(SlowJev(action="ignore", done=0.5), sleep=sleep)
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    await handle_message(app, tg().model_copy(update={"date": clock()}))
+    waits[0][1].set()  # the debounce ends while Jev is still thinking
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert GROUP in dispatch._active and not turn_requests(app)  # the turn is waiting on Jev, not generating
+    clock.advance(seconds=3)
+    release.set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    assert not turn_requests(app) and not app.bot.of("send", GROUP)  # a confident "ignore" is honoured
+    assert (await app.store.get_unread(GROUP))[0] == 0
+
+
+async def test_new_message_cancels_generation_before_any_bubble(setup_dispatch, monkeypatch):
+    app, dispatch, _ = await setup_dispatch(FakeJev(done=1))
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+    complete = app.client.complete
+
+    async def generate(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            assert not app.locks[GROUP].locked()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+        return await complete(*args, **kwargs)
+
+    monkeypatch.setattr(app.client, "complete", generate)
+    await handle_message(app, tg(text="first thought"))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await handle_message(app, tg(msg_id=2, text="and a detail"))
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    assert cancelled.is_set() and not dispatch._slots
+    [request] = turn_requests(app)
+    note = request["messages"][-1]["content"]
+    assert note.index("first thought") < note.index("and a detail")
+    [bubble] = app.bot.of("send", GROUP)
+    assert bubble[2] == "hey"
+    [row] = await app.store.recent_turns()
+    assert "Restarted before sending" in json.loads(row["trace"])
+    assert (await app.store.get_unread(GROUP))[0] == 0
+    assert [m.reply_to_msg_id for m in await app.store.get_recent_chat_window(GROUP) if m.role == "assistant"] == [2]
+
+
+async def test_incoming_during_typing_pause_replaces_unsent_reply(setup_dispatch, monkeypatch):
+    app, dispatch, _ = await setup_dispatch(FakeJev(done=1), chat_id=OWNER)
+    await dispatch.presence.go_online(OWNER, parse_habits(""))
+    app.script.contents[:] = ['{"bubbles":[{"text":"obsolete"}]}', '{"bubbles":[{"text":"updated"}]}']
+    typing, stopped = asyncio.Event(), asyncio.Event()
+
+    async def sleep(_):
+        if not typing.is_set():
+            typing.set()
+            try:
+                await asyncio.Future()
+            finally:
+                stopped.set()
+
+    monkeypatch.setattr(app, "sleep", sleep)
+    await handle_message(app, tg(chat_id=OWNER, sender=OWNER))
+    await asyncio.wait_for(typing.wait(), timeout=2)
+    await handle_message(app, tg(chat_id=OWNER, sender=OWNER, msg_id=2))
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    assert stopped.is_set()
+    assert [c[2] for c in app.bot.of("send", OWNER)] == ["updated"]
+    assert len(await app.store.recent_turns()) == 1
+    assert not dispatch._active and not dispatch._arrivals
+
+
+@pytest.mark.parametrize("in_flight", [False, True])
+async def test_message_during_delivery_gets_a_linked_followup(setup_dispatch, monkeypatch, in_flight):
+    app, dispatch, clock = await setup_dispatch(FakeJev(done=1))
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    app.script.contents[:] = [
+        '{"bubbles":[{"text":"first bubble"},{"text":"second bubble","reply_to":1}]}',
+        '{"bubbles":[{"text":"followup bubble"}]}',
+    ]
+    delivering, release = asyncio.Event(), asyncio.Event()
+    if in_flight:
+        send = app.bot.send_message
+
+        async def hold_send(chat, text, **options):
+            if text == "first bubble":
+                delivering.set()
+                await release.wait()
+            return await send(chat, text, **options)
+
+        monkeypatch.setattr(app.bot, "send_message", hold_send)
+    else:
+        async def hold_gap(seconds):
+            if seconds == 1:
+                delivering.set()
+                await release.wait()
+
+        monkeypatch.setattr(app, "sleep", hold_gap)
+
+    await handle_message(app, tg(text="before Dom answered").model_copy(update={"date": clock()}))
+    await asyncio.wait_for(delivering.wait(), timeout=2)
+    # This timestamp predates the first message to prove the prompt follows arrival order.
+    await handle_message(app, tg(msg_id=2, text="new information").model_copy(update={"date": clock() - timedelta(seconds=1)}))
+    release.set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    before, after = (request["messages"][-1]["content"] for request in turn_requests(app))
+    assert "new information" not in before
+    assert "Messages with IDs 2 came in while you were answering" in after
+    assert "Your earlier bubbles did not see them" in after
+    assert after.index("before Dom answered") < after.index("new information") < after.index("second bubble")
+    assert 'role="assistant" reply_to="1"' in after
+    assert [c[2] for c in app.bot.of("send", GROUP)] == ["first bubble", "second bubble", "followup bubble"]
+    rows = await app.store.get_recent_chat_window(GROUP)
+    assert [m.reply_to_msg_id for m in rows if m.role == "assistant"] == [1, 1, 2]
+    assert (await app.store.get_unread(GROUP))[0] == 0
+    assert len(await app.store.recent_turns()) == 2
+
+
+async def test_restart_cap_finishes_the_third_attempt_and_queues_a_followup(setup_dispatch, monkeypatch):
+    app, dispatch, _ = await setup_dispatch(FakeJev(done=1))
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    attempts, release = asyncio.Queue(), asyncio.Event()
+    complete = app.client.complete
+    cancelled = []
+
+    async def generate(messages, *args, **kwargs):
+        note = messages[-1]["content"]
+        await attempts.put(note)
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.append(note)
+            raise
+        return await complete(messages, *args, **kwargs)
+
+    monkeypatch.setattr(app.client, "complete", generate)
+    for msg_id in (1, 2, 3):
+        await handle_message(app, tg(msg_id=msg_id, text=f"message {msg_id}"))
+        assert f"message {msg_id}" in await asyncio.wait_for(attempts.get(), timeout=2)
+    await handle_message(app, tg(msg_id=4, text="message 4"))
+    assert len(cancelled) == 2
+    release.set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    first, followup = (request["messages"][-1]["content"] for request in turn_requests(app))
+    assert "message 3" in first and "message 4" not in first
+    assert "message 4" in followup and "Messages with IDs 4 came in while you were answering" in followup
+    assert len(app.bot.of("send", GROUP)) == 2
+    assert not (dispatch._active or dispatch._interrupted or dispatch._followups)
+
+
+async def test_only_long_owner_dm_requests_get_a_rotating_ack(setup_dispatch):
+    jev = FakeJev(done=1, long=True)
+    app, dispatch, clock = await setup_dispatch(jev, chat_id=OWNER)
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    for chat in (OWNER, GROUP):
+        await dispatch.presence.go_online(chat, parse_habits(""))
+    await deliver(app, 1, chat_id=OWNER, sender=OWNER)
+    await deliver(app, 2, chat_id=OWNER, sender=OWNER)
+    clock.advance(minutes=1)
+    await deliver(app, 3, chat_id=OWNER, sender=OWNER)
+    jev.long = False
+    clock.advance(minutes=1)
+    await deliver(app, 4, chat_id=OWNER, sender=OWNER)
+    jev.long = True
+    await deliver(app, 1, chat_id=GROUP)
+    assert [c[2] for c in app.bot.of("send", OWNER)] == ["On it.", "hey", "hey", "Give me a moment.", "hey", "hey"]
+    assert [c[2] for c in app.bot.of("send", GROUP)] == ["hey"]
 
 
 async def test_background_poll_does_not_skip_a_chat_with_an_overdue_debounce(setup_dispatch, gated_sleep):

@@ -101,7 +101,7 @@ class Openers:
         if actions.no_response or not (actions.bubbles or actions.sticker in app.stickers.by_emoji or (actions.gif and app.gifs)):
             return
 
-        async with app.locks[owner]:
+        async with dispatch._dispatch_slot(owner, wait_media=False):
             if owner != app.owner_id or not await store.is_chat_approved(owner):
                 return
             if dispatch.presence.peek(await store.get_presence(owner), read_habits(app.home))[0] == "asleep":

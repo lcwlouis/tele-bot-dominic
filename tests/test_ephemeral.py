@@ -152,7 +152,7 @@ async def test_where_dom_is_not_admin_a_private_reply_goes_straight_to_the_dm(ma
     assert app.bot.of("send", GROUP) == []  # no doomed in-group attempt
     [dm] = app.bot.of("send", OWNER)
     assert "only when I'm a group admin" in dm[2] and dm[2].endswith("Owner-only answer.")
-    assert "you are not an admin of this group" in str(turn_requests(app))
+    assert "where only the owner can see it" in str(turn_requests(app))
     assert asked == [GROUP]  # asked once, then kept
 
 

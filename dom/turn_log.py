@@ -72,6 +72,7 @@ class TurnTrace:
     now: Callable[[], datetime] | None = None
     first_bubble_ms: int | None = None
     last_bubble_ms: int | None = None
+    superseded: bool = False  # the next attempt carries this trace forward
 
     def add_timing(self, what: str, elapsed_ms: int) -> None:
         self.timings.append(f"{what}@{elapsed_ms}")
@@ -187,7 +188,7 @@ async def capture(
         trace.outcome = "Turn failed"
         raise
     finally:
-        if trace.steps or trace.calls:
+        if not trace.superseded and (trace.steps or trace.calls):
             try:
                 await store.record_turn(
                     at, chat_id, scope, trace.calls, [*trace.steps, *trace.timings], trace.model, trace.fallback,

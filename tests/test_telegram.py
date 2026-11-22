@@ -361,7 +361,37 @@ async def test_time_spent_thinking_counts_against_the_reply_typing_budget(store)
 
     actions = Actions(bubbles=[Bubble(text="a" * 100), Bubble(text="b" * 16), Bubble(text="c" * 16)])
     await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep, typed_already=25.0)
-    assert sleeps == [4, 1.0, 1.0, 1.0]  # 5 s left of the budget, then a short pause before each later bubble
+    assert sleeps == [1.0, 1.0]  # the first bubble's full typing time is already covered
+
+
+@pytest.mark.parametrize(("chat", "length", "thinking", "pace", "expected"), [
+    (OWNER, 80, 1, executor.TYPING_CPS, [9.0, 1.0]),
+    (OWNER, 80, 17, executor.TYPING_CPS, [1.0]),
+    (OWNER, 80, 1, executor.ASSISTANT_TYPING_CPS, [4.0, 1.0]),
+    (GROUP, 24, 0, executor.TYPING_CPS, [0.6, 1.0]),
+    (OWNER, 400, 29, executor.TYPING_CPS, [1.0, 1.0]),
+])
+async def test_adaptive_typing_subtracts_thinking_and_keeps_the_bubble_gap(store, chat, length, thinking, pace, expected):
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    actions = Actions(bubbles=[Bubble(text="x" * length), Bubble(text="y" * 120)])
+    await executor.perform(FakeBot(), store, chat, 1, actions, sleep=sleep, typing_cps=pace, typed_already=thinking)
+    assert sleeps == expected
+
+
+async def _instant(_seconds):
+    return None
+
+
+async def test_the_gap_between_bubbles_shows_typing_but_the_first_bubble_relies_on_the_callers_indicator(store):
+    bot = FakeBot()
+    actions = Actions(bubbles=[Bubble(text="x" * 40), Bubble(text="y" * 40)])
+    await executor.perform(bot, store, OWNER, 1, actions, sleep=_instant, typed_already=1.0)
+    kinds = [call[0] for call in bot.calls]
+    assert kinds == ["send", "action", "send"]
 
 
 async def test_typing_shows_while_dom_thinks_and_stops_after(monkeypatch):
