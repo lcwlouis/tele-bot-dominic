@@ -486,6 +486,13 @@ async def edit_stickers(request: Request):
     return render("chats.html", context=await _chats(app) | {"message": message})
 
 
+@router.post("/stickers/refresh", response_class=HTMLResponse)
+async def refresh_sticker_descriptions(request: Request):
+    app = owner_app(request)
+    message = await owner.refresh_sticker_descriptions(app)
+    return render("chats.html", context=await _chats(app) | {"message": message})
+
+
 @router.get("/proposals", response_class=HTMLResponse)
 async def proposals_page(request: Request, kind: str = "", source: str = ""):
     return panel(request, "proposals", **await _proposals(owner_app(request), kind, source))
