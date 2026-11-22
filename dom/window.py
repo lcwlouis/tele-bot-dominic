@@ -51,19 +51,22 @@ class Window:
     rows: list[StoredMessage]
     tokens: int  # estimated prompt size with these rows
     blocked: bool = False  # a trim is due but would drop messages the memory pass has not read
+    trim_seq: int = 0  # increments on every trim so the prompt cache knows when to swap notes
 
 
-async def _state(store: Store, chat_id: int) -> tuple[tuple[int, str] | None, int]:
+async def _state(store: Store, chat_id: int) -> tuple[tuple[int, str] | None, int, int]:
     try:
         raw = json.loads(await store.kv_get(_key(chat_id)) or "{}")
         start = (int(raw["id"]), str(raw["at"])) if "id" in raw else None
-        return start, max(0, int(raw.get("fixed", DEFAULT_FIXED)))
+        return start, max(0, int(raw.get("fixed", DEFAULT_FIXED))), max(0, int(raw.get("trims", 0)))
     except (ValueError, TypeError, AttributeError, KeyError):
-        return None, DEFAULT_FIXED
+        return None, DEFAULT_FIXED, 0
 
 
-async def _save(store: Store, chat_id: int, start: tuple[int, str] | None, fixed: int) -> None:
-    state = {"fixed": fixed} if start is None else {"id": start[0], "at": start[1], "fixed": fixed}
+async def _save(store: Store, chat_id: int, start: tuple[int, str] | None, fixed: int, trims: int = 0) -> None:
+    state: dict[str, int | str] = {"fixed": fixed} if start is None else {"id": start[0], "at": start[1], "fixed": fixed}
+    if trims:
+        state["trims"] = trims
     await store.kv_set(_key(chat_id), json.dumps(state))
 
 
@@ -80,29 +83,30 @@ def _drop_count(rows: list[StoredMessage], tokens: int, config: Config) -> int:
 
 async def load(store: Store, chat_id: int, config: Config, *, through_id: int | None = None) -> Window:
     """The messages the model reads for this chat, trimming first if the prompt has reached its budget."""
-    start, fixed = await _state(store, chat_id)
+    start, fixed, trims = await _state(store, chat_id)
     limit = config.window_size * (FETCH_FACTOR if start else 1)  # with no start yet, begin from the newest `window_size`
     rows = await store.get_window_from(chat_id, start, limit, through_id=through_id)
     tokens = fixed + sum(estimate_tokens(message) for message in rows)
     if tokens < config.window_budget_tokens and len(rows) <= config.window_size:
-        return Window(rows, tokens)
+        return Window(rows, tokens, trim_seq=trims)
     dropped = _drop_count(rows, tokens, config)
     if not dropped:
-        return Window(rows, tokens)
+        return Window(rows, tokens, trim_seq=trims)
     cursor = await store.get_memory_cursor(chat_id)
     if any(m.role != "event" and m.msg_id is not None and m.msg_id > cursor for m in rows[:dropped]):
-        return Window(rows, tokens, blocked=True)
+        return Window(rows, tokens, blocked=True, trim_seq=trims)
     first = rows[dropped]
-    await _save(store, chat_id, (first.id, first.created_at), fixed)
+    trims += 1
+    await _save(store, chat_id, (first.id, first.created_at), fixed, trims)
     log.info("trimmed chat %s: dropped %d messages (about %d tokens)", chat_id, dropped, tokens)
-    return Window(rows[dropped:], tokens - sum(estimate_tokens(m) for m in rows[:dropped]))
+    return Window(rows[dropped:], tokens - sum(estimate_tokens(m) for m in rows[:dropped]), trim_seq=trims)
 
 
 async def measure(store: Store, chat_id: int, sent: list[StoredMessage], prompt_tokens: int) -> None:
     """Remember how much of a real prompt was not the window: its reported size minus the window's estimate."""
     if prompt_tokens <= 0:
         return
-    start, _ = await _state(store, chat_id)
+    start, _, trims = await _state(store, chat_id)
     if start is None and sent:  # the first turn of a chat: from here the window starts where this one did
         start = (sent[0].id, sent[0].created_at)
-    await _save(store, chat_id, start, max(0, prompt_tokens - sum(estimate_tokens(m) for m in sent)))
+    await _save(store, chat_id, start, max(0, prompt_tokens - sum(estimate_tokens(m) for m in sent)), trims)
