@@ -6,7 +6,9 @@ reminder, never lose one. A failed delivery is retried with a growing delay and 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -14,9 +16,12 @@ from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+
 from dom.agent import parse_actions
 from dom.models import StoredMessage
 from dom.prompt import build_messages
+from dom.telegram.executor import FloodBudget, retry_telegram
 from dom.usage import check_model_allowed, model_request
 
 if TYPE_CHECKING:
@@ -29,6 +34,16 @@ IMPORTANCE = ("critical", "normal", "casual")
 REPEATS = ("", "daily", "weekdays", "weekly")
 MAX_ATTEMPTS = 10
 MAX_BACKOFF_MINUTES = 60
+RETRY_STATE_PREFIX = "reminder_retry:"
+_UNDELIVERABLE = re.compile(
+    r"chat not found|user not found|user is deactivated|bot was blocked|can't initiate conversation", re.IGNORECASE,
+)
+
+
+def _is_destination_gone(exc: BaseException) -> bool:
+    return isinstance(exc, TelegramForbiddenError) or (
+        isinstance(exc, TelegramBadRequest) and _UNDELIVERABLE.search(str(exc)) is not None
+    )
 
 
 def _utc_local(wall: datetime, tz: ZoneInfo) -> datetime | None:
@@ -86,22 +101,73 @@ def _carry(styled: str | None, text: str) -> str:
 
 @dataclass
 class _Delivery:
-    """What one reminder has done so far in memory: its styled chunks (styling costs a model call, so once), the
-    message ids of the chunks already sent (never resent), and the failed attempts."""
+    """What one reminder occurrence has done so far: its styled chunks (styling costs a model call, so once), the
+    message ids of the chunks already sent (never resent), and the failed attempts / persisted critical retry state."""
 
+    due_at: str = ""
     chunks: list[str] = field(default_factory=list)
     sent: list[int] = field(default_factory=list)
     failures: int = 0
     retry_at: datetime | None = None
+    owner_notified: bool = False
+    undeliverable: bool = False
 
 
 class Reminders:
     def __init__(self, app: App):
         self.app = app
         self._deliveries: dict[int, _Delivery] = {}
+        self._in_flight: set[int] = set()
         self._tick_lock = asyncio.Lock()
         self._delivery_lock = asyncio.Lock()
         self._started_at: datetime | None = None
+
+    @staticmethod
+    def _retry_key(reminder_id: int) -> str:
+        return f"{RETRY_STATE_PREFIX}{reminder_id}"
+
+    async def _load_retry_state(self, reminder_id: int, due_at: str) -> _Delivery | None:
+        raw = await self.app.store.kv_get(self._retry_key(reminder_id))
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or data.get("due_at") != due_at:
+            return None
+        retry_at = None
+        if isinstance(data.get("retry_at"), str) and data["retry_at"]:
+            try:
+                retry_at = datetime.fromisoformat(data["retry_at"])
+            except ValueError:
+                retry_at = None
+        return _Delivery(
+            due_at=due_at,
+            failures=int(data.get("failures") or 0),
+            retry_at=retry_at,
+            owner_notified=bool(data.get("owner_notified")),
+            undeliverable=bool(data.get("undeliverable")),
+        )
+
+    async def _save_retry_state(self, reminder_id: int, due_at: str, delivery: _Delivery) -> None:
+        payload = {
+            "due_at": due_at,
+            "failures": delivery.failures,
+            "retry_at": delivery.retry_at.isoformat() if delivery.retry_at else None,
+            "owner_notified": delivery.owner_notified,
+            "undeliverable": delivery.undeliverable,
+        }
+        try:
+            await self.app.store.kv_set(self._retry_key(reminder_id), json.dumps(payload))
+        except Exception:
+            log.exception("could not persist retry state for reminder %s", reminder_id)
+
+    async def _clear_retry_state(self, reminder_id: int) -> None:
+        try:
+            await self.app.store.kv_set(self._retry_key(reminder_id), "")
+        except Exception:
+            log.exception("could not clear retry state for reminder %s", reminder_id)
 
     def _now(self) -> datetime:
         return self.app.dispatch.now().astimezone(timezone.utc)
@@ -139,6 +205,7 @@ class Reminders:
         async with self._delivery_lock:
             changed = await app.store.cancel_reminder(app.owner_id, reminder_id)
             self._deliveries.pop(reminder_id, None)
+            await self._clear_retry_state(reminder_id)
         if changed:
             await app.store.record_owner_event(f"Cancelled reminder #{reminder_id}")
         return changed
@@ -180,10 +247,20 @@ class Reminders:
             pending = []
             for row in await self.active():
                 due = datetime.fromisoformat(row["due_at"])
-                if due > now or row["importance"] == "casual":
+                if due > now or row["importance"] == "casual" or row.get("undeliverable"):
                     continue
-                if (delivery := self._deliveries.get(row["id"])) and delivery.retry_at and delivery.retry_at > now:
-                    continue
+                delivery = self._deliveries.get(row["id"])
+                if delivery is not None and delivery.due_at != row["due_at"]:
+                    self._deliveries.pop(row["id"], None)
+                    delivery = None
+                if delivery is None and row["importance"] == "critical":
+                    if (saved := await self._load_retry_state(row["id"], row["due_at"])) is not None:
+                        self._deliveries[row["id"]] = delivery = saved
+                if delivery is not None:
+                    if delivery.undeliverable:
+                        continue
+                    if delivery.retry_at and delivery.retry_at > now:
+                        continue
                 missed = self._started_at is not None and due < self._started_at
                 if row["importance"] == "normal" and asleep and not missed:
                     continue
@@ -213,7 +290,24 @@ class Reminders:
 
     async def _deliver(self, owner: int, row: dict, late: bool) -> None:
         app = self.app
-        delivery = self._deliveries.setdefault(row["id"], _Delivery())
+        reminder_id = row["id"]
+        # Claim delivery under _delivery_lock, then style, send, and retry outside it so flood waits never block cancel/consume.
+        async with self._delivery_lock:
+            if (
+                reminder_id in self._in_flight
+                or owner != app.owner_id
+                or row.get("undeliverable")
+                or not await app.store.reminder_is_active(reminder_id)
+            ):
+                return
+            delivery = self._deliveries.get(reminder_id)
+            if delivery is None or delivery.due_at != row["due_at"]:
+                delivery = _Delivery(due_at=row["due_at"])
+                self._deliveries[reminder_id] = delivery
+            if delivery.undeliverable:
+                return
+            self._in_flight.add(reminder_id)
+
         try:
             if not delivery.chunks:
                 styled = await self._in_character(owner, row["text"])
@@ -223,19 +317,31 @@ class Reminders:
                 delivery.chunks = [text] if len(text.encode("utf-16-le")) <= 8192 else [
                     text[start:start + 2000] for start in range(0, len(text), 2000)
                 ]
-            async with self._delivery_lock:
-                if owner != app.owner_id or not await app.store.reminder_is_active(row["id"]):
-                    self._deliveries.pop(row["id"], None)
+            budget = FloodBudget()
+            for chunk in delivery.chunks[len(delivery.sent):]:
+                if owner != app.owner_id or not await app.store.reminder_is_active(reminder_id):
+                    self._deliveries.pop(reminder_id, None)
                     return
-                for chunk in delivery.chunks[len(delivery.sent):]:
-                    delivery.sent.append((await app.bot.send_message(owner, chunk)).message_id)
+                sent = await retry_telegram(
+                    lambda c=chunk: app.bot.send_message(owner, c), sleep=app.sleep, budget=budget,
+                )
+                delivery.sent.append(sent.message_id)
+            async with self._delivery_lock:
+                if owner != app.owner_id or not await app.store.reminder_is_active(reminder_id):
+                    self._deliveries.pop(reminder_id, None)
+                    return
                 now = self._now()
                 await self._advance(row, now)
-                self._deliveries.pop(row["id"], None)
-        except Exception:
-            log.exception("could not deliver reminder %s", row["id"])
-            await self._failed(owner, row, delivery)
+                self._deliveries.pop(reminder_id, None)
+                if row["importance"] == "critical":
+                    await self._clear_retry_state(reminder_id)
+        except Exception as exc:
+            log.exception("could not deliver reminder %s", reminder_id)
+            await self._failed(owner, row, delivery, exc)
             return
+        finally:
+            self._in_flight.discard(reminder_id)
+
         try:
             for message_id, chunk in zip(delivery.sent, delivery.chunks):
                 await app.store.record_new_message(StoredMessage(
@@ -243,18 +349,72 @@ class Reminders:
                     visibility_scope=app.store.visibility_for(owner), text=chunk, created_at=now.isoformat(),
                 ))
         except Exception:
-            log.exception("could not record reminder %s in the chat", row["id"])
+            log.exception("could not record reminder %s in the chat", reminder_id)
 
-    async def _failed(self, owner: int, row: dict, delivery: _Delivery) -> None:
-        """Back off 1, 2, 4... minutes (at most an hour) before the next attempt; give up after MAX_ATTEMPTS."""
+    async def _failed(self, owner: int, row: dict, delivery: _Delivery, exc: Exception) -> None:
+        """Back off 1, 2, 4... minutes (at most an hour) before the next attempt; non-critical reminders give up
+        after MAX_ATTEMPTS while critical reminders persist retry state per occurrence, mark confirmed blocked/missing
+        destinations undeliverable (while staying active), and notify the owner once per occurrence."""
+        reminder_id = row["id"]
+        if row["importance"] == "critical":
+            if _is_destination_gone(exc):
+                delivery.undeliverable = True
+                delivery.retry_at = None
+                should_notify = not delivery.owner_notified
+                delivery.owner_notified = True
+                try:
+                    await self.app.store.set_reminder_undeliverable(reminder_id, True)
+                except Exception:
+                    log.exception("could not mark critical reminder %s undeliverable", reminder_id)
+                await self._save_retry_state(reminder_id, row["due_at"], delivery)
+                if should_notify:
+                    log.error("critical reminder %s destination is undeliverable (%s); keeping active", reminder_id, type(exc).__name__)
+                    notice = (
+                        f"Critical reminder #{reminder_id} is undeliverable ({type(exc).__name__}: {str(exc)[:120]}); "
+                        f"kept active: {row['text'][:200]}"
+                    )
+                    try:
+                        await self.app.store.record_owner_event(notice)
+                    except Exception:
+                        log.exception("could not record owner event for undeliverable critical reminder %s", reminder_id)
+                return
+
+            delivery.failures += 1
+            wait = min(2 ** (delivery.failures - 1), MAX_BACKOFF_MINUTES)
+            delivery.retry_at = self._now() + timedelta(minutes=wait)
+            should_notify = delivery.failures >= MAX_ATTEMPTS and not delivery.owner_notified
+            if should_notify:
+                delivery.owner_notified = True
+            await self._save_retry_state(reminder_id, row["due_at"], delivery)
+            if should_notify:
+                log.error("critical reminder %s failed %s deliveries; will keep retrying", reminder_id, delivery.failures)
+                notice = (
+                    f"Critical reminder #{reminder_id} could not be delivered after {MAX_ATTEMPTS} attempts; "
+                    f"still retrying: {row['text'][:200]}"
+                )
+                try:
+                    await self.app.store.record_owner_event(notice)
+                except Exception:
+                    log.exception("could not record owner event for critical reminder %s", reminder_id)
+                try:
+                    await retry_telegram(
+                        lambda: self.app.bot.send_message(owner, notice),
+                        sleep=self.app.sleep,
+                        budget=FloodBudget(),
+                    )
+                except Exception:
+                    log.exception("could not DM owner about critical reminder %s", reminder_id)
+            return
+
         delivery.failures += 1
         if delivery.failures < MAX_ATTEMPTS:
             wait = min(2 ** (delivery.failures - 1), MAX_BACKOFF_MINUTES)
             delivery.retry_at = self._now() + timedelta(minutes=wait)
             return
-        log.error("giving up on reminder %s after %s failed deliveries", row["id"], delivery.failures)
-        self._deliveries.pop(row["id"], None)
-        try:
-            await self.app.store.cancel_reminder(owner, row["id"])
-        except Exception:
-            log.exception("could not cancel reminder %s", row["id"])
+        log.error("giving up on reminder %s after %s failed deliveries", reminder_id, delivery.failures)
+        async with self._delivery_lock:
+            self._deliveries.pop(reminder_id, None)
+            try:
+                await self.app.store.cancel_reminder(owner, reminder_id)
+            except Exception:
+                log.exception("could not cancel reminder %s", reminder_id)

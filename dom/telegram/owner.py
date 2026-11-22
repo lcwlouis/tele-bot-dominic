@@ -28,6 +28,7 @@ from dom import memory_import, proposals, release, traits
 from dom._version import VERSION
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE
+from dom.telegram.executor import retry_telegram
 from dom.traits import AUTO, GLOBAL_PRESET_KEY, ensure_pick, load_preset, vibe
 
 if TYPE_CHECKING:
@@ -86,19 +87,26 @@ def _table(header: list[str], rows: list[list[str]]) -> list[str]:
     return [_row(header), "|" + "---|" * len(header), *map(_row, rows)]
 
 
-async def send_view(bot, chat_id: int, view: View) -> None:
+async def send_view(bot, chat_id: int, view: View, *, sleep=None) -> None:
     """Send `view` as a rich message; if Telegram refuses rich messages, send its plain text with the same keyboard."""
+    kw = {"sleep": sleep} if sleep is not None else {}
     try:
-        await bot.send_rich_message(chat_id=chat_id, rich_message=InputRichMessage(markdown=view.markdown), reply_markup=view.markup)
+        await retry_telegram(
+            lambda: bot.send_rich_message(
+                chat_id=chat_id, rich_message=InputRichMessage(markdown=view.markdown), reply_markup=view.markup,
+            ),
+            **kw,
+        )
     except TelegramBadRequest as error:
         log.warning("rich message refused, sending plain text instead: %s", error)
-        await bot.send_message(chat_id, view.plain, reply_markup=view.markup)
+        await retry_telegram(lambda: bot.send_message(chat_id, view.plain, reply_markup=view.markup), **kw)
 
 
-async def delete_message(bot, chat_id: int, message_id: int) -> None:
+async def delete_message(bot, chat_id: int, message_id: int, *, sleep=None) -> None:
     """Remove an old owner message. Rich messages cannot be edited in place, so a change means delete and send anew."""
+    kw = {"sleep": sleep} if sleep is not None else {}
     try:
-        await bot.delete_message(chat_id, message_id)
+        await retry_telegram(lambda: bot.delete_message(chat_id, message_id), **kw)
     except TelegramBadRequest:  # already deleted by the owner
         log.info("the message was already gone")
 
@@ -162,13 +170,14 @@ class PresenceChange:
 
 
 async def override_chat(app: App, chat_id: int, command: str, who: str) -> PresenceChange | None:
-    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), None)
-    if chat is None or not await app.dispatch.override(chat_id, command):
+    resolved = int(await app.store.resolve_chat_id(chat_id))
+    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(resolved)), None)
+    if chat is None or not await app.dispatch.override(resolved, command):
         return None
     title = display_title(chat, app.owner_id)
     if command == "/wake":
         await record_event(app, f"{who} woke Dom in {title}")
-        if await app.dispatch.spend_paused(chat_id):
+        if await app.dispatch.spend_paused(resolved):
             return PresenceChange(f"Dom is up in {title}, but friends' chats are paused by today's spend cap", True)
         return PresenceChange(f"Dom is up in {title}")
     await record_event(app, f"{who} sent Dom to sleep in {title}")
@@ -179,37 +188,40 @@ LEAVABLE = ("approved", "pending_approval", "ignored")
 
 
 async def leavable_chat(app: App, chat_id: int) -> dict | None:
-    if chat_id >= 0:
+    resolved = int(await app.store.resolve_chat_id(chat_id))
+    if resolved >= 0:
         return None
     return next((
         c for c in await app.store.list_chats()
-        if c["chat_id"] == str(chat_id) and c["authorization_status"] in LEAVABLE
+        if c["chat_id"] == str(resolved) and c["authorization_status"] in LEAVABLE
     ), None)
 
 
 async def leave_chat(app: App, chat_id: int, who: str) -> tuple[str, bool]:
-    async with app.locks[chat_id]:
-        chat = await leavable_chat(app, chat_id)
+    resolved = int(await app.store.resolve_chat_id(chat_id))
+    async with app.locks[resolved]:
+        chat = await leavable_chat(app, resolved)
         if chat is None:
             return "unknown chat", False
         title = display_title(chat, app.owner_id)
         try:
-            await app.bot.leave_chat(chat_id)
+            await app.bot.leave_chat(resolved)
             result = f"Dom left {title}"
         except (TelegramBadRequest, TelegramForbiddenError):
             result = f"Dom wasn't in {title} anymore"
         except Exception as error:
-            log.exception("could not leave chat %s", chat_id)
+            log.exception("could not leave chat %s", resolved)
             await record_event(app, f"{who} tapped Leave on {title}: Dom couldn't leave")
             message = (getattr(error, "message", "") or str(error) or type(error).__name__)[:100]
             return f"Couldn't leave: {message}", False
-        await app.store.set_chat_auth_status(chat_id, "left")
+        await app.store.set_chat_auth_status(resolved, "left")
         await record_event(app, f"{who} tapped Leave on {title}: {result}")
         return result, True
 
 
 async def approved_chat(app: App, chat_id: int | str) -> dict | None:
-    return next((c for c in await app.store.list_chats("approved") if c["chat_id"] == str(chat_id)), None)
+    resolved = await app.store.resolve_chat_id(chat_id)
+    return next((c for c in await app.store.list_chats("approved") if c["chat_id"] == resolved), None)
 
 
 async def set_preset(app: App, chat: dict, name: str) -> str | None:
@@ -253,7 +265,8 @@ async def decide_pending_chat(app: App, chat_id: int, decision: str, who: str) -
     status = PENDING_DECISIONS.get(decision)
     if status is None or app.owner_id is None:
         raise ValueError("Choose approve or ignore.")
-    chat = await app.store.resolve_pending_chat(str(chat_id), status)
+    resolved = await app.store.resolve_chat_id(chat_id)
+    chat = await app.store.resolve_pending_chat(resolved, status)
     if chat is None:
         return None, "already handled"
     label = "Approved" if decision == "approve" else "Ignored"
@@ -304,6 +317,10 @@ def _container_tag(task: dict) -> str:
     return "" if task.get("container", "default") == "default" else f" on {task['container']}"
 
 
+async def _send(app: App, text: str, **kw) -> None:
+    await retry_telegram(lambda: app.bot.send_message(app.owner_id, text, **kw), sleep=app.sleep)
+
+
 async def show_tasks(app: App) -> None:
     if app.owner_id is None:
         return
@@ -314,8 +331,8 @@ async def show_tasks(app: App) -> None:
     ]
     buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"desktop:cancel:{row['id']}")]
                for row in rows if row["status"] in ("queued", "running", "waiting_owner")]
-    await app.bot.send_message(
-        app.owner_id, "\n".join(lines) or "No desktop tasks yet.",
+    await _send(
+        app, "\n".join(lines) or "No desktop tasks yet.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
     )
 
@@ -427,7 +444,7 @@ async def _preset_buttons(app: App, text: str, choices: list[tuple[str, str]]) -
             [InlineKeyboardButton(text=label, callback_data=data)]
             for label, data in choices[start:start + MAX_BUTTONS]
         ])
-        await app.bot.send_message(app.owner_id, text, reply_markup=markup)
+        await _send(app, text, reply_markup=markup)
 
 
 async def show_presets(app: App) -> None:
@@ -460,7 +477,7 @@ async def choose_preset(app: App, chat: dict | None) -> None:
 async def show_plugins(app: App) -> None:
     rows = await app.plugins.listing()
     if not rows:
-        await app.bot.send_message(app.owner_id, "No plugins are installed.")
+        await _send(app, "No plugins are installed.")
         return
     for start in range(0, len(rows), 20):
         lines, buttons = [], []
@@ -470,8 +487,8 @@ async def show_plugins(app: App) -> None:
             lines.append(f"{name} · {status}" + (f" · {NETWORK_NOTICE}" if row["network"] else ""))
             if row["status"] != "disabled":
                 buttons.append([InlineKeyboardButton(text=f"Disable {name}", callback_data=f"plugin:disable:{name}")])
-        await app.bot.send_message(
-            app.owner_id, "\n".join(lines),
+        await _send(
+            app, "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
         )
 
@@ -484,7 +501,7 @@ async def disable_plugin(app: App, name: str) -> str:
 async def show_proposals(app: App, page: int = 1) -> None:
     rows = await app.proposals.pending()
     if not rows:
-        await app.bot.send_message(app.owner_id, "No pending proposals.")
+        await _send(app, "No pending proposals.")
         return
     pages = (len(rows) + PROPOSALS_PER_PAGE - 1) // PROPOSALS_PER_PAGE
     page = min(max(1, page), pages)
@@ -516,8 +533,8 @@ async def show_proposals(app: App, page: int = 1) -> None:
         navigation.append(InlineKeyboardButton(text="Next", callback_data=f"prop:page:{page + 1}"))
     if navigation:
         keyboard.append(navigation)
-    await app.bot.send_message(
-        app.owner_id, "\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+    await _send(
+        app, "\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         disable_notification=True,
     )
 
@@ -549,7 +566,7 @@ async def approve_proposal_page(app: App, first: int, last: int) -> str:
 async def show_reminders(app: App) -> None:
     reminders = await app.dispatch.reminders.active()
     if not reminders:
-        await app.bot.send_message(app.owner_id, "No active reminders.")
+        await _send(app, "No active reminders.")
         return
     tz = ZoneInfo(app.config.timezone)
     for start in range(0, len(reminders), 10):
@@ -560,17 +577,15 @@ async def show_reminders(app: App) -> None:
             preview = " ".join(row["text"].split())[:130]
             lines.append(f"#{row['id']} {due:%Y-%m-%d %H:%M} ({row['importance']}{repeat}) {preview}")
             buttons.append([InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"rem:cancel:{row['id']}")])
-        await app.bot.send_message(
-            app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        )
+        await _send(app, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
 async def edit_stickers(app: App, args: list[str]) -> None:
     if len(args) != 2 or args[0] not in ("add", "remove"):
-        await app.bot.send_message(app.owner_id, "Use /stickers add <set_name> or /stickers remove <set_name>.")
+        await _send(app, "Use /stickers add <set_name> or /stickers remove <set_name>.")
         return
     result = await change_sticker_set(app, *args)
-    await app.bot.send_message(app.owner_id, result)
+    await _send(app, result)
 
 
 async def change_sticker_set(app: App, action: str, name: str) -> str:
@@ -645,7 +660,7 @@ async def import_memory(app: App, message: Message, text: str) -> tuple[str, str
 
 async def show_t3(app: App) -> None:
     if app.t3 is None:
-        await app.bot.send_message(app.owner_id, "T3 bridge off.")
+        await _send(app, "T3 bridge off.")
     else:
         await app.t3.show()
 
@@ -663,15 +678,15 @@ async def offer_update(app: App) -> None:
         layout = release.Layout.installed()
         offer = await asyncio.to_thread(release.check, layout, url, VERSION)
     except release.DeployError as error:
-        await app.bot.send_message(app.owner_id, str(error))
+        await _send(app, str(error))
         return
     except (OSError, subprocess.SubprocessError):
         log.warning("could not check %s for releases", url, exc_info=True)
-        await app.bot.send_message(app.owner_id, f"Could not check {url} for releases.")
+        await _send(app, f"Could not check {url} for releases.")
         return
     if offer is None:
         await app.store.kv_set(UPDATE_OFFER_KEY, "")
-        await app.bot.send_message(app.owner_id, f"Dom is up to date ({VERSION}).")
+        await _send(app, f"Dom is up to date ({VERSION}).")
         return
     nonce = secrets.token_hex(8)
     await app.store.kv_set(UPDATE_OFFER_KEY, json.dumps({"nonce": nonce, "tag": offer.tag, "commit": offer.commit}))
@@ -680,7 +695,7 @@ async def offer_update(app: App) -> None:
         InlineKeyboardButton(text=f"Update to {offer.tag}", callback_data=f"update:go:{nonce}"),
         InlineKeyboardButton(text="Not now", callback_data=f"update:no:{nonce}"),
     ]])
-    await app.bot.send_message(app.owner_id, text, reply_markup=markup)
+    await _send(app, text, reply_markup=markup)
 
 
 async def decide_update(app: App, decision: str, nonce: str) -> str:
@@ -698,11 +713,11 @@ async def decide_update(app: App, decision: str, nonce: str) -> str:
         layout = release.Layout.installed()
         await asyncio.to_thread(release.launch, layout, app.home.root, chosen)
     except release.DeployError as error:
-        await app.bot.send_message(app.owner_id, str(error))
+        await _send(app, str(error))
         return "Not started"
     await record_event(app, f"Started the update to {chosen.tag}")
-    await app.bot.send_message(
-        app.owner_id, f"Updating to {chosen.tag}. Dom restarts on the way and reports back here when it is done.",
+    await _send(
+        app, f"Updating to {chosen.tag}. Dom restarts on the way and reports back here when it is done.",
     )
     watch_update(app)
     return f"Updating to {chosen.tag}"
@@ -714,7 +729,7 @@ def watch_update(app: App) -> None:
         return
 
     async def send(text: str) -> None:
-        await app.bot.send_message(app.owner_id, text)
+        await _send(app, text)
         await record_event(app, text[:250])
 
     task = asyncio.create_task(release.deliver_result(app.home.root, send, sleep=asyncio.sleep))

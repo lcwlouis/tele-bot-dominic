@@ -71,15 +71,15 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             self.assertEqual(migrate_database(db), TARGET_VERSION)
-            self.assertGreaterEqual(TARGET_VERSION, 17)
+            self.assertGreaterEqual(TARGET_VERSION, 21)
             self.assertEqual(list(Path(d).glob("*.bak")), [])
             conn = sqlite3.connect(db)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
-            self.assertTrue({"sender_user_id", "original_seen_before_edit", "previous_seen_text"} <= cols)
+            self.assertTrue({"sender_user_id", "original_seen_before_edit", "previous_seen_text", "thread_id"} <= cols)
             names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
             self.assertTrue({"chats", "people_identities", "scheduled_jobs", "messages", "messages_fts",
                              "messages_ai", "messages_ad", "messages_au", "pending_turns",
-                             "idx_messages_chat_msg_unique", "self_tasks", "plugin_storage"} <= names)
+                             "idx_messages_chat_msg_unique", "self_tasks", "plugin_storage", "chat_migrations"} <= names)
             conn.close()
 
     def test_self_work_migration_keeps_the_previous_schema_usable(self):

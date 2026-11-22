@@ -178,7 +178,7 @@ async def test_ordinary_words_that_are_also_action_names_do_not_block_a_rescue()
 
 
 async def test_a_chunk_too_long_for_one_bubble_falls_through():
-    assert await rescue(FakeJev(), "a" * 4001) is None
+    assert await rescue(FakeJev(), "a" * 4097) is None
 
 
 async def test_jev_sees_the_window_and_the_candidate_as_data():
