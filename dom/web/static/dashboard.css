@@ -284,8 +284,10 @@ input[type="file"]::file-selector-button {
   .chats-panel { grid-column: 1 / -1; }
   .desktop-tile { grid-column: 1 / -1; }
   #own-work, #plugin-panels { grid-column: 1 / -1; } /* full width on Now; without a placement they took one of 12 columns */
-  .usage { grid-column: 1 / 6; grid-row: 4; }
-  .turns { grid-column: 6 / -1; grid-row: 4; }
+  #reminders { grid-column: 1 / -1; } /* without a placement it took one of 12 columns */
+  main:not(.single) { grid-auto-flow: row dense; } /* usage and turns pair up whichever panels Now shows; fixed rows overlapped */
+  .usage { grid-column: 1 / 6; }
+  .turns { grid-column: 6 / -1; }
   .single > section { grid-column: 1 / -1; grid-row: auto; }
   .memory-panel { grid-column: 1 / -1; }
   .memory { grid-template-columns: 240px minmax(0, 1fr); }
