@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MessageEntity
 
 from dom.agent import unfence
 from dom.config import replace_host
@@ -272,9 +272,13 @@ class Proposals:
                 if review is not None:
                     keyboard.insert(0, [review])
                 markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+            chunk = text[start:start + 2000]
+            entities = None
+            if row["kind"] == "memory_edit":  # model-written diff: shown verbatim, nothing in it becomes tappable
+                options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
+                entities = [MessageEntity(type="pre", offset=0, length=len(chunk.encode("utf-16-le")) // 2)]
             sent = await app.bot.send_message(
-                app.owner_id, text[start:start + 2000], disable_notification=True, reply_markup=markup,
-                **options,
+                app.owner_id, chunk, disable_notification=True, reply_markup=markup, entities=entities, **options,
             )
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):

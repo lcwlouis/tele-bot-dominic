@@ -498,6 +498,8 @@ async def show_proposals(app: App, page: int = 1) -> None:
         controls = proposals.buttons(row["id"], numbered=len(shown) > 1)
         if preview != text:
             preview += "…"
+            if row["kind"] == "memory_edit":  # never approve a note edit without seeing the whole diff
+                controls = [button for button in controls if not button.callback_data.startswith("prop:yes:")]
             controls.append(InlineKeyboardButton(text=f"Details #{row['id']}", callback_data=f"prop:show:{row['id']}"))
         if row["kind"] == "plugin" and (review := proposals.review_button(app, json.loads(row["body_json"]))):
             controls.append(review)

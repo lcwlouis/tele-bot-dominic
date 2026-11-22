@@ -32,8 +32,8 @@ _EDITABLE_EXACT = {
     "memory/JOURNAL.md",
     "memory/MEMORY.md",
 }
-_PERSON_NOTE = re.compile(r"\A(?:memory/)?people/(\d+|handle_[a-z0-9_]+)\.md\Z")
-_CHAT_NOTE = re.compile(r"\A(?:memory/)?chats/(-?\d+)\.md\Z")
+_PERSON_NOTE = re.compile(r"\A(?:memory/)?people/(0|[1-9][0-9]*|handle_[a-z0-9_]+)\.md\Z", re.ASCII)
+_CHAT_NOTE = re.compile(r"\A(?:memory/)?chats/(-?[1-9][0-9]*)\.md\Z", re.ASCII)
 _DATE_HEADING = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 _CLAUSE_SPLIT = re.compile(r"(?:[.;!?]+|:)\s+")
 _SENTENCE_SPLIT = re.compile(r"[.;!?]+\s+")
@@ -178,7 +178,7 @@ def check_no_private_to_public(config: Config, home: Home, rel: str, old: str, n
         try:
             content = read_regular_note(private, private_rel)
         except (OSError, ValueError):
-            continue
+            raise ValueError(f"Cannot check {private_rel}, so no public note can be edited.") from None
         is_journal = private_rel == "private/JOURNAL.md"
         for raw_line in content.splitlines():
             clean = raw_line.strip(" \t#-*")
@@ -210,6 +210,9 @@ def check_no_private_to_public(config: Config, home: Home, rel: str, old: str, n
                     raise ValueError("Cannot move private notes into a public note.")
 
 
+MAX_DIFF_CHARS = 6000  # a full rewrite of a bounded note fits; a huge journal rewrite does not
+
+
 def memory_diff(rel: str, old: str, new: str) -> list[str]:
     """Unified diff lines for a proposed note edit."""
     return list(unified_diff(old.splitlines(), new.splitlines(), fromfile=f"a/{rel}", tofile=f"b/{rel}", lineterm=""))
@@ -231,6 +234,10 @@ def prepare_proposal(config: Config, home: Home, body: dict) -> tuple[str, dict]
     check_size_bounds(rel, current, new)
     check_no_private_to_public(config, home, rel, current, new)
     diff = "\n".join(memory_diff(rel, current, new))
+    if not diff:
+        raise ValueError("That edit makes no visible change.")
+    if len(diff) > MAX_DIFF_CHARS:
+        raise ValueError("That edit is too big to review on one card; propose a smaller change.")
     title = f"{rel}: {reason}"
     normalized = {
         "file": rel,
@@ -245,6 +252,8 @@ def prepare_proposal(config: Config, home: Home, body: dict) -> tuple[str, dict]
 
 def apply_proposal(config: Config, home: Home, body: dict) -> None:
     """Apply an approved `memory_edit` proposal after re-checking path, version, privacy and bounds."""
+    if not config.memory_self_edit:
+        raise ValueError("memory self-edit is turned off")
     rel = resolve_note_path(body.get("file"))
     old = body.get("old")
     new = body.get("new")

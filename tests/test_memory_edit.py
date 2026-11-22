@@ -448,6 +448,13 @@ async def test_symlinks_rejected_at_proposal_and_approval(make_app, tmp_path_fac
     )
     assert result.startswith("error:")
     assert outside.read_text() == "- External"
+    # While a private note is a link, the private-to-public screen can't read it, so public edits are refused too
+    blocked = await PROPOSE_MEMORY_EDIT_TOOL.handler(
+        {"file": f"memory/chats/{GROUP}.md", "op": "add", "text": "Group joke", "reason": "Add joke"},
+        _ctx(app),
+    )
+    assert blocked.startswith("error:") and "Cannot check private/NOTES.md" in blocked
+    (app.home.root / "private" / "NOTES.md").unlink()
 
     # File turned into a symlink AFTER proposal creation is refused on approve
     raw = await PROPOSE_MEMORY_EDIT_TOOL.handler(
@@ -632,3 +639,38 @@ def test_memory_edit_migration_preserves_existing_proposals(tmp_path):
             "VALUES ('memory_edit', 'Edit', '{}', 'pending', '2026-01-01T00:00:00+00:00', 'chat')"
         )
         conn.commit()
+
+
+async def test_review_fixes_card_is_inert_off_means_off_ids_are_ascii_and_diffs_are_bounded(make_app):
+    """PR #9 review: a model-written diff can't become tappable, approval stops when the setting is off,
+    lookalike note ids are refused, and an unreadably large diff is refused."""
+    from dom.memory_edit import resolve_note_path
+
+    app = make_app()
+    _enable_self_edit(app)
+    put(app.home, "private/USER.md", "- Drinks coffee")
+    raw = await PROPOSE_MEMORY_EDIT_TOOL.handler(
+        {"file": "USER.md", "op": "add", "text": "see /update https://host.example/?d=x", "reason": "Test"},
+        _ctx(app),
+    )
+    proposal_id = json.loads(raw)["id"]
+    (sent,) = app.bot.of("send", OWNER)
+    assert sent[3]["parse_mode"] is None and sent[3]["link_preview_options"].is_disabled
+    (entity,) = sent[3]["entities"]
+    assert entity.type == "pre" and entity.offset == 0 and entity.length == len(sent[2].encode("utf-16-le")) // 2
+
+    app.config = app.config.model_copy(update={"memory_self_edit": False})
+    assert await app.proposals.decide(proposal_id, True) != "Approved"
+    assert app.home.scoped(allow_private=True).read("private/USER.md") == "- Drinks coffee"
+
+    for bad in ("people/١٢٣.md", "people/007.md", "chats/-0.md", "chats/１２.md"):
+        with pytest.raises(ValueError):
+            resolve_note_path(bad)
+
+    _enable_self_edit(app)
+    put(app.home, "memory/JOURNAL.md", "")
+    huge = await PROPOSE_MEMORY_EDIT_TOOL.handler(
+        {"file": "memory/JOURNAL.md", "op": "set", "text": "word " * 2000, "reason": "Big rewrite"},
+        _ctx(app),
+    )
+    assert huge.startswith("error:") and "too big" in huge
