@@ -71,7 +71,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             self.assertEqual(migrate_database(db), TARGET_VERSION)
-            self.assertEqual(TARGET_VERSION, 16)
+            self.assertGreaterEqual(TARGET_VERSION, 17)
             self.assertEqual(list(Path(d).glob("*.bak")), [])
             conn = sqlite3.connect(db)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
@@ -87,19 +87,39 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "state.db"
             conn = sqlite3.connect(db)
-            for _, filename in MIGRATIONS[:-1]:
+            for _, filename in [(version, name) for version, name in MIGRATIONS if version <= 15]:
                 conn.executescript((MIGRATIONS_DIR / filename).read_text())
             self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 15)
             before = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
             conn.execute("INSERT INTO desktop_tasks (chat_id, brief, status, created_at) VALUES (1, 'b', 'done', 't')")
             conn.commit()
             conn.close()
-            self.assertEqual(migrate_database(db), 16)
+            self.assertEqual(migrate_database(db), TARGET_VERSION)
             conn = sqlite3.connect(db)
             after = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
             self.assertEqual(after - before, {"self_tasks", "idx_self_tasks_status"})
             self.assertEqual(conn.execute("SELECT brief FROM desktop_tasks").fetchall(), [("b",)])
             conn.close()
+
+    def test_turn_timings_migration_preserves_preexisting_turns(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "state.db"
+            with sqlite3.connect(db) as conn:
+                for _, filename in [(version, name) for version, name in MIGRATIONS if version <= 16]:
+                    conn.executescript((MIGRATIONS_DIR / filename).read_text())
+                conn.execute(
+                    "INSERT INTO turns (at, chat_id, scope, calls, trace, model, fallback, duration_ms, outcome) "
+                    "VALUES ('t', '111', 'owner_dm', 1, ?, 'test', 0, 12, 'Replied')",
+                    ('["final", "model@8", "typing@4"]',),
+                )
+            self.assertEqual(migrate_database(db), TARGET_VERSION)
+            self.assertTrue(db.with_name("state.db.v16.bak").exists())
+            self.assertEqual(migrate_database(db), TARGET_VERSION)
+            with sqlite3.connect(db) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT trace, model_calls, first_bubble_ms, last_bubble_ms FROM turns").fetchone(),
+                    ('["final", "model@8", "typing@4"]', "[]", None, None),
+                )
 
     def test_existing_v2_db_is_backed_up_and_data_preserved(self):
         with tempfile.TemporaryDirectory() as d:

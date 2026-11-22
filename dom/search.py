@@ -8,6 +8,7 @@ from xml.sax.saxutils import escape
 
 import httpx
 
+from dom import turn_log
 from dom.config import ModelEndpoint
 from dom.usage import UsageRecorder, check_model_allowed
 
@@ -45,19 +46,21 @@ class SearchClient:
 
     async def search(self, query: str) -> str:
         await check_model_allowed()
-        async with asyncio.timeout(TIMEOUT_SECONDS):
-            response = await self.http.post(
-                f"{self.endpoint.base_url.rstrip('/')}/chat/completions",
-                json={
-                    "model": self.endpoint.model,
-                    "messages": [{
-                        "role": "user", "content": f"Search the web and answer concisely with the key facts: {query}",
-                    }],
-                    "plugins": [{"id": "web", "max_results": 3}],
-                },
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=TIMEOUT_SECONDS,
-            )
+        messages = [{
+            "role": "user",
+            "content": f"Search the web and answer concisely with the key facts: {query}",
+        }]
+        plugins = [{"id": "web", "max_results": 3}]
+        with turn_log.model_call(self.endpoint.model, "search", messages, plugins) as call:
+            async with asyncio.timeout(TIMEOUT_SECONDS):
+                response = await self.http.post(
+                    f"{self.endpoint.base_url.rstrip('/')}/chat/completions",
+                    json={"model": self.endpoint.model, "messages": messages, "plugins": plugins},
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=TIMEOUT_SECONDS,
+                )
+        if call is not None:
+            call.received(response)
         if self.usage is not None:
             await self.usage.record_response(response, "search", self.endpoint.model, self.host)
         response.raise_for_status()

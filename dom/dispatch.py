@@ -8,6 +8,7 @@ import logging
 import re
 from collections import deque
 from contextlib import asynccontextmanager, nullcontext
+from dataclasses import dataclass
 from functools import partial
 from datetime import datetime, timedelta
 from time import monotonic
@@ -51,6 +52,7 @@ TICK_SECONDS = 60
 HANDOFF_CARD = "desktop-handoff-card:"  # + task id -> the Telegram message id of its log-in card
 DEBOUNCE_CAP = timedelta(seconds=15)  # a steady stream of messages cannot postpone a turn longer
 MEDIA_WAIT_SECONDS = 15
+LATE_REPLY = timedelta(seconds=60)
 ORPHAN_AGE = timedelta(seconds=10)  # an online chat's unread message this old lost its debounce
 TRIAGE_WINDOW = 15
 OFFLINE_URGENCY = 1.5
@@ -72,6 +74,14 @@ BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short mes
 NO_ANSWER_NOTICE = "Sorry, I couldn't put a reply together just now. Could you send that again?"
 
 
+@dataclass
+class QueueWaits:
+    start: datetime
+    debounce_until: datetime | None
+    media_ms: int | None = None
+    lock_ms: int | None = None
+
+
 class Dispatcher:
     def __init__(
         self, app: App, presence: Presence, jev: JevClient | None,
@@ -91,6 +101,7 @@ class Dispatcher:
         self._first_notify: dict[int, datetime] = {}
         self._latest: dict[int, IncomingMessage] = {}
         self._media_tasks: dict[int, set[asyncio.Task]] = {}
+        self._arrival_media: dict[int, dict[int, turn_log.TurnTrace]] = {}
         self._tasks: set[asyncio.Task] = set()
         self._polls: dict[int, asyncio.Task] = {}
         self._loop: asyncio.Task | None = None
@@ -154,7 +165,9 @@ class Dispatcher:
         except Exception:
             log.exception("could not check presence before describing media in chat %s", msg.chat_id)
             return
-        task = self._spawn(self._describe_media(msg))
+        trace = turn_log.TurnTrace()
+        self._arrival_media.setdefault(msg.chat_id, {})[msg.msg_id] = trace
+        task = self._spawn(self._describe_media(msg, trace))
         self._media_tasks.setdefault(msg.chat_id, set()).add(task)
         task.add_done_callback(lambda done: self._clear_media_task(msg.chat_id, done))
 
@@ -164,8 +177,24 @@ class Dispatcher:
         if not tasks:
             del self._media_tasks[chat_id]
 
-    async def _describe_media(self, msg: IncomingMessage) -> None:
-        await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
+    async def _describe_media(self, msg: IncomingMessage, trace: turn_log.TurnTrace) -> None:
+        try:
+            with turn_log.track(trace):
+                await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
+        finally:
+            if not trace.model_calls:
+                arrivals = self._arrival_media.get(msg.chat_id, {})
+                if arrivals.get(msg.msg_id) is trace:
+                    del arrivals[msg.msg_id]
+                    if not arrivals:
+                        del self._arrival_media[msg.chat_id]
+
+    def _take_arrival_media(self, chat_id: int, newest_msg_id: int) -> list[turn_log.TurnTrace]:
+        arrivals = self._arrival_media.get(chat_id, {})
+        selected = [arrivals.pop(msg_id) for msg_id in sorted(arrivals) if msg_id <= newest_msg_id]
+        if not arrivals:
+            self._arrival_media.pop(chat_id, None)
+        return selected
 
     @asynccontextmanager
     async def sticker_media_request(self) -> AsyncIterator[None]:
@@ -212,8 +241,11 @@ class Dispatcher:
         checked directly; the wait is bounded because an arrival-time description may hold the
         describer while it waits for that same lock."""
         async def describe_all() -> None:
-            for msg_id, media in await self.app.store.get_unread_media_to_describe(chat_id, CATCH_UP_MEDIA):
-                await self._describe(chat_id, msg_id, media, self._media_request(chat_id, lock_held=True))
+            pending = await self.app.store.get_unread_media_to_describe(chat_id, CATCH_UP_MEDIA)
+            if pending:
+                with turn_log.timed("media_wait"):
+                    for msg_id, media in pending:
+                        await self._describe(chat_id, msg_id, media, self._media_request(chat_id, lock_held=True))
 
         try:
             await asyncio.wait_for(describe_all(), MEDIA_WAIT_SECONDS)
@@ -236,8 +268,8 @@ class Dispatcher:
         await self.sleep(delay)
         # A new message may cancel the timer, but must never cancel a turn in progress.
         self._debounces.pop(chat_id)
-        self._first_notify.pop(chat_id, None)
-        await self._decide(chat_id)
+        first = self._first_notify.pop(chat_id, None)
+        await self._decide(chat_id, debounce_started=first)
 
     def start(self) -> None:
         if self._loop is None or self._loop.done():
@@ -348,9 +380,7 @@ class Dispatcher:
     async def override(self, chat_id: int, command: str) -> bool:
         """The owner's /wake or /sleep. False if the chat is unknown or not approved; that lookup never
         creates a chat row."""
-        if command == "/wake":
-            await self._wait_media(chat_id)
-        async with self.app.locks[chat_id]:
+        async with self._dispatch_slot(chat_id, wait_media=command == "/wake") as waits:
             if not await self.app.store.is_chat_approved(chat_id):
                 return False
             habits = self._habits()
@@ -358,25 +388,50 @@ class Dispatcher:
                 await self.presence.sleep(chat_id, habits)
                 return True
             await self.presence.wake(chat_id, habits)
-            await self._guarded_dispatch(chat_id, habits, catch_up=True)
+            await self._guarded_dispatch(chat_id, habits, waits, catch_up=True)
             return True
 
-    async def _decide(self, chat_id: int, *, background: bool = False) -> None:
-        try:
+    @asynccontextmanager
+    async def _dispatch_slot(
+        self, chat_id: int, *, debounce_started: datetime | None = None, wait_media: bool = True,
+    ) -> AsyncIterator[QueueWaits]:
+        """Carry pre-dispatch waits forward only if this attempt takes the unread messages."""
+        now = self.now()
+        waits = QueueWaits(debounce_started or now, now if debounce_started is not None else None)
+        if wait_media:
+            started = monotonic()
+            waiting = bool(self._media_tasks.get(chat_id))
             await self._wait_media(chat_id)
-            async with self.app.locks[chat_id]:
+            if waiting:
+                waits.media_ms = round((monotonic() - started) * 1000)
+        started = monotonic()
+        lock = self.app.locks[chat_id]
+        waiting = lock.locked()
+        async with lock:
+            elapsed = round((monotonic() - started) * 1000)
+            if waiting or elapsed:
+                waits.lock_ms = elapsed
+            yield waits
+
+    async def _decide(
+        self, chat_id: int, *, background: bool = False, debounce_started: datetime | None = None,
+    ) -> None:
+        try:
+            async with self._dispatch_slot(chat_id, debounce_started=debounce_started) as waits:
                 # A newer message can restart the timer while we wait for media or the turn lock.
                 if self._debounce_pending(chat_id) or not await self._approved(chat_id):
                     return
-                await self._guarded_dispatch(chat_id, self._habits(), background=background)
+                await self._guarded_dispatch(chat_id, self._habits(), waits, background=background)
         except Exception:
             log.exception("could not decide on chat %s", chat_id)
 
-    async def _guarded_dispatch(self, chat_id: int, habits: Habits, **kwargs: bool) -> None:
+    async def _guarded_dispatch(
+        self, chat_id: int, habits: Habits, waits: QueueWaits, **kwargs: bool,
+    ) -> None:
         """Run a dispatch; a chat whose turns keep failing is given up on instead of retried forever."""
         try:
             with model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
-                await self._dispatch(chat_id, habits, **kwargs)
+                await self._dispatch(chat_id, habits, waits, **kwargs)
         except ModelCallSkipped:
             return
         except Exception as exc:
@@ -415,7 +470,8 @@ class Dispatcher:
             log.exception("could not tell the owner about giving up on chat %s", chat_id)
 
     async def _dispatch(
-        self, chat_id: int, habits: Habits, *, background: bool = False, catch_up: bool = False,
+        self, chat_id: int, habits: Habits, waits: QueueWaits,
+        *, background: bool = False, catch_up: bool = False,
     ) -> None:
         store = self.app.store
         state, until = await self.presence.state(chat_id, habits)
@@ -439,12 +495,39 @@ class Dispatcher:
                 await store.mark_chat_read(chat_id, newest.msg_id)
                 return
 
+        media_traces = self._take_arrival_media(chat_id, newest.msg_id)
         if bot_key is not None:
             self._bots_in_flight.add(bot_key)
         try:
             scope = store.scope_for(chat_id, "group" if chat_id < 0 else "private")
-            async with turn_log.capture(store, self.now(), chat_id, scope):
-                await self._respond(chat_id, habits, state, until, count, newest, background, catch_up, bot_depth)
+            message_at = datetime.fromisoformat(newest.created_at)
+            trace = turn_log.TurnTrace(message_at=message_at, now=self.now)
+            if (state != "online" or catch_up) and message_at < waits.start:
+                # Presence sessions survive a restart. Stop at the start of this dispatch's explicit
+                # waits so none of that time is charged to both presence and a queue stage.
+                offline = timedelta()
+                cursor = message_at
+                for start, end in await store.online_sessions(cursor, waits.start, chat_id=chat_id):
+                    offline += max(timedelta(), start - cursor)
+                    cursor = max(cursor, end)
+                offline += max(timedelta(), waits.start - cursor)
+                if offline:
+                    trace.add_timing("away_wait", turn_log.milliseconds(offline))
+            if waits.debounce_until is not None:
+                trace.add_timing("debounce", turn_log.milliseconds(waits.debounce_until - max(waits.start, message_at)))
+            if waits.media_ms is not None:
+                trace.add_timing("media_wait", waits.media_ms)
+            if waits.lock_ms is not None:
+                trace.add_timing("lock_wait", waits.lock_ms)
+            async with turn_log.capture(store, self.now(), chat_id, scope, trace=trace):
+                try:
+                    await self._respond(chat_id, habits, state, until, count, newest, background, catch_up, bot_depth)
+                finally:
+                    # Arrival descriptions run independently and can finish during the debounce. Their calls
+                    # explain the media work without charging parallel time twice in the stage bar.
+                    calls = [call for media in media_traces for call in media.model_calls if call.status]
+                    trace.model_calls[:0] = calls
+                    trace.calls += len(calls)
         finally:
             if bot_key is not None:
                 self._bots_in_flight.remove(bot_key)
@@ -613,12 +696,11 @@ class Dispatcher:
         recipient = self._ephemeral_recipient(scope, newest)
         in_group = recipient is None or await self._is_admin(chat_id)
         try:
-            with turn_log.timed("typing"):  # the typing delays and the sending
-                sent = await executor.perform(
-                    app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
-                    thread_id=live.thread_id if live else None, stickers=app.stickers.sendable(),
-                    gifs=app.gifs, ephemeral_recipient=recipient, ephemeral_in_chat=in_group, typed_already=thought,
-                )
+            sent = await executor.perform(
+                app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
+                thread_id=live.thread_id if live else None, stickers=app.stickers.sendable(),
+                gifs=app.gifs, ephemeral_recipient=recipient, ephemeral_in_chat=in_group, typed_already=thought,
+            )
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
                 if sent:  # the bubbles stay out of the group's history, so say here that the owner was answered
@@ -876,6 +958,8 @@ class Dispatcher:
         if sender_id is not None:
             participants.append(sender_id)
         sliders, preset = await for_chat(app.home, app.store, chat_id, self.now())
+        if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:
+            note += "\nyou are answering late. If it fits, you can give a reason from your life in your own words."
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
             sliders=sliders, preset=preset,

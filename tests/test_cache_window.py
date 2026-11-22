@@ -270,7 +270,61 @@ async def test_a_full_turn_records_model_and_typing_time(make_app):
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
     [row] = await app.store.recent_turns()
-    assert [item.rpartition("@")[0] for item in json.loads(row["trace"]) if "@" in item] == ["model", "typing"]
+    assert [item.rpartition("@")[0] for item in json.loads(row["trace"]) if "@" in item] == [
+        "model", "typing", "send",
+    ]
+
+
+async def test_model_attempts_store_provider_usage_and_split_fingerprints(make_app):
+    import httpx
+
+    from dom.config import ModelEndpoint
+    from dom.llm import ChatClient, FallbackClient
+    from test_agent import Script
+    from tghelpers import no_sleep
+
+    app = make_app()
+    endpoint = ModelEndpoint(base_url="http://localhost/v1", model="test-model", api_key_env=None)
+    response = {
+        "choices": [{"message": {"role": "assistant", "content": FINAL}}],
+        "usage": {"prompt_tokens": 1480, "completion_tokens": 31, "prompt_tokens_details": {"cached_tokens": 1400}},
+    }
+    primary = Script(httpx.Response(503), httpx.Response(200, json=response), httpx.Response(200, json=response))
+    fallback = Script(httpx.Response(200, json={
+        **response, "usage": {"input_tokens": 1480, "output_tokens": 31, "input_tokens_details": {"cached_tokens": 0}},
+    }))
+    system = {"role": "system", "content": "Private fixture system"}
+    user = {"role": "user", "content": "Notes\n<chat_window>Private fixture user</chat_window>"}
+    tools = [{"type": "function", "function": {"name": "sample"}}]
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(primary)) as primary_http,
+        httpx.AsyncClient(transport=httpx.MockTransport(fallback)) as fallback_http,
+    ):
+        client = FallbackClient(
+            ChatClient(endpoint, None, primary_http, sleep=no_sleep),
+            ChatClient(endpoint.model_copy(update={"model": "fallback"}), None, fallback_http, sleep=no_sleep),
+        )
+        async with turn_log.capture(app.store, app.dispatch.now(), GROUP, "group"):
+            await client.complete([system, user], tools, once=True)
+            await client.complete([system, {**user, "content": user["content"] + " More"}], tools)
+            await client.complete([{**system, "content": "New system"}, user], [])
+
+    [row] = await app.store.recent_turns()
+    failed, rescued, changed_user, changed_system_and_tools = json.loads(row["model_calls"])
+    assert row["calls"] == 4 and row["fallback"] == 1
+    assert failed["status"] == 503 and failed["input_tokens"] is None
+    assert rescued["fallback"] and rescued["model"] == "fallback"
+    assert (rescued["input_tokens"], rescued["output_tokens"], rescued["cached_tokens"]) == (1480, 31, 0)
+    assert (changed_user["input_tokens"], changed_user["output_tokens"], changed_user["cached_tokens"]) == (1480, 31, 1400)
+    fields = ("system_hash", "tools_hash", "user_hash", "user_prefix_hash")
+
+    def changed(left, right):
+        return {field for field in fields if left[field] != right[field]}
+
+    assert changed(failed, rescued) == set()
+    assert changed(failed, changed_user) == {"user_hash"}
+    assert changed(failed, changed_system_and_tools) == {"system_hash", "tools_hash"}
+    assert "Private fixture" not in row["model_calls"]
 
 
 async def test_a_turn_cut_off_by_a_restart_is_logged_as_interrupted_not_quiet(make_app):
