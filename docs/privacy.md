@@ -83,6 +83,12 @@ Cloudflare. Keep local bearer-token testing on loopback.
   `leak_check = false` does not turn it off. With no Jev API key (the one `models.triage.api_key_env` names) Dom
   makes no Jev calls at all and asks the model again as before.
 
+  Triage also gets the name and one-line description of each approved skill (public text) and picks the one that
+  fits, so Dom does not need a separate model call to read it. When an online session is within ten minutes of
+  ending and could still be extended, Jev is asked once more after Dom's reply, with the same recent messages
+  triage uses, whether he stays longer. These come with the reply's own Jev calls and need no extra setting; with no
+  Jev key, Dom picks no skill ahead and the session ends as scheduled.
+
 - **Private group replies.** A reply Dom marks private in a group is shown only
   to the owner there. Where Telegram refuses that (Dom is not a group admin), it
   goes to the owner's DM instead, and the group's history records only that the

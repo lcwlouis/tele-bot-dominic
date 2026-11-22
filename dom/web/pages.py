@@ -370,6 +370,7 @@ TURN_STAGES = {
     "typing": "Typing",
     "send": "Sending",
     "other": "Other time",
+    "after_reply": "Jev after reply",  # the staying-online decision, made once the bubbles are out
 }
 TIMING_STAGES = {"fallback_model": "model", "gif_search": "send"}
 TIMING_LABELS = {"fallback_model": "Fallback model", "web_search": "Search", "gif_search": "GIF lookup"}
@@ -388,7 +389,7 @@ def _turn_timings(row: dict, trace: list[str]) -> None:
         timings.append((label, ms))
         totals[stage] += ms
     if row["last_bubble_ms"] is not None:
-        other = row["last_bubble_ms"] - sum(totals.values())
+        other = row["last_bubble_ms"] - sum(ms for stage, ms in totals.items() if stage != "after_reply")
         if other > 0:
             totals["other"] = other
             timings.append((TURN_STAGES["other"], other))

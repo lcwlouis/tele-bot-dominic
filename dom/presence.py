@@ -208,19 +208,35 @@ class Presence:
         self._session_ended(chat_id)
         return until
 
-    async def extend_online(self, chat_id, habits: Habits, minutes: float) -> datetime:
-        """Extend by up to 30 minutes, but never past 2 hours after the session began, nor (unless the
-        owner woke Dom) into the next sleep window. When nothing can be added the deadline is unchanged."""
-        row = await self.store.get_presence(chat_id)
+    def _extension(self, chat_id, row: dict, minutes: float) -> tuple[datetime, datetime, bool]:
+        """(current deadline, deadline after adding up to `minutes`, owner woke Dom) with the session cap applied.
+        Raises ValueError when the chat is no longer online."""
         online = _deadline(row["online_until"])
         now = self.now()
         if online is None or online <= now:
             raise ValueError("the chat is no longer online")
         owner_wake = _deadline(row["sleep_until"]) == online
         until = online + timedelta(minutes=min(max(minutes, 0), 30))
-        until = min(until, self._session_start.get(chat_id, now) + MAX_SESSION)
+        return online, min(until, self._session_start.get(chat_id, now) + MAX_SESSION), owner_wake
+
+    async def stay_room(self, chat_id, habits: Habits) -> tuple[float, float]:
+        """(minutes left in this online session, minutes an extension could still add right now). Writes nothing;
+        (0, 0) when the chat is not online."""
+        try:
+            online, until, owner_wake = self._extension(chat_id, await self.store.get_presence(chat_id), 30)
+        except ValueError:
+            return 0.0, 0.0
+        now = self.now()
         if not owner_wake:
             until = min(until, self._next_sleep_start(now, habits))
+        return (online - now).total_seconds() / 60, max(0.0, (until - online).total_seconds() / 60)
+
+    async def extend_online(self, chat_id, habits: Habits, minutes: float) -> datetime:
+        """Extend by up to 30 minutes, but never past 2 hours after the session began, nor (unless the
+        owner woke Dom) into the next sleep window. When nothing can be added the deadline is unchanged."""
+        online, until, owner_wake = self._extension(chat_id, await self.store.get_presence(chat_id), minutes)
+        if not owner_wake:
+            until = min(until, self._next_sleep_start(self.now(), habits))
         return await self._set_online(chat_id, max(until, online), override=owner_wake)
 
     async def wake(self, chat_id, habits: Habits, minutes: float = 30) -> datetime:

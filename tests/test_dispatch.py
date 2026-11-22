@@ -250,30 +250,6 @@ async def test_owner_wake_command_only_in_owner_dm(setup_dispatch):
     assert (await dispatch.presence.state(FRIEND, parse_habits("")))[0] == "asleep"
 
 
-async def test_extend_online_tool(setup_dispatch):
-    app, dispatch, _ = await setup_dispatch()
-    habits = parse_habits("")
-    until = await dispatch.presence.go_online(GROUP, habits, minutes=5)
-    calls = []
-
-    def model(request):
-        calls.append(request)
-        if len(calls) == 1:
-            message = {"role": "assistant", "tool_calls": [{
-                "id": "call-1", "type": "function",
-                "function": {"name": "extend_online", "arguments": '{"minutes": 30}'},
-            }]}
-        else:
-            message = {"role": "assistant", "content": '{"no_response": true}'}
-        return httpx.Response(200, json={"choices": [{"message": message}]})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(model)) as http:
-        app.client.http = http
-        await deliver(app)
-    assert len(calls) == 2
-    assert (await dispatch.presence.state(GROUP, habits))[1] == until.replace(hour=12, minute=35)
-
-
 async def test_expired_offline_session_is_caught_up_on_tick(setup_dispatch):
     app, dispatch, clock = await setup_dispatch()
     habits = parse_habits("")

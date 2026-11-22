@@ -107,32 +107,6 @@ SEARCH_HISTORY_TOOL = Tool(
 )
 
 
-async def _extend_online(args: dict, ctx: TurnCtx) -> str:
-    minutes = args.get("minutes")
-    if type(minutes) not in (int, float) or not 0 < minutes <= 30:
-        return "error: minutes must be greater than 0 and at most 30"
-    if ctx.presence is None or ctx.habits is None:
-        return "error: presence is unavailable"
-    until = await ctx.presence.extend_online(ctx.chat_id, ctx.habits, minutes)
-    return json.dumps({"online_until": until.isoformat()})
-
-
-EXTEND_ONLINE_TOOL = Tool(
-    name="extend_online",
-    description=(
-        "Add up to 30 minutes to this chat's online session when you want to stay longer. A session lasts "
-        "at most 2 hours in total and does not run into your sleep hours."
-    ),
-    schema={
-        "type": "object",
-        "properties": {"minutes": {"type": "number", "exclusiveMinimum": 0, "maximum": 30}},
-        "required": ["minutes"],
-    },
-    handler=_extend_online,
-    scopes=set(ALL_SCOPES),
-)
-
-
 async def _remind(args: dict, ctx: TurnCtx) -> str:
     if ctx.scope != "owner_dm" or ctx.chat_id != ctx.owner_id or ctx.reminders is None:
         return "error: reminders are available only in the owner's DM"
@@ -351,7 +325,6 @@ def _is_owner_only(tool: Tool) -> bool:
 def _shared_core_tools(search: SearchClient | None = None) -> list[Tool]:
     tools = [
         SEARCH_HISTORY_TOOL,
-        EXTEND_ONLINE_TOOL,
         SKILLS_LIST_TOOL,
         SKILL_VIEW_TOOL,
         SKILL_MANAGE_TOOL,
