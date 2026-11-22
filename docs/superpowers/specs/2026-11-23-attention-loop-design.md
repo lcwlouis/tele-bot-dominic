@@ -1,6 +1,6 @@
 # Attention loop and cross-chat queue — design (v0.8.2 W2)
 
-Status: draft for the owner's review, docs only · 2026-11-23 · implements E52 and answers D1 and D2 of
+Status: approved by the owner 2026-11-23 (D1 yes; D2 widened, see §4) · docs only · implements E52, D1 and D2 of
 `docs/superpowers/plans/2026-11-23-v0.8.2.md` (W2). Baseline: `docs/superpowers/specs/2026-11-19-dom-core-design.md`
 and the v0.8.1 plan (E45 early start, restarts and follow-ups; E46 machinery rule). Checked against `dom/dispatch.py`,
 `dom/prompt.py`, `dom/tools.py`, `dom/triage.py`, `dom/proposals.py`, `dom/presence.py` and `dom/window.py` as of
@@ -15,8 +15,9 @@ time, each turn knows nothing of the others, and nothing can pass between chats.
    time, like flicking between apps, in an order the loop picks (owner DM first, then by age). Each visit leaves a short
    facts-only line, and the next turn's note says what he was just doing elsewhere.
 2. **The cross-chat queue.** A persisted queue and one worker task that do every cross-chat action. A turn only adds an
-   item; it never takes another chat's lock. There are two item kinds: an **alert** to the owner DM, which needs no card
-   and is rate-limited (D2), and a **message** to another chat, which needs an owner approval card first (E52).
+   item; it never takes another chat's lock. There are three item kinds. Two go to the owner DM with no card, rate-limited (D2): an **alert** (code-made,
+   when a group asks for the owner) and an **owner note** (Dom's own message to the owner, from any chat). The third, a
+   **message** to any other chat, needs an owner approval card first (E52).
 
 Goals, from W2's "done when": two chats active at once are answered in turn and neither starves; a group asking for the
 owner pings the owner DM; a DM→group message goes out only after the owner approves its card.
@@ -136,10 +137,12 @@ another, so it gets a card (§4.3).
 | Kind | Direction | Text | Card |
 |---|---|---|---|
 | `alert` | group → owner DM | A code template, one line: `👋 <sender name> is asking for you in "<group title>"`, with a link to the message when Telegram allows one. Never the message text. | No (D2), rate-limited |
+| `owner_note` | group or friend DM → owner DM | Dom's own words, at most 1,000 characters, text only, sent as an ordinary bubble from Dom in the owner DM | No (D2), rate-limited |
 | `message` | owner DM → group or friend DM; group → group content only through the owner DM | The exact text Dom drafted, at most 1,000 characters, text only | Yes, always |
 
-Group or friend → owner DM messages carrying content, group-initiated sends, media and forwarding are not in v0.8.2
-(§10).
+The owner's D2 answer: "if Dom gets anything that needs my attention he can send anything to me". So anything bound for
+the owner DM is free; anything bound anywhere else needs a card. Group-initiated sends to other chats, media and
+forwarding are not in v0.8.2 (§10).
 
 ### 4.2 Who may add items
 
@@ -151,7 +154,10 @@ Group or friend → owner DM messages carrying content, group-initiated sends, m
   approved chat's id or title. An ambiguous or unknown title returns the matching approved chats so the model can choose.
   The tool is owner-only, so `enabled_tools` puts it after the shared tools and it changes only the owner DM's tool
   list, once. The tool result reads: *"Waiting for the owner's OK on a card; it goes out once approved."*
-- Group and friend-DM turns get no cross-chat tool.
+- **Owner notes: group and friend-DM models**, through `tell_owner(text, reason)`. It exists only in those turns' tool
+  lists (added last, so each scope's tool list stays fixed). The tool description: use it when something there needs the
+  owner's attention, write it as Dom texting the owner, and don't use it to repeat what an alert already said. Over a
+  rate limit (§4.5) it returns a plain error and nothing is queued. The result reads: *"Sent to the owner."* once queued.
 
 ### 4.3 Direction rules (E52, D2)
 
@@ -161,7 +167,7 @@ Group or friend → owner DM messages carrying content, group-initiated sends, m
 | owner DM → group | yes | **always.** The card shows the exact text. Approving it is the owner publishing that text, which is how this spec reads E52's "nothing from the owner DM goes into a group": never without the owner approving the exact words. |
 | owner DM → friend DM | yes | always |
 | group → group (content from A, drafted in the owner DM) | yes | always |
-| group or friend → owner DM, content | no (only the note, as context) | — |
+| group or friend → owner DM, owner note | yes | free, rate-limited (D2) |
 | anything → a pending, ignored or unknown chat | no | — |
 
 **Leak checks when the card is made**, all before any card exists:
@@ -188,6 +194,8 @@ target_title, text, reason, leak_score}`. The card shows the target, the exact t
 - **Alerts:** at most 1 per group every 15 minutes, 1 per (group, asker) per hour, and 6 an hour in all. No alert when
   the owner has posted in that group in the last 15 minutes. During Dom's sleep hours an alert goes out silently
   (`disable_notification`).
+- **Owner notes:** at most 1 per source chat every 10 minutes and 6 an hour in all, counted with alerts so a busy group
+  cannot flood the owner DM. During Dom's sleep hours a note goes out silently (`disable_notification`).
 - **Messages:** at most 3 pending cards, which refuses a fourth `message_chat` with a plain tool error. At most 10 sends
   a day, which refuses at card creation. One target per call.
 
@@ -224,6 +232,9 @@ words.
 
 - The note's wording is in-life: "you were just in another conversation", "4 min ago in "Title": …". It never says
   loop, queue, visit, turn or timing. Dom can use it as an in-life reason ("sorry, was talking to someone").
+- An owner note is Dom texting the owner in his own voice, so `MACHINERY_RULE` applies to it as to any reply. It is
+  recorded in the owner DM's history as Dom's own message, so the owner can answer it there and the owner-DM turn has
+  the context.
 - Alerts and card text are system notices, like "🔎 Checked your coding work" and the `/update` report. They are not
   in Dom's voice, so E46's exemption for system messages applies.
 - The `message_chat` result lets Dom say "I'll send it once you OK it" in the owner DM. That talks about the owner's
@@ -271,7 +282,7 @@ The layout stays:
 | Part | Shared by |
 |---|---|
 | system message (FRAME, SOUL, MEMORY, HABITS, skills) | every chat |
-| tool list | one scope (`message_chat` is added last, owner DM only) |
+| tool list | one scope (`message_chat` added last in the owner DM; `tell_owner` added last in groups and friend DMs) |
 | user message: persona, notes, window, then the turn note, with the elsewhere note last | one chat |
 
 Chats are never merged into one transcript.
@@ -305,20 +316,20 @@ whether to tune vLLM's cache size or build the second lane.
 - Merging chats into one transcript or one prompt.
 - Putting memory passes, openers, reminders, reflection, self-directed work and desktop or `/update` reports into the
   loop. They keep their own locks. Moving the memory pass in as a `later` visit is a candidate after W2's timings.
-- Cross-chat tools in group or friend-DM turns; group or friend → owner DM messages carrying content; rewriting a
+- Cross-chat tools in group or friend-DM turns other than `tell_owner`; rewriting a
   message in the target chat's voice; media, files and forwards.
 - Saving the note across restarts.
 - Pausing a visit for the owner DM.
 
 ## 11. Migration
 
-Migration `0021_cross_chat.sql` (`user_version` 21 → 22), in two parts.
+Migration `0022_cross_chat.sql` (`user_version` 22 → 23; W6 took 0021), in two parts.
 
 **The new table:**
 ```sql
 CREATE TABLE cross_chat (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL CHECK(kind IN ('alert', 'message')),
+    kind TEXT NOT NULL CHECK(kind IN ('alert', 'owner_note', 'message')),
     source_chat_id INTEGER NOT NULL,
     target_chat_id INTEGER NOT NULL,
     sender_user_id INTEGER,            -- the asker, for an alert's rate limit
@@ -375,7 +386,9 @@ Unit tests with the fake clock and the fake bot, as in the dispatch tests:
 - **Cross-chat:**
   - an alert from mention, `text_mention` and a reply to the owner; none for bots, unapproved chats or a recent owner
     post; every rate limit;
-  - `message_chat` exists only in the owner DM's tool list, last;
+  - `message_chat` exists only in the owner DM's tool list, last; `tell_owner` only in group and friend-DM lists, last;
+  - an owner note goes out with no card, is recorded as Dom's message in the owner DM, and every rate limit refuses with
+    nothing queued;
   - the card is created, Approve sends exactly once, and Reject or expiry never sends;
   - text with private content is refused before any card;
   - "Approve all" skips these cards;
@@ -383,7 +396,7 @@ Unit tests with the fake clock and the fake bot, as in the dispatch tests:
   - an instrumented slot registry asserts no task ever holds two chat slots and no turn takes another chat's slot.
 - **Restart:** every row of the §7 table, including a crash between approval and `queued`, and that `sending` is never
   resent.
-- **Migration:** a version 21 database with proposals of every kind migrates to 22 unchanged; an older build reads the
+- **Migration:** a version 22 database with proposals of every kind migrates to 23 unchanged; an older build reads the
   migrated `proposals` table.
 - **E46:** a replay over the turn notes and tool results finds none of loop, queue, visit, card or timing in group or
   friend scopes.
@@ -394,14 +407,14 @@ Live tests on Dominic Dev (W8), each row recording what was live and what was te
 - a DM→group message through its card, approved once and rejected once;
 - the cache-on-return table, after an hour of mixed use.
 
-## 13. Decisions for the owner
+## 13. Decisions (the owner approved this spec, W2-a to W2-e included, on 2026-11-23)
 
 | # | Question | Recommendation |
 |---|---|---|
-| D1 | One loop, or a fast lane from the start? | One loop, with the owner DM always first, and no cap on the owner DM. Decide on a second lane from the cache-on-return and `queue_wait` numbers. |
+| D1 | One loop, or a fast lane from the start? | One loop, with the owner DM always first, and no cap on the owner DM. Decide on a second lane from the cache-on-return and `queue_wait` numbers. **Decided: yes.** |
 | W2-a | Where does a visit end? | When the reply is composed, so the next chat thinks while this one's bubbles type. Holding the token through sending would make every waiting chat wait for typing too (10–16 s median). |
 | W2-b | Can a group that has waited long go ahead of the owner DM? | No: the owner DM is always first, as decided. Starvation is bounded because the owner DM queues only when the owner has written. Alternative: a chat waiting over 2 minutes gets one visit ahead of the owner DM. |
-| D2 | Which alert is free, and what triggers it? | Only "someone in a group is asking for **the owner**": a mention, a `text_mention` or a reply to the owner's message, when the owner has not posted there for 15 minutes, as one template line with no message text. Please confirm it is the owner they are asking for, not Dom. The backlog note reads that way, while the plan's D2 says "asking for Dom". |
+| D2 | Which alert is free, and what triggers it? | **Decided (owner, 2026-11-23):** anything to the owner DM is free. The code-made alert when a group asks for the owner stays, and Dom may send his own owner note from any chat (§4.1), both rate-limited. Everything sent anywhere else needs a card. |
 | W2-c | E52 says nothing from the owner DM ever goes into a group. Is a DM→group message the owner approves word for word allowed? | Yes, and only like that. Text that contains `private/` notes verbatim is refused before any card; Jev's leak score is shown on the card for paraphrases. |
 | W2-d | Facts from groups and friends' DMs reach the owner DM's prompt as context, with no card. | Yes: it is context, not a message, and the owner DM can already search every chat. |
 | W2-e | Card expiry and limits | 2 h expiry; 3 pending cards; 10 sends a day; alerts 1 per group per 15 min and 6 an hour. |
