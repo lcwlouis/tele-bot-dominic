@@ -642,7 +642,8 @@ async def test_search_settings_round_trip_test_and_data_retention_display(dashbo
         assert [p["provider"] for p in data["roles"]["search"]["fallbacks"]] == ["openrouter", "deepseek", "tavily"]
         assert data["roles"]["search"]["fallbacks"][2]["policy_url"] == "https://www.tavily.com/privacy"
         assert app.search_client is not None
-        assert [p.provider for p in app.search_client.providers] == ["searxng", "openrouter", "deepseek", "tavily"]
+        # The live chain leaves out DeepSeek and Tavily until their keys exist; the saved config keeps all four.
+        assert [p.provider for p in app.search_client.providers] == ["searxng", "openrouter"]
 
         # Round-trip reload from disk.
         reloaded = load_config(path.parent)
