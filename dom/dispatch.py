@@ -20,7 +20,7 @@ import httpx
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
-from dom import guard, turn_log
+from dom import guard, salvage, turn_log
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
 from dom.agent import NoFinalAnswer, malformed_shape, parse_actions, run_turn
@@ -40,7 +40,7 @@ from dom.reminders import Reminders
 from dom.telegram import executor, gate
 from dom.tools import TurnCtx, enabled_tools
 from dom.traits import for_chat, keep_task_mode, task_mode
-from dom.triage import persona_card, triage_offline, triage_online, triage_urgency
+from dom.triage import chat_state, persona_card, triage_offline, triage_online, triage_urgency
 from dom.usage import ModelCallSkipped, Usage, check_model_allowed, local_hosts, model_request
 
 if TYPE_CHECKING:
@@ -535,6 +535,14 @@ class Dispatcher:
             self.request_memory_pass(chat_id)
         return window.rows
 
+    async def _rescue(
+        self, chat_id: int, scope: Scope, window: list[StoredMessage], names: set[str], text: str | None,
+    ) -> salvage.Salvaged | None:
+        """Jev's verdict on a reply the model wrote as plain prose; see dom.salvage."""
+        with model_request("triage", chat_id, partial(self.turn_allowed, chat_id, scope)):
+            state = chat_state(persona_card(self.app.home), self._triage_xml(chat_id, window))
+            return await salvage.rescue(self.jev, state, text, scope, names)
+
     def _triage_xml(self, chat_id: int, window: list[StoredMessage]) -> str:
         chat = [m for m in window if m.role != "event"]  # events are the owner's commands, not chat content for Jev
         return self.app.store.format_chat_window_xml(chat_id, chat[-TRIAGE_WINDOW:], self.presence.tz)
@@ -869,8 +877,9 @@ class Dispatcher:
             desktop=app.desktop_worker, app=app,
         )
         usage_mark = await app.store.last_usage_id()
+        rescue = None if self.jev is None else partial(self._rescue, chat_id, scope, window, {t.name for t in tools})
         try:
-            actions = await run_turn(app.client, messages, tools, ctx)
+            actions = await run_turn(app.client, messages, tools, ctx, rescue=rescue)
         except ModelCallSkipped:
             raise
         except NoFinalAnswer:  # run_turn has logged why; the owner is told, others see nothing worse than silence

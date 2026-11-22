@@ -18,10 +18,13 @@ REACTIONS = (
 SEEN = "👀"
 
 
+MAX_BUBBLE_CHARS = 4000
+
+
 class Bubble(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: str = Field(min_length=1, max_length=4000)
+    text: str = Field(min_length=1, max_length=MAX_BUBBLE_CHARS)
     reply_to: int | None = None
     delete_after: float | None = Field(default=None, ge=1, le=30)
 

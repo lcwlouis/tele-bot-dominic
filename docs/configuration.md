@@ -30,7 +30,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | --- | --- | --- |
 | `models.chat` | Required | Primary chat and desktop worker model. |
 | `models.chat_fallback` | Optional | Backup chat endpoint when the primary is unavailable. |
-| `models.triage` | Built in | Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, and the `dom doctor --online` probe. |
+| `models.triage` | Built in | Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe. |
 | `models.media` | Built in | Attachment descriptions, transcriptions and desktop screenshot descriptions. |
 | `models.search` | Optional | OpenRouter web search. If the table is present, omitted fields use the starter search settings. |
 

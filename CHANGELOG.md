@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- A chat reply written as plain prose instead of the JSON actions object is no longer always asked for again (10–19 s in the owner's DM). Jev, which only judges and never writes, is asked once whether it is a message ready to send, whether it talks about being a bot or its instructions, how many bubbles it should be, and in a group whether it would be wrong for everyone to read. If it is sure, Dom sends the model's own words as bubbles, split only at paragraph or sentence breaks, through the usual group leak check; the turn log shows a "salvaged" step and the journal the bubble count and Jev's confidence, never the text. JSON-looking text, visible reasoning, tool or action names, a refusal, low confidence or no Jev leave the retry and fallback as they were. This sends the reply text from DMs, the owner DM included, to Jev; `docs/privacy.md` says so.
+
 ## [0.8.0] - 2026-11-22
 
 Drift to zero: every decision the owner made since the rebuild is built and live-tested on the Pi, and two independent drift reviews (Gemini 4 Neon and Claude Fable 5.2) report zero drift.

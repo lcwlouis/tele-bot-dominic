@@ -67,12 +67,12 @@ def persona_card(home: Home) -> str:
     return body.strip()[:600]
 
 
-def _state(card: str, window_xml: str) -> str:
+def chat_state(card: str, window_xml: str) -> str:
     return f"Dom's persona:\n{card}\n\nRecent messages:\n{window_xml}"
 
 
 async def triage_online(jev: JevClient, card: str, window_xml: str) -> Triage:
-    answers = await jev.decide(_state(card, window_xml), {
+    answers = await jev.decide(chat_state(card, window_xml), {
         "action": {
             "type": "choice",
             "instructions": "What should Dom do with the newest messages?",
@@ -98,7 +98,7 @@ async def triage_online(jev: JevClient, card: str, window_xml: str) -> Triage:
 
 
 async def triage_offline(jev: JevClient, card: str, window_xml: str) -> Triage:
-    answers = await jev.decide(_state(card, window_xml), {
+    answers = await jev.decide(chat_state(card, window_xml), {
         "kapoh": {
             "type": "score",
             "instructions": "How much would Dom want to interrupt his offline time to join in?",
@@ -110,7 +110,7 @@ async def triage_offline(jev: JevClient, card: str, window_xml: str) -> Triage:
 
 
 async def triage_urgency(jev: JevClient, card: str, window_xml: str) -> float | None:
-    answers = await jev.decide(_state(card, window_xml), {
+    answers = await jev.decide(chat_state(card, window_xml), {
         "urgency": {
             "type": "score",
             "instructions": "How urgently do the owner's newest messages need Dom to respond?",
