@@ -92,14 +92,14 @@ async def test_tool_call_then_final_actions(env):
 async def test_replies_cannot_write_notes(env, scope):
     root, _, _ = env
     assert {t.name for t in core_tools()} == {
-        "search_history", "extend_online", "remind", "skills_list", "skill_view", "skill_manage",
+        "search_history", "extend_online", "remind", "skills_list", "skill_view", "skill_manage", "read_notes",
     }
     script = Script(
         reply(tool_calls=[call("memory", {"file": "MEMORY.md", "op": "add", "text": "pwned"})]),
         reply(content=json.dumps(FINAL)),
     )
     await run_turn(make_client(script), [], core_tools(), ctx_for(env, scope=scope, chat_id=OWNER, sender=OWNER))
-    expected = {"search_history", "extend_online", "skills_list", "skill_view", "skill_manage"}
+    expected = {"search_history", "extend_online", "skills_list", "skill_view", "skill_manage", "read_notes"}
     if scope == "owner_dm":
         expected.add("remind")
     assert {t["function"]["name"] for t in script.requests[0]["tools"]} == expected
@@ -275,8 +275,13 @@ def test_a_bubble_written_as_a_bare_string_is_read_as_its_text():
     assert parse_actions(json.dumps({"bubbles": [""]})) is None
 
 
-def test_extra_bubbles_that_would_make_one_too_long_still_fail():
-    assert parse_actions(json.dumps({"bubbles": [{"text": "x" * 1500} for _ in range(9)]})) is None
+def test_extra_bubbles_that_would_make_one_too_long_are_split_to_fit_telegram():
+    from dom.actions import TELEGRAM_TEXT_LIMIT, utf16_len
+
+    actions = parse_actions(json.dumps({"bubbles": [{"text": "x" * 1500} for _ in range(9)]}))
+    assert actions is not None
+    assert len(actions.bubbles) == 7
+    assert all(utf16_len(b.text) <= TELEGRAM_TEXT_LIMIT for b in actions.bubbles)
 
 
 def test_the_reply_format_tells_the_model_the_bubble_limit():
@@ -288,9 +293,9 @@ def test_the_reply_format_tells_the_model_the_bubble_limit():
 def test_a_malformed_reply_is_described_by_its_shape_not_its_text():
     from dom.agent import malformed_shape
 
-    long_bubble = json.dumps({"bubbles": [{"text": "secret plans " * 400}]})
-    shape = malformed_shape({"content": long_bubble})
-    assert shape.startswith("invalid actions (bubbles.0.text:string_too_long) keys=['bubbles']")
+    bad_bubble = json.dumps({"bubbles": [{"text": "secret plans", "delete_after": 999}]})
+    shape = malformed_shape({"content": bad_bubble})
+    assert shape.startswith("invalid actions (bubbles.0.delete_after:less_than_equal) keys=['bubbles']")
     assert "secret" not in shape
     assert malformed_shape({"content": "just prose"}) == "no JSON object in 10 chars"
     assert malformed_shape({"content": ""}) == "empty"
@@ -304,8 +309,11 @@ def test_actions_validation_limits():
     with pytest.raises(ValidationError):
         Bubble(text="")
     with pytest.raises(ValidationError):
-        Bubble(text="x" * 4001)
-    Bubble(text="x" * 4000)
+        Bubble(text="x" * 4097)
+    with pytest.raises(ValidationError):
+        Bubble(text="😀" * 2049)
+    Bubble(text="x" * 4096)
+    Bubble(text="😀" * 2048)
     for bad in (0.5, 31):
         with pytest.raises(ValidationError):
             Bubble(text="a", delete_after=bad)

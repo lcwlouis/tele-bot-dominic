@@ -13,6 +13,7 @@ from dom.config import PresenceConfig
 from dom.dispatch import NO_ANSWER_NOTICE, Dispatcher
 from dom.jev import JevClient, JevUnavailable
 from dom.models import StoredMessage
+from dom.telegram import executor
 from dom.presence import Presence, parse_habits, read_habits
 from dom.telegram.handlers import handle_message
 from tghelpers import FRIEND, GROUP, OWNER, Clock, FixedRandom, drain_dispatch, no_sleep, tg, turn_requests
@@ -75,7 +76,8 @@ async def test_asleep_flood_no_calls_single_catchup(setup_dispatch):
     assert not jev.calls
     assert len(turn_requests(app)) == 1
     note = turn_requests(app)[0]["messages"][-1]["content"]
-    assert "state: online" in note and "online minutes left: 15" in note
+    assert "state: online" in note and "availability: you're around for a bit longer" in note
+    assert "online minutes left" not in note
     assert "messages that arrived while away: 200" in note
     assert "you just came online" in note and "desktop: off" in note
     assert (await app.store.list_chats("approved"))[0]["last_read_msg_id"] == 200
@@ -589,7 +591,7 @@ async def test_message_during_delivery_gets_a_linked_followup(setup_dispatch, mo
         monkeypatch.setattr(app.bot, "send_message", hold_send)
     else:
         async def hold_gap(seconds):
-            if seconds == 1:
+            if app.bot.of("send", GROUP):  # the first bubble is out: this is the pause before the next one
                 delivering.set()
                 await release.wait()
 
@@ -613,6 +615,138 @@ async def test_message_during_delivery_gets_a_linked_followup(setup_dispatch, mo
     assert [m.reply_to_msg_id for m in rows if m.role == "assistant"] == [1, 1, 2]
     assert (await app.store.get_unread(GROUP))[0] == 0
     assert len(await app.store.recent_turns()) == 2
+
+
+def hold_first_generation(app, monkeypatch):
+    """Make the first model call wait to be cancelled; later calls go through."""
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+    complete = app.client.complete
+
+    async def generate(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+        return await complete(*args, **kwargs)
+
+    monkeypatch.setattr(app.client, "complete", generate)
+    return entered, cancelled
+
+
+class JudgesEachMessage(FakeJev):
+    """Replies to the first message, ignores the second ("thanks!")."""
+
+    async def decide(self, state, questions):
+        self.action = "ignore" if 'id="2"' in state else "reply"
+        self.done = 1 if 'id="2"' not in state else None
+        return await super().decide(state, questions)
+
+
+async def test_restart_keeps_an_answer_jev_already_chose_when_a_thank_you_arrives(setup_dispatch, monkeypatch):
+    app, dispatch, _ = await setup_dispatch(JudgesEachMessage())
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    entered, _ = hold_first_generation(app, monkeypatch)
+    await handle_message(app, tg(text="can you send me the address?"))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await handle_message(app, tg(msg_id=2, text="thanks!"))
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    [bubble] = app.bot.of("send", GROUP)  # the question is answered once, not marked read unanswered
+    assert bubble[2] == "hey"
+    note = turn_requests(app)[-1]["messages"][-1]["content"]
+    assert note.index("can you send me the address?") < note.index("thanks!")
+    assert not app.bot.of("react")
+    assert (await app.store.get_unread(GROUP))[0] == 0
+
+
+async def test_restart_of_a_catch_up_turn_stays_a_catch_up_turn(setup_dispatch, gated_sleep, monkeypatch):
+    sleep, waits = gated_sleep
+    app, dispatch, clock = await setup_dispatch(FakeJev(action="ignore"), sleep=sleep)
+    entered, _ = hold_first_generation(app, monkeypatch)
+    for msg_id in range(1, 6):  # the fifth unread message wakes Dom
+        await handle_message(app, tg(msg_id=msg_id, text=f"while you were out {msg_id}").model_copy(update={"date": clock()}))
+        await asyncio.sleep(0)
+    waits[-1][1].set()
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await handle_message(app, tg(msg_id=6, text="and one more").model_copy(update={"date": clock()}))
+    while len(waits) < 6:
+        await asyncio.sleep(0)
+    waits[-1][1].set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    [bubble] = app.bot.of("send", GROUP)  # online Jev would ignore "and one more"; the backlog is still answered
+    assert bubble[2] == "hey"
+    note = turn_requests(app)[-1]["messages"][-1]["content"]
+    assert "messages that arrived while away: 5" in note and "you just came online" in note
+    assert (await app.store.get_unread(GROUP))[0] == 0
+
+
+async def test_typing_already_shown_before_a_restart_still_counts(setup_dispatch, monkeypatch):
+    app, dispatch, _ = await setup_dispatch(FakeJev(done=1))
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    now = [100.0]
+    monkeypatch.setattr("dom.dispatch.monotonic", lambda: now[0])
+    entered, _ = hold_first_generation(app, monkeypatch)
+    typed = []
+    real_perform = executor.perform
+
+    async def perform(*args, **kwargs):
+        typed.append(kwargs["typed_already"])
+        return await real_perform(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "perform", perform)
+    await handle_message(app, tg(text="first thought"))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    for _ in range(20):  # the indicator's first refresh
+        await asyncio.sleep(0)
+    now[0] += 3  # "typing…" showed for three seconds while Dom thought
+    await handle_message(app, tg(msg_id=2, text="and a detail"))
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    assert len(typed) == 1 and typed[0] >= 3
+
+
+async def test_a_restart_dispatch_that_gives_up_leaves_no_stale_attempt_behind(setup_dispatch, gated_sleep, monkeypatch):
+    sleep, waits = gated_sleep
+    app, dispatch, _ = await setup_dispatch(JudgesEachMessage(), sleep=sleep)
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    entered, cancelled = hold_first_generation(app, monkeypatch)
+    await handle_message(app, tg(text="a thought"))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await handle_message(app, tg(msg_id=2, text="another"))
+    await asyncio.wait_for(cancelled.wait(), timeout=2)
+    while GROUP not in dispatch._interrupted or len(waits) < 2:  # the cancelled attempt is filed; msg 2's timer runs
+        await asyncio.sleep(0)
+    await app.store.set_chat_auth_status(GROUP, "ignored")  # the owner dropped the chat before the restart ran
+    waits[-1][1].set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    assert GROUP not in dispatch._interrupted and not app.bot.of("send", GROUP)
+
+
+async def test_arrival_triage_judges_a_photo_by_its_description(setup_dispatch):
+    jev = FakeJev(action="reply", done=1)
+    app, dispatch, _ = await setup_dispatch(jev)
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    release = asyncio.Event()
+
+    class Describer:
+        async def describe(self, media, *, request):
+            await release.wait()
+            return "a street sign pointing to Elm Road"
+
+    app.media_describer = Describer()
+    photo = tg(text=None, photo=[PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)])
+    await handle_message(app, photo)
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert not jev.calls  # Jev waits for the description instead of reading "[photo]"
+    release.set()
+    await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
+
+    assert jev.calls and "Elm Road" in jev.calls[0][0]
 
 
 async def test_restart_cap_finishes_the_third_attempt_and_queues_a_followup(setup_dispatch, monkeypatch):
@@ -980,10 +1114,15 @@ async def test_the_owner_is_told_when_no_model_could_answer(setup_dispatch, capl
     assert "no usable final answer" in caplog.text and "[malformed malformed]" in caplog.text
 
 
-async def test_a_friend_is_not_sent_the_notice_but_the_message_is_marked_seen(setup_dispatch):
+async def test_a_friend_gets_an_in_character_line_and_owner_gets_an_event(setup_dispatch):
+    from dom.dispatch import FRIEND_NO_ANSWER_LINE
+
     app, _, _ = await online_with(setup_dispatch, "prose", "more prose", chat_id=FRIEND)
     await deliver(app, 5, chat_id=FRIEND, sender=FRIEND)
-    assert not app.bot.of("send") and seen(app) == [(5, "👀")]
+    assert [call[2] for call in app.bot.of("send", FRIEND)] == [FRIEND_NO_ANSWER_LINE]
+    assert not app.bot.of("react")
+    events = [row.text for row in await app.store.get_recent_chat_window(OWNER) if row.role == "event"]
+    assert any("no usable final answer" in text for text in events)
 
 
 async def test_a_proactive_turn_that_cannot_answer_stays_quiet(setup_dispatch):

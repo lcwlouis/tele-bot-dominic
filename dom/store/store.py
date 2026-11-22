@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 from xml.sax.saxutils import escape, quoteattr
 
+from dom.deletion import hash_matches, stamp_matches
 from dom.models import (
     VISIBILITY_OWNER_PRIVATE,
     VISIBILITY_PUBLIC,
@@ -52,6 +53,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (17, "0016_turn_timings.sql"),
     (19, "0018_plugin_storage.sql"),
     (20, "0019_memory_edit_proposals.sql"),
+    (21, "0020_topics_and_migrations.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -65,7 +67,7 @@ _ADD_COLUMN_RE = re.compile(
     r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)", re.IGNORECASE
 )
 _MESSAGE_COLUMNS = (
-    "id, chat_id, msg_id, reply_to_msg_id, sender_user_id, sender_handle, sender_name, "
+    "id, chat_id, msg_id, reply_to_msg_id, thread_id, sender_user_id, sender_handle, sender_name, "
     "is_bot, role, visibility_scope, text, media_json, is_edited, original_seen_before_edit, "
     "previous_seen_text, is_deleted, created_at, updated_at"
 )
@@ -221,6 +223,7 @@ def _row_to_message(row: sqlite3.Row) -> StoredMessage:
         chat_id=row["chat_id"],
         msg_id=row["msg_id"],
         reply_to_msg_id=row["reply_to_msg_id"],
+        thread_id=row["thread_id"],
         sender_user_id=row["sender_user_id"],
         sender_handle=row["sender_handle"] or "",
         sender_name=row["sender_name"] or "",
@@ -345,6 +348,118 @@ class Store:
             "WHERE chat_id = ? AND msg_id = ? AND is_deleted = 0 ORDER BY id DESC LIMIT 1",
             (chat_id, msg_id),
         ).fetchone()
+
+    # ---- chat migrations --------------------------------------------------
+
+    def _resolve_chat_id(self, chat_id: str) -> str:
+        """Follow any supergroup migration mapping from `chat_id` to the current chat id."""
+        current = str(chat_id)
+        seen = {current}
+        while True:
+            row = self._conn.execute(
+                "SELECT new_chat_id FROM chat_migrations WHERE old_chat_id = ?", (current,),
+            ).fetchone()
+            if row is None:
+                return current
+            nxt = row[0]
+            if nxt in seen:
+                return current
+            seen.add(nxt)
+            current = nxt
+
+    def _chat_id_aliases(self, chat_id: str) -> set[str]:
+        """Return `chat_id` plus any old chat ids that migrated to it (for read-only history search)."""
+        canonical = self._resolve_chat_id(chat_id)
+        rows = self._conn.execute(
+            "SELECT old_chat_id FROM chat_migrations WHERE new_chat_id = ?", (canonical,),
+        ).fetchall()
+        return {str(chat_id), canonical, *(row[0] for row in rows)}
+
+    async def resolve_chat_id(self, chat_id: int | str) -> str:
+        """Return the current chat id for `chat_id`, following any recorded supergroup migration."""
+        return await self._run(self._resolve_chat_id, str(chat_id))
+
+    async def migrate_chat(
+        self, old_chat_id: int | str, new_chat_id: int | str, *, title: str = "",
+    ) -> tuple[str, str]:
+        """Record a group -> supergroup alias and carry approval/settings/presence to `new_chat_id` ONLY when
+        the destination is new/empty. Never rewrites message history or cursors.
+
+        Returns `(outcome, title)` where outcome is `'migrated'`, `'conflict'`, `'already'`, or `'unknown'`."""
+        return await self._run(self._migrate_chat, str(old_chat_id), str(new_chat_id), title)
+
+    def _migrate_chat(self, old_id: str, new_id: str, title: str) -> tuple[str, str]:
+        if old_id == new_id:
+            return "already", ""
+        now = _now()
+        with self._tx() as conn:
+            existing_map = conn.execute(
+                "SELECT new_chat_id FROM chat_migrations WHERE old_chat_id = ?", (old_id,),
+            ).fetchone()
+            if existing_map is not None:
+                return "already", ""
+
+            old_row = conn.execute("SELECT * FROM chats WHERE chat_id = ?", (old_id,)).fetchone()
+            if old_row is None:
+                return "unknown", ""
+
+            effective_title = title or old_row["title"] or new_id
+            new_row = conn.execute("SELECT * FROM chats WHERE chat_id = ?", (new_id,)).fetchone()
+            new_has_messages = (
+                conn.execute("SELECT 1 FROM messages WHERE chat_id = ? LIMIT 1", (new_id,)).fetchone() is not None
+            )
+            if new_row is not None or new_has_messages:
+                # Destination already exists (approved, pending, or has messages): refuse to merge and leave both intact.
+                return "conflict", effective_title
+
+            # Record the alias old -> new (and flatten any chain X -> old to X -> new).
+            conn.execute(
+                "INSERT INTO chat_migrations (old_chat_id, new_chat_id, migrated_at) VALUES (?, ?, ?)",
+                (old_id, new_id, now),
+            )
+            conn.execute(
+                "UPDATE chat_migrations SET new_chat_id = ?, migrated_at = ? WHERE new_chat_id = ? AND old_chat_id != ?",
+                (new_id, now, old_id, new_id),
+            )
+
+            # Create the new supergroup row carrying approval, settings, and presence, with a fresh window and cursors.
+            new_scope = self.visibility_for(new_id)
+            conn.execute(
+                """
+                INSERT INTO chats (
+                    chat_id, chat_type, visibility_scope, is_sleeping, sleep_until,
+                    is_offline, offline_until, online_until, last_read_msg_id, updated_at,
+                    authorization_status, title, invited_by_handle, approval_prompt_sent,
+                    traits_json, bot_depth, memory_cursor_msg_id, preset
+                ) VALUES (?, 'supergroup', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+                """,
+                (
+                    new_id, new_scope, old_row["is_sleeping"], old_row["sleep_until"],
+                    old_row["is_offline"], old_row["offline_until"], old_row["online_until"], now,
+                    old_row["authorization_status"], effective_title, old_row["invited_by_handle"],
+                    old_row["approval_prompt_sent"], old_row["traits_json"], old_row["preset"],
+                ),
+            )
+            # Mark the old group row left so background polling and approved chat lists follow the supergroup,
+            # while leaving old messages, cursors, and in-flight work on the old id completely untouched.
+            conn.execute(
+                "UPDATE chats SET authorization_status = 'left', updated_at = ? WHERE chat_id = ?",
+                (now, old_id),
+            )
+            # Seed the new supergroup history with one event line noting the upgrade.
+            self._insert_message(
+                conn,
+                StoredMessage(
+                    chat_id=new_id,
+                    role="event",
+                    visibility_scope=new_scope,
+                    text=f"This group was upgraded to a supergroup (previous chat ID {old_id}).",
+                    created_at=now,
+                ),
+            )
+
+        self._append_transcript(new_id, "chat_migrated", old_chat_id=old_id, new_chat_id=new_id)
+        return "migrated", effective_title
 
     # ---- chat authorization and pending turns ----------------------------
 
@@ -724,6 +839,7 @@ class Store:
             sender_user_id=msg.sender_user_id,
             msg_id=msg.msg_id,
             reply_to_msg_id=msg.reply_to_msg_id,
+            thread_id=msg.thread_id,
             role=msg.role,
             is_bot=msg.is_bot,
             text=msg.text,
@@ -736,13 +852,13 @@ class Store:
         cur = conn.execute(
             """
             INSERT INTO messages (
-                chat_id, msg_id, reply_to_msg_id, sender_user_id, sender_handle, sender_name,
+                chat_id, msg_id, reply_to_msg_id, thread_id, sender_user_id, sender_handle, sender_name,
                 is_bot, role, visibility_scope, text, media_json, is_edited,
                 original_seen_before_edit, previous_seen_text, is_deleted, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
-                msg.chat_id, msg.msg_id, msg.reply_to_msg_id, msg.sender_user_id,
+                msg.chat_id, msg.msg_id, msg.reply_to_msg_id, msg.thread_id, msg.sender_user_id,
                 msg.sender_handle, msg.sender_name, int(msg.is_bot), msg.role,
                 msg.visibility_scope, msg.text, msg.media_json, int(msg.is_edited),
                 int(msg.original_seen_before_edit), msg.previous_seen_text,
@@ -790,6 +906,67 @@ class Store:
             chat_id=str(self.owner_id), role="event", visibility_scope=VISIBILITY_OWNER_PRIVATE,
             text=text, created_at=_now(),
         ))
+
+    def _insert_owner_event(self, conn: sqlite3.Connection, text: str, created_at: str) -> None:
+        if self.owner_id is None:
+            raise ValueError("there is no owner to record an event for")
+        chat_id = str(self.owner_id)
+        self._ensure_chat(conn, chat_id, VISIBILITY_OWNER_PRIVATE)
+        self._insert_message(conn, StoredMessage(
+            chat_id=chat_id, role="event", visibility_scope=VISIBILITY_OWNER_PRIVATE,
+            text=text, created_at=created_at,
+        ))
+
+    def _append_owner_event_transcript(self, text: str, created_at: str) -> None:
+        if self.owner_id is None:
+            return
+        self._append_transcript(
+            str(self.owner_id),
+            "message_created",
+            visibility_scope=VISIBILITY_OWNER_PRIVATE,
+            sender_name="",
+            sender_handle="",
+            sender_user_id=None,
+            msg_id=None,
+            reply_to_msg_id=None,
+            role="event",
+            is_bot=False,
+            text=text,
+            media_json=None,
+            message_created_at=created_at,
+        )
+
+    async def has_owner_event(self, text: str, created_at: str) -> bool:
+        """Whether an exact owner event row was committed (used by deletion startup recovery)."""
+        def exists() -> bool:
+            if self.owner_id is None:
+                return False
+            return self._conn.execute(
+                "SELECT 1 FROM messages WHERE chat_id = ? AND role = 'event' AND text = ? AND created_at = ? LIMIT 1",
+                (str(self.owner_id), text, created_at),
+            ).fetchone() is not None
+
+        return await self._run(exists)
+
+    async def commit_skill_delete(
+        self, event_text: str, event_at: str, prepare: Callable[[], None], rollback: Callable[[], None],
+    ) -> None:
+        """Run `prepare` (re-check hash + move files under SKILL_LOCK) and record the owner event in one DB tx.
+        Rolls back both DB and moved files if either step fails."""
+        def commit() -> None:
+            moved = False
+            try:
+                with self._tx() as conn:
+                    prepare()
+                    moved = True
+                    self._insert_owner_event(conn, event_text, event_at)
+            except BaseException:
+                if moved:
+                    rollback()
+                raise
+            self._append_owner_event_transcript(event_text, event_at)
+
+        await self._run(commit)
 
     async def record_chat_event(self, chat_id: int | str, text: str) -> None:
         """A one-line note for Dom in one chat's history (no msg_id, never unread). Only the main model sees it."""
@@ -1154,11 +1331,12 @@ class Store:
 
         return await self._run(count)
 
-    async def recent_turns(self, chat_id: str | None = None) -> list[dict[str, Any]]:
+    async def recent_turns(self, chat_id: str | None = None, *, limit: int = 200) -> list[dict[str, Any]]:
+        capped = max(1, min(limit, 200))
         return await self._run(lambda: [
             dict(row) for row in self._conn.execute(
-                "SELECT * FROM turns WHERE (? IS NULL OR chat_id = ?) ORDER BY at DESC, id DESC LIMIT 200",
-                (chat_id, chat_id),
+                "SELECT * FROM turns WHERE (? IS NULL OR chat_id = ?) ORDER BY at DESC, id DESC LIMIT ?",
+                (chat_id, chat_id, capped),
             )
         ])
 
@@ -1196,7 +1374,7 @@ class Store:
         return await self._run(enqueue)
 
     async def desktop_tasks(
-        self, chat_id: int, *, active: bool = False, container: str | None = None,
+        self, chat_id: int, *, active: bool = False, container: str | None = None, limit: int = 10,
     ) -> list[dict[str, Any]]:
         def select() -> list[dict[str, Any]]:
             if chat_id != self.owner_id:
@@ -1205,11 +1383,46 @@ class Store:
             if container is not None:
                 condition += " AND container = ?"
             return [dict(row) for row in self._conn.execute(
-                f"SELECT * FROM desktop_tasks WHERE chat_id = ? {condition} ORDER BY id DESC LIMIT 10",
-                (chat_id, *([container] if container is not None else [])),
+                f"SELECT * FROM desktop_tasks WHERE chat_id = ? {condition} ORDER BY id DESC LIMIT ?",
+                (chat_id, *([container] if container is not None else []), limit),
             )]
 
         return await self._run(select)
+
+    async def get_desktop_task(self, chat_id: int, task_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            if chat_id != self.owner_id:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM desktop_tasks WHERE id = ? AND chat_id = ?", (task_id, chat_id),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def delete_desktop_task(
+        self, chat_id: int, task_id: int, expected_created_at: str, event_text: str, event_at: str,
+    ) -> str:
+        """Verify identity and delete one finished desktop task + record owner event in a single transaction."""
+        def delete() -> str:
+            if chat_id != self.owner_id:
+                return "not_found"
+            with self._tx() as conn:
+                row = conn.execute(
+                    "SELECT * FROM desktop_tasks WHERE id = ? AND chat_id = ?", (task_id, chat_id),
+                ).fetchone()
+                if row is None:
+                    return "not_found"
+                if row["status"] in ("queued", "running", "waiting_owner"):
+                    return "active"
+                if not stamp_matches(row["created_at"], expected_created_at):
+                    return "stale"
+                conn.execute("DELETE FROM desktop_tasks WHERE id = ? AND chat_id = ?", (task_id, chat_id))
+                self._insert_owner_event(conn, event_text, event_at)
+            self._append_owner_event_transcript(event_text, event_at)
+            return "deleted"
+
+        return await self._run(delete)
 
     async def update_desktop_task(
         self, task_id: int, chat_id: int, expected: tuple[str, ...], status: str, *,
@@ -1291,6 +1504,33 @@ class Store:
             "UPDATE self_tasks SET status = 'expired', finished_at = ? WHERE status = 'planned' AND announced_at < ?",
             (_now(), announced_before.isoformat()),
         ))
+
+    async def get_self_task(self, task_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM self_tasks WHERE id = ?", (task_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def delete_self_task(
+        self, task_id: int, expected_announced_at: str, event_text: str, event_at: str,
+    ) -> str:
+        """Verify identity and delete one finished self-directed task + record owner event in a single transaction."""
+        def delete() -> str:
+            with self._tx() as conn:
+                row = conn.execute("SELECT * FROM self_tasks WHERE id = ?", (task_id,)).fetchone()
+                if row is None:
+                    return "not_found"
+                if row["status"] in ("planned", "running"):
+                    return "active"
+                if not stamp_matches(row["announced_at"], expected_announced_at):
+                    return "stale"
+                conn.execute("DELETE FROM self_tasks WHERE id = ?", (task_id,))
+                self._insert_owner_event(conn, event_text, event_at)
+            self._append_owner_event_transcript(event_text, event_at)
+            return "deleted"
+
+        return await self._run(delete)
 
     # ---- plugins ---------------------------------------------------------
 
@@ -1397,6 +1637,74 @@ class Store:
 
         return await self._run(decide)
 
+    async def plugin_state_snapshot(self, name: str) -> dict[str, Any]:
+        """Read a plugin's DB row, KV entries, and pending proposals for its deletion archive."""
+        def snapshot() -> dict[str, Any]:
+            reviewed_prefix = f"plugin-reviewed:{name}:"
+            storage_prefix = f"plugin-storage:{name}:"
+            plugin_row = self._conn.execute("SELECT * FROM plugins WHERE name = ?", (name,)).fetchone()
+            kv_rows = [
+                dict(r) for r in self._conn.execute(
+                    "SELECT * FROM kv WHERE key IN (?, ?) OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ?",
+                    (
+                        f"plugin-files:{name}", f"plugin-storage:{name}",
+                        len(reviewed_prefix), reviewed_prefix,
+                        len(storage_prefix), storage_prefix,
+                    ),
+                )
+            ]
+            proposals = [
+                dict(r) for r in self._conn.execute(
+                    "SELECT * FROM proposals WHERE kind = 'plugin' AND status = 'pending' "
+                    "AND json_extract(body_json, '$.name') = ?",
+                    (name,),
+                )
+            ]
+            storage = [  # the plugin's stored state goes with its row (ON DELETE CASCADE), so archive it too
+                dict(r) for r in self._conn.execute("SELECT * FROM plugin_storage WHERE name = ?", (name,))
+            ]
+            return {
+                "plugin": dict(plugin_row) if plugin_row is not None else None,
+                "kv": kv_rows,
+                "storage": storage,
+                "pending_proposals": proposals,
+            }
+
+        return await self._run(snapshot)
+
+    async def delete_plugin(
+        self, name: str, expected_hash: str, event_text: str, event_at: str, *, allow_missing_row: bool = False,
+    ) -> str:
+        """Verify plugin hash and remove DB row, KV state, pending proposals, and record owner event in one tx."""
+        def delete() -> str:
+            reviewed_prefix = f"plugin-reviewed:{name}:"
+            storage_prefix = f"plugin-storage:{name}:"
+            with self._tx() as conn:
+                row = conn.execute("SELECT * FROM plugins WHERE name = ?", (name,)).fetchone()
+                if row is None and not allow_missing_row:
+                    return "not_found"
+                if row is not None and not hash_matches(row["hash"], expected_hash):
+                    return "stale"
+                conn.execute("DELETE FROM plugins WHERE name = ?", (name,))
+                conn.execute(
+                    "DELETE FROM kv WHERE key IN (?, ?) OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ?",
+                    (
+                        f"plugin-files:{name}", f"plugin-storage:{name}",
+                        len(reviewed_prefix), reviewed_prefix,
+                        len(storage_prefix), storage_prefix,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE proposals SET status = 'rejected', decided_at = ? WHERE kind = 'plugin' "
+                    "AND status = 'pending' AND json_extract(body_json, '$.name') = ?",
+                    (event_at, name),
+                )
+                self._insert_owner_event(conn, event_text, event_at)
+            self._append_owner_event_transcript(event_text, event_at)
+            return "deleted"
+
+        return await self._run(delete)
+
     # ---- proposals and reminders -----------------------------------------
 
     async def create_proposal(
@@ -1456,6 +1764,51 @@ class Store:
             (at, before),
         )
 
+    async def get_proposal(self, proposal_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def settled_proposals(self, limit: int = 50) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT * FROM proposals WHERE status != 'pending' "
+                "ORDER BY COALESCE(decided_at, created_at) DESC, id DESC LIMIT ?",
+                (limit,),
+            )
+        ])
+
+    async def delete_settled_proposal(
+        self, proposal_id: int, expected_created_at: str, event_text: str, event_at: str, *, cards_key: str = "proposal-cards",
+    ) -> str:
+        """Verify identity and delete a settled proposal + card reference + record owner event in one tx."""
+        def delete() -> str:
+            with self._tx() as conn:
+                row = conn.execute("SELECT * FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
+                if row is None:
+                    return "not_found"
+                if row["status"] == "pending":
+                    return "pending"
+                if not stamp_matches(row["created_at"], expected_created_at):
+                    return "stale"
+                conn.execute("DELETE FROM proposals WHERE id = ?", (proposal_id,))
+                raw_cards = conn.execute("SELECT value FROM kv WHERE key = ?", (cards_key,)).fetchone()
+                if raw_cards is not None:
+                    try:
+                        cards = json.loads(raw_cards[0] or "{}")
+                    except ValueError:
+                        cards = {}
+                    if isinstance(cards, dict) and str(proposal_id) in cards:
+                        cards.pop(str(proposal_id), None)
+                        self._write_kv(conn, {cards_key: json.dumps(cards)})
+                self._insert_owner_event(conn, event_text, event_at)
+            self._append_owner_event_transcript(event_text, event_at)
+            return "deleted"
+
+        return await self._run(delete)
+
     async def create_reminder(
         self, chat_id: int, text: str, due_at: str, importance: str, repeat: str, at: str, limit: int,
     ) -> int | None:
@@ -1490,10 +1843,62 @@ class Store:
 
     async def finish_reminder(self, reminder_id: int, fired_at: str, next_due: str | None) -> None:
         await self._run(self._conn.execute,
-            "UPDATE reminders SET fired_at = ?, status = ?, due_at = COALESCE(?, due_at) "
+            "UPDATE reminders SET fired_at = ?, status = ?, due_at = COALESCE(?, due_at), undeliverable = 0 "
             "WHERE id = ? AND status = 'active'",
             (fired_at, "active" if next_due else "done", next_due, reminder_id),
         )
+
+    async def set_reminder_undeliverable(self, reminder_id: int, undeliverable: bool = True) -> None:
+        await self._run(
+            self._conn.execute,
+            "UPDATE reminders SET undeliverable = ? WHERE id = ? AND status = 'active'",
+            (int(undeliverable), reminder_id),
+        )
+
+    async def get_reminder(self, chat_id: int | None, reminder_id: int) -> dict[str, Any] | None:
+        if chat_id is None:
+            return None
+
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute(
+                "SELECT * FROM reminders WHERE chat_id = ? AND id = ?", (str(chat_id), reminder_id),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def list_reminders(self, chat_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT * FROM reminders WHERE chat_id = ? "
+                "ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, "
+                "CASE WHEN status = 'active' THEN due_at END ASC, id DESC LIMIT ?",
+                (str(chat_id), limit),
+            )
+        ])
+
+    async def delete_reminder(
+        self, chat_id: int | None, reminder_id: int, expected_created_at: str, event_text: str, event_at: str,
+    ) -> str:
+        """Verify identity and delete one reminder + record owner event in a single transaction."""
+        if chat_id is None:
+            return "not_found"
+
+        def delete() -> str:
+            with self._tx() as conn:
+                row = conn.execute(
+                    "SELECT * FROM reminders WHERE chat_id = ? AND id = ?", (str(chat_id), reminder_id),
+                ).fetchone()
+                if row is None:
+                    return "not_found"
+                if not stamp_matches(row["created_at"], expected_created_at):
+                    return "stale"
+                conn.execute("DELETE FROM reminders WHERE chat_id = ? AND id = ?", (str(chat_id), reminder_id))
+                self._insert_owner_event(conn, event_text, event_at)
+            self._append_owner_event_transcript(event_text, event_at)
+            return "deleted"
+
+        return await self._run(delete)
 
     # ---- usage ------------------------------------------------------------
 
@@ -1640,8 +2045,10 @@ class Store:
         )
         params: list[Any] = [match]
         if not self._is_owner_chat(requester_chat_id):  # the owner's DM searches every chat
-            sql += f" AND m.chat_id = ? AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
-            params.append(requester_chat_id)
+            aliases = sorted(self._chat_id_aliases(requester_chat_id))
+            marks = ",".join("?" * len(aliases))
+            sql += f" AND m.chat_id IN ({marks}) AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+            params.extend(aliases)
         sql += " ORDER BY messages_fts.rank LIMIT ?"
         params.append(max(1, min(limit, 100)))
         return [dict(r) for r in self._conn.execute(sql, params)]

@@ -37,6 +37,16 @@
     <div class="actions">
       <button class="link-danger" hx-post="/own-work/{{ task.id }}/cancel" hx-target="#own-work" hx-swap="outerHTML">Cancel #{{ task.id }}</button>
     </div>
+    {% else %}
+    <div class="actions">
+      <form class="inline-form" method="post" action="/own-work/{{ task.id }}/delete"
+        hx-post="/own-work/{{ task.id }}/delete"
+        hx-confirm="Delete task #{{ task.id }} and its screenshots? They are moved to the deletion archive."
+        hx-target="#own-work" hx-swap="outerHTML">
+        <input type="hidden" name="expected" value="{{ task.announced_at }}">
+        <button class="link-danger">Delete #{{ task.id }}</button>
+      </form>
+    </div>
     {% endif %}
   </article>
   {% endfor %}

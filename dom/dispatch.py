@@ -16,9 +16,10 @@ from urllib.parse import urlencode, urlsplit
 from collections.abc import AsyncIterator, Coroutine
 from xml.sax.saxutils import escape
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
+from zoneinfo import ZoneInfo
 
 import httpx
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from dom import guard, salvage, turn_log
@@ -35,7 +36,7 @@ from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
 from dom.presence import Habits, Presence, State, read_habits
-from dom.prompt import build_messages, report_messages
+from dom.prompt import PromptCache, build_messages, online_window_note, report_messages
 from dom.reflection import mood
 from dom.reminders import Reminders
 from dom.telegram import executor, gate
@@ -76,6 +77,10 @@ _CHAT_GONE = re.compile(
 MEMORY_PASS_INTERVAL = timedelta(minutes=5)  # per chat
 BOT_EXIT_NOTE = "Leave this bot conversation now, in character, in one short message."
 NO_ANSWER_NOTICE = "Sorry, I couldn't put a reply together just now. Could you send that again?"
+FRIEND_NO_ANSWER_LINE = "sorry, brain blanked for a sec — say that again?"
+GROUP_NO_ANSWER_COOLDOWN = timedelta(minutes=30)
+SPEND_CAP_LINE = "gotta head off for the rest of the day, catch you later!"
+SPEND_CAP_LINE_KEY = "spend_cap_line:"
 
 
 @dataclass
@@ -119,6 +124,11 @@ class TurnAttempt:
     reminder_ids: list[int] = field(default_factory=list)
     assistant: bool = False
     read: bool = False
+    answering: bool = False  # past triage: Jev or the presence rules already decided this turn gets an answer
+    catch_up: bool = False
+    away: int = 0  # messages that came in while Dom was away, as the first attempt told the model
+    credit: float = 0.0  # seconds "typing…" showed in attempts this one restarted
+    shown: float = 0.0  # seconds it showed in this one
 
     def commit(self) -> None:
         self.committed = True
@@ -191,9 +201,13 @@ class Dispatcher:
         self._memory_last: dict[int, datetime] = {}  # when the chat's last pass finished
         self._memory_slot = asyncio.Semaphore(1)  # one pass at a time across chats
         self._reactions_off: set[int] = set()  # chats where Telegram refused a reaction; not asked again
+        self._group_no_answer_at: dict[int, datetime] = {}  # cooldown for group NoFinalAnswer fallback lines
+        self._migration_conflicts: set[tuple[int, int]] = set()
         # Whether Dom is an admin in a group, which Telegram needs for ephemeral bubbles. Kept from my_chat_member
         # updates (note_admin), else asked once per group; a group not known yet is asked on its next owner turn.
         self._admin: dict[int, bool] = {}
+        self.prompt_cache = PromptCache()
+        self._trim_seq: dict[int, int] = {}
         presence.on_session_end = self.request_memory_pass
 
     def notify(self, msg: IncomingMessage) -> None:
@@ -249,6 +263,8 @@ class Dispatcher:
             if msg.is_bot:
                 if state != "online" or not await store.has_unread_human(chat_id):
                     return  # the bot-only depth, deduplication and cooldown checks run first
+            if msg.media:
+                await self._wait_media(chat_id)  # judge the description, not "[photo]"; text pays nothing
             rows = await store.get_window_from(chat_id, None, TRIAGE_WINDOW * 2, through_id=newest.id)
             if self._latest.get(chat_id) is not msg:
                 return  # a newer message took over before this request started
@@ -278,7 +294,7 @@ class Dispatcher:
         attempt = self._active.get(chat_id)
         if (attempt is None or attempt.msg_id == msg.msg_id) and not self._followups.get(chat_id):
             if verdict.confident and verdict.action == "react" and verdict.emoji:
-                arrival.reaction = self._spawn(executor.react(self.app.bot, chat_id, msg.msg_id, verdict.emoji))
+                arrival.reaction = self._spawn(self._perform_reaction(chat_id, msg.msg_id, verdict.emoji))
             elif verdict.action == "reply" or not verdict.confident:
                 arrival.typing = executor.TypingIndicator(self.app.bot, chat_id, msg.thread_id, monotonic)
                 if (scope == "owner_dm" and verdict.action == "reply" and verdict.confident
@@ -288,6 +304,11 @@ class Dispatcher:
             timer.cancel()
             first = self._first_notify.pop(chat_id)
             self._spawn(self._decide(chat_id, debounce_started=first))
+
+    async def _perform_reaction(self, chat_id: int, msg_id: int, emoji: str) -> executor.PerformResult:
+        return await executor.perform(
+            self.app.bot, self.app.store, chat_id, msg_id, Actions(react=emoji), sleep=self.app.sleep,
+        )
 
     @staticmethod
     def _log_triage(verdict: Triage) -> None:
@@ -518,6 +539,10 @@ class Dispatcher:
         await self.app.store.prune_turn_history(self.now() - timedelta(days=30))
 
     async def _background_jobs(self) -> None:
+        if self.app.menu_dirty:
+            from dom.telegram import owner
+
+            await owner.refresh_menu(self.app)
         await self.app.stickers.refresh()
         await self.jobs.tick()
         await self.openers.maybe(self.now())
@@ -546,6 +571,10 @@ class Dispatcher:
             self._polls.pop(chat_id, None)
 
     async def tick(self) -> None:
+        if self.app.menu_dirty:
+            from dom.telegram import owner
+
+            await owner.refresh_menu(self.app)
         await asyncio.gather(self.reminders.tick(), *(await self._poll_chats()))
 
     def _habits(self) -> Habits:
@@ -561,7 +590,9 @@ class Dispatcher:
 
     async def spend_paused(self, chat_id: int) -> bool:
         """Friends' chats pause once today's spend cap is reached; the owner's own chat never does."""
-        return chat_id != self.app.owner_id and await self.usage.over_cap(self.app.config, self.app.bot)
+        return chat_id != self.app.owner_id and await self.usage.over_cap(
+            self.app.config, self.app.bot, sleep=self.app.sleep,
+        )
 
     async def model_allowed(self, chat_id: int) -> bool:
         return await self._approved(chat_id) and not await self.spend_paused(chat_id)
@@ -573,7 +604,7 @@ class Dispatcher:
         """Why the desktop worker must stop before its next model call, or None. Desktop spend counts toward the daily cap."""
         if not await self.turn_allowed(chat_id, "owner_dm"):
             return "model calls are not allowed"
-        if await self.usage.over_cap(self.app.config, self.app.bot):
+        if await self.usage.over_cap(self.app.config, self.app.bot, sleep=self.app.sleep):
             return "paused by today's spend cap"
         settings = self.app.config.desktop
         cap = settings.task_cost_cap_usd
@@ -583,18 +614,78 @@ class Dispatcher:
             return f"task cost cap of ${cap:.2f} reached"
         return None
 
+    async def migrate_chat(self, old_chat_id: int, new_chat_id: int, title: str = "") -> str:
+        """Record a group -> supergroup alias and carry settings/notes when the destination is empty.
+        Takes both chats' ingest and turn locks in a fixed order so service updates and send-error paths share one
+        deadlock-free implementation. Returns 'migrated', 'conflict', 'already', or 'unknown'."""
+        if old_chat_id == new_chat_id:
+            return "already"
+        first, second = sorted((old_chat_id, new_chat_id))
+        async with self.app.ingest_locks[first]:
+            async with self.app.ingest_locks[second]:
+                async with self.app.locks[first]:
+                    async with self.app.locks[second]:
+                        return await self._migrate_locked(old_chat_id, new_chat_id, title)
+
+    async def _migrate_locked(self, old_chat_id: int, new_chat_id: int, title: str = "") -> str:
+        outcome, effective_title = await self.app.store.migrate_chat(old_chat_id, new_chat_id, title=title)
+        if outcome == "conflict":
+            key = (old_chat_id, new_chat_id)
+            if key not in self._migration_conflicts and self.app.owner_id is not None:
+                self._migration_conflicts.add(key)
+                try:
+                    await self.app.store.record_owner_event(
+                        f"Could not migrate group {effective_title} (ID {old_chat_id} -> {new_chat_id}): "
+                        "destination chat already exists; left both unchanged"
+                    )
+                except Exception:
+                    log.exception("could not record migration conflict event for %s -> %s", old_chat_id, new_chat_id)
+            return outcome
+        if outcome != "migrated":
+            return outcome
+        if (pending := self._debounces.pop(old_chat_id, None)) is not None:
+            pending.cancel()
+        self._first_notify.pop(old_chat_id, None)
+        self._latest.pop(old_chat_id, None)
+        self._failures.pop(old_chat_id, None)
+        self._media_times.pop(old_chat_id, None)
+        if old_chat_id in self._admin:
+            self._admin.setdefault(new_chat_id, self._admin.pop(old_chat_id))
+        if old_chat_id in self._reactions_off:
+            self._reactions_off.discard(old_chat_id)
+            self._reactions_off.add(new_chat_id)
+        try:
+            self.app.home.move_chat_notes(old_chat_id, new_chat_id)
+        except Exception:
+            log.exception("could not copy chat notes for %s -> %s", old_chat_id, new_chat_id)
+        if self.app.owner_id is not None:
+            try:
+                await self.app.store.record_owner_event(
+                    f"Group {effective_title} migrated to supergroup (ID {old_chat_id} -> {new_chat_id})"
+                )
+            except Exception:
+                log.exception("could not record migration owner event for %s -> %s", old_chat_id, new_chat_id)
+        return outcome
+
     async def override(self, chat_id: int, command: str) -> bool:
         """The owner's /wake or /sleep. False if the chat is unknown or not approved; that lookup never
         creates a chat row."""
-        async with self._dispatch_slot(chat_id, wait_media=command == "/wake") as waits:
-            if not await self.app.store.is_chat_approved(chat_id):
-                return False
-            habits = self._habits()
-            if command == "/sleep":
-                await self.presence.sleep(chat_id, habits)
+        chat_id = int(await self.app.store.resolve_chat_id(chat_id))
+        try:
+            async with self._dispatch_slot(chat_id, wait_media=command == "/wake") as waits:
+                if not await self.app.store.is_chat_approved(chat_id):
+                    return False
+                habits = self._habits()
+                if command == "/sleep":
+                    self._interrupted.pop(chat_id, None)
+                    await self.presence.sleep(chat_id, habits)
+                    return True
+                await self.presence.wake(chat_id, habits)
+                await self._guarded_dispatch(chat_id, habits, waits, catch_up=True)
                 return True
-            await self.presence.wake(chat_id, habits)
-            await self._guarded_dispatch(chat_id, habits, waits, catch_up=True)
+        except TelegramMigrateToChat as exc:
+            log.info("chat %s migrated to %s during override", chat_id, exc.migrate_to_chat_id)
+            await self.migrate_chat(chat_id, exc.migrate_to_chat_id)
             return True
 
     @asynccontextmanager
@@ -639,11 +730,44 @@ class Dispatcher:
                     return
                 if not await self._approved(chat_id):
                     if (latest := self._latest.get(chat_id)) is not None:
-                        self._take_arrivals(chat_id, latest.msg_id)
+                        self._drop_unanswered(chat_id, latest.msg_id)
                     return
                 await self._guarded_dispatch(chat_id, self._habits(), waits, background=background)
+        except TelegramMigrateToChat as exc:
+            log.info("chat %s migrated to %s during dispatch", chat_id, exc.migrate_to_chat_id)
+            await self.migrate_chat(chat_id, exc.migrate_to_chat_id)
         except Exception:
             log.exception("could not decide on chat %s", chat_id)
+
+    async def _maybe_send_spend_cap_line(self, chat_id: int) -> None:
+        """Send one short in-character line per local day to a friend's DM paused by the spend cap (never groups)."""
+        app = self.app
+        if (
+            chat_id <= 0
+            or chat_id == app.owner_id
+            or not await self._approved(chat_id)
+            or not await self.spend_paused(chat_id)
+        ):
+            return
+        state, _ = await self.presence.state(chat_id, self._habits())
+        if state == "asleep":
+            return
+        _, newest = await app.store.get_unread(chat_id)
+        if newest is None or newest.is_bot:
+            return
+        day = self.now().astimezone(ZoneInfo(app.config.timezone)).date().isoformat()
+        key = f"{SPEND_CAP_LINE_KEY}{chat_id}"
+        if await app.store.kv_get(key) == day:
+            return
+        await app.store.kv_set(key, day)
+        try:
+            await executor.perform(
+                app.bot, app.store, chat_id, newest.msg_id,
+                Actions(bubbles=[Bubble(text=SPEND_CAP_LINE)]),
+                sleep=app.sleep, thread_id=newest.thread_id, now=self.now,
+            )
+        except Exception:
+            log.exception("could not send spend cap line in chat %s", chat_id)
 
     async def _guarded_dispatch(
         self, chat_id: int, habits: Habits, waits: QueueWaits, **kwargs: bool,
@@ -653,7 +777,11 @@ class Dispatcher:
             with model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
                 await self._dispatch(chat_id, habits, waits, **kwargs)
         except ModelCallSkipped:
+            await self._maybe_send_spend_cap_line(chat_id)
             return
+        except TelegramMigrateToChat:
+            self._failures.pop(chat_id, None)
+            raise
         except Exception as exc:
             log.exception("turn failed in chat %s", chat_id)
             gone = isinstance(exc, TelegramForbiddenError) or (
@@ -681,7 +809,10 @@ class Dispatcher:
             why = f"my turns kept failing ({type(exc).__name__})"
         try:
             if chat_id == app.owner_id:
-                await app.bot.send_message(chat_id, f"I couldn't answer your last messages: {why}. Try again in a bit?")
+                await executor.retry_telegram(
+                    lambda: app.bot.send_message(chat_id, f"I couldn't answer your last messages: {why}. Try again in a bit?"),
+                    sleep=app.sleep,
+                )
             elif app.owner_id is not None:
                 title = (await app.store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
                 await app.store.record_owner_event(f"Gave up on the unread messages in {title}: {why}")
@@ -696,16 +827,17 @@ class Dispatcher:
         state, until = await self.presence.state(chat_id, habits)
         if state == "asleep" and (background or chat_id != self.app.owner_id):
             if (latest := self._latest.get(chat_id)) is not None:
-                self._take_arrivals(chat_id, latest.msg_id)
+                self._drop_unanswered(chat_id, latest.msg_id)
             return
         if background and state == "offline" and until is not None and until > self.now():
             for arrival in self._arrivals.get(chat_id, {}).values():
                 arrival.stop_typing()  # Dom went offline after the indicator started; nothing will answer now
+            self._interrupted.pop(chat_id, None)
             return
         count, newest = await store.get_unread(chat_id)
         if newest is None:
             if (latest := self._latest.get(chat_id)) is not None:
-                self._take_arrivals(chat_id, latest.msg_id)
+                self._drop_unanswered(chat_id, latest.msg_id)
             return
         waits.through = newest.msg_id
         if background and state == "online" and self.now() - datetime.fromisoformat(newest.created_at) < ORPHAN_AGE:
@@ -719,7 +851,7 @@ class Dispatcher:
             bot_depth = await store.get_bot_depth(chat_id)
             if bot_depth > BOT_DEPTH_LIMIT or await self._suppress_bot(chat_id, newest):
                 await store.mark_chat_read(chat_id, newest.msg_id)
-                self._take_arrivals(chat_id, newest.msg_id)
+                self._drop_unanswered(chat_id, newest.msg_id)
                 return
 
         # If ingress got ahead of our unread snapshot, the newer dispatch already owns these messages.
@@ -732,9 +864,14 @@ class Dispatcher:
         message_at = datetime.fromisoformat(newest.created_at)
         trace = turn_log.TurnTrace(message_at=message_at, now=self.now)
         attempt = self._active[chat_id] = TurnAttempt(asyncio.current_task(), newest.msg_id, trace, waits.start)
+        resumed = False
         if prior := self._interrupted.get(chat_id):
             attempt.tool_results = prior[-1].tool_results
             attempt.notices = prior[-1].notices
+            attempt.credit = prior[-1].credit + prior[-1].shown
+            resumed = prior[-1].answering
+            if resumed:  # the restarted answer was already chosen: a newer message must not turn it into a skip
+                catch_up, count = catch_up or prior[-1].catch_up, prior[-1].away
         arrival = self._arrivals.get(chat_id, {}).get(newest.msg_id)
         followup = [msg_id for msg_id in self._followups.get(chat_id, ()) if msg_id <= newest.msg_id]
         completed = False
@@ -761,7 +898,7 @@ class Dispatcher:
                 try:
                     await self._respond(
                         chat_id, habits, state, until, count, newest, background, catch_up, bot_depth,
-                        attempt, arrival, followup, waits.start + DEBOUNCE_CAP,
+                        attempt, arrival, followup, waits.start + DEBOUNCE_CAP, resumed,
                     )
                     attempt.commit()
                     completed = True
@@ -800,6 +937,12 @@ class Dispatcher:
             if bot_key is not None:
                 self._bots_in_flight.remove(bot_key)
 
+    def _drop_unanswered(self, chat_id: int, through: int) -> None:
+        """A dispatch that will not answer: its arrivals are done, and an interrupted attempt must not leak into the
+        next, unrelated turn or count against its restart cap."""
+        self._take_arrivals(chat_id, through)
+        self._interrupted.pop(chat_id, None)
+
     def _take_arrivals(self, chat_id: int, through: int) -> list[Arrival]:
         arrivals = self._arrivals.get(chat_id, {})
         selected = [arrivals.pop(msg_id) for msg_id in list(arrivals) if msg_id <= through]
@@ -824,7 +967,7 @@ class Dispatcher:
     async def _respond(
         self, chat_id: int, habits: Habits, state: State, until: datetime | None,
         count: int, newest: StoredMessage, background: bool, catch_up: bool, bot_depth: int | None,
-        attempt: TurnAttempt, arrival: Arrival | None, followup: list[int], deadline: datetime,
+        attempt: TurnAttempt, arrival: Arrival | None, followup: list[int], deadline: datetime, resumed: bool,
     ) -> None:
         store = self.app.store
         final_bot_turn = bot_depth == BOT_DEPTH_LIMIT
@@ -832,21 +975,24 @@ class Dispatcher:
         live = latest if latest is not None and latest.msg_id == newest.msg_id else None
         chat_type = live.chat_type if live else ("group" if chat_id < 0 else "private")
         scope = store.scope_for(chat_id, chat_type)
+        window = await self._window(chat_id, newest)
+        count_wakes = state == "offline" and count >= habits.wake_after_messages
+        if state == "offline" and not background and not count_wakes and (scope == "friend_dm" or self.jev is None):
+            return
         await check_model_allowed()
 
         # Classification runs in parallel with the debounce. A slow or failed provider cannot hold
         # the unread messages past the original batch deadline.
-        judged = state != "online" or (not catch_up and not followup and not final_bot_turn)
+        # A follow-up, or a restart of an answer already chosen, is not judged again.
+        judged = state != "online" or (not catch_up and not followup and not resumed and not final_bot_turn)
         if judged and arrival is not None and arrival.task is not None and not arrival.task.done():
             with turn_log.timed("triage"):
                 await asyncio.wait([arrival.task], timeout=max(0.0, (deadline - self.now()).total_seconds()))
         if arrival is not None:
             arrival.feedback = False
         use_arrival = arrival is not None and (arrival.state == state or (arrival.task is not None and not arrival.task.done()))
-        window = await self._window(chat_id, newest)
 
         urgency = None
-        count_wakes = state == "offline" and count >= habits.wake_after_messages
         if state != "online" and scope == "owner_dm" and not background and not count_wakes and self.jev is not None:
             if use_arrival:
                 urgency = arrival.urgency
@@ -879,7 +1025,7 @@ class Dispatcher:
                 return
             until = await self.presence.go_online(chat_id, habits)
             catch_up = True
-        elif not catch_up and not followup and not final_bot_turn and self.jev is not None:
+        elif not catch_up and not followup and not resumed and not final_bot_turn and self.jev is not None:
             if use_arrival:
                 triage = arrival.verdict
             else:
@@ -900,10 +1046,17 @@ class Dispatcher:
                     return
                 if triage.confident and triage.action == "react" and triage.emoji:
                     attempt.commit()
-                    reacted = await (arrival.reaction if arrival is not None and arrival.reaction is not None else
-                                     executor.react(self.app.bot, chat_id, newest.msg_id, triage.emoji))
-                    if reacted:
+                    result = await (arrival.reaction if arrival is not None and arrival.reaction is not None else
+                                    self._perform_reaction(chat_id, newest.msg_id, triage.emoji))
+                    if result.flood_limited:
+                        turn_log.outcome("Flood limited")
+                        return
+                    if result.reacted:
                         turn_log.outcome(f"Reacted {triage.emoji[:16]}")
+                    else:
+                        turn_log.outcome("Reaction failed")
+                        if result.reaction_result is False:
+                            self._reactions_off.add(chat_id)
                     await store.mark_chat_read(chat_id, newest.msg_id)
                     return
 
@@ -916,8 +1069,9 @@ class Dispatcher:
             await check_model_allowed()
         if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
             return
+        attempt.answering, attempt.catch_up, attempt.away = True, catch_up, count if catch_up else 0
         with model_request("chat", chat_id, partial(self.model_allowed, chat_id)):
-            answered = await self._run_turn(
+            answered, flood_limited = await self._run_turn(
                 chat_id, scope, newest, live, window, until, count if catch_up else 0, final_bot_turn, habits,
                 attempt, arrival, followup,
             )
@@ -926,6 +1080,12 @@ class Dispatcher:
             self._spawn(self._send_coding_notice(chat_id, attempt.notices))
         if answered and attempt.reminder_ids:
             self._spawn(self.reminders.consume(attempt.reminder_ids))
+        if flood_limited:
+            # Mark read only up to what this turn actually covered when something went out; newer messages (and
+            # untouched messages when nothing went out) stay unread for a later turn.
+            if answered and not attempt.read:
+                await store.mark_chat_read(chat_id, newest.msg_id)
+            return
         if not answered:
             await self._mark_seen(chat_id, newest)
         if not attempt.read:
@@ -937,6 +1097,7 @@ class Dispatcher:
         window = await chat_window.load(
             self.app.store, chat_id, self.app.config, through_id=newest.id if newest is not None else None,
         )
+        self._trim_seq[chat_id] = window.trim_seq
         if window.blocked:
             self.request_memory_pass(chat_id)
         return window.rows
@@ -978,6 +1139,13 @@ class Dispatcher:
             return owner
         return None
 
+    def _ephemeral_ineligible_reason(self, scope: Scope, trigger: StoredMessage | None) -> str:
+        if not self.app.config.ephemeral_replies:
+            return "ephemeral replies are off"
+        if self.app.owner_id is None:
+            return "no owner is set"
+        return "it was a friend's turn"
+
     async def _mark_seen(self, chat_id: int, newest: StoredMessage) -> None:
         """Stand in for a read receipt: react 👀 to the newest message Dom read when he has nothing to say."""
         if (
@@ -986,7 +1154,7 @@ class Dispatcher:
             or newest.is_bot or newest.msg_id is None
         ):
             return
-        reacted = await executor.react(self.app.bot, chat_id, newest.msg_id, SEEN)
+        reacted = await executor.react(self.app.bot, chat_id, newest.msg_id, SEEN, sleep=self.app.sleep)
         if reacted:
             turn_log.outcome(f"Marked seen {SEEN}")
         elif reacted is False:  # Telegram refused it for this chat; a network error (None) may pass
@@ -996,12 +1164,13 @@ class Dispatcher:
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
         attempt: TurnAttempt, arrival: Arrival | None, followup: list[int],
-    ) -> bool:
-        """Run one turn and send its result; True when it said or reacted something in the chat."""
+    ) -> tuple[bool, bool]:
+        """Run one turn and send its result; returns `(answered, flood_limited)`."""
         app = self.app
+        thread_id = newest.thread_id if newest.thread_id is not None else (live.thread_id if live else None)
         typing = arrival.typing if arrival is not None else None
         if typing is None:
-            typing = executor.TypingIndicator(app.bot, chat_id, live.thread_id if live else None, monotonic)
+            typing = executor.TypingIndicator(app.bot, chat_id, thread_id, monotonic)
         note = ""
         if followup:
             ids = ", ".join(map(str, followup))
@@ -1010,6 +1179,7 @@ class Dispatcher:
                 "Use the reply links in the chat window to see what you already answered. Add to or correct what you said "
                 "where needed, without repeating it."
             )
+
         def before_send() -> None:
             typing.stop()
             attempt.commit()
@@ -1027,16 +1197,40 @@ class Dispatcher:
             )
             if await self._hold_for_leak_check(chat_id, scope, actions, live.chat_title if live else ""):
                 turn_log.outcome("Held back: possible leak")
-                return False
-            recipient = self._ephemeral_recipient(scope, newest) if actions.private else None
+                return False, False
+            recipient = self._ephemeral_recipient(scope, newest)
             in_group = recipient is None or await self._is_admin(chat_id)
+            ineligible_reason = None if recipient is not None else self._ephemeral_ineligible_reason(scope, newest)
             sent = await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
-                thread_id=live.thread_id if live else None, stickers=app.stickers.sendable(),
-                gifs=app.gifs, ephemeral_recipient=recipient, ephemeral_in_chat=in_group, typed_already=typing.seconds,
+                thread_id=thread_id, stickers=app.stickers.sendable(),
+                gifs=app.gifs, ephemeral_recipient=recipient, ephemeral_in_chat=in_group,
+                ephemeral_ineligible_reason=ineligible_reason, typed_already=attempt.credit + typing.seconds,
                 typing_cps=executor.ASSISTANT_TYPING_CPS if attempt.assistant else executor.TYPING_CPS,
                 before_send=before_send, on_sent=on_sent,
             )
+            if sent.reaction_result is False:
+                self._reactions_off.add(chat_id)
+            if sent.flood_limited:
+                log.warning("reply in chat %s hit Telegram flood-wait budget (%d sent)", chat_id, len(sent))
+                turn_log.outcome(
+                    f"Partially sent ({len(sent)}), flood limited" if sent else "Flood limited"
+                )
+                if app.owner_id is not None:
+                    try:
+                        where = "your DM" if chat_id == app.owner_id else (
+                            (live.chat_title if live and live.chat_title else "")
+                            or (await app.store.get_chat_auth_status(chat_id))["title"]
+                            or str(chat_id)
+                        )
+                        detail = (
+                            f"sent {len(sent)} before hitting Telegram's flood limit"
+                            if sent else "hit Telegram's flood limit before sending"
+                        )
+                        await app.store.record_owner_event(f"Reply in {where} stopped early ({detail})")
+                    except Exception:
+                        log.exception("could not record flood-limit owner event in chat %s", chat_id)
+                return bool(sent) or sent.reacted, True
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
                 if sent:  # the bubbles stay out of the group's history, so say here that the owner was answered
@@ -1048,13 +1242,17 @@ class Dispatcher:
                 bubbles = len(actions.bubbles)
                 label = "bubble" if bubbles == 1 else "bubbles"
                 turn_log.outcome(
-                    f"Replied in {bubbles} {label}" if bubbles else "Sent a sticker" if actions.sticker else "Sent a GIF"
+                    f"Replied in {bubbles} {label}" if bubbles
+                    else "Sent a media fallback" if sent.media_fallback
+                    else "Sent a sticker" if actions.sticker else "Sent a GIF"
                 )
-            elif actions.react and not actions.no_response:
+            elif sent.reacted:
                 turn_log.outcome(f"Reacted {actions.react[:16]}")
-            return bool(sent) or bool(actions.react and not actions.no_response)
+            elif actions.react and not actions.no_response:
+                turn_log.outcome("Reaction failed")
+            return bool(sent) or sent.reacted, False
         finally:
-            typing.stop()
+            attempt.shown = typing.stop()
             if (
                 attempt.committed and newest.is_bot and newest.sender_user_id is not None
                 and actions is not None and not actions.no_response
@@ -1112,13 +1310,16 @@ class Dispatcher:
             link = f"{base}/desktop" + ("" if container == DEFAULT else "?" + urlencode({"container": container}))
             buttons.append(InlineKeyboardButton(text="Open Desktop", url=link))
         buttons.append(InlineKeyboardButton(text="Done", callback_data=f"desktop:done:{task_id}:{steps}"))
-        sent = await app.bot.send_message(
-            chat_id,
-            f"Dom needs you to log in{'' if container == DEFAULT else f' on the {container} desktop'} "
-            f"(browser was on {host or 'an unknown site'} at {observed:%H:%M}): {reason}\nLogins you make here are kept for later tasks."
-            + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        sent = await executor.retry_telegram(
+            lambda: app.bot.send_message(
+                chat_id,
+                f"Dom needs you to log in{'' if container == DEFAULT else f' on the {container} desktop'} "
+                f"(browser was on {host or 'an unknown site'} at {observed:%H:%M}): {reason}\nLogins you make here are kept for later tasks."
+                + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            ),
+            sleep=app.sleep,
         )
         if isinstance(message_id := getattr(sent, "message_id", None), int):
             await app.store.kv_set(f"{HANDOFF_CARD}{task_id}", str(message_id))
@@ -1133,7 +1334,10 @@ class Dispatcher:
         await app.store.kv_set(key, "")
         markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]])
         try:
-            await app.bot.edit_message_reply_markup(chat_id=app.owner_id, message_id=int(raw), reply_markup=markup)
+            await executor.retry_telegram(
+                lambda: app.bot.edit_message_reply_markup(chat_id=app.owner_id, message_id=int(raw), reply_markup=markup),
+                sleep=app.sleep,
+            )
         except TelegramBadRequest:
             log.info("could not settle the log-in card of desktop task %s", task_id)
 
@@ -1202,9 +1406,12 @@ class Dispatcher:
                 actions = None
             if actions is None or actions.no_response or not actions.bubbles:
                 # Raw task text goes to the owner only; it is not kept in the chat history the model reads.
-                await app.bot.send_message(
-                    chat_id, f"Desktop task #{task_id}{where} {status}. {result}"[:3000],
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                await executor.retry_telegram(
+                    lambda: app.bot.send_message(
+                        chat_id, f"Desktop task #{task_id}{where} {status}. {result}"[:3000],
+                        link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    ),
+                    sleep=app.sleep,
                 )
                 await app.store.record_owner_event(f"Desktop task #{task_id}{where} result sent as plain text")
             else:
@@ -1215,7 +1422,7 @@ class Dispatcher:
                     sleep=app.sleep, link_previews=False, record=False,
                 )
                 await app.store.record_owner_event(f"Dom reported desktop task #{task_id}")
-            await executor.send_files(app.bot, app.store, chat_id, files)
+            await executor.send_files(app.bot, app.store, chat_id, files, sleep=app.sleep)
 
     async def _measure_prompt(self, chat_id: int, window: list[StoredMessage], usage_mark: int) -> None:
         """Learn the real size of the prompt just sent, from the first model call's reported input tokens."""
@@ -1225,6 +1432,50 @@ class Dispatcher:
             )
         except Exception:
             log.exception("could not measure the prompt in chat %s", chat_id)
+
+    def _directly_addressed(self, newest: StoredMessage, window: list[StoredMessage]) -> bool:
+        """True when a group message mentions Dom by username or replies directly to one of Dom's messages."""
+        username = (self.app.bot_username or "").strip().lstrip("@")
+        if username and re.search(rf"(?<!\w)@{re.escape(username)}(?!\w)", newest.text or "", re.IGNORECASE):
+            return True
+        if newest.reply_to_msg_id is not None:
+            return any(m.msg_id == newest.reply_to_msg_id and m.role == "assistant" for m in window)
+        return False
+
+    async def _no_final_answer(
+        self, chat_id: int, scope: Scope, newest: StoredMessage | None,
+        live: IncomingMessage | None, window: list[StoredMessage],
+    ) -> Actions:
+        """Record an owner event whenever no model produces a final answer, and give a waiting friend
+        (or directly addressed group member) a short in-character line instead of silence."""
+        app = self.app
+        if app.owner_id is not None:
+            try:
+                if chat_id == app.owner_id:
+                    where = "your DM"
+                else:
+                    where = (
+                        (live.chat_title if live and live.chat_title else "")
+                        or (await app.store.get_chat_auth_status(chat_id))["title"]
+                        or str(chat_id)
+                    )
+                await app.store.record_owner_event(f"Could not produce a reply in {where} (no usable final answer)")
+            except Exception:
+                log.exception("could not record owner event for NoFinalAnswer in chat %s", chat_id)
+        if newest is None or newest.is_bot:
+            return Actions(no_response=True)
+        if scope == "owner_dm":
+            return Actions(bubbles=[Bubble(text=NO_ANSWER_NOTICE)])
+        if scope == "friend_dm":
+            return Actions(bubbles=[Bubble(text=FRIEND_NO_ANSWER_LINE)])
+        if scope == "group" and self._directly_addressed(newest, window):
+            now = self.now()
+            last = self._group_no_answer_at.get(chat_id)
+            if last is not None and now - last < GROUP_NO_ANSWER_COOLDOWN:
+                return Actions(no_response=True)
+            self._group_no_answer_at[chat_id] = now
+            return Actions(bubbles=[Bubble(text=FRIEND_NO_ANSWER_LINE, reply_to=newest.msg_id)])
+        return Actions(no_response=True)
 
     async def _compose_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage | None, live: IncomingMessage | None,
@@ -1239,10 +1490,8 @@ class Dispatcher:
         tools = await enabled_tools(app, scope)
         note = (
             f"It is {now:%A %Y-%m-%d %H:%M} ({app.config.timezone}). You are in {where} ({scope}).\n"
-            f"state: online\nonline minutes left: {minutes:.1f}\n"
-            f"messages that arrived while away: {away_count}\n{describe(app, scope, tools)}\n"
-            "Keep the mechanics of how you work to yourself: don't mention timers, restarts, versions, tools, "
-            "or how long you're staying online. If you need to wrap up, give a reason from your life."
+            f"state: online\n"
+            f"messages that arrived while away: {away_count}\n{describe(app, scope, tools)}"
         )
         if any(tool.name.startswith("plugin_") for tool in tools):
             note += (
@@ -1297,14 +1546,21 @@ class Dispatcher:
             attempt.assistant = preset is not None and preset.name == ASSISTANT
         if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:
             note += "\nyou are answering late. If it fits, you can give a reason from your life in your own words."
+        snap = self.prompt_cache.snapshot(
+            app.home, scope, chat_id, participants, self.now(), trim_seq=self._trim_seq.get(chat_id, 0),
+        )
+        note += f"\n{online_window_note(minutes)}"
+        if snap.stale_since is not None:
+            since = snap.stale_since.astimezone(self.presence.tz)
+            note += f"\nnotes updated since {since:%H:%M}; call read_notes only if your answer depends on something saved since then"
         messages = build_messages(
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
-            sliders=sliders, preset=preset,
+            sliders=sliders, preset=preset, memory_text=snap.memory_text, notes_blocks=snap.notes_blocks,
         )
         ctx = TurnCtx(
             scope, chat_id, sender_id, app.home, app.store, app.owner_id, self.presence, habits,
             model_allowed=partial(self.turn_allowed, chat_id, scope), reminders=self.reminders,
-            desktop=app.desktop_worker, app=app,
+            desktop=app.desktop_worker, app=app, participant_ids=tuple(dict.fromkeys(participants)),
         )
         usage_mark = await app.store.last_usage_id()
         rescue = None if self.jev is None else partial(self._rescue, chat_id, scope, window, {t.name for t in tools})
@@ -1315,10 +1571,9 @@ class Dispatcher:
                 actions = await run_turn(app.client, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool)
         except ModelCallSkipped:
             raise
-        except NoFinalAnswer:  # run_turn has logged why; the owner is told, others see nothing worse than silence
+        except NoFinalAnswer:  # run_turn has logged why; record an owner event and answer waiting friends in character
             turn_log.step("no answer")
-            owner_waiting = scope == "owner_dm" and newest is not None
-            actions = Actions(bubbles=[Bubble(text=NO_ANSWER_NOTICE)]) if owner_waiting else Actions(no_response=True)
+            actions = await self._no_final_answer(chat_id, scope, newest, live, window)
         except Exception:
             if not final_bot_turn:
                 raise
@@ -1344,6 +1599,9 @@ class Dispatcher:
     async def _send_coding_notice(self, chat_id: int, notes: list[str]) -> None:
         try:
             note = "; ".join(dict.fromkeys(notes))
-            await self.app.bot.send_message(chat_id, f"🔎 Checked your coding work: {note}"[:1800])
+            await executor.retry_telegram(
+                lambda: self.app.bot.send_message(chat_id, f"🔎 Checked your coding work: {note}"[:1800]),
+                sleep=self.app.sleep,
+            )
         except Exception:
             log.warning("Could not deliver T3 turn notification.")

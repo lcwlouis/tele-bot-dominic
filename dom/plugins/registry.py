@@ -7,13 +7,16 @@ import json
 import logging
 import re
 import shutil
+import sqlite3
 import tomllib
-from dataclasses import asdict
-from difflib import unified_diff
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
+from datetime import datetime, timezone
+from difflib import unified_diff
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from dom.deletion import STALE_MESSAGE, hash_matches, prune_deletions, stage_deletion
 from dom.home import Home
 from dom.plugins.manifest import (
     CommandManifest, Manifest, PanelManifest, Plugin, ToolManifest, read_plugin, validate_name,
@@ -35,7 +38,7 @@ def _surfaces(manifest: Manifest) -> tuple:
 class PluginRegistry:
     def __init__(
         self, home: Home, store: Store, on_change: Callable[[], Awaitable[None]] | None = None,
-        *, runner: PluginRunner | None = None,
+        *, runner: PluginRunner | None = None, is_running: Callable[[str], bool] | None = None,
     ):
         self.home = home.scoped(allow_private=False)
         self.store = store
@@ -43,7 +46,8 @@ class PluginRegistry:
         self.runner = runner or PluginRunner(home=home.root, store=store)
         self._trial_lock = asyncio.Lock()
         self._trials: dict[tuple[str, str], asyncio.Task[dict | None]] = {}
-        self.on_change = on_change  # called after the owner approves, rejects or disables a plugin
+        self.on_change = on_change  # called after the owner approves, rejects, disables or deletes a plugin
+        self.is_running = is_running or self.runner.is_running
 
     def _read_all(self) -> dict[str, Plugin]:
         found = {}
@@ -263,6 +267,99 @@ class PluginRegistry:
             label = {"approve": "Approved", "reject": "Rejected", "disable": "Disabled"}[decision]
             await self.store.record_owner_event(f"{label} plugin {name} ({digest[:12]})")
             return label
+
+    def _inspect_for_delete(self, name: str, db_row: dict | None) -> tuple[Path, bool, str | None]:
+        """Inspect disk + DB state of `name`. Returns (folder, on_disk, live_hash_or_None)."""
+        target = self.home._regular_path(f"plugins/{name}")
+        on_disk = target.exists()
+        if on_disk:
+            if target.is_symlink() or not target.is_dir():
+                raise ValueError("The plugin path must be a regular directory.")
+            try:
+                disk_hash = read_plugin(target).hash
+            except (OSError, ValueError, RecursionError):
+                disk_hash = db_row["hash"] if db_row is not None else None
+            if db_row is not None and disk_hash is not None and db_row["hash"] != disk_hash:
+                return target, True, disk_hash  # changed on disk since staged
+            return target, True, disk_hash
+        return target, False, db_row["hash"] if db_row is not None else None
+
+    async def delete(self, name: str, expected_hash: str) -> str:
+        """Move a plugin's files into the deletion archive and remove its DB/KV state in one tx.
+        Refuses if mid-call or if the plugin changed since confirmation."""
+        validate_name(name)
+        if not expected_hash:
+            return STALE_MESSAGE
+        async with self.lock:
+            if self.is_running is not None and self.is_running(name):
+                return f"Cannot delete plugin {name} while it is running."
+            snapshot = await self.store.plugin_state_snapshot(name)
+            db_row = snapshot["plugin"]
+            target, on_disk, live_hash = await asyncio.to_thread(self._inspect_for_delete, name, db_row)
+            if db_row is None and not on_disk:
+                return "Unknown plugin"
+            if live_hash is not None and not hash_matches(live_hash, expected_hash):
+                return STALE_MESSAGE
+            if db_row is not None and not hash_matches(db_row["hash"], expected_hash):
+                return STALE_MESSAGE
+        event_at = datetime.now(timezone.utc).isoformat()
+        event_text = f"Deleted plugin {name}"
+        try:
+            archive = await asyncio.to_thread(
+                stage_deletion,
+                self.home.root,
+                "plugin",
+                name,
+                event_text=event_text,
+                event_at=event_at,
+                rows=snapshot,
+                sources=[target] if on_disk else [],
+            )
+        except (OSError, ValueError) as error:
+            log.warning("could not stage deletion archive for plugin %s: %s", name, type(error).__name__)
+            return "Could not archive plugin before deleting."
+
+        async with self.lock:
+            try:
+                if self.is_running is not None and self.is_running(name):
+                    await asyncio.to_thread(archive.rollback)
+                    return f"Cannot delete plugin {name} while it is running."
+                # Re-check hash under self.lock (the same lock draft() and decide() use) so a concurrent
+                # draft or approval is never deleted unseen.
+                snapshot = await self.store.plugin_state_snapshot(name)
+                db_row = snapshot["plugin"]
+                target, on_disk, live_hash = await asyncio.to_thread(self._inspect_for_delete, name, db_row)
+                if db_row is None and not on_disk:
+                    await asyncio.to_thread(archive.rollback)
+                    return "Unknown plugin"
+                if (
+                    (live_hash is not None and not hash_matches(live_hash, expected_hash))
+                    or (db_row is not None and not hash_matches(db_row["hash"], expected_hash))
+                ):
+                    await asyncio.to_thread(archive.rollback)
+                    return STALE_MESSAGE
+                archive.sources = [target] if on_disk else []
+                await asyncio.to_thread(archive.update_rows, snapshot)
+                await asyncio.to_thread(archive.move_in)
+                result = await self.store.delete_plugin(
+                    name, expected_hash, event_text, event_at, allow_missing_row=on_disk,
+                )
+            except (OSError, ValueError, sqlite3.Error) as error:
+                log.warning("could not delete plugin %s: %s", name, type(error).__name__)
+                await asyncio.to_thread(archive.rollback)
+                return "Could not delete plugin."
+            if result != "deleted":
+                await asyncio.to_thread(archive.rollback)
+                return STALE_MESSAGE if result == "stale" else "Unknown plugin"
+            await asyncio.to_thread(archive.commit)
+
+        if self.on_change is not None:
+            try:
+                await self.on_change()
+            except Exception:
+                log.exception("could not update after deleting plugin %s", name)
+        await asyncio.to_thread(prune_deletions, self.home.root)
+        return "Deleted"
 
     async def entries(self, scope: str) -> list[tuple[Plugin, ToolManifest]]:
         unique: dict[str, tuple[Plugin, ToolManifest]] = {}

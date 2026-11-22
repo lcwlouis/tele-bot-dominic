@@ -7,9 +7,10 @@ import hmac
 import json
 import logging
 import secrets
+import sqlite3
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -24,10 +25,21 @@ from aiogram.types import (
     Message,
 )
 
-from dom import memory_import, proposals, release, traits
+from dom import memory_import, proposals, release, skills, traits
 from dom._version import VERSION
+from dom.deletion import (
+    STALE_MESSAGE,
+    hash_matches,
+    prune_deletions,
+    stage_deletion,
+    stamp_matches,
+    stamp_token,
+)
+from dom.desktop import files as desktop_files
+from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.plugins import surfaces
-from dom.plugins.manifest import NETWORK_NOTICE
+from dom.plugins.manifest import NETWORK_NOTICE, validate_name as validate_plugin_name
+from dom.telegram.executor import retry_telegram
 from dom.traits import AUTO, GLOBAL_PRESET_KEY, ensure_pick, load_preset, vibe
 
 if TYPE_CHECKING:
@@ -44,9 +56,11 @@ OWNER_COMMANDS = [
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
     BotCommand(command="proposals", description="Review pending changes"),
     BotCommand(command="plugins", description="List and disable plugins"),
+    BotCommand(command="skills", description="List, retire, restore and delete skills"),
     BotCommand(command="reminders", description="List and cancel reminders"),
     BotCommand(command="t3", description="View T3 sign-in, machines and audit history"),
     BotCommand(command="tasks", description="List and cancel desktop tasks"),
+    BotCommand(command="ownwork", description="List, cancel and delete self-directed tasks"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
     BotCommand(command="import", description="Bring memories from another assistant"),
     BotCommand(command="update", description="Check for and install a new release"),
@@ -86,19 +100,26 @@ def _table(header: list[str], rows: list[list[str]]) -> list[str]:
     return [_row(header), "|" + "---|" * len(header), *map(_row, rows)]
 
 
-async def send_view(bot, chat_id: int, view: View) -> None:
+async def send_view(bot, chat_id: int, view: View, *, sleep=None) -> None:
     """Send `view` as a rich message; if Telegram refuses rich messages, send its plain text with the same keyboard."""
+    kw = {"sleep": sleep} if sleep is not None else {}
     try:
-        await bot.send_rich_message(chat_id=chat_id, rich_message=InputRichMessage(markdown=view.markdown), reply_markup=view.markup)
+        await retry_telegram(
+            lambda: bot.send_rich_message(
+                chat_id=chat_id, rich_message=InputRichMessage(markdown=view.markdown), reply_markup=view.markup,
+            ),
+            **kw,
+        )
     except TelegramBadRequest as error:
         log.warning("rich message refused, sending plain text instead: %s", error)
-        await bot.send_message(chat_id, view.plain, reply_markup=view.markup)
+        await retry_telegram(lambda: bot.send_message(chat_id, view.plain, reply_markup=view.markup), **kw)
 
 
-async def delete_message(bot, chat_id: int, message_id: int) -> None:
+async def delete_message(bot, chat_id: int, message_id: int, *, sleep=None) -> None:
     """Remove an old owner message. Rich messages cannot be edited in place, so a change means delete and send anew."""
+    kw = {"sleep": sleep} if sleep is not None else {}
     try:
-        await bot.delete_message(chat_id, message_id)
+        await retry_telegram(lambda: bot.delete_message(chat_id, message_id), **kw)
     except TelegramBadRequest:  # already deleted by the owner
         log.info("the message was already gone")
 
@@ -111,25 +132,37 @@ def _short(title: str, limit: int = 20) -> str:
     return title if len(title) <= limit else title[: limit - 1] + "…"
 
 
-async def publish_menu(bot, owner_id: int, extra: list[BotCommand] | None = None) -> None:
+async def publish_menu(bot, owner_id: int, extra: list[BotCommand] | None = None) -> bool:
     """Show the owner the command menu (core, then approved plugin commands) and everyone else none.
 
-    A failure is logged, never raised.
+    A failure is logged, never raised. Returns True when set_my_commands succeeded.
     """
     commands = OWNER_COMMANDS + (extra or [])[:surfaces.MAX_MENU - len(OWNER_COMMANDS)]
+    ok = True
     try:
         await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=owner_id))
     except Exception:
+        ok = False
         log.exception("could not set the owner's command menu")
     try:
         await bot.delete_my_commands(scope=BotCommandScopeDefault())
     except Exception:
         log.exception("could not clear the default command menu")
+    return ok
 
 
-async def refresh_menu(app: App) -> None:
-    if app.owner_id is not None:
-        await publish_menu(app.bot, app.owner_id, await surfaces.menu_commands(app))
+async def refresh_menu(app: App) -> bool:
+    if app.owner_id is None:
+        app.menu_dirty = False
+        return True
+    try:
+        extra = await surfaces.menu_commands(app)
+        ok = await publish_menu(app.bot, app.owner_id, extra)
+    except Exception:
+        log.exception("could not refresh the owner's command menu")
+        ok = False
+    app.menu_dirty = not ok
+    return ok
 
 
 def display_title(chat: dict, owner_id: int | None) -> str:
@@ -162,13 +195,14 @@ class PresenceChange:
 
 
 async def override_chat(app: App, chat_id: int, command: str, who: str) -> PresenceChange | None:
-    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(chat_id)), None)
-    if chat is None or not await app.dispatch.override(chat_id, command):
+    resolved = int(await app.store.resolve_chat_id(chat_id))
+    chat = next((c for c in await app.store.list_approved_chats() if c["chat_id"] == str(resolved)), None)
+    if chat is None or not await app.dispatch.override(resolved, command):
         return None
     title = display_title(chat, app.owner_id)
     if command == "/wake":
         await record_event(app, f"{who} woke Dom in {title}")
-        if await app.dispatch.spend_paused(chat_id):
+        if await app.dispatch.spend_paused(resolved):
             return PresenceChange(f"Dom is up in {title}, but friends' chats are paused by today's spend cap", True)
         return PresenceChange(f"Dom is up in {title}")
     await record_event(app, f"{who} sent Dom to sleep in {title}")
@@ -179,37 +213,40 @@ LEAVABLE = ("approved", "pending_approval", "ignored")
 
 
 async def leavable_chat(app: App, chat_id: int) -> dict | None:
-    if chat_id >= 0:
+    resolved = int(await app.store.resolve_chat_id(chat_id))
+    if resolved >= 0:
         return None
     return next((
         c for c in await app.store.list_chats()
-        if c["chat_id"] == str(chat_id) and c["authorization_status"] in LEAVABLE
+        if c["chat_id"] == str(resolved) and c["authorization_status"] in LEAVABLE
     ), None)
 
 
 async def leave_chat(app: App, chat_id: int, who: str) -> tuple[str, bool]:
-    async with app.dispatch._dispatch_slot(chat_id, wait_media=False):
-        chat = await leavable_chat(app, chat_id)
+    resolved = int(await app.store.resolve_chat_id(chat_id))
+    async with app.dispatch._dispatch_slot(resolved, wait_media=False):
+        chat = await leavable_chat(app, resolved)
         if chat is None:
             return "unknown chat", False
         title = display_title(chat, app.owner_id)
         try:
-            await app.bot.leave_chat(chat_id)
+            await app.bot.leave_chat(resolved)
             result = f"Dom left {title}"
         except (TelegramBadRequest, TelegramForbiddenError):
             result = f"Dom wasn't in {title} anymore"
         except Exception as error:
-            log.exception("could not leave chat %s", chat_id)
+            log.exception("could not leave chat %s", resolved)
             await record_event(app, f"{who} tapped Leave on {title}: Dom couldn't leave")
             message = (getattr(error, "message", "") or str(error) or type(error).__name__)[:100]
             return f"Couldn't leave: {message}", False
-        await app.store.set_chat_auth_status(chat_id, "left")
+        await app.store.set_chat_auth_status(resolved, "left")
         await record_event(app, f"{who} tapped Leave on {title}: {result}")
         return result, True
 
 
 async def approved_chat(app: App, chat_id: int | str) -> dict | None:
-    return next((c for c in await app.store.list_chats("approved") if c["chat_id"] == str(chat_id)), None)
+    resolved = await app.store.resolve_chat_id(chat_id)
+    return next((c for c in await app.store.list_chats("approved") if c["chat_id"] == resolved), None)
 
 
 async def set_preset(app: App, chat: dict, name: str) -> str | None:
@@ -253,7 +290,8 @@ async def decide_pending_chat(app: App, chat_id: int, decision: str, who: str) -
     status = PENDING_DECISIONS.get(decision)
     if status is None or app.owner_id is None:
         raise ValueError("Choose approve or ignore.")
-    chat = await app.store.resolve_pending_chat(str(chat_id), status)
+    resolved = await app.store.resolve_chat_id(chat_id)
+    chat = await app.store.resolve_pending_chat(resolved, status)
     if chat is None:
         return None, "already handled"
     label = "Approved" if decision == "approve" else "Ignored"
@@ -304,6 +342,14 @@ def _container_tag(task: dict) -> str:
     return "" if task.get("container", "default") == "default" else f" on {task['container']}"
 
 
+async def _send(app: App, text: str, **kw) -> None:
+    await retry_telegram(lambda: app.bot.send_message(app.owner_id, text, **kw), sleep=app.sleep)
+
+
+class _StaleSkill(Exception):
+    pass
+
+
 async def show_tasks(app: App) -> None:
     if app.owner_id is None:
         return
@@ -312,12 +358,272 @@ async def show_tasks(app: App) -> None:
         f"#{row['id']} · {row['status'].replace('_', ' ')}{_container_tag(row)} · {_short(' '.join(row['brief'].split()), 120)}"
         for row in rows
     ]
-    buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"desktop:cancel:{row['id']}")]
-               for row in rows if row["status"] in ("queued", "running", "waiting_owner")]
-    await app.bot.send_message(
-        app.owner_id, "\n".join(lines) or "No desktop tasks yet.",
+    buttons = [
+        [InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"desktop:cancel:{row['id']}")]
+        if row["status"] in DESKTOP_ACTIVE else
+        [InlineKeyboardButton(
+            text=f"Delete #{row['id']}", callback_data=f"desktop:del:{row['id']}:{stamp_token(row['created_at'])}",
+        )]
+        for row in rows
+    ]
+    await _send(
+        app, "\n".join(lines) or "No desktop tasks yet.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
     )
+
+
+async def show_own_work(app: App) -> None:
+    if app.owner_id is None:
+        return
+    rows = await app.store.self_tasks(limit=20)
+    if not rows:
+        await app.bot.send_message(app.owner_id, "No self-directed tasks yet.")
+        return
+    for start in range(0, len(rows), 10):
+        lines, buttons = [], []
+        for row in rows[start:start + 10]:
+            goal = _short(" ".join(row["goal"].split()), 120)
+            lines.append(f"#{row['id']} · {row['status']} · {goal}")
+            if row["status"] in ("planned", "running"):
+                buttons.append([InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"own:cancel:{row['id']}")])
+            else:
+                buttons.append([InlineKeyboardButton(
+                    text=f"Delete #{row['id']}",
+                    callback_data=f"own:del:{row['id']}:{stamp_token(row['announced_at'])}",
+                )])
+        await app.bot.send_message(
+            app.owner_id, "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
+        )
+
+
+async def delete_desktop_task(app: App, task_id: int, expected_created_at: str) -> tuple[bool, str]:
+    """Archive and delete one finished desktop task and any bound inbox files."""
+    if app.owner_id is None:
+        return False, "There is no owner."
+    if not expected_created_at:
+        return False, STALE_MESSAGE
+    row = await app.store.get_desktop_task(app.owner_id, task_id)
+    if row is None:
+        return False, f"Desktop task #{task_id} not found."
+    if row["status"] in DESKTOP_ACTIVE:
+        return False, f"Cannot delete desktop task #{task_id} while it is {row['status'].replace('_', ' ')}."
+    if not stamp_matches(row["created_at"], expected_created_at):
+        return False, STALE_MESSAGE
+    try:
+        inbox_dir = desktop_files._inbox(app.home.root) / f"task-{task_id}"
+        if inbox_dir.is_symlink():
+            raise ValueError("Task inbox path cannot be a symlink.")
+    except ValueError as error:
+        return False, str(error)
+    event_at = datetime.now(timezone.utc).isoformat()
+    event_text = f"Deleted desktop task #{task_id}"
+    archive = None
+    try:
+        archive = await asyncio.to_thread(
+            stage_deletion,
+            app.home.root,
+            "desktop_task",
+            task_id,
+            event_text=event_text,
+            event_at=event_at,
+            rows={"desktop_task": row},
+            sources=[inbox_dir] if inbox_dir.exists() else [],
+        )
+        await asyncio.to_thread(archive.move_in)
+    except (OSError, ValueError) as error:
+        if archive is not None:
+            await asyncio.to_thread(archive.rollback)
+        log.warning("could not archive desktop task %s: %s", task_id, type(error).__name__)
+        return False, "Could not archive desktop task before deleting."
+    try:
+        result = await app.store.delete_desktop_task(
+            app.owner_id, task_id, expected_created_at, event_text, event_at,
+        )
+    except sqlite3.Error as error:
+        log.warning("could not delete desktop task %s: %s", task_id, type(error).__name__)
+        await asyncio.to_thread(archive.rollback)
+        return False, "Could not delete desktop task."
+    if result != "deleted":
+        await asyncio.to_thread(archive.rollback)
+        if result == "stale":
+            return False, STALE_MESSAGE
+        if result == "active":
+            return False, f"Cannot delete desktop task #{task_id} while it is active."
+        return False, f"Desktop task #{task_id} not found."
+    await asyncio.to_thread(archive.commit)
+    await asyncio.to_thread(prune_deletions, app.home.root)
+    return True, f"Deleted desktop task #{task_id}."
+
+
+async def skill_callback(app: App, action: str, name: str, digest: str = "") -> str:
+    """Build a Telegram callback_data <= 64 bytes for a skill action, using a KV token for long names."""
+    direct = f"skill:{action}:{name}:{digest[:12]}" if digest else f"skill:{action}:{name}"
+    if len(direct.encode("utf-8")) <= 64:
+        return direct
+    token = secrets.token_hex(6)
+    await app.store.kv_set(f"skill-cb:{token}", json.dumps({"name": name, "hash": digest}))
+    return f"skill:{action}:~{token}"
+
+
+async def resolve_skill_callback(app: App, payload: str) -> tuple[str, str] | None:
+    """Resolve `name[:hash]` or `~token` from a skill callback into `(name, expected_hash)`."""
+    if payload.startswith("~"):
+        raw = await app.store.kv_get(f"skill-cb:{payload[1:]}")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            name, digest = data.get("name"), data.get("hash", "")
+            return (name, digest) if isinstance(name, str) and isinstance(digest, str) else None
+        except (ValueError, AttributeError):
+            return None
+    name, _, digest = payload.partition(":")
+    return (name, digest) if name else None
+
+
+async def show_skills(app: App) -> None:
+    if app.owner_id is None:
+        return
+    rows = await asyncio.to_thread(skills.skills_inventory, app.home)
+    if not rows:
+        await app.bot.send_message(app.owner_id, "No skills yet.")
+        return
+    for start in range(0, len(rows), 10):
+        lines, buttons = [], []
+        for row in rows[start:start + 10]:
+            name = str(row["name"])
+            digest = str(row["hash"])
+            retired = bool(row["retired"])
+            status = "retired" if retired else "active"
+            desc = _short(str(row["description"]), 120)
+            lines.append(f"{name} · {status} · {desc}")
+            toggle = (
+                InlineKeyboardButton(text=f"Restore {name}", callback_data=await skill_callback(app, "restore", name))
+                if retired else
+                InlineKeyboardButton(text=f"Retire {name}", callback_data=await skill_callback(app, "retire", name))
+            )
+            delete_btn = InlineKeyboardButton(
+                text=f"Delete {name}", callback_data=await skill_callback(app, "del", name, digest),
+            )
+            buttons.append([toggle, delete_btn])
+        await app.bot.send_message(
+            app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+
+
+async def retire_skill(app: App, name: str) -> tuple[bool, str]:
+    """Retire an approved skill: keep files on disk, stop Dom from listing or using it."""
+    try:
+        changed = await asyncio.to_thread(skills.retire_skill, app.home, name)
+    except FileNotFoundError:
+        return False, f"Skill {name} not found."
+    except ValueError as error:
+        return False, str(error)
+    if not changed:
+        return False, f"Skill {name} is already retired."
+    await record_event(app, f"Retired skill {name}")
+    return True, f"Retired skill {name}."
+
+
+async def restore_skill(app: App, name: str) -> tuple[bool, str]:
+    """Restore a retired skill so Dom can list and use it again."""
+    try:
+        changed = await asyncio.to_thread(skills.restore_skill, app.home, name)
+    except FileNotFoundError:
+        return False, f"Skill {name} not found."
+    except ValueError as error:
+        return False, str(error)
+    if not changed:
+        return False, f"Skill {name} is already active."
+    await record_event(app, f"Restored skill {name}")
+    return True, f"Restored skill {name}."
+
+
+async def delete_skill(app: App, name: str, expected_hash: str) -> tuple[bool, str]:
+    """Archive and remove a skill's files under SKILL_LOCK, verifying its content hash."""
+    skills._validate_name(name)
+    if not expected_hash:
+        return False, STALE_MESSAGE
+    public = app.home.scoped(allow_private=False)
+
+    def inspect() -> tuple[object, str]:
+        with skills.SKILL_LOCK:
+            folder = public._regular_path(f"skills/{name}")
+            if not folder.exists() or not folder.is_dir():
+                raise FileNotFoundError(f"Skill {name} not found.")
+            live = skills.skill_hash(public, name)
+            if not hash_matches(live, expected_hash):
+                raise _StaleSkill
+            return folder, live
+
+    try:
+        folder, live_hash = await asyncio.to_thread(inspect)
+    except FileNotFoundError:
+        return False, f"Skill {name} not found."
+    except _StaleSkill:
+        return False, STALE_MESSAGE
+    except ValueError as error:
+        return False, str(error)
+
+    event_at = datetime.now(timezone.utc).isoformat()
+    event_text = f"Deleted skill {name}"
+    try:
+        archive = await asyncio.to_thread(
+            stage_deletion,
+            app.home.root,
+            "skill",
+            name,
+            event_text=event_text,
+            event_at=event_at,
+            rows={"skill": {"name": name, "hash": live_hash}},
+            sources=[folder],
+        )
+    except (OSError, ValueError) as error:
+        log.warning("could not archive skill %s: %s", name, type(error).__name__)
+        return False, "Could not archive skill before deleting."
+
+    def prepare() -> None:
+        # Runs inside store._tx() (lock order: store._lock -> SKILL_LOCK, matching decide_proposal).
+        with skills.SKILL_LOCK:
+            current_folder = public._regular_path(f"skills/{name}")
+            if not current_folder.exists() or not current_folder.is_dir():
+                raise FileNotFoundError(f"Skill {name} not found.")
+            live = skills.skill_hash(public, name)
+            if not hash_matches(live, expected_hash):
+                raise _StaleSkill
+            archive.move_in()
+
+    def rollback_files() -> None:
+        with skills.SKILL_LOCK:
+            archive.rollback()
+
+    try:
+        await app.store.commit_skill_delete(event_text, event_at, prepare, rollback_files)
+    except _StaleSkill:
+        await asyncio.to_thread(rollback_files)
+        return False, STALE_MESSAGE
+    except FileNotFoundError:
+        await asyncio.to_thread(rollback_files)
+        return False, f"Skill {name} not found."
+    except (OSError, ValueError, sqlite3.Error) as error:
+        log.warning("could not delete skill %s: %s", name, type(error).__name__)
+        await asyncio.to_thread(rollback_files)
+        return False, "Could not delete skill."
+    await asyncio.to_thread(archive.commit)
+    await asyncio.to_thread(prune_deletions, app.home.root)
+    return True, f"Deleted skill {name}."
+
+
+async def send_delete_confirm(app: App, prompt: str, yes_data: str, no_data: str) -> None:
+    """Send a two-button delete confirmation prompt in the owner's DM."""
+    if app.owner_id is None:
+        return
+    markup = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Yes, delete", callback_data=yes_data),
+        InlineKeyboardButton(text="Cancel", callback_data=no_data),
+    ]])
+    await app.bot.send_message(app.owner_id, prompt, reply_markup=markup)
 
 
 async def render_status(app: App) -> View:
@@ -427,7 +733,7 @@ async def _preset_buttons(app: App, text: str, choices: list[tuple[str, str]]) -
             [InlineKeyboardButton(text=label, callback_data=data)]
             for label, data in choices[start:start + MAX_BUTTONS]
         ])
-        await app.bot.send_message(app.owner_id, text, reply_markup=markup)
+        await _send(app, text, reply_markup=markup)
 
 
 async def show_presets(app: App) -> None:
@@ -460,7 +766,7 @@ async def choose_preset(app: App, chat: dict | None) -> None:
 async def show_plugins(app: App) -> None:
     rows = await app.plugins.listing()
     if not rows:
-        await app.bot.send_message(app.owner_id, "No plugins are installed.")
+        await _send(app, "No plugins are installed.")
         return
     for start in range(0, len(rows), 20):
         lines, buttons = [], []
@@ -468,10 +774,15 @@ async def show_plugins(app: App) -> None:
             name = row["name"]
             status = row["status"] + ("" if row["available"] else " · files unavailable")
             lines.append(f"{name} · {status}" + (f" · {NETWORK_NOTICE}" if row["network"] else ""))
+            row_buttons = []
             if row["status"] != "disabled":
-                buttons.append([InlineKeyboardButton(text=f"Disable {name}", callback_data=f"plugin:disable:{name}")])
-        await app.bot.send_message(
-            app.owner_id, "\n".join(lines),
+                row_buttons.append(InlineKeyboardButton(text=f"Disable {name}", callback_data=f"plugin:disable:{name}"))
+            row_buttons.append(InlineKeyboardButton(
+                text=f"Delete {name}", callback_data=f"plugin:del:{name}:{row['hash'][:16]}",
+            ))
+            buttons.append(row_buttons)
+        await _send(
+            app, "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
         )
 
@@ -481,10 +792,21 @@ async def disable_plugin(app: App, name: str) -> str:
     return await app.plugins.decide(name, row["hash"], "disable") if row else "Unknown plugin"
 
 
+async def delete_plugin(app: App, name: str, expected_hash: str) -> str:
+    try:
+        validate_plugin_name(name)
+    except ValueError:
+        return "Unknown plugin"
+    result = await app.plugins.delete(name, expected_hash)
+    if result == "Deleted":
+        await app.proposals.settle_cards()
+    return result
+
+
 async def show_proposals(app: App, page: int = 1) -> None:
     rows = await app.proposals.pending()
     if not rows:
-        await app.bot.send_message(app.owner_id, "No pending proposals.")
+        await _send(app, "No pending proposals.")
         return
     pages = (len(rows) + PROPOSALS_PER_PAGE - 1) // PROPOSALS_PER_PAGE
     page = min(max(1, page), pages)
@@ -516,8 +838,8 @@ async def show_proposals(app: App, page: int = 1) -> None:
         navigation.append(InlineKeyboardButton(text="Next", callback_data=f"prop:page:{page + 1}"))
     if navigation:
         keyboard.append(navigation)
-    await app.bot.send_message(
-        app.owner_id, "\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+    await _send(
+        app, "\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         disable_notification=True,
     )
 
@@ -546,10 +868,30 @@ async def approve_proposal_page(app: App, first: int, last: int) -> str:
     return f"Approved {approved}.{held}"
 
 
-async def show_reminders(app: App) -> None:
-    reminders = await app.dispatch.reminders.active()
+async def show_settled_proposals(app: App) -> None:
+    rows = await app.proposals.settled(limit=20)
+    if not rows:
+        await app.bot.send_message(app.owner_id, "No settled proposals.")
+        return
+    for start in range(0, len(rows), 10):
+        lines, buttons = [], []
+        for row in rows[start:start + 10]:
+            title = _short(" ".join(row["title"].split()), 120)
+            lines.append(f"#{row['id']} · {row['status']} · {title}")
+            buttons.append([InlineKeyboardButton(
+                text=f"Delete #{row['id']}",
+                callback_data=f"prop:del:{row['id']}:{stamp_token(row['created_at'])}",
+            )])
+        await app.bot.send_message(
+            app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            disable_notification=True,
+        )
+
+
+async def show_reminders(app: App, *, include_settled: bool = False) -> None:
+    reminders = await app.dispatch.reminders.list_all() if include_settled else await app.dispatch.reminders.active()
     if not reminders:
-        await app.bot.send_message(app.owner_id, "No active reminders.")
+        await _send(app, "No reminders." if include_settled else "No active reminders.")
         return
     tz = ZoneInfo(app.config.timezone)
     for start in range(0, len(reminders), 10):
@@ -557,20 +899,28 @@ async def show_reminders(app: App) -> None:
         for row in reminders[start:start + 10]:
             due = datetime.fromisoformat(row["due_at"]).astimezone(tz)
             repeat = f", {row['repeat']}" if row["repeat"] else ""
+            status = f", {row['status']}" if row["status"] != "active" else ""
             preview = " ".join(row["text"].split())[:130]
-            lines.append(f"#{row['id']} {due:%Y-%m-%d %H:%M} ({row['importance']}{repeat}) {preview}")
-            buttons.append([InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"rem:cancel:{row['id']}")])
-        await app.bot.send_message(
-            app.owner_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            lines.append(f"#{row['id']} {due:%Y-%m-%d %H:%M} ({row['importance']}{repeat}{status}) {preview}")
+            del_data = f"rem:del:{row['id']}:{stamp_token(row['created_at'])}"
+            if row["status"] == "active":
+                buttons.append([
+                    InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"rem:cancel:{row['id']}"),
+                    InlineKeyboardButton(text=f"Delete #{row['id']}", callback_data=del_data),
+                ])
+            else:
+                buttons.append([InlineKeyboardButton(text=f"Delete #{row['id']}", callback_data=del_data)])
+        await _send(
+            app, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
 
 
 async def edit_stickers(app: App, args: list[str]) -> None:
     if len(args) != 2 or args[0] not in ("add", "remove"):
-        await app.bot.send_message(app.owner_id, "Use /stickers add <set_name> or /stickers remove <set_name>.")
+        await _send(app, "Use /stickers add <set_name> or /stickers remove <set_name>.")
         return
     result = await change_sticker_set(app, *args)
-    await app.bot.send_message(app.owner_id, result)
+    await _send(app, result)
 
 
 async def change_sticker_set(app: App, action: str, name: str) -> str:
@@ -645,7 +995,7 @@ async def import_memory(app: App, message: Message, text: str) -> tuple[str, str
 
 async def show_t3(app: App) -> None:
     if app.t3 is None:
-        await app.bot.send_message(app.owner_id, "T3 bridge off.")
+        await _send(app, "T3 bridge off.")
     else:
         await app.t3.show()
 
@@ -663,15 +1013,15 @@ async def offer_update(app: App) -> None:
         layout = release.Layout.installed()
         offer = await asyncio.to_thread(release.check, layout, url, VERSION)
     except release.DeployError as error:
-        await app.bot.send_message(app.owner_id, str(error))
+        await _send(app, str(error))
         return
     except (OSError, subprocess.SubprocessError):
         log.warning("could not check %s for releases", url, exc_info=True)
-        await app.bot.send_message(app.owner_id, f"Could not check {url} for releases.")
+        await _send(app, f"Could not check {url} for releases.")
         return
     if offer is None:
         await app.store.kv_set(UPDATE_OFFER_KEY, "")
-        await app.bot.send_message(app.owner_id, f"Dom is up to date ({VERSION}).")
+        await _send(app, f"Dom is up to date ({VERSION}).")
         return
     nonce = secrets.token_hex(8)
     await app.store.kv_set(UPDATE_OFFER_KEY, json.dumps({"nonce": nonce, "tag": offer.tag, "commit": offer.commit}))
@@ -680,7 +1030,7 @@ async def offer_update(app: App) -> None:
         InlineKeyboardButton(text=f"Update to {offer.tag}", callback_data=f"update:go:{nonce}"),
         InlineKeyboardButton(text="Not now", callback_data=f"update:no:{nonce}"),
     ]])
-    await app.bot.send_message(app.owner_id, text, reply_markup=markup)
+    await _send(app, text, reply_markup=markup)
 
 
 async def decide_update(app: App, decision: str, nonce: str) -> str:
@@ -698,11 +1048,11 @@ async def decide_update(app: App, decision: str, nonce: str) -> str:
         layout = release.Layout.installed()
         await asyncio.to_thread(release.launch, layout, app.home.root, chosen)
     except release.DeployError as error:
-        await app.bot.send_message(app.owner_id, str(error))
+        await _send(app, str(error))
         return "Not started"
     await record_event(app, f"Started the update to {chosen.tag}")
-    await app.bot.send_message(
-        app.owner_id, f"Updating to {chosen.tag}. Dom restarts on the way and reports back here when it is done.",
+    await _send(
+        app, f"Updating to {chosen.tag}. Dom restarts on the way and reports back here when it is done.",
     )
     watch_update(app)
     return f"Updating to {chosen.tag}"
@@ -714,7 +1064,7 @@ def watch_update(app: App) -> None:
         return
 
     async def send(text: str) -> None:
-        await app.bot.send_message(app.owner_id, text)
+        await _send(app, text)
         await record_event(app, text[:250])
 
     task = asyncio.create_task(release.deliver_result(app.home.root, send, sleep=asyncio.sleep))

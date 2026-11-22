@@ -149,6 +149,8 @@ async def run(home: Path) -> None:
                 draft_client=ChatClient(drafting, drafting_key, http, usage=usage),
             )
             await app.stickers.refresh()
+            from dom.deletion import recover_deletions
+            await recover_deletions(app.home.root, app.store)
             await app.plugins.cleanup_drafts()
             if app.desktop_worker is not None:
                 await app.desktop_worker.recover()

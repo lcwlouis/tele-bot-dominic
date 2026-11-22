@@ -10,6 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom.models import IncomingMessage
 from dom.store import Store
+from dom.telegram.executor import retry_telegram
 
 log = logging.getLogger("dom.gate")
 
@@ -40,6 +41,7 @@ def first_line(text: str | None, limit: int = 160) -> str:
 
 async def _send_prompt(
     bot, owner_id: int, chat_id: int, title: str, kind: str, requested_by: str, first_text: str | None = None,
+    *, sleep=None,
 ) -> None:
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="Approve", callback_data=f"approve:{chat_id}"),
@@ -49,18 +51,20 @@ async def _send_prompt(
     if first := first_line(first_text):
         text += f'\nFirst message: "{first}"'
     text += "\nApprove?"
-    await bot.send_message(owner_id, text, reply_markup=keyboard)
+    kw = {"sleep": sleep} if sleep is not None else {}
+    await retry_telegram(lambda: bot.send_message(owner_id, text, reply_markup=keyboard), **kw)
 
 
 async def request_approval(
     bot, store: Store, owner_id: int, chat_id: int, title: str, kind: str, requested_by: str, first_text: str | None = None,
+    *, sleep=None,
 ) -> None:
     """DM the owner Approve/Ignore buttons, once per pending chat."""
     if not await store.claim_approval_prompt(chat_id):
         return
     await store.note_pending_chat(str(chat_id), title, requested_by)
     try:
-        await _send_prompt(bot, owner_id, chat_id, title, kind, requested_by, first_text)
+        await _send_prompt(bot, owner_id, chat_id, title, kind, requested_by, first_text, sleep=sleep)
     except (TelegramBadRequest, TelegramForbiddenError):  # definitely not delivered: allow a retry
         log.exception("the approval prompt for chat %s was rejected", chat_id)
         await store.release_approval_prompt(chat_id)
@@ -68,13 +72,15 @@ async def request_approval(
         log.exception("could not confirm delivery of the approval prompt for chat %s", chat_id)
 
 
-async def resend_pending(bot, store: Store, owner_id: int) -> None:
+async def resend_pending(bot, store: Store, owner_id: int, *, sleep=None) -> None:
     """Send the prompt again for every chat still awaiting a decision (the owner's /pending)."""
     for chat in await store.list_pending_chats():
         chat_id = int(chat["chat_id"])
         title = chat["title"] or str(chat_id)
         kind = "group" if chat_id < 0 else "chat"
         try:
-            await _send_prompt(bot, owner_id, chat_id, title, kind, chat["invited_by_handle"] or "", chat.get("first_text"))
+            await _send_prompt(
+                bot, owner_id, chat_id, title, kind, chat["invited_by_handle"] or "", chat.get("first_text"), sleep=sleep,
+            )
         except Exception:
             log.exception("could not resend the approval prompt for chat %s", chat_id)
