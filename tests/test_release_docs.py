@@ -47,7 +47,7 @@ def test_readme_links_to_every_guide():
 
 def test_changelog_has_unreleased_then_the_first_release():
     headings = [line for line in (ROOT / "CHANGELOG.md").read_text().splitlines() if line.startswith("## ")]
-    assert headings[:2] == ["## [Unreleased]", "## [0.7.0] - 2026-11-19"]
+    assert headings[:2] == ["## [Unreleased]", "## [0.8.0] - 2026-11-22"]
 
 
 def test_pi_guide_explains_cutting_a_release_from_a_tag():
