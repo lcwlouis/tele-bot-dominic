@@ -17,6 +17,17 @@ export sent with `/import` or as an attached file. An export pasted into the
 owner DM as an ordinary message, to reply to with `/import` later, is stored as
 chat history like any other DM message.
 
+Memory self-edit (`memory_self_edit = false` by default) is an optional,
+owner-DM-only path alongside the background memory pass. When enabled, Dom can
+propose edits to notes (`USER.md`, `NOTES.md`, the private and public journals,
+`MEMORY.md`, people notes and chat notes) as a unified diff with a one-line
+reason on an approval card. Nothing is written until the owner approves, and
+approval refuses if the file changed since the proposal. The tool is never
+offered outside the owner DM, screens public note edits locally so credentials
+and `private/` notes cannot be moved into `memory/`, respects each file's size
+bounds, and cannot touch `SOUL.md`, `HABITS.md`, `config.toml`, skills or
+plugins.
+
 The backup command makes an archive of the instance home and a consistent
 SQLite snapshot. Archives include credentials and private data. Keep the
 instance home and its backups outside the checkout and restrict access to them.
