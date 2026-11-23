@@ -1,6 +1,6 @@
 <script lang="ts">
   import Orbit from "$lib/components/Orbit.svelte";
-  import { destinations, gallery, workspace, type Destination } from "$lib/nav";
+  import { destinations, workspace, type Destination } from "$lib/nav";
   import { cn } from "$lib/utils";
 
   let { path, current }: { path: string; current: Destination } = $props();
@@ -52,16 +52,6 @@
           </a>
         </li>
       {/each}
-      <li>
-        <a
-          href={gallery.href}
-          class={cn(item, "h-9", path === gallery.href && active)}
-          aria-current={path === gallery.href ? "page" : undefined}
-        >
-          <gallery.icon class="size-4" aria-hidden="true" />
-          {gallery.label}
-        </a>
-      </li>
     </ul>
   </nav>
 

@@ -15,8 +15,9 @@
 <PageHeader kicker={tab ? destination.label : "Destination"} title={page.label} subtitle={page.blurb} />
 
 {#if destination.tabs}
-  <nav aria-label={`${destination.label} pages`} class="-mx-4 mb-6 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-    <ul class="inline-flex min-w-max gap-1 rounded-xl border bg-surface p-1">
+  <nav aria-label={`${destination.label} pages`} class="mb-6">
+    <!-- The pill itself scrolls on a narrow screen, so no scrollbar shows outside it. -->
+    <ul class="no-scrollbar flex w-fit max-w-full gap-1 overflow-x-auto rounded-xl border bg-surface p-1 [&>li]:shrink-0">
       {#each destination.tabs as item (item.id)}
         {@const here = item.id === tab?.id}
         <li>
@@ -42,8 +43,7 @@
     <p class="kicker">Not ported yet</p>
     <Card.Title class="text-lg">{page.label} still lives in the current dashboard</Card.Title>
     <Card.Description>
-      This baseline shows where {page.label} sits in the new navigation. The page itself moves here once the owner
-      signs off the baseline; until then the current page has everything.
+      {page.label} moves to the new dashboard in a later update. Until then the current page has everything.
     </Card.Description>
   </Card.Header>
   <Card.Footer>
