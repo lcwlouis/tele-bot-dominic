@@ -100,7 +100,7 @@ async def test_an_answer_outside_the_bubble_range_is_not_trusted():
 
 
 async def test_words_stay_exactly_as_written_only_edge_whitespace_goes():
-    text = "  \n  Café   ouvert… « oui »!  Ça marche ?\n\n\tTrès bien.  (ok)\n  "
+    text = "  \n  Café   ouvert… « oui »!  Ça marche ?\n\n  Très bien.  (ok)\n  "
     saved = await rescue(FakeJev(count=2), text)
     assert texts(saved) == ["Café   ouvert… « oui »!  Ça marche ?", "Très bien.  (ok)"]
     assert [w for t in texts(saved) for w in t.split()] == text.split()

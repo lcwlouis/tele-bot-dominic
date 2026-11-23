@@ -17,7 +17,7 @@ from dom.desktop.tools import untrusted
 from dom.t3.auth import TOKEN_FILE, command, connect_home
 from dom.t3.client import T3Client, T3Uncertain, T3Unavailable, read_token
 from dom.t3.service import BASE_DIR
-from dom.telegram.executor import FloodBudget, retry_telegram
+from dom.telegram.executor import FloodBudget, send_text
 from dom.tools import Tool
 
 REACHABLE = "reachable"
@@ -101,10 +101,7 @@ class Bridge:
 
     async def notify(self, message):
         await self.app.store.record_owner_event(message)
-        await retry_telegram(
-            lambda: self.app.bot.send_message(self.app.owner_id, message),
-            sleep=self.app.sleep,
-        )
+        await send_text(self.app.bot, self.app.owner_id, message, sleep=self.app.sleep)
 
     async def machines(self, **audit):
         rows = await self.execute("environment list", lambda _: self.gateway().environments(), **audit)
@@ -201,13 +198,9 @@ class Bridge:
             InlineKeyboardButton(text="Cancel", callback_data=f"t3cancel:{token}"),
         ]])
         try:
-            await retry_telegram(
-                lambda: self.app.bot.send_message(
-                    self.app.owner_id, body,
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                    reply_markup=markup,
-                ),
-                sleep=self.app.sleep,
+            await send_text(
+                self.app.bot, self.app.owner_id, body, sleep=self.app.sleep, reply_markup=markup,
+                link_preview_options=LinkPreviewOptions(is_disabled=True), literal=True,
                 budget=FloodBudget(),  # this runs inside a model turn: never hold the chat for a long flood wait
             )
         except Exception:
@@ -348,9 +341,8 @@ class Bridge:
         if await self.app.store.kv_get(key) == str(expires):
             return
         message = "Your T3 sign-in has expired." if expires <= time.time() else "Your T3 sign-in expires within three days."
-        await retry_telegram(
-            lambda: self.app.bot.send_message(self.app.owner_id, message, reply_markup=reconnect_button()),
-            sleep=self.app.sleep,
+        await send_text(
+            self.app.bot, self.app.owner_id, message, reply_markup=reconnect_button(), sleep=self.app.sleep,
         )
         await self.app.store.kv_set(key, str(expires))
 
@@ -366,9 +358,8 @@ class Bridge:
             lines.append(str(exc))
         rows = await self.app.store.t3_history(self.app.owner_id)
         summary = "\n".join(lines)[:3000]
-        await retry_telegram(
-            lambda: self.app.bot.send_message(self.app.owner_id, summary, reply_markup=reconnect_button()),
-            sleep=self.app.sleep,
+        await send_text(
+            self.app.bot, self.app.owner_id, summary, reply_markup=reconnect_button(), sleep=self.app.sleep,
         )
         if rows:
             table = ["UTC | Tool | Machine | Target | Outcome"]
@@ -376,10 +367,7 @@ class Bridge:
                 values = (row["at"][:16], row["tool"][:30], row["machine"][:35], row["target"][:45], row["outcome"])
                 table.append(" | ".join(display(value) for value in values))
             table_text = "\n".join(table)
-            await retry_telegram(
-                lambda: self.app.bot.send_message(self.app.owner_id, table_text),
-                sleep=self.app.sleep,
-            )
+            await send_text(self.app.bot, self.app.owner_id, table_text, sleep=self.app.sleep, literal=True)
 
 
 def format_thread(result, note):

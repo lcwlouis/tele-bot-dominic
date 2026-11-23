@@ -41,7 +41,7 @@ from dom.desktop.files import safe_filename
 from dom.desktop.sandbox import SELF_WORK, Refused
 from dom.desktop.worker import GuardRefused, PlanBreach, Progress
 from dom.home import PrivateAccessError
-from dom.telegram.executor import retry_telegram
+from dom.telegram.executor import send_text
 from dom.traits import decode
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
@@ -258,12 +258,9 @@ class SelfWork:
         buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"own:cancel:{row['id']}")] for row in rows]
         markup = InlineKeyboardMarkup(inline_keyboard=buttons)
         try:
-            await retry_telegram(
-                lambda: app.bot.send_message(
-                    owner, text, reply_markup=markup,
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                ),
-                sleep=app.sleep,
+            await send_text(
+                app.bot, owner, text, reply_markup=markup, sleep=app.sleep,
+                link_preview_options=LinkPreviewOptions(is_disabled=True), literal=True,
             )
         except Exception as exc:
             log.warning("could not announce self-directed tasks; they will not run (%s)", type(exc).__name__)
@@ -475,9 +472,9 @@ class SelfWork:
         app = self.app
         body = text[:1000]
         try:
-            await retry_telegram(
-                lambda: app.bot.send_message(app.owner_id, body, link_preview_options=LinkPreviewOptions(is_disabled=True)),
-                sleep=app.sleep,
+            await send_text(
+                app.bot, app.owner_id, body, link_preview_options=LinkPreviewOptions(is_disabled=True),
+                sleep=app.sleep, literal=True,
             )
         except Exception as exc:
             log.warning("could not report self-directed task %s (%s)", row["id"], type(exc).__name__)

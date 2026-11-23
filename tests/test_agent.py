@@ -275,13 +275,14 @@ def test_a_bubble_written_as_a_bare_string_is_read_as_its_text():
     assert parse_actions(json.dumps({"bubbles": [""]})) is None
 
 
-def test_extra_bubbles_that_would_make_one_too_long_are_split_to_fit_telegram():
-    from dom.actions import TELEGRAM_TEXT_LIMIT, utf16_len
+def test_extra_bubbles_fold_before_telegram_formats_the_merged_text():
+    from dom.telegram.format import format_text
 
     actions = parse_actions(json.dumps({"bubbles": [{"text": "x" * 1500} for _ in range(9)]}))
     assert actions is not None
-    assert len(actions.bubbles) == 7
-    assert all(utf16_len(b.text) <= TELEGRAM_TEXT_LIMIT for b in actions.bubbles)
+    assert len(actions.bubbles) == 6
+    assert actions.bubbles[-1].text == "\n\n".join(["x" * 1500] * 4)
+    assert len(format_text(actions.bubbles[-1].text)) == 2
 
 
 def test_the_reply_format_tells_the_model_the_bubble_limit():
@@ -308,12 +309,8 @@ def test_actions_validation_limits():
         Actions(bubbles=[Bubble(text="a")] * 7)
     with pytest.raises(ValidationError):
         Bubble(text="")
-    with pytest.raises(ValidationError):
-        Bubble(text="x" * 4097)
-    with pytest.raises(ValidationError):
-        Bubble(text="😀" * 2049)
-    Bubble(text="x" * 4096)
-    Bubble(text="😀" * 2048)
+    assert Bubble(text="x" * 4097).text == "x" * 4097
+    assert Bubble(text="😀" * 2049).text == "😀" * 2049
     for bad in (0.5, 31):
         with pytest.raises(ValidationError):
             Bubble(text="a", delete_after=bad)

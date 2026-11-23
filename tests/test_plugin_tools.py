@@ -119,7 +119,7 @@ async def test_failed_trial_and_storage_are_visible_without_blocking_approval(ma
     assert len(preview) < 180 and preview.endswith('…"')
     assert card[2].splitlines().count("Network off") == 1
     assert "https://example.test/path" not in card[2]
-    assert card[3]["link_preview_options"].is_disabled and card[3]["parse_mode"] is None
+    assert card[3]["link_preview_options"].is_disabled and "parse_mode" not in card[3]
     async with browser(app) as client:
         for path in ("/plugins", route):
             page = (await client.get(path)).text

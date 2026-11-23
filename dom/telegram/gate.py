@@ -10,7 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom.models import IncomingMessage
 from dom.store import Store
-from dom.telegram.executor import retry_telegram
+from dom.telegram.executor import send_text
 
 log = logging.getLogger("dom.gate")
 
@@ -52,7 +52,7 @@ async def _send_prompt(
         text += f'\nFirst message: "{first}"'
     text += "\nApprove?"
     kw = {"sleep": sleep} if sleep is not None else {}
-    await retry_telegram(lambda: bot.send_message(owner_id, text, reply_markup=keyboard), **kw)
+    await send_text(bot, owner_id, text, reply_markup=keyboard, literal=True, **kw)
 
 
 async def request_approval(

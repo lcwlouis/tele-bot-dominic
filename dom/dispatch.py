@@ -956,10 +956,9 @@ class Dispatcher:
     async def _retry_not_run(self, chat_id: int) -> None:
         """The card already said "Retry requested": say it did not run, rather than nothing."""
         try:
-            await executor.retry_telegram(
-                lambda: self.app.bot.send_message(chat_id, "The retry did not run: model calls are paused right now.",
-                                                  disable_notification=True),
-                sleep=self.app.sleep,
+            await executor.send_text(
+                self.app.bot, chat_id, "The retry did not run: model calls are paused right now.",
+                disable_notification=True, sleep=self.app.sleep,
             )
         except Exception as exc:
             log.warning("could not tell the owner the retry did not run (%s)", type(exc).__name__)
@@ -1100,9 +1099,9 @@ class Dispatcher:
             why = f"my turns kept failing ({type(exc).__name__})"
         try:
             if chat_id == app.owner_id:
-                await executor.retry_telegram(
-                    lambda: app.bot.send_message(chat_id, f"I couldn't answer your last messages: {why}. Try again in a bit?"),
-                    sleep=app.sleep,
+                await executor.send_text(
+                    app.bot, chat_id, f"I couldn't answer your last messages: {why}. Try again in a bit?",
+                    sleep=app.sleep, literal=True,
                 )
             elif app.owner_id is not None:
                 title = (await app.store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
@@ -1810,16 +1809,13 @@ class Dispatcher:
             link = f"{base}/desktop" + ("" if container == DEFAULT else "?" + urlencode({"container": container}))
             buttons.append(InlineKeyboardButton(text="Open Desktop", url=link))
         buttons.append(InlineKeyboardButton(text="Done", callback_data=f"desktop:done:{task_id}:{steps}"))
-        sent = await executor.retry_telegram(
-            lambda: app.bot.send_message(
-                chat_id,
-                f"Dom needs you to log in{'' if container == DEFAULT else f' on the {container} desktop'} "
-                f"(browser was on {host or 'an unknown site'} at {observed:%H:%M}): {reason}\nLogins you make here are kept for later tasks."
-                + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
-            ),
-            sleep=app.sleep,
+        sent = await executor.send_text(
+            app.bot, chat_id,
+            f"Dom needs you to log in{'' if container == DEFAULT else f' on the {container} desktop'} "
+            f"(browser was on {host or 'an unknown site'} at {observed:%H:%M}): {reason}\nLogins you make here are kept for later tasks."
+            + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
+            link_preview_options=LinkPreviewOptions(is_disabled=True), literal=True, sleep=app.sleep,
         )
         if isinstance(message_id := getattr(sent, "message_id", None), int):
             await app.store.kv_set(f"{HANDOFF_CARD}{task_id}", str(message_id))
@@ -1906,12 +1902,9 @@ class Dispatcher:
                 actions = None
             if actions is None or actions.no_response or not actions.bubbles:
                 # Raw task text goes to the owner only; it is not kept in the chat history the model reads.
-                await executor.retry_telegram(
-                    lambda: app.bot.send_message(
-                        chat_id, f"Desktop task #{task_id}{where} {status}. {result}"[:3000],
-                        link_preview_options=LinkPreviewOptions(is_disabled=True),
-                    ),
-                    sleep=app.sleep,
+                await executor.send_text(
+                    app.bot, chat_id, f"Desktop task #{task_id}{where} {status}. {result}"[:3000],
+                    link_preview_options=LinkPreviewOptions(is_disabled=True), sleep=app.sleep, literal=True,
                 )
                 await app.store.record_owner_event(f"Desktop task #{task_id}{where} result sent as plain text")
             else:
@@ -2146,9 +2139,8 @@ class Dispatcher:
     async def _send_coding_notice(self, chat_id: int, notes: list[str]) -> None:
         try:
             note = "; ".join(dict.fromkeys(notes))
-            await executor.retry_telegram(
-                lambda: self.app.bot.send_message(chat_id, f"🔎 Checked your coding work: {note}"[:1800]),
-                sleep=self.app.sleep,
+            await executor.send_text(
+                self.app.bot, chat_id, f"🔎 Checked your coding work: {note}"[:1800], sleep=self.app.sleep,
                 budget=executor.FloodBudget(remaining=CODING_NOTICE_FLOOD_BUDGET),
             )
         except Exception:

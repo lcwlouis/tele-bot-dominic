@@ -19,7 +19,7 @@ from aiogram.exceptions import (
 from aiogram.methods import EditMessageText, SendChatAction, SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, User
 
-from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, split_text, utf16_len
+from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, utf16_len
 from dom.dispatch import (
     FRIEND_NO_ANSWER_LINE,
     GROUP_NO_ANSWER_COOLDOWN,
@@ -32,6 +32,7 @@ from dom.models import StoredMessage
 from dom.presence import Presence, parse_habits
 from dom.reminders import Reminders
 from dom.telegram import executor, handlers
+from dom.telegram.format import format_text
 from test_dispatch import FakeJev
 from test_gifs import StubGifs, animation_bot
 from test_owner_events import events
@@ -246,35 +247,6 @@ async def test_edit_message_retries_on_flood_control(make_app):
 # ---- 2. Over-long bubble splitting in UTF-16 code units ---------------------------------------
 
 
-def test_split_text_prefers_paragraph_then_sentence_then_word_and_counts_utf16():
-    # Paragraph boundary preferred
-    p1, p2, p3 = "a" * 2000, "b" * 2000, "c" * 2000
-    parts = split_text(f"{p1}\n\n{p2}\n\n{p3}", limit=TELEGRAM_TEXT_LIMIT)
-    assert parts == [f"{p1}\n\n{p2}", p3]
-    assert all(utf16_len(p) <= TELEGRAM_TEXT_LIMIT for p in parts)
-
-    # Sentence boundary when no paragraph break fits
-    s1 = ("Hello world. " * 200).strip()
-    s2 = ("Second half! " * 200).strip()
-    parts = split_text(f"{s1} {s2}", limit=TELEGRAM_TEXT_LIMIT)
-    assert len(parts) == 2
-    assert parts[0].endswith((".", "!"))
-    assert all(utf16_len(p) <= TELEGRAM_TEXT_LIMIT for p in parts)
-
-    # Word boundary when a single sentence has no punctuation
-    words = " ".join(["word"] * 1000)
-    parts = split_text(words, limit=TELEGRAM_TEXT_LIMIT)
-    assert len(parts) >= 2
-    assert all(utf16_len(p) <= TELEGRAM_TEXT_LIMIT for p in parts)
-    assert " ".join(parts) == words
-
-    # Astral emoji count as 2 UTF-16 code units each
-    emojis = "😀" * 2500  # 2500 Python chars, 5000 UTF-16 code units
-    parts = split_text(emojis, limit=TELEGRAM_TEXT_LIMIT)
-    assert [utf16_len(p) for p in parts] == [4096, 904]
-    assert "".join(parts) == emojis
-
-
 def test_hard_split_keeps_zwj_emoji_and_grapheme_clusters_whole():
     family = "👨‍👩‍👧‍👦"  # 11 UTF-16 code units with ZWJs
     technologist = "👨‍💻"  # 5 UTF-16 code units with ZWJ
@@ -288,14 +260,14 @@ def test_hard_split_keeps_zwj_emoji_and_grapheme_clusters_whole():
         for offset in range(1, cluster_units):
             limit = 20 + offset
             text = ("x" * 20) + cluster + ("y" * 20)
-            parts = split_text(text, limit=limit)
+            parts = [part for part, _ in format_text(text, limit=limit)]
             assert "".join(parts) == text
             assert all(utf16_len(p) <= limit for p in parts)
             assert any(cluster in p for p in parts), f"cluster {cluster!r} was torn at offset {offset}: {parts!r}"
 
     # Repeated ZWJ emoji stream at Telegram limit never tears a sequence
     stream = family * 450  # 4950 UTF-16 code units
-    parts = split_text(stream, limit=TELEGRAM_TEXT_LIMIT)
+    parts = [part for part, _ in format_text(stream)]
     assert len(parts) == 2
     assert "".join(parts) == stream
     assert all(utf16_len(p) <= TELEGRAM_TEXT_LIMIT for p in parts)
@@ -715,14 +687,16 @@ async def test_failed_gif_only_sends_text_standin(make_app):
         app.bot, app.store, GROUP, 1, Actions(gif="happy dance"), gifs=StubGifs(), sleep=no_sleep,
     )
     assert len(sent) == 1 and sent.media_fallback is True
-    assert [c[2] for c in app.bot.of("send", GROUP)] == ["*happy dance*"]
+    call, = app.bot.of("send", GROUP)
+    assert call[2] == "happy dance" and call[3]["entities"][0].type == "italic"
 
     app.bot.calls.clear()
     sent2 = await executor.perform(
         app.bot, app.store, GROUP, 2, Actions(gif="shrug"), gifs=StubGifs(url=None), sleep=no_sleep,
     )
     assert len(sent2) == 1 and sent2.media_fallback is True
-    assert [c[2] for c in app.bot.of("send", GROUP)] == ["*shrug*"]
+    call, = app.bot.of("send", GROUP)
+    assert call[2] == "shrug" and call[3]["entities"][0].type == "italic"
 
 
 async def test_failed_sticker_or_gif_with_bubble_sends_bubble_without_extra_standin(make_app):
@@ -1204,7 +1178,8 @@ async def test_supergroup_upgrade_mid_override_wake_delivers_reply_in_new_chat(m
 @pytest.mark.parametrize("cancel_mid_send", [False, True])
 async def test_critical_reminder_does_not_resend_chunk_one_after_restart_mid_send(make_app, cancel_mid_send):
     app = make_app()
-    text = "".join(chr(ord("a") + i) * 2000 for i in range(4)) + "z" * 1000
+    part = "x" * 2750
+    text = f"Details follow.\n\n```text\n{(part + chr(10)) * 3}```"
     await app.dispatch.reminders.create("2026-01-01T12:01", text, "critical", "")
     real_send = app.bot.send_message
     attempts: list[str] = []
@@ -1237,10 +1212,10 @@ async def test_critical_reminder_does_not_resend_chunk_one_after_restart_mid_sen
     app.dispatch.now.advance(minutes=1)
     await app.dispatch.tick()
 
-    sent = [c[2] for c in app.bot.of("send", OWNER)]
-    assert len(sent) == 5
-    assert "".join(sent) == f"hey\n⏰ {text}"
-    assert len(attempts) == 6  # chunk 1 once, chunk 2 failed/cancelled once + succeeded once, chunks 3..5 once each
+    sent = app.bot.of("send", OWNER)
+    assert [call[2] for call in sent] == ["hey\n⏰ Details follow.", part, part, part]
+    assert all(call[3]["entities"][0].type == "pre" and call[3]["entities"][0].language == "text" for call in sent[1:])
+    assert len(attempts) == 5  # chunk 1 once, chunk 2 failed/cancelled then succeeded, chunks 3 and 4 once each
     assert len(app.script.requests) == 1  # never re-styled after restart
     assert await app.dispatch.reminders.active() == []
 

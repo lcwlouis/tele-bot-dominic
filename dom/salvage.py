@@ -10,9 +10,10 @@ from xml.sax.saxutils import escape
 
 from pydantic import ValidationError
 
-from dom.actions import MAX_BUBBLE_CHARS, MAX_BUBBLES, Actions, Bubble
+from dom.actions import MAX_BUBBLE_CHARS, MAX_BUBBLES, Actions, Bubble, utf16_len
 from dom.jev import JevClient, JevUnavailable
 from dom.models import Scope
+from dom.telegram.format import format_text
 
 # Wordings and bars tuned against the live Jev (2026-11-22): good replies scored 1.00 on `ready` and `meta`, leaked
 # reasoning and persona talk scored "no"/"yes" at 0.88-1.00. A plain group reply can score its "no" on `private` as
@@ -161,9 +162,15 @@ async def rescue(jev: JevClient, state: str, text: object, scope: Scope, names: 
         return None
     paragraphs, every = _points(text)
     count = int(count)
-    breaks = _even(text, paragraphs if len(paragraphs) >= count - 1 else every, count)
+    if format_text(text, limit=max(2, utf16_len(text))) != [(text, [])]:
+        parts = [text]  # Leave Markdown intact for the Telegram formatter.
+    else:
+        breaks = _even(text, paragraphs if len(paragraphs) >= count - 1 else every, count)
+        parts = _bubbles(text, breaks)
+        if any(utf16_len(part) > MAX_BUBBLE_CHARS for part in parts):
+            return None
     try:
-        actions = Actions(bubbles=[Bubble(text=part) for part in _bubbles(text, breaks)])
-    except ValidationError:  # a piece longer than one bubble holds
+        actions = Actions(bubbles=[Bubble(text=part) for part in parts])
+    except ValidationError:
         return None
     return Salvaged(actions, min(sure))

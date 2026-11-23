@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
-    CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntity,
+    CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Message,
 )
 
 from dom.claim import try_claim
@@ -44,7 +44,7 @@ from dom.search import SearchClient, SearchRouter, routed_search_client
 from dom.selfwork import SelfWork
 from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
-from dom.telegram.executor import retry_telegram
+from dom.telegram.executor import edit_text, retry_telegram, send_text
 
 CHAT_TYPES = ("private", "group", "supergroup")
 
@@ -192,7 +192,7 @@ def _claim_code(text: str, username: str) -> str | None:
 
 
 async def _send(app: App, chat_id: int, text: str, **kw: Any) -> Any:
-    return await retry_telegram(lambda: app.bot.send_message(chat_id, text, **kw), sleep=app.sleep)
+    return await send_text(app.bot, chat_id, text, sleep=app.sleep, **kw)
 
 
 async def _handle_claim(app: App, msg: IncomingMessage, code: str) -> None:
@@ -334,9 +334,7 @@ async def handle_message(app: App, message: Message) -> None:
             await owner.record_event(app, event)
             await _send(app, msg.chat_id, response)
             if code:  # its own message as one code block: one tap copies it with its line breaks
-                await _send(app, msg.chat_id, code, entities=[
-                    MessageEntity(type="pre", offset=0, length=len(code.encode("utf-16-le")) // 2),
-                ])
+                await _send(app, msg.chat_id, code, pre=True)
         return
     if owner_dm:
         who = _person(msg.sender_name)
@@ -531,7 +529,7 @@ async def _replace_with_prompt(app: App, query: CallbackQuery, text: str, markup
     if query.message is None:
         return
     chat_id = query.message.chat.id
-    await retry_telegram(lambda: app.bot.send_message(chat_id, text, reply_markup=markup), sleep=app.sleep)
+    await _send(app, chat_id, text, reply_markup=markup)
     await owner.delete_message(app.bot, chat_id, query.message.message_id, sleep=app.sleep)
 
 
@@ -974,11 +972,9 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
     chat, label = await owner.decide_pending_chat(app, chat_id, action, _person(query.from_user.full_name))
     await _toast(app, query, label)  # a tap from before a restart is too old to answer, but the card still updates
     if chat is not None and query.message is not None:
-        await retry_telegram(
-            lambda: app.bot.edit_message_text(
-                f"{label}: {chat['title'] or chat_id}", chat_id=query.message.chat.id, message_id=query.message.message_id,
-            ),
-            sleep=app.sleep,
+        await edit_text(
+            app.bot, query.message.chat.id, query.message.message_id, f"{label}: {chat['title'] or chat_id}",
+            sleep=app.sleep, literal=True,
         )
 
 
@@ -990,10 +986,7 @@ async def _note_removed(app: App, update: ChatMemberUpdated, owner_id: int) -> N
     await app.store.set_chat_auth_status(chat["chat_id"], "left")
     title = update.chat.title or chat["title"] or chat["chat_id"]
     own_choice = update.new_chat_member.status == "left" and update.from_user.id == app.bot_id
-    await retry_telegram(
-        lambda: app.bot.send_message(owner_id, f"Dom left {title}" if own_choice else f"Dom was removed from {title}"),
-        sleep=app.sleep,
-    )
+    await _send(app, owner_id, f"Dom left {title}" if own_choice else f"Dom was removed from {title}", literal=True)
 
 
 async def handle_my_chat_member(app: App, update: ChatMemberUpdated) -> None:

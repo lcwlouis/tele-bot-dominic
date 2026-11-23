@@ -39,7 +39,7 @@ from dom.desktop import files as desktop_files
 from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE, validate_name as validate_plugin_name
-from dom.telegram.executor import retry_telegram
+from dom.telegram.executor import retry_telegram, send_text
 from dom.traits import AUTO, GLOBAL_PRESET_KEY, ensure_pick, load_preset, vibe
 
 if TYPE_CHECKING:
@@ -112,7 +112,7 @@ async def send_view(bot, chat_id: int, view: View, *, sleep=None) -> None:
         )
     except TelegramBadRequest as error:
         log.warning("rich message refused, sending plain text instead: %s", error)
-        await retry_telegram(lambda: bot.send_message(chat_id, view.plain, reply_markup=view.markup), **kw)
+        await send_text(bot, chat_id, view.plain, reply_markup=view.markup, literal=True, **kw)
 
 
 async def delete_message(bot, chat_id: int, message_id: int, *, sleep=None) -> None:
@@ -343,7 +343,7 @@ def _container_tag(task: dict) -> str:
 
 
 async def _send(app: App, text: str, **kw) -> None:
-    await retry_telegram(lambda: app.bot.send_message(app.owner_id, text, **kw), sleep=app.sleep)
+    await send_text(app.bot, app.owner_id, text, sleep=app.sleep, **kw)
 
 
 class _StaleSkill(Exception):

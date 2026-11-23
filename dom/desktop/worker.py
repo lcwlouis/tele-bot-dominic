@@ -24,7 +24,7 @@ from dom.desktop.files import (
     OUTBOX_DIR, bind_inbox, discard_bound, download_results, drop_stale, inbox_dir, safe_filename, upload_inbox,
 )
 from dom.skills import Skill, skills_list, view_text
-from dom.telegram.executor import retry_telegram
+from dom.telegram.executor import send_text
 
 if TYPE_CHECKING:
     from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
@@ -145,7 +145,7 @@ class DesktopWorker:
 
     async def _alert_owner(self, text: str) -> None:
         if (owner_id := self.app.owner_id) is not None:
-            await retry_telegram(lambda: self.app.bot.send_message(owner_id, text), sleep=self.app.sleep)
+            await send_text(self.app.bot, owner_id, text, sleep=self.app.sleep, literal=True)
 
     def available(self) -> bool:
         return self.sandbox.status() in ("stopped", "starting", "ready")

@@ -21,12 +21,15 @@ from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import MessageEntity
+from pydantic import TypeAdapter, ValidationError
 
 from dom.agent import parse_actions
 from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.models import StoredMessage
 from dom.prompt import build_messages
-from dom.telegram.executor import FloodBudget, retry_telegram
+from dom.telegram.executor import FloodBudget, send_chunk, send_text
+from dom.telegram.format import TextChunk, format_delivery
 from dom.usage import check_model_allowed, model_request
 
 if TYPE_CHECKING:
@@ -111,12 +114,16 @@ class _Delivery:
     message ids of the chunks already sent (never resent), and the failed attempts / persisted critical retry state."""
 
     due_at: str = ""
-    chunks: list[str] = field(default_factory=list)
+    chunks: list[TextChunk] = field(default_factory=list)
+    history: list[str] = field(default_factory=list)
     sent: list[int] = field(default_factory=list)
     failures: int = 0
     retry_at: datetime | None = None
     owner_notified: bool = False
     undeliverable: bool = False
+
+
+_SAVED_ENTITIES = TypeAdapter(list[list[MessageEntity]])
 
 
 class Reminders:
@@ -149,15 +156,26 @@ class Reminders:
             except ValueError:
                 retry_at = None
         raw_chunks = data.get("chunks")
-        chunks = [c for c in raw_chunks if isinstance(c, str)] if isinstance(raw_chunks, list) else []
+        texts = [c for c in raw_chunks if isinstance(c, str)] if isinstance(raw_chunks, list) else []
+        try:
+            entities = _SAVED_ENTITIES.validate_python(data.get("entities"))
+        except ValidationError:
+            entities = []
+        # Older state stored literal chunks. Reuse the boundaries so sent indices keep their meaning.
+        chunks = list(zip(texts, entities)) if len(entities) == len(texts) else [(text, []) for text in texts]
+        raw_history = data.get("history")
+        history = raw_history if isinstance(raw_history, list) and len(raw_history) == len(texts) and all(
+            isinstance(text, str) for text in raw_history
+        ) else texts
         raw_sent = data.get("sent")
         sent = [m for m in raw_sent if isinstance(m, int)] if isinstance(raw_sent, list) else []
         if not sent or len(sent) > len(chunks):
             # Only restore saved chunks once at least one chunk was sent; otherwise a restart re-evaluates `(late)`.
-            chunks, sent = [], []
+            chunks, history, sent = [], [], []
         return _Delivery(
             due_at=due_at,
             chunks=chunks,
+            history=history,
             sent=sent,
             failures=int(data.get("failures") or 0),
             retry_at=retry_at,
@@ -172,7 +190,11 @@ class Reminders:
             "retry_at": delivery.retry_at.isoformat() if delivery.retry_at else None,
             "owner_notified": delivery.owner_notified,
             "undeliverable": delivery.undeliverable,
-            "chunks": list(delivery.chunks) if delivery.sent else [],
+            "chunks": [text for text, _ in delivery.chunks] if delivery.sent else [],
+            "entities": _SAVED_ENTITIES.dump_python(
+                [entities for _, entities in delivery.chunks], mode="json", exclude_none=True,
+            ) if delivery.sent else [],
+            "history": delivery.history if delivery.sent else [],
             "sent": list(delivery.sent),
         }
 
@@ -420,17 +442,15 @@ class Reminders:
                 text = _carry(styled, row["text"])
                 if late:
                     text += " (late)"
-                delivery.chunks = [text] if len(text.encode("utf-16-le")) <= 8192 else [
-                    text[start:start + 2000] for start in range(0, len(text), 2000)
-                ]
+                for chunk, original in format_delivery(text):
+                    delivery.chunks.append(chunk)
+                    delivery.history.append(original)
             budget = FloodBudget()
             for chunk in delivery.chunks[len(delivery.sent):]:
                 if owner != app.owner_id or not await app.store.reminder_is_active(reminder_id):
                     self._deliveries.pop(reminder_id, None)
                     return
-                sent = await retry_telegram(
-                    lambda c=chunk: app.bot.send_message(owner, c), sleep=app.sleep, budget=budget,
-                )
+                sent = await send_chunk(app.bot, owner, chunk, sleep=app.sleep, budget=budget)
                 delivery.sent.append(sent.message_id)
                 # A reminder cancelled or deleted while this chunk was in flight must not get its retry state back.
                 if row["importance"] == "critical" and await app.store.reminder_is_active(reminder_id):
@@ -452,7 +472,7 @@ class Reminders:
             self._in_flight.discard(reminder_id)
 
         try:
-            for message_id, chunk in zip(delivery.sent, delivery.chunks):
+            for message_id, chunk in zip(delivery.sent, delivery.history):
                 await app.store.record_new_message(StoredMessage(
                     chat_id=str(owner), msg_id=message_id, role="assistant", is_bot=True,
                     visibility_scope=app.store.visibility_for(owner), text=chunk, created_at=now.isoformat(),
@@ -506,11 +526,7 @@ class Reminders:
                 except Exception:
                     log.exception("could not record owner event for critical reminder %s", reminder_id)
                 try:
-                    await retry_telegram(
-                        lambda: self.app.bot.send_message(owner, notice),
-                        sleep=self.app.sleep,
-                        budget=FloodBudget(),
-                    )
+                    await send_text(self.app.bot, owner, notice, sleep=self.app.sleep, budget=FloodBudget(), literal=True)
                 except Exception:
                     log.exception("could not DM owner about critical reminder %s", reminder_id)
             return

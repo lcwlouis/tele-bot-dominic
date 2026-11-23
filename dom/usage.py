@@ -221,11 +221,11 @@ class Usage(UsageRecorder):
             )
             async def notify() -> None:
                 try:
-                    from dom.telegram.executor import FloodBudget, retry_telegram
+                    from dom.telegram.executor import FloodBudget, send_text
 
                     await self.store.record_owner_event(text)
                     kw = {"sleep": sleep} if sleep is not None else {}
-                    await retry_telegram(lambda: bot.send_message(owner_id, text), budget=FloodBudget(), **kw)
+                    await send_text(bot, owner_id, text, budget=FloodBudget(), **kw)
                 except Exception:
                     log.exception("could not send or record the owner's daily spend cap notice")
 
