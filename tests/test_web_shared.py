@@ -247,3 +247,23 @@ async def test_pending_chat_approvals_share_the_owner_decision_function(make_app
     event_texts = [m.text for m in events if m.role == "event"]
     assert any("approved Book Club" in text for text in event_texts)
     assert any("ignored DM with Fran" in text for text in event_texts)
+
+
+async def test_an_oversized_upload_stops_being_read_at_the_limit():
+    import pytest
+    from fastapi import HTTPException
+
+    from dom.web.shared import _bounded_stream
+
+    read = []
+
+    class Request:
+        async def stream(self):
+            for chunk in (b"a" * 6, b"b" * 6, b"c" * 6):
+                read.append(chunk)
+                yield chunk
+
+    with pytest.raises(HTTPException) as refused:
+        async for _ in _bounded_stream(Request(), 10):
+            pass
+    assert refused.value.status_code == 413 and len(read) == 2  # the third chunk is never read
