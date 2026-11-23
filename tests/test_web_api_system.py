@@ -52,7 +52,7 @@ async def test_waiting_lists_every_kind_with_only_what_the_old_page_showed(make_
     await app.store.create_proposal(
         "cross_chat", "Tell the crew", {"text": "Hi crew", "reason": "Owner asked", "leak_score": None}, "chat", app.dispatch.now().isoformat(),
     )
-    await app.proposals.create("lan_address", "Printer moved", {"old": "10.0.0.5", "new": "10.0.0.9", "name": "printer"}, "chat", notify=False)
+    await app.proposals.create("lan_address", "Printer moved", {"old": "192.0.2.5", "new": "192.0.2.9", "name": "printer"}, "chat", notify=False)
     await app.proposals.create("memory_fact", "Likes tea", {"file": "USER.md", "text": "Likes tea"}, "import:chatgpt", notify=False)
     async with browser(app) as client:
         data = (await client.get("/api/waiting")).json()
@@ -61,7 +61,7 @@ async def test_waiting_lists_every_kind_with_only_what_the_old_page_showed(make_
         by_kind = {card["kind"] if card["type"] == "proposal" else "import": card for card in data["cards"]}
         assert by_kind["soul_edit"]["diff"] == ["- One old line", "+ <b>A new line</b>"]  # data, never markup
         assert by_kind["cross_chat"]["leak_score"] is None and by_kind["cross_chat"]["text"] == "Hi crew"
-        assert by_kind["lan_address"]["old"] == "10.0.0.5" and by_kind["lan_address"]["address_name"] == "printer"
+        assert by_kind["lan_address"]["old"] == "192.0.2.5" and by_kind["lan_address"]["address_name"] == "printer"
         assert by_kind["import"]["facts"][0]["text"] == "Likes tea" and by_kind["import"]["service"] == "ChatGPT"
         assert "body" not in by_kind["soul_edit"] and "body_json" not in by_kind["soul_edit"]
         only = (await client.get("/api/waiting", params={"kind": "soul_edit"})).json()
@@ -72,7 +72,7 @@ async def test_deciding_a_proposal_writes_through_and_keeps_the_filter(make_app,
     app = make_app()
     app.home._write_regular("SOUL.md", "One old line")
     first = await app.proposals.create("soul_edit", "A change", {"old": "One old line", "new": "New line"}, "reflection")
-    await app.proposals.create("lan_address", "Printer", {"old": "10.0.0.1", "new": "10.0.0.2"}, "chat", notify=False)
+    await app.proposals.create("lan_address", "Printer", {"old": "192.0.2.1", "new": "192.0.2.2"}, "chat", notify=False)
     async with browser(app) as client:
         for bad in ({"id": 0, "decision": "approve"}, {"id": 2**63, "decision": "approve"}, {"id": 1, "decision": "maybe"}, {"id": 1, "decision": "approve", "x": 1}):
             assert (await client.post("/api/waiting/decide", headers=JSON, json=bad)).status_code == 422
