@@ -101,6 +101,36 @@ Cloudflare. Keep local bearer-token testing on loopback.
   to the owner there. Where Telegram refuses that (Dom is not a group admin), it
   goes to the owner's DM instead, and the group's history records only that the
   owner was answered privately, never the answer.
+- **Escalation model** (`[models.escalation]`, or the drafting providers when it
+  is unset) receives the whole owner-DM task prompt, owner notes included, only
+  after the owner taps Switch or Retry on its card. It never runs in other chats. OpenRouter calls request
+  `provider.zdr`. To estimate the cost, Dom fetches OpenRouter's public model
+  price list (`openrouter.ai/api/v1/models`), which carries no chat data.
+
+## Between chats
+
+These flows stay on the Dom host and Telegram. No extra provider is involved
+beyond the models listed above.
+
+- **Owner alerts.** A group message that mentions the owner, or replies to one
+  of the owner's own messages, can send the owner a short alert in the owner DM.
+  The alert names the sender and the group and links the message; it does
+  not quote it. Alerts are rate-limited.
+- **Notes to the owner.** In a group or a friend's DM, Dom can send the owner a
+  note in the owner DM. Notes are rate-limited and never come from the owner's
+  own messages.
+- **Messages to other chats.** Text Dom drafts in the owner DM for another chat
+  is shown to the owner on a card. Nothing is sent until the owner approves that
+  exact text, and the card expires after two hours. For a group, Jev's leak
+  check scores the text before the card is shown, against the owner's private
+  terms minus the names of that group's participants. A card for a friend's DM
+  is not scored and says so. A group card is not scored when Jev has no key or
+  the spend cap skips the call, and then says the leak check was unavailable.
+- **"Elsewhere" notes.** After a conversation in a group or friend DM, Dom can
+  keep a one-line, facts-only note of it. These notes go into the owner DM's
+  prompt only, and so to the chat model when the owner DM is answered. Other chats learn only that Dom "was just in another conversation",
+  never where or what. Nothing from the owner DM or private notes becomes such
+  a note.
 
 ## Plugins and desktop
 

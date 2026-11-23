@@ -125,8 +125,8 @@ matching Access team and audience in `[web]`. Dom validates the signed
 assertion too. The [dashboard deployment guide](deploy-dashboard.md) covers
 tunnel ingress and a loopback-only bearer token for local testing.
 
-The dashboard's Settings page edits the chat, fallback, media and drafting
-routes: a primary provider and an ordered fallback chain per role, each a local
+The dashboard's Settings page edits the chat, fallback, media, drafting, search
+and escalation routes: a primary provider and an ordered fallback chain per role, each a local
 (OpenAI-compatible) or cloud endpoint. Test sends one short real call to a saved
 provider. Saving tests each changed or added provider slot first, refuses the
 save if any fails, writes `config.toml` atomically, keeps `config.toml.bak` and
@@ -186,7 +186,7 @@ See [Writing plugins](plugins.md) for the format and limits.
 ## Skills, reminders and history cleanup
 
 Approved skills live under `<home>/skills/<name>/SKILL.md`. On the dashboard's
-Memory page or with `/skills`, the owner can retire a skill (its files stay on
+Work → Own work page or with `/skills`, the owner can retire a skill (its files stay on
 disk, Dom stops listing or using it, and it stays retired across approved edits
 until explicitly restored) or delete it. Reminders can be cancelled or deleted
 on the dashboard's Reminders page and via `/reminders`. Finished desktop tasks,

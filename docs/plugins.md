@@ -5,7 +5,7 @@ three kinds of surface:
 
 - **Tools** that Dom calls during a chat turn.
 - **Slash commands** that people type in Telegram, such as `/weather Berlin`.
-- **Dashboard panels** that show data on the Plugins page and the dashboard home.
+- **Dashboard panels** that show data on the dashboard's Plugins page.
 
 Dom drafts plugins in the owner DM with `draft_plugin`, or the owner places one
 under `<home>/plugins/<name>/`. Staging runs an isolated trial. Live calls need
@@ -123,9 +123,8 @@ provider can answer (missing key or provider down), Dom uses the chat route. See
   Values and cells may be strings or finite numbers. Anything else, including
   unknown keys, booleans, nested objects and invisible characters, is refused and
   the panel shows an error. Dom never tries to clean bad data.
-- Dom renders the data with its own Jinja template, with autoescaping on. A
-  plugin cannot send HTML, CSS or JavaScript to the dashboard: markup in a value
-  is shown as text.
+- The dashboard renders the data itself, as text. A plugin cannot send HTML,
+  CSS or JavaScript to the dashboard: markup in a value is shown as text.
 - Panels load after the page, one request per panel, so a slow plugin never
   delays the dashboard. Each load and each Refresh runs the plugin once.
 

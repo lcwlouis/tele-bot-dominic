@@ -36,18 +36,19 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `models.media` | Built in | Attachment descriptions, transcriptions, desktop screenshot descriptions and previews of the sticker images in your listed sticker sets. |
 | `models.drafting` | Built in | Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort. |
 | `models.search` | Optional | Web search role with ordered provider fallback: `searxng` (self-hosted JSON API), `openrouter` (OpenRouter web plugin with ZDR), `deepseek` (DeepSeek Search API) and `tavily` (Tavily Search API). If `[models.search]` omits `base_url` with no other provider set, it uses the starter OpenRouter search settings. |
+| `models.escalation` | Optional | The bigger model offered on an owner-DM task card after two model rounds and more than 60 seconds (Switch / Keep local, or Retry after a failed task). Only the owner DM uses it, and only after the owner taps. Without `[models.escalation]` it uses the drafting role's providers. |
 
 Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `models.<name>.base_url` | Required | Provider API base URL, including its API version path. |
-| `models.<name>.model` | `""` | Provider model ID. Required for chat, fallback, media, drafting, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
+| `models.<name>.model` | `""` | Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
 | `models.<name>.api_key_env` | Unset | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.<name>.reasoning_effort` | Unset | Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default. |
 | `models.<name>.provider` | Unset | Search provider for models.search: searxng, openrouter, deepseek or tavily. |
 
-Chat, fallback, media, drafting and search can also list additional providers.
+Chat, fallback, media, drafting, search and escalation can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -64,20 +65,20 @@ Init creates the tables below. Omitted triage, media and drafting tables use the
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `models.chat.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
-| `models.chat.model` | `"deepseek/deepseek-v4.1-flash-1017"` | Provider model ID. Required for chat, fallback, media, drafting, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
+| `models.chat.model` | `"deepseek/deepseek-v4.1-flash-1017"` | Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
 | `models.chat.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.triage.base_url` | `"https://openrouter.ai/api/alpha"` | Provider API base URL, including its API version path. |
-| `models.triage.model` | `"~typesafe/jev-latest"` | Provider model ID. Required for chat, fallback, media, drafting, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
+| `models.triage.model` | `"~typesafe/jev-latest"` | Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
 | `models.triage.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.media.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
-| `models.media.model` | `"perceptron/perceptron-mk1.5"` | Provider model ID. Required for chat, fallback, media, drafting, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
+| `models.media.model` | `"perceptron/perceptron-mk1.5"` | Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
 | `models.media.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.search.provider` | `"openrouter"` | Search provider for models.search: searxng, openrouter, deepseek or tavily. |
 | `models.search.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
-| `models.search.model` | `"deepseek/deepseek-v4.1-flash-1017"` | Provider model ID. Required for chat, fallback, media, drafting, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
+| `models.search.model` | `"deepseek/deepseek-v4.1-flash-1017"` | Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
 | `models.search.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.drafting.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
-| `models.drafting.model` | `"anthropic/claude-haiku-5.5"` | Provider model ID. Required for chat, fallback, media, drafting, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
+| `models.drafting.model` | `"anthropic/claude-haiku-5.5"` | Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
 | `models.drafting.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.drafting.reasoning_effort` | `"low"` | Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default. |
 

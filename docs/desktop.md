@@ -231,8 +231,8 @@ model is bounded by its step budget (`max_steps`), not by the dollar ceiling.
 Set `[web].public_url` in `config.toml` to the HTTPS base URL of the
 authenticated dashboard. Dom uses it for the Open Desktop button in the owner's
 handoff message (it adds `?container=<name>` for a container other than `default`).
-That link opens the Desk page; its Open live viewer button launches the full-page live
-viewer (`/desktop/vnc/index.html`), whose back link returns to the Desk. The viewer shows the live browser host, handoff countdown,
+That link opens the full-page live viewer (`/desktop/vnc/index.html`) directly; its
+back link returns to the Desk page, whose Open live viewer button opens it again. The viewer shows the live browser host, handoff countdown,
 Done button, local zoom and pan, one-finger scroll mode, a remote key bar,
 explicit Copy/Paste buttons, fullscreen, and Phone mode (`800x600` via the
 sandbox API, automatically restored to `1280x1024` server-side at Done, cancel,

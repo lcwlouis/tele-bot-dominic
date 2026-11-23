@@ -442,9 +442,9 @@ async def test_handoff_and_report_name_a_non_default_container(make_app):
     await app.dispatch.desktop_handoff(2, 3, OWNER, "Sign in", "example.org", observed)
     shop, main = app.bot.of("send", OWNER)
     assert shop[2].startswith("Dom needs you to log in on the shop desktop (browser was on example.org at 06:05): Sign in")
-    assert shop[3]["reply_markup"].inline_keyboard[0][0].url == "https://example.org/app/work?container=shop"
+    assert shop[3]["reply_markup"].inline_keyboard[0][0].url == "https://example.org/desktop/vnc/index.html?container=shop"
     assert main[2].startswith("Dom needs you to log in (browser was on")
-    assert main[3]["reply_markup"].inline_keyboard[0][0].url == "https://example.org/app/work"
+    assert main[3]["reply_markup"].inline_keyboard[0][0].url == "https://example.org/desktop/vnc/index.html"
     row = {"id": 7, "chat_id": OWNER, "status": "done", "result": "all good", "error": None, "container": "shop",
            "started_at": None, "created_at": "2026-01-01T00:00:00+00:00"}
     app.client = Gate()
