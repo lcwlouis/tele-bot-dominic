@@ -92,6 +92,9 @@ class _Refused:
     error: str
 
 
+_NOTED = re.compile(r"^\s*noted\b\s*[:\-–—]?\s*", re.IGNORECASE)
+
+
 def _parse(reply: str | None) -> tuple[list[Any], str] | None:
     try:
         data = json.loads(unfence(reply))
@@ -100,6 +103,8 @@ def _parse(reply: str | None) -> tuple[list[Any], str] | None:
     if not isinstance(data, dict) or not isinstance(data.get("ops"), list):
         return None
     summary = data.get("summary")
+    if isinstance(summary, str):  # the notice already says "Noted:", so a summary starting with it would repeat it
+        summary = _NOTED.sub("", summary)
     words = summary.split()[:SUMMARY_WORDS] if isinstance(summary, str) else []
     return data["ops"], " ".join(words)
 
