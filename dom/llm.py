@@ -91,15 +91,20 @@ class ChatClient:
             await check_model_allowed()
             if not self.available:
                 raise MissingProviderKey("Set the provider's API key in .env.")
-            with turn_log.model_call(
-                self.endpoint.model, kind, messages, tools, fallback=fallback, host=self.address,
-            ) as call:
-                response = await self.http.post(
-                    url, json=body, headers=headers, follow_redirects=False,
-                    timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS)),
-                )
-                if call is not None:
-                    call.received(response)
+            try:
+                with turn_log.model_call(
+                    self.endpoint.model, kind, messages, tools, fallback=fallback, host=self.address,
+                ) as call:
+                    response = await self.http.post(
+                        url, json=body, headers=headers, follow_redirects=False,
+                        timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS)),
+                    )
+                    if call is not None:
+                        call.received(response)
+            except (httpx.TransportError, asyncio.CancelledError):
+                if kind == "escalation" and self.usage is not None:
+                    await self.usage.record_response(None, self.kind, self.endpoint.model, self.address, fallback=fallback)
+                raise
             if self.usage is not None:
                 await self.usage.record_response(response, self.kind, self.endpoint.model, self.address, fallback=fallback)
             if delay is None or not _retryable(response.status_code):
@@ -124,21 +129,25 @@ class FallbackClient:
     def available(self) -> bool:
         return any(provider.available for provider in self.providers)
 
-    async def complete(self, messages: list[dict], tools: list[dict], *, once: bool = False) -> dict:
-        return await self._complete(messages, tools, start=0, once=once)
+    async def complete(
+        self, messages: list[dict], tools: list[dict], *, once: bool = False, timeout: float = TIMEOUT_SECONDS,
+    ) -> dict:
+        return await self._complete(messages, tools, start=0, once=once, timeout=timeout)
 
     async def complete_on_fallback(self, messages: list[dict], tools: list[dict], *, once: bool = False) -> dict:
         """Ask the fallback model directly, e.g. when the primary is up but keeps answering unusably."""
         if self.fallback is None:
             raise RuntimeError("no fallback model is configured")
-        return await self._complete(messages, tools, start=1, once=once)
+        return await self._complete(messages, tools, start=1, once=once, timeout=TIMEOUT_SECONDS)
 
-    async def _complete(self, messages: list[dict], tools: list[dict], *, start: int, once: bool) -> dict:
+    async def _complete(
+        self, messages: list[dict], tools: list[dict], *, start: int, once: bool, timeout: float,
+    ) -> dict:
         for index in range(start, len(self.providers)):
             provider = self.providers[index]
             fallback = index > 0
             try:
-                reply = await provider.complete(messages, tools, fallback=fallback, once=once)
+                reply = await provider.complete(messages, tools, fallback=fallback, once=once, timeout=timeout)
             except (httpx.TransportError, httpx.HTTPStatusError, MissingProviderKey) as exc:
                 status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                 if index + 1 == len(self.providers) or (status is not None and not _fallback_worthy(status)):
@@ -161,7 +170,9 @@ def routed_client(
         endpoints += config.providers("fallback")
     elif role == "drafting":  # drafts fall back to the chat route when no drafting provider can answer
         endpoints += config.providers("chat") + config.providers("fallback")
-    kind: Kind = "media" if role == "media" else "chat"
+    elif role == "escalation":
+        endpoints = endpoints or config.providers("drafting")
+    kind: Kind = role if role in ("media", "escalation") else "chat"
     providers = [
         ChatClient(endpoint, config.secret(endpoint.api_key_env) if endpoint.api_key_env else None, http,
                    usage=usage, kind=kind)

@@ -151,7 +151,7 @@ def model_call(
 ):
     """Record one provider attempt, even if transport fails or the attempt is cancelled."""
     trace = _current.get()
-    if trace is None or kind not in ("chat", "triage", "guard", "media", "search"):
+    if trace is None or kind not in ("chat", "triage", "guard", "media", "search", "escalation"):
         yield None
         return
 
@@ -179,7 +179,7 @@ def model_call(
         visit = None
     trace.model_calls.append(call)
     trace.calls += 1
-    if kind == "chat" or (not trace.model and kind == "triage"):
+    if kind in ("chat", "escalation") or (not trace.model and kind == "triage"):
         trace.model = model
     trace.fallback |= fallback
     if kind in ("triage", "guard"):
@@ -197,7 +197,7 @@ def model_call(
             attention.record_call(chat_id, at, call.input_tokens or 0)
         if _inside_timed.get():
             pass  # e.g. a plugin tool's leak-guard call: the enclosing tool timing already covers it
-        elif kind == "chat":
+        elif kind in ("chat", "escalation"):
             trace.add_timing("fallback_model" if fallback else "model", call.duration_ms)
         elif kind in ("triage", "guard"):
             trace.add_timing(kind, call.duration_ms)

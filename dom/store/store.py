@@ -56,6 +56,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (21, "0020_topics_and_migrations.sql"),
     (22, "0021_topic_reads_and_cooldowns.sql"),
     (23, "0022_cross_chat.sql"),
+    (24, "0023_escalation_usage.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1032,6 +1033,10 @@ class Store:
 
     async def has_message(self, chat_id: int | str, msg_id: int) -> bool:
         return await self._run(self._has_message, str(chat_id), msg_id)
+
+    async def get_message(self, chat_id: int | str, msg_id: int) -> StoredMessage | None:
+        row = await self._run(self._get_message, str(chat_id), msg_id)
+        return _row_to_message(row) if row is not None else None
 
     def _has_message(self, chat_id: str, msg_id: int) -> bool:
         return self._conn.execute(

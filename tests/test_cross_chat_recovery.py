@@ -212,7 +212,7 @@ async def test_terminal_delivery_rows_are_pruned_after_thirty_days(make_app):
 async def test_v22_proposals_migrate_intact_and_legacy_projection_still_reads(tmp_path, monkeypatch):
     kinds = ("soul_edit", "memory_fact", "skill", "plugin", "lan_address", "memory_edit")
     at = "2026-01-01T12:00:00+00:00"
-    old_migrations = storage.MIGRATIONS[:-1]
+    old_migrations = [(version, name) for version, name in storage.MIGRATIONS if version <= 22]
     with monkeypatch.context() as old:
         old.setattr(storage, "MIGRATIONS", old_migrations)
         store = Store(tmp_path, owner_id=OWNER)
@@ -229,7 +229,7 @@ async def test_v22_proposals_migrate_intact_and_legacy_projection_still_reads(tm
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
         before = conn.execute(f"SELECT {projection} FROM proposals ORDER BY id").fetchall()
 
-    assert storage.migrate_database(path) == 23
+    assert storage.migrate_database(path) == storage.TARGET_VERSION
     with sqlite3.connect(path) as conn:
         assert conn.execute(f"SELECT {projection} FROM proposals ORDER BY id").fetchall() == before
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []

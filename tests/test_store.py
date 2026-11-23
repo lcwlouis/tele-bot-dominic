@@ -667,3 +667,18 @@ def test_migration_keeps_existing_desktop_tasks_on_the_default_container(tmp_pat
 def MIGRATIONS_BEFORE_CONTAINERS():
     from dom.store.store import MIGRATIONS
     return [(v, f) for v, f in MIGRATIONS if v <= 14]
+
+
+def test_escalation_usage_upgrade_preserves_existing_costs(tmp_path):
+    db = tmp_path / "state.db"
+    initial = (71, "t", "chat", "old", "localhost", OWNER_ID, 9, 4, 0.5, 0)
+    with sqlite3.connect(db) as conn:
+        for version, name in MIGRATIONS:
+            if version < 24:
+                conn.executescript((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
+        conn.execute("INSERT INTO usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", initial)
+    assert migrate_database(db) == TARGET_VERSION
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT * FROM usage").fetchall() == [initial]
+        conn.execute("INSERT INTO usage VALUES (72, 't', 'escalation', 'bigger', 'example.test', 111, 9, 4, 0.2, 0)")
+        assert conn.execute("SELECT TOTAL(cost_usd) FROM usage").fetchone() == (0.7,)

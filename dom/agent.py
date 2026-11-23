@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterator
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -15,6 +16,9 @@ from dom.llm import ChatClient, FallbackClient
 from dom.salvage import Salvaged
 from dom.tools import Tool, TurnCtx
 from dom.usage import ModelCallSkipped
+
+if TYPE_CHECKING:
+    from dom.escalation import EscalationTurn
 
 CORRECTION = (
     "Your last reply was not the required JSON object. Do not call tools. Answer again with ONLY the "
@@ -161,6 +165,7 @@ async def run_turn(
     max_steps: int = 6,
     rescue: Rescue | None = None,
     run_tool: ToolRunner = execute_tool_call,
+    escalation: EscalationTurn | None = None,
 ) -> Actions:
     """Run one turn. Dom never sends raw model text: only valid actions leave this function.
 
@@ -174,6 +179,13 @@ async def run_turn(
     messages = list(messages)
     trace: list[str] = []  # one entry per model call, logged once per turn
 
+    async def complete(prompt: list[dict], tools: list[dict], *, on_fallback: bool = False) -> dict:
+        if escalation is not None:
+            return await escalation.complete(client, prompt, tools, on_fallback=on_fallback)
+        if on_fallback and isinstance(client, FallbackClient):
+            return await client.complete_on_fallback(prompt, tools)
+        return await client.complete(prompt, tools)
+
     def succeed(actions: Actions) -> Actions:
         trace.append("final")
         turn_log.step("final")
@@ -181,7 +193,7 @@ async def run_turn(
         return actions
 
     for _ in range(max_steps):
-        reply = await client.complete(messages, schemas)
+        reply = await complete(messages, schemas)
         calls = reply.get("tool_calls")
         if calls and _well_formed(calls):
             trace.append("tools:" + ",".join(str((c.get("function") or {}).get("name")) for c in calls))
@@ -208,6 +220,8 @@ async def run_turn(
             )
             return succeed(saved.actions)
         trace.append("malformed")
+        if escalation is not None:
+            escalation.failed()
         turn_log.step("malformed")
         log.info("malformed reply in chat %s: %s", ctx.chat_id, malformed_shape(reply))
         settled = list(messages)
@@ -222,17 +236,20 @@ async def run_turn(
     # Ask again without tools: with them offered the model may call one more instead of answering.
     # The shape of what was wrong (keys and error kinds, never text) lets the model fix that instead of repeating it.
     request = f"{CORRECTION} What was wrong: {malformed_shape(reply)}." if reply is not None else FINAL_REQUEST
-    retry = await client.complete([*messages, {"role": "user", "content": request}], [])
+    retry = await complete([*messages, {"role": "user", "content": request}], [])
     if (actions := _final(retry)) is not None:
         return succeed(actions)
     trace.append("malformed")
+    if escalation is not None:
+        escalation.failed()
     turn_log.step("malformed")
     log.info("malformed retry in chat %s: %s", ctx.chat_id, malformed_shape(retry))
 
-    if isinstance(client, FallbackClient) and client.fallback is not None:
+    has_fallback = isinstance(client, FallbackClient) and client.fallback is not None
+    if has_fallback:
         turn_log.step("fallback")
         try:
-            reply = await client.complete_on_fallback([*settled, {"role": "user", "content": FINAL_REQUEST}], [])
+            reply = await complete([*settled, {"role": "user", "content": FINAL_REQUEST}], [], on_fallback=has_fallback)
         except ModelCallSkipped:
             raise
         except Exception as exc:  # the last resort failing is reported below, not raised as a transport error

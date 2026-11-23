@@ -69,6 +69,7 @@ class App:
     search_client: SearchClient | SearchRouter | None = None
     gifs: GifSearch | None = None
     draft_client: ChatClient | FallbackClient | None = None
+    escalation_client: FallbackClient | None = None
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
@@ -115,8 +116,8 @@ class App:
         models.update({name: saved.models[name] for name in MODEL_ROLES if name in saved.models})
         config = self.config.model_copy(update={"models": models})
         current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
-        chat, media, draft = (routed_client(config, role, current.http, current.usage)
-                              for role in ("chat", "media", "drafting"))
+        chat, media, draft, escalation = (routed_client(config, role, current.http, current.usage)
+                                          for role in ("chat", "media", "drafting", "escalation"))
         if isinstance(self.client, FallbackClient):
             chat.last_model = self.client.last_model
             chat.last_fallback_at = self.client.last_fallback_at
@@ -129,6 +130,7 @@ class App:
             self.media_describer = None
         self.search_client = routed_search_client(config, current.http, current.usage)
         self.config, self.client, self.draft_client = config, chat, draft
+        self.escalation_client = escalation
 
 
 # ---- owner events ------------------------------------------------------------------
@@ -811,6 +813,14 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         return
     owner_id = app.owner_id
     if owner_id is None or query.from_user.id != owner_id:
+        return
+    if action == "escalation":
+        if (not query.from_user.is_bot and query.message is not None
+                and query.message.chat.id == owner_id and query.message.chat.type == "private"):
+            decision, _, token = raw_chat_id.partition(":")
+            if decision in ("switch", "keep", "retry", "dismiss"):
+                outcome = app.dispatch.escalation.choose(token, decision, owner_id, query.message.message_id)
+                await _toast(app, query, outcome)
         return
     if action in {"t3send", "t3cancel", "t3reconnect"}:
         if (app.t3 is not None and not query.from_user.is_bot and query.message is not None

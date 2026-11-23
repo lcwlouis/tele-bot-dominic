@@ -53,6 +53,7 @@ WHO = "The owner"
 KINDS = {
     "chat": "Replies", "triage": "Triage", "media": "Photos and voice", "memory": "Memory",
     "search": "Web search", "reflection": "Reflection", "guard": "Leak check", "desktop": "Desktop",
+    "escalation": "Escalation",
 }
 IMPORT_SERVICES = {"chatgpt": "ChatGPT", "claude": "Claude", "muse": "Muse"}
 
