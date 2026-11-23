@@ -41,18 +41,37 @@ def _heading_terms(label: str) -> list[str]:
     return [" ".join(words[:6])[:64]]
 
 
-def _names_someone(term: str, names: set[str]) -> bool:
-    """True when every word of the term is a word of a name in the chat, or a short form of one (Bart for Bartholomew)."""
-    words = [_POSSESSIVE.sub("", word).casefold() for word in _WORDS.findall(term)]
-    return bool(words) and all(
-        any(word == name or (len(word) >= 3 and name.startswith(word)) for name in names) for word in words
-    )
+class _Person:
+    """The words one person in the chat goes by: whole words of names and handles, and name words a short form
+    may start (Bart for Bartholomew)."""
+
+    def __init__(self, names: Iterable[str]):
+        self.exact: set[str] = set()
+        self.name_words: set[str] = set()
+        for name in names:
+            words = {word.casefold() for word in _WORDS.findall(name)}
+            self.exact |= words
+            if not name.startswith("@"):
+                self.name_words |= words
+
+    def named_by(self, term: str) -> bool:
+        """True when every word of the term is one of this person's names, or a short form of a name word."""
+        words = [_POSSESSIVE.sub("", word) for word in _WORDS.findall(term)]
+        return bool(words) and all(self._matches(word) for word in words)
+
+    def _matches(self, word: str) -> bool:
+        folded = word.casefold()
+        if folded in self.exact:
+            return True
+        # Only a capitalised, name-shaped word counts as a short form: "PIN" or "pin" never stands for "Pinto".
+        short_form = len(word) >= 3 and word[0].isupper() and not word.isupper() and word.isalpha()
+        return short_form and any(name.startswith(folded) for name in self.name_words)
 
 
-def private_terms(home: Home, names_in_chat: Iterable[str] = ()) -> str:
-    """Keywords from the private files. Names of people in the chat are left out: everyone there already sees them,
-    and listing them would make any reply that addresses someone by name look like a leak."""
-    names = {word.casefold() for name in names_in_chat for word in _WORDS.findall(name)}
+def private_terms(home: Home, people_in_chat: Iterable[Iterable[str]] = ()) -> str:
+    """Keywords from the private files. A term that is only a name of someone in the chat is left out: everyone
+    there already sees it, and listing it would make any reply that addresses that person look like a leak."""
+    people = [_Person(names) for names in people_in_chat]
     private = home.scoped(allow_private=True)
     files = []
     for name in ("USER", "NOTES"):
@@ -70,9 +89,12 @@ def private_terms(home: Home, names_in_chat: Iterable[str] = ()) -> str:
     terms = []
     remaining = MAX_TERMS
     for term in dict.fromkeys(candidates):
-        if term and len(term) <= remaining and not (names and _names_someone(term, names)):
-            terms.append(term)
-            remaining -= len(term) + 1
+        if not term or len(term) > remaining:
+            continue
+        if not term.isdigit() and any(person.named_by(term) for person in people):
+            continue
+        terms.append(term)
+        remaining -= len(term) + 1
     return "\n".join(terms)
 
 

@@ -309,7 +309,14 @@ async def test_card_guard_uses_owner_attribution_and_the_spend_gate(make_app, mo
 
     app = make_app()
     await approve_chat(app, GROUP)
-    requests = []
+    requests, looked_up = [], []
+    names = app.store.chat_participant_names
+
+    async def record_lookup(chat_id):
+        looked_up.append(chat_id)
+        return await names(chat_id)
+
+    monkeypatch.setattr(app.store, "chat_participant_names", record_lookup)
 
     def jev_response(request):
         requests.append(json.loads(request.content))
@@ -324,6 +331,7 @@ async def test_card_guard_uses_owner_attribution_and_the_spend_gate(make_app, mo
             assert (await draft(app)).startswith("Waiting")
         [row] = await app.proposals.pending()
         assert json.loads(row["body_json"])["leak_score"] == 2.5
+        assert looked_up == [GROUP]  # the names of the chat the message goes to, not the owner's DM
         assert requests[0]["provider"] == {"zdr": True}
         assert [call.kind for call in trace.model_calls] == ["guard"]
         usage = await app.store._run(lambda: list(app.store._conn.execute("SELECT kind, chat_id FROM usage")))

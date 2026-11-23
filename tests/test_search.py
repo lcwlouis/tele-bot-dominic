@@ -288,7 +288,8 @@ async def test_router_falls_through_when_searxng_fails_or_times_out(make_app, ca
     assert trace.model_calls[1].model == "deepseek/deepseek-v4.1-flash-1017" and trace.model_calls[1].fallback is True
     # The log says why our own checks failed, but never quotes the response body.
     assert ("upstream engines unresponsive" in caplog.text) == (failure_mode == "unresponsive")
-    assert "not json" not in caplog.text
+    assert "Expecting value" not in caplog.text  # a JSON decode error's message quotes the body; only its name is logged
+    assert ("JSONDecodeError" in caplog.text) == (failure_mode == "invalid_json")
     assert trace.fallback is True
 
     # Answering provider is attributed with fallback=1 and its cost.

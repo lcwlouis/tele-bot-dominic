@@ -48,3 +48,30 @@ async def test_owner_search_covers_every_chat(store):
     await store.record_new_message(row(333, 1, "chat:333", "pineapple one"))
     await store.record_new_message(row(OWNER, 2, "owner_private", "pineapple two"))
     assert len(await store.search_chat_history("pineapple", str(OWNER))) == 2
+
+
+async def test_chat_participant_names_come_only_from_what_this_chat_saw(store):
+    group, old_group, other = "-100200", "-200", "-300"
+
+    def said(chat_id, msg_id, uid, name, handle, **kw):
+        return StoredMessage(
+            chat_id=chat_id, msg_id=msg_id, visibility_scope=f"chat:{chat_id}", text="hi", sender_user_id=uid,
+            sender_name=name, sender_handle=handle, created_at=f"2026-01-01T00:00:{msg_id:02d}+00:00", **kw,
+        )
+
+    await store.record_new_message(said(old_group, 3, 333, "Olga", ""))  # before the group became a supergroup
+    await store.set_chat_title(old_group, "The Group")
+    assert (await store.migrate_chat(old_group, group))[0] == "migrated"
+    await store.record_new_message(said(group, 1, FRIEND, "Fran", "@newbie"))
+    await store.record_new_message(said(group, 2, FRIEND, "Fran", "@newbie"))
+    await store.record_new_message(said(group, 4, 444, "Dana Deleted", ""))
+    await store.record_message_delete(group, [4])
+    await store.record_new_message(said(group, 5, 555, "Priya Private", ""))
+    await store._run(lambda: store._conn.execute("UPDATE messages SET visibility_scope = 'owner_private' WHERE msg_id = 5"))
+    await store.record_new_message(said(group, 6, 999, "Dom", "@dombot", is_bot=True, role="assistant"))
+    await store.record_new_message(said(other, 7, 777, "Otto", ""))
+    # Fran's current Telegram name is visible in the group too; an alias she used elsewhere is not looked up.
+    await store.resolve_person(FRIEND, "@inviter", "Fran Q")
+
+    people = await store.chat_participant_names(group)
+    assert sorted(sorted(names) for names in people) == [["@inviter", "@newbie", "Fran", "Fran Q"], ["Olga"]]

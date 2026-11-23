@@ -55,10 +55,23 @@ def test_private_terms_leave_out_names_of_people_in_the_chat(make_app):
     everyone = private_terms(app.home).splitlines()
     assert {"Bartholomew Quince", "Bart", "Bart's", "Glorbina", "7319"} <= set(everyone)
 
-    in_chat = private_terms(app.home, ["Bartholomew Quince", "@newbie"]).splitlines()
+    in_chat = private_terms(app.home, [["Bartholomew Quince", "@newbie"]]).splitlines()
     assert not {"Bartholomew Quince", "Bart", "Bart's"} & set(in_chat)
     # Someone else's name, a number, and a heading that only starts with a name stay private.
     assert {"Glorbina", "7319", "Bartholomew surprise party"} <= set(in_chat)
+
+
+def test_names_in_the_chat_never_hide_codes_acronyms_or_someone_elses_full_name(make_app):
+    from dom.guard import private_terms
+
+    app = make_app()
+    put(app.home, "private/USER.md", "## PIN\n## Invite\n- Fran Quill keeps the code 7319.\n")
+    everyone = set(private_terms(app.home).splitlines())
+    assert {"PIN", "Invite", "Fran Quill", "7319"} <= everyone
+    people = [["Pinto"], ["Room 73190"], ["Fran"], ["Quilliam"], ["@inviter"]]
+    # An acronym is no short form of a name, a handle is matched whole, numbers always stay, and two people's
+    # names never add up to a third term.
+    assert everyone == set(private_terms(app.home, people).splitlines())
 
 
 async def test_a_reply_naming_someone_in_the_group_does_not_list_their_name_as_private(make_app):

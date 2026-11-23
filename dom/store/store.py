@@ -1374,29 +1374,27 @@ class Store:
     ) -> list[StoredMessage]:
         return await self._run(self._get_recent_chat_window, str(chat_id), limit, through_id, thread_id, filter_thread)
 
-    async def chat_participant_names(self, chat_id: int | str) -> list[str]:
-        """Every name and handle the people who have written in this chat go by there, known aliases included."""
+    async def chat_participant_names(self, chat_id: int | str) -> list[list[str]]:
+        """For each person who has written in this chat, the names and Telegram handles they go by there: what they wrote
+        under, plus their current Telegram name and handle, which the chat sees too."""
         return await self._run(self._chat_participant_names, str(chat_id))
 
-    def _chat_participant_names(self, chat_id: str) -> list[str]:
+    def _chat_participant_names(self, chat_id: str) -> list[list[str]]:
+        aliases = sorted(self._chat_id_aliases(chat_id))
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        # One row per distinct sender label before the join, so a large chat probes people_identities once a person.
         rows = self._conn.execute(
-            "SELECT DISTINCT m.sender_name, m.sender_handle, p.display_name, p.preferred_name, p.current_handle, "
-            "p.known_handles_json FROM messages m "
-            "LEFT JOIN people_identities p ON p.telegram_user_id = m.sender_user_id "
-            "WHERE m.chat_id = ? AND m.role = 'user' AND m.is_bot = 0",
-            (chat_id,),
+            "SELECT m.sender_user_id, m.sender_name, m.sender_handle, p.display_name, p.current_handle FROM ("
+            "SELECT DISTINCT sender_user_id, sender_name, sender_handle FROM messages "
+            f"WHERE chat_id IN ({', '.join('?' * len(aliases))}) AND role = 'user' AND is_bot = 0 AND is_deleted = 0"
+            f"{hide}) m LEFT JOIN people_identities p ON p.telegram_user_id = m.sender_user_id",
+            aliases,
         ).fetchall()
-        names: dict[str, None] = {}
-        for row in rows:
-            *fields, handles_json = row
-            try:
-                handles = json.loads(handles_json) if handles_json else []
-            except ValueError:
-                handles = []
-            for name in (*fields, *(h for h in handles if isinstance(h, str))):
-                if name:
-                    names[name] = None
-        return list(names)
+        people: dict[object, dict[str, None]] = {}
+        for user_id, *names in rows:
+            person = people.setdefault(user_id if user_id is not None else names[0], {})
+            person.update((name, None) for name in names if name)
+        return [list(names) for names in people.values() if names]
 
     def _window_where(
         self, chat_id: str, through_id: int | None,
