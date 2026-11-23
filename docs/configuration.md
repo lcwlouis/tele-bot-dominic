@@ -48,7 +48,7 @@ Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud p
 | `models.<name>.reasoning_effort` | Unset | Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default. |
 | `models.<name>.provider` | Unset | Search provider for models.search: searxng, openrouter, deepseek or tavily. |
 
-Chat, fallback, media, drafting, search and escalation can also list additional providers.
+Chat, fallback, media, drafting, search and escalation can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

@@ -121,9 +121,11 @@ beyond the models listed above.
   own messages.
 - **Messages to other chats.** Text Dom drafts in the owner DM for another chat
   is shown to the owner on a card. Nothing is sent until the owner approves that
-  exact text, and the card expires after two hours. Before the card is shown,
-  Jev's leak check scores the text against the owner's private terms, minus the
-  names of the target chat's participants.
+  exact text, and the card expires after two hours. For a group, Jev's leak
+  check scores the text before the card is shown, against the owner's private
+  terms minus the names of that group's participants. A card for a friend's DM
+  is not scored and says so. A group card is not scored when Jev has no key or
+  the spend cap skips the call, and then says the leak check was unavailable.
 - **"Elsewhere" notes.** After a conversation in a group or friend DM, Dom can
   keep a one-line, facts-only note of it. These notes go into the owner DM's
   prompt only, and so to the chat model when the owner DM is answered. Other chats learn only that Dom "was just in another conversation",

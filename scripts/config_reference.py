@@ -64,7 +64,7 @@ def render() -> str:
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
         "A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.",
         table(fields(ProviderEndpoint, "models.<name>.")),
-        "Chat, fallback, media, drafting, search and escalation can also list additional providers.",
+        "Chat, fallback, media, drafting, search and escalation can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.",
         table(fields(ModelEndpoint, "models.<name>.", exclude=ProviderEndpoint.model_fields.keys())),
         "Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. "
         "Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. "
