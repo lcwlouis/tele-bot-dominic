@@ -571,3 +571,16 @@ async def test_a_route_that_cannot_be_built_keeps_the_old_file_and_runtime(dashb
         assert provider.status_code == 409
     assert path.read_text() == START and not path.with_name("config.toml.bak").exists()
     assert (app.config, app.client, app.jev, app.search_client) == running
+
+
+
+async def test_a_role_save_error_never_quotes_a_cached_effort_label_holding_a_secret(dashboard):
+    app, path, browser = dashboard
+    backup = {"base_url": "https://fallback.example.test/v1", "api_key_env": "BACKUP_KEY"}
+    # A list cached before the key value was set, whose provider echoed that value into an effort label.
+    leaky = model_lists.ListedModel(id="acme/leaky", name="Leaky", reasoning=True, efforts=("low", f"x{SECRET}"))
+    await model_lists.remember(app.store, backup["base_url"], backup["api_key_env"], (leaky,))
+    async with browser() as client:
+        bad = await _save(client, "fallback", dict(backup, model="acme/leaky", reasoning_effort="turbo"))
+    assert bad.status_code == 422
+    assert SECRET not in bad.text

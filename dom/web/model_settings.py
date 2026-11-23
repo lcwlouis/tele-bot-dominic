@@ -658,8 +658,11 @@ async def update_models(request: Request):
         raise HTTPException(422, str(exc)) from None
     # An effort is checked against the provider's fetched list when it knows the model (D9).
     effort_failures = []
+    secrets = model_lists.secret_values(current.config)  # the 422 below quotes upstream effort labels
     for index, provider in enumerate(submitted):
-        listed = await model_lists.cached(app.store, provider.base_url, provider.api_key_env, fresh_only=False)
+        listed = await model_lists.cached(
+            app.store, provider.base_url, provider.api_key_env, fresh_only=False, secrets=secrets,
+        )
         if error := model_lists.effort_error(listed, provider.model, provider.reasoning_effort):
             effort_failures.append({"index": index, "error": error})
     if effort_failures:
