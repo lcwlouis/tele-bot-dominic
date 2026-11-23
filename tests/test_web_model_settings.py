@@ -82,13 +82,14 @@ async def test_save_backs_up_config_and_applies_new_routes_without_restart(dashb
     route = dict(PRIMARY, model="local-media")
     async with browser() as client:
         initial = (await client.get(API)).json()
-        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search", "escalation"}
+        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search", "escalation", "triage"}
         assert initial["roles"]["search"] == {"primary": None, "fallbacks": []}
         assert {item["id"] for item in initial["search_providers"]} == {"searxng", "openrouter", "deepseek", "tavily"}
         assert initial["roles"]["fallback"]["primary"]["key_set"] is True
         assert initial["roles"]["chat"]["primary"]["kind"] == "local"
         assert initial["roles"]["fallback"]["primary"]["kind"] == "cloud"
-        assert initial["triage"] == {
+        triage = initial["roles"]["triage"]
+        assert triage["fallbacks"] == [] and {key: triage["primary"][key] for key in ("model", "base_url", "api_key_env", "key_set")} == {
             "model": "classifier", "base_url": "https://classifier.example.test/decisions", "api_key_env": None, "key_set": False,
         }
         assert SECRET not in json.dumps(initial)
@@ -829,7 +830,7 @@ async def test_triage_view_names_its_missing_key_variable(dashboard):
     app, path, browser = dashboard
     path.write_text(START.replace('model = "classifier"', 'model = "classifier"\napi_key_env = "TRIAGE_KEY"'))
     async with browser() as client:
-        triage = (await client.get(API)).json()["triage"]
+        triage = (await client.get(API)).json()["roles"]["triage"]["primary"]
     assert triage["api_key_env"] == "TRIAGE_KEY" and triage["key_set"] is False
 
 

@@ -96,8 +96,27 @@ base_url = "https://api.tavily.com"
 api_key_env = "TAVILY_API_KEY"
 
 [models.triage]
-base_url = "http://homelab:8000/v1"
+base_url = "https://decisions.example.org/alpha"
 model = "example/classifier"
+
+[[studio.voice_fallbacks]]
+provider = "openrouter_tts"
+model = "example/voice-model"
+api_key_env = "EXAMPLE_VOICE_KEY"
+
+[[studio.voice_fallbacks]]
+provider = "gemini_tts"
+model = "example-speech"
+api_key_env = "EXAMPLE_SPEECH_KEY"
+
+[[studio.image_fallbacks]]
+provider = "openrouter_image"
+model = "example/image-model"
+api_key_env = "EXAMPLE_VOICE_KEY"
+
+[providers."Spare box"]
+kind = "openai"
+base_url = "http://sparebox:8000/v1"
 
 [openers]
 enabled = true
@@ -125,6 +144,29 @@ def screenshot() -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
+# A fictional provider model list (OpenRouter's shape): which models reason, and one that names its own levels.
+PREVIEW_MODELS = {"data": [
+    {"id": "example/chat-model", "name": "Example: Chat", "supported_parameters": ["tools", "reasoning"]},
+    {"id": "example/chat-large", "name": "Example: Chat Large", "supported_parameters": ["tools", "reasoning"],
+     "supported_reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+    {"id": "example/coder-pro", "name": "Example: Coder Pro", "supported_parameters": ["tools", "reasoning"]},
+    {"id": "example/draft-model", "name": "Example: Draft", "supported_parameters": ["tools", "reasoning"]},
+    {"id": "example/tiny", "name": "Example: Tiny", "supported_parameters": ["tools"]},
+    {"id": "example/vision-model", "name": "Example: Vision", "supported_parameters": ["tools"]},
+]}
+
+
+def preview_models(script: ModelScript):
+    """The fake providers: a model list for GET /models, a yes for a decisions request, else the chat script."""
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.endswith("/models"):
+            return httpx.Response(200, json=PREVIEW_MODELS)
+        if request.url.path.endswith("/decisions"):
+            return httpx.Response(200, json={"answers": {"check": {"type": "choice", "choice": "yes"}}})
+        return script(request)
+    return handle
+
+
 def build(home: Path, port: int) -> handlers.App:
     (home / "config.toml").write_text(CONFIG)
     (home / ".env").write_text("EXAMPLE_LLM_KEY=preview-made-up-value\nTAVILY_API_KEY=preview-made-up-value\n")
@@ -133,7 +175,7 @@ def build(home: Path, port: int) -> handlers.App:
     config = config.model_copy(update={
         "web": config.web.model_copy(update={"dev_token_env": TOKEN_ENV, "bind": "127.0.0.1", "port": port}),
     })
-    client = ChatClient(endpoint, None, httpx.AsyncClient(transport=httpx.MockTransport(ModelScript())), sleep=no_sleep)
+    client = ChatClient(endpoint, None, httpx.AsyncClient(transport=httpx.MockTransport(preview_models(ModelScript()))), sleep=no_sleep)
     app = handlers.App(
         config=config, home=Home(home), store=Store(home, owner_id=OWNER), client=client,
         bot=FakeBot(), bot_username="dombot", sleep=no_sleep, bot_id=BOT_USER.id,

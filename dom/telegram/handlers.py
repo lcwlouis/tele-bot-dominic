@@ -118,11 +118,17 @@ class App:
         return self.store.owner_id
 
     def apply_model_routes(self, saved: Config) -> None:
-        """Swap the configured routes for new calls. In-flight completions keep their current chain."""
-        models = {name: endpoint for name, endpoint in self.config.models.items() if name not in MODEL_ROLES}
-        models.update({name: saved.models[name] for name in MODEL_ROLES if name in saved.models})
-        config = self.config.model_copy(update={"models": models})
+        """Swap the configured routes (and triage's decisions client) for new calls. In-flight calls keep theirs."""
+        routed = (*MODEL_ROLES, "triage")
+        models = {name: endpoint for name, endpoint in self.config.models.items() if name not in routed}
+        models.update({name: saved.models[name] for name in routed if name in saved.models})
+        config = self.config.model_copy(update={"models": models, "provider_setups": saved.provider_setups})
         current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
+        triage = config.models["triage"]
+        if triage != self.config.models.get("triage"):
+            key = config.secret(triage.api_key_env) if triage.api_key_env else None
+            self.jev = JevClient(current.http, key, triage.model, triage.base_url, usage=current.usage) if key else None
+            self.dispatch.jev = self.jev
         chat, media, draft, escalation = (routed_client(config, role, current.http, current.usage)
                                           for role in ("chat", "media", "drafting", "escalation"))
         if isinstance(self.client, FallbackClient):

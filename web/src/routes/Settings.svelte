@@ -1,11 +1,13 @@
 <script lang="ts">
   import Activity from "@lucide/svelte/icons/activity";
+  import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import Cloud from "@lucide/svelte/icons/cloud";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import Lock from "@lucide/svelte/icons/lock";
   import Pencil from "@lucide/svelte/icons/pencil";
+  import Plus from "@lucide/svelte/icons/plus";
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Server from "@lucide/svelte/icons/server";
+  import Trash from "@lucide/svelte/icons/trash";
   import { onMount } from "svelte";
   import {
     getJSON,
@@ -13,15 +15,19 @@
     type ModelSettings,
     type Permission,
     type Permissions,
+    type ProviderSetup,
     type ProviderView,
-    type Role,
+    type SettingsRole,
+    type StudioChain,
     type TestResult,
   } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
+  import { forgetLists } from "$lib/components/settings/modelLists.svelte";
+  import ProviderEditor from "$lib/components/settings/ProviderEditor.svelte";
   import RoleEditor from "$lib/components/settings/RoleEditor.svelte";
-  import { ROLE_INFO, ROLES, host, seconds, slotLabel } from "$lib/components/settings/roles";
+  import { DECISION_ROLES, KIND_INFO, ROLE_INFO, ROLES, host, seconds, slotLabel, useLabel } from "$lib/components/settings/roles";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
@@ -41,9 +47,13 @@
   let revision = $state("");
   let failed = $state("");
   let section = $state("models");
-  let editing = $state<Role | null>(null);
+  // One edit at a time across both tabs: each save takes the revision the last one returned.
+  type Editing = { role: SettingsRole } | { provider: ProviderSetup | null };
+  let editing = $state<Editing | null>(null);
+  let reordering = $state(""); // the role whose fallback is moving up, which shows its progress
   let tests = $state<Record<string, TestResult | "running">>({});
   let pending = $state<Permission | null>(null); // a switch waiting on its confirm dialog
+  let removing = $state<ProviderSetup | null>(null); // a provider waiting on its remove dialog
   // One permission save at a time: each takes the revision the last one returned.
   let savingPermission = $state(false);
   let savingId = $state(""); // the switch being saved, which shows its progress
@@ -66,22 +76,100 @@
 
   onMount(load);
 
-  function saved(result: ModelSettings) {
+  function saved(result: ModelSettings, message = "Saved.") {
     models = result;
     revision = result.revision;
     editing = null;
     tests = {};
-    toast.show("ok", result.restart_required ? "Saved. Restart Dom to apply." : "Saved.");
+    toast.show("ok", result.restart_required ? `${message} Restart Dom to apply.` : message);
   }
 
+  function providerSaved(result: ModelSettings) {
+    forgetLists(); // an address may have moved; the next picker fetches again
+    saved(result, "Provider saved.");
+  }
+
+  const editingLabel = $derived(
+    editing === null ? "" : "role" in editing ? ROLE_INFO[editing.role].label : (editing.provider?.name ?? "the new provider"),
+  );
+  const isEditingRole = (role: SettingsRole) => editing !== null && "role" in editing && editing.role === role;
+  const isEditingProvider = (name: string | null) =>
+    editing !== null && "provider" in editing && (editing.provider?.name ?? null) === name;
+
   /** Test a saved slot (index), or the whole saved search chain (null). */
-  async function test(role: Role, index: number | null) {
+  async function test(role: SettingsRole, index: number | null) {
     const key = `${role}:${index}`;
     tests[key] = "running";
     try {
       tests[key] = await send<TestResult>("/api/models/test", { revision, role, index });
     } catch {
       delete tests[key];
+    }
+  }
+
+  async function testProvider(provider: ProviderSetup) {
+    const key = `provider:${provider.name}`;
+    tests[key] = "running";
+    try {
+      tests[key] = await send<TestResult>("/api/providers/test", { revision, name: provider.name });
+    } catch {
+      delete tests[key];
+    }
+  }
+
+  /** A saved slot as the save route takes it back. */
+  function slotBody(settings: ModelSettings, role: SettingsRole, view: ProviderView) {
+    if (role === "search") {
+      const needsModel = settings.search_providers.find((item) => item.id === view.provider)?.needs_model ?? false;
+      return { provider: view.provider, base_url: view.base_url, model: needsModel ? view.model : "", api_key_env: view.api_key_env };
+    }
+    if (role === "triage") return { base_url: view.base_url, model: view.model, api_key_env: view.api_key_env };
+    return { base_url: view.base_url, model: view.model, api_key_env: view.api_key_env, reasoning_effort: view.reasoning_effort };
+  }
+
+  /** Move a fallback one place up; the first fallback becomes the primary. Moved slots are not tested again. */
+  async function moveUp(settings: ModelSettings, role: SettingsRole, index: number) {
+    const route = settings.roles[role];
+    const chain = [route.primary!, ...route.fallbacks].map((view) => slotBody(settings, role, view));
+    [chain[index - 1], chain[index]] = [chain[index], chain[index - 1]];
+    reordering = role;
+    try {
+      const [primary, ...fallbacks] = chain;
+      saved(await send<ModelSettings>("/api/models", { revision, role, primary, fallbacks }), `${ROLE_INFO[role].label}: order saved.`);
+    } catch {
+      // the toast says why; the saved order stands
+    } finally {
+      reordering = "";
+    }
+  }
+
+  const STUDIO: { chain: StudioChain; label: string; summary: string }[] = [
+    { chain: "voice", label: "Voice notes", summary: "Tried in order when the local studio can't voice a note." },
+    { chain: "image", label: "Photos", summary: "Tried in order when the local studio can't make a photo." },
+  ];
+  const STUDIO_PROVIDERS: Record<string, string> = {
+    openrouter_tts: "OpenRouter speech", openrouter_image: "OpenRouter image", gemini_tts: "Gemini speech",
+  };
+
+  /** Move a studio backup one place up. It applies at once and tests nothing: no new provider is reached. */
+  async function moveStudio(chain: StudioChain, index: number) {
+    reordering = `studio-${chain}`;
+    try {
+      const label = STUDIO.find((item) => item.chain === chain)!.label;
+      saved(await send<ModelSettings>("/api/models/studio-move", { revision, chain, index }), `${label}: order saved.`);
+    } catch {
+      // the toast says why
+    } finally {
+      reordering = "";
+    }
+  }
+
+  async function removeProvider(provider: ProviderSetup) {
+    removing = null;
+    try {
+      saved(await send<ModelSettings>("/api/providers/remove", { revision, name: provider.name }), `${provider.name} removed.`);
+    } catch {
+      // the toast says why
     }
   }
 
@@ -111,60 +199,10 @@
     else setPermission(item, enabled);
   }
 
-  type Usage = { role: Role | "triage"; index: number };
   type KeyState = "none" | "set" | "missing";
-  type Provider = { id: string; name: string; endpoint: ProviderView | null; base_url: string; kind: "local" | "cloud"; key: string | null; keyState: KeyState; uses: Usage[] };
   const keyState = (variable: string | null, set: boolean): KeyState => (!variable ? "none" : set ? "set" : "missing");
-  const RANK: Record<KeyState, number> = { none: 0, set: 1, missing: 2 };
-  /** A group of slots shows its worst key: one missing key makes the provider's key missing. */
-  function worse(entry: Provider, key: string | null, state: KeyState) {
-    if (RANK[state] > RANK[entry.keyState]) [entry.key, entry.keyState] = [key, state];
-  }
-
-  /** Every saved endpoint, grouped by address (and search provider): who serves Dom, and which roles use it. */
-  function providers(settings: ModelSettings, searchOnly: boolean): Provider[] {
-    const found = new Map<string, Provider>();
-    const note = (endpoint: ProviderView, use: Usage) => {
-      const id = `${endpoint.provider ?? ""} ${endpoint.base_url}`;
-      const entry = found.get(id) ?? {
-        id,
-        name: endpoint.provider ? settings.search_providers.find((item) => item.id === endpoint.provider)!.label : host(endpoint.base_url),
-        endpoint,
-        base_url: endpoint.base_url,
-        kind: endpoint.kind,
-        key: endpoint.api_key_env,
-        keyState: keyState(endpoint.api_key_env, endpoint.key_set),
-        uses: [],
-      };
-      entry.uses.push(use);
-      worse(entry, endpoint.api_key_env, keyState(endpoint.api_key_env, endpoint.key_set));
-      found.set(id, entry);
-    };
-    for (const role of ROLES) {
-      if ((role === "search") !== searchOnly) continue;
-      const route = settings.roles[role];
-      [route.primary, ...route.fallbacks].forEach((endpoint, index) => endpoint && note(endpoint, { role, index }));
-    }
-    if (!searchOnly && settings.triage.base_url) {
-      const id = ` ${settings.triage.base_url}`;
-      const entry = found.get(id);
-      const triageKey = keyState(settings.triage.api_key_env, settings.triage.key_set);
-      if (entry) {
-        entry.uses.push({ role: "triage", index: 0 });
-        worse(entry, settings.triage.api_key_env, triageKey);
-      } else {
-        found.set(id, {
-          id, name: host(settings.triage.base_url), endpoint: null, base_url: settings.triage.base_url,
-          kind: /^http:/.test(settings.triage.base_url) ? "local" : "cloud", key: settings.triage.api_key_env, keyState: triageKey,
-          uses: [{ role: "triage", index: 0 }],
-        });
-      }
-    }
-    return [...found.values()];
-  }
-
-  const useLabel = (use: Usage) =>
-    use.role === "triage" ? "Triage" : use.index === 0 ? ROLE_INFO[use.role].label : `${ROLE_INFO[use.role].label} ${slotLabel(use.index).toLowerCase()}`;
+  const slotName = (settings: ModelSettings, view: ProviderView) =>
+    view.model || settings.search_providers.find((item) => item.id === view.provider)?.label;
 </script>
 
 {#snippet keyBadge(state: KeyState)}
@@ -177,7 +215,7 @@
   {/if}
 {/snippet}
 
-{#snippet slotTest(role: Role, index: number, name: string)}
+{#snippet slotTest(role: SettingsRole, index: number, name: string)}
   <Button variant="ghost" size="xs" onclick={() => test(role, index)} disabled={tests[`${role}:${index}`] === "running"}>
     <Activity data-icon="inline-start" aria-hidden="true" /> Test <span class="sr-only">{name}</span>
   </Button>
@@ -195,6 +233,178 @@
       <span class="text-coral">{seconds(outcome.latency_ms)} · {outcome.error}</span>
     {/if}
   </p>
+{/snippet}
+
+{#snippet waitNote(id: string)}
+  {#if editing !== null}
+    <!-- One edit at a time: each save takes the revision the last one returned. -->
+    <p {id} class="text-xs text-muted-foreground">Finish editing {editingLabel} first.</p>
+  {/if}
+{/snippet}
+
+{#snippet roleCard(settings: ModelSettings, role: SettingsRole)}
+  {@const info = ROLE_INFO[role]}
+  {@const route = settings.roles[role]}
+  {#if isEditingRole(role)}
+    <RoleEditor {role} {settings} {revision} onsaved={(result) => saved(result)} oncancel={() => (editing = null)} />
+  {:else}
+    {@const inherited = role === "escalation" && !route.primary}
+    {@const testKey = `${role}:${role === "search" ? null : 0}`}
+    {@const busy = editing !== null || reordering !== ""}
+    <Card.Root aria-labelledby={`${role}-title`}>
+      <Card.Header>
+        <Card.Title id={`${role}-title`} class="text-lg">{info.label}</Card.Title>
+        <Card.Description>{info.summary}</Card.Description>
+        <Card.Action>
+          <span class="grid size-9 place-items-center rounded-lg border bg-raised text-signal" aria-hidden="true"><info.icon class="size-4" /></span>
+        </Card.Action>
+      </Card.Header>
+      <Card.Content class="flex flex-1 flex-col gap-4">
+        {#if route.primary}
+          {@const primary = route.primary}
+          <div class="rounded-xl border bg-raised/40 p-3.5">
+            <div class="flex items-start justify-between gap-2">
+              <p class="min-w-0 font-mono text-sm break-all text-signal-strong">{slotName(settings, primary)}</p>
+              <Badge variant={primary.kind === "local" ? "default" : "outline"}>{primary.kind === "local" ? "Local" : "Cloud"}</Badge>
+            </div>
+            <p class="mt-1 text-sm break-all text-muted-foreground">
+              {host(primary.base_url)}{primary.reasoning_effort ? ` · ${primary.reasoning_effort} effort` : ""}
+            </p>
+            {#if primary.api_key_env && !primary.key_set}
+              <p class="mt-2 text-sm text-coral">Add {primary.api_key_env} to .env</p>
+            {/if}
+            {#if role === "search"}
+              <!-- The footer tests the whole chain; this tests the primary alone. -->
+              <div class="mt-2">{@render slotTest(role, 0, `${info.label} primary`)}</div>
+              {@render result(`${role}:0`)}
+            {/if}
+          </div>
+          {#if role !== "triage"}
+            <div>
+              <p class="kicker">If it fails</p>
+              {#if route.fallbacks.length}
+                <ol class="mt-1.5 grid gap-1">
+                  {#each route.fallbacks as fallback, index (index)}
+                    <li class="text-sm">
+                      <div class="flex items-start gap-2">
+                        <span class="font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
+                        <span class="min-w-0 flex-1 font-mono break-all">{slotName(settings, fallback)} · {host(fallback.base_url)}</span>
+                      </div>
+                      <div class="ml-6 flex flex-wrap items-center gap-1">
+                        {@render slotTest(role, index + 1, `${info.label} fallback ${index + 1}`)}
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onclick={() => moveUp(settings, role, index + 1)}
+                          disabled={busy}
+                          aria-describedby={editing !== null ? `${role}-wait` : undefined}
+                        >
+                          <ArrowUp data-icon="inline-start" aria-hidden="true" /> Move up
+                          <span class="sr-only">{info.label} fallback {index + 1}{index === 0 ? ", making it the primary" : ""}</span>
+                        </Button>
+                      </div>
+                      {#if fallback.api_key_env && !fallback.key_set}<p class="ml-6 text-coral">Add {fallback.api_key_env} to .env</p>{/if}
+                      <div class="ml-6">{@render result(`${role}:${index + 1}`)}</div>
+                    </li>
+                  {/each}
+                </ol>
+              {:else}
+                <p class="mt-1.5 text-sm text-muted-foreground">
+                  {role === "chat" ? "The fallback role, if set" : role === "drafting" ? "The chat route" : "No backup"}
+                </p>
+              {/if}
+            </div>
+          {/if}
+        {:else}
+          <p class="rounded-xl border border-dashed p-3.5 text-sm text-muted-foreground">
+            {inherited ? "Not set: uses the drafting providers." : "Not set."}
+          </p>
+        {/if}
+        {#if info.note}<p class="text-xs text-muted-foreground">{info.note}</p>{/if}
+        {#if reordering === role}
+          <p role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
+          </p>
+        {/if}
+        {@render result(testKey)}
+      </Card.Content>
+      <Card.Footer class="flex-wrap gap-2">
+        <Button variant="secondary" onclick={() => (editing = { role })} disabled={busy} aria-describedby={editing !== null ? `${role}-wait` : undefined}>
+          <Pencil data-icon="inline-start" aria-hidden="true" /> {route.primary ? "Edit" : "Set up"}
+          <span class="sr-only">{info.label}</span>
+        </Button>
+        {#if route.primary || inherited}
+          <Button variant="ghost" onclick={() => test(role, role === "search" ? null : 0)} disabled={tests[testKey] === "running"}>
+            <Activity data-icon="inline-start" aria-hidden="true" /> {role === "search" ? "Test chain" : "Test"}
+            <span class="sr-only">{info.label}</span>
+          </Button>
+        {/if}
+        {@render waitNote(`${role}-wait`)}
+      </Card.Footer>
+    </Card.Root>
+  {/if}
+{/snippet}
+
+{#snippet providerCard(settings: ModelSettings, provider: ProviderSetup, n: string)}
+  {@const testKey = `provider:${provider.name}`}
+  {@const search = settings.search_providers.find((item) => item.id === provider.kind)}
+  {#if isEditingProvider(provider.name)}
+    <ProviderEditor original={provider} {settings} {revision} onsaved={providerSaved} oncancel={() => (editing = null)} />
+  {:else}
+    <Card.Root aria-labelledby={`provider-${n}`}>
+      <Card.Header>
+        <div class="flex items-center gap-3">
+          <span class="grid size-9 shrink-0 place-items-center rounded-lg border bg-raised text-signal" aria-hidden="true">
+            {#if provider.is_local}<Server class="size-4" />{:else}<Cloud class="size-4" />{/if}
+          </span>
+          <div class="min-w-0">
+            <Card.Title id={`provider-${n}`} class="text-base break-all">{provider.name}</Card.Title>
+            <div class="mt-1 flex flex-wrap gap-1">
+              <Badge variant="outline">{KIND_INFO[provider.kind].label}</Badge>
+              <Badge variant={provider.is_local ? "default" : "outline"}>{provider.is_local ? "Local" : "Cloud"}</Badge>
+              {@render keyBadge(keyState(provider.api_key_env, provider.key_set))}
+            </div>
+          </div>
+        </div>
+      </Card.Header>
+      <Card.Content class="flex flex-1 flex-col gap-3">
+        <p class="rounded-lg bg-raised/60 px-3 py-2 font-mono text-xs break-all text-muted-foreground">
+          {provider.base_url}{provider.api_key_env ? ` · ${provider.api_key_env}` : ""}
+        </p>
+        {#if provider.api_key_env && !provider.key_set}<p class="text-sm text-coral">Add {provider.api_key_env} to .env</p>{/if}
+        {#if search}
+          <p class="text-xs text-muted-foreground">
+            {search.data_retention}
+            {#if search.policy_url}
+              <a class="text-signal-strong underline underline-offset-2" href={search.policy_url} target="_blank" rel="noopener noreferrer">{search.policy_label ?? "Data policy"}</a>
+            {/if}
+          </p>
+        {/if}
+        <div>
+          <p class="kicker">Used by</p>
+          <p class="mt-1 text-sm">{provider.uses.length ? provider.uses.map(useLabel).join(" · ") : "Nothing yet"}</p>
+        </div>
+        {#if !provider.saved}
+          <p class="text-xs text-muted-foreground">Found in config.toml's roles. Edit to name and save it here.</p>
+        {/if}
+        {@render result(testKey)}
+      </Card.Content>
+      <Card.Footer class="flex-wrap gap-2">
+        <Button variant="secondary" onclick={() => (editing = { provider })} disabled={editing !== null} aria-describedby={editing !== null ? `provider-${n}-wait` : undefined}>
+          <Pencil data-icon="inline-start" aria-hidden="true" /> Edit <span class="sr-only">{provider.name}</span>
+        </Button>
+        <Button variant="ghost" onclick={() => testProvider(provider)} disabled={tests[testKey] === "running"}>
+          <Activity data-icon="inline-start" aria-hidden="true" /> Test <span class="sr-only">{provider.name}</span>
+        </Button>
+        {#if provider.saved}
+          <Button variant="ghost" onclick={() => (removing = provider)} disabled={editing !== null}>
+            <Trash data-icon="inline-start" aria-hidden="true" /> Remove <span class="sr-only">{provider.name}</span>
+          </Button>
+        {/if}
+        {@render waitNote(`provider-${n}-wait`)}
+      </Card.Footer>
+    </Card.Root>
+  {/if}
 {/snippet}
 
 <PageHeader kicker="System / Configuration" title="Settings" subtitle="Fine-tune how Dom thinks and what he may do." />
@@ -223,186 +433,113 @@
     </Tabs.List>
 
     <Tabs.Content value="models">
-      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p class="kicker">{String(ROLES.length + 1).padStart(2, "0")} jobs / routing</p>
-        <Badge variant="outline"><Lock aria-hidden="true" /> Triage locked</Badge>
-      </div>
-      <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {#each ROLES as role (role)}
-          {@const info = ROLE_INFO[role]}
-          {@const route = settings.roles[role]}
-          {#if editing === role}
-            <RoleEditor {role} {settings} {revision} onsaved={saved} oncancel={() => (editing = null)} />
-          {:else}
-            {@const inherited = role === "escalation" && !route.primary}
-            {@const testKey = `${role}:${role === "search" ? null : 0}`}
-            <Card.Root aria-labelledby={`${role}-title`}>
+      <section aria-labelledby="routing-title" class="mb-8">
+        <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <h2 id="routing-title" class="text-lg font-semibold">Jobs</h2>
+          <p class="kicker">{String(ROLES.length).padStart(2, "0")} jobs / routing</p>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {#each ROLES as role (role)}{@render roleCard(settings, role)}{/each}
+        </div>
+      </section>
+      <section aria-labelledby="decisions-title" class="mb-8">
+        <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <h2 id="decisions-title" class="text-lg font-semibold">Decision models</h2>
+          <p class="kicker">{String(DECISION_ROLES.length).padStart(2, "0")} {DECISION_ROLES.length === 1 ? "model" : "models"}</p>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {#each DECISION_ROLES as role (role)}{@render roleCard(settings, role)}{/each}
+        </div>
+      </section>
+      <section aria-labelledby="studio-title">
+        <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <h2 id="studio-title" class="text-lg font-semibold">Studio cloud backups</h2>
+          <p class="kicker">After the local studio</p>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {#each STUDIO as group (group.chain)}
+            {@const chain = settings.studio[group.chain]}
+            <Card.Root aria-labelledby={`studio-${group.chain}-title`}>
               <Card.Header>
-                <Card.Title id={`${role}-title`} class="text-lg">{info.label}</Card.Title>
-                <Card.Description>{info.summary}</Card.Description>
-                <Card.Action>
-                  <span class="grid size-9 place-items-center rounded-lg border bg-raised text-signal" aria-hidden="true"><info.icon class="size-4" /></span>
-                </Card.Action>
+                <Card.Title id={`studio-${group.chain}-title`} class="text-lg">{group.label}</Card.Title>
+                <Card.Description>{group.summary}</Card.Description>
               </Card.Header>
-              <Card.Content class="flex flex-1 flex-col gap-4">
-                {#if route.primary}
-                  {@const primary = route.primary}
-                  <div class="rounded-xl border bg-raised/40 p-3.5">
-                    <div class="flex items-start justify-between gap-2">
-                      <p class="min-w-0 font-mono text-sm break-all text-signal-strong">{primary.model || settings.search_providers.find((item) => item.id === primary.provider)?.label}</p>
-                      <Badge variant={primary.kind === "local" ? "default" : "outline"}>{primary.kind === "local" ? "Local" : "Cloud"}</Badge>
-                    </div>
-                    <p class="mt-1 text-sm break-all text-muted-foreground">{host(primary.base_url)}</p>
-                    {#if primary.api_key_env && !primary.key_set}
-                      <p class="mt-2 text-sm text-coral">Add {primary.api_key_env} to .env</p>
-                    {/if}
-                    {#if role === "search"}
-                      <!-- The footer tests the whole chain; this tests the primary alone. -->
-                      <div class="mt-2">{@render slotTest(role, 0, `${info.label} primary`)}</div>
-                      {@render result(`${role}:0`)}
-                    {/if}
-                  </div>
-                  <div>
-                    <p class="kicker">If it fails</p>
-                    {#if route.fallbacks.length}
-                      <ol class="mt-1.5 grid gap-1">
-                        {#each route.fallbacks as fallback, index (index)}
-                          <li class="text-sm">
-                            <div class="flex items-start gap-2">
-                              <span class="font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
-                              <span class="min-w-0 flex-1 font-mono break-all">{fallback.model || settings.search_providers.find((item) => item.id === fallback.provider)?.label} · {host(fallback.base_url)}</span>
-                              {@render slotTest(role, index + 1, `${info.label} fallback ${index + 1}`)}
-                            </div>
-                            {#if fallback.api_key_env && !fallback.key_set}<p class="ml-6 text-coral">Add {fallback.api_key_env} to .env</p>{/if}
-                            <div class="ml-6">{@render result(`${role}:${index + 1}`)}</div>
-                          </li>
-                        {/each}
-                      </ol>
-                    {:else}
-                      <p class="mt-1.5 text-sm text-muted-foreground">
-                        {role === "chat" ? "The fallback role, if set" : role === "drafting" ? "The chat route" : "No backup"}
-                      </p>
-                    {/if}
-                  </div>
+              <Card.Content class="flex flex-1 flex-col gap-3">
+                {#if chain.length}
+                  <ol class="grid gap-2">
+                    {#each chain as item, index (index)}
+                      <li class="text-sm">
+                        <div class="flex items-start gap-2">
+                          <span class="font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
+                          <div class="min-w-0 flex-1">
+                            <p class="font-mono break-all">{item.model}</p>
+                            <p class="text-xs text-muted-foreground">
+                              {STUDIO_PROVIDERS[item.provider] ?? item.provider}{item.provider === "gemini_tts" && !item.paid ? " · skipped until marked paid" : ""}
+                            </p>
+                            {#if !item.key_set}<p class="text-coral">Add {item.api_key_env} to .env</p>{/if}
+                          </div>
+                        </div>
+                        {#if index > 0}
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            class="ml-6"
+                            onclick={() => moveStudio(group.chain, index)}
+                            disabled={editing !== null || reordering !== ""}
+                          >
+                            <ArrowUp data-icon="inline-start" aria-hidden="true" /> Move up
+                            <span class="sr-only">{group.label} backup {index + 1}</span>
+                          </Button>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ol>
                 {:else}
-                  <p class="rounded-xl border border-dashed p-3.5 text-sm text-muted-foreground">
-                    {inherited ? "Not set: uses the drafting providers." : "Not set."}
+                  <p class="rounded-xl border border-dashed p-3.5 text-sm text-muted-foreground">No cloud backup: only the local studio.</p>
+                {/if}
+                {#if reordering === `studio-${group.chain}`}
+                  <p role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
                   </p>
                 {/if}
-                {#if info.note}<p class="text-xs text-muted-foreground">{info.note}</p>{/if}
-                {@render result(testKey)}
+                <p class="mt-auto text-xs text-muted-foreground">
+                  Add or change backups in <code class="font-mono">config.toml</code> (<code class="font-mono">[[studio.{group.chain}_fallbacks]]</code>); a paid key is confirmed there.
+                </p>
               </Card.Content>
-              <Card.Footer class="flex-wrap gap-2">
-                <Button variant="secondary" onclick={() => (editing = role)} disabled={editing !== null} aria-describedby={editing !== null ? `${role}-wait` : undefined}>
-                  <Pencil data-icon="inline-start" aria-hidden="true" /> {route.primary ? "Edit" : "Set up"}
-                  <span class="sr-only">{info.label}</span>
-                </Button>
-                {#if route.primary || inherited}
-                  <Button variant="ghost" onclick={() => test(role, role === "search" ? null : 0)} disabled={tests[testKey] === "running"}>
-                    <Activity data-icon="inline-start" aria-hidden="true" /> {role === "search" ? "Test chain" : "Test"}
-                    <span class="sr-only">{info.label}</span>
-                  </Button>
-                {/if}
-                {#if editing !== null}
-                  <!-- One slot is edited at a time: each save takes the revision the last one returned. -->
-                  <p id={`${role}-wait`} class="text-xs text-muted-foreground">Finish editing {ROLE_INFO[editing].label} first.</p>
-                {/if}
-              </Card.Footer>
             </Card.Root>
-          {/if}
-        {/each}
-
-        <Card.Root aria-labelledby="triage-title">
-          <Card.Header>
-            <Card.Title id="triage-title" class="text-lg">Triage</Card.Title>
-            <Card.Description>Decides whether to reply.</Card.Description>
-            <Card.Action>
-              <span class="grid size-9 place-items-center rounded-lg border bg-raised text-signal" aria-hidden="true"><Lock class="size-4" /></span>
-            </Card.Action>
-          </Card.Header>
-          <Card.Content class="flex flex-1 flex-col gap-4">
-            <div class="rounded-xl border bg-raised/40 p-3.5">
-              <div class="flex items-start justify-between gap-2">
-                <p class="min-w-0 font-mono text-sm break-all text-signal-strong">{settings.triage.model}</p>
-                {@render keyBadge(keyState(settings.triage.api_key_env, settings.triage.key_set))}
-              </div>
-              <p class="mt-1 text-sm break-all text-muted-foreground">{host(settings.triage.base_url)}</p>
-              {#if settings.triage.api_key_env && !settings.triage.key_set}
-                <p class="mt-2 text-sm text-coral">Add {settings.triage.api_key_env} to .env</p>
-              {/if}
-            </div>
-            <p class="text-xs text-muted-foreground">
-              Jev, a fixed classifier: it cannot be swapped for a chat model here. Change it in config.toml.
-            </p>
-          </Card.Content>
-        </Card.Root>
-      </div>
+          {/each}
+        </div>
+      </section>
     </Tabs.Content>
 
     <Tabs.Content value="providers">
-      {#each [false, true] as searchOnly (searchOnly)}
-        {@const list = providers(settings, searchOnly)}
-        <section aria-labelledby={`providers-${searchOnly}`} class="mb-8">
+      <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <p class="max-w-prose text-sm text-muted-foreground">
+          Each provider is an address and a key variable. Key values live in <code class="font-mono">.env</code>; this page only shows whether each is set.
+        </p>
+        <Button onclick={() => (editing = { provider: null })} disabled={editing !== null} aria-describedby={editing !== null ? "provider-add-wait" : undefined}>
+          <Plus data-icon="inline-start" aria-hidden="true" /> Add provider
+        </Button>
+        {@render waitNote("provider-add-wait")}
+      </div>
+      {#if isEditingProvider(null)}
+        <div class="mb-8 grid"><ProviderEditor original={null} {settings} {revision} onsaved={providerSaved} oncancel={() => (editing = null)} /></div>
+      {/if}
+      {#each ["models", "search"] as group (group)}
+        {@const list = settings.providers.filter((item) => KIND_INFO[item.kind].group === group)}
+        <section aria-labelledby={`providers-${group}`} class="mb-8">
           <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
-            <h2 id={`providers-${searchOnly}`} class="text-lg font-semibold">{searchOnly ? "Web search" : "Model providers"}</h2>
-            <p class="kicker">{String(list.length).padStart(2, "0")} {list.length === 1 ? "endpoint" : "endpoints"}</p>
+            <h2 id={`providers-${group}`} class="text-lg font-semibold">{group === "search" ? "Web search" : "Model providers"}</h2>
+            <p class="kicker">{String(list.length).padStart(2, "0")} {list.length === 1 ? "provider" : "providers"}</p>
           </div>
           {#if list.length === 0}
-            <StatusNote title={searchOnly ? "No search providers" : "No model providers"} detail="Set one up from a role under Models.">
-              <Button variant="secondary" size="sm" onclick={() => (section = "models")}>Go to Models</Button>
-            </StatusNote>
+            <StatusNote title={group === "search" ? "No search providers" : "No model providers"} detail="Add one with Add provider, then pick it for a role under Models." />
           {/if}
           <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {#each list as provider, n (provider.id)}
-              {@const testable = provider.uses.find((use) => use.role !== "triage") as { role: Role; index: number } | undefined}
-              {@const testKey = testable ? `${testable.role}:${testable.index}` : ""}
-              <Card.Root aria-labelledby={`provider-${searchOnly}-${n}`}>
-                <Card.Header>
-                  <div class="flex items-center gap-3">
-                    <span class="grid size-9 shrink-0 place-items-center rounded-lg border bg-raised text-signal" aria-hidden="true">
-                      {#if provider.kind === "local"}<Server class="size-4" />{:else}<Cloud class="size-4" />{/if}
-                    </span>
-                    <div class="min-w-0">
-                      <Card.Title id={`provider-${searchOnly}-${n}`} class="text-base break-all">{provider.name}</Card.Title>
-                      <Badge variant={provider.kind === "local" ? "default" : "outline"} class="mt-1">{provider.kind === "local" ? "Local" : "Cloud"}</Badge>
-                    </div>
-                  </div>
-                  <Card.Action>{@render keyBadge(provider.keyState)}</Card.Action>
-                </Card.Header>
-                <Card.Content class="flex flex-1 flex-col gap-3">
-                  <p class="rounded-lg bg-raised/60 px-3 py-2 font-mono text-xs break-all text-muted-foreground">{provider.base_url}</p>
-                  {#if provider.keyState === "missing"}<p class="text-sm text-coral">Add {provider.key} to .env</p>{/if}
-                  {#if provider.endpoint?.data_retention}
-                    <p class="text-xs text-muted-foreground">
-                      {provider.endpoint.data_retention}
-                      {#if provider.endpoint.policy_url}
-                        <a class="text-signal-strong underline underline-offset-2" href={provider.endpoint.policy_url} target="_blank" rel="noopener noreferrer">{provider.endpoint.policy_label ?? "Data policy"}</a>
-                      {/if}
-                    </p>
-                  {/if}
-                  <div>
-                    <p class="kicker">Used by</p>
-                    <p class="mt-1 text-sm">{provider.uses.map(useLabel).join(" · ")}</p>
-                  </div>
-                  {#if testKey}{@render result(testKey)}{/if}
-                </Card.Content>
-                {#if testable}
-                  <Card.Footer>
-                    <Button variant="secondary" onclick={() => test(testable.role, testable.index)} disabled={tests[testKey] === "running"} class="ml-auto">
-                      <Activity data-icon="inline-start" aria-hidden="true" /> Test <span class="sr-only">{provider.name}</span>
-                    </Button>
-                  </Card.Footer>
-                {/if}
-              </Card.Root>
-            {/each}
+            {#each list as provider, n (provider.name)}{@render providerCard(settings, provider, `${group}-${n}`)}{/each}
           </div>
         </section>
       {/each}
-      <p class="text-sm text-muted-foreground">
-        To add, change or reorder a provider, edit a role under
-        <Button variant="link" class="h-auto p-0" onclick={() => (section = "models")}>Models</Button>.
-        Key values live in <code class="font-mono">.env</code>; this page only shows whether each is set.
-      </p>
     </Tabs.Content>
 
     <Tabs.Content value="permissions">
@@ -454,5 +591,33 @@
       <AlertDialog.Cancel variant="outline">Keep it on</AlertDialog.Cancel>
       <AlertDialog.Action variant="destructive-solid" onclick={() => pending && setPermission(pending, false)}>Turn off</AlertDialog.Action>
     </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<AlertDialog.Root open={removing !== null} onOpenChange={(open) => !open && (removing = null)}>
+  <AlertDialog.Content>
+    {#if removing?.uses.length}
+      <AlertDialog.Header>
+        <AlertDialog.Title>{removing.name} is still in use</AlertDialog.Title>
+        <AlertDialog.Description>
+          {removing.uses.map(useLabel).join(", ")} {removing.uses.length === 1 ? "uses" : "use"} it. Pick another provider for
+          {removing.uses.length === 1 ? "that role" : "those roles"} under Models first.
+        </AlertDialog.Description>
+      </AlertDialog.Header>
+      <AlertDialog.Footer>
+        <AlertDialog.Cancel variant="outline">OK</AlertDialog.Cancel>
+      </AlertDialog.Footer>
+    {:else if removing}
+      <AlertDialog.Header>
+        <AlertDialog.Title>Remove {removing.name}?</AlertDialog.Title>
+        <AlertDialog.Description>
+          Its table leaves config.toml. Nothing uses it, and you can add it again later.
+        </AlertDialog.Description>
+      </AlertDialog.Header>
+      <AlertDialog.Footer>
+        <AlertDialog.Cancel variant="outline">Keep it</AlertDialog.Cancel>
+        <AlertDialog.Action variant="destructive-solid" onclick={() => removing && removeProvider(removing)}>Remove</AlertDialog.Action>
+      </AlertDialog.Footer>
+    {/if}
   </AlertDialog.Content>
 </AlertDialog.Root>

@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderEndpoint, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, starter_config
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -58,7 +58,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "desktop", "openers", "presence", "self_work", "studio", "web", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "presence", "self_work", "studio", "web", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -69,10 +69,17 @@ def render() -> str:
         "Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. "
         "Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. "
         "An existing `[models.chat_fallback]` is read as `[models.fallback]` unless the new table is already present.",
-        "The owner can save and test providers from **Settings** in the dashboard. A save keeps the previous file in "
+        "The owner can save and test model roles and providers from **Settings** in the dashboard, including triage. "
+        "A save keeps the previous file in "
         "`config.toml.bak`. The test sends a short synthetic prompt to the selected saved provider. "
         "Before sending conversation data to any new cloud model, run a real test and verify that your provider "
         "and account enforce zero data retention. Dom requests ZDR routing for OpenRouter chat completions.",
+        "### Saved providers",
+        "The dashboard's Providers tab saves each provider as a `[providers.<name>]` table. Roles keep their own "
+        "address and key variable, so routing never depends on these tables; the dashboard uses them to offer "
+        "providers in the Models tab and to fetch each provider's model list (OpenRouter and OpenAI-compatible "
+        "`/models`, cached for a day). Editing a provider's address or key variable there rewrites the roles that use it.",
+        table(fields(ProviderSetup, "providers.<name>.")),
         "### Starter model settings",
         "Init creates the tables below. Omitted triage, media and drafting tables use these defaults. "
         "A hand-written config must supply `[models.chat]`. Omitting `[models.search]` disables search.",

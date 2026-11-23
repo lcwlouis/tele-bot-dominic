@@ -45,7 +45,7 @@ Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud p
 | `models.<name>.base_url` | Required | Provider API base URL, including its API version path. |
 | `models.<name>.model` | `""` | Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
 | `models.<name>.api_key_env` | Unset | Secret variable name. Leave unset for a compatible endpoint without authentication. |
-| `models.<name>.reasoning_effort` | Unset | Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default. |
+| `models.<name>.reasoning_effort` | Unset | Thinking effort sent to the provider, such as low, medium or high (any level the provider lists). Omit it to use the provider default. Higher effort takes longer and costs more. |
 | `models.<name>.provider` | Unset | Search provider for models.search: searxng, openrouter, deepseek or tavily. |
 
 Chat, fallback, media, drafting, search and escalation can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.
@@ -56,7 +56,17 @@ Chat, fallback, media, drafting, search and escalation can also list additional 
 
 Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. An existing `[models.chat_fallback]` is read as `[models.fallback]` unless the new table is already present.
 
-The owner can save and test providers from **Settings** in the dashboard. A save keeps the previous file in `config.toml.bak`. The test sends a short synthetic prompt to the selected saved provider. Before sending conversation data to any new cloud model, run a real test and verify that your provider and account enforce zero data retention. Dom requests ZDR routing for OpenRouter chat completions.
+The owner can save and test model roles and providers from **Settings** in the dashboard, including triage. A save keeps the previous file in `config.toml.bak`. The test sends a short synthetic prompt to the selected saved provider. Before sending conversation data to any new cloud model, run a real test and verify that your provider and account enforce zero data retention. Dom requests ZDR routing for OpenRouter chat completions.
+
+### Saved providers
+
+The dashboard's Providers tab saves each provider as a `[providers.<name>]` table. Roles keep their own address and key variable, so routing never depends on these tables; the dashboard uses them to offer providers in the Models tab and to fetch each provider's model list (OpenRouter and OpenAI-compatible `/models`, cached for a day). Editing a provider's address or key variable there rewrites the roles that use it.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `providers.<name>.kind` | `"openai"` | openai (any OpenAI-compatible endpoint), openrouter, jev (decisions), searxng, deepseek or tavily. |
+| `providers.<name>.base_url` | Required | Provider API base URL, including its API version path. |
+| `providers.<name>.api_key_env` | Unset | Secret variable name. Leave unset for an endpoint without authentication. |
 
 ### Starter model settings
 
@@ -80,7 +90,7 @@ Init creates the tables below. Omitted triage, media and drafting tables use the
 | `models.drafting.base_url` | `"https://openrouter.ai/api/v1"` | Provider API base URL, including its API version path. |
 | `models.drafting.model` | `"anthropic/claude-haiku-5.5"` | Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily. |
 | `models.drafting.api_key_env` | `"OPENROUTER_API_KEY"` | Secret variable name. Leave unset for a compatible endpoint without authentication. |
-| `models.drafting.reasoning_effort` | `"low"` | Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default. |
+| `models.drafting.reasoning_effort` | `"low"` | Thinking effort sent to the provider, such as low, medium or high (any level the provider lists). Omit it to use the provider default. Higher effort takes longer and costs more. |
 
 ## Optional secrets
 
