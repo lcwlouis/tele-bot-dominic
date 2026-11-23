@@ -148,7 +148,7 @@ Add one `[[studio.voice_fallbacks]]` or `[[studio.image_fallbacks]]` table per p
 | `studio.<kind>_fallbacks[].provider` | Required | Cloud media provider. |
 | `studio.<kind>_fallbacks[].model` | Required | Provider model ID. |
 | `studio.<kind>_fallbacks[].api_key_env` | Required | Secret variable paired with the provider's fixed HTTPS origin. |
-| `studio.<kind>_fallbacks[].paid` | `false` | Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. |
+| `studio.<kind>_fallbacks[].paid` | `false` | Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. Gemini reports tokens, not a price, so its calls are recorded at no cost and do not count toward daily_spend_cap_usd; only OpenRouter-reported costs do. |
 | `studio.<kind>_fallbacks[].supports_reference` | `true` | For OpenRouter image models that accept an image reference. |
 | `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos when an approved reference cannot be sent. |
 

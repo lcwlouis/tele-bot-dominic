@@ -302,7 +302,7 @@ class StudioFallback(BaseModel):
     provider: Literal["openrouter_image", "openrouter_tts", "gemini_tts"] = Field(description="Cloud media provider.")
     model: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$", description="Provider model ID.")
     api_key_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", description="Secret variable paired with the provider's fixed HTTPS origin.")
-    paid: bool = Field(False, description="Owner confirms this direct Gemini key uses Paid Services. Required for Gemini.")
+    paid: bool = Field(False, description="Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. Gemini reports tokens, not a price, so its calls are recorded at no cost and do not count toward daily_spend_cap_usd; only OpenRouter-reported costs do.")
     supports_reference: bool = Field(True, description="For OpenRouter image models that accept an image reference.")
     allow_without_reference: bool = Field(False, description="Allow cloud photos when an approved reference cannot be sent.")
 
