@@ -230,9 +230,12 @@ def _display_time(stamp: str, tz: tzinfo | None) -> str:
     return moment.astimezone(tz).strftime("%Y-%m-%d %H:%M")
 
 
-def format_chat_window_xml(chat_id: str, messages: list[StoredMessage], tz: tzinfo | None = None) -> str:
+def format_chat_window_xml(
+    chat_id: str, messages: list[StoredMessage], tz: tzinfo | None = None, *, owner_id: int | None = None,
+) -> str:
     """Render messages as ``<chat_window>`` XML. ``previous_seen_text`` is shown only when
-    Dom actually saw the original before it was edited. With ``tz``, times are local."""
+    Dom actually saw the original before it was edited. With ``tz``, times are local. With ``owner_id``, the
+    owner's own messages carry ``owner="true"``, so Dom knows him in a group without his private profile."""
     out = [f"<chat_window chat_id={quoteattr(str(chat_id))}>"]
     for m in messages:
         if m.role == "event":
@@ -244,6 +247,8 @@ def format_chat_window_xml(chat_id: str, messages: list[StoredMessage], tz: tzin
         if m.sender_name:
             attrs.append(f"name={quoteattr(m.sender_name)}")
         attrs.append(f"role={quoteattr(m.role)}")
+        if owner_id is not None and m.role == "user" and m.sender_user_id == owner_id:
+            attrs.append('owner="true"')
         if m.reply_to_msg_id is not None:
             attrs.append(f"reply_to={quoteattr(str(m.reply_to_msg_id))}")
         attrs.append(f"time={quoteattr(_display_time(m.created_at, tz))}")
@@ -1444,7 +1449,9 @@ class Store:
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]
 
-    format_chat_window_xml = staticmethod(format_chat_window_xml)
+    def format_chat_window_xml(self, chat_id: int | str, messages: list[StoredMessage], tz: tzinfo | None = None) -> str:
+        owner = None if self._is_owner_chat(chat_id) else self.owner_id  # in his DM every message is his
+        return format_chat_window_xml(str(chat_id), messages, tz, owner_id=owner)
 
     async def reflection_messages(self, start: datetime, end: datetime, *, private: bool) -> str:
         return await self._run(self._reflection_messages, start.isoformat(), end.isoformat(), private)

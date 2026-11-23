@@ -75,3 +75,23 @@ async def test_chat_participant_names_come_only_from_what_this_chat_saw(store):
 
     people = await store.chat_participant_names(group)
     assert sorted(sorted(names) for names in people) == [["@inviter", "@newbie", "Fran", "Fran Q"], ["Olga"]]
+
+
+async def test_the_window_marks_the_owners_own_messages_outside_his_dm(store):
+    group = "-100"
+
+    def said(chat_id, msg_id, uid, **kw):
+        return StoredMessage(
+            chat_id=chat_id, msg_id=msg_id, visibility_scope=f"chat:{chat_id}", text="hi", sender_user_id=uid,
+            created_at=f"2026-01-01T00:00:{msg_id:02d}+00:00", **kw,
+        )
+
+    await store.record_new_message(said(group, 1, OWNER))
+    await store.record_new_message(said(group, 2, FRIEND))
+    await store.record_new_message(said(group, 3, OWNER, role="assistant", is_bot=True))
+    xml = store.format_chat_window_xml(group, await store.get_recent_chat_window(group))
+    lines = [line for line in xml.splitlines() if "<msg " in line]
+    assert [('owner="true"' in line) for line in lines] == [True, False, False]
+
+    await store.record_new_message(said(str(OWNER), 4, OWNER))
+    assert 'owner="true"' not in store.format_chat_window_xml(str(OWNER), await store.get_recent_chat_window(str(OWNER)))

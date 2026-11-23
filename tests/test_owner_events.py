@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, User
 from tghelpers import FRIEND, GROUP, OWNER, drain_dispatch, tg
 
 from dom.models import StoredMessage
-from dom.store import Store
+from dom.store.store import format_chat_window_xml
 from dom.telegram import handlers
 
 BOOK_CLUB = -2002  # approved group
@@ -69,7 +69,7 @@ async def test_event_row_is_owner_private_and_not_a_user_message(app):
 async def test_window_renders_events_as_event_elements_and_they_count_toward_the_size(app):
     await app.store.record_owner_event("Fran ran /status <b>")
     window = await app.store.get_recent_chat_window(OWNER, 35)
-    xml = Store.format_chat_window_xml(str(OWNER), window)
+    xml = format_chat_window_xml(str(OWNER), window)
     assert '<event time="' in xml and ">Fran ran /status &lt;b&gt;</event>" in xml
     assert xml.count("<msg ") == 1  # only "hi"
     assert [m.role for m in await app.store.get_recent_chat_window(OWNER, 1)] == ["event"]

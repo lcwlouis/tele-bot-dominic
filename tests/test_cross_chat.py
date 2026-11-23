@@ -113,6 +113,7 @@ async def test_alert_limits_by_group_asker_and_shared_hour(make_app):
         await app.dispatch.cross_chat.alert(request)
         return len(await app.store.cross_chat_items())
 
+    assert await alert(GROUP, OWNER, 9) == 0  # the owner naming himself is no call for his attention
     assert await alert(GROUP, FRIEND, 1) == 1
     assert await alert(GROUP, FRIEND + 1, 2) == 1  # group cooldown
     clock.advance(minutes=15)
@@ -384,3 +385,16 @@ async def test_friend_dm_card_says_no_leak_check_runs_there(make_app):
     await process_ready(app)
     [notice] = app.bot.of("send", OWNER)
     assert "No leak check for a private chat" in notice[2] and "Leak check unavailable" not in notice[2]
+
+
+async def test_tell_owner_refuses_when_the_owner_is_the_one_talking(make_app):
+    app = make_app()
+    await approve_chat(app, GROUP)
+    offered = {tool.name: tool for tool in await enabled_tools(app, "group")}
+    ctx = TurnCtx("group", GROUP, OWNER, app.home, app.store, OWNER, app=app)
+    result = await execute_tool_call(
+        {"function": {"name": "tell_owner", "arguments": json.dumps({"text": "he keeps asking", "reason": "x"})}},
+        offered, ctx,
+    )
+    assert "owner is the one talking to you here" in result
+    assert not await app.store.cross_chat_items()
