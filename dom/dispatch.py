@@ -1900,15 +1900,18 @@ class Dispatcher:
         if isinstance(message_id := getattr(sent, "message_id", None), int):
             await app.store.kv_set(f"{HANDOFF_CARD}{task_id}", str(message_id))
 
-    async def desktop_budget_ask(self, task_id: int, steps: int, chat_id: int, extra: int, container: str = DEFAULT) -> None:
-        """A desktop task used its step budget before finishing: ask the owner to keep going or wrap up now."""
+    async def desktop_budget_ask(
+        self, task_id: int, steps: int, chat_id: int, extra: int, token: str, container: str = DEFAULT,
+    ) -> bool:
+        """A desktop task used its step budget before finishing: ask the owner to keep going or wrap up now. The
+        buttons carry the pause's single-use token. False when no card went out, so nobody can answer."""
         app = self.app
         if chat_id != app.owner_id:
-            return
+            return False
         where = "" if container == DEFAULT else f" on the {container} desktop"
         buttons = [
-            InlineKeyboardButton(text=f"Keep going (+{extra} steps)", callback_data=f"desktop:more:{task_id}:{steps}"),
-            InlineKeyboardButton(text="Wrap up now", callback_data=f"desktop:wrap:{task_id}:{steps}"),
+            InlineKeyboardButton(text=f"Keep going (+{extra} steps)", callback_data=f"desktop:more:{task_id}:{token}"),
+            InlineKeyboardButton(text="Wrap up now", callback_data=f"desktop:wrap:{task_id}:{token}"),
         ]
         sent = await executor.send_text(
             app.bot, chat_id,
@@ -1916,8 +1919,10 @@ class Dispatcher:
             "Keep going, or wrap up with what it has so far? With no answer it wraps up.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]), literal=True, sleep=app.sleep,
         )
-        if isinstance(message_id := getattr(sent, "message_id", None), int):
-            await app.store.kv_set(f"{BUDGET_CARD}{task_id}", str(message_id))
+        if not isinstance(message_id := getattr(sent, "message_id", None), int):
+            return False
+        await app.store.kv_set(f"{BUDGET_CARD}{task_id}", str(message_id))
+        return True
 
     async def settle_handoff_card(self, task_id: int, label: str) -> None:
         """Replace the log-in card's Done button with what happened, however the task moved on (Done on the

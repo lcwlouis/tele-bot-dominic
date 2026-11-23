@@ -347,7 +347,7 @@ async def test_reminders_bulk_cancel_and_delete_report_each_one_they_could_not_d
 
         again = (await bulk("cancel", items(ids[0], ids[2]))).json()
         assert again["ok"] is False
-        assert again["message"] == f"Cancelled 1 of 2 reminders. Reminder #{ids[0]} is no longer active."
+        assert again["message"] == f"Cancelled 1 of 2 reminders. Reminder #{ids[0]} is no longer active or has changed."
 
         stale = items(*ids)
         stale[1]["expected"] = "1999-01-01T00:00:00+00:00"
@@ -355,3 +355,20 @@ async def test_reminders_bulk_cancel_and_delete_report_each_one_they_could_not_d
         assert deleted["ok"] is False and deleted["message"].startswith("Deleted 2 of 3 reminders.")
         assert [r["id"] for r in deleted["reminders"]] == [ids[1]]  # the changed one stays
         assert await app.store.get_reminder(OWNER, ids[0]) is None and await app.store.get_reminder(OWNER, ids[2]) is None
+
+
+async def test_reminders_bulk_cancel_never_cancels_a_new_reminder_that_reused_a_deleted_ones_id(make_app, browser):
+    app = make_app()
+    first = await app.dispatch.reminders.create("2026-06-01T12:00", "Water the plants")
+    stale = (await app.store.get_reminder(OWNER, first))["created_at"]
+    await app.store.delete_reminder(OWNER, first, stale, "Deleted in another tab", stale)
+    app.dispatch.now.advance(minutes=1)
+    reused = await app.dispatch.reminders.create("2026-06-02T12:00", "Call the plumber")
+    assert reused == first  # SQLite handed the deleted reminder's id to the new one
+    async with browser(app) as client:
+        result = (await client.post(
+            "/api/work/reminders/bulk", headers=JSON,
+            json={"action": "cancel", "items": [{"id": first, "expected": stale}]},
+        )).json()
+    assert result["ok"] is False and "has changed" in result["message"]
+    assert (await app.store.get_reminder(OWNER, reused))["status"] == "active"

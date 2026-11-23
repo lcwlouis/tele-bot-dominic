@@ -274,8 +274,8 @@ async def bulk_reminders(request: Request) -> dict:
     failed: list[str] = []
     for reminder_id in ids:
         if update.action == "cancel":
-            if not await reminders.cancel(reminder_id):
-                failed.append(f"Reminder #{reminder_id} is no longer active.")
+            if not await reminders.cancel(reminder_id, stamps[reminder_id]):
+                failed.append(f"Reminder #{reminder_id} is no longer active or has changed.")
         else:
             ok, message = await reminders.delete(reminder_id, stamps[reminder_id])
             if not ok:

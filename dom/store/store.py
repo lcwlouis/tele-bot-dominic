@@ -2430,11 +2430,25 @@ class Store:
             "SELECT 1 FROM reminders WHERE id = ? AND status = 'active'", (reminder_id,),
         ).fetchone() is not None)
 
-    async def cancel_reminder(self, chat_id: int | None, reminder_id: int) -> bool:
-        return await self._run(lambda: self._conn.execute(
-            "UPDATE reminders SET status = 'cancelled' WHERE chat_id = ? AND id = ? AND status = 'active'",
-            (str(chat_id), reminder_id),
-        ).rowcount == 1)
+    async def cancel_reminder(
+        self, chat_id: int | None, reminder_id: int, expected_created_at: str | None = None,
+    ) -> bool:
+        """Cancel an active reminder. With `expected_created_at`, only the reminder created then: the check and the
+        update share one transaction, so a stale selection never cancels a new reminder that reused the id."""
+        def cancel() -> bool:
+            with self._tx() as conn:
+                if expected_created_at is not None:
+                    row = conn.execute(
+                        "SELECT created_at FROM reminders WHERE chat_id = ? AND id = ?", (str(chat_id), reminder_id),
+                    ).fetchone()
+                    if row is None or not stamp_matches(row["created_at"], expected_created_at):
+                        return False
+                return conn.execute(
+                    "UPDATE reminders SET status = 'cancelled' WHERE chat_id = ? AND id = ? AND status = 'active'",
+                    (str(chat_id), reminder_id),
+                ).rowcount == 1
+
+        return await self._run(cancel)
 
     async def finish_reminder(self, reminder_id: int, fired_at: str, next_due: str | None) -> None:
         await self._run(self._conn.execute,

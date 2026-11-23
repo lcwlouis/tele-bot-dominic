@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import math
 import posixpath
+import secrets
 import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -141,7 +143,10 @@ class DesktopWorker:
         self.control = asyncio.Lock()
         self._screen_lock = asyncio.Lock()
         self._handoff: tuple[int, int, asyncio.Event] | None = None
-        self._budget_ask: tuple[int, int, asyncio.Future[bool]] | None = None  # (task, steps, the owner's answer)
+        # (task, steps, the card's single-use token, the owner's answer). Ids and step counts can repeat (SQLite may
+        # reuse a deleted task's id; two pauses can share a count), so only the token says which card was tapped.
+        self._budget_ask: tuple[int, int, str, asyncio.Future[bool]] | None = None
+        self._chores: set[asyncio.Task] = set()  # card edits left to finish outside `control`
         self.handoff_host: str | None = None  # the page the owner is asked to log in on
         self.handoff_reason: str | None = None
         self.handoff_deadline: float | None = None
@@ -343,6 +348,7 @@ class DesktopWorker:
         if self._job is not None:
             self._job.cancel()
             await asyncio.gather(self._job, return_exceptions=True)
+        await asyncio.gather(*self._chores, return_exceptions=True)
 
     async def cancel(self, chat_id: int, task_id: int) -> bool:
         async with self.control:
@@ -390,14 +396,19 @@ class DesktopWorker:
         await self._settle_card(task_id, "✅ Resumed")
         return True
 
-    async def extend(self, chat_id: int, task_id: int, steps: int, keep_going: bool) -> bool:
+    async def extend(self, chat_id: int, task_id: int, token: str, keep_going: bool) -> bool:
         """The owner's answer to a task that is about to run out of steps: keep going, or wrap up now. False when
-        that question is no longer open (answered, timed out, or the task ended)."""
+        that question is no longer open (answered, timed out, or the task ended) or the token is not its card's."""
         async with self.control:
             ask = self._budget_ask
-            if chat_id != self.app.owner_id or ask is None or ask[:2] != (task_id, steps) or ask[2].done():
+            if (
+                chat_id != self.app.owner_id or ask is None or ask[0] != task_id or ask[3].done()
+                or not token.isascii() or not hmac.compare_digest(ask[2], token)
+            ):
                 return False
-            ask[2].set_result(keep_going)
+            self._budget_ask = None  # single use
+            steps = ask[1]
+            ask[3].set_result(keep_going)
             await self.app.store.record_owner_event(
                 f"{'Extended' if keep_going else 'Wrapped up'} desktop task #{task_id} at {steps} steps",
             )
@@ -410,11 +421,20 @@ class DesktopWorker:
         if grant <= 0:
             return 0
         answer: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-        self._budget_ask = (run.task_id, steps, answer)
+        token = secrets.token_hex(8)
+        self._budget_ask = (run.task_id, steps, token, answer)
         label = "Wrapped up"
         try:
             async with asyncio.timeout(self.handoff_seconds):
-                await self.app.dispatch.desktop_budget_ask(run.task_id, steps, run.chat_id, grant, self.container)
+                try:
+                    sent = await self.app.dispatch.desktop_budget_ask(
+                        run.task_id, steps, run.chat_id, grant, token, self.container,
+                    )
+                except Exception as exc:  # Telegram or the network failed: nobody can answer, so wrap up as before
+                    log.warning("could not ask to extend desktop task %s (%s)", run.task_id, type(exc).__name__)
+                    sent = False
+                if not sent:
+                    return 0
                 keep_going = await answer
         except TimeoutError:
             keep_going, label = False, "No answer: wrapped up"
@@ -450,7 +470,11 @@ class DesktopWorker:
             await self._run_task(task_id, chat_id)
         finally:
             discard_bound(self.app.home.root, task_id)
-            await self._settle_card(task_id, "Task ended")  # only if it ended while still waiting for the owner
+            # Only if it ended while still waiting for the owner. A separate task: a cancel awaits this job under
+            # `control`, and a slow Telegram edit must not hold that lock.
+            chore = asyncio.create_task(self._settle_card(task_id, "Task ended"))
+            self._chores.add(chore)
+            chore.add_done_callback(self._chores.discard)
 
     async def _run_task(self, task_id: int, chat_id: int) -> None:
         store = self.app.store
