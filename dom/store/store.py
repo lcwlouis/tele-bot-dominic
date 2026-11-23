@@ -1397,7 +1397,8 @@ class Store:
         ).fetchall()
         people: dict[object, dict[str, None]] = {}
         for user_id, *names in rows:
-            person = people.setdefault(user_id if user_id is not None else names[0], {})
+            # A legacy row without a user ID is one person per name and handle, so two nameless senders never merge.
+            person = people.setdefault(user_id if user_id is not None else (names[0], names[1]), {})
             person.update((name, None) for name in names if name)
         return [list(names) for names in people.values() if names]
 
