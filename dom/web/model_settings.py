@@ -7,7 +7,8 @@ For search, omitting index (null) tests the saved chain in order and reports
 which provider answered. GET /api/permissions returns Permissions; POST
 /api/permissions sets one PermissionUpdate and returns Permissions. Every POST
 takes the GET revision (a hash of config.toml, shared by both GETs) so a stale
-page cannot modify or test a moved slot.
+page cannot modify or test a moved slot. POST /api/permissions/desktop-steps sets
+the step budget of the owner's desktop tasks (DesktopStepsUpdate) and returns Permissions.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dom.config import (
+    MAX_DESKTOP_STEPS,
+    MIN_DESKTOP_STEPS,
     MODEL_ROLES,
     SEARCH_PROVIDERS,
     Config,
@@ -51,9 +54,11 @@ if TYPE_CHECKING:
 router = APIRouter()
 API_PATH = "/api/models"
 PERMISSIONS_PATH = "/api/permissions"
+DESKTOP_STEPS_PATH = PERMISSIONS_PATH + "/desktop-steps"
+DESKTOP_STEPS = ("desktop", "max_steps")
 # Serialises the dashboard's config.toml writes, which run in a thread.
 _CONFIG_WRITE = asyncio.Lock()
-JSON_POSTS = {API_PATH, API_PATH + "/test", PERMISSIONS_PATH}
+JSON_POSTS = {API_PATH, API_PATH + "/test", PERMISSIONS_PATH, DESKTOP_STEPS_PATH}
 MAX_BODY = 32 * 1024
 MAX_FALLBACKS = 5
 URL_RULE = ("Use an HTTPS API base URL without credentials, a query or a fragment. "
@@ -558,9 +563,22 @@ class PermissionView(BaseModel):
     enabled: bool
 
 
+class DesktopStepsView(BaseModel):
+    value: int
+    min: int = MIN_DESKTOP_STEPS
+    max: int = MAX_DESKTOP_STEPS
+
+
 class Permissions(BaseModel):
     revision: str
     items: list[PermissionView]
+    desktop_steps: DesktopStepsView
+
+
+class DesktopStepsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: str = Field(pattern=REVISION)
+    max_steps: int = Field(ge=MIN_DESKTOP_STEPS, le=MAX_DESKTOP_STEPS)
 
 
 class PermissionUpdate(BaseModel):
@@ -582,15 +600,15 @@ def _permissions(snapshot: Snapshot) -> Permissions:
         PermissionView(id=item.id, label=item.label, description=item.description,
                        enabled=_permission_value(snapshot.config, item))
         for item in PERMISSIONS
-    ])
+    ], desktop_steps=DesktopStepsView(value=snapshot.config.desktop.max_steps))
 
 
-def _with_permission(config: Config, path: tuple[str, ...], enabled: bool) -> Config:
-    """A copy of the running config with one switch changed; everything else stays as it runs now."""
+def _with_permission(config: Config, path: tuple[str, ...], value: bool | int) -> Config:
+    """A copy of the running config with one setting changed; everything else stays as it runs now."""
     key, *rest = path
     if not rest:
-        return config.model_copy(update={key: enabled})
-    return config.model_copy(update={key: _with_permission(getattr(config, key), tuple(rest), enabled)})
+        return config.model_copy(update={key: value})
+    return config.model_copy(update={key: _with_permission(getattr(config, key), tuple(rest), value)})
 
 
 @router.get(PERMISSIONS_PATH)
@@ -607,22 +625,33 @@ async def update_permission(request: Request) -> Permissions:
     # Reading, checking and replacing config.toml waits on the disk; it runs off the event loop, one save at a time,
     # so a slow disk never stalls Dom's other work.
     async with _CONFIG_WRITE:
-        saved = await asyncio.to_thread(_save_permission, app.config.home, update, permission)
+        saved = await asyncio.to_thread(_save_setting, app.config.home, update.revision, permission.path, update.enabled)
         app.config = _with_permission(app.config, permission.path, update.enabled)
     return _permissions(saved)
 
 
-def _save_permission(home: Path, update: PermissionUpdate, permission: Permission) -> Snapshot:
+@router.post(DESKTOP_STEPS_PATH)
+async def update_desktop_steps(request: Request) -> Permissions:
+    """The step budget of the owner's desktop tasks. A task reads it when it starts, so a save applies to the next one."""
+    app = owner_app(request)
+    update = await _input(request, DesktopStepsUpdate)
+    async with _CONFIG_WRITE:
+        saved = await asyncio.to_thread(_save_setting, app.config.home, update.revision, DESKTOP_STEPS, update.max_steps)
+        app.config = _with_permission(app.config, DESKTOP_STEPS, update.max_steps)
+    return _permissions(saved)
+
+
+def _save_setting(home: Path, revision: str, path: tuple[str, ...], setting: bool | int) -> Snapshot:
     current = _snapshot(home)
-    _check_revision(current, update.revision)
+    _check_revision(current, revision)
     document = tomlkit.parse(current.text)
     table = document
-    *parents, key = permission.path
+    *parents, key = path
     for name in parents:
         if name not in table:
             table[name] = tomlkit.table()
         table = table[name]
-    value = tomlkit.item(update.enabled)
+    value = tomlkit.item(setting)
     if key in table and hasattr(table[key], "trivia"):  # keep the comment beside the value
         value.trivia.comment_ws = table[key].trivia.comment_ws
         value.trivia.comment = table[key].trivia.comment

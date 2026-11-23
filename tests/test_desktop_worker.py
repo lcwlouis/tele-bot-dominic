@@ -194,7 +194,7 @@ async def test_step_and_time_limits_with_partial_result(make_app, time_over):
     worker = await worker_for(
         app, {"role": "assistant", "content": "Some progress"},
         blocked if time_over else call("read_page"), {"content": "invalid"},
-        max_steps=30 if time_over else 2, work_seconds=0.03 if time_over else 600,
+        max_steps=30 if time_over else 2, handoff_seconds=0.01, work_seconds=0.03 if time_over else 600,
     )
     task_id = await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
@@ -302,7 +302,7 @@ async def test_out_of_steps_the_task_says_how_far_it_got(make_app):
     app = make_app()
     worker = await worker_for(
         app, call("read_page"), call("read_page"), call("finish", result="Read the inbox; the watchlist is left."),
-        {"content": "invalid"}, max_steps=2,
+        {"content": "invalid"}, max_steps=2, handoff_seconds=0.01,
     )
     task_id = await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
@@ -317,7 +317,7 @@ async def test_out_of_steps_the_task_says_how_far_it_got(make_app):
 
 async def test_failure_result_never_holds_raw_tool_output(make_app):
     app = make_app()
-    worker = await worker_for(app, call("read_page"), call("read_page"), {"content": "invalid"}, max_steps=2)
+    worker = await worker_for(app, call("read_page"), call("read_page"), {"content": "invalid"}, max_steps=2, handoff_seconds=0.01)
     task_id = await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
     row = await task_row(app, task_id)
@@ -491,7 +491,7 @@ def test_task_cost_cap_default():
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "javascript:alert(1)", "data:text/html,hi", "chrome://settings", "https://", "example.org", ""])
 async def test_browse_accepts_only_http_and_https(make_app, url):
     app = make_app()
-    worker = await worker_for(app, call("browse", url=url), {"content": "stop"}, {"content": "invalid"}, max_steps=2)
+    worker = await worker_for(app, call("browse", url=url), {"content": "stop"}, {"content": "invalid"}, max_steps=2, handoff_seconds=0.01)
     navigated = []
 
     async def navigate(url):

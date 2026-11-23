@@ -136,7 +136,7 @@ async def test_a_failed_task_discards_its_draft_skill(make_app):
     app = make_app()
     worker = await worker_for(
         app, call("propose_skill", name="example", description="Example", body="Public procedure."),
-        {"content": "invalid"}, max_steps=1,
+        {"content": "invalid"}, max_steps=1, handoff_seconds=0.01,
     )
     await worker.enqueue(OWNER, "Do the thing")
     await wait_task(worker)

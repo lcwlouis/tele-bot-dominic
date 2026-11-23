@@ -76,7 +76,14 @@ def _short(text: str | None) -> str:
 
 
 def _task(row: dict | None) -> dict | None:
-    return None if row is None else {key: row[key] for key in ("id", "status", "steps", "brief", "error")}
+    if row is None:
+        return None
+    return {**{key: row[key] for key in ("id", "status", "steps", "brief", "error")}, **_budget(row)}
+
+
+def _budget(row: dict) -> dict:
+    """The step budget a task started with (None on tasks older than v0.8.3) and the steps the owner added."""
+    return {"steps_budget": row.get("steps_budget"), "extra_steps": row.get("extra_steps") or 0}
 
 
 async def _desk(app, lane) -> dict:
@@ -101,7 +108,7 @@ async def _desk(app, lane) -> dict:
         } for host in state["hosts"]],
         "history": [{
             "id": row["id"], "status": row["status"], "container": row["container"], "steps": row["steps"],
-            "brief": row["brief"], "result": _short(row.get("result")), "error": _short(row.get("error")),
+            **_budget(row), "brief": row["brief"], "result": _short(row.get("result")), "error": _short(row.get("error")),
             "finished": row["finished_local"], "created_at": row["created_at"],
         } for row in history],
     }

@@ -298,7 +298,7 @@ async def test_full_inbox_replies_and_does_not_stage(make_app, monkeypatch):
 async def test_inbox_is_removed_from_the_sandbox_after_any_task(make_app, finish):
     app = make_app()
     worker = await worker_for(
-        app, call("finish", result="Done") if finish else {"content": "stop"}, {"content": "invalid"}, max_steps=1,
+        app, call("finish", result="Done") if finish else {"content": "stop"}, {"content": "invalid"}, max_steps=1, handoff_seconds=0.01,
     )
     commands = []
 

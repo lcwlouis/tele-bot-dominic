@@ -877,3 +877,40 @@ async def test_studio_permission_save_applies_now(dashboard, permission, field):
     assert result.status_code == 200
     assert getattr(app.config.studio, field)
     assert tomllib.loads(path.read_text())["studio"] == {field: True}
+
+
+DESKTOP_STEPS = "/api/permissions/desktop-steps"
+
+
+async def test_desktop_steps_need_owner_auth_same_origin_and_a_valid_budget(dashboard):
+    app, path, browser = dashboard
+    async with browser(authorized=False) as client:
+        assert (await client.post(DESKTOP_STEPS, json={}, headers=ORIGIN_HEADER)).status_code == 403
+    async with browser() as client:
+        revision = (await client.get(PERMISSIONS)).json()["revision"]
+        body = {"revision": revision, "max_steps": 40}
+        for headers in ({}, {"Origin": "https://other.example.test"}, {"Referer": ORIGIN}):
+            assert (await client.post(DESKTOP_STEPS, headers=headers, json=body)).status_code == 403
+        for bad in (
+            {**body, "max_steps": 9}, {**body, "max_steps": 101}, {**body, "max_steps": "40"}, {**body, "max_steps": True},
+            {**body, "max_steps": 40.0}, {**body, "extra": 1}, {"max_steps": 40},
+        ):
+            response = await client.post(DESKTOP_STEPS, headers=ORIGIN_HEADER, json=bad)
+            assert response.status_code == 422, bad
+            assert "extra" not in response.json()["detail"]
+    assert path.read_text() == START
+
+
+async def test_desktop_steps_save_writes_config_and_applies_to_the_next_task(dashboard):
+    app, path, browser = dashboard
+    async with browser() as client:
+        initial = (await client.get(PERMISSIONS)).json()
+        assert initial["desktop_steps"] == {"value": 30, "min": 10, "max": 100}
+        result = await client.post(DESKTOP_STEPS, headers=ORIGIN_HEADER, json={"revision": initial["revision"], "max_steps": 45})
+        assert result.status_code == 200, result.text
+        assert result.json()["desktop_steps"]["value"] == 45
+        assert app.config.desktop.max_steps == 45
+        stale = await client.post(DESKTOP_STEPS, headers=ORIGIN_HEADER, json={"revision": initial["revision"], "max_steps": 20})
+        assert stale.status_code == 409 and app.config.desktop.max_steps == 45
+    assert tomllib.loads(path.read_text())["desktop"]["max_steps"] == 45
+    assert load_config(path.parent).desktop.max_steps == 45

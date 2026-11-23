@@ -445,6 +445,8 @@ async def test_step_and_time_budgets_stop_the_task(make_app, over):
     if over == "steps":  # two steps, then a wrap-up that may only call finish: the third read_page never runs
         assert len(app.client.requests) == 3
         assert [schema["function"]["name"] for schema in app.client.requests[2][1]] == ["finish"]
+    # Self-directed tasks keep their planned budget: the owner is never asked to extend one.
+    assert not any("Keep going" in str(c) for c in app.bot.calls)
 
 
 # ---- the network guard ------------------------------------------------------------------------------------

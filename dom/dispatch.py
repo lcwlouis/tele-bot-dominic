@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("dom.dispatch")
 TICK_SECONDS = 60
 HANDOFF_CARD = "desktop-handoff-card:"  # + task id -> the Telegram message id of its log-in card
+BUDGET_CARD = "desktop-budget-card:"  # + task id -> the Telegram message id of its "keep going?" card
 DEBOUNCE_CAP = timedelta(seconds=15)  # a steady stream of messages cannot postpone a turn longer
 MAX_RESTARTS = 2
 ACK_INTERVAL = timedelta(minutes=1)
@@ -1899,10 +1900,36 @@ class Dispatcher:
         if isinstance(message_id := getattr(sent, "message_id", None), int):
             await app.store.kv_set(f"{HANDOFF_CARD}{task_id}", str(message_id))
 
+    async def desktop_budget_ask(self, task_id: int, steps: int, chat_id: int, extra: int, container: str = DEFAULT) -> None:
+        """A desktop task used its step budget before finishing: ask the owner to keep going or wrap up now."""
+        app = self.app
+        if chat_id != app.owner_id:
+            return
+        where = "" if container == DEFAULT else f" on the {container} desktop"
+        buttons = [
+            InlineKeyboardButton(text=f"Keep going (+{extra} steps)", callback_data=f"desktop:more:{task_id}:{steps}"),
+            InlineKeyboardButton(text="Wrap up now", callback_data=f"desktop:wrap:{task_id}:{steps}"),
+        ]
+        sent = await executor.send_text(
+            app.bot, chat_id,
+            f"Desktop task #{task_id}{where} has used its {steps} steps and isn't done yet. "
+            "Keep going, or wrap up with what it has so far? With no answer it wraps up.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]), literal=True, sleep=app.sleep,
+        )
+        if isinstance(message_id := getattr(sent, "message_id", None), int):
+            await app.store.kv_set(f"{BUDGET_CARD}{task_id}", str(message_id))
+
     async def settle_handoff_card(self, task_id: int, label: str) -> None:
         """Replace the log-in card's Done button with what happened, however the task moved on (Done on the
         dashboard or in Telegram, a cancel, a timeout or a restart), so a stale Done is not left to tap."""
-        app, key = self.app, f"{HANDOFF_CARD}{task_id}"
+        await self._settle_card(f"{HANDOFF_CARD}{task_id}", label)
+
+    async def settle_budget_card(self, task_id: int, label: str) -> None:
+        """The same for the step budget card's buttons, once the owner answered, it timed out or the task ended."""
+        await self._settle_card(f"{BUDGET_CARD}{task_id}", label)
+
+    async def _settle_card(self, key: str, label: str) -> None:
+        app = self.app
         raw = await app.store.kv_get(key)
         if not raw or not raw.isdigit() or app.owner_id is None:
             return
@@ -1914,7 +1941,7 @@ class Dispatcher:
                 sleep=app.sleep,
             )
         except TelegramBadRequest:
-            log.info("could not settle the log-in card of desktop task %s", task_id)
+            log.info("could not settle the desktop card %s", key)
 
     async def grumble_after_command(self, chat_id: int, name: str, args: str) -> None:
         """The owner woke Dom with a plugin command. Its result is already sent; add one in-character line.

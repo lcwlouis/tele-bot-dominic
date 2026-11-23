@@ -57,6 +57,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (22, "0021_topic_reads_and_cooldowns.sql"),
     (23, "0022_cross_chat.sql"),
     (24, "0023_escalation_usage.sql"),
+    (25, "0024_desktop_step_budget.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1767,6 +1768,13 @@ class Store:
             return dict(row) if row else None
 
         return await self._run(update)
+
+    async def set_desktop_budget(self, task_id: int, steps_budget: int, extra_steps: int = 0) -> None:
+        """Record a running task's step budget: the one it started with and the steps the owner added since."""
+        await self._run(lambda: self._conn.execute(
+            "UPDATE desktop_tasks SET steps_budget = ?, extra_steps = ? WHERE id = ? AND status IN ('running', 'waiting_owner')",
+            (steps_budget, extra_steps, task_id),
+        ))
 
     # ---- self-directed tasks (W13) ----------------------------------------
 

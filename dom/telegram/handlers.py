@@ -857,6 +857,9 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             elif decision == "done" and app.desktop_worker is not None and (steps := _item_id(rest)) is not None:
                 changed = await app.desktop_worker.resume(owner_id, task_id, steps)
                 await _toast(app, query, "Resumed" if changed else "already handled")
+            elif decision in ("more", "wrap") and app.desktop_worker is not None and (steps := _item_id(rest)) is not None:
+                changed = await app.desktop_worker.extend(owner_id, task_id, steps, decision == "more")
+                await _toast(app, query, ("Keeping going" if decision == "more" else "Wrapping up") if changed else "already handled")
             elif decision == "del":
                 error = await _confirm_delete_desktop_task(app, task_id, rest or None)
                 await _toast(app, query, error)
