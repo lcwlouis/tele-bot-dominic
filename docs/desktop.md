@@ -350,3 +350,7 @@ dom doctor /path/to/dom-home
 The planning call sends the public soul, the last few public journal entries and
 the goals of earlier self-directed tasks to the chat model. Nothing from `private/`
 is used, and the worker's brief holds only the plan.
+
+### Studio on the desktop host
+
+If this host also runs the studio, include the studio port in its isolation sign-off. From a sandbox, verify that the studio is unreachable through the host LAN address, container host alias, VM gateway and local DNS name. Test from an unlisted LAN peer as well. Set `remote_isolation_confirmed = true` only after all the isolation checks pass. Match the studio's desktop reservation to the host's container limit, memory per container and minimum free memory.

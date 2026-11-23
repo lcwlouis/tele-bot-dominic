@@ -50,3 +50,17 @@ jobs:
           if not any(all(case.find(tag) is None for tag in nonpassing) for case in cases):
               sys.exit("No plugin sandbox test passed.")
           PYTHON
+
+  studio:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv run --locked pytest -q

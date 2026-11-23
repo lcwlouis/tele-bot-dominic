@@ -1,0 +1,30 @@
+bind_host = "192.0.2.1"
+port = 8080
+allowed_sources = ["192.0.2.2"]
+denied_sources = []
+token_file = "/path/to/private/token"
+ffmpeg = "/path/to/bin/ffmpeg"
+default_outfit = "default"
+
+[desktop]
+max_containers = 0
+container_memory_mb = 0
+min_free_memory_mb = 0
+
+[outfits.default]
+portrait = "/path/to/private/portrait.png"
+turnaround = "/path/to/private/turnaround.png"
+
+[workers.voice]
+cwd = "/path/to/runtime/bin"
+command = ["/path/to/runtime/bin/DomHiggs", "/path/to/higgs-snapshot", "/path/to/reference.wav", "/path/to/transcript.txt"]
+
+[workers.image]
+command = ["/path/to/runtime/image/bin/python", "/path/to/studio/workers/image_worker.py", "/path/to/klein-snapshot"]
+
+[workers.video]
+cwd = "/path/to/runtime/flash-src"
+command = ["/path/to/runtime/flash/bin/python", "/path/to/studio/workers/flash_worker.py", "/path/to/runtime/flash-src", "/path/to/flash-snapshot", "/path/to/wav2vec-snapshot", "/path/to/bin/ffmpeg"]
+
+[workers.special]
+command = ["/path/to/studio/.venv/bin/python", "/path/to/studio/workers/ltx_worker.py", "/path/to/runtime/ltx-src/.venv/bin/ltx-2-mlx", "/path/to/ltx-snapshot", "/path/to/gemma-snapshot", "/path/to/bin/ffmpeg"]

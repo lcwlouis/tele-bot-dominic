@@ -1,0 +1,168 @@
+"""The versioned HTTP surface shared with the bot."""
+
+import asyncio
+from contextlib import asynccontextmanager
+from functools import partial
+from hmac import compare_digest
+import json
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.applications import Starlette
+from starlette.requests import ClientDisconnect
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
+
+
+from .process import WorkerError
+from .service import read_output
+
+
+VERSION = "0.8.3"
+MAX_BODY = 16 * 1024
+MIME = {"voice": "audio/ogg", "image": "image/png", "video": "video/mp4", "special": "video/mp4"}
+Text = Annotated[str, Field(min_length=1, max_length=600)]
+OutfitName = Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class Payload(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+
+class Voice(Payload):
+    text: Text
+    seed: Annotated[int, Field(ge=0, le=2**64 - 1)] | None = None
+
+
+class Video(Payload):
+    text: Text
+    special: bool = False
+    outfit: OutfitName | None = None
+
+
+class Image(Payload):
+    scene: Annotated[str, Field(min_length=1, max_length=300)]
+    outfit: OutfitName | None = None
+    size: Annotated[int, Field(ge=768, le=768)] = 768
+
+
+MODELS = {"voice": Voice, "video": Video, "image": Image}
+
+
+def error(status, message):
+    return JSONResponse({"error": message}, status_code=status)
+
+
+async def disconnected(request):
+    while (await request.receive())["type"] != "http.disconnect":
+        pass
+
+
+def create_app(studio, sources, token):
+    async def refresh():
+        while True:
+            await asyncio.sleep(60)
+            await sources.refresh()
+
+    async def sample_idle():
+        while True:
+            await asyncio.sleep(2)
+            if not studio.lane.locked():
+                await studio.read_memory()
+
+    @asynccontextmanager
+    async def lifespan(_):
+        await sources.refresh()
+        await studio.read_memory()
+        tasks = [asyncio.create_task(coro()) for coro in (refresh, studio.warm, sample_idle)]
+        try:
+            yield
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await studio.close()
+
+    def authorize(request):
+        if not sources.permits(request.scope.get("client")):
+            return Response(status_code=403)
+        headers = [value for key, value in request.scope["headers"] if key == b"authorization"]
+        if (len(headers) != 1 or not headers[0].lower().startswith(b"bearer ")
+                or not compare_digest(headers[0][7:], token)):
+            return error(401, "unauthorized")
+        return None
+
+    async def health(request):
+        denied = authorize(request)
+        if denied is not None:
+            return denied
+        reading = studio.reading
+        return JSONResponse({
+            "workers": [name for name, worker in studio.workers.items() if worker.loaded],
+            "available_memory_bytes": reading.available if reading else None,
+            "queue_depth": len(studio.pending),
+            "version": VERSION,
+        })
+
+    async def portrait(request):
+        denied = authorize(request)
+        if denied is not None:
+            return denied
+        outfit = studio.config.outfits.get(request.path_params["outfit"])
+        if outfit is None:
+            return error(404, "unknown-outfit")
+        try:
+            content = await asyncio.to_thread(read_output, outfit.portrait)
+        except (OSError, WorkerError):
+            return error(503, "portrait-unavailable")
+        return Response(content, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    async def submit(request, *, kind):
+        denied = authorize(request)
+        if denied is not None:
+            return denied
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+            return error(415, "expected-json")
+        body = bytearray()
+        try:
+            async with asyncio.timeout(5):
+                async for chunk in request.stream():
+                    if len(body) + len(chunk) > MAX_BODY:
+                        return error(413, "body-too-large")
+                    body.extend(chunk)
+            values = MODELS[kind].model_validate(json.loads(body))
+        except (ValueError, RecursionError):
+            return error(422, "invalid-request")
+        except TimeoutError:
+            return error(408, "request-timeout")
+        except ClientDisconnect:
+            return Response(status_code=499)
+        payload = values.model_dump()
+        if payload.get("special"):
+            kind = "special"
+        if len(studio.pending) >= 3:
+            return error(503, "busy")
+        job = asyncio.create_task(studio.job(kind, payload))
+        studio.pending.add(job)
+        disconnect = asyncio.create_task(disconnected(request))
+        try:
+            done, _ = await asyncio.wait((job, disconnect), return_when=asyncio.FIRST_COMPLETED)
+            if disconnect in done:
+                return Response(status_code=499)
+            status, result = job.result()
+            if status != 200:
+                return error(status, result)
+            return Response(result, media_type=MIME[kind], headers={"Cache-Control": "no-store"})
+        finally:
+            job.cancel()
+            disconnect.cancel()
+            await asyncio.gather(job, disconnect, return_exceptions=True)
+            studio.pending.discard(job)
+
+    return Starlette(lifespan=lifespan, routes=[
+        Route("/v1/health", health),
+        Route("/v1/portrait/{outfit}", portrait),
+        Route("/v1/voice", partial(submit, kind="voice"), methods=["POST"]),
+        Route("/v1/video_note", partial(submit, kind="video"), methods=["POST"]),
+        Route("/v1/image", partial(submit, kind="image"), methods=["POST"]),
+    ])
