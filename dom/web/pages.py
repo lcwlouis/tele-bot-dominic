@@ -198,6 +198,18 @@ async def _today(app: App, now: datetime, start: datetime, end: datetime) -> lis
     return [("Turns today", str(turns)), ("Replies sent", str(replies)), ("Spend today", f"${spent:,.2f}"), ("Next reminder", upcoming)]
 
 
+def presence_line(chats: list[dict], now: datetime) -> tuple[Literal["online", "asleep", "offline"], str, str]:
+    """Dom's presence across his chats, as the day dial and the new Home show it: state, title and detail."""
+    online = next((row for row in chats if row["state"] == "online"), None)
+    sleeping = [row for row in chats if row["state"] == "asleep"]
+    if online:
+        return "online", "Online in " + ("your DM" if online["scope"] == "owner_dm" else online["title"]), f"until {online['when']}"
+    if sleeping:
+        soonest = min(sleeping, key=lambda row: row["until"])
+        return "asleep", "Asleep", f"until {soonest['when']}"
+    return "offline", "Offline", f"Local time {now:%H:%M}"
+
+
 async def _dial(app: App, chats: list[dict]) -> dict:
     now = app.dispatch.now().astimezone(ZoneInfo(app.config.timezone))
     habits = read_habits(app.home)
@@ -217,16 +229,7 @@ async def _dial(app: App, chats: list[dict]) -> dict:
         (hour, count, _point(hour + .5, 142), _point(hour + .5, 146 + 14 * count / maximum))
         for hour, count in enumerate(counts) if count
     ]
-    online = next((row for row in chats if row["state"] == "online"), None)
-    sleeping = [row for row in chats if row["state"] == "asleep"]
-    if online:
-        title = "Online in " + ("your DM" if online["scope"] == "owner_dm" else online["title"])
-        detail = f"until {online['when']}"
-    elif sleeping:
-        soonest = min(sleeping, key=lambda row: row["until"])
-        title, detail = "Asleep", f"until {soonest['when']}"
-    else:
-        title, detail = "Offline", f"Local time {now:%H:%M}"
+    _, title, detail = presence_line(chats, now)
     return {
         "sleep_window": f"{habits.sleep_start:%H:%M} to {habits.sleep_end:%H:%M}",
         "sleep_arc": _arc(_hour(habits.sleep_start), _hour(habits.sleep_end)),

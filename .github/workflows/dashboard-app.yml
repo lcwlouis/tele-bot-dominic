@@ -1,0 +1,45 @@
+name: Dashboard app
+
+# The new dashboard (web/) is built here and its output committed under dom/web/static/app, so `/update` and the
+# Pi never run Node. This fails when the committed build does not match the sources, then checks the app under
+# Dom's real CSP with Playwright (screenshot comparison is skipped: the baselines are rendered on macOS).
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npm run build
+      - name: The committed build matches the sources
+        run: |
+          changed="$(git status --porcelain -- ../dom/web/static/app)"
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            echo "::error::dom/web/static/app is out of date. Run 'npm run build' in web/ and commit the result."
+            exit 1
+          fi
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: npx playwright install --with-deps chromium
+      - name: CSP, accessibility and navigation checks
+        run: npx playwright test --ignore-snapshots
+        env:
+          CI: "true"

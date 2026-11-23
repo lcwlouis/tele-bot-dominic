@@ -1373,6 +1373,18 @@ class Store:
         ).fetchone()
         return (row["msg_id"], row["created_at"]) if row is not None else None
 
+    async def recent_replies(self, limit: int = 3) -> list[dict[str, Any]]:
+        """Dom's latest sent reply in each approved chat, newest first, for the dashboard's Home."""
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT m.chat_id, m.text, m.created_at FROM messages m "
+                "JOIN chats c ON c.chat_id = m.chat_id AND c.authorization_status = 'approved' "
+                "WHERE m.id IN (SELECT MAX(id) FROM messages WHERE role = 'assistant' AND is_deleted = 0 "
+                "AND msg_id IS NOT NULL GROUP BY chat_id) ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+                (max(1, min(limit, 20)),),
+            )
+        ])
+
     async def get_recent_chat_window(
         self, chat_id: int | str, limit: int = 35, *, through_id: int | None = None,
         thread_id: int | None = None, filter_thread: bool = False,

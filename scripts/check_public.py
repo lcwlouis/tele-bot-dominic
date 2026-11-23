@@ -33,10 +33,15 @@ EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]{2,63}
 EXAMPLE_EMAIL_DOMAIN = re.compile(r"(?:[a-z0-9-]+\.)*example\.[a-z0-9-]+")
 DOC_NETWORKS = tuple(map(ipaddress.IPv4Network, ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")))
 CARRIER_NAT = ipaddress.IPv4Network("100.64.0.0/10")
-VENDORED = ("dom/web/static/novnc/", "dom/web/static/fonts/")
-EXCLUDED = {"uv.lock", "dom/web/static/htmx.min.js"}
+VENDORED = ("dom/web/static/novnc/", "dom/web/static/fonts/", "dom/web/static/app/")  # app/: built from web/, scanned there
+EXCLUDED = {"uv.lock", "web/package-lock.json", "dom/web/static/htmx.min.js"}
 POLICY_PATH = Path("scripts/check_public.toml")
-CSS_RULES = {"charset", "container", "import", "keyframes", "layer", "media", "namespace", "starting", "supports"}
+CSS_RULES = {
+    "charset", "container", "import", "keyframes", "layer", "media", "namespace", "starting", "supports",
+    "property", "apply", "theme", "custom", "utility", "source", "plugin", "variant", "reference", "slot",
+}
+NPM_SCOPE_REST = re.compile(r"[\w.-]*/")
+SVELTE_TAGS = {"render", "const", "attach", "debug"}  # Svelte template tags, written as an at sign after "{"
 
 
 def decorators(content: str) -> set[tuple[int, int]]:
@@ -112,7 +117,13 @@ def categories(
         handle = match.group().lower()
         if (line_number, match.start()) in python_decorators:
             continue
-        if path.suffix in (".css", ".html") and handle[1:] in CSS_RULES:
+        web = path.parts[0] == "web"
+        if (path.suffix in (".css", ".html") or web) and handle[1:] in CSS_RULES:
+            continue
+        # The dashboard app's sources: npm package scopes ("scope/package" after the at sign) and Svelte tags.
+        if web and (NPM_SCOPE_REST.match(line, match.end()) or (
+            line[match.start() - 1:match.start()] == "{" and handle[1:] in SVELTE_TAGS
+        )):
             continue
         if fixtures and handle in allow["test_handles"]:
             continue

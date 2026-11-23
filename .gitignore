@@ -16,6 +16,7 @@ eggs/
 .eggs/
 lib/
 !dom/web/static/novnc/vendor/pako/lib/
+!web/src/lib/
 lib64/
 parts/
 sdist/

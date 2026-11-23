@@ -7,6 +7,7 @@ named `vX.Y.Z`.
 ## [Unreleased]
 
 - Dom composes replies one chat at a time, with priority for the owner's DM after resuming an interrupted reply. The Turn log shows attention waits, visits, cache use on return, and cross-chat deliveries.
+- A first look at the new dashboard at `/app` (Quiet Orbit, built in Svelte): the navigation for phone and desktop, a Home page whose orbit follows what Dom is doing, and a component library. The current dashboard at `/` is unchanged; the other pages move over once the owner signs off this baseline.
 - A group mention or reply to the owner can send an alert, and Dom can text the owner from a group or friend's DM. Both are rate-limited. Messages to other chats need individual approval of the exact text and expire after two hours.
 
 ## [0.8.1] - 2026-11-23
