@@ -90,8 +90,12 @@ function fail(error: ApiError, quiet: boolean): never {
 
 /** GET/POST /api/models and /api/models/test (dom/web/model_settings.py). */
 export type Role = "chat" | "fallback" | "media" | "drafting" | "search" | "escalation";
+/** The routing roles plus the decision roles (triage), which have one endpoint and no effort. */
+export type SettingsRole = Role | "triage";
 export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily";
-export type Effort = "low" | "medium";
+/** A provider's own effort names (low, medium, high, and any others it lists). */
+export type Effort = string;
+export type ProviderKind = "openai" | "openrouter" | "jev" | "searxng" | "deepseek" | "tavily";
 
 export type Endpoint = {
   base_url: string;
@@ -121,13 +125,35 @@ export type SearchProviderInfo = {
   policy_label: string | null;
 };
 
+/** A saved `[providers.<name>]` table, or (saved: false) an address a role uses that isn't saved yet. */
+export type ProviderSetup = {
+  name: string;
+  kind: ProviderKind;
+  base_url: string;
+  api_key_env: string | null;
+  key_set: boolean;
+  is_local: boolean;
+  saved: boolean;
+  listable: boolean;
+  uses: { role: SettingsRole; index: number }[];
+};
+
 export type ModelSettings = {
   revision: string;
-  roles: Record<Role, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
-  triage: { model: string; base_url: string; api_key_env: string | null; key_set: boolean };
+  roles: Record<SettingsRole, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
+  providers: ProviderSetup[];
+  /** The studio's cloud backups ([[studio.voice_fallbacks]], [[studio.image_fallbacks]]), in the order they're tried. */
+  studio: Record<StudioChain, StudioFallback[]>;
   search_providers: SearchProviderInfo[];
   restart_required: boolean;
 };
+
+export type StudioChain = "voice" | "image";
+export type StudioFallback = { provider: string; model: string; api_key_env: string; key_set: boolean; paid: boolean };
+
+/** POST /api/providers/models (dom/web/provider_settings.py): reasoning null means the provider doesn't say. */
+export type ListedModel = { id: string; name: string; reasoning: boolean | null; efforts: string[] };
+export type ModelList = { listable: boolean; models: ListedModel[]; fetched_at: number | null };
 
 export type TestResult = { ok: boolean; latency_ms: number; reply: string | null; error: string | null; provider: string | null };
 

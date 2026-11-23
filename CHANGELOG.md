@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Rollback note: a reasoning effort other than `low` or `medium` (such as `high`) saved from Settings makes v0.8.2 and older refuse to start. Before starting the older release, set each `reasoning_effort` in `config.toml` back to `low` or `medium` (or delete it), and check again after restoring any backup copy (see docs/deploy-pi.md, "Roll back by hand").
+
 ## [0.8.2] - 2026-11-23
 
 A new dashboard, and Dom keeps up with several chats at once: one conversation at a time in his head, nobody waits on a slow one, and replies read like someone typing.

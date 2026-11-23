@@ -2,7 +2,10 @@
 
 GET /api/models returns ModelSettings. POST /api/models replaces one ModelUpdate
 role and returns ModelSettings. POST /api/models/test takes ProviderTest and
-returns TestResult. Index 0 is the role's primary, followed by its own fallbacks.
+returns TestResult. Index 0 is the role's primary, followed by its own fallbacks. Triage (Jev, a decision model)
+is edited and tested like a role but has no fallbacks or effort; its test is a real decisions request.
+ModelSettings.providers lists the saved `[providers.<name>]` tables plus every other address the roles use;
+dom/web/provider_settings.py adds, edits, tests and removes them and fetches their model lists.
 For search, omitting index (null) tests the saved chain in order and reports
 which provider answered. GET /api/permissions returns Permissions; POST
 /api/permissions sets one PermissionUpdate and returns Permissions. Every POST
@@ -17,6 +20,7 @@ import asyncio
 import hashlib
 import re
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -35,14 +39,16 @@ from dom.config import (
     MODEL_ROLES,
     SEARCH_PROVIDERS,
     Config,
-    ModelRole,
     ProviderEndpoint,
+    ProviderKind,
     SearchProvider,
     _replace_file,
     validate_config,
 )
+from dom import model_lists
 from dom.doctor import _probe_hint, is_zdr_refusal
-from dom.llm import ChatClient, FallbackClient, MissingProviderKey
+from dom.jev import JevClient, JevUnavailable
+from dom.llm import ChatClient, FallbackClient, MissingProviderKey, openrouter_host
 from dom.search import PROVIDER_INFO, SearchClient, search_provider_kind
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.usage import ModelCallSkipped, model_request, on_own_network, provider_address, unroutable_address
@@ -58,7 +64,8 @@ DESKTOP_STEPS_PATH = PERMISSIONS_PATH + "/desktop-steps"
 DESKTOP_STEPS = ("desktop", "max_steps")
 # Serialises the dashboard's config.toml writes, which run in a thread.
 _CONFIG_WRITE = asyncio.Lock()
-JSON_POSTS = {API_PATH, API_PATH + "/test", PERMISSIONS_PATH, DESKTOP_STEPS_PATH}
+STUDIO_MOVE_PATH = API_PATH + "/studio-move"
+JSON_POSTS = {API_PATH, API_PATH + "/test", STUDIO_MOVE_PATH, PERMISSIONS_PATH, DESKTOP_STEPS_PATH}
 MAX_BODY = 32 * 1024
 MAX_FALLBACKS = 5
 URL_RULE = ("Use an HTTPS API base URL without credentials, a query or a fragment. "
@@ -67,6 +74,11 @@ TEST_TIMEOUT = 8
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 REVISION = r"^[a-f0-9]{64}$"
 CREDENTIAL_PATTERNS = (API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN)
+# Decision models (Jev's decisions API) edited beside the routing roles. Each has one endpoint: no fallbacks, no effort.
+DECISION_ROLES = ("triage",)
+SettingsRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation", "triage"]
+SETTINGS_ROLES = get_args(SettingsRole)
+assert SETTINGS_ROLES == (*MODEL_ROLES, *DECISION_ROLES)
 
 
 def _looks_like_secret(value: str) -> bool:
@@ -116,7 +128,13 @@ class ProviderInput(ProviderEndpoint):
         return value
 
 
-def _validate_slot_for_role(role: ModelRole, slot: ProviderInput) -> ProviderInput:
+def _validate_slot_for_role(role: SettingsRole, slot: ProviderInput) -> ProviderInput:
+    if role in DECISION_ROLES:
+        if slot.provider is not None or slot.reasoning_effort is not None:
+            raise ValueError("Triage takes a decisions endpoint, a model ID and a key variable only.")
+        if not slot.model:
+            raise ValueError("Enter a model ID without spaces or credentials.")
+        return slot
     if role != "search":
         if slot.provider is not None:
             raise ValueError("Only the search role accepts a search provider type.")
@@ -140,12 +158,14 @@ def _validate_slot_for_role(role: ModelRole, slot: ProviderInput) -> ProviderInp
 class ModelUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: str = Field(pattern=REVISION)
-    role: ModelRole
+    role: SettingsRole
     primary: ProviderInput | None
     fallbacks: list[ProviderInput] = Field(max_length=MAX_FALLBACKS)
 
     @model_validator(mode="after")
     def _validate_role_slots(self) -> ModelUpdate:
+        if self.role in DECISION_ROLES and (self.primary is None or self.fallbacks):
+            raise ValueError("Triage takes exactly one endpoint.")
         if self.primary is None and (self.role not in ("fallback", "search", "escalation") or self.fallbacks):
             raise ValueError("Only fallback, search and escalation may be left empty.")
         if self.primary is not None:
@@ -167,18 +187,43 @@ def _address(url: str) -> str | None:
         return None
 
 
+def _keyed_routes(config: Config) -> list:
+    """Everything in config.toml that sends a key variable to an address, after the starter defaults are applied."""
+    return [*(endpoint for _, endpoint in config.model_endpoints()), *config.provider_setups.values(),
+            *config.studio.voice_fallbacks, *config.studio.image_fallbacks]
+
+
+def _paired(config: Config) -> dict[str, set[str | None]]:
+    paired: dict[str, set[str | None]] = {}
+    for endpoint in _keyed_routes(config):
+        if endpoint.api_key_env:
+            paired.setdefault(endpoint.api_key_env, set()).add(_address(endpoint.base_url))
+    return paired
+
+
+def _check_effective_keys(disk: Config, saved: Config) -> None:
+    """The rule _check_keys applies to what the owner typed, applied to what the saved file will actually route:
+    the starter defaults can fill in a key the owner left blank (an OpenRouter search table takes
+    OPENROUTER_API_KEY), so a key variable that holds a value must not reach a host config.toml doesn't pair it with."""
+    paired = _paired(disk)
+    for endpoint in _keyed_routes(saved):
+        name = endpoint.api_key_env
+        if name and _address(endpoint.base_url) not in paired.get(name, ()) and disk.secret(name):
+            raise KeyPairing(
+                f"This change would send {name} to {_address(endpoint.base_url)}, which it isn't paired with "
+                "(a slot left without a key variable can take the starter's). Give that address its own key variable, "
+                "or edit config.toml by hand.")
+
+
 def _check_keys(disk: Config, providers: list[ProviderEndpoint]) -> None:
-    """A key variable may go only to the scheme://host:port that config.toml already pairs it with (so triage's
+    """A key variable may go only to the scheme://host:port that config.toml already pairs it with, in a model
+    role or a saved `[providers.<name>]` table (so triage's
     key is allowed on its paired host such as https://openrouter.ai, but not elsewhere). A new name may be used
     for one host, unless it already holds a value, names a non-model instance credential (the bot token, desktop
     keys, KLIPY_API_KEY, or an unpaired JEV_API_KEY), or belongs to another host. Pairing an existing key with a
     new host stays a hand edit of config.toml."""
-    paired: dict[str, set[str | None]] = {}
-    for endpoint in [*(endpoint for _, endpoint in disk.model_endpoints()),
-                     *disk.studio.voice_fallbacks, *disk.studio.image_fallbacks]:
-        if endpoint.api_key_env:
-            paired.setdefault(endpoint.api_key_env, set()).add(_address(endpoint.base_url))
-    instance = disk.model_copy(update={"models": {}}).secret_names()
+    paired = _paired(disk)
+    instance = disk.model_copy(update={"models": {}, "provider_setups": {}}).secret_names()
     claimed: dict[str, set[str | None]] = {}
     for provider in providers:
         name, address = provider.api_key_env, _address(provider.base_url)
@@ -221,24 +266,56 @@ class ProviderView(ProviderEndpoint):
     policy_label: str | None = None
 
 
-class TriageView(BaseModel):
-    """Jev, the TypeSafe Decisions API: a classifier, shown here but not routable to a chat model."""
-
-    model: str
-    base_url: str
-    api_key_env: str | None
-    key_set: bool
-
-
 class RoleView(BaseModel):
     primary: ProviderView | None
     fallbacks: list[ProviderView]
 
 
+class ProviderUse(BaseModel):
+    role: SettingsRole
+    index: int
+
+
+class ProviderSetupView(BaseModel):
+    """A provider: a saved `[providers.<name>]` table, or (saved=False) an address a role uses that isn't saved yet."""
+
+    name: str
+    kind: ProviderKind
+    base_url: str
+    api_key_env: str | None
+    key_set: bool
+    is_local: bool
+    saved: bool
+    listable: bool
+    uses: list[ProviderUse]
+
+
+StudioChain = Literal["voice", "image"]
+
+
+class StudioFallbackView(BaseModel):
+    """One cloud backup for the local studio ([[studio.<chain>_fallbacks]]); a Gemini voice needs paid=true to run."""
+
+    provider: str
+    model: str
+    api_key_env: str
+    key_set: bool
+    paid: bool
+
+
+class StudioMove(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: str = Field(pattern=REVISION)
+    chain: StudioChain
+    index: int = Field(ge=1, le=64)  # moves this backup one place up
+
+
 class ModelSettings(BaseModel):
     revision: str
-    roles: dict[ModelRole, RoleView]
-    triage: TriageView
+    # Routing roles, then the decision roles (triage): triage has a primary and never fallbacks.
+    roles: dict[SettingsRole, RoleView]
+    providers: list[ProviderSetupView]
+    studio: dict[StudioChain, list[StudioFallbackView]]
     search_providers: list[SearchProviderInfo]
     restart_required: bool
 
@@ -246,7 +323,7 @@ class ModelSettings(BaseModel):
 class ProviderTest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: str = Field(pattern=REVISION)
-    role: ModelRole
+    role: SettingsRole
     index: int | None = Field(None, ge=0)
 
     @model_validator(mode="after")
@@ -287,21 +364,20 @@ def _check_revision(current: Snapshot, revision: str) -> None:
         raise HTTPException(409, "Configuration changed. Reload settings and try again.")
 
 
-def _dump_slot(role: ModelRole, provider: ProviderInput) -> dict:
-    data = provider.model_dump(exclude_none=True)
+def chain(config: Config, role: SettingsRole) -> tuple[ProviderEndpoint, ...]:
+    """A role's saved endpoints in order; triage always has exactly one (the starter default when unset)."""
+    return (config.models["triage"],) if role in DECISION_ROLES else config.providers(role)
+
+
+def _dump_slot(role: SettingsRole, provider: ProviderEndpoint) -> dict:
+    data = provider.model_dump(exclude_none=True, exclude={"fallbacks"})
     if role == "search" and search_provider_kind(provider) != "openrouter":
         data.pop("model", None)
     return data
 
 
-def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
-    _check_revision(current, update.revision)
-    try:
-        _check_keys(current.config, [*([update.primary] if update.primary else []), *update.fallbacks])
-    except KeyPairing as exc:
-        raise HTTPException(422, str(exc)) from None
-    home = current.config.home
-    document = tomlkit.parse(current.text)
+def set_role(document: tomlkit.TOMLDocument, role: SettingsRole, slots: list[ProviderEndpoint]) -> None:
+    """Write one role's whole chain into config.toml's document, or drop the role when `slots` is empty."""
 
     def models():
         # A fresh view per step: when other tables sit between the [models.*] ones, tomlkit's view of them goes stale
@@ -310,22 +386,59 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
 
     if "chat_fallback" in models():
         legacy = models().pop("chat_fallback")
-        if update.role != "fallback" and "fallback" not in models():
+        if role != "fallback" and "fallback" not in models():
             models()["fallback"] = legacy
-    if update.primary is None:
-        models().pop(update.role, None)
+    if not slots:
+        models().pop(role, None)
     else:
-        primary = _dump_slot(update.role, update.primary)
-        if update.fallbacks:
-            primary["fallbacks"] = [_dump_slot(update.role, provider) for provider in update.fallbacks]
-        models()[update.role] = primary
+        primary = _dump_slot(role, slots[0])
+        if slots[1:]:
+            primary["fallbacks"] = [_dump_slot(role, provider) for provider in slots[1:]]
+        models()[role] = primary
 
+
+def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     text = tomlkit.dumps(document)
-    saved = Snapshot(validate_config(home, tomllib.loads(text)), text)
+    saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
     if "chat" not in saved.config.models:
         raise HTTPException(422, "Configure a primary chat provider.")
-    _write(current, saved)
+    try:
+        _check_effective_keys(current.config, saved.config)
+    except KeyPairing as exc:
+        raise HTTPException(422, str(exc)) from None
     return saved
+
+
+def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
+    """The settings with `update` applied, validated but not written."""
+    _check_revision(current, update.revision)
+    try:
+        _check_keys(current.config, [*([update.primary] if update.primary else []), *update.fallbacks])
+    except KeyPairing as exc:
+        raise HTTPException(422, str(exc)) from None
+    document = tomlkit.parse(current.text)
+    set_role(document, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
+    return validated(current, document)
+
+
+async def commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str) -> Snapshot:
+    """Apply `change` to config.toml and the running routes, or to neither. The new settings and every client they
+    route to are built before the file is replaced, so a route that can't be built keeps the old file and runtime.
+    One config write at a time; the disk work runs off the loop, and a cancelled request still finishes the swap."""
+
+    async def run() -> Snapshot:
+        async with _CONFIG_WRITE:
+            try:
+                current = await asyncio.to_thread(_snapshot, app.config.home)
+                saved = await asyncio.to_thread(change, current)
+                routes = app.model_routes(saved.config)
+                await asyncio.to_thread(_write, current, saved)
+            except (OSError, ValueError, httpx.InvalidURL):
+                raise HTTPException(409, failure) from None
+            app.use_model_routes(routes)
+            return saved
+
+    return await asyncio.shield(asyncio.ensure_future(run()))
 
 
 def _write(current: Snapshot, saved: Snapshot) -> None:
@@ -388,22 +501,98 @@ def _search_provider_infos() -> list[SearchProviderInfo]:
     ]
 
 
+def slot_kind(role: SettingsRole, endpoint: ProviderEndpoint) -> ProviderKind:
+    """The provider kind a role's slot implies, for an address not saved under [providers] yet."""
+    if role in DECISION_ROLES:
+        return "jev"
+    if role == "search":
+        return search_provider_kind(endpoint)
+    try:
+        return "openrouter" if openrouter_host(httpx.URL(endpoint.base_url).host) else "openai"
+    except httpx.InvalidURL:
+        return "openai"
+
+
+KIND_LABELS: dict[str, str] = {"openrouter": "OpenRouter", "jev": "Jev decisions"} | {
+    name: PROVIDER_INFO[name].label for name in ("searxng", "deepseek", "tavily")
+}
+
+
+def kind_fits(kind: ProviderKind, role: SettingsRole, endpoint: ProviderEndpoint) -> bool:
+    """Whether a provider of this kind can serve the slot: triage takes Jev, search its own kind, the rest chat."""
+    if role in DECISION_ROLES:
+        return kind == "jev"
+    if role == "search":
+        return kind == search_provider_kind(endpoint)
+    return kind in ("openai", "openrouter")
+
+
+def family(kind: ProviderKind) -> str:
+    """Providers at one address and key variable are one provider, unless they serve different kinds of call."""
+    return kind if kind in ("jev", "searxng", "deepseek", "tavily") else "chat"
+
+
+def _key_set(config: Config, variable: str | None) -> bool:
+    try:
+        return bool(variable and config.secret(variable))
+    except (OSError, ValueError):
+        return False
+
+
+def provider_catalog(config: Config) -> list[ProviderSetupView]:
+    """Saved providers first, then each other address (and key variable) a role uses, with every slot that uses it."""
+    found: dict[tuple[str, str | None, str], ProviderSetupView] = {}
+    for name, setup in config.provider_setups.items():
+        found.setdefault((setup.base_url, setup.api_key_env, family(setup.kind)), ProviderSetupView(
+            name=name, kind=setup.kind, base_url=setup.base_url, api_key_env=setup.api_key_env,
+            key_set=_key_set(config, setup.api_key_env), is_local=_is_local(setup.base_url), saved=True,
+            listable=model_lists.listable(setup.kind), uses=[],
+        ))
+    names = {view.name.lower() for view in found.values()}
+    for role in SETTINGS_ROLES:
+        for index, endpoint in enumerate(chain(config, role)):
+            view = _provider_view(config, endpoint, role=role)
+            if not view.base_url:  # a hand-written address the settings API can't show
+                continue
+            kind = slot_kind(role, endpoint)
+            key = (view.base_url, view.api_key_env, family(kind))
+            if key not in found:
+                base = re.sub(r"[^A-Za-z0-9 ._-]+", " ", KIND_LABELS.get(kind) or httpx.URL(view.base_url).host).strip()[:36] or "Provider"
+                name, n = base, 2
+                while name.lower() in names:
+                    name, n = f"{base} {n}", n + 1
+                names.add(name.lower())
+                found[key] = ProviderSetupView(
+                    name=name, kind=kind, base_url=view.base_url, api_key_env=view.api_key_env, key_set=view.key_set,
+                    is_local=view.kind == "local", saved=False, listable=model_lists.listable(kind), uses=[],
+                )
+            found[key].uses.append(ProviderUse(role=role, index=index))
+    return list(found.values())
+
+
 def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
     config = snapshot.config
     roles = {}
-    for role in MODEL_ROLES:
-        primary, *fallbacks = config.providers(role) or (None,)
+    for role in SETTINGS_ROLES:
+        primary, *fallbacks = chain(config, role) or (None,)
         roles[role] = RoleView(
             primary=_provider_view(config, primary, role=role) if primary else None,
             fallbacks=[_provider_view(config, provider, role=role) for provider in fallbacks],
         )
-    triage = _provider_view(config, config.models["triage"])
     return ModelSettings(
         revision=snapshot.revision,
         roles=roles,
-        triage=TriageView(model=triage.model, base_url=triage.base_url, api_key_env=triage.api_key_env, key_set=triage.key_set),
+        providers=provider_catalog(config),
+        studio={
+            chain: [
+                StudioFallbackView(provider=item.provider, model=item.model, api_key_env=item.api_key_env,
+                                   key_set=_key_set(config, item.api_key_env), paid=item.paid)
+                for item in getattr(config.studio, f"{chain}_fallbacks")
+            ]
+            for chain in ("voice", "image")
+        },
         search_providers=_search_provider_infos(),
-        restart_required=any(config.providers(role) != app.config.providers(role) for role in MODEL_ROLES),
+        restart_required=any(chain(config, role) != chain(app.config, role) for role in SETTINGS_ROLES),
     )
 
 
@@ -440,11 +629,15 @@ async def read_models(request: Request) -> ModelSettings:
     return _settings(app, _snapshot(app.config.home))
 
 
-def _probe_tuple(role: ModelRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None]:
+def _probe_tuple(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None, str | None]:
+    """What a probe sends: a slot whose tuple is already in the chain was tested when it was added."""
     kind = search_provider_kind(endpoint) if role == "search" else None
-    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind)
+    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind, endpoint.reasoning_effort)
 
 
+# A probe is sent as the role will send it, reasoning effort included; reasoning needs room before the reply.
+PROBE_TOKENS = 256
+REASONING_PROBE_TOKENS = 2048
 MISSING_KEY = "Not tested: this provider's key variable has no value in .env yet. Add it, then press Test."
 
 
@@ -463,13 +656,30 @@ async def update_models(request: Request):
         _check_keys(current.config, submitted)
     except KeyPairing as exc:
         raise HTTPException(422, str(exc)) from None
+    # An effort is checked against the provider's fetched list when it knows the model (D9).
+    effort_failures = []
+    secrets = model_lists.secret_values(current.config)  # the 422 below quotes upstream effort labels
+    for index, provider in enumerate(submitted):
+        listed = await model_lists.cached(
+            app.store, provider.base_url, provider.api_key_env, fresh_only=False, secrets=secrets,
+        )
+        if error := model_lists.effort_error(listed, provider.model, provider.reasoning_effort):
+            effort_failures.append({"index": index, "error": error})
+    if effort_failures:
+        detail = "; ".join(f"{_slot_label(item['index'])}: {item['error']}" for item in effort_failures)
+        return JSONResponse(status_code=422, content={"detail": detail, "errors": effort_failures})
 
-    # A slot already in the chain (at any position) was tested when it was added; the probe ignores reasoning effort,
-    # so a change to that alone tests nothing new either.
-    existing = {_probe_tuple(update.role, provider) for provider in current.config.providers(update.role)}
+    # Built first, so the key pairing is checked on the routes as they will be saved (with the starter's defaults
+    # filled in), and each slot is tested as it will be sent.
+    try:
+        candidate = await asyncio.to_thread(_save, current, update)
+    except (OSError, ValueError):
+        raise HTTPException(409, "Could not save valid model settings. Check config.toml and its permissions.") from None
+    # A slot already in the chain (at any position) was tested when it was added; a changed model or effort is tested.
+    existing = {_probe_tuple(update.role, provider) for provider in chain(current.config, update.role)}
     to_test = [
         (index, provider)
-        for index, provider in enumerate(submitted)
+        for index, provider in enumerate(chain(candidate.config, update.role))
         if _probe_tuple(update.role, provider) not in existing
     ]
     if to_test:
@@ -486,16 +696,39 @@ async def update_models(request: Request):
             detail = "; ".join(f"{_slot_label(item['index'])}: {item['error']}" for item in failures)
             return JSONResponse(status_code=422, content={"detail": detail, "errors": failures})
 
-    # One config write at a time from reading to publishing the new runtime snapshot; the disk work runs off the loop.
+    saved = await commit(app, lambda current: _save(current, update),
+                         "Could not save valid model settings. Check config.toml and its permissions.")
+    return _settings(app, saved)
+
+
+def _move_studio(current: Snapshot, move: StudioMove) -> Snapshot:
+    _check_revision(current, move.revision)
+    key = f"{move.chain}_fallbacks"
+    chain = list(getattr(current.config.studio, key))
+    if move.index >= len(chain):
+        raise HTTPException(404, "There is no studio backup at that position.")
+    chain[move.index - 1], chain[move.index] = chain[move.index], chain[move.index - 1]
+    document = tomlkit.parse(current.text)
+    tables = tomlkit.aot()
+    for item in chain:
+        tables.append(tomlkit.item(item.model_dump(exclude_defaults=True)))
+    document["studio"][key] = tables
+    saved = validated(current, document)
+    _write(current, saved)
+    return saved
+
+
+@router.post(STUDIO_MOVE_PATH)
+async def move_studio_fallback(request: Request) -> ModelSettings:
+    """Reorder a studio cloud chain. Nothing new is reached, so nothing is tested; it applies at once."""
+    app = owner_app(request)
+    move = await _input(request, StudioMove)
     async with _CONFIG_WRITE:
         try:
-            saved = await asyncio.to_thread(lambda: _save(_snapshot(app.config.home), update))
+            saved = await asyncio.to_thread(lambda: _move_studio(_snapshot(app.config.home), move))
         except (OSError, ValueError):
-            raise HTTPException(409, "Could not save valid model settings. Check config.toml and its permissions.") from None
-        try:
-            app.apply_model_routes(saved.config)
-        except (OSError, ValueError, httpx.InvalidURL):
-            pass  # the response reports whether the running routes still differ
+            raise HTTPException(409, "Could not save the order. Check config.toml and its permissions.") from None
+        app.config = app.config.model_copy(update={"studio": saved.config.studio})
     return _settings(app, saved)
 
 
@@ -505,7 +738,7 @@ async def test_provider(request: Request) -> TestResult:
     test = await _input(request, ProviderTest)
     snapshot = _snapshot(app.config.home)
     _check_revision(snapshot, test.revision)
-    providers = snapshot.config.providers(test.role)
+    providers = chain(snapshot.config, test.role)
     if not providers and test.role == "escalation":
         providers = snapshot.config.providers("drafting")
     current = app.client.primary if isinstance(app.client, FallbackClient) else app.client
@@ -517,7 +750,10 @@ async def test_provider(request: Request) -> TestResult:
     if test.index >= len(providers):
         raise HTTPException(404, "There is no saved provider at that position.")
     provider = providers[test.index]
-    return await _probe(app, current.http, snapshot.config, provider, role=test.role)
+    result = await _probe(app, current.http, snapshot.config, provider, role=test.role)
+    if result.ok and test.role in DECISION_ROLES:
+        app.refresh_triage()  # a key added to .env after saving takes effect once it works
+    return result
 
 
 @dataclass(frozen=True)
@@ -778,9 +1014,64 @@ async def _probe_search_chain(
     )
 
 
+async def _probe_decisions(app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint) -> TestResult:
+    """A real Jev decisions request with one yes/no question, recorded as triage usage."""
+    local = _is_local(provider.base_url)
+
+    async def allowed() -> bool:
+        return local or not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
+
+    start = monotonic()
+    key = None
+    try:
+        _validate_slot_for_role("triage", ProviderInput(
+            base_url=provider.base_url, model=provider.model, api_key_env=provider.api_key_env or None,
+        ))
+        _check_keys(config, [provider])
+        key = config.secret(provider.api_key_env) if provider.api_key_env else None
+        if provider.api_key_env and not key:
+            raise MissingProviderKey
+        client = JevClient(http, key or "", provider.model, provider.base_url, usage=app.dispatch.usage)
+        async with asyncio.timeout(TEST_TIMEOUT):
+            with model_request("triage", None, allowed):
+                answers = await client.decide("A settings test from the owner's dashboard.", {"check": {
+                    "type": "choice", "instructions": "Answer yes.",
+                    "criteria": {"yes": "The check reached the decisions API.", "no": "The check did not reach it."},
+                }})
+        choice = (answers.get("check") or {}).get("choice")
+        if choice not in ("yes", "no"):
+            raise JevUnavailable
+    except KeyPairing as exc:
+        error = str(exc)
+    except (ValidationError, ValueError):
+        error = "Fix this provider's URL, model or key variable in settings."
+    except ModelCallSkipped:
+        error = "The daily spend cap has been reached."
+    except MissingProviderKey:
+        error = MISSING_KEY
+    except TimeoutError:
+        error = "Provider test timed out."
+    except JevUnavailable as exc:
+        cause = exc.__cause__
+        if isinstance(cause, httpx.HTTPStatusError):
+            error = (_probe_hint(cause.response) if is_zdr_refusal(cause.response)
+                     else f"Provider returned HTTP {cause.response.status_code}.")
+        elif isinstance(cause, httpx.TimeoutException):
+            error = "Provider test timed out."
+        elif isinstance(cause, httpx.HTTPError):
+            error = "Could not reach the provider."
+        else:
+            error = "The decisions API did not return a usable answer."
+    else:
+        return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=f"Decided: {choice}")
+    return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=_redact(error, key))
+
+
 async def _probe(
-    app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint, *, role: ModelRole = "chat",
+    app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint, *, role: SettingsRole = "chat",
 ) -> TestResult:
+    if role in DECISION_ROLES:
+        return await _probe_decisions(app, http, config, provider)
     if role == "search":
         return await _probe_search(app, http, config, provider)
     local = _is_local(provider.base_url)
@@ -802,14 +1093,14 @@ async def _probe(
         )
         _check_keys(config, [provider])
         key = config.secret(provider.api_key_env) if provider.api_key_env else None
-        probe_endpoint = provider.model_copy(update={"reasoning_effort": None})
         kind = "escalation" if role == "escalation" else "chat"
-        client = ChatClient(probe_endpoint, key, http, sleep=app.sleep, usage=app.dispatch.usage, kind=kind)
+        client = ChatClient(provider, key, http, sleep=app.sleep, usage=app.dispatch.usage, kind=kind)
         async with asyncio.timeout(TEST_TIMEOUT):
             with model_request(kind, escalation_owner, allowed):
                 message = await client.complete(
                     [{"role": "user", "content": "Reply with OK."}], [],
-                    once=True, max_tokens=256, timeout=TEST_TIMEOUT,
+                    once=True, max_tokens=PROBE_TOKENS if provider.reasoning_effort is None else REASONING_PROBE_TOKENS,
+                    timeout=TEST_TIMEOUT,
                 )
         if not isinstance(message, dict):
             raise ValueError

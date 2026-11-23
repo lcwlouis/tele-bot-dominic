@@ -3,7 +3,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import X from "@lucide/svelte/icons/x";
   import { untrack } from "svelte";
-  import { ApiError, send, type Effort, type ModelSettings, type Role, type SearchProviderId } from "$lib/api";
+  import { ApiError, send, type ModelSettings, type ProviderSetup, type SearchProviderId, type SettingsRole } from "$lib/api";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
@@ -11,9 +11,12 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import * as Select from "$lib/components/ui/select";
-  import { CLEARABLE, KEY_PATTERN, MAX_SLOTS, ROLE_INFO, slotLabel } from "./roles";
+  import ModelPicker from "./ModelPicker.svelte";
+  import { effortsFor, findModel } from "./modelLists.svelte";
+  import { CLEARABLE, KEY_PATTERN, KIND_INFO, MAX_SLOTS, ROLE_INFO, family, host, kindsFor, slotLabel } from "./roles";
 
-  // Edits one role's chain: its primary, then its own fallbacks in order. Nothing is written until Save, which
+  // Edits one role's chain: its primary, then its own fallbacks in order. Each slot picks a provider (from the
+  // Providers tab) and a model from that provider's list, or a custom address. Nothing is written until Save, which
   // tests every new slot on the server first (dom/web/model_settings.py update_models).
   let {
     role,
@@ -22,31 +25,45 @@
     onsaved,
     oncancel,
   }: {
-    role: Role;
+    role: SettingsRole;
     settings: ModelSettings;
     revision: string;
     onsaved: (saved: ModelSettings) => void;
     oncancel: () => void;
   } = $props();
 
+  const CUSTOM = "__custom__"; // provider names start with a letter or digit, so this never names one
   type Slot = {
     key: number;
+    source: string; // a provider's name, or CUSTOM for an address typed here
     base_url: string;
     model: string;
     api_key_env: string;
-    effort: Effort | "default";
+    effort: string; // "default" leaves it to the provider
     provider: SearchProviderId;
     key_set: boolean | null; // null for a slot added here, whose key the server has not looked at yet
   };
 
   const search = $derived(role === "search");
+  const triage = $derived(role === "triage");
   const info = $derived(ROLE_INFO[role]);
   let nextKey = 0;
   // The editor opens on the saved chain; later changes to the props (a reload) don't reset what the owner typed.
   const route = untrack(() => settings.roles[role]);
+  const choices = untrack(() => settings.providers.filter((item) => kindsFor(role).includes(item.kind)));
+  const searchKind = (kind: ProviderSetup["kind"]): SearchProviderId => (kind === "openai" || kind === "jev" ? "openrouter" : kind);
+
+  function sourceOf(base_url: string, api_key_env: string | null, kind: string): string {
+    const found = choices.find(
+      (item) => item.base_url === base_url && item.api_key_env === api_key_env && family(item.kind) === family(kind as ProviderSetup["kind"]),
+    );
+    return found?.name ?? CUSTOM;
+  }
+
   let slots = $state<Slot[]>(
     [route.primary, ...route.fallbacks].filter((item) => item !== null).map((item) => ({
       key: nextKey++,
+      source: sourceOf(item.base_url, item.api_key_env, triage ? "jev" : (item.provider ?? "openai")),
       base_url: item.base_url,
       model: item.model,
       api_key_env: item.api_key_env ?? "",
@@ -59,31 +76,49 @@
   let saving = $state(false);
   let confirmClear = $state(false);
   const hadPrimary = route.primary !== null;
+  const maxSlots = $derived(triage ? 1 : MAX_SLOTS);
 
   const providerInfo = (id: SearchProviderId) => settings.search_providers.find((item) => item.id === id)!;
-  const efforts = [
-    { value: "default", label: "Provider default" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-  ];
+  const chosen = (slot: Slot) => choices.find((item) => item.name === slot.source);
+
+  function effortOptions(slot: Slot) {
+    const listed = effortsFor(findModel(slot.source === CUSTOM ? null : slot.source, slot.model.trim()));
+    const values = slot.effort !== "default" && !listed.includes(slot.effort) ? [...listed, slot.effort] : listed;
+    return [{ value: "default", label: "Provider default" }, ...values.map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))];
+  }
 
   function edited() {
     errors = {};
   }
 
   function add() {
+    const first = choices[0];
     const fresh = providerInfo("searxng");
     slots.push({
       key: nextKey++,
-      base_url: search ? fresh.default_base_url : "",
+      source: first?.name ?? CUSTOM,
+      base_url: first?.base_url ?? (search ? fresh.default_base_url : ""),
       model: "",
-      api_key_env: search ? fresh.default_api_key_env : "",
+      api_key_env: first ? (first.api_key_env ?? "") : search ? fresh.default_api_key_env : "",
       effort: "default",
-      provider: "searxng",
-      key_set: null,
+      provider: first ? searchKind(first.kind) : "searxng",
+      key_set: first ? first.key_set : null,
     });
     edited();
     queueMicrotask(() => document.getElementById(`${role}-slot-${slots.at(-1)!.key}-first`)?.focus());
+  }
+
+  function pickSource(slot: Slot, name: string) {
+    slot.source = name;
+    const found = chosen(slot);
+    if (found) {
+      slot.base_url = found.base_url;
+      slot.api_key_env = found.api_key_env ?? "";
+      slot.key_set = found.api_key_env ? found.key_set : null;
+      if (search) slot.provider = searchKind(found.kind);
+      if (search && !providerInfo(slot.provider).needs_model) slot.model = "";
+    }
+    edited();
   }
 
   function move(index: number) {
@@ -118,6 +153,7 @@
         api_key_env,
       };
     }
+    if (triage) return { base_url: slot.base_url.trim(), model: slot.model.trim(), api_key_env };
     return {
       base_url: slot.base_url.trim(),
       model: slot.model.trim(),
@@ -179,6 +215,8 @@
         {#each slots as slot, index (slot.key)}
           {@const id = `${role}-slot-${slot.key}`}
           {@const needsModel = !search || providerInfo(slot.provider).needs_model}
+          {@const source = chosen(slot)}
+          {@const efforts = effortOptions(slot)}
           <li>
             <fieldset class="rounded-xl border bg-raised/30 p-4" aria-describedby={errors[index] ? `${id}-error` : undefined}>
               <legend class="flex items-center gap-2 px-1 text-sm font-medium">
@@ -186,66 +224,97 @@
                 {slotLabel(index)}
               </legend>
               <div class="grid gap-3 sm:grid-cols-2">
-                {#if search}
-                  <div class="grid gap-1.5 sm:col-span-2">
-                    <Label id={`${id}-provider-label`}>Search provider</Label>
-                    <Select.Root type="single" value={slot.provider} onValueChange={(value) => pickProvider(slot, value as SearchProviderId)}>
-                      <Select.Trigger id={`${id}-first`} class="h-9 w-full" aria-labelledby={`${id}-provider-label`}>
-                        {providerInfo(slot.provider).label}
-                      </Select.Trigger>
-                      <Select.Content>
-                        {#each settings.search_providers as item (item.id)}
-                          <Select.Item value={item.id} label={item.label} />
-                        {/each}
-                      </Select.Content>
-                    </Select.Root>
-                  </div>
-                {/if}
                 <div class="grid gap-1.5 sm:col-span-2">
-                  <Label for={search ? `${id}-url` : `${id}-first`}>Base URL</Label>
-                  <Input
-                    id={search ? `${id}-url` : `${id}-first`}
-                    type="url"
-                    required
-                    bind:value={slot.base_url}
-                    oninput={edited}
-                    placeholder="https://models.example.org/v1"
-                    class="font-mono"
-                    autocomplete="off"
-                    spellcheck={false}
-                  />
+                  <Label id={`${id}-source-label`}>Provider</Label>
+                  <Select.Root type="single" value={slot.source} onValueChange={(value) => pickSource(slot, value)}>
+                    <Select.Trigger id={`${id}-first`} class="h-9 w-full" aria-labelledby={`${id}-source-label`}>
+                      {source ? `${source.name} · ${KIND_INFO[source.kind].label}` : "Custom address"}
+                    </Select.Trigger>
+                    <Select.Content>
+                      {#each choices as item (item.name)}
+                        <Select.Item value={item.name} label={`${item.name} · ${KIND_INFO[item.kind].label}`} />
+                      {/each}
+                      <Select.Item value={CUSTOM} label="Custom address" />
+                    </Select.Content>
+                  </Select.Root>
+                  {#if source}
+                    <p class="text-xs break-all text-muted-foreground">
+                      {host(source.base_url)}{source.api_key_env ? ` · ${source.api_key_env}` : " · no key"}
+                      {#if source.api_key_env && !source.key_set}<Badge variant="destructive" class="ml-1">Key missing</Badge>{/if}
+                    </p>
+                  {/if}
                 </div>
-                {#if needsModel}
-                  <div class="grid gap-1.5">
-                    <Label for={`${id}-model`}>Model ID</Label>
-                    <Input id={`${id}-model`} required bind:value={slot.model} oninput={edited} class="font-mono" autocomplete="off" spellcheck={false} />
+                {#if !source}
+                  {#if search}
+                    <div class="grid gap-1.5 sm:col-span-2">
+                      <Label id={`${id}-provider-label`}>Search provider</Label>
+                      <Select.Root type="single" value={slot.provider} onValueChange={(value) => pickProvider(slot, value as SearchProviderId)}>
+                        <Select.Trigger class="h-9 w-full" aria-labelledby={`${id}-provider-label`}>
+                          {providerInfo(slot.provider).label}
+                        </Select.Trigger>
+                        <Select.Content>
+                          {#each settings.search_providers as item (item.id)}
+                            <Select.Item value={item.id} label={item.label} />
+                          {/each}
+                        </Select.Content>
+                      </Select.Root>
+                    </div>
+                  {/if}
+                  <div class="grid gap-1.5 sm:col-span-2">
+                    <Label for={`${id}-url`}>Base URL</Label>
+                    <Input
+                      id={`${id}-url`}
+                      type="url"
+                      required
+                      bind:value={slot.base_url}
+                      oninput={edited}
+                      placeholder="https://models.example.org/v1"
+                      class="font-mono"
+                      autocomplete="off"
+                      spellcheck={false}
+                    />
                   </div>
                 {/if}
-                <div class="grid gap-1.5">
-                  <Label for={`${id}-key`}>Key variable</Label>
-                  <Input
-                    id={`${id}-key`}
-                    bind:value={slot.api_key_env}
-                    oninput={edited}
-                    pattern={KEY_PATTERN}
-                    placeholder="None"
-                    class="font-mono"
-                    autocomplete="off"
-                    spellcheck={false}
-                    aria-describedby={`${id}-key-hint`}
-                  />
-                  <p id={`${id}-key-hint`} class="text-xs text-muted-foreground">
-                    The name of a variable in <code class="font-mono">.env</code>, never the key itself.
-                    {#if slot.key_set !== null && slot.api_key_env}
-                      <Badge variant={slot.key_set ? "secondary" : "destructive"} class="ml-1">{slot.key_set ? "Key set" : "Key missing"}</Badge>
-                    {/if}
-                  </p>
-                </div>
-                {#if !search}
+                {#if needsModel}
+                  <div class="grid gap-1.5 {source ? 'sm:col-span-2' : ''}">
+                    <Label for={`${id}-model`}>Model ID</Label>
+                    <ModelPicker
+                      id={`${id}-model`}
+                      bind:value={slot.model}
+                      provider={source?.name ?? null}
+                      listable={source?.listable ?? false}
+                      {revision}
+                      oninput={edited}
+                    />
+                  </div>
+                {/if}
+                {#if !source}
+                  <div class="grid gap-1.5">
+                    <Label for={`${id}-key`}>Key variable</Label>
+                    <Input
+                      id={`${id}-key`}
+                      bind:value={slot.api_key_env}
+                      oninput={edited}
+                      pattern={KEY_PATTERN}
+                      placeholder="None"
+                      class="font-mono"
+                      autocomplete="off"
+                      spellcheck={false}
+                      aria-describedby={`${id}-key-hint`}
+                    />
+                    <p id={`${id}-key-hint`} class="text-xs text-muted-foreground">
+                      The name of a variable in <code class="font-mono">.env</code>, never the key itself.
+                      {#if slot.key_set !== null && slot.api_key_env}
+                        <Badge variant={slot.key_set ? "secondary" : "destructive"} class="ml-1">{slot.key_set ? "Key set" : "Key missing"}</Badge>
+                      {/if}
+                    </p>
+                  </div>
+                {/if}
+                {#if !search && !triage}
                   <div class="grid gap-1.5">
                     <Label id={`${id}-effort-label`}>Reasoning effort</Label>
                     <Select.Root type="single" bind:value={slot.effort} onValueChange={edited}>
-                      <Select.Trigger class="h-9 w-full" aria-labelledby={`${id}-effort-label`}>
+                      <Select.Trigger class="h-9 w-full" aria-labelledby={`${id}-effort-label`} aria-describedby={`${id}-effort-hint`}>
                         {efforts.find((item) => item.value === slot.effort)?.label}
                       </Select.Trigger>
                       <Select.Content>
@@ -254,8 +323,11 @@
                         {/each}
                       </Select.Content>
                     </Select.Root>
+                    <p id={`${id}-effort-hint`} class="text-xs text-muted-foreground">
+                      {efforts.length === 1 ? "This model doesn't reason." : "Higher effort takes longer and costs more."}
+                    </p>
                   </div>
-                {:else}
+                {:else if search}
                   <p class="self-end text-xs text-muted-foreground sm:pb-2.5">
                     {providerInfo(slot.provider).data_retention}
                   </p>
@@ -279,17 +351,26 @@
         {/each}
       </ol>
 
-      <div class="flex flex-wrap gap-2">
-        <Button type="button" variant="secondary" onclick={add} disabled={slots.length >= MAX_SLOTS}>
-          <Plus data-icon="inline-start" aria-hidden="true" /> {slots.length ? "Add fallback" : "Set primary"}
-        </Button>
-        {#if CLEARABLE.includes(role) && slots.length}
-          <Button type="button" variant="ghost" onclick={() => { slots = []; edited(); }}>Clear role</Button>
-        {/if}
-      </div>
-      {#if slots.length >= MAX_SLOTS}<p class="text-xs text-muted-foreground">A role has at most {MAX_SLOTS - 1} fallbacks.</p>{/if}
+      {#if !triage || slots.length === 0}
+        <div class="flex flex-wrap gap-2">
+          <Button type="button" variant="secondary" onclick={add} disabled={slots.length >= maxSlots}>
+            <Plus data-icon="inline-start" aria-hidden="true" /> {slots.length ? "Add fallback" : "Set primary"}
+          </Button>
+          {#if CLEARABLE.includes(role) && slots.length}
+            <Button type="button" variant="ghost" onclick={() => { slots = []; edited(); }}>Clear role</Button>
+          {/if}
+        </div>
+      {/if}
+      {#if triage}
+        <p class="text-xs text-muted-foreground">
+          Triage uses one decisions endpoint, with no fallbacks. Until its key variable has a value in
+          <code class="font-mono">.env</code>, triage and the leak check are off; once it does, press Test to turn them on.
+        </p>
+      {:else if slots.length >= maxSlots}
+        <p class="text-xs text-muted-foreground">A role has at most {MAX_SLOTS - 1} fallbacks.</p>
+      {/if}
       <p class="text-xs text-muted-foreground">
-        Saving tests each new provider first. Put key values in <code class="font-mono">.env</code>, and check any new cloud model
+        Saving tests each new provider first. Add providers on the Providers tab. Put key values in <code class="font-mono">.env</code>, and check any new cloud model
         against your zero-data-retention policy before it sees conversations.
       </p>
     </Card.Content>

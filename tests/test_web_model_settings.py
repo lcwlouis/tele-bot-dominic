@@ -82,13 +82,14 @@ async def test_save_backs_up_config_and_applies_new_routes_without_restart(dashb
     route = dict(PRIMARY, model="local-media")
     async with browser() as client:
         initial = (await client.get(API)).json()
-        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search", "escalation"}
+        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search", "escalation", "triage"}
         assert initial["roles"]["search"] == {"primary": None, "fallbacks": []}
         assert {item["id"] for item in initial["search_providers"]} == {"searxng", "openrouter", "deepseek", "tavily"}
         assert initial["roles"]["fallback"]["primary"]["key_set"] is True
         assert initial["roles"]["chat"]["primary"]["kind"] == "local"
         assert initial["roles"]["fallback"]["primary"]["kind"] == "cloud"
-        assert initial["triage"] == {
+        triage = initial["roles"]["triage"]
+        assert triage["fallbacks"] == [] and {key: triage["primary"][key] for key in ("model", "base_url", "api_key_env", "key_set")} == {
             "model": "classifier", "base_url": "https://classifier.example.test/decisions", "api_key_env": None, "key_set": False,
         }
         assert SECRET not in json.dumps(initial)
@@ -465,7 +466,7 @@ async def test_save_probes_only_changed_or_added_slots_and_refuses_on_failure(da
         assert seen == []
 
 
-async def test_probe_omits_reasoning_uses_larger_budget_accepts_thinking_and_uses_app_sleep(dashboard, monkeypatch):
+async def test_probe_sends_reasoning_with_a_larger_budget_accepts_thinking_and_uses_app_sleep(dashboard, monkeypatch):
     from aiogram.exceptions import TelegramRetryAfter
 
     app, _, browser = dashboard
@@ -487,10 +488,10 @@ async def test_probe_omits_reasoning_uses_larger_budget_accepts_thinking_and_use
         assert body == {
             "model": "thinking-model",
             "messages": [{"role": "user", "content": "Reply with OK."}],
-            "max_tokens": 256,
+            "max_tokens": 2048,
             "provider": {"zdr": True},
+            "reasoning": {"effort": "low"},
         }
-        assert "reasoning" not in body and "reasoning_effort" not in body
 
         # Also check sleep=app.sleep is passed to over_cap's flood retry when cap is reached.
         slept = []
@@ -519,7 +520,7 @@ async def test_probe_omits_reasoning_uses_larger_budget_accepts_thinking_and_use
         assert slept == [2.0] and attempts == 2
 
 
-async def test_save_does_not_reprobe_a_slot_that_only_moved_or_changed_reasoning(dashboard):
+async def test_save_reprobes_a_changed_effort_but_not_a_slot_that_only_moved(dashboard):
     app, path, browser = dashboard
     seen = []
 
@@ -534,8 +535,10 @@ async def test_save_does_not_reprobe_a_slot_that_only_moved_or_changed_reasoning
         assert seen == ["other-model"]
         seen.clear()
         assert (await _save(client, "chat", other, [PRIMARY])).status_code == 200  # swapped
-        assert (await _save(client, "chat", dict(other, reasoning_effort="low"), [PRIMARY])).status_code == 200
         assert seen == []
+        # A new effort changes the request, so it is tested as it will be sent.
+        assert (await _save(client, "chat", dict(other, reasoning_effort="low"), [PRIMARY])).status_code == 200
+        assert seen == ["other-model"]
 
 
 async def test_the_spend_cap_never_blocks_saving_a_local_endpoint(dashboard, monkeypatch):
@@ -598,13 +601,15 @@ OTHER = {"base_url": "http://localhost:8002/v1", "model": "other-model"}
 
 def _live_save(tmp_path, role, primary, fallbacks):
     from dom.config import validate_config
-    from dom.web.model_settings import ModelUpdate, Snapshot, _save
+    from dom.web.model_settings import ModelUpdate, Snapshot, _save, _write
 
     (tmp_path / "config.toml").write_text(LIVE_SHAPE)
     config = validate_config(tmp_path, tomllib.loads(LIVE_SHAPE))
     current = Snapshot(config, LIVE_SHAPE)
     update = ModelUpdate(revision=current.revision, role=role, primary=primary, fallbacks=fallbacks)
-    return _save(current, update)
+    saved = _save(current, update)
+    _write(current, saved)
+    return saved
 
 
 @pytest.mark.parametrize("role", ["chat", "fallback", "media", "drafting", "search", "escalation"])
@@ -829,7 +834,7 @@ async def test_triage_view_names_its_missing_key_variable(dashboard):
     app, path, browser = dashboard
     path.write_text(START.replace('model = "classifier"', 'model = "classifier"\napi_key_env = "TRIAGE_KEY"'))
     async with browser() as client:
-        triage = (await client.get(API)).json()["triage"]
+        triage = (await client.get(API)).json()["roles"]["triage"]["primary"]
     assert triage["api_key_env"] == "TRIAGE_KEY" and triage["key_set"] is False
 
 

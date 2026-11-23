@@ -117,27 +117,63 @@ class App:
     def owner_id(self) -> int | None:
         return self.store.owner_id
 
-    def apply_model_routes(self, saved: Config) -> None:
-        """Swap the configured routes for new calls. In-flight completions keep their current chain."""
-        models = {name: endpoint for name, endpoint in self.config.models.items() if name not in MODEL_ROLES}
-        models.update({name: saved.models[name] for name in MODEL_ROLES if name in saved.models})
-        config = self.config.model_copy(update={"models": models})
+    def model_routes(self, saved: Config) -> ModelRoutes:
+        """Build every client for `saved`'s routes (and triage's decisions client) without touching the running ones,
+        so a route that can't be built raises before anything is published."""
+        routed = (*MODEL_ROLES, "triage")
+        models = {name: endpoint for name, endpoint in self.config.models.items() if name not in routed}
+        models.update({name: saved.models[name] for name in routed if name in saved.models})
+        config = self.config.model_copy(update={"models": models, "provider_setups": saved.provider_setups})
         current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
         chat, media, draft, escalation = (routed_client(config, role, current.http, current.usage)
                                           for role in ("chat", "media", "drafting", "escalation"))
+        search = routed_search_client(config, current.http, current.usage)
+        return ModelRoutes(config, chat, media, draft, escalation, search, self._triage_client(config))
+
+    def use_model_routes(self, routes: ModelRoutes) -> None:
+        """Swap in routes built by model_routes for new calls. In-flight calls keep theirs."""
         if isinstance(self.client, FallbackClient):
-            chat.last_model = self.client.last_model
-            chat.last_fallback_at = self.client.last_fallback_at
-        if media.available:
+            routes.chat.last_model = self.client.last_model
+            routes.chat.last_fallback_at = self.client.last_fallback_at
+        if routes.media.available:
             if self.media_describer is None:
-                self.media_describer = MediaDescriber(media, self.bot)
+                self.media_describer = MediaDescriber(routes.media, self.bot)
             else:
-                self.media_describer.client = media
+                self.media_describer.client = routes.media
         else:
             self.media_describer = None
-        self.search_client = routed_search_client(config, current.http, current.usage)
-        self.config, self.client, self.draft_client = config, chat, draft
-        self.escalation_client = escalation
+        self.jev = self.dispatch.jev = routes.jev
+        self.search_client = routes.search
+        self.config, self.client, self.draft_client = routes.config, routes.chat, routes.draft
+        self.escalation_client = routes.escalation
+
+    def apply_model_routes(self, saved: Config) -> None:
+        self.use_model_routes(self.model_routes(saved))
+
+    def refresh_triage(self) -> None:
+        """Pick up a triage key added to .env since the decisions client was built (or one that was removed)."""
+        self.jev = self.dispatch.jev = self._triage_client(self.config)
+
+    def _triage_client(self, config: Config) -> JevClient | None:
+        """Triage's decisions client for `config`: the running one while its endpoint and key value are unchanged.
+        Without a key value triage, and the leak checks that use it, stay off, as at startup."""
+        triage = config.models["triage"]
+        key = config.secret(triage.api_key_env) if triage.api_key_env else None
+        if self.jev is not None and triage == self.config.models.get("triage") and key == self.jev.api_key:
+            return self.jev
+        current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
+        return JevClient(current.http, key, triage.model, triage.base_url, usage=current.usage) if key else None
+
+
+@dataclass(frozen=True)
+class ModelRoutes:
+    config: Config
+    chat: FallbackClient
+    media: FallbackClient
+    draft: FallbackClient
+    escalation: FallbackClient
+    search: SearchRouter | None
+    jev: JevClient | None
 
 
 # ---- owner events ------------------------------------------------------------------

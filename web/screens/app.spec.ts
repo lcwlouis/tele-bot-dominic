@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages: { name: string; path: string; heading: string; tab?: string; click?: string; link?: string; menu?: boolean; phoneOnly?: boolean }[] = [
+const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
@@ -11,6 +11,9 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "settings-models", path: "/app/system", heading: "Settings" },
   { name: "settings-providers", path: "/app/system", heading: "Settings", tab: "Providers" },
   { name: "settings-permissions", path: "/app/system", heading: "Settings", tab: "What Dom may do" },
+  // Provider setup, and a role's editor with its model picker open on the provider's fetched list.
+  { name: "settings-provider-editor", path: "/app/system", heading: "Settings", tab: "Providers", click: "Add provider" },
+  { name: "settings-model-picker", path: "/app/system", heading: "Settings", click: "Edit Chat", fill: ["Model ID", "example/c"] },
   { name: "chats", path: "/app/chats", heading: "Chats" },
   { name: "chats-personality", path: "/app/chats", heading: "Chats", click: "Personality" },
   { name: "memory", path: "/app/memory", heading: "Memory" },
@@ -59,7 +62,7 @@ for (const scheme of ["dark", "light"] as const) {
     test.describe(`${device} ${scheme}`, () => {
       test.use({ viewport, colorScheme: scheme });
 
-      for (const { name, path, heading, tab, click, link, menu, phoneOnly } of pages) {
+      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly } of pages) {
         if (phoneOnly && device !== "phone") continue;
         test(name, async ({ page }) => {
           const problems = await watch(page);
@@ -72,6 +75,10 @@ for (const scheme of ["dark", "light"] as const) {
           }
           if (tab) await page.getByRole("tab", { name: tab }).click();
           if (click) await page.getByRole("button", { name: click, exact: true }).first().click();
+          if (fill) {
+            await page.getByLabel(fill[0]).first().fill(fill[1]);
+            await expect(page.getByRole("listbox").getByRole("option").first()).toBeVisible();
+          }
           await page.waitForLoadState("networkidle");
           await page.evaluate(() => document.fonts.ready);
           // Nothing on any page is wider than the screen: long results wrap or scroll inside their own box.
@@ -168,9 +175,81 @@ test.describe("interactions under the CSP", () => {
 
     // The editor opens on the saved chain and cancels without writing.
     await page.getByRole("button", { name: "Edit Drafting" }).click();
-    await expect(page.getByLabel("Base URL").first()).toHaveValue("https://drafts.example.net/v1");
+    await expect(page.getByLabel("Model ID").first()).toHaveValue("example/draft-model");
+    await expect(page.getByText("drafts.example.net · EXAMPLE_DRAFTS_KEY")).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByRole("button", { name: "Edit Drafting" })).toBeEnabled();
+    expect(problems).toEqual([]);
+  });
+
+  test("settings: providers are added, tested and removed; a role picks a model from the fetched list", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "Providers" }).click();
+
+    // Add: the save tests the provider by fetching its model list first.
+    await page.getByRole("button", { name: "Add provider" }).click();
+    await expect(page.locator("#provider-add-wait")).toHaveText("Finish editing the new provider first.");
+    await page.getByLabel("Name", { exact: true }).fill("Attic");
+    await page.getByLabel("Base URL").fill("http://attic:8000/v1");
+    await page.getByRole("button", { name: "Add provider" }).last().click();
+    await expect(page.getByRole("status").filter({ hasText: "Provider saved." })).toBeVisible();
+    const attic = page.locator("[data-slot=card]").filter({ hasText: "Attic" });
+    await expect(attic.getByText("Nothing yet")).toBeVisible();
+    await attic.getByRole("button", { name: "Test Attic" }).click();
+    await expect(attic.getByText("Lists 6 models")).toBeVisible();
+
+    // A provider a role uses can't be removed: the dialog says which roles to change first.
+    await page.getByRole("button", { name: "Edit homelab" }).first().click();
+    await page.getByLabel("Name", { exact: true }).fill("Home lab");
+    await page.getByRole("button", { name: "Save provider" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Provider saved." }).last()).toBeVisible();
+    await page.getByRole("button", { name: "Remove Home lab" }).click();
+    await expect(page.getByRole("alertdialog").getByText("Home lab is still in use")).toBeVisible();
+    await page.getByRole("alertdialog").getByRole("button", { name: "OK" }).click();
+    // An unused one goes after a confirm.
+    await page.getByRole("button", { name: "Remove Spare box" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Remove" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Spare box removed." })).toBeVisible();
+    await expect(page.locator("[data-slot=card]").filter({ hasText: "Spare box" })).toHaveCount(0);
+
+    // Models: the picker searches the provider's list; a reasoning model offers its own effort levels.
+    await page.getByRole("tab", { name: "Models" }).click();
+    await page.getByRole("button", { name: "Edit Fallback" }).click();
+    const model = page.getByLabel("Model ID").first();
+    await model.fill("large");
+    const options = page.getByRole("listbox").getByRole("option");
+    await expect(options).toHaveCount(1);
+    await model.press("ArrowDown");
+    await model.press("Enter");
+    await expect(model).toHaveValue("example/chat-large");
+    await page.getByLabel("Reasoning effort").first().click();
+    await expect(page.getByRole("option", { name: "Xhigh" })).toBeVisible();
+    await page.getByRole("option", { name: "High", exact: true }).click();
+    await expect(page.getByText("Higher effort takes longer and costs more.").first()).toBeVisible();
+    // Any ID can still be typed by hand.
+    await model.fill("example/not-listed");
+    await expect(options).toHaveCount(0);
+    await model.fill("example/chat-large");
+    await page.getByRole("button", { name: "Save fallback" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved." }).last()).toBeVisible();
+    await expect(page.getByText("llm.example.org · high effort")).toBeVisible();
+
+    // Move up: the first fallback becomes the primary, without opening the editor.
+    await page.getByRole("button", { name: "Move up Chat fallback 1, making it the primary" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Chat: order saved." })).toBeVisible();
+
+    // The studio's cloud backups reorder in place too.
+    await page.getByRole("button", { name: "Move up Voice notes backup 2" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Voice notes: order saved." })).toBeVisible();
+
+    // Triage is edited and tested like any role; its test is a real decisions request.
+    await page.getByRole("button", { name: "Edit Triage" }).click();
+    await page.getByLabel("Model ID").first().fill("example/classifier-2");
+    await page.getByRole("button", { name: "Save triage" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved." }).last()).toBeVisible();
+    await page.getByRole("button", { name: "Test Triage", exact: true }).click();
+    await expect(page.getByText("Decided: yes")).toBeVisible();
     expect(problems).toEqual([]);
   });
 

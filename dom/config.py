@@ -26,6 +26,13 @@ SEARCH_PROVIDERS = get_args(SearchProvider)
 ModelRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation"]
 MODEL_ROLES = get_args(ModelRole)
 
+# What a saved provider is: an OpenAI-compatible chat endpoint, OpenRouter, Jev's decisions API or a search service.
+ProviderKind = Literal["openai", "openrouter", "jev", "searxng", "deepseek", "tavily"]
+PROVIDER_KINDS = get_args(ProviderKind)
+# A provider reports its own effort names (low, medium, high, and more); config.toml takes any one lowercase word.
+EFFORT_PATTERN = r"^[a-z][a-z0-9_-]{0,23}$"
+PROVIDER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$"
+
 
 class ProviderEndpoint(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -36,8 +43,10 @@ class ProviderEndpoint(BaseModel):
         description="Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily.",
     )
     api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for a compatible endpoint without authentication.")
-    reasoning_effort: Literal["low", "medium"] | None = Field(
-        None, description="Thinking effort sent to the provider. Use low or medium, or omit it to use the provider default.",
+    reasoning_effort: str | None = Field(
+        None, pattern=EFFORT_PATTERN,
+        description="Thinking effort sent to the provider, such as low, medium or high (any level the provider lists). "
+        "Omit it to use the provider default. Higher effort takes longer and costs more.",
     )
     provider: SearchProvider | None = Field(
         None, description="Search provider for models.search: searxng, openrouter, deepseek or tavily.",
@@ -46,6 +55,19 @@ class ProviderEndpoint(BaseModel):
 
 class ModelEndpoint(ProviderEndpoint):
     fallbacks: tuple[ProviderEndpoint, ...] = Field((), description="Additional providers to try in order when this role's primary fails.")
+
+
+class ProviderSetup(BaseModel):
+    """A provider saved from the dashboard's Providers tab. Model roles keep their own address and key variable, so
+    routing never depends on this table; the dashboard uses it to offer providers and fetch their model lists."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: ProviderKind = Field(
+        "openai", description="openai (any OpenAI-compatible endpoint), openrouter, jev (decisions), searxng, deepseek or tavily.",
+    )
+    base_url: str = Field(description="Provider API base URL, including its API version path.")
+    api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for an endpoint without authentication.")
 
 
 class OpenersConfig(BaseModel):
@@ -360,12 +382,16 @@ class StudioConfig(BaseModel):
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
 
     home: Path
     owner_id: int | None = Field(None, description="Telegram user ID recorded after a successful /claim.")
     timezone: str = Field("UTC", description="IANA timezone for presence and daily jobs. Init writes the machine timezone or the supplied --timezone.")
     models: dict[str, ModelEndpoint] = {}
+    provider_setups: dict[str, ProviderSetup] = Field(
+        default_factory=dict, alias="providers",
+        description="Saved providers by name, the `[providers.<name>]` tables the dashboard's Providers tab writes.",
+    )
     desktop_mode: Literal["local", "remote", "off"] = Field("off", description="Desktop mode. Use off to disable it, local for Docker, or remote for a separate sandbox host.")
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
     window_budget_tokens: int = Field(
@@ -428,8 +454,8 @@ class Config(BaseModel):
         if not fallbacks:
             return self
         studio = self.studio.model_copy(update={"voice_fallbacks": (), "image_fallbacks": ()})
-        reserved = self.model_copy(update={"models": {}, "studio": studio}).secret_names()
-        model_routes = [endpoint for _, endpoint in self.model_endpoints()]
+        reserved = self.model_copy(update={"models": {}, "provider_setups": {}, "studio": studio}).secret_names()
+        model_routes = [*(endpoint for _, endpoint in self.model_endpoints()), *self.provider_setups.values()]
         for provider in fallbacks:
             origin = httpx.URL(provider.base_url).copy_with(path="/")
             if provider.api_key_env in reserved or any(
@@ -439,6 +465,14 @@ class Config(BaseModel):
             ):
                 raise ValueError("A studio key variable must be paired only with its provider's HTTPS origin")
         return self
+
+    @field_validator("provider_setups")
+    @classmethod
+    def _provider_names(cls, value: dict[str, ProviderSetup]) -> dict[str, ProviderSetup]:
+        for name in value:
+            if not re.fullmatch(PROVIDER_NAME_PATTERN, name):
+                raise ValueError("Provider names use letters, digits, spaces, dots, dashes or underscores (at most 40).")
+        return value
 
     def providers(self, role: ModelRole) -> tuple[ProviderEndpoint, ...]:
         primary = self.models.get(role)
