@@ -847,7 +847,7 @@ async def own_work_file(request: Request, task_id: int, name: str):
     if not selfwork.FILE_NAME.fullmatch(name):
         raise HTTPException(404)
     try:
-        data = await asyncio.to_thread((selfwork.task_files(app.home.root, task_id) / name).read_bytes)
+        data = await asyncio.to_thread(selfwork.read_task_file, app.home.root, task_id, name)
     except OSError:
         raise HTTPException(404) from None
     return Response(data, media_type="image/png")

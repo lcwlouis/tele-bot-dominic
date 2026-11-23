@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from dom import skills
 from dom.briefs import list_briefs, markdown_blocks
 from dom.telegram import owner
-from dom.web.desktop import _context, _lane, desktop_history_context, resume_handoff, run_computer_action
+from dom.web.desktop import _context, _lane, resume_handoff, run_computer_action
 from dom.web.model_settings import _input
 from dom.web.pages import _own_work, _reminders, _skills, owner_app, own_work_file
 
@@ -81,7 +81,7 @@ def _task(row: dict | None) -> dict | None:
 
 async def _desk(app, lane) -> dict:
     state = await _context(app, lane)
-    history = (await desktop_history_context(app))["rows"]
+    history = state["history"]["rows"]  # _context already read it
     return {
         "enabled": state["enabled"],
         "status": state["status"],

@@ -146,6 +146,10 @@ async def test_own_work_lists_tasks_serves_screenshots_and_cancels(make_app, bro
         assert image.status_code == 200 and image.headers["content-type"] == "image/png"
         assert (await client.get(f"/api/work/own/{finished['id']}/files/..%2Fx.png")).status_code == 404
         assert (await client.get(f"/api/work/own/{finished['id']}/files/missing.png")).status_code == 404
+        (app.home.root / "secret.txt").write_text("not for the browser")
+        (shots / "link.png").symlink_to(app.home.root / "secret.txt")  # a link in the task folder is never followed
+        assert (await client.get(f"/api/work/own/{finished['id']}/files/link.png")).status_code == 404
+        assert (await client.get(f"/own-work/{finished['id']}/files/link.png")).status_code == 404
 
         cancelled = await client.post("/api/work/own/cancel", headers=JSON, json={"id": planned["id"]})
         assert cancelled.json()["ok"] is True and cancelled.json()["message"] == f"Cancelled task #{planned['id']}."
