@@ -16,6 +16,11 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "memory", path: "/app/memory", heading: "Memory" },
   // On a phone the list is its own screen and a file opens full width; on a desktop the list stays beside it.
   { name: "memory-file", path: "/app/memory", heading: "Memory", click: "MEMORY.md" },
+  // Work: the desk with a handoff waiting for the owner, Dom's own tasks and skills, reminders and a brief.
+  { name: "work-desk", path: "/app/work", heading: "Desk" },
+  { name: "work-own", path: "/app/work/own-work", heading: "Own work" },
+  { name: "work-reminders", path: "/app/work/reminders", heading: "Reminders" },
+  { name: "work-briefs", path: "/app/work/briefs", heading: "Briefs" },
 ];
 
 /** Collect every CSP violation and every request that leaves Dom's origin. */
@@ -204,6 +209,50 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Reject all" }).click();
     await dialog.getByRole("button", { name: "Keep them" }).click();
     await expect(dialog).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("work: a handoff answers, destructive actions ask first, a skill retires and comes back", async ({ page }) => {
+    const problems = await watch(page);
+    const dialog = page.getByRole("alertdialog");
+
+    // The preview's handoff has no live worker behind it, so Dom says it already ended: a refusal, not a change.
+    await page.goto("/app/work");
+    await expect(page.getByText("Dom needs you to log in: Sign in to continue.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open live viewer" })).toHaveAttribute("href", "/desktop/vnc/index.html");
+    await page.getByRole("button", { name: "I'm done, resume Dom" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "The handoff has already ended." })).toBeVisible();
+    await page.getByRole("button", { name: "Delete desktop task 2" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByText("Look up opening hours for the library.")).toBeVisible();
+
+    await page.goto("/app/work/own-work");
+    await page.getByRole("button", { name: "Cancel #1" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await page.getByRole("button", { name: "Delete #2" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await expect(page.getByRole("img", { name: "Screenshot weather.png from task 2" })).toBeVisible();
+    expect(await page.getByRole("img", { name: "Screenshot weather.png from task 2" }).evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+    await page.getByRole("button", { name: "Retire trip-notes" }).click();
+    await dialog.getByRole("button", { name: "Retire skill" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Retired skill trip-notes." })).toBeVisible();
+    await page.getByRole("button", { name: "Restore trip-notes" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Restored skill trip-notes." })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retire trip-notes" })).toBeVisible();
+
+    await page.goto("/app/work/reminders");
+    await page.getByRole("button", { name: "Delete reminder 3" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await page.getByRole("button", { name: "Cancel reminder 3" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await expect(page.getByText("Pack a charger")).toBeVisible();
+
+    await page.goto("/app/work/briefs");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.getByRole("button", { name: "Copy Wake groups gently" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Brief copied." })).toBeVisible();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("Wake groups gently");
     expect(problems).toEqual([]);
   });
 

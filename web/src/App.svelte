@@ -7,9 +7,13 @@
   import { gallery, locate } from "$lib/nav";
   import { interceptLinks, route } from "$lib/router.svelte";
   import Gallery from "./routes/Gallery.svelte";
+  import Briefs from "./routes/Briefs.svelte";
   import Chats from "./routes/Chats.svelte";
+  import Desk from "./routes/Desk.svelte";
   import Home from "./routes/Home.svelte";
   import Memory from "./routes/Memory.svelte";
+  import OwnWork from "./routes/OwnWork.svelte";
+  import Reminders from "./routes/Reminders.svelte";
   import Section from "./routes/Section.svelte";
   import Settings from "./routes/Settings.svelte";
 
@@ -46,6 +50,14 @@
           <Memory destination={where.destination} />
         {:else if where.tab?.id === "settings"}
           <Settings destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "desk"}
+          <Desk destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "own-work"}
+          <OwnWork destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "reminders"}
+          <Reminders destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "briefs"}
+          <Briefs destination={where.destination} tab={where.tab} />
         {:else}
           {#key route.path}<Section destination={where.destination} tab={where.tab} />{/key}
         {/if}
