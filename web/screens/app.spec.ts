@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages: { name: string; path: string; heading: string; tab?: string; click?: string }[] = [
+const pages: { name: string; path: string; heading: string; tab?: string; click?: string; link?: string }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
@@ -21,6 +21,12 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "work-own", path: "/app/work/own-work", heading: "Own work" },
   { name: "work-reminders", path: "/app/work/reminders", heading: "Reminders" },
   { name: "work-briefs", path: "/app/work/briefs", heading: "Briefs" },
+  // System and Waiting: plugins with their panel, a plugin's code review, spend, the turn log and what waits for the owner.
+  { name: "system-plugins", path: "/app/system/plugins", heading: "Plugins" },
+  { name: "system-plugin-review", path: "/app/system/plugins", heading: "Plugins", link: "Review code of trip_planner" },
+  { name: "system-usage", path: "/app/system/usage", heading: "Usage" },
+  { name: "system-turns", path: "/app/system/turns", heading: "Turn log" },
+  { name: "waiting", path: "/app/waiting", heading: "Waiting for you" },
 ];
 
 /** Collect every CSP violation and every request that leaves Dom's origin. */
@@ -46,12 +52,16 @@ for (const scheme of ["dark", "light"] as const) {
     test.describe(`${device} ${scheme}`, () => {
       test.use({ viewport, colorScheme: scheme });
 
-      for (const { name, path, heading, tab, click } of pages) {
+      for (const { name, path, heading, tab, click, link } of pages) {
         test(name, async ({ page }) => {
           const problems = await watch(page);
           const response = await page.goto(path);
           expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
           await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
+          if (link) {
+            await page.getByRole("link", { name: link }).click();
+            await expect(page.getByRole("button", { name: "I've read this code" })).toBeVisible();
+          }
           if (tab) await page.getByRole("tab", { name: tab }).click();
           if (click) await page.getByRole("button", { name: click, exact: true }).first().click();
           await page.waitForLoadState("networkidle");
@@ -256,6 +266,57 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("system: a plugin is reviewed before it is approved, panels load as text, waiting items are decided", async ({ page }) => {
+    const problems = await watch(page);
+    const dialog = page.getByRole("alertdialog");
+
+    // The approved plugin's panel loads by itself and shows only text.
+    await page.goto("/app/system/plugins");
+    await expect(page.getByText("Two day trips are planned.")).toBeVisible();
+    await expect(page.getByRole("cell", { name: "1 h 20 min" })).toBeVisible();
+    await page.getByRole("button", { name: "Refresh On the calendar" }).click();
+    await page.getByRole("button", { name: "Retire wall_calendar" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await expect(dialog).toBeHidden();
+
+    // The review shows the code and the notices; Approve appears only after "I've read this code".
+    await page.getByRole("link", { name: "Review code of trip_planner" }).click();
+    await expect(page.getByText("def plan(a, b):")).toBeVisible();
+    await expect(page.getByText(/can reach the internet/)).toBeVisible();
+    await page.getByText(/Test run passed/).click();
+    await expect(page.getByText(/Plugin said: .Planned 2 trips/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve" })).toBeHidden();
+    await page.getByRole("button", { name: "I've read this code" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Review recorded." })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "I've read this code" })).toBeHidden();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await expect(dialog).toBeHidden();
+
+    // Waiting for you: every kind has its card, a decision writes through, Reject all on an import asks first.
+    await page.goto("/app/waiting");
+    await expect(page.getByText("Book swap")).toBeVisible();
+    await expect(page.getByText("Leak score 0/3")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Review code" })).toHaveAttribute("href", /\/app\/system\/plugins\/trip_planner\//);
+    await page.getByRole("button", { name: "Ignore" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Ignored" })).toBeVisible();
+    await page.getByRole("button", { name: "Reject all" }).click();
+    await dialog.getByRole("button", { name: "Keep them" }).click();
+    await expect(dialog).toBeHidden();
+    await page.getByRole("button", { name: "Reject" }).first().click();
+    await expect(page.getByRole("status").filter({ hasText: "Rejected" })).toBeVisible();
+    await page.getByText(/Settled \(/).click();
+    await page.getByRole("button", { name: /Delete settled proposal/ }).first().click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+
+    // The turn log filters by chat.
+    await page.goto("/app/system/turns");
+    await page.getByLabel("Chat").selectOption({ label: "Weekend crew" });
+    await expect(page.getByText("Held back: leak check")).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
   test("keyboard focus is visible and the skip link leads to the page", async ({ page }) => {
     await page.goto("/app");
     await page.keyboard.press("Tab");
@@ -273,7 +334,8 @@ test.describe("interactions under the CSP", () => {
     await expect(page).toHaveURL(/\/app\/system$/);
     await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
     await page.getByRole("navigation", { name: "System pages" }).getByRole("link", { name: "Usage" }).click();
-    await expect(page.getByRole("link", { name: "Open Usage in the current dashboard" })).toHaveAttribute("href", "/usage");
+    await expect(page).toHaveURL(/\/app\/system\/usage$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Usage" })).toBeVisible();
     await page.getByRole("button", { name: "Switch to the light theme" }).click();
     await page.reload();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");

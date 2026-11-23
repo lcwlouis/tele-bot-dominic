@@ -4,7 +4,7 @@
   import TopBar from "$lib/components/shell/TopBar.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
   import * as Tooltip from "$lib/components/ui/tooltip";
-  import { gallery, locate } from "$lib/nav";
+  import { gallery, locate, waiting } from "$lib/nav";
   import { interceptLinks, route } from "$lib/router.svelte";
   import Gallery from "./routes/Gallery.svelte";
   import Briefs from "./routes/Briefs.svelte";
@@ -14,14 +14,21 @@
   import Memory from "./routes/Memory.svelte";
   import OwnWork from "./routes/OwnWork.svelte";
   import Reminders from "./routes/Reminders.svelte";
-  import Section from "./routes/Section.svelte";
+  import Plugins from "./routes/Plugins.svelte";
+  import PluginReview from "./routes/PluginReview.svelte";
+  import Turns from "./routes/Turns.svelte";
+  import Usage from "./routes/Usage.svelte";
+  import Waiting from "./routes/Waiting.svelte";
   import Settings from "./routes/Settings.svelte";
 
   const isGallery = $derived(route.path === gallery.href);
+  const isWaiting = $derived(route.path === waiting.href);
   const where = $derived(locate(route.path));
+  // /app/system/plugins/{name}/{digest}: one plugin version's code review.
+  const review = $derived(where.tab?.id === "plugins" ? route.path.slice(where.tab.href.length + 1).split("/") : []);
 
   $effect(() => {
-    const page = isGallery ? gallery.label : (where.tab?.label ?? where.destination.label);
+    const page = isGallery ? gallery.label : isWaiting ? waiting.label : (where.tab?.label ?? where.destination.label);
     document.title = page === "Home" ? "Dom" : `${page} · Dom`;
   });
 </script>
@@ -38,10 +45,12 @@
   <div class="min-h-dvh lg:grid lg:grid-cols-[15.5rem_minmax(0,1fr)]">
     <Sidebar path={route.path} current={isGallery ? { ...where.destination, id: "" } : where.destination} />
     <div class="min-w-0">
-      <TopBar destination={where.destination} tab={where.tab} title={isGallery ? gallery.label : undefined} />
+      <TopBar destination={where.destination} tab={where.tab} title={isGallery ? gallery.label : isWaiting ? waiting.label : undefined} />
       <main id="main" tabindex="-1" class="mx-auto max-w-[68rem] px-4 pt-3 pb-28 outline-none sm:px-6 lg:px-9 lg:pt-1 lg:pb-14">
         {#if isGallery}
           <Gallery />
+        {:else if isWaiting}
+          <Waiting />
         {:else if where.destination.id === "home"}
           <Home />
         {:else if where.destination.id === "chats"}
@@ -58,8 +67,14 @@
           <Reminders destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "briefs"}
           <Briefs destination={where.destination} tab={where.tab} />
-        {:else}
-          {#key route.path}<Section destination={where.destination} tab={where.tab} />{/key}
+        {:else if where.tab?.id === "plugins" && review.length === 2}
+          {#key route.path}<PluginReview destination={where.destination} tab={where.tab} name={review[0]} digest={review[1]} />{/key}
+        {:else if where.tab?.id === "plugins"}
+          <Plugins destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "usage"}
+          <Usage destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "turns"}
+          <Turns destination={where.destination} tab={where.tab} />
         {/if}
       </main>
     </div>

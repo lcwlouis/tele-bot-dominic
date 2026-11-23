@@ -65,6 +65,9 @@ export const workspace: { tab: Tab; home: string }[] = [
   ...["plugins", "usage", "turns"].map((id) => ({ tab: tabOf("system", id), home: "System" })),
 ];
 
+// Everything waiting for the owner's yes or no: reached from Home's card and Chats' pending link, not from the navigation.
+export const waiting = { label: "Waiting for you", href: "/app/waiting", blurb: "Everything Dom won't do until you say so." };
+
 // A design reference, reachable only by its address: not in the navigation.
 export const gallery = { label: "Component library", href: "/app/gallery", icon: Layers };
 
@@ -74,8 +77,10 @@ function tabOf(destination: string, id: string): Tab {
 
 /** The destination and tab a path belongs to; unknown paths fall back to Home. */
 export function locate(path: string): { destination: Destination; tab?: Tab } {
+  if (path === waiting.href) return { destination: destinations[0] };
   for (const destination of destinations) {
-    const tab = destination.tabs?.find((item) => item.href === path);
+    // A page under a tab (a plugin's review) belongs to that tab. The first tab shares its address with the destination, so only an exact match counts for it.
+    const tab = destination.tabs?.find((item) => item.href === path || (item.href !== destination.href && path.startsWith(item.href + "/")));
     if (tab) return { destination, tab };
     if (destination.href === path) return { destination };
   }

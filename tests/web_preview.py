@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import struct
@@ -31,12 +32,14 @@ from dom.dispatch import Dispatcher  # noqa: E402
 from dom.home import Home  # noqa: E402
 from dom.llm import ChatClient  # noqa: E402
 from dom.models import StoredMessage  # noqa: E402
+from dom.plugins.tools import DRAFT_PLUGIN_TOOL  # noqa: E402
 from dom.presence import Presence, read_habits  # noqa: E402
 from dom.selfwork import task_files  # noqa: E402
 from dom import skills  # noqa: E402
 from dom.skills import Skill, write_skill  # noqa: E402
 from dom.store import Store  # noqa: E402
 from dom.telegram import handlers, owner  # noqa: E402
+from dom.tools import TurnCtx  # noqa: E402
 from dom.web.app import create_app  # noqa: E402
 from dom.web.auth import Auth  # noqa: E402
 from tghelpers import BOT_USER, OWNER, Clock, FakeBot, FixedRandom, ModelScript, no_sleep  # noqa: E402
@@ -227,11 +230,106 @@ async def seed(app: handlers.App) -> None:
     await app.dispatch.presence.wake(OWNER, read_habits(app.home), minutes=180)
 
 
+PLUGIN = """name = "trip_planner"
+description = "Plan a day trip from two stations"
+version = "1"
+network = true
+
+[[tools]]
+name = "plan"
+description = "Plan a trip"
+parameters = {type = "object"}
+
+[[commands]]
+name = "trip"
+description = "Plan a day trip"
+
+[[panels]]
+id = "week"
+title = "Trips this week"
+"""
+CALENDAR = """name = "wall_calendar"
+description = "Show what is on the wall calendar"
+version = "1"
+
+[[tools]]
+name = "events"
+description = "List calendar events"
+parameters = {type = "object"}
+
+[[panels]]
+id = "today"
+title = "On the calendar"
+"""
+PANEL = {
+    "title": "Trips this week",
+    "paragraphs": ["Two day trips are planned. The Saturday one has the most stops."],
+    "items": [["Saturday", "Central to Harbor"], ["Sunday", "Harbor to Hillside"]],
+    "table": {"columns": ["Day", "Stops", "Travel time"], "rows": [["Saturday", "4", "1 h 20 min"], ["Sunday", "2", "40 min"]]},
+}
+
+
+async def seed_system(app: handlers.App) -> None:
+    """System and Waiting: plugins (one pending, one approved with a panel), more proposals, turns and spend."""
+    store, now = app.store, NOW
+    runner = app.plugin_runner  # the sandbox never runs in the preview: its answers are fixed
+    runner.trial = lambda *_: {"output": "Planned 2 trips.", "self_test": True}
+    runner.self_test = lambda: True
+    runner.run_request = lambda folder, request, manifest, *, approved_hash: PANEL
+    ctx = TurnCtx("owner_dm", OWNER, OWNER, app.home, store, OWNER, app=app)
+    for name, description, manifest, source in (
+        ("wall_calendar", "Show what is on the wall calendar", CALENDAR, "def events():\n    return ['Dentist on Tuesday']\n"),
+        ("trip_planner", "Plan a day trip from two stations", PLUGIN, "def plan(a, b):\n    return f'{a} to {b}'\n"),
+    ):
+        await DRAFT_PLUGIN_TOOL.handler({"name": name, "description": description, "files": {"main.py": source}, "manifest_toml": manifest}, ctx)
+    calendar = next(row for row in await store.list_plugins() if row["name"] == "wall_calendar")
+    await app.plugins.mark_reviewed("wall_calendar", calendar["hash"])
+    await app.plugins.decide("wall_calendar", calendar["hash"], "approve")
+
+    await app.proposals.create(
+        "skill", "Skill: packing-list", {"name": "packing-list", "description": "Keep a packing list for each trip", "body": "Open the trip note.\nList what to bring.\nTick items off."},
+        "chat", notify=False,
+    )
+    await app.proposals.create("lan_address", "The printer moved", {"old": "192.0.2.10", "new": "192.0.2.20", "name": "printer", "places": ["config.toml"]}, "chat", notify=False)
+    await store.create_proposal(
+        "cross_chat", "Tell the crew about Saturday",
+        {"text": "Heads up: the train on Saturday leaves at 9 am.", "reason": "The owner asked Dom to share the plan.", "leak_score": 0},
+        "chat", now.isoformat(),
+    )
+    old = await app.proposals.create("soul_edit", "Mention tea", {"old": "Dom likes quiet evenings.", "new": "Dom likes quiet evenings and tea."}, "reflection", notify=False)
+    await app.proposals.decide(old, False)
+
+    for day in range(1, 29):  # a month of spend, with the odd fallback
+        at = (now - timedelta(days=day)).replace(hour=14).isoformat()
+        await store.record_usage(at, "chat", "example/chat-model", "llm.example.org", CREW, 900, 300, 0.2 + day % 5 * 0.07, int(day % 9 == 0))
+        if day % 2 == 0:
+            await store.record_usage(at, "search", "example/classifier", "homelab", CREW, 300, 20, 0.04 + day % 3 * 0.01, 0)
+        if day % 4 == 0:
+            await store.record_usage(at, "reflection", "example/chat-large", "llm.example.org", None, 1500, 400, 0.18, 0)
+    await store.record_usage(now.isoformat(), "search", "example/classifier", "homelab", CREW, 300, 20, 0.05, 0)
+    await store.record_usage(now.isoformat(), "media", "example/vision-model", "llm.example.org", ALEX, 800, 60, 0.11, 0)
+
+    call = {
+        "kind": "chat", "model": "example/chat-model", "host": "homelab", "fallback": False, "status": 200, "duration_ms": 1900,
+        "input_tokens": 2048, "output_tokens": 96, "cached_tokens": 1536, "system_hash": "9f3a2c", "tools_hash": "4be1d7",
+        "user_hash": "c07a11", "user_prefix_hash": "1d5e90",
+    }
+    await store.record_turn(
+        now - timedelta(minutes=2), CREW, "group", 2, ["final", "web_search", "lock_wait@900", "model@1900", "web_search@1100", "typing@1600", "send@120"],
+        "example/chat-model", True, 5600, "Replied in 2 bubbles", model_calls=[call], first_bubble_ms=4200, last_bubble_ms=5600,
+    )
+    await store.record_turn(
+        now - timedelta(minutes=3), OWNER, "owner_dm", 1, ["final", "model@1300", "typing@800"], "example/chat-model", False, 2100,
+        "Held back: leak check", model_calls=[{**call, "duration_ms": 1300, "cached_tokens": 0}], first_bubble_ms=None, last_bubble_ms=None,
+    )
+
+
 async def main(port: int) -> None:
     os.environ[TOKEN_ENV] = TOKEN
     with tempfile.TemporaryDirectory() as tmp:
         app = build(Path(tmp), port)
         await seed(app)
+        await seed_system(app)
         server = uvicorn.Server(uvicorn.Config(
             create_app(app, Auth(app.config)), host="127.0.0.1", port=port, log_level="warning", access_log=False,
         ))
