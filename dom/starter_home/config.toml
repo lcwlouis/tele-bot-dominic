@@ -62,6 +62,17 @@ max_per_day = 2
 enabled = true  # Dom plans up to three small tasks of his own at night; they run only in a local desktop behind a verified LAN guard
 delay_hours = 3  # announced in your DM and on the dashboard this long before any of them may start; cancel any there
 
+[studio]
+enabled = false
+base_url = ""  # origin of your local media server
+token_env = "STUDIO_TOKEN"
+voice = false
+video_notes = false
+images = false
+special = false
+profile_photo_follows_preset = false
+default_outfit = ""
+
 [web]
 enabled = false
 bind = "127.0.0.1"

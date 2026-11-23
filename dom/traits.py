@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import TYPE_CHECKING
 
+from dom.config import OUTFIT_NAME
 from dom.home import Home, PrivateAccessError
 
 if TYPE_CHECKING:
@@ -87,6 +90,7 @@ class Preset:
     description: str
     traits: dict[str, float]
     overlay: str
+    outfits: tuple[str, ...] = ()
     picked: str = ""  # why Dom picked it himself today; empty when somebody set it
 
 
@@ -102,9 +106,14 @@ def load_preset(home: Home, name: str) -> Preset | None:
     overlay = body.strip()
     if len(overlay) > MAX_OVERLAY:
         log.warning("preset %r overlay truncated to %s characters", name, MAX_OVERLAY)
+    raw_outfits = meta.get("outfits")
+    outfits = ()
+    if isinstance(raw_outfits, str) and raw_outfits.startswith("[") and raw_outfits.endswith("]"):
+        names = (item.strip().strip("'\"") for item in raw_outfits[1:-1].split(","))
+        outfits = tuple(dict.fromkeys(name for name in names if re.fullmatch(OUTFIT_NAME, name)))
     return Preset(
         name, str(meta.get("title") or name), str(meta.get("description") or ""),
-        normalise(meta.get("traits", {})), overlay[:MAX_OVERLAY],
+        normalise(meta.get("traits", {})), overlay[:MAX_OVERLAY], outfits=outfits,
     )
 
 
@@ -218,11 +227,11 @@ async def ensure_pick(home: Home, store: Store, now: datetime | None = None) -> 
 async def vibe(home: Home, store: Store, now: datetime | None = None) -> Vibe:
     name = await global_preset_name(store)
     if name != AUTO:
-        return Vibe("locked" if name else "none", load_preset(home, name) if name else None)
+        return Vibe("locked" if name else "none", await asyncio.to_thread(load_preset, home, name) if name else None)
     pick = _in_force(await _picks(store), now or _utc_now())
     if pick is None:
         return Vibe("auto")
-    preset = load_preset(home, pick["name"])
+    preset = await asyncio.to_thread(load_preset, home, pick["name"])
     if preset is not None:
         preset = replace(preset, picked=pick["reason"] or "your own pick")
     return Vibe("auto", preset, pick["reason"], pick["source"], pick["since"])

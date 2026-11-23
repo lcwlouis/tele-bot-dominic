@@ -800,6 +800,8 @@ async def test_permission_save_writes_config_and_applies_without_restart(dashboa
         initial = (await client.get(PERMISSIONS)).json()
         assert {item["id"]: item["enabled"] for item in initial["items"]} == {
             "memory_self_edit": False, "openers": False, "ephemeral_replies": False, "leak_check": True,
+            "studio_voice": False, "studio_video": False, "studio_images": False, "studio_special": False,
+            "studio_profile": False,
         }
         assert initial["revision"] == (await client.get(API)).json()["revision"]
         result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={"revision": initial["revision"], "id": "openers", "enabled": True})
@@ -859,3 +861,19 @@ async def test_a_permission_save_waits_on_the_disk_once_and_off_the_event_loop(d
     # Only config.toml itself is synced; the .orig and .bak copies are not worth a wait. None of it on the loop.
     assert len(synced) == 1 and threads == [False]
     assert tomllib.loads(path.read_text())["openers"]["enabled"] is True
+
+
+@pytest.mark.parametrize(("permission", "field"), [
+    ("studio_voice", "voice"), ("studio_video", "video_notes"), ("studio_images", "images"),
+    ("studio_special", "special"), ("studio_profile", "profile_photo_follows_preset"),
+])
+async def test_studio_permission_save_applies_now(dashboard, permission, field):
+    app, path, browser = dashboard
+    async with browser() as client:
+        revision = (await client.get(PERMISSIONS)).json()["revision"]
+        result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
+            "revision": revision, "id": permission, "enabled": True,
+        })
+    assert result.status_code == 200
+    assert getattr(app.config.studio, field)
+    assert tomllib.loads(path.read_text())["studio"] == {field: True}

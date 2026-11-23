@@ -1541,6 +1541,30 @@ class Store:
                 counts[hour] += 1
         return counts
 
+    async def studio_usage(self, chat_id: int, now: datetime) -> tuple[int, list[tuple[str, datetime]]]:
+        """Return the global daily tally and a chat's rolling week of delivered media."""
+        day = (now - timedelta(days=1)).isoformat()
+        week = (now - timedelta(days=7)).isoformat()
+
+        def read() -> tuple[int, list[tuple[str, datetime]]]:
+            kinds = """role = 'assistant' AND json_valid(media_json)
+                       AND json_extract(media_json, '$.kind') IN ('voice', 'video_note', 'photo')"""
+            total = self._conn.execute(
+                f"SELECT count(*) FROM messages WHERE created_at > ? AND {kinds}", (day,),
+            ).fetchone()[0]
+            rows = self._conn.execute(
+                f"SELECT media_json, created_at FROM messages WHERE chat_id = ? AND created_at > ? AND {kinds}",
+                (str(chat_id), week),
+            )
+            result = []
+            for row in rows:
+                media = json.loads(row["media_json"])
+                kind = "special" if media["kind"] == "video_note" and media.get("special") is True else media["kind"]
+                result.append((kind, datetime.fromisoformat(row["created_at"])))
+            return total, result
+
+        return await self._run(read)
+
     async def kv_get(self, key: str) -> str | None:
         return await self._run(self._kv_get, key)
 

@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Literal, get_args
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -243,6 +245,78 @@ class UpdateConfig(BaseModel):
 KNOWN_SECRETS = ("TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY")
 
 
+OUTFIT_NAME = r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+
+
+class StudioTier(BaseModel):
+    voice_daily: int = Field(1, ge=0, description="Voice notes per rolling 24 hours.")
+    video_weekly: int = Field(1, ge=0, description="Round video notes per rolling week when the daily limit is unset.")
+    video_daily: int | None = Field(None, ge=0, description="Round video notes per rolling 24 hours when set.")
+    image_daily: int | None = Field(None, ge=0, description="Images per rolling 24 hours when set.")
+    image_weekly: int = Field(1, ge=0, description="Images per rolling week when the daily limit is unset.")
+    special_daily: int = Field(0, ge=0, description="Special video notes per rolling 24 hours. Only the owner DM can use them.")
+    gap_minutes: int = Field(360, ge=0, le=10080, description="Minimum minutes between generation deliveries in a chat.")
+
+
+class OwnerStudioTier(StudioTier):
+    voice_daily: int = Field(3, ge=0)
+    video_daily: int | None = Field(1, ge=0)
+    image_daily: int | None = Field(2, ge=0)
+    special_daily: int = Field(1, ge=0)
+    gap_minutes: int = Field(30, ge=0, le=10080)
+
+
+class FriendStudioTier(StudioTier):
+    video_weekly: int = Field(2, ge=0)
+    image_daily: int | None = Field(1, ge=0)
+    gap_minutes: int = Field(180, ge=0, le=10080)
+
+
+class StudioLimits(BaseModel):
+    owner_dm: OwnerStudioTier = Field(default_factory=OwnerStudioTier)
+    friend_dm: FriendStudioTier = Field(default_factory=FriendStudioTier)
+    group: StudioTier = Field(default_factory=StudioTier)
+    daily: int = Field(12, ge=0, description="Studio items across all chats in a rolling 24 hours.")
+
+
+class StudioTimeouts(BaseModel):
+    health: float = Field(3, gt=0, allow_inf_nan=False, description="Health check request deadline in seconds.")
+    voice: float = Field(65, gt=0, allow_inf_nan=False, description="Voice request deadline in seconds.")
+    video_notes: float = Field(185, gt=0, allow_inf_nan=False, description="Round video request deadline in seconds.")
+    special: float = Field(425, gt=0, allow_inf_nan=False, description="Special video request deadline in seconds.")
+    images: float = Field(125, gt=0, allow_inf_nan=False, description="Image request deadline in seconds.")
+    portrait: float = Field(10, gt=0, allow_inf_nan=False, description="Wardrobe portrait request deadline in seconds.")
+
+
+class StudioConfig(BaseModel):
+    enabled: bool = Field(False, description="Connect to a self-hosted media studio.")
+    base_url: str = Field("", description="Studio server origin, without /v1.")
+    token_env: str = Field("STUDIO_TOKEN", description="Environment variable holding the studio bearer token.")
+    voice: bool = Field(False, description="Allow outbound voice notes.")
+    video_notes: bool = Field(False, description="Allow everyday round video notes.")
+    images: bool = Field(False, description="Allow outbound photos.")
+    special: bool = Field(False, description="Allow special video notes in the owner DM.")
+    profile_photo_follows_preset: bool = Field(False, description="Use the Everywhere preset's portrait as the bot profile photo.")
+    default_outfit: str = Field("", pattern=r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?$",
+                               description="Wardrobe ID to use when the active preset has no outfit list.")
+    limits: StudioLimits = Field(default_factory=StudioLimits)
+    timeouts: StudioTimeouts = Field(default_factory=StudioTimeouts)
+
+    @field_validator("base_url")
+    @classmethod
+    def _origin(cls, value: str) -> str:
+        if not value:
+            return value
+        try:
+            url = httpx.URL(value)
+        except httpx.InvalidURL as error:
+            raise ValueError("studio.base_url must be an HTTP(S) origin") from error
+        if (url.scheme not in {"http", "https"} or not url.host or url.userinfo
+                or url.path != "/" or url.query or url.fragment):
+            raise ValueError("studio.base_url must be an HTTP(S) origin")
+        return str(url).rstrip("/")
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -273,6 +347,7 @@ class Config(BaseModel):
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
+    studio: StudioConfig = Field(default_factory=StudioConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     t3: T3Config = Field(default_factory=T3Config)
     update: UpdateConfig = Field(default_factory=UpdateConfig)

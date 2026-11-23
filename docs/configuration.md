@@ -122,6 +122,60 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | `desktop.hosts[].max_containers` | `1` | Most containers that may run at once on a local host. A remote host runs one. |
 | `desktop.hosts[].min_free_memory_mb` | Unset | Memory the host must still have free after a container's own limit. Dom refuses to start a container that would breach it. Unset means 512 for a local host and 0 (unchecked) for a remote one. |
 
+## Studio
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `studio.enabled` | `false` | Connect to a self-hosted media studio. |
+| `studio.base_url` | `""` | Studio server origin, without /v1. |
+| `studio.token_env` | `"STUDIO_TOKEN"` | Environment variable holding the studio bearer token. |
+| `studio.voice` | `false` | Allow outbound voice notes. |
+| `studio.video_notes` | `false` | Allow everyday round video notes. |
+| `studio.images` | `false` | Allow outbound photos. |
+| `studio.special` | `false` | Allow special video notes in the owner DM. |
+| `studio.profile_photo_follows_preset` | `false` | Use the Everywhere preset's portrait as the bot profile photo. |
+| `studio.default_outfit` | `""` | Wardrobe ID to use when the active preset has no outfit list. |
+
+### Studio limits
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `studio.limits.daily` | `12` | Studio items across all chats in a rolling 24 hours. |
+| `studio.limits.owner_dm.voice_daily` | `3` | Voice notes per rolling 24 hours. |
+| `studio.limits.owner_dm.video_weekly` | `1` | Round video notes per rolling week when the daily limit is unset. |
+| `studio.limits.owner_dm.video_daily` | `1` | Round video notes per rolling 24 hours when set. |
+| `studio.limits.owner_dm.image_daily` | `2` | Images per rolling 24 hours when set. |
+| `studio.limits.owner_dm.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
+| `studio.limits.owner_dm.special_daily` | `1` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
+| `studio.limits.owner_dm.gap_minutes` | `30` | Minimum minutes between generation deliveries in a chat. |
+| `studio.limits.friend_dm.voice_daily` | `1` | Voice notes per rolling 24 hours. |
+| `studio.limits.friend_dm.video_weekly` | `2` | Round video notes per rolling week when the daily limit is unset. |
+| `studio.limits.friend_dm.video_daily` | Unset | Round video notes per rolling 24 hours when set. |
+| `studio.limits.friend_dm.image_daily` | `1` | Images per rolling 24 hours when set. |
+| `studio.limits.friend_dm.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
+| `studio.limits.friend_dm.special_daily` | `0` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
+| `studio.limits.friend_dm.gap_minutes` | `180` | Minimum minutes between generation deliveries in a chat. |
+| `studio.limits.group.voice_daily` | `1` | Voice notes per rolling 24 hours. |
+| `studio.limits.group.video_weekly` | `1` | Round video notes per rolling week when the daily limit is unset. |
+| `studio.limits.group.video_daily` | Unset | Round video notes per rolling 24 hours when set. |
+| `studio.limits.group.image_daily` | Unset | Images per rolling 24 hours when set. |
+| `studio.limits.group.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
+| `studio.limits.group.special_daily` | `0` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
+| `studio.limits.group.gap_minutes` | `360` | Minimum minutes between generation deliveries in a chat. |
+
+### Studio timeouts
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `studio.timeouts.health` | `3` | Health check request deadline in seconds. |
+| `studio.timeouts.voice` | `65` | Voice request deadline in seconds. |
+| `studio.timeouts.video_notes` | `185` | Round video request deadline in seconds. |
+| `studio.timeouts.special` | `425` | Special video request deadline in seconds. |
+| `studio.timeouts.images` | `125` | Image request deadline in seconds. |
+| `studio.timeouts.portrait` | `10` | Wardrobe portrait request deadline in seconds. |
+
+See [Studio](studio.md) for outfit setup and model licences.
+
 ## Openers
 
 | Key | Default | Meaning |

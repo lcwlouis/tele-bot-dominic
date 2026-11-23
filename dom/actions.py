@@ -42,6 +42,12 @@ class Bubble(BaseModel):
     _telegram_chunk: TextChunk | None = PrivateAttr(default=None)
 
 
+class VideoNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=600, strict=True)
+    special: bool = Field(default=False, strict=True)
+
+
 MAX_BUBBLES = 6
 
 
@@ -53,6 +59,10 @@ class Actions(BaseModel):
     react: str | None = None
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     gif: str | None = Field(default=None, min_length=1, max_length=50, strict=True)
+    voice: str | None = Field(default=None, min_length=1, max_length=600, strict=True)
+    video_note: VideoNote | None = None
+    image: str | None = Field(default=None, min_length=1, max_length=300, strict=True)
+    outfit: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list)
     elsewhere: str | None = None
 

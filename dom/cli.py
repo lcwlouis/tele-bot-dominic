@@ -21,6 +21,7 @@ from dom.config import Config, load_config
 from dom.desktop import network as desktop_network
 from dom.home import Home, init_home
 from dom.gifs import GifSearch
+from dom.studio.client import StudioClient
 from dom.importer import import_v2
 from dom.jev import JevClient
 from dom.llm import FallbackClient, routed_client
@@ -120,18 +121,21 @@ async def run(home: Path) -> None:
     app = None
     try:
         me = await bot.get_me()
-        async with httpx.AsyncClient() as http:
+        async with httpx.AsyncClient() as http, httpx.AsyncClient(trust_env=False) as studio_http:
             usage = UsageRecorder(store)
             client = chat_client(config, http, usage)
             triage = config.models["triage"]
             triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
             jev = JevClient(http, triage_key, triage.model, triage.base_url, usage=usage) if triage_key else None
             media = routed_client(config, "media", http, usage)
+            studio = config.studio
+            studio_token = config.secret(studio.token_env) if studio.enabled and studio.base_url else None
             app = App(
                 config=config, home=Home(home), store=store, client=client,
                 bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id,
                 media_describer=MediaDescriber(media, bot) if media.available else None,
                 search_client=search_client(config, http, usage), gifs=gif_search(config, http),
+                studio=StudioClient(studio, studio_token, studio_http) if studio_token else None,
                 draft_client=routed_client(config, "drafting", http, usage),
                 escalation_client=routed_client(config, "escalation", http, usage),
             )

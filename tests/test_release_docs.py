@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, SelfWorkConfig, T3Config, UpdateConfig, WebConfig
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, SelfWorkConfig, StudioConfig, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,7 +16,7 @@ def test_configuration_reference_matches_generator():
 
 def test_configuration_reference_has_every_toml_key():
     doc = (ROOT / "docs/configuration.md").read_text()
-    root = Config.model_fields.keys() - {"home", "models", "desktop_mode", "desktop", "openers", "presence", "self_work", "web", "t3", "update"}
+    root = Config.model_fields.keys() - {"home", "models", "desktop_mode", "desktop", "openers", "presence", "self_work", "studio", "web", "t3", "update"}
     for name in root:
         assert f"| `{name}` |" in doc
     for section, model in (
@@ -25,6 +25,13 @@ def test_configuration_reference_has_every_toml_key():
     ):
         for name in model.model_fields:
             assert f"| `{section}.{name}` |" in doc
+    for name in StudioConfig.model_fields.keys() - {"limits", "timeouts"}:
+        assert f"| `studio.{name}` |" in doc
+    for scope in ("owner_dm", "friend_dm", "group"):
+        for name in StudioTier.model_fields:
+            assert f"| `studio.limits.{scope}.{name}` |" in doc
+    for name in StudioTimeouts.model_fields:
+        assert f"| `studio.timeouts.{name}` |" in doc
     for name in DesktopHost.model_fields:
         assert f"| `desktop.hosts[].{name}` |" in doc
     assert "| `desktop.mode` | `\"off\"` |" in doc

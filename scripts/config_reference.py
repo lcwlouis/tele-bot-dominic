@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderEndpoint, SelfWorkConfig, T3Config, UpdateConfig, WebConfig, starter_config
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderEndpoint, SelfWorkConfig, StudioConfig, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -58,7 +58,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "desktop", "openers", "presence", "self_work", "web", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "desktop", "openers", "presence", "self_work", "studio", "web", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -94,6 +94,20 @@ def render() -> str:
         "(list at most one). A remote host is one sandbox API and counts as one container, named after the host. "
         "Without any `[[desktop.hosts]]`, `desktop.mode` and the keys above describe a single host named `default`.",
         table(fields(DesktopHost, "desktop.hosts[].")),
+        "## Studio",
+        table(fields(StudioConfig, "studio.", exclude={"limits", "timeouts"})),
+        "### Studio limits",
+        table([
+            *fields(StudioLimits, "studio.limits.", exclude={"owner_dm", "friend_dm", "group"}),
+            *(
+                (f"studio.limits.{scope}.{name}", literal(getattr(getattr(StudioLimits(), scope), name)), field.description)
+                for scope in ("owner_dm", "friend_dm", "group")
+                for name, field in StudioTier.model_fields.items()
+            ),
+        ]),
+        "### Studio timeouts",
+        table(fields(StudioTimeouts, "studio.timeouts.")),
+        "See [Studio](studio.md) for outfit setup and model licences.",
         "## Openers",
         table(fields(OpenersConfig, "openers.")),
         "## Presence",

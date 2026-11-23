@@ -38,6 +38,8 @@ from dom.jobs import DailyJobs
 from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
+from dom.studio.policy import enabled as studio_enabled, outfits, turn_note as studio_turn_note
+from dom.studio.profile import maintain as maintain_studio
 from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import PromptCache, build_messages, online_window_note, report_messages
 from dom.reflection import mood
@@ -590,6 +592,8 @@ class Dispatcher:
         self.cross_chat.start()
         if self._loop is None or self._loop.done():
             self._loop = self._spawn(self._run())
+            if self.app.studio is not None:
+                self._spawn(maintain_studio(self.app))
 
     async def close(self) -> None:
         self._closing = True
@@ -1663,6 +1667,7 @@ class Dispatcher:
                             if await self._hold_for_leak_check(chat_id, scope, actions, title):
                                 turn_log.outcome("Held back: possible leak")
                                 return False, False
+                            actions = await self._screen_studio(chat_id, scope, actions, title)
                             if scope != "owner_dm" and actions.elsewhere:
                                 if not title:
                                     title = (await app.store.get_chat_auth_status(chat_id))["title"]
@@ -1693,6 +1698,14 @@ class Dispatcher:
                         typing_cps=typing_cps,
                     )
 
+            queue_studio = None
+            if actions.voice or actions.video_note or actions.image:
+                def queue_studio() -> None:
+                    if not self._closing:
+                        self._spawn(executor.deliver_studio(
+                            app, chat_id, scope, thread_id, newest.msg_id, actions, on_sent,
+                        ))
+
             sent = await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
                 thread_id=thread_id, stickers=app.stickers.sendable(),
@@ -1700,7 +1713,7 @@ class Dispatcher:
                 ephemeral_ineligible_reason=ineligible_reason, typed_already=attempt.credit + typing.seconds,
                 reply_elapsed=monotonic() - reply_started,
                 typing_cps=typing_cps,
-                before_send=before_send, on_sent=on_sent, on_migrate=on_migrate,
+                before_send=before_send, on_sent=on_sent, on_migrate=on_migrate, queue_studio=queue_studio,
             )
             if sent.reaction_result is False:
                 self._reactions_off.add(chat_id)
@@ -1740,22 +1753,55 @@ class Dispatcher:
                     else "Sent a media fallback" if sent.media_fallback
                     else "Sent a sticker" if actions.sticker else "Sent a GIF"
                 )
+            elif queue_studio is not None and attempt.committed:
+                turn_log.outcome("Queued media")
             elif sent.reacted:
                 turn_log.outcome(f"Reacted {actions.react[:16]}")
             elif actions.react and not actions.no_response:
                 turn_log.outcome("Reaction failed")
-            return bool(sent) or sent.reacted, False
+            return bool(sent) or sent.reacted or (queue_studio is not None and attempt.committed), False
         finally:
             if typing is not None:
                 attempt.shown = typing.stop()
             if (
                 attempt.committed and newest.is_bot and newest.sender_user_id is not None
                 and actions is not None and not actions.no_response
-                and (actions.bubbles or resolve_sticker(app.stickers.sendable(), actions.sticker) or (actions.gif and app.gifs))
+                and (actions.bubbles or resolve_sticker(app.stickers.sendable(), actions.sticker)
+                     or (actions.gif and app.gifs) or actions.voice or actions.video_note or actions.image)
             ):
                 now = self.now()
                 self._bot_replies = {k: t for k, t in self._bot_replies.items() if now - t < BOT_DEDUP_WINDOW}
                 self._bot_replies[(chat_id, newest.sender_user_id)] = now
+
+    async def _screen_studio(self, chat_id: int, scope: Scope, actions: Actions, title: str) -> Actions:
+        if not (actions.voice or actions.video_note or actions.image):
+            return actions
+        update = {"voice": None, "video_note": None, "image": None}
+        if actions.private or actions.no_response or not self.app.config.studio.enabled:
+            return actions.model_copy(update=update)
+        config = self.app.config.studio
+        if studio_enabled(config, scope, "voice"):
+            update["voice"] = actions.voice
+        if actions.video_note is not None:
+            kind = "special" if actions.video_note.special else "video_note"
+            if studio_enabled(config, scope, kind):
+                update["video_note"] = actions.video_note
+        if studio_enabled(config, scope, "photo"):
+            update["image"] = actions.image
+        speech = update["video_note"].text if update["video_note"] else None
+        texts = [item for item in (update["voice"], speech, update["image"]) if item]
+        if texts:
+            if actions.outfit and (update["image"] or update["video_note"]):
+                texts.append(actions.outfit)
+            try:
+                await asyncio.to_thread(guard.check_local_private_text, self.app.config, self.app.home, texts)
+            except (ValueError, OSError):
+                turn_log.step("Held back media: possible leak")
+                return actions.model_copy(update=dict.fromkeys(update))
+            if await self._hold_text_for_leak_check(chat_id, "\n".join(texts), title, hold_if_unavailable=True):
+                turn_log.step("Held back media: possible leak")
+                return actions.model_copy(update=dict.fromkeys(update))
+        return actions.model_copy(update=update)
 
     async def _hold_for_leak_check(
         self, chat_id: int, scope: Scope, actions: Actions, title: str,
@@ -1767,21 +1813,30 @@ class Dispatcher:
         ):
             return False
         text = "\n".join([bubble.text for bubble in actions.bubbles] + ([actions.gif] if actions.gif else []))
+        return await self._hold_text_for_leak_check(chat_id, text, title)
+
+    async def _hold_text_for_leak_check(
+        self, chat_id: int, text: str, title: str, *, hold_if_unavailable: bool = False,
+    ) -> bool:
+        app = self.app
+        if self.jev is None or not app.config.leak_check:
+            return False
         try:
             with model_request("guard", chat_id, partial(self.model_allowed, chat_id)):
                 await check_model_allowed()
-                terms = guard.private_terms(app.home, await app.store.chat_participant_names(chat_id))
+                people = await app.store.chat_participant_names(chat_id)
+                terms = await asyncio.to_thread(guard.private_terms, app.home, people)
                 score = await guard.leak_score(self.jev, terms, text)
         except ModelCallSkipped:
             if not await app.store.is_chat_approved(chat_id):
                 raise
-            return False  # the spend cap pauses the guard, while the completed turn may be sent
+            return hold_if_unavailable  # a paused guard still lets ordinary bubbles through
 
         if not await app.store.is_chat_approved(chat_id):
             raise ModelCallSkipped
         if score is None:
-            log.warning("leak check unavailable in chat %s; sending", chat_id)
-            return False
+            log.warning("leak check unavailable in chat %s", chat_id)
+            return hold_if_unavailable
         if score < app.config.leak_threshold:
             return False
 
@@ -2057,6 +2112,10 @@ class Dispatcher:
         if sender_id is not None:
             participants.append(sender_id)
         sliders, preset = await for_chat(app.home, app.store, chat_id, self.now())
+        if not final_bot_turn and app.studio is not None and app.studio.ready:
+            remaining = await app.studio_quota.remaining(app.config.studio, scope, chat_id, self.now())
+            if media_note := studio_turn_note(remaining, outfits(app.config.studio, preset)):
+                note += f"\n{media_note}"
         if attempt is not None:
             attempt.assistant = preset is not None and preset.name == ASSISTANT
         if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:
@@ -2135,6 +2194,10 @@ class Dispatcher:
                 if attempt is None and ctx.t3_notes:
                     notice = self._spawn(self._send_coding_notice(chat_id, ctx.t3_notes), committed=True)
                     await asyncio.shield(notice)
+        if actions.image or actions.video_note:
+            wardrobe = outfits(app.config.studio, preset)
+            outfit = wardrobe[0] if wardrobe else None
+            actions = actions.model_copy(update={"outfit": actions.outfit if actions.outfit in wardrobe else outfit})
         if casual_ids and not actions.no_response:
             if attempt is None:
                 await self.reminders.consume(casual_ids)

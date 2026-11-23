@@ -53,6 +53,7 @@ OWNER_COMMANDS = [
     BotCommand(command="sleep", description="Send Dom to sleep"),
     BotCommand(command="pending", description="Chats waiting for your approval"),
     BotCommand(command="chats", description="Every group and DM Dom knows about"),
+    BotCommand(command="studio", description="Check media generation status"),
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
     BotCommand(command="proposals", description="Review pending or delete settled proposals"),
     BotCommand(command="plugins", description="List, disable and delete plugins"),

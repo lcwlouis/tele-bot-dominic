@@ -533,8 +533,21 @@ PERMISSIONS = (
                "Dom may answer you privately inside a group where he is an admin, or in your DM where he is not."),
     Permission("leak_check", ("leak_check",), "Check replies for leaks",
                "Jev screens what Dom sends and what network plugins send for private information first."),
+    Permission("studio_voice", ("studio", "voice"), "Send voice notes",
+               "Dom can use your configured media server to send occasional voice notes."),
+    Permission("studio_video", ("studio", "video_notes"), "Send round video notes",
+               "Dom can send occasional round videos."),
+    Permission("studio_images", ("studio", "images"), "Send photos",
+               "Dom can send occasional generated photos."),
+    Permission("studio_special", ("studio", "special"), "Send special video notes",
+               "Dom can send a special video for a milestone or when you ask in your DM."),
+    Permission("studio_profile", ("studio", "profile_photo_follows_preset"), "Match the Everywhere preset’s profile photo",
+               "Dom updates his Telegram profile photo to match his Everywhere preset, at most once an hour."),
 )
-PermissionId = Literal["memory_self_edit", "openers", "ephemeral_replies", "leak_check"]
+PermissionId = Literal[
+    "memory_self_edit", "openers", "ephemeral_replies", "leak_check",
+    "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
+]
 assert set(get_args(PermissionId)) == {item.id for item in PERMISSIONS}
 
 

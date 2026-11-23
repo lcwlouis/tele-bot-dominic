@@ -95,6 +95,7 @@ def test_owner_commands():
         ("sleep", "Send Dom to sleep"),
         ("pending", "Chats waiting for your approval"),
         ("chats", "Every group and DM Dom knows about"),
+        ("studio", "Check media generation status"),
         ("preset", "Change Dom's persona in a chat"),
         ("proposals", "Review pending or delete settled proposals"),
         ("plugins", "List, disable and delete plugins"),

@@ -548,6 +548,11 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
         "plugin_sandbox_failure": app.plugin_runner.last_failure,
         "desktop": desktop_status(app, "owner_dm"),
         "gifs": "on" if app.gifs is not None else "off (set KLIPY_API_KEY in .env to turn them on)",
+        "studio": app.studio.status if app.studio and app.config.studio.enabled else "off (configure [studio])",
+        "studio_features": {
+            name: bool(app.config.studio.enabled and getattr(app.config.studio, name))
+            for name in ("voice", "video_notes", "images", "special", "profile_photo_follows_preset")
+        },
         "desktop_hosts": desktop_hosts(app),
         "models": {kind: endpoint.model or endpoint.provider or "" for kind, endpoint in app.config.models.items()},
         "last_errors": await app.store.recent_turn_errors(),
@@ -576,7 +581,7 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
 SELF_INSPECT_TOOL = Tool(
     name="self_inspect",
     description=(
-        "Read Dom's version, public repository URL, newest changelog entry, available tools by chat scope, approved plugins, desktop status, whether GIFs are on, "
+        "Read Dom's version, public repository URL, newest changelog entry, available tools by chat scope, approved plugins, desktop status, GIFs and outbound media status, "
         "models, the preset used everywhere with the chats that override it, and recent errors. "
         "Pass include_timings=true only when the owner asks why a reply was slow to inspect recent reply timings from the turn log. "
         "When someone asks about you, answer in your own words like a person would; "
