@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
@@ -25,6 +26,7 @@ from dom.web.auth import same_origin
 from dom.web.model_settings import is_json
 from dom.web.shared import _bounded_stream, owner_app
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/desktop")
 templates = Environment(
     loader=FileSystemLoader(Path(__file__).with_name("templates")), autoescape=select_autoescape(("html",)),
@@ -189,24 +191,32 @@ async def run_computer_action(app, lane, action: str) -> str:
         return await _change_computer(app, sandbox, action)
     if not isinstance(sandbox, LocalSandbox):
         raise HTTPException(409, "Manage the remote computer on its host.")
-    if lane.status() == "stopping":
-        return "Stopping the computer."
     async with worker.control:
+        # Checked and claimed under the lock with no await in between, so two stops (a double tap, two tabs) start
+        # one background stop, and a stop never lands on a computer that is still booting.
         if await app.store.desktop_tasks(app.owner_id, active=True, container=lane.name):
             return "Cancel the current task before stopping the computer."
-    lane.stopping = asyncio.create_task(_stop_computer(app, lane))
+        if lane.status() == "stopping":
+            return "Stopping the computer."
+        if sandbox.status() == "starting":
+            return "The computer is still starting."
+        lane.stopping = asyncio.create_task(_stop_computer(app, lane))
     return "Stopping the computer."
 
 
 async def _stop_computer(app, lane) -> None:
-    async with lane.worker.control:
-        # A task may have been queued between the request's check and now; it wins.
-        if await app.store.desktop_tasks(app.owner_id, active=True, container=lane.name):
-            await owner.record_event(app, "Desktop stop skipped: a task started")
-            return
-        await _change_computer(app, lane.sandbox, "stop")
-        if lane.sandbox.status() == "stopped":
-            lane.worker.screen_reset()
+    try:
+        async with lane.worker.control:
+            # A task may have been queued between the request's check and now; it wins.
+            if await app.store.desktop_tasks(app.owner_id, active=True, container=lane.name):
+                await owner.record_event(app, "Desktop stop skipped: a task started")
+                return
+            await _change_computer(app, lane.sandbox, "stop")
+            if lane.sandbox.status() == "stopped":
+                lane.worker.screen_reset()
+    except Exception:
+        # Nobody awaits this task; log here, or the failure is only seen at garbage collection.
+        log.exception("background desktop stop failed")
 
 
 async def resume_handoff(app, task_id: int, steps: int) -> tuple[str, object]:

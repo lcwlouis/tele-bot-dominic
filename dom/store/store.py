@@ -1949,14 +1949,16 @@ class Store:
         def snapshot() -> dict[str, Any]:
             reviewed_prefix = f"plugin-reviewed:{name}:"
             storage_prefix = f"plugin-storage:{name}:"
+            ended_prefix = f"plugin-ended:{name}:"
             plugin_row = self._conn.execute("SELECT * FROM plugins WHERE name = ?", (name,)).fetchone()
             kv_rows = [
                 dict(r) for r in self._conn.execute(
-                    "SELECT * FROM kv WHERE key IN (?, ?) OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ?",
+                    "SELECT * FROM kv WHERE key IN (?, ?) OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ?",
                     (
                         f"plugin-files:{name}", f"plugin-storage:{name}",
                         len(reviewed_prefix), reviewed_prefix,
                         len(storage_prefix), storage_prefix,
+                        len(ended_prefix), ended_prefix,
                     ),
                 )
             ]
@@ -1986,6 +1988,7 @@ class Store:
         def delete() -> str:
             reviewed_prefix = f"plugin-reviewed:{name}:"
             storage_prefix = f"plugin-storage:{name}:"
+            ended_prefix = f"plugin-ended:{name}:"
             with self._tx() as conn:
                 row = conn.execute("SELECT * FROM plugins WHERE name = ?", (name,)).fetchone()
                 if row is None and not allow_missing_row:
@@ -1994,11 +1997,12 @@ class Store:
                     return "stale"
                 conn.execute("DELETE FROM plugins WHERE name = ?", (name,))
                 conn.execute(
-                    "DELETE FROM kv WHERE key IN (?, ?) OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ?",
+                    "DELETE FROM kv WHERE key IN (?, ?) OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ?",
                     (
                         f"plugin-files:{name}", f"plugin-storage:{name}",
                         len(reviewed_prefix), reviewed_prefix,
                         len(storage_prefix), storage_prefix,
+                        len(ended_prefix), ended_prefix,
                     ),
                 )
                 conn.execute(

@@ -210,6 +210,10 @@ class DesktopFleet:
     async def close(self) -> None:
         lanes = list(self.lanes.values())
         for lane in lanes:
+            # A dashboard stop still running in the background finishes before the sandbox is closed under it.
+            if lane.stopping is not None and not lane.stopping.done():
+                await asyncio.gather(lane.stopping, return_exceptions=True)
+        for lane in lanes:
             await lane.worker.close()
         for lane in lanes:
             if (close := getattr(lane.sandbox, "close", None)) is not None:

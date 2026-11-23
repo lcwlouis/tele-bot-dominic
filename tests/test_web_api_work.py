@@ -270,3 +270,47 @@ async def test_briefs_list_their_blocks_and_never_the_private_folder(make_app, b
         assert len(briefs) == 1 and briefs[0]["title"] == "Quieter nights"
         assert "He wakes too often." in briefs[0]["markdown"]
         assert {block["kind"] for block in briefs[0]["blocks"]} >= {"heading", "ul"}
+
+
+async def test_two_stops_at_once_start_one_background_stop_and_a_booting_computer_is_not_stopped(
+    make_app, browser, monkeypatch, caplog,
+):
+    import asyncio
+
+    import dom.web.desktop as desktop_web
+    from test_web_desktop import Computer
+
+    class SlowStop(Computer):
+        def __init__(self, url, state="ready"):
+            super().__init__(url, state)
+            self.release = asyncio.Event()
+            self.stops = 0
+
+        async def stop(self):
+            self.stops += 1
+            await self.release.wait()
+            raise RuntimeError("docker went away")
+
+    app = make_app()
+    fleet, computers = two_containers(app)
+    slow = computers["default"] = SlowStop("https://main.example.org")
+    fleet.lanes.pop("default")
+    lane = fleet.lane("default")
+    monkeypatch.setattr(desktop_web, "LocalSandbox", SlowStop)
+    async with browser(app) as client:
+        slow.state = "starting"
+        booting = await client.post("/api/work/desk/computer", headers=JSON, json={"action": "stop"})
+        assert booting.json()["message"] == "The computer is still starting." and lane.stopping is None
+        slow.state = "ready"
+
+        first, second = await asyncio.gather(*(
+            client.post("/api/work/desk/computer", headers=JSON, json={"action": "stop"}) for _ in range(2)
+        ))
+        assert first.json()["message"] == second.json()["message"] == "Stopping the computer."
+        claimed = lane.stopping
+        await asyncio.sleep(0)
+        assert lane.stopping is claimed and slow.stops == 1
+        # An unexpected failure in the background stop is logged, not left for garbage collection.
+        slow.release.set()
+        await claimed
+        assert "background desktop stop failed" in caplog.text
