@@ -245,3 +245,15 @@ async def test_migration_retries_only_unsent_rendered_chunks(make_app):
     calls = app.bot.of("send")
     assert [call[1] for call in calls] == [GROUP, new_group, new_group]
     assert [(call[2], call[3]["entities"]) for call in calls] == format_text(LONG_SKILL)
+
+
+@pytest.mark.parametrize("casual", ["lol *sigh*", "5*6*7", "- a", "1) x", "_whispers_ fine", "2*3=6"])
+def test_casual_lines_without_clear_structure_go_out_exactly_as_written(casual):
+    [(text, entities)] = [(chunk[0], chunk[1]) for chunk in format_text(casual)]
+    assert text == casual and not entities
+
+
+def test_emphasis_renders_once_the_text_has_clear_structure():
+    [(text, entities)] = [(chunk[0], chunk[1]) for chunk in format_text("**done** and *nearly*")]
+    assert text == "done and nearly"
+    assert [(e.type, e.offset, e.length) for e in entities] == [("bold", 0, 4), ("italic", 9, 6)]

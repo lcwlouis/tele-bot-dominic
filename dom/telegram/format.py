@@ -22,6 +22,12 @@ log = logging.getLogger(__name__)
 _MARKDOWN = MarkdownIt().enable(("strikethrough", "table"))
 _INLINE_STYLES = {"strong": "bold", "em": "italic", "s": "strikethrough"}
 _FORMATTED_INLINE = {*_INLINE_STYLES, "link", "code_inline"}
+# Only text with clear structure is rendered. A casual line such as "lol *sigh*" or "5*6*7" goes out exactly as
+# written, because a lone pair of asterisks or underscores in chat is rarely meant as Markdown.
+_STRUCTURED = re.compile(
+    r"```|~~~|`[^`\n]+`|\*\*\S[^\n]*?\*\*|__\S[^\n]*?__|^#{1,6}[ \t]+\S|\[[^\]\n]+\]\([^)\s]+\)|^>[ \t]",
+    re.MULTILINE,
+)
 _BLANK_LINE = re.compile(r"(?:^[ \t]*\r?\n)+|(?:\r?\n[ \t]*)+$")
 _BREAKS = (
     re.compile(r"\r?\n(?:[ \t]*\r?\n)+"),
@@ -218,6 +224,8 @@ def _is_plain(node: SyntaxTreeNode) -> bool:
 
 
 def _render(text: str) -> tuple[str, list[_Span], dict[int, int]]:
+    if not _STRUCTURED.search(text):
+        return text, [], {}
     nodes = SyntaxTreeNode(_MARKDOWN.parse(text)).children
     if all(_is_plain(node) for node in nodes):
         return text, [], {}

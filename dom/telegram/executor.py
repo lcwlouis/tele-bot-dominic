@@ -19,7 +19,8 @@ from aiogram.exceptions import (
     TelegramAPIError, TelegramBadRequest, TelegramMigrateToChat, TelegramNetworkError, TelegramRetryAfter,
 )
 from aiogram.types import (
-    BufferedInputFile, EphemeralMessageParameters, LinkPreviewOptions, ReactionTypeEmoji, ReplyParameters,
+    BufferedInputFile, EphemeralMessageParameters, LinkPreviewOptions, MessageEntity, ReactionTypeEmoji,
+    ReplyParameters,
 )
 from pydantic import ValidationError
 
@@ -600,8 +601,13 @@ async def perform(
             if not await enter_send_boundary():
                 return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
             with turn_log.timed("send"):
-                sent = await send_text(bot, chat_id, fallback_text, sleep=sleep, budget=flood,
-                                       message_thread_id=thread_id, **options)
+                if fallback_text == f"*{actions.gif}*":  # the GIF's query in italics, set directly, not via Markdown
+                    italic = MessageEntity(type="italic", offset=0, length=utf16_len(actions.gif))
+                    sent = await send_chunk(bot, chat_id, (actions.gif, [italic]), sleep=sleep, budget=flood,
+                                            message_thread_id=thread_id, **options)
+                else:
+                    sent = await send_text(bot, chat_id, fallback_text, sleep=sleep, budget=flood,
+                                           message_thread_id=thread_id, **options)
         except TelegramMigrateToChat:
             if on_migrate is not None:
                 on_migrate(Actions(bubbles=[Bubble(text=fallback_text)]))
