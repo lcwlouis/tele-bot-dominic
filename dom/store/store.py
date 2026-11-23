@@ -1915,6 +1915,9 @@ class Store:
                     return False
                 if not self._set_plugin_status(name, digest, status):
                     return False
+                if status == "disabled":  # how it ended: an approved plugin is retired, a pending one rejected
+                    ended = "retired" if row["status"] == "approved" else "rejected"
+                    self._write_kv(conn, {f"plugin-ended:{name}:{digest}": ended})
                 if snapshot is not None:
                     self._write_kv(conn, {f"plugin-files:{name}": json.dumps(snapshot)})
                 conn.execute(
@@ -1925,6 +1928,21 @@ class Store:
                 return True
 
         return await self._run(decide)
+
+    async def reopen_plugin(self, name: str, digest: str) -> bool:
+        """Put a rejected or retired plugin version back to pending, as unreviewed: approving it again needs a fresh
+        "I've read this code" and a fresh approval of this exact hash."""
+        def reopen() -> bool:
+            with self._tx() as conn:
+                row = conn.execute("SELECT status FROM plugins WHERE name = ? AND hash = ?", (name, digest)).fetchone()
+                if row is None or row["status"] != "disabled" or not self._set_plugin_status(name, digest, "pending"):
+                    return False
+                conn.execute(
+                    "DELETE FROM kv WHERE key IN (?, ?)", (f"plugin-reviewed:{name}:{digest}", f"plugin-ended:{name}:{digest}"),
+                )
+                return True
+
+        return await self._run(reopen)
 
     async def plugin_state_snapshot(self, name: str) -> dict[str, Any]:
         """Read a plugin's DB row, KV entries, and pending proposals for its deletion archive."""
@@ -2449,7 +2467,8 @@ class Store:
         return await self._run(lambda: [
             dict(row) for row in self._conn.execute(
                 f"WITH days(day, start_at, end_at) AS (VALUES {values}) "
-                "SELECT day, kind, model, COUNT(*) AS calls, TOTAL(cost_usd) AS cost, SUM(fallback) AS fallbacks "
+                "SELECT day, kind, model, COUNT(*) AS calls, TOTAL(cost_usd) AS cost, SUM(fallback) AS fallbacks, "
+                "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens "
                 "FROM days JOIN usage ON at >= start_at AND at < end_at GROUP BY day, kind, model "
                 "ORDER BY day, kind, model",
                 [value for day in bounds for value in day],

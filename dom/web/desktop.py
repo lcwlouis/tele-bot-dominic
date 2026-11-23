@@ -55,8 +55,8 @@ def _display_state(status: str, task: dict | None, error: str | None) -> tuple[s
     """Map raw sandbox status, active task and error to the tile's state label and visual tone."""
     if task is not None and task.get("status") == "waiting_owner":
         return "waiting for you", "waiting"
-    if status == "starting":
-        return "starting", "starting"
+    if status in ("starting", "stopping"):
+        return status, "starting"
     if status == "ready":
         return "running", "running"
     if status == "stopped" and error:
@@ -136,7 +136,7 @@ async def _context(app, lane, message: str = "") -> dict:
     hosts = [{
         "name": host.config.name,
         "mode": host.config.mode,
-        "running": sum(1 for item in fleet.lanes.values() if item.host is host and item.status() in ("starting", "ready")),
+        "running": sum(1 for item in fleet.lanes.values() if item.host is host and item.status() in ("starting", "ready", "stopping")),
         "max_containers": host.config.max_containers,
         "memory_floor_mb": host.config.memory_floor_mb,
         "memory_floor": _memory_label(host.config.memory_floor_mb) if host.config.memory_floor_mb else "",
@@ -177,24 +177,36 @@ async def _change_computer(app, sandbox, action: str) -> str:
 
 
 async def run_computer_action(app, lane, action: str) -> str:
-    """Start or stop a lane's computer from the dashboard and say what happened."""
+    """Start or stop a lane's computer from the dashboard and say what happened.
+
+    A stop answers at once and runs in the background (`lane.stopping`, shown as "stopping"): `docker stop` waits for
+    the container to exit, and the dashboard must not sit on that request meanwhile."""
     sandbox, worker = lane.sandbox, lane.worker
     if action == "start":
+        if lane.status() == "stopping":
+            return "The computer is still stopping."
         # Booting takes a while; the worker's lock must stay free for cancel and resume meanwhile.
         return await _change_computer(app, sandbox, action)
     if not isinstance(sandbox, LocalSandbox):
         raise HTTPException(409, "Manage the remote computer on its host.")
+    if lane.status() == "stopping":
+        return "Stopping the computer."
     async with worker.control:
         if await app.store.desktop_tasks(app.owner_id, active=True, container=lane.name):
             return "Cancel the current task before stopping the computer."
-        message = await _change_computer(app, sandbox, action)
-        if sandbox.status() == "stopped":
-            worker.screen_reset()
-        return message
+    lane.stopping = asyncio.create_task(_stop_computer(app, lane))
+    return "Stopping the computer."
 
 
-
-
+async def _stop_computer(app, lane) -> None:
+    async with lane.worker.control:
+        # A task may have been queued between the request's check and now; it wins.
+        if await app.store.desktop_tasks(app.owner_id, active=True, container=lane.name):
+            await owner.record_event(app, "Desktop stop skipped: a task started")
+            return
+        await _change_computer(app, lane.sandbox, "stop")
+        if lane.sandbox.status() == "stopped":
+            lane.worker.screen_reset()
 
 
 async def resume_handoff(app, task_id: int, steps: int) -> tuple[str, object]:

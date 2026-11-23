@@ -19,10 +19,14 @@
   const page = new WorkPage<PluginsData>("/api/system/plugins");
   let retiring = $state<PluginRow | null>(null);
   let deleting = $state<PluginRow | null>(null);
+  let reopening = $state<PluginRow | null>(null);
 
   onMount(() => page.load());
 
   const tone = (status: string) => (status === "pending" ? "secondary" : status === "approved" ? "default" : "outline");
+  // A disabled plugin was either rejected before it ever ran or retired after it was approved.
+  const stateLabel = (row: PluginRow) =>
+    row.status === "disabled" ? (row.ended === "retired" ? "Retired" : "Rejected") : row.status === "pending" ? "Waiting for review" : "Approved";
 </script>
 
 <PageHeader kicker={destination.label} title={tab.label} subtitle={tab.blurb} />
@@ -46,7 +50,7 @@
             <Card.Header>
               <Card.Title class="flex flex-wrap items-center gap-2 text-base">
                 <span class="font-mono">{row.name}</span>
-                <Badge variant={tone(row.status)}>{row.status}</Badge>
+                <Badge variant={tone(row.status)}>{stateLabel(row)}</Badge>
                 {#if !row.available}<Badge variant="destructive">Files unavailable</Badge>{/if}
               </Card.Title>
             </Card.Header>
@@ -59,6 +63,8 @@
                 {/if}
                 {#if row.status !== "disabled"}
                   <Button variant="outline" size="sm" disabled={page.busy} aria-label={`Retire ${row.name}`} onclick={() => (retiring = row)}>Retire</Button>
+                {:else if row.available}
+                  <Button variant="outline" size="sm" disabled={page.busy} aria-label={`Review ${row.name} again`} onclick={() => (reopening = row)}>Review again</Button>
                 {/if}
                 <Button variant="destructive" size="sm" disabled={page.busy} aria-label={`Delete ${row.name}`} onclick={() => (deleting = row)}>Delete</Button>
               </div>
@@ -88,6 +94,15 @@
   keep="Keep it"
   action="Retire plugin"
   onconfirm={() => retiring && page.write("/api/system/plugins/decide", { name: retiring.name, digest: retiring.hash, decision: "disable" })}
+/>
+<Confirm
+  bind:open={() => reopening !== null, (open) => !open && (reopening = null)}
+  title={`Review ${reopening?.name} again?`}
+  description="It goes back to Waiting for you, unreviewed. It stays off until you read its code and approve this exact version."
+  keep="Leave it off"
+  action="Review again"
+  destructive={false}
+  onconfirm={() => reopening && page.write("/api/system/plugins/review-again", { name: reopening.name, digest: reopening.hash })}
 />
 <Confirm
   bind:open={() => deleting !== null, (open) => !open && (deleting = null)}

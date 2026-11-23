@@ -82,6 +82,43 @@ async def test_stopping_the_computer_waits_for_the_task_and_never_stops_a_remote
         assert refused.status_code == 409 and "remote computer" in refused.json()["detail"]
 
 
+async def test_a_stop_answers_at_once_and_the_dashboard_keeps_serving_while_docker_stops(make_app, browser, monkeypatch):
+    import asyncio
+
+    import dom.web.desktop as desktop_web
+    from test_web_desktop import Computer
+
+    class SlowStop(Computer):
+        """A local computer whose `docker stop` takes as long as the test says."""
+
+        def __init__(self, url):
+            super().__init__(url)
+            self.release = asyncio.Event()
+
+        async def stop(self):
+            await self.release.wait()
+            self.state = "stopped"
+
+    app = make_app()
+    fleet, computers = two_containers(app)
+    slow = computers["default"] = SlowStop("https://main.example.org")
+    fleet.lanes.pop("default")
+    lane = fleet.lane("default")
+    monkeypatch.setattr(desktop_web, "LocalSandbox", SlowStop)
+    async with browser(app) as client:
+        stopped = await asyncio.wait_for(client.post("/api/work/desk/computer", headers=JSON, json={"action": "stop"}), 2)
+        assert stopped.status_code == 200 and stopped.json()["ok"] is True
+        assert stopped.json()["message"] == "Stopping the computer." and stopped.json()["status"] == "stopping"
+        # Other pages are served while the container is still stopping, and a second stop or a start waits.
+        assert (await asyncio.wait_for(client.get("/api/home"), 2)).status_code == 200
+        assert (await client.get("/api/work/desk")).json()["status"] == "stopping"
+        again = await client.post("/api/work/desk/computer", headers=JSON, json={"action": "start"})
+        assert again.json()["message"] == "The computer is still stopping." and slow.started == 0
+        slow.release.set()
+        await lane.stopping
+        assert (await client.get("/api/work/desk")).json()["status"] == "stopped"
+
+
 async def test_desk_handoff_resumes_through_done_and_a_stale_one_says_so(make_app, browser):
     app = make_app()
     worker = await worker_for(app, call("handoff", reason="Sign in <here>"), call("finish", result="Done"), {"content": "invalid"})

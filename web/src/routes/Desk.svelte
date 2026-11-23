@@ -115,7 +115,7 @@
         {#if data.task}
           <div class="grid gap-1">
             <p class="font-mono text-sm text-muted-foreground">Task #{data.task.id} · {words(data.task.status)} · {data.task.steps} steps</p>
-            <p class="text-lg font-medium break-words">{data.task.brief}</p>
+            <p class="text-lg font-medium wrap-anywhere">{data.task.brief}</p>
           </div>
           {#if data.task.status === "waiting_owner"}
             <div class="rounded-xl border border-signal/45 bg-tint p-4">
@@ -155,7 +155,7 @@
     {#if data.history.length === 0}
       <StatusNote title="No finished desktop tasks yet" detail="Tasks Dom finishes on the desktop are listed here." />
     {:else}
-      <ul class="grid gap-3" aria-label="Task history">
+      <ul class="grid grid-cols-1 gap-3" aria-label="Task history">
         {#each data.history as row (row.id)}
           <li>
             <Card.Root>
@@ -165,9 +165,10 @@
                   <Badge variant={row.status === "done" ? "secondary" : row.status === "failed" ? "destructive" : "outline"}>{words(row.status)}</Badge>
                   <span>{row.container && row.container !== "default" ? `${row.container} · ` : ""}{row.steps} steps{row.finished ? ` · ${row.finished}` : ""}</span>
                 </p>
-                <p class="font-medium break-words">{row.brief}</p>
-                {#if row.result}<p class="rounded-lg border bg-canvas/50 p-3 text-sm break-words whitespace-pre-line">{row.result}</p>{/if}
-                {#if row.error}<p class="rounded-lg border border-coral/45 bg-coral-tint p-3 text-sm break-words whitespace-pre-line text-coral">{row.error}</p>{/if}
+                <p class="font-medium wrap-anywhere">{row.brief}</p>
+                <!-- A result keeps its line breaks and spacing, wraps long words and links, and scrolls inside its own box. -->
+                {#if row.result}<p class="max-h-72 overflow-auto rounded-lg border bg-canvas/50 p-3 text-sm wrap-anywhere whitespace-pre-wrap">{row.result}</p>{/if}
+                {#if row.error}<p class="max-h-72 overflow-auto rounded-lg border border-coral/45 bg-coral-tint p-3 text-sm wrap-anywhere whitespace-pre-wrap text-coral">{row.error}</p>{/if}
               </Card.Content>
               <Card.Footer>
                 <Button variant="destructive" size="sm" disabled={page.busy} aria-label={`Delete desktop task ${row.id}`} onclick={() => (deleting = row)}>Delete</Button>

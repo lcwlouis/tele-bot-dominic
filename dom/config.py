@@ -425,7 +425,9 @@ def save_owner(home: Path, owner_id: int) -> None:
         raise ValueError("owner_id was not saved to config.toml")
 
 
-def _replace_file(path: Path, text: str, *, mode: int | None = None) -> None:
+def _replace_file(path: Path, text: str, *, mode: int | None = None, durable: bool = True) -> None:
+    """Atomically replace `path`. `durable` waits for the disk (fsync), which can take seconds on an SD card:
+    a backup copy that a crash may lose skips it."""
     if mode is None:
         mode = stat.S_IMODE(path.stat().st_mode)
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as file:
@@ -434,7 +436,8 @@ def _replace_file(path: Path, text: str, *, mode: int | None = None) -> None:
             os.fchmod(file.fileno(), mode)
             file.write(text.encode("utf-8"))
             file.flush()
-            os.fsync(file.fileno())
+            if durable:
+                os.fsync(file.fileno())
             file.close()
             os.replace(temp, path)
         finally:

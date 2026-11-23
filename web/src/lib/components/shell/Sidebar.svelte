@@ -10,7 +10,7 @@
   const active = "border-signal/35 bg-tint text-foreground hover:bg-tint";
 </script>
 
-<!-- Desktop only: the kit's grouped sidebar. Control surface is the five destinations of the phone's bar;
+<!-- Desktop only: the kit's grouped sidebar. Control surface is the five destinations of the phone menu;
      Workspace reaches the utility pages, each of which also lives as a tab in Work or System. -->
 <div class="hidden border-r bg-rail lg:block">
 <aside class="sticky top-0 flex h-dvh flex-col px-4 pt-6 pb-5">

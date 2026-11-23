@@ -51,6 +51,8 @@ if TYPE_CHECKING:
 router = APIRouter()
 API_PATH = "/api/models"
 PERMISSIONS_PATH = "/api/permissions"
+# Serialises the dashboard's config.toml writes, which run in a thread.
+_CONFIG_WRITE = asyncio.Lock()
 JSON_POSTS = {API_PATH, API_PATH + "/test", PERMISSIONS_PATH}
 MAX_BODY = 32 * 1024
 MAX_FALLBACKS = 5
@@ -328,8 +330,8 @@ def _write(current: Snapshot, saved: Snapshot) -> None:
         if path.read_bytes() != current.text.encode("utf-8"):
             raise HTTPException(409, "Configuration changed. Reload settings and try again.")
         if not (home / "config.toml.orig").exists():  # the file as it was before the first save from here
-            _replace_file(home / "config.toml.orig", current.text, mode=0o600)
-        _replace_file(home / "config.toml.bak", current.text, mode=0o600)
+            _replace_file(home / "config.toml.orig", current.text, mode=0o600, durable=False)
+        _replace_file(home / "config.toml.bak", current.text, mode=0o600, durable=False)
         _replace_file(path, saved.text)
 
 
@@ -478,15 +480,16 @@ async def update_models(request: Request):
             detail = "; ".join(f"{_slot_label(item['index'])}: {item['error']}" for item in failures)
             return JSONResponse(status_code=422, content={"detail": detail, "errors": failures})
 
-    # No await between reading, replacing the file, and publishing the new runtime snapshot.
-    try:
-        saved = _save(_snapshot(app.config.home), update)
-    except (OSError, ValueError):
-        raise HTTPException(409, "Could not save valid model settings. Check config.toml and its permissions.") from None
-    try:
-        app.apply_model_routes(saved.config)
-    except (OSError, ValueError, httpx.InvalidURL):
-        pass  # the response reports whether the running routes still differ
+    # One config write at a time from reading to publishing the new runtime snapshot; the disk work runs off the loop.
+    async with _CONFIG_WRITE:
+        try:
+            saved = await asyncio.to_thread(lambda: _save(_snapshot(app.config.home), update))
+        except (OSError, ValueError):
+            raise HTTPException(409, "Could not save valid model settings. Check config.toml and its permissions.") from None
+        try:
+            app.apply_model_routes(saved.config)
+        except (OSError, ValueError, httpx.InvalidURL):
+            pass  # the response reports whether the running routes still differ
     return _settings(app, saved)
 
 
@@ -587,9 +590,18 @@ async def read_permissions(request: Request) -> Permissions:
 async def update_permission(request: Request) -> Permissions:
     app = owner_app(request)
     update = await _input(request, PermissionUpdate)
-    current = _snapshot(app.config.home)
-    _check_revision(current, update.revision)
     permission = next(item for item in PERMISSIONS if item.id == update.id)
+    # Reading, checking and replacing config.toml waits on the disk; it runs off the event loop, one save at a time,
+    # so a slow disk never stalls Dom's other work.
+    async with _CONFIG_WRITE:
+        saved = await asyncio.to_thread(_save_permission, app.config.home, update, permission)
+        app.config = _with_permission(app.config, permission.path, update.enabled)
+    return _permissions(saved)
+
+
+def _save_permission(home: Path, update: PermissionUpdate, permission: Permission) -> Snapshot:
+    current = _snapshot(home)
+    _check_revision(current, update.revision)
     document = tomlkit.parse(current.text)
     table = document
     *parents, key = permission.path
@@ -608,8 +620,7 @@ async def update_permission(request: Request) -> Permissions:
         _write(current, saved)
     except (OSError, ValueError):
         raise HTTPException(409, "Could not save the setting. Check config.toml and its permissions.") from None
-    app.config = _with_permission(app.config, permission.path, update.enabled)
-    return _permissions(saved)
+    return saved
 
 
 def _redact(text: str, key: str | None) -> str:

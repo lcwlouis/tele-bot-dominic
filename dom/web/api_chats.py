@@ -3,8 +3,9 @@ and vibe, and the sticker sets.
 
 Each write runs the same dom.telegram.owner function the Telegram buttons use, so every
 check and owner event is shared. A write answers with its message and the fresh page data. A write that did nothing
-(an unknown chat, a preset that is gone) is a 4xx carrying that message. Only counts and titles leave here: no chat's
-message text is read.
+(an unknown chat, a preset that is gone) is a 4xx carrying that message. The chat list carries only counts and titles.
+A chat's recent messages are their own read: the owner's DM in full, every other chat one line per message, as Home
+shows Dom's replies; the dashboard is not a place to read friends' chats.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dom.telegram import owner
 from dom.traits import NAMES
-from dom.web.api import _when
+from dom.web.api import _local, _preview, _when
 from dom.web.model_settings import _input
 from dom.web.shared import WHO, _chats, owner_app
 
@@ -89,6 +90,30 @@ async def _view(app) -> dict:
 @router.get("/api/chats")
 async def read_chats(request: Request) -> dict:
     return await _view(owner_app(request))
+
+
+RECENT_MESSAGES = 20
+
+
+@router.get("/api/chats/{chat_id}/messages")
+async def read_messages(request: Request, chat_id: int) -> dict:
+    app = owner_app(request)
+    chat = next((row for row in (await _chats(app))["rows"] if row["id"] == chat_id), None)
+    if chat is None:
+        raise HTTPException(404, "Unknown chat.")
+    full = chat["scope"] == "owner_dm"
+    tz = app.dispatch.presence.tz
+    now = app.dispatch.now().astimezone(tz)
+    rows = [row for row in await app.store.get_recent_chat_window(chat_id, RECENT_MESSAGES) if row.role in ("user", "assistant")]
+    return {
+        "chat_id": chat_id, "full": full,
+        "messages": [{
+            "who": "Dom" if row.role == "assistant" else "You" if full else (row.sender_name or "Someone"),
+            "mine": row.role == "assistant",
+            "text": row.text if full else _preview(row.text),
+            "at": _when(_local(row.created_at, tz), now),
+        } for row in rows],
+    }
 
 
 async def _done(app, message: str) -> dict:

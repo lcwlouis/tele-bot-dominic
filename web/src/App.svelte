@@ -1,11 +1,11 @@
 <script lang="ts">
-  import BottomBar from "$lib/components/shell/BottomBar.svelte";
   import Sidebar from "$lib/components/shell/Sidebar.svelte";
   import TopBar from "$lib/components/shell/TopBar.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
   import * as Tooltip from "$lib/components/ui/tooltip";
   import { gallery, locate, waiting } from "$lib/nav";
   import { interceptLinks, route } from "$lib/router.svelte";
+  import { shell } from "$lib/shell.svelte";
   import Gallery from "./routes/Gallery.svelte";
   import Briefs from "./routes/Briefs.svelte";
   import Chats from "./routes/Chats.svelte";
@@ -27,6 +27,16 @@
   // /app/system/plugins/{name}/{digest}: one plugin version's code review.
   const review = $derived(where.tab?.id === "plugins" ? route.path.slice(where.tab.href.length + 1).split("/") : []);
 
+  // The menu's waiting dot: fresh on every page change, and every minute while the tab is in view.
+  $effect(() => {
+    void route.path;
+    shell.refresh();
+  });
+  $effect(() => {
+    const timer = setInterval(() => document.visibilityState === "visible" && shell.refresh(), 60_000);
+    return () => clearInterval(timer);
+  });
+
   $effect(() => {
     const page = isGallery ? gallery.label : isWaiting ? waiting.label : (where.tab?.label ?? where.destination.label);
     document.title = page === "Home" ? "Dom" : `${page} · Dom`;
@@ -45,8 +55,14 @@
   <div class="min-h-dvh lg:grid lg:grid-cols-[15.5rem_minmax(0,1fr)]">
     <Sidebar path={route.path} current={isGallery ? { ...where.destination, id: "" } : where.destination} />
     <div class="min-w-0">
-      <TopBar destination={where.destination} tab={where.tab} title={isGallery ? gallery.label : isWaiting ? waiting.label : undefined} />
-      <main id="main" tabindex="-1" class="mx-auto max-w-[68rem] px-4 pt-3 pb-28 outline-none sm:px-6 lg:px-9 lg:pt-1 lg:pb-14">
+      <TopBar
+        destination={where.destination}
+        tab={where.tab}
+        title={isGallery ? gallery.label : isWaiting ? waiting.label : undefined}
+        path={route.path}
+        current={isGallery ? { ...where.destination, id: "" } : where.destination}
+      />
+      <main id="main" tabindex="-1" class="mx-auto max-w-[68rem] px-4 pt-2 pb-10 outline-none sm:px-6 lg:px-9 lg:pt-1 lg:pb-14">
         {#if isGallery}
           <Gallery />
         {:else if isWaiting}
@@ -80,5 +96,4 @@
     </div>
   </div>
   <Toaster />
-  <BottomBar path={route.path} current={isGallery ? { ...where.destination, id: "" } : where.destination} />
 </Tooltip.Provider>

@@ -9,7 +9,8 @@
     keep,
     action,
     onconfirm,
-  }: { open: boolean; title: string; description: string; keep: string; action: string; onconfirm: () => void } = $props();
+    destructive = true,
+  }: { open: boolean; title: string; description: string; keep: string; action: string; onconfirm: () => void; destructive?: boolean } = $props();
 </script>
 
 <AlertDialog.Root bind:open>
@@ -20,7 +21,7 @@
     </AlertDialog.Header>
     <AlertDialog.Footer>
       <AlertDialog.Cancel variant="outline">{keep}</AlertDialog.Cancel>
-      <AlertDialog.Action variant="destructive-solid" onclick={() => { onconfirm(); open = false; }}>{action}</AlertDialog.Action>
+      <AlertDialog.Action variant={destructive ? "destructive-solid" : "default"} onclick={() => { onconfirm(); open = false; }}>{action}</AlertDialog.Action>
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>

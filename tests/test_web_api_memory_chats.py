@@ -77,7 +77,7 @@ async def test_memory_lists_files_and_keeps_private_ones_in_their_own_section(ma
         assert ("private/USER.md", "USER.md") in sections["Only in your DM"]
         assert all(not path.startswith("private/") for heading, files in sections.items() if heading != "Only in your DM" for path, _ in files)
         assert "Owner only" not in json.dumps(index)
-        assert [service["id"] for service in index["services"]] == ["chatgpt", "claude", "muse"]
+        assert [service["id"] for service in index["services"]] == ["chatgpt", "claude", "muse", "other"]
 
         file = (await client.get("/api/memory/file", params={"file": "private/USER.md"})).json()
         assert file["content"] == "Owner only" and file["version"] == version("Owner only") and not file["readonly"]
@@ -175,7 +175,7 @@ async def test_import_uses_the_shared_pipeline_and_limits_then_review_decides_in
         events = await app.store.get_recent_chat_window(OWNER)
         assert any(e.role == "event" and "Imported 2 facts from claude" in e.text for e in events)
         for service, name, raw, expected in (
-            ("siri", "export.md", b"- Fact\n", "ChatGPT, Claude or Muse"),
+            ("siri", "export.md", b"- Fact\n", "ChatGPT, Claude, Muse or another assistant"),
             ("muse", "export.json", b"- Fact\n", ".txt or .md"),
             ("muse", "export.txt", b"\xff\xfe- Fact\n", "UTF-8"),
             ("muse", "export.txt", b"x" * (MAX_DOCUMENT_BYTES + 1), "1 MB"),
@@ -198,6 +198,13 @@ async def test_import_uses_the_shared_pipeline_and_limits_then_review_decides_in
         assert "Owns a kettle" in app.home.scoped(allow_private=True).read("private/USER.md")
         rest = await client.post("/api/memory/import-review", headers=JSON, json={"id": part.json()["imports"][0]["id"], "decision": "reject"})
         assert rest.json()["message"] == "Rejected 1." and rest.json()["settled"] is True and rest.json()["imports"] == []
+        # "Other" covers any assistant that ran the export prompt, which the page serves for copying.
+        other = await send("other", "notes.txt", b"- Walks on Sundays\n")
+        assert other.status_code == 200 and other.json()["message"].startswith("Imported 1 facts from another assistant.")
+        assert other.json()["imports"][0]["service"] == "Other assistant"
+        index = (await client.get("/api/memory")).json()
+        assert {"id": "other", "label": "Other assistant"} in index["services"]
+        assert index["export_prompt"].startswith("Export everything you remember about me.")
         again = await client.post("/api/memory/import-review", headers=JSON, json={"id": first["id"], "decision": "all"})
         assert again.json()["message"] == "Already handled."
         assert (await client.post("/api/memory/import-review", headers=JSON, json={"id": 1, "decision": "bogus"})).status_code == 422
@@ -220,6 +227,37 @@ async def test_chats_list_has_state_presets_and_no_message_text(make_app, browse
     assert next(s for s in chat["sliders"] if s["name"] == "humor") == {"name": "humor", "value": 0.8, "custom": False}
     assert data["presets"] == [{"name": "classic", "title": "Classic", "description": "Easy and warm."}]
     assert set(chat) == {"id", "title", "scope", "state", "until", "unread", "preset", "own_preset", "task", "sliders"}
+
+
+async def test_a_chats_recent_messages_are_full_only_in_the_owners_dm(make_app, browser):
+    from dom.models import StoredMessage
+
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    await app.store.set_chat_auth_status(FRIEND, "pending_approval", title="Stranger")
+    long = "Line one of a long story.\nLine two " + "goes on " * 40
+    at = app.dispatch.now().isoformat()
+    for chat_id, role, text, msg_id in (
+        (OWNER, "user", long, 1), (OWNER, "assistant", "Noted.", 2), (OWNER, "event", "Ran /import", None),
+        (GROUP, "user", long, 3), (GROUP, "assistant", "Sounds good.", 4), (FRIEND, "user", "Hello?", 5),
+    ):
+        await app.store.record_new_message(StoredMessage(
+            chat_id=str(chat_id), role=role, text=text, msg_id=msg_id, is_bot=role == "assistant", sender_name="River",
+            created_at=at, visibility_scope=app.store.visibility_for(chat_id),
+        ))
+    async with browser(app) as client:
+        mine = (await client.get(f"/api/chats/{OWNER}/messages")).json()
+        assert mine["full"] is True
+        assert [(m["who"], m["text"]) for m in mine["messages"]] == [("You", long), ("Dom", "Noted.")]  # no owner events
+        theirs = (await client.get(f"/api/chats/{GROUP}/messages")).json()
+        assert theirs["full"] is False
+        first, reply = theirs["messages"]
+        # Another chat: one line per message, no longer than Home's preview, and never the full text over the API.
+        assert first["who"] == "River" and "\n" not in first["text"] and len(first["text"]) <= 120 and first["text"].endswith("…")
+        assert "goes on " * 20 not in json.dumps(theirs) and reply == {"who": "Dom", "mine": True, "text": "Sounds good.", "at": reply["at"]}
+        assert (await client.get(f"/api/chats/{FRIEND}/messages")).status_code == 404  # not approved
+        assert (await client.get("/api/chats/12345/messages")).status_code == 404
+        assert (await client.get(f"/api/chats/{GROUP}/messages", headers={"Authorization": ""})).status_code == 403
 
 
 async def test_chat_actions_run_the_owner_functions(make_app, browser):

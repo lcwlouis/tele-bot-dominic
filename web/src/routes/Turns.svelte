@@ -13,11 +13,19 @@
   let { destination, tab }: { destination: Destination; tab: Tab } = $props();
 
   const page = new WorkPage<TurnsData>("/api/system/turns");
-  let chat = $state("");
+  // The chat filter rides in the address (?chat=<id>), so a chat's page can link straight to its turns.
+  let chat = $state(new URLSearchParams(location.search).get("chat") ?? "");
   let shown = $state(25); // the log keeps 200 turns; a page of them at a time keeps it light
-  onMount(() => page.load());
+  onMount(() => page.load(chat ? `?${new URLSearchParams({ chat })}` : ""));
 
-  const reload = () => ((shown = 25), page.load(`?${new URLSearchParams({ chat })}`));
+  function reload() {
+    shown = 25;
+    const url = new URL(location.href);
+    if (chat) url.searchParams.set("chat", chat);
+    else url.searchParams.delete("chat");
+    history.replaceState(history.state, "", url);
+    page.load(`?${new URLSearchParams({ chat })}`);
+  }
   const duration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
   const tokens = (value: number | null) => (value === null ? "—" : value);
   const words = (text: string) => text.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
@@ -156,14 +164,14 @@
               </span>
               {#if turn.segments.length}
                 <svg viewBox={`0 0 ${turn.bar_ms} 10`} preserveAspectRatio="none" class="h-2.5 w-full sm:col-span-3" role="img" aria-label="Stage durations">
-                  {#each turn.segments as segment (segment.stage)}
+                  {#each turn.segments as segment, segmentIndex (segmentIndex)}
                     <rect x={segment.x} width={segment.ms} height="10" class={fillOf(segment.stage)}><title>{segment.label} {duration(segment.ms)}</title></rect>
                   {/each}
                 </svg>
               {/if}
             </summary>
             <div class="mt-3 flex flex-wrap gap-1.5">
-              {#each turn.steps as step (step)}<Badge variant="outline">{step === "web_search" ? "Search" : words(step)}</Badge>{/each}
+              {#each turn.steps as step, stepIndex (stepIndex)}<Badge variant="outline">{step === "web_search" ? "Search" : words(step)}</Badge>{/each}
               {#each turn.visits as visit, visitIndex (visitIndex)}
                 <Badge variant="outline">Picked: {visit.reason}{visit.behind ? ` · Waited behind ${visit.behind}` : ""}{visit.capped ? ` · Skipped ${visit.capped} after two visits` : ""}</Badge>
               {/each}

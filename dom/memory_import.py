@@ -20,7 +20,7 @@ from dom.proposals import MEMORY_FILES
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
-SERVICES = ("chatgpt", "claude", "muse")
+SERVICES = ("chatgpt", "claude", "muse", "other")  # "other": any assistant that can run the export prompt
 MAX_FACTS = 300
 MAX_FACT_LENGTH = 300
 MAX_DOCUMENT_BYTES = 1024 * 1024
@@ -67,7 +67,7 @@ def parse_facts(text: str, *, existing: Iterable[str] = ()) -> ParsedFacts:
 
 def summary(service: str, parsed: ParsedFacts) -> str:
     """The owner's DM after an import: what was imported, what was skipped and why only some facts will fit."""
-    text = f"Imported {len(parsed.facts)} facts from {service}."
+    text = f"Imported {len(parsed.facts)} facts from {'another assistant' if service == 'other' else service}."
     skipped = []
     if parsed.duplicates:
         skipped.append(f"{parsed.duplicates} duplicate{'s' if parsed.duplicates != 1 else ''}")

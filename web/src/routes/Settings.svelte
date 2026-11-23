@@ -1,6 +1,7 @@
 <script lang="ts">
   import Activity from "@lucide/svelte/icons/activity";
   import Cloud from "@lucide/svelte/icons/cloud";
+  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Lock from "@lucide/svelte/icons/lock";
   import Pencil from "@lucide/svelte/icons/pencil";
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
@@ -43,6 +44,7 @@
   let pending = $state<Permission | null>(null); // a switch waiting on its confirm dialog
   // One permission save at a time: each takes the revision the last one returned.
   let savingPermission = $state(false);
+  let savingId = $state(""); // the switch being saved, which shows its progress
 
   async function load() {
     try {
@@ -85,6 +87,7 @@
     pending = null;
     item.enabled = enabled;
     savingPermission = true;
+    savingId = item.id;
     try {
       const result = await send<Permissions>("/api/permissions", { revision, id: item.id, enabled });
       permissions = result.items;
@@ -94,6 +97,7 @@
       item.enabled = !enabled;
     } finally {
       savingPermission = false;
+      savingId = "";
     }
   }
 
@@ -285,8 +289,8 @@
                 {#if info.note}<p class="text-xs text-muted-foreground">{info.note}</p>{/if}
                 {@render result(testKey)}
               </Card.Content>
-              <Card.Footer class="gap-2">
-                <Button variant="secondary" onclick={() => (editing = role)} disabled={editing !== null}>
+              <Card.Footer class="flex-wrap gap-2">
+                <Button variant="secondary" onclick={() => (editing = role)} disabled={editing !== null} aria-describedby={editing !== null ? `${role}-wait` : undefined}>
                   <Pencil data-icon="inline-start" aria-hidden="true" /> {route.primary ? "Edit" : "Set up"}
                   <span class="sr-only">{info.label}</span>
                 </Button>
@@ -295,6 +299,10 @@
                     <Activity data-icon="inline-start" aria-hidden="true" /> {role === "search" ? "Test chain" : "Test"}
                     <span class="sr-only">{info.label}</span>
                   </Button>
+                {/if}
+                {#if editing !== null}
+                  <!-- One slot is edited at a time: each save takes the revision the last one returned. -->
+                  <p id={`${role}-wait`} class="text-xs text-muted-foreground">Finish editing {ROLE_INFO[editing].label} first.</p>
                 {/if}
               </Card.Footer>
             </Card.Root>
@@ -403,12 +411,20 @@
                 <label for={`perm-${item.id}`} class="font-medium">{item.label}</label>
                 <p id={`perm-${item.id}-hint`} class="mt-0.5 text-sm text-muted-foreground">{item.description}</p>
               </div>
-              <Switch
-                id={`perm-${item.id}`}
-                aria-describedby={`perm-${item.id}-hint`}
-                bind:checked={() => item.enabled, (value) => flip(item, value)}
-                disabled={savingPermission}
-              />
+              <div class="flex shrink-0 items-center gap-2">
+                {#if savingId === item.id}
+                  <span role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
+                  </span>
+                {/if}
+                <Switch
+                  id={`perm-${item.id}`}
+                  aria-describedby={`perm-${item.id}-hint`}
+                  aria-busy={savingId === item.id}
+                  bind:checked={() => item.enabled, (value) => flip(item, value)}
+                  disabled={savingPermission}
+                />
+              </div>
             </li>
           {/each}
         </ul>

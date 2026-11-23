@@ -23,7 +23,10 @@ from dom.web.shared import _plugin_panels, _turns, _usage, owner_app
 
 router = APIRouter()
 PREFIX = "/api/system"
-JSON_POSTS = {f"{PREFIX}/plugins/reviewed", f"{PREFIX}/plugins/decide", f"{PREFIX}/plugins/delete", f"{PREFIX}/plugins/panel"}
+JSON_POSTS = {
+    f"{PREFIX}/plugins/reviewed", f"{PREFIX}/plugins/decide", f"{PREFIX}/plugins/review-again", f"{PREFIX}/plugins/delete",
+    f"{PREFIX}/plugins/panel",
+}
 MODEL_CALL_KEYS = (
     "kind", "model", "host", "fallback", "duration_ms", "status", "input_tokens", "output_tokens", "cached_tokens",
     "gap_ms", "between_tokens", "system_hash", "tools_hash", "user_hash", "user_prefix_hash",
@@ -76,7 +79,7 @@ def _trial(result: dict | None) -> dict | None:
 async def _plugins(app) -> dict:
     return {
         "plugins": [{
-            "name": row["name"], "status": row["status"], "hash": row["hash"], "available": row["available"],
+            "name": row["name"], "status": row["status"], "ended": row["ended"], "hash": row["hash"], "available": row["available"],
             "network": row["network"], "storage": row["storage"], "test_run": _trial(row["test_run"]),
         } for row in await app.plugins.listing()],
         "panels": [{"plugin": name, "id": panel.id, "title": panel.title} for name, panel in await _plugin_panels(app)],
@@ -140,6 +143,20 @@ async def plugin_decide(request: Request) -> dict:
     return {"ok": message != "already handled", "message": message, **await _plugins(app)}
 
 
+@router.post(PREFIX + "/plugins/review-again")
+async def plugin_review_again(request: Request) -> dict:
+    """Send a rejected or retired version back to Waiting for you. It stays off until the owner reads the code again
+    and approves this exact hash."""
+    app = owner_app(request)
+    update = await _input(request, Review)
+    _name(update.name)
+    try:
+        await app.proposals.review_plugin_again(update.name, update.digest)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    return {"ok": True, "message": f"{update.name} is waiting for your review again.", **await _plugins(app)}
+
+
 @router.post(PREFIX + "/plugins/delete")
 async def plugin_delete(request: Request) -> dict:
     app = owner_app(request)
@@ -188,7 +205,7 @@ async def read_usage(request: Request) -> dict:
         "month_kinds": _breakdown(data["month_kinds"]), "month_models": _breakdown(data["month_models"]),
         "bars": [{
             "date": bar["date"], "spent": bar["spent"], "fallbacks": bar["fallbacks"],
-            "parts": [{"kind": kind, "y": y, "height": height} for kind, y, height in bar["parts"]],
+            "parts": bar["parts"],
         } for bar in data["bars"]],
     }
 

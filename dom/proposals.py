@@ -248,15 +248,17 @@ class Proposals:
         if self.app.draft_client is not None and not authored:
             seed = {key: body[key] for key in ("name", "description", "manifest_toml", "files")}
             plugin = self._plugin_from_draft(await self._write_draft("plugin", seed))
-        result = await self.app.plugins.draft(plugin)
-        return {
-            "name": plugin.manifest.name, "description": plugin.manifest.description, "hash": plugin.hash,
-            "network": plugin.manifest.network, "storage": plugin.manifest.storage, "test_run": result,
-            "tools": [{"name": tool.name, "scopes": tool.scopes} for tool in plugin.manifest.tools],
-            "commands": [{"name": c.name, "scopes": c.scopes} for c in plugin.manifest.commands],
-            "panels": [{"id": panel.id, "title": panel.title} for panel in plugin.manifest.panels],
-            "files": {path: len(data) for path, data in sorted(plugin.files.items())},
-        }
+        return _plugin_body(plugin, await self.app.plugins.draft(plugin))
+
+    async def review_plugin_again(self, name: str, digest: str) -> int:
+        """File a rejected or retired plugin version back in Waiting for you. The registry makes it pending and
+        unreviewed, so it is approved only through the usual review of this exact hash. Raises ValueError."""
+        plugin, result = await self.app.plugins.review_again(name, digest)
+        body = _plugin_body(plugin, result)
+        at = self.app.dispatch.now().astimezone(timezone.utc).isoformat()
+        proposal_id = await self.app.store.create_proposal("plugin", f"Plugin: {name}", body, "review_again", at)
+        assert proposal_id is not None
+        return proposal_id
 
     async def _notify(self, proposal_id: int, kind: str, title: str, body: dict, event: str | None = None) -> None:
         app = self.app
@@ -509,3 +511,15 @@ class Proposals:
         now = self.app.dispatch.now().astimezone(timezone.utc)
         await self.app.store.expire_proposals((now - timedelta(days=14)).isoformat(), now.isoformat())
         await self.settle_cards()
+
+
+def _plugin_body(plugin, result: dict | None) -> dict:
+    """A plugin proposal's body: what its review card and Waiting for you show."""
+    return {
+        "name": plugin.manifest.name, "description": plugin.manifest.description, "hash": plugin.hash,
+        "network": plugin.manifest.network, "storage": plugin.manifest.storage, "test_run": result,
+        "tools": [{"name": tool.name, "scopes": tool.scopes} for tool in plugin.manifest.tools],
+        "commands": [{"name": c.name, "scopes": c.scopes} for c in plugin.manifest.commands],
+        "panels": [{"id": panel.id, "title": panel.title} for panel in plugin.manifest.panels],
+        "files": {path: len(data) for path, data in sorted(plugin.files.items())},
+    }

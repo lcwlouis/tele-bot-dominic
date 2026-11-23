@@ -100,6 +100,7 @@ async def read_memory(request: Request) -> dict:
             for heading, files in await _memory_sections(app) if files
         ],
         "services": [{"id": key, "label": label} for key, label in IMPORT_SERVICES.items()],
+        "export_prompt": memory_import.export_prompt().strip(),  # what the owner pastes into the other assistant
         "max_soul_request": MAX_SOUL_EDIT,
         **await _waiting(app),
     }

@@ -34,7 +34,7 @@ KINDS = {
     "search": "Web search", "reflection": "Reflection", "guard": "Leak check", "desktop": "Desktop",
     "escalation": "Escalation",
 }
-IMPORT_SERVICES = {"chatgpt": "ChatGPT", "claude": "Claude", "muse": "Muse"}
+IMPORT_SERVICES = {"chatgpt": "ChatGPT", "claude": "Claude", "muse": "Muse", "other": "Other assistant"}
 SOUL_INSTRUCTIONS = (
     "Suggest one small change to Dom's SOUL.md in response to the owner's request. "
     "Return only a JSON object with old and new string fields. The old text must occur "
@@ -236,10 +236,20 @@ async def _usage(app: App) -> dict:
     for day, spent in zip(days, sums):
         height = 68
         parts = []
-        for kind, _, cost in _usage_rows(by_day[day], "kind"):
+        for kind, calls, cost in _usage_rows(by_day[day], "kind"):
             size = round(62 * (cost / peak), 3)
             height -= size
-            parts.append((kind, round(height, 3), size))
+            # What a tap on the segment shows: the kind's calls, spend and tokens that day, by model.
+            models = [row for row in by_day[day] if row["kind"] == kind]
+            parts.append({
+                "kind": kind, "y": round(height, 3), "height": size, "calls": calls, "spend": cost,
+                "input_tokens": sum(row["input_tokens"] or 0 for row in models),
+                "output_tokens": sum(row["output_tokens"] or 0 for row in models),
+                "models": [{
+                    "model": row["model"], "calls": row["calls"], "spend": row["cost"],
+                    "input_tokens": row["input_tokens"] or 0, "output_tokens": row["output_tokens"] or 0,
+                } for row in sorted(models, key=lambda row: (-row["cost"], row["model"]))],
+            })
         bars.append({
             "date": day, "parts": parts, "fallbacks": sum(row["fallbacks"] for row in by_day[day]),
             "spent": spent,
@@ -602,7 +612,7 @@ async def run_memory_import(app: App, service: str, filename: str | None, raw: b
     """The dashboard's /import: the same MemoryImport.run and the same document limits as Telegram.
     Returns the summary line and the number of facts filed. Raises ValueError with a sentence for the owner."""
     if service not in memory_import.SERVICES:
-        raise ValueError("Choose ChatGPT, Claude or Muse.")
+        raise ValueError("Choose ChatGPT, Claude, Muse or another assistant.")
     memory_import.validate_document_meta(filename, len(raw))
     parsed = await app.memory_import.run(service, memory_import.decode_document(raw))
     message = memory_import.summary(service, parsed)

@@ -147,18 +147,39 @@ class PluginRegistry:
             rows = await self.store.list_plugins()
             if any(row["name"] == name and row["status"] == "approved" and row["hash"] == plugin.hash for row in rows):
                 raise ValueError("This plugin version is already approved.")
-            # A disabled plugin keeps its files but gives up its command names.
-            live = {row["name"] for row in rows if row["status"] in ("approved", "pending") and row["name"] != name}
-            mine = {command.name for command in plugin.manifest.commands}
-            for other in (await asyncio.to_thread(self._read_all)).values():
-                taken = mine & {command.name for command in other.manifest.commands}
-                if other.manifest.name in live and taken:
-                    raise ValueError(f"/{min(taken)} is already a command of plugin {other.manifest.name}.")
+            await self._check_commands(plugin, rows)
             await asyncio.to_thread(self._write, plugin)
             await self.store.stage_plugins([(name, plugin.hash, json.dumps(asdict(plugin.manifest)))])
             await self.store.set_plugin_status(name, plugin.hash, "pending")
             trial = self._queue_trial(plugin)
         return await asyncio.shield(trial)
+
+    async def _check_commands(self, plugin: Plugin, rows: list[dict]) -> None:
+        # A disabled plugin keeps its files but gives up its command names.
+        name = plugin.manifest.name
+        live = {row["name"] for row in rows if row["status"] in ("approved", "pending") and row["name"] != name}
+        mine = {command.name for command in plugin.manifest.commands}
+        for other in (await asyncio.to_thread(self._read_all)).values():
+            taken = mine & {command.name for command in other.manifest.commands}
+            if other.manifest.name in live and taken:
+                raise ValueError(f"/{min(taken)} is already a command of plugin {other.manifest.name}.")
+
+    async def review_again(self, name: str, digest: str) -> tuple[Plugin, dict | None]:
+        """Send a rejected or retired version back to the owner's review. Nothing runs again until the owner reads
+        the code and approves this hash; the caller files the review card. Raises ValueError with the reason."""
+        async with self.lock:
+            found = await self._scan()
+            if name not in found or found[name].hash != digest:
+                raise ValueError("This version of the plugin is no longer on disk.")
+            rows = await self.store.list_plugins()
+            row = next((row for row in rows if row["name"] == name and row["hash"] == digest), None)
+            if row is None or row["status"] != "disabled":
+                raise ValueError("Only a rejected or retired plugin can be reviewed again.")
+            await self._check_commands(found[name], rows)
+            if not await self.store.reopen_plugin(name, digest):
+                raise ValueError("Only a rejected or retired plugin can be reviewed again.")
+            await self.store.record_owner_event(f"Sent plugin {name} ({digest[:12]}) back to review")
+            return found[name], json.loads(row["test_run_json"] or "null")
 
     async def _scan(self) -> dict[str, Plugin]:
         found = await asyncio.to_thread(self._read_all)
@@ -189,8 +210,14 @@ class PluginRegistry:
         listing = []
         for row in rows:
             manifest = json.loads(row["manifest_json"])
+            ended = None
+            if row["status"] == "disabled":
+                # Decisions since v0.8.2 record how a plugin ended; before that, an approved snapshot means it was retired.
+                ended = await self.store.kv_get(f"plugin-ended:{row['name']}:{row['hash']}") or (
+                    "retired" if row["approved_hash"] == row["hash"] else "rejected"
+                )
             listing.append({
-                **row, "available": row["name"] in found and found[row["name"]].hash == row["hash"],
+                **row, "ended": ended, "available": row["name"] in found and found[row["name"]].hash == row["hash"],
                 "network": manifest["network"], "storage": manifest.get("storage", False),
                 "test_run": json.loads(row["test_run_json"] or "null"),
             })
