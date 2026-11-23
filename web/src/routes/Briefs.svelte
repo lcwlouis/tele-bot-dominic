@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Code from "$lib/components/code/Code.svelte";
   import Copy from "@lucide/svelte/icons/copy";
   import { onMount } from "svelte";
   import type { BriefsData } from "$lib/api";
@@ -55,7 +56,7 @@
               {#if block.kind === "heading"}
                 <h2 class="mt-2 text-base font-semibold">{block.lines[0]}</h2>
               {:else if block.kind === "code"}
-                <pre class="overflow-x-auto rounded-lg border bg-canvas/50 p-3 font-mono text-sm">{block.lines.join("\n")}</pre>
+                <Code text={block.lines.join("\n")} language={block.language} focusable class="overflow-x-auto rounded-lg border bg-canvas/50 p-3 text-sm" />
               {:else if block.kind === "ul"}
                 <ul class="list-disc space-y-1 pl-5">{#each block.lines as line}<li>{line}</li>{/each}</ul>
               {:else if block.kind === "ol"}

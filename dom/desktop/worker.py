@@ -146,6 +146,7 @@ class DesktopWorker:
         self.handoff_reason: str | None = None
         self.handoff_deadline: float | None = None
         self.screen_resolution: str = DEFAULT_RESOLUTION
+        self._stops = 0  # counts container stops, so a resize that a stop overtook does not write its size back
         # A remote sandbox survives Dom crashes; restore 1280x1024 on first task if needed.
         self._needs_screen_restore: bool = getattr(sandbox, "stop", None) is None
         if hasattr(sandbox, "alert"):
@@ -192,6 +193,7 @@ class DesktopWorker:
 
     def screen_reset(self) -> None:
         """Reset tracked screen state after a local container stops or restarts."""
+        self._stops += 1
         self.screen_resolution = DEFAULT_RESOLUTION
         self._needs_screen_restore = getattr(self.sandbox, "stop", None) is None
 
@@ -207,10 +209,15 @@ class DesktopWorker:
             if setter is None:
                 raise SandboxError("desktop is not ready")
             target = PHONE_RESOLUTION if phone else DEFAULT_RESOLUTION
+            stops = self._stops
             if target != DEFAULT_RESOLUTION:
                 self._needs_screen_restore = True
             async with asyncio.timeout(10):
                 await setter(target, timeout=10)
+            if self._stops != stops:
+                # The container stopped meanwhile and its next start is 1280x1024: keep the reset state, so the viewer
+                # does not show phone mode on a desktop that no longer has it.
+                raise ScreenBusy("the desktop stopped while the screen was being resized")
             self.screen_resolution = target
             self._needs_screen_restore = target != DEFAULT_RESOLUTION
             self.sandbox.touch()

@@ -1004,3 +1004,35 @@ async def test_local_sandbox_idle_stop_resets_worker_screen_state(make_app):
 
 
 
+
+
+async def test_a_stop_during_a_phone_resize_leaves_the_viewer_on_the_desktop_size(make_app, monkeypatch):
+    """E60: the container stops (idle timer or Stop) while a phone-mode resize is in flight. The resize must not write
+    800x600 back over the reset, or the viewer keeps showing phone mode for a desktop that restarts at 1280x1024."""
+    from dom.desktop.client import SandboxError
+    from dom.desktop.worker import DesktopWorker, ScreenBusy
+
+    app = make_app()
+    mock_client = MockSandboxClient()
+    in_resize, release = asyncio.Event(), asyncio.Event()
+
+    async def gated_resize(resolution, *, timeout=10):
+        if sandbox.status() == "stopped":
+            raise SandboxError("desktop is not running")  # a stopped container cannot be resized back either
+        mock_client.resolutions.append((resolution, timeout))
+        in_resize.set()
+        await release.wait()
+        return {"resolution": resolution}
+
+    mock_client.set_browser_resolution = gated_resize
+    sandbox = ViewerSandbox(mock_client)
+    worker = DesktopWorker(app, sandbox)
+    worker._needs_screen_restore = False
+    resize = asyncio.create_task(worker.set_screen_mode(True))
+    await asyncio.wait_for(in_resize.wait(), 2)
+    sandbox._state = "stopped"
+    worker.screen_reset()  # what the sandbox's on_stop calls
+    release.set()
+    with pytest.raises(ScreenBusy):
+        await resize
+    assert worker.screen_resolution == "1280x1024"

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CodeEditor from "$lib/components/code/CodeEditor.svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Copy from "@lucide/svelte/icons/copy";
   import Download from "@lucide/svelte/icons/download";
@@ -368,15 +369,16 @@
           </Card.Header>
           <Card.Content class="grid gap-3">
             <Label for="memory-text" class="sr-only">{file.label}</Label>
-            <textarea
+            <CodeEditor
               id="memory-text"
-              class={cn(field, "min-h-[22rem] resize-y font-mono leading-relaxed lg:min-h-[28rem]")}
+              class={cn(field, "min-h-[22rem] resize-y leading-relaxed lg:min-h-[28rem]")}
+              language={file.file}
               spellcheck="false"
               readonly={file.readonly}
               aria-describedby="memory-count"
               aria-invalid={over || undefined}
               bind:value={draft}
-            ></textarea>
+            />
             <p id="memory-count" class={cn("text-sm text-muted-foreground", over && "text-coral")}>
               {count(used)}
               {#if file.limit != null}of {count(file.limit)} characters{:else}characters · No character limit{/if}{over ? ". Over the limit: shorten it to save." : ""}

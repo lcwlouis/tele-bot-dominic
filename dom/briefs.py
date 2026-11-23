@@ -82,16 +82,18 @@ def list_briefs(home: Home) -> list[Brief]:
     return listed
 
 
-def markdown_blocks(markdown: str) -> list[tuple[str, list[str]]]:
-    """Render brief Markdown as headings, paragraphs, lists and fenced code, with escaped text."""
-    blocks: list[tuple[str, list[str]]] = []
+def markdown_blocks(markdown: str) -> list[tuple[str, list[str], str]]:
+    """Render brief Markdown as headings, paragraphs, lists and fenced code, with escaped text. Each block is
+    (kind, lines, language); language is a code fence's info word, for the dashboard's highlighting, else ""."""
+    blocks: list[tuple[str, list[str], str]] = []
     kind = ""
     lines: list[str] = []
     fence = ""
+    language = ""
 
     def flush() -> None:
         if lines:
-            blocks.append((kind, lines.copy()))
+            blocks.append((kind, lines.copy(), language if kind == "code" else ""))
             lines.clear()
 
     for line in markdown.splitlines()[1:]:  # the card already displays the title
@@ -106,10 +108,11 @@ def markdown_blocks(markdown: str) -> list[tuple[str, list[str]]]:
             flush()
             fence = match[1]
             kind = "code"
+            language = (line[len(fence):].split() or [""])[0][:20].lower()
             continue
         if line.startswith("## "):
             flush()
-            blocks.append(("heading", [line[3:]]))
+            blocks.append(("heading", [line[3:]], ""))
             kind = ""
             continue
         if not line.strip():

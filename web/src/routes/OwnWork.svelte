@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Code from "$lib/components/code/Code.svelte";
   import ShieldAlert from "@lucide/svelte/icons/shield-alert";
   import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import { onMount } from "svelte";
@@ -138,7 +139,7 @@
               <Card.Content>
                 <details class="group text-sm">
                   <summary class="cursor-pointer rounded-md text-signal-strong outline-none focus-visible:ring-3 focus-visible:ring-ring/50">View procedure<span class="sr-only"> for {skill.name}</span></summary>
-                  <pre class="mt-2 overflow-x-auto rounded-lg border bg-canvas/50 p-3 font-sans whitespace-pre-wrap">{skill.body}</pre>
+                  <Code text={skill.body} language="markdown" class="mt-2 overflow-x-auto rounded-lg border bg-canvas/50 p-3 text-[0.8rem] break-words whitespace-pre-wrap" />
                 </details>
               </Card.Content>
               <Card.Footer class="flex flex-wrap gap-2">

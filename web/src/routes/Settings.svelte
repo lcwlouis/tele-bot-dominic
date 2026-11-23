@@ -19,6 +19,7 @@
   } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
+  import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
   import RoleEditor from "$lib/components/settings/RoleEditor.svelte";
   import { ROLE_INFO, ROLES, host, seconds, slotLabel } from "$lib/components/settings/roles";
   import StatusNote from "$lib/components/StatusNote.svelte";
@@ -35,6 +36,7 @@
 
   let models = $state<ModelSettings | null>(null);
   let permissions = $state<Permission[]>([]);
+  let desktopSteps = $state<Permissions["desktop_steps"] | null>(null);
   // One revision for the whole page: both GETs hash the same config.toml, and every save moves it.
   let revision = $state("");
   let failed = $state("");
@@ -54,6 +56,7 @@
       ]);
       models = loadedModels;
       permissions = loadedPermissions.items;
+      desktopSteps = loadedPermissions.desktop_steps;
       revision = loadedModels.revision;
       failed = "";
     } catch (error) {
@@ -432,6 +435,9 @@
       <p class="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
         <RotateCw class="size-3.5" aria-hidden="true" /> Each switch applies at once and is saved to config.toml.
       </p>
+      {#if desktopSteps}
+        <DesktopSteps bind:revision budget={desktopSteps} onsaved={(result) => (desktopSteps = result.desktop_steps)} />
+      {/if}
     </Tabs.Content>
   </Tabs.Root>
 {/if}

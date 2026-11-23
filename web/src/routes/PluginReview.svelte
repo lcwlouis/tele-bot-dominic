@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Code from "$lib/components/code/Code.svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import { onMount } from "svelte";
@@ -109,13 +110,11 @@
         <section aria-label={`File ${file.path}`} class="grid gap-2">
           <h2 class="font-mono text-sm font-semibold">{file.path}{file.removed ? " · Removed" : ""}</h2>
           {#if !file.removed}
-            <!-- Focusable so a keyboard can scroll the code. -->
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <pre tabindex="0" class="max-h-96 overflow-auto rounded-lg border bg-raised/50 p-3 font-mono text-[0.8rem] break-words whitespace-pre-wrap">{file.text}</pre>
+            <Code text={file.text} path={file.path} focusable class="max-h-96 overflow-auto rounded-lg border bg-raised/50 p-3 text-[0.8rem] break-words whitespace-pre-wrap" />
           {/if}
           {#if file.changes.length}
             <p class="text-sm text-muted-foreground">Changes since approval</p>
-            <DiffLines lines={file.changes} all />
+            <DiffLines lines={file.changes} path={file.path} all />
           {/if}
         </section>
       {/each}

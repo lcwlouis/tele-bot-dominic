@@ -158,3 +158,54 @@
     @apply font-mono text-[0.7rem] tracking-[0.16em] uppercase text-muted-foreground;
   }
 }
+
+/* Syntax highlighting: highlight.js classes in Quiet Orbit colours. Each pairing is AA (4.5:1 or more) on every
+   surface code sits on (raised, canvas, a diff's tint and coral tint) in both themes. Colour is never the only cue:
+   the code reads the same without it. */
+@layer components {
+  .code .hljs-comment,
+  .code .hljs-quote,
+  .code .hljs-meta {
+    color: var(--text-muted);
+    font-style: italic;
+  }
+  .code .hljs-keyword,
+  .code .hljs-built_in,
+  .code .hljs-literal,
+  .code .hljs-type,
+  .code .hljs-selector-tag,
+  .code .hljs-name,
+  .code .hljs-section,
+  .code .hljs-bullet {
+    color: var(--signal);
+  }
+  .code .hljs-title,
+  .code .hljs-title.function_,
+  .code .hljs-title.class_,
+  .code .hljs-addition {
+    color: var(--signal-strong);
+  }
+  .code .hljs-string,
+  .code .hljs-regexp,
+  .code .hljs-symbol,
+  .code .hljs-link,
+  .code .hljs-code {
+    color: var(--amber);
+  }
+  .code .hljs-number,
+  .code .hljs-attr,
+  .code .hljs-attribute,
+  .code .hljs-variable,
+  .code .hljs-template-variable,
+  .code .hljs-selector-id,
+  .code .hljs-selector-class,
+  .code .hljs-deletion {
+    color: var(--coral);
+  }
+  .code .hljs-emphasis {
+    font-style: italic;
+  }
+  .code .hljs-strong {
+    font-weight: 600;
+  }
+}

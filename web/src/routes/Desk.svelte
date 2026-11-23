@@ -1,9 +1,10 @@
 <script lang="ts">
+  import ResultText from "$lib/components/code/ResultText.svelte";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import Info from "@lucide/svelte/icons/info";
   import Monitor from "@lucide/svelte/icons/monitor";
   import { onMount } from "svelte";
-  import type { DeskData, DeskHistory } from "$lib/api";
+  import type { DeskData, DeskHistory, StepBudget } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
@@ -42,6 +43,11 @@
   }
 
   const computer = (action: "start" | "stop") => page.write("/api/work/desk/computer", { action, container: page.data?.container ?? "" });
+  // "12 of 30 steps", and how many steps the owner added with Keep going. Tasks from before v0.8.3 show only the count.
+  const stepsLabel = (task: StepBudget & { steps: number }) =>
+    task.steps_budget == null
+      ? `${task.steps} steps`
+      : `${task.steps} of ${task.steps_budget + task.extra_steps} steps` + (task.extra_steps ? ` · ${task.extra_steps} added by you` : "");
   const resume = (task: { id: number; steps: number }) => page.write("/api/work/desk/done", { task_id: task.id, steps: task.steps });
 
   const words = (text: string) => text.replaceAll("_", " ");
@@ -114,7 +120,7 @@
 
         {#if data.task}
           <div class="grid gap-1">
-            <p class="font-mono text-sm text-muted-foreground">Task #{data.task.id} · {words(data.task.status)} · {data.task.steps} steps</p>
+            <p class="font-mono text-sm text-muted-foreground">Task #{data.task.id} · {words(data.task.status)} · {stepsLabel(data.task)}</p>
             <p class="text-lg font-medium wrap-anywhere">{data.task.brief}</p>
           </div>
           {#if data.task.status === "waiting_owner"}
@@ -163,11 +169,11 @@
                 <p class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                   <span class="font-mono">#{row.id}</span>
                   <Badge variant={row.status === "done" ? "secondary" : row.status === "failed" ? "destructive" : "outline"}>{words(row.status)}</Badge>
-                  <span>{row.container && row.container !== "default" ? `${row.container} · ` : ""}{row.steps} steps{row.finished ? ` · ${row.finished}` : ""}</span>
+                  <span>{row.container && row.container !== "default" ? `${row.container} · ` : ""}{stepsLabel(row)}{row.finished ? ` · ${row.finished}` : ""}</span>
                 </p>
                 <p class="font-medium wrap-anywhere">{row.brief}</p>
                 <!-- A result keeps its line breaks and spacing, wraps long words and links, and scrolls inside its own box. -->
-                {#if row.result}<p class="max-h-72 overflow-auto rounded-lg border bg-canvas/50 p-3 text-sm wrap-anywhere whitespace-pre-wrap">{row.result}</p>{/if}
+                {#if row.result}<ResultText text={row.result} class="max-h-72 overflow-auto rounded-lg border bg-canvas/50 p-3 text-sm" />{/if}
                 {#if row.error}<p class="max-h-72 overflow-auto rounded-lg border border-coral/45 bg-coral-tint p-3 text-sm wrap-anywhere whitespace-pre-wrap text-coral">{row.error}</p>{/if}
               </Card.Content>
               <Card.Footer>
