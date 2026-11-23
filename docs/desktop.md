@@ -190,9 +190,9 @@ firewall rules above cover all of them, and Dom runs the LAN probe before **ever
 container start, not once. Containers on that bridge can reach each other (not your
 LAN); each has its own random API key.
 
-**Dashboard.** The Desktop page lists every container with its host, state and task.
-`/desktop?container=<name>` shows one; the live viewer and the Open Desktop button in a
-handoff message carry the name. Handoff and report messages, `/tasks` and `/status` name
+**Dashboard.** The Desk page (Work, then Desk) lists every container with its host, state and
+task, and each host's container limit. `/app/work?container=<name>` shows one; the live viewer
+and the Open Desktop button in a handoff message carry the name. Handoff and report messages, `/tasks` and `/status` name
 a non-default container, and screenshot files are prefixed with it.
 
 ## Documents
@@ -231,8 +231,8 @@ model is bounded by its step budget (`max_steps`), not by the dollar ceiling.
 Set `[web].public_url` in `config.toml` to the HTTPS base URL of the
 authenticated dashboard. Dom uses it for the Open Desktop button in the owner's
 handoff message (it adds `?container=<name>` for a container other than `default`).
-Opening that link during an active handoff launches the full-page live viewer
-(`/desktop/vnc/index.html`), which shows the live browser host, handoff countdown,
+That link opens the Desk page; its Open live viewer button launches the full-page live
+viewer (`/desktop/vnc/index.html`), whose back link returns to the Desk. The viewer shows the live browser host, handoff countdown,
 Done button, local zoom and pan, one-finger scroll mode, a remote key bar,
 explicit Copy/Paste buttons, fullscreen, and Phone mode (`800x600` via the
 sandbox API, automatically restored to `1280x1024` server-side at Done, cancel,

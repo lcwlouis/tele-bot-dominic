@@ -57,8 +57,8 @@ def dashboard(make_app, tmp_path, monkeypatch):
 async def test_settings_owner_auth_and_post_csrf(dashboard):
     app, path, browser = dashboard
     async with browser(authorized=False) as client:
-        for route in ("/settings", API):
-            assert (await client.get(route)).status_code == 403
+        assert (await client.get(API)).status_code == 403
+        assert (await client.get("/settings")).status_code == 403  # the old page is only a redirect, and not for strangers
         for route in (API, API + "/test"):
             assert (await client.post(route, json={}, headers=ORIGIN_HEADER)).status_code == 403
 
@@ -68,10 +68,10 @@ async def test_settings_owner_auth_and_post_csrf(dashboard):
                 assert (await client.post(route, headers=headers, json={})).status_code == 403
             assert (await client.post(route, headers=POST_HEADERS, json={})).status_code == 422
             assert (await client.post(route, headers=ORIGIN_HEADER, json={})).status_code == 422
-            assert (await client.post(route, headers=POST_HEADERS, data={})).status_code == 415
-        page = await client.get("/settings")
-        assert page.status_code == 200 and "Key set" in page.text and 'data-role="drafting"' in page.text
-        assert SECRET not in page.text
+            assert (await client.post(route, headers=ORIGIN_HEADER, data={})).status_code == 403  # a form is not a JSON write
+        settings = (await client.get(API)).json()
+        assert settings["roles"]["fallback"]["primary"]["key_set"] is True and "drafting" in settings["roles"]
+        assert SECRET not in json.dumps(settings)
         app.store.owner_id = None
         assert (await client.get(API)).status_code == 409
     assert path.read_text() == START
@@ -212,8 +212,6 @@ async def test_escalation_settings_test_explicit_and_inherited_models(dashboard,
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
         app.client = ChatClient(app.config.models["chat"], None, http)
-        page = (await client.get("/settings")).text
-        assert 'data-role="escalation"' in page and "Uses drafting providers when unset." in page
         settings = (await client.get(API)).json()
         assert settings["roles"]["escalation"]["primary"] is None
         test = {"revision": settings["revision"], "role": "escalation", "index": 0}
@@ -671,10 +669,9 @@ async def test_search_settings_round_trip_test_and_data_retention_display(dashbo
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
         app.client = ChatClient(app.config.models["chat"], None, http)
-        page = (await client.get("/settings")).text
-        assert 'data-role="search"' in page
-        assert "https://www.tavily.com/privacy" in page and "Tavily data policy" in page
-        assert "Zero data retention" in page and "Self-hosted" in page
+        providers = {item["id"]: item for item in (await client.get(API)).json()["search_providers"]}
+        assert providers["tavily"]["policy_url"] == "https://www.tavily.com/privacy" and providers["tavily"]["policy_label"] == "Tavily data policy"
+        assert providers["openrouter"]["data_retention"].startswith("Zero data retention") and providers["searxng"]["data_retention"].startswith("Self-hosted")
 
         # Save full chain: SearXNG + OpenRouter web (probed) + DeepSeek + Tavily (unset keys save untested).
         saved = await _save(client, "search", searx, [openrouter, deepseek, tavily])
@@ -780,7 +777,7 @@ async def test_permissions_need_owner_auth_same_origin_and_json(dashboard):
         body = {"revision": revision, "id": "leak_check", "enabled": False}
         for headers in ({}, {"Origin": "https://other.example.test"}, {"Referer": ORIGIN}, {"HX-Request": "true"}):
             assert (await client.post(PERMISSIONS, headers=headers, json=body)).status_code == 403
-        assert (await client.post(PERMISSIONS, headers=POST_HEADERS, data={})).status_code == 415
+        assert (await client.post(PERMISSIONS, headers=ORIGIN_HEADER, data={})).status_code == 403
         for bad in (
             {**body, "id": "web"},  # only the listed switches, never an arbitrary config key
             {**body, "enabled": "false"},  # strict booleans

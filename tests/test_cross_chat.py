@@ -13,7 +13,6 @@ from dom.telegram.handlers import handle_callback, handle_message
 from dom.tools import TurnCtx, enabled_tools
 from test_owner_controls import callback
 from test_web_auth import POST_HEADERS
-from test_web_pages import browser  # shared authenticated dashboard client
 from tghelpers import FRIEND, GROUP, OWNER, drain_dispatch, tg
 
 
@@ -173,7 +172,7 @@ async def test_owner_note_is_an_ordinary_silent_bubble_with_no_card_and_shared_l
     assert not any(reply[3].get("reply_parameters") for reply in replies)
 
 
-async def test_card_has_exact_text_telegram_approval_sends_once_and_dashboard_rejects(make_app, browser):
+async def test_card_has_exact_text_telegram_approval_sends_once_and_the_api_rejects(make_app, browser):
     app = make_app()
     await approve_chat(app, GROUP, "Book Club")
     await approve_chat(app, FRIEND, "Reader")
@@ -200,12 +199,13 @@ async def test_card_has_exact_text_telegram_approval_sends_once_and_dashboard_re
     assert (await draft(app, chat=FRIEND, text="coordinating the plan")).startswith("Waiting")
     [pending] = await app.proposals.pending()
     async with browser(app) as client:
-        page = await client.get("/proposals")
-        assert "Reader" in page.text and "coordinating the plan" in page.text and "Confirm the plan" in page.text
-        denied = await client.post(f"/proposals/{pending['id']}/reject", headers=POST_HEADERS)
-        assert denied.status_code == 200
-        log = await client.get("/turns")
-        assert "Cross-chat" in log.text and "coordinating the plan" in log.text
+        waiting = (await client.get("/api/waiting")).json()
+        card, = waiting["cards"]
+        assert card["kind"] == "cross_chat" and "coordinating the plan" in card["text"] and "Confirm the plan" in card["reason"]
+        denied = await client.post("/api/waiting/decide", json={"id": pending["id"], "decision": "reject"}, headers=POST_HEADERS)
+        assert denied.status_code == 200 and denied.json()["ok"] is True
+        log = (await client.get("/api/system/turns")).json()
+        assert any("coordinating the plan" in item["text"] for item in log["cross_chat"])
     await process_ready(app)
     assert not app.bot.of("send", FRIEND)
     assert (await app.store.cross_chat_items())[0]["drop_reason"] == "refused"

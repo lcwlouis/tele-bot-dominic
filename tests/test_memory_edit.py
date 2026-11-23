@@ -23,7 +23,6 @@ from dom.tools import TurnCtx, enabled_tools
 from test_owner_events import events, press
 from test_traits import put
 from test_web_auth import POST_HEADERS
-from test_web_pages import browser  # noqa: F401
 from tghelpers import FINAL, FRIEND, GROUP, OWNER, tg
 
 
@@ -253,16 +252,17 @@ async def test_dashboard_renders_memory_edit_diff_and_approves(make_app, browser
     proposal_id = json.loads(raw)["id"]
 
     async with browser(app) as client:
-        page = await client.get("/proposals?kind=memory_edit")
+        page = await client.get("/api/waiting?kind=memory_edit")
         assert page.status_code == 200
-        assert "Memory edit" in page.text
-        assert "private/USER.md: Switched to oolong" in page.text
-        assert "<del>-- Drinks coffee</del>" in page.text
-        assert "<ins>+- Drinks oolong</ins>" in page.text
+        card, = page.json()["cards"]
+        assert card["label"] == "Memory edit"
+        assert "private/USER.md: Switched to oolong" in card["title"]
+        assert "-- Drinks coffee" in card["diff"]
+        assert "+- Drinks oolong" in card["diff"]
 
-        response = await client.post(f"/proposals/{proposal_id}/approve", headers=POST_HEADERS)
+        response = await client.post("/api/waiting/decide", json={"id": proposal_id, "decision": "approve"}, headers=POST_HEADERS)
         assert response.status_code == 200
-        assert "Approved" in response.text
+        assert response.json()["message"] == "Approved"
     assert app.home.scoped(allow_private=True).read("private/USER.md") == "- Drinks oolong"
 
 

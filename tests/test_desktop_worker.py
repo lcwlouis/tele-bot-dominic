@@ -223,7 +223,7 @@ async def test_handoff_resume_and_timeout(make_app, resume):
     message = app.bot.of("send", OWNER)[0]
     assert "Sign in" in message[2]
     buttons = message[3]["reply_markup"].inline_keyboard[0]
-    assert buttons[0].url == "https://example.org/desktop"
+    assert buttons[0].url == "https://example.org/app/work"
     if resume:
         assert not await worker.resume(OWNER, task_id, row["steps"] + 1)
         assert await worker.resume(OWNER, task_id, row["steps"])

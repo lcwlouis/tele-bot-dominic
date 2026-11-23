@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 import httpx
 import tomlkit
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dom.config import (
@@ -43,7 +43,7 @@ from dom.llm import ChatClient, FallbackClient, MissingProviderKey
 from dom.search import PROVIDER_INFO, SearchClient, search_provider_kind
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.usage import ModelCallSkipped, model_request, on_own_network, provider_address, unroutable_address
-from dom.web.pages import _bounded_stream, owner_app, panel
+from dom.web.shared import _bounded_stream, owner_app
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App
@@ -424,13 +424,6 @@ async def _input(request: Request, model: type[Input], max_bytes: int = MAX_BODY
             if error["type"] == "literal_error":
                 detail = "Choose one of the supported values."
         raise HTTPException(422, detail) from None
-
-
-@router.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request):
-    app = owner_app(request)
-    settings = _settings(app, _snapshot(app.config.home))
-    return panel(request, "settings", settings=settings)
 
 
 @router.get(API_PATH)

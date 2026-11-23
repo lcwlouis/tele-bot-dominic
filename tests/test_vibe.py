@@ -11,7 +11,6 @@ from dom.traits import (
 )
 from test_owner_controls import approve, callback
 from test_traits import put
-from test_web_pages import browser  # noqa: F401  (fixture)
 from test_web_auth import POST_HEADERS
 from tghelpers import FRIEND, GROUP, OWNER, tg
 
@@ -235,18 +234,26 @@ async def test_dashboard_shows_the_vibe_its_reason_and_whether_it_is_auto_or_loc
     install(app)
     await approve(app, GROUP, "Book Club")
     async with browser(app) as client:
-        assert "No preset everywhere" in (await client.get("/chats")).text
-        response = await client.post("/chats/all/preset", headers=POST_HEADERS, data={"preset": "auto"})
-        assert "Auto (Dom picks)" in response.text and await app.store.kv_get("preset:global") == "auto"
-        assert '<option value="auto" selected>' in response.text
+        async def vibe_now():
+            data = (await client.get("/api/chats")).json()
+            return data["everywhere"], data["vibe"]
+
+        async def set_preset(chat, preset):
+            return await client.post("/api/chats/preset", json={"chat_id": chat, "preset": preset}, headers=POST_HEADERS)
+
+        assert (await vibe_now())[0] in (None, "")
+        response = await set_preset("all", "auto")
+        assert response.json()["everywhere"] == "auto" and await app.store.kv_get("preset:global") == "auto"
         await pick(app, "fboy", "feeling <cheeky>")
-        text = (await client.get("/chats")).text
-        assert "Auto: Dom's vibe today is Fboy: feeling &lt;cheeky&gt;" in text
+        everywhere, vibe = await vibe_now()
+        assert everywhere == "auto" and vibe["mode"] == "auto" and vibe["title"] == "Fboy" and vibe["reason"] == "feeling <cheeky>"
         await pick(app, "classic", "calm down", source="switch")
-        assert "Classic (switched mid-day): calm down" in (await client.get("/chats")).text
-        await client.post("/chats/all/preset", headers=POST_HEADERS, data={"preset": "fboy"})
-        assert "Locked to Fboy." in (await client.get("/chats")).text
+        everywhere, vibe = await vibe_now()
+        assert vibe["title"] == "Classic" and vibe["source"] == "switch" and vibe["reason"] == "calm down"
+        await set_preset("all", "fboy")
+        everywhere, vibe = await vibe_now()
+        assert everywhere == "fboy" and vibe["mode"] == "locked" and vibe["title"] == "Fboy"
         # per-chat editing still works under auto
-        await client.post("/chats/all/preset", headers=POST_HEADERS, data={"preset": "auto"})
-        await client.post(f"/chats/{GROUP}/preset", headers=POST_HEADERS, data={"preset": "classic"})
+        await set_preset("all", "auto")
+        await set_preset(GROUP, "classic")
         assert (await app.store.list_chats("approved"))[0]["preset"] == "classic"

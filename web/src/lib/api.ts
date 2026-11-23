@@ -202,6 +202,7 @@ export type DeskData = {
   task: DeskTask | null;
   viewer: string;
   containers: DeskContainer[];
+  hosts: { name: string; running: number; max_containers: number; memory_floor: string }[];
   history: DeskHistory[];
 };
 export type OwnTask = {

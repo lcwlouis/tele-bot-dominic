@@ -55,10 +55,5 @@
     </ul>
   </nav>
 
-  <div class="mt-5 border-t pt-4 px-1.5">
-    <a href="/" class="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
-      Current dashboard
-    </a>
-  </div>
 </aside>
 </div>

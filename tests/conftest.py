@@ -24,6 +24,27 @@ def lan_probes_answer(monkeypatch):
     monkeypatch.setattr(network, "host_answers", answers)
 
 
+@pytest.fixture
+def browser(monkeypatch):
+    """An authenticated client for the dashboard's ASGI app: `async with browser(app) as client`."""
+    from dom.web.app import create_app
+    from dom.web.auth import Auth
+    from test_web_auth import ORIGIN, TOKEN
+
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
+
+    def connect(app):
+        config = app.config.model_copy(update={
+            "web": app.config.web.model_copy(update={"dev_token_env": "DOM_TEST_TOKEN"}),
+        })
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(app, Auth(config))),
+            base_url=ORIGIN, headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+
+    return connect
+
+
 @pytest_asyncio.fixture
 async def make_app(tmp_path):
     apps = []

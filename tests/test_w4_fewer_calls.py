@@ -16,7 +16,7 @@ from dom.telegram.handlers import handle_message
 from dom.tools import SKILL_VIEW_TOOL, TurnCtx, enabled_tools
 from dom.traits import SwitchRefused, start_task_mode, switch_blocker, switch_vibe
 from dom.triage import NO_SKILL, Triage, triage_online, triage_stay
-from dom.web.pages import _turn_timings
+from dom.web.shared import _turn_timings
 from test_chat_skills import BODY, approved
 from test_dispatch import FakeJev, deliver, gated_sleep, setup_dispatch  # noqa: F401  (fixtures)
 from test_vibe import auto, install, pick

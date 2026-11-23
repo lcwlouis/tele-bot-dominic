@@ -26,7 +26,7 @@ from dom.plugins.trial import test_run
 from dom.store import Store
 
 log = logging.getLogger(__name__)
-_HASH = re.compile(r"[0-9a-f]{64}")
+PLUGIN_HASH = re.compile(r"[0-9a-f]{64}")
 DRAFT_PREFIX = ".draft-"  # staging folders made by _write; never plugins
 
 
@@ -210,7 +210,7 @@ class PluginRegistry:
 
     async def review(self, name: str, digest: str) -> dict | None:
         validate_name(name)
-        if not _HASH.fullmatch(digest):
+        if not PLUGIN_HASH.fullmatch(digest):
             return None
         async with self.lock:
             plugin = (await self._scan()).get(name)

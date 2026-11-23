@@ -1,6 +1,6 @@
 """JSON API for the Work destination: the desk, Dom's own work and skills, reminders and briefs.
 
-Every read and check is the old page's own (dom/web/desktop.py, dom/web/pages.py): the same store, worker and owner
+Every read and check lives in dom/web/desktop.py and dom/web/shared.py: the same store, worker and owner
 functions, so a delete still needs the row's stamp or hash, a stopped computer stays stopped while a task runs, and
 a skill name is validated. Every POST sits in JSON_POSTS, so it needs the dashboard's auth, a same-origin Origin and a
 JSON body. Each write answers `{ok, message, ...fresh page data}` so the page never shows stale rows.
@@ -20,7 +20,7 @@ from dom.briefs import list_briefs, markdown_blocks
 from dom.telegram import owner
 from dom.web.desktop import _context, _lane, resume_handoff, run_computer_action
 from dom.web.model_settings import _input
-from dom.web.pages import _own_work, _reminders, _skills, owner_app, own_work_file
+from dom.web.shared import _own_work, _reminders, _skills, owner_app, own_work_file
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,7 +64,7 @@ class SkillAction(Strict):
 
 
 def _status(message: str) -> int:
-    """The old routes' failure codes: a missing row is a 404, any other refusal a 409."""
+    """A missing row is a 404, any other refusal a 409."""
     return 404 if "not found" in message else 409
 
 
@@ -96,6 +96,9 @@ async def _desk(app, lane) -> dict:
             "tone": item["tone"], "detail": item["detail"], "selected": item["selected"],
             "task": None if item["task"] is None else {"id": item["task"]["id"], "status": item["task"]["status"]},
         } for item in state["containers"]],
+        "hosts": [{
+            "name": host["name"], "running": host["running"], "max_containers": host["max_containers"], "memory_floor": host["memory_floor"],
+        } for host in state["hosts"]],
         "history": [{
             "id": row["id"], "status": row["status"], "container": row["container"], "steps": row["steps"],
             "brief": row["brief"], "result": _short(row.get("result")), "error": _short(row.get("error")),

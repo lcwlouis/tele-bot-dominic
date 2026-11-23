@@ -7,7 +7,6 @@ import pytest
 from dom.briefs import LIMITS, write_brief
 from dom.tools import SELF_INSPECT_TOOL, WRITE_BRIEF_TOOL, TurnCtx, enabled_tools
 from test_owner_events import events
-from test_web_pages import browser
 from tghelpers import GROUP, OWNER
 
 
@@ -46,7 +45,7 @@ def test_brief_field_limits(make_app, field):
     assert not (app.home.root / "briefs").exists()
 
 
-async def test_write_brief_dms_document_and_renders_dashboard(make_app, browser):
+async def test_write_brief_dms_document_and_is_listed_by_the_api(make_app, browser):
     app = make_app()
     app.bot.send_document = AsyncMock()
     app.home.scoped(allow_private=True)._write_regular("private/NOTES.md", "- Confidential sample phrase\n")
@@ -61,12 +60,14 @@ async def test_write_brief_dms_document_and_renders_dashboard(make_app, browser)
     assert any(expected in row["text"] for row in await events(app))
 
     async with browser(app) as client:
-        assert (await client.get("/briefs", headers={"Authorization": ""})).status_code == 403
-        html = (await client.get("/briefs")).text
-    assert "Briefs" in html and "Improve Café / tests" in html and "Copy" in html
-    assert "<h4>Problem</h4>" in html and "&lt;script&gt;" in html and "<script>" not in html
-    assert "<li>Display the tag as text.</li>" in html
-    assert "Confidential sample phrase" not in html
+        assert (await client.get("/api/work/briefs", headers={"Authorization": ""})).status_code == 403
+        data = (await client.get("/api/work/briefs")).json()
+    brief, = data["briefs"]
+    assert brief["title"] == "Improve Café / tests" and brief["filename"] == expected
+    assert ["Problem"] in [block["lines"] for block in brief["blocks"] if block["kind"] == "heading"] or "Problem" in brief["markdown"]
+    assert "<script>" in brief["markdown"]  # the text arrives as data; the app shows it as text
+    assert any("Display the tag as text." in line for block in brief["blocks"] for line in block["lines"])
+    assert "Confidential sample phrase" not in json.dumps(data)
 
 
 async def test_brief_excludes_private_content_and_requires_owner(make_app):
