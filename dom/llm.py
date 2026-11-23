@@ -12,7 +12,7 @@ import httpx
 
 from dom import turn_log
 from dom.config import Config, ModelRole, ProviderEndpoint
-from dom.usage import Kind, UsageRecorder, check_model_allowed, model_failed, provider_address, request_kind
+from dom.usage import Kind, UsageRecorder, check_model_allowed, provider_address, request_kind
 
 TIMEOUT_SECONDS = 90
 CONNECT_TIMEOUT_SECONDS = 5  # an unreachable home lab should fail over fast
@@ -101,14 +101,10 @@ class ChatClient:
                     )
                     if call is not None:
                         call.received(response)
-            except (httpx.TransportError, asyncio.CancelledError) as exc:
-                if isinstance(exc, httpx.TransportError):
-                    model_failed()
+            except (httpx.TransportError, asyncio.CancelledError):
                 if kind == "escalation" and self.usage is not None:
                     await self.usage.record_response(None, self.kind, self.endpoint.model, self.address, fallback=fallback)
                 raise
-            if not response.is_success:
-                model_failed()
             if self.usage is not None:
                 await self.usage.record_response(response, self.kind, self.endpoint.model, self.address, fallback=fallback)
             if delay is None or not _retryable(response.status_code):
@@ -133,21 +129,25 @@ class FallbackClient:
     def available(self) -> bool:
         return any(provider.available for provider in self.providers)
 
-    async def complete(self, messages: list[dict], tools: list[dict], *, once: bool = False) -> dict:
-        return await self._complete(messages, tools, start=0, once=once)
+    async def complete(
+        self, messages: list[dict], tools: list[dict], *, once: bool = False, timeout: float = TIMEOUT_SECONDS,
+    ) -> dict:
+        return await self._complete(messages, tools, start=0, once=once, timeout=timeout)
 
     async def complete_on_fallback(self, messages: list[dict], tools: list[dict], *, once: bool = False) -> dict:
         """Ask the fallback model directly, e.g. when the primary is up but keeps answering unusably."""
         if self.fallback is None:
             raise RuntimeError("no fallback model is configured")
-        return await self._complete(messages, tools, start=1, once=once)
+        return await self._complete(messages, tools, start=1, once=once, timeout=TIMEOUT_SECONDS)
 
-    async def _complete(self, messages: list[dict], tools: list[dict], *, start: int, once: bool) -> dict:
+    async def _complete(
+        self, messages: list[dict], tools: list[dict], *, start: int, once: bool, timeout: float,
+    ) -> dict:
         for index in range(start, len(self.providers)):
             provider = self.providers[index]
             fallback = index > 0
             try:
-                reply = await provider.complete(messages, tools, fallback=fallback, once=once)
+                reply = await provider.complete(messages, tools, fallback=fallback, once=once, timeout=timeout)
             except (httpx.TransportError, httpx.HTTPStatusError, MissingProviderKey) as exc:
                 status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                 if index + 1 == len(self.providers) or (status is not None and not _fallback_worthy(status)):

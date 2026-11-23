@@ -818,8 +818,9 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         if (not query.from_user.is_bot and query.message is not None
                 and query.message.chat.id == owner_id and query.message.chat.type == "private"):
             decision, _, token = raw_chat_id.partition(":")
-            if decision in ("switch", "keep"):
-                await _toast(app, query, app.dispatch.escalation.choose(token, switch=decision == "switch"))
+            if decision in ("switch", "keep", "retry", "dismiss"):
+                outcome = app.dispatch.escalation.choose(token, decision, owner_id, query.message.message_id)
+                await _toast(app, query, outcome)
         return
     if action in {"t3send", "t3cancel", "t3reconnect"}:
         if (app.t3 is not None and not query.from_user.is_bot and query.message is not None

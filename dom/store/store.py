@@ -1034,6 +1034,10 @@ class Store:
     async def has_message(self, chat_id: int | str, msg_id: int) -> bool:
         return await self._run(self._has_message, str(chat_id), msg_id)
 
+    async def get_message(self, chat_id: int | str, msg_id: int) -> StoredMessage | None:
+        row = await self._run(self._get_message, str(chat_id), msg_id)
+        return _row_to_message(row) if row is not None else None
+
     def _has_message(self, chat_id: str, msg_id: int) -> bool:
         return self._conn.execute(
             "SELECT 1 FROM messages WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id),

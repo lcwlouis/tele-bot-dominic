@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery
 
 from dom import escalation
 from dom.config import ModelEndpoint
-from dom.llm import ChatClient, routed_client
+from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.presence import parse_habits
 from dom.telegram.handlers import handle_callback, handle_message
 from test_usage import USAGE, usage_rows
@@ -48,17 +48,17 @@ def cards(app):
     return [call for call in app.bot.of("send", OWNER) if call[2].startswith("Model switch available")]
 
 
-def tap_for(button, *, chat_id=OWNER, sender=OWNER):
+def tap_for(button, *, chat_id=OWNER, sender=OWNER, msg_id=5001):
     return CallbackQuery(
         id="tap", from_user=tg(chat_id=sender, sender=sender).from_user, chat_instance="instance",
-        message=tg(chat_id=chat_id, sender=BOT_USER.id), data=button.callback_data,
+        message=tg(chat_id=chat_id, sender=BOT_USER.id, msg_id=msg_id), data=button.callback_data,
     )
 
 
-async def start(app, chat_id=OWNER, msg_id=1):
+async def start(app, chat_id=OWNER, msg_id=1, text="hello"):
     await app.store.set_chat_auth_status(chat_id, "approved")
     await app.dispatch.presence.go_online(chat_id, parse_habits(""))
-    await handle_message(app, tg(chat_id=chat_id, sender=chat_id if chat_id > 0 else OWNER, msg_id=msg_id))
+    await handle_message(app, tg(chat_id=chat_id, sender=chat_id if chat_id > 0 else OWNER, msg_id=msg_id, text=text))
 
 
 @pytest.mark.parametrize("switch", [True, False, None])
@@ -113,15 +113,16 @@ async def test_owner_consent_changes_only_later_rounds_and_expires(make_app, mon
                 await sent.wait()
             assert requests == ["local"] * 3  # work continued while consent was pending
             [(kind, chat_id, text, options)] = cards(app)
+            card_id = app.bot._next_id
             assert chat_id == OWNER and "cloud" in text and "Estimated $0.0050 for the next round" in text
             [buttons] = options["reply_markup"].inline_keyboard
             assert [button.text for button in buttons] == ["Switch", "Keep local"]
-            await handle_callback(app, tap_for(buttons[0], chat_id=GROUP))
-            await handle_callback(app, tap_for(buttons[0], sender=FRIEND))
+            await handle_callback(app, tap_for(buttons[0], chat_id=GROUP, msg_id=card_id))
+            await handle_callback(app, tap_for(buttons[0], sender=FRIEND, msg_id=card_id))
             assert app.bot.of("answer") == []
             if switch is not None:
-                await handle_callback(app, tap_for(buttons[0 if switch else 1]))
-                await handle_callback(app, tap_for(buttons[1 if switch else 0]))
+                await handle_callback(app, tap_for(buttons[0 if switch else 1], msg_id=card_id))
+                await handle_callback(app, tap_for(buttons[1 if switch else 0], msg_id=card_id))
                 assert app.bot.of("answer")[-1][2] == "Already handled"
         finally:
             finish_third.set()
@@ -129,7 +130,7 @@ async def test_owner_consent_changes_only_later_rounds_and_expires(make_app, mon
         expected = ["cloud", "cloud"] if switch else ["local", "local"]
         assert requests == ["local"] * 3 + expected
         assert len(cards(app)) == 1
-        await handle_callback(app, tap_for(buttons[0]))
+        await handle_callback(app, tap_for(buttons[0], msg_id=card_id))
         assert app.bot.of("answer")[-1][2] == "That task already finished"
         escalation_rows = [row for row in usage_rows(app) if row[0] == "escalation"]
         if switch:
@@ -142,41 +143,169 @@ async def test_owner_consent_changes_only_later_rounds_and_expires(make_app, mon
         assert requests[-1] == "local" and len(pricing) == 1
 
 
-@pytest.mark.parametrize("chat_id", [OWNER, GROUP, FRIEND])
-async def test_two_provider_failures_trigger_only_in_owner_dm(make_app, monkeypatch, chat_id):
+@pytest.mark.parametrize("failure", ["primary", "internal_retry"])
+async def test_successful_chat_rounds_never_count_provider_attempts_as_failures(make_app, failure):
     app = make_app()
+    app.dispatch.escalation.clock = lambda: 0
     attempts = []
-    sent = asyncio.Event()
-    original_send = app.bot.send_message
-
-    async def send(*args, **kwargs):
-        result = await original_send(*args, **kwargs)
-        if cards(app):
-            sent.set()
-        return result
-
-    monkeypatch.setattr(app.bot, "send_message", send)
 
     async def respond(request):
         if request.method == "GET":
             return price_list(request)
-        attempts.append(json.loads(request.content)["model"])
+        model = json.loads(request.content)["model"]
+        attempts.append(model)
+        if model == "local":
+            if failure == "primary":
+                raise httpx.ConnectError("unreachable", request=request)
+            if len(attempts) <= 2:
+                return httpx.Response(503)
+        await asyncio.sleep(0.02)  # a wrongly queued card would be sent while the route is still answering
+        return answer(1 if len(attempts) in (2, 3) else None)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        wire(app, http)
+        backup_endpoint = ModelEndpoint(base_url="https://fallback.example.test/v1", model="backup")
+        backup = ChatClient(backup_endpoint, None, http, sleep=no_sleep, usage=app.dispatch.usage)
+        app.client = FallbackClient(app.client, backup)
+        await start(app)
+        await drain_dispatch(app.dispatch)
+
+    expected = ["local", "backup"] * 2 if failure == "primary" else ["local"] * 4
+    assert attempts == expected and cards(app) == []
+    assert any(call[2] == "hey" for call in app.bot.of("send", OWNER))
+
+
+@pytest.mark.parametrize("decision", ["retry", "dismiss", "expired"])
+async def test_failure_card_outlives_the_turn_and_retries_at_most_once(make_app, decision):
+    app = make_app()
+    now = 0
+    app.dispatch.escalation.clock = lambda: now
+    attempts = []
+
+    async def respond(request):
+        if request.method == "GET":
+            return price_list(request)
+        body = json.loads(request.content)
+        attempts.append(body["model"])
         if len(attempts) <= 2:
-            assert cards(app) == []
-            return httpx.Response(503)
-        if len(attempts) == 3 and chat_id == OWNER:
-            await asyncio.wait_for(sent.wait(), 3)
-            await handle_callback(app, tap_for(cards(app)[0][3]["reply_markup"].inline_keyboard[0][0]))
-            return answer(1)
+            raise httpx.ConnectError("unreachable", request=request)
+        if body["model"] == "cloud":
+            assert body["provider"] == {"zdr": True}
+            assert "original task" in json.dumps(body["messages"])
+            assert "newer unrelated message" not in json.dumps(body["messages"])
+            assert app.dispatch.turn_running(OWNER)
         return answer()
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
         wire(app, http, explicit=True)
+        await start(app, text="original task")
+        await drain_dispatch(app.dispatch)
+        assert not app.dispatch.turn_running(OWNER)
+        assert (await app.store.get_unread(OWNER))[0] == 0
+        assert attempts == ["local"] * 2
+        [(kind, chat_id, text, options)] = [
+            call for call in app.bot.of("send", OWNER) if "Retry on cloud?" in call[2]
+        ]
+        assert "Dom couldn't answer with local" in text and "$0.0050" in text
+        [buttons] = options["reply_markup"].inline_keyboard
+        assert [button.text for button in buttons] == ["Retry", "Dismiss"]
+        card_id = app.bot._next_id
+
+        await start(app, msg_id=2, text="newer unrelated message")
+        await drain_dispatch(app.dispatch)
+        assert attempts == ["local"] * 3
+
+        if decision == "expired":
+            now += escalation.RETRY_OFFER_SECONDS
+        button = buttons[1 if decision == "dismiss" else 0]
+        async with app.locks[OWNER]:
+            await handle_callback(app, tap_for(button, msg_id=card_id))
+            outcome = app.bot.of("answer")[-1][2]
+            assert outcome == {
+                "retry": "Retry requested", "dismiss": "Retry dismissed", "expired": "That retry offer expired",
+            }[decision]
+            await asyncio.sleep(0)
+            assert attempts == ["local"] * 3
+        if decision != "expired":
+            await handle_callback(app, tap_for(button, msg_id=card_id))
+            assert app.bot.of("answer")[-1][2] == "Already handled"
+        await asyncio.sleep(0)  # let the completed card edit leave the dispatch task set
+        await drain_dispatch(app.dispatch)
+
+    assert app.bot.of("edit", OWNER)[-1][3] == outcome
+    assert app.bot.edit_markups[-1] is None
+    assert attempts == ["local"] * 3 + (["cloud"] if decision == "retry" else [])
+    escalated = [row for row in usage_rows(app) if row[0] == "escalation"]
+    assert escalated == ([("escalation", "cloud", "openrouter.ai", OWNER, 12, 4, 0.25, 0)]
+                         if decision == "retry" else [])
+
+
+@pytest.mark.parametrize("chat_id", [GROUP, FRIEND])
+async def test_non_owner_chats_never_offer_escalation(make_app, chat_id):
+    app = make_app()
+    now = 0
+    app.dispatch.escalation.clock = lambda: now
+    rounds = 0
+
+    async def respond(request):
+        nonlocal now, rounds
+        # No price lookup or cloud request should be started for these chats.
+        assert request.method == "POST" and json.loads(request.content)["model"] == "local"
+        rounds += 1
+        now = 61
+        return answer(1) if rounds < 3 else answer()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        wire(app, http)
+        app.config = app.config.model_copy(update={"daily_spend_cap_usd": 0})
         await start(app, chat_id)
         await drain_dispatch(app.dispatch)
 
-    assert len(cards(app)) == int(chat_id == OWNER)
-    assert attempts == ["local"] * 3 + (["cloud"] if chat_id == OWNER else [])
+    assert rounds == 3 and app.bot.of("send", OWNER) == []
+
+
+@pytest.mark.parametrize("failure", ["bad_json", "bad_request", "read_timeout"])
+async def test_recovery_stops_on_permanent_errors_and_shortens_the_second_timeout(make_app, failure):
+    app = make_app()
+    timeouts = []
+
+    async def respond(request):
+        if request.method == "GET":
+            return price_list(request)
+        timeouts.append(request.extensions["timeout"]["read"])
+        if failure == "bad_json":
+            return httpx.Response(200, text="invalid")
+        if failure == "bad_request":
+            return httpx.Response(400)
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        wire(app, http)
+        await start(app)
+        await drain_dispatch(app.dispatch)
+
+    assert timeouts == ([90, escalation.RECOVERY_TIMEOUT] if failure == "read_timeout" else [90])
+
+
+async def test_failed_price_refresh_keeps_last_price(make_app):
+    app = make_app()
+    now = 0
+    app.dispatch.escalation.prices.clock = lambda: now
+    calls = 0
+
+    def respond(request):
+        nonlocal calls
+        calls += 1
+        return price_list(request) if calls == 1 else httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        wire(app, http)
+        prices = app.dispatch.escalation.prices
+        cloud = app.escalation_client.primary
+        estimate = await prices.estimate(cloud, [], [])
+        now += escalation.PRICE_TTL
+        assert await prices.estimate(cloud, [], []) == estimate
+        assert "$0.0050" in estimate and calls == 2
 
 
 async def test_timer_offers_during_a_round_already_in_progress(make_app, monkeypatch):

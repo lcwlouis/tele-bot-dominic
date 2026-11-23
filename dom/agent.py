@@ -246,7 +246,7 @@ async def run_turn(
     log.info("malformed retry in chat %s: %s", ctx.chat_id, malformed_shape(retry))
 
     has_fallback = isinstance(client, FallbackClient) and client.fallback is not None
-    if has_fallback or (escalation is not None and escalation.offered):
+    if has_fallback:
         turn_log.step("fallback")
         try:
             reply = await complete([*settled, {"role": "user", "content": FINAL_REQUEST}], [], on_fallback=has_fallback)

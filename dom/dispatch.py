@@ -30,7 +30,7 @@ from dom.cross_chat import CrossChat
 from dom.agent import NoFinalAnswer, execute_tool_call, malformed_shape, parse_actions, run_turn
 from dom.desktop.sandbox import DEFAULT
 from dom.desktop.tools import untrusted
-from dom.escalation import Escalation
+from dom.escalation import MODEL_FAILURES, Escalation, EscalationTurn, RetryTask
 from dom.gifs import GIF_NOTE
 from dom.capabilities import describe
 from dom.jev import JevClient, JevUnavailable
@@ -155,6 +155,8 @@ class TurnAttempt:
     queued: bool = False  # reached the attention queue; superseded there without a visit, it costs no restart
     resume_visit: bool = False
     stay_check: bool = False  # a reply went out, so Jev owes the after-turn staying-online decision
+    escalation_retry: RetryTask | None = None
+    retry_offer: EscalationTurn | None = None
 
     def commit(self) -> None:
         self.committed = True
@@ -254,7 +256,7 @@ class Dispatcher:
             and msg.msg_id > attempt.msg_id and not attempt.trace.superseded
         ):
             restarts = sum(prior.visited or not prior.queued for prior in self._interrupted.get(chat_id, ()))
-            if attempt.committed or restarts >= MAX_RESTARTS or attempt.task not in self._tasks:
+            if attempt.committed or attempt.escalation_retry or restarts >= MAX_RESTARTS or attempt.task not in self._tasks:
                 attempt.later.append(msg.msg_id)
             else:
                 self._first_notify.setdefault(chat_id, attempt.started)
@@ -592,6 +594,7 @@ class Dispatcher:
     async def close(self) -> None:
         self._closing = True
         self.cross_chat.stop()
+        self.escalation.close()
         committed = {attempt.task for attempt in self._active.values() if attempt.committed} | self._committed_tasks
         tasks = self._tasks | committed
         for task in tasks - committed:
@@ -926,6 +929,29 @@ class Dispatcher:
         except Exception:
             log.exception("could not decide on chat %s", chat_id)
 
+    async def retry_escalation(self, retry: RetryTask) -> None:
+        """Dispatch the original message after the owner explicitly chose Retry."""
+        chat_id = retry.chat_id
+        try:
+            async with self._dispatch_slot(chat_id) as waits:
+                if not await self.turn_allowed(chat_id, "owner_dm"):
+                    return
+                original = await self.app.store.get_message(chat_id, retry.msg_id)
+                if original is None or original.id != retry.row_id:
+                    return
+                habits = self._habits()
+                state, until = await self.presence.state(chat_id, habits)
+                if state != "online":
+                    until = await self.presence.wake(chat_id, habits, minutes=URGENT_WAKE_MINUTES)
+                await self._dispatch(
+                    chat_id, habits, waits, "online", until, original.thread_id, 1, original,
+                    total_unread=1, escalation_retry=retry,
+                )
+        except ModelCallSkipped:
+            return
+        except Exception:
+            log.exception("could not retry owner DM task")
+
     async def _maybe_send_spend_cap_line(self, chat_id: int) -> None:
         """Send one short in-character line per local day to a friend's DM paused by the spend cap (never groups)."""
         app = self.app
@@ -1076,6 +1102,7 @@ class Dispatcher:
         self, chat_id: int, habits: Habits, waits: QueueWaits,
         state: State, until: datetime | None, topic_thread_id: int | None, count: int, newest: StoredMessage,
         *, total_unread: int, background: bool = False, catch_up: bool = False,
+        escalation_retry: RetryTask | None = None,
     ) -> tuple[bool, datetime | None, bool]:
         """Dispatch one topic (General uses `topic_thread_id=None`). Returns `(is_online, until, flood_limited)`."""
         store = self.app.store
@@ -1097,7 +1124,7 @@ class Dispatcher:
 
         # If ingress got ahead of our unread snapshot in the same topic, the newer dispatch already owns these messages.
         if (
-            not catch_up and (latest := self._latest.get(chat_id)) is not None
+            escalation_retry is None and not catch_up and (latest := self._latest.get(chat_id)) is not None
             and latest.thread_id == topic_thread_id and latest.msg_id > newest.msg_id
         ):
             return state == "online", until, False
@@ -1110,9 +1137,12 @@ class Dispatcher:
         attempt = self._active[chat_id] = TurnAttempt(
             asyncio.current_task(), newest.msg_id, trace, waits.start, thread_id=topic_thread_id,
         )
-        resumed = False
+        resumed = escalation_retry is not None
+        if escalation_retry is not None:
+            attempt.escalation_retry = escalation_retry
+            attempt.tool_results = dict(escalation_retry.tool_results)
         prior = self._interrupted.get(chat_id)
-        if prior and prior[-1].thread_id == topic_thread_id:
+        if escalation_retry is None and prior and prior[-1].thread_id == topic_thread_id:
             attempt.tool_results = prior[-1].tool_results
             attempt.notices, prior[-1].notices = prior[-1].notices, []
             attempt.credit = prior[-1].credit + prior[-1].shown
@@ -1193,6 +1223,11 @@ class Dispatcher:
             raise
         finally:
             del self._active[chat_id]
+            if attempt.retry_offer is not None:
+                if completed:
+                    attempt.retry_offer.publish_retry()
+                else:
+                    attempt.retry_offer.abort_retry()
             if (completed and attempt.stay_check and not trace.superseded and not self._closing
                     and self._stay_marks.get(chat_id) != newest.msg_id):
                 self._stay_marks[chat_id] = newest.msg_id
@@ -1560,6 +1595,9 @@ class Dispatcher:
     ) -> tuple[bool, bool]:
         """Run one turn and send its result; returns `(answered, flood_limited)`."""
         app = self.app
+        if attempt.escalation_retry is not None:
+            away_count = attempt.escalation_retry.away_count
+            skill = attempt.escalation_retry.skill
         thread_id = newest.thread_id if newest.thread_id is not None else (live.thread_id if live else None)
         typing = arrival.typing if arrival is not None else None
         if typing is not None and not self.attention.can_type(chat_id):
@@ -2039,11 +2077,28 @@ class Dispatcher:
         try:
             if attempt is None:
                 actions = await run_turn(app.client, messages, tools, ctx, rescue=rescue)
+            elif (retry := attempt.escalation_retry) is not None:
+                with model_request("escalation", chat_id, partial(self.turn_allowed, chat_id, scope)):
+                    try:
+                        actions = await run_turn(
+                            retry.provider, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool,
+                        )
+                    except MODEL_FAILURES as exc:
+                        raise NoFinalAnswer(type(exc).__name__) from exc
             else:
-                with self.escalation.turn(chat_id, scope) as escalation:
-                    actions = await run_turn(
-                        app.client, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool, escalation=escalation,
-                    )
+                with self.escalation.turn(chat_id, scope, app.client) as escalation:
+                    try:
+                        actions = await run_turn(
+                            app.client, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool, escalation=escalation,
+                        )
+                    except NoFinalAnswer:
+                        if escalation is None or newest is None or not escalation.prepare_retry(
+                            newest, attempt.tool_results, away_count, skill,
+                        ):
+                            raise
+                        attempt.retry_offer = escalation
+                        turn_log.outcome("Offered a model retry")
+                        actions = Actions(no_response=True)
         except ModelCallSkipped:
             raise
         except NoFinalAnswer:  # run_turn has logged why; record an owner event and answer waiting friends in character

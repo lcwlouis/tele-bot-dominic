@@ -82,19 +82,15 @@ class _Request:
     kind: Kind
     chat_id: int | None
     allowed: Callable[[], Awaitable[bool]]
-    on_failure: Callable[[], None] | None
 
 
 _request: ContextVar[_Request | None] = ContextVar("model_request", default=None)
 
 
 @contextmanager
-def model_request(
-    kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]],
-    *, on_failure: Callable[[], None] | None = None,
-) -> Iterator[None]:
+def model_request(kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]]) -> Iterator[None]:
     """Carry request attribution and approval through tool rounds, retries and fallback."""
-    token = _request.set(_Request(kind, chat_id, allowed, on_failure))
+    token = _request.set(_Request(kind, chat_id, allowed))
     try:
         yield
     finally:
@@ -110,12 +106,6 @@ async def check_model_allowed() -> None:
     request = _request.get()
     if request is not None and not await request.allowed():
         raise ModelCallSkipped
-
-
-def model_failed() -> None:
-    request = _request.get()
-    if request is not None and request.on_failure is not None:
-        request.on_failure()
 
 
 def _tokens(value: object) -> int | None:
