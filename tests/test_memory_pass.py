@@ -735,3 +735,14 @@ async def test_a_chat_that_lost_approval_during_the_model_call_is_not_written(ma
     assert await MemoryPass(app).run(GROUP) is False
     assert files(tmp_path, "memory/MEMORY.md") is None
     assert await cursor(app, GROUP) == 0
+
+
+@pytest.mark.parametrize("summary, shown", [
+    ("Noted Lou's login boundary test", "Lou's login boundary test"),
+    ("noted: Fran moves to Lisbon", "Fran moves to Lisbon"),
+    ("Notedly odd day", "Notedly odd day"),
+])
+def test_summary_never_repeats_the_noted_prefix(summary, shown):
+    from dom.memory_pass import _parse
+
+    assert _parse(ops(summary=summary)) == ([], shown)
