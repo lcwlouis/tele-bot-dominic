@@ -2,12 +2,14 @@
   import BottomBar from "$lib/components/shell/BottomBar.svelte";
   import Sidebar from "$lib/components/shell/Sidebar.svelte";
   import TopBar from "$lib/components/shell/TopBar.svelte";
+  import Toaster from "$lib/components/Toaster.svelte";
   import * as Tooltip from "$lib/components/ui/tooltip";
   import { gallery, locate } from "$lib/nav";
   import { interceptLinks, route } from "$lib/router.svelte";
   import Gallery from "./routes/Gallery.svelte";
   import Home from "./routes/Home.svelte";
   import Section from "./routes/Section.svelte";
+  import Settings from "./routes/Settings.svelte";
 
   const isGallery = $derived(route.path === gallery.href);
   const where = $derived(locate(route.path));
@@ -36,11 +38,14 @@
           <Gallery />
         {:else if where.destination.id === "home"}
           <Home />
+        {:else if where.tab?.id === "settings"}
+          <Settings destination={where.destination} tab={where.tab} />
         {:else}
           {#key route.path}<Section destination={where.destination} tab={where.tab} />{/key}
         {/if}
       </main>
     </div>
   </div>
+  <Toaster />
   <BottomBar path={route.path} current={isGallery ? { ...where.destination, id: "" } : where.destination} />
 </Tooltip.Provider>

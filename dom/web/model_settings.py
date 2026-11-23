@@ -1,11 +1,13 @@
-"""Owner model settings JSON contract.
+"""Owner settings JSON contract: models, providers and permissions.
 
 GET /api/models returns ModelSettings. POST /api/models replaces one ModelUpdate
 role and returns ModelSettings. POST /api/models/test takes ProviderTest and
 returns TestResult. Index 0 is the role's primary, followed by its own fallbacks.
 For search, omitting index (null) tests the saved chain in order and reports
-which provider answered. Both POSTs take the GET revision so a stale page cannot
-modify or test a moved slot.
+which provider answered. GET /api/permissions returns Permissions; POST
+/api/permissions sets one PermissionUpdate and returns Permissions. Every POST
+takes the GET revision (a hash of config.toml, shared by both GETs) so a stale
+page cannot modify or test a moved slot.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, Literal, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar, get_args
 from urllib.parse import urlsplit
 
 import httpx
@@ -48,7 +50,8 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 API_PATH = "/api/models"
-JSON_POSTS = {API_PATH, API_PATH + "/test"}
+PERMISSIONS_PATH = "/api/permissions"
+JSON_POSTS = {API_PATH, API_PATH + "/test", PERMISSIONS_PATH}
 MAX_BODY = 32 * 1024
 MAX_FALLBACKS = 5
 URL_RULE = ("Use an HTTPS API base URL without credentials, a query or a fragment. "
@@ -289,7 +292,6 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     except KeyPairing as exc:
         raise HTTPException(422, str(exc)) from None
     home = current.config.home
-    path = home / "config.toml"
     document = tomlkit.parse(current.text)
 
     def models():
@@ -313,14 +315,21 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     saved = Snapshot(validate_config(home, tomllib.loads(text)), text)
     if "chat" not in saved.config.models:
         raise HTTPException(422, "Configure a primary chat provider.")
-    if text != current.text:
+    _write(current, saved)
+    return saved
+
+
+def _write(current: Snapshot, saved: Snapshot) -> None:
+    """Replace config.toml with a validated snapshot, keeping the first original and the last version beside it."""
+    home = current.config.home
+    path = home / "config.toml"
+    if saved.text != current.text:
         if path.read_bytes() != current.text.encode("utf-8"):
-            raise HTTPException(409, "Configuration changed. Reload model settings and try again.")
+            raise HTTPException(409, "Configuration changed. Reload settings and try again.")
         if not (home / "config.toml.orig").exists():  # the file as it was before the first save from here
             _replace_file(home / "config.toml.orig", current.text, mode=0o600)
         _replace_file(home / "config.toml.bak", current.text, mode=0o600)
-        _replace_file(path, text)
-    return saved
+        _replace_file(path, saved.text)
 
 
 def _provider_view(config: Config, endpoint: ProviderEndpoint, *, role: str = "") -> ProviderView:
@@ -506,6 +515,107 @@ async def test_provider(request: Request) -> TestResult:
         raise HTTPException(404, "There is no saved provider at that position.")
     provider = providers[test.index]
     return await _probe(app, current.http, snapshot.config, provider, role=test.role)
+
+
+@dataclass(frozen=True)
+class Permission:
+    id: str
+    path: tuple[str, ...]  # its key in config.toml
+    label: str
+    description: str
+
+
+# What Dom may do: switches the owner flips from the dashboard. Each is read from app.config on every use, so a save
+# applies at once, without a restart.
+PERMISSIONS = (
+    Permission("memory_self_edit", ("memory_self_edit",), "Let Dom edit his own memory",
+               "Dom proposes each change to his notes in your DM; nothing changes until you approve it."),
+    Permission("openers", ("openers", "enabled"), "Start conversations",
+               "Dom may start a conversation in your DM, a few times a day at most."),
+    Permission("ephemeral_replies", ("ephemeral_replies",), "Private replies in groups",
+               "Dom may answer you privately inside a group where he is an admin, or in your DM where he is not."),
+    Permission("leak_check", ("leak_check",), "Check replies for leaks",
+               "Jev screens what Dom sends and what network plugins send for private information first."),
+)
+PermissionId = Literal["memory_self_edit", "openers", "ephemeral_replies", "leak_check"]
+assert set(get_args(PermissionId)) == {item.id for item in PERMISSIONS}
+
+
+class PermissionView(BaseModel):
+    id: PermissionId
+    label: str
+    description: str
+    enabled: bool
+
+
+class Permissions(BaseModel):
+    revision: str
+    items: list[PermissionView]
+
+
+class PermissionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: str = Field(pattern=REVISION)
+    id: PermissionId
+    enabled: bool
+
+
+def _permission_value(config: Config, permission: Permission) -> bool:
+    value = config
+    for key in permission.path:
+        value = getattr(value, key)
+    return bool(value)
+
+
+def _permissions(snapshot: Snapshot) -> Permissions:
+    return Permissions(revision=snapshot.revision, items=[
+        PermissionView(id=item.id, label=item.label, description=item.description,
+                       enabled=_permission_value(snapshot.config, item))
+        for item in PERMISSIONS
+    ])
+
+
+def _with_permission(config: Config, path: tuple[str, ...], enabled: bool) -> Config:
+    """A copy of the running config with one switch changed; everything else stays as it runs now."""
+    key, *rest = path
+    if not rest:
+        return config.model_copy(update={key: enabled})
+    return config.model_copy(update={key: _with_permission(getattr(config, key), tuple(rest), enabled)})
+
+
+@router.get(PERMISSIONS_PATH)
+async def read_permissions(request: Request) -> Permissions:
+    app = owner_app(request)
+    return _permissions(_snapshot(app.config.home))
+
+
+@router.post(PERMISSIONS_PATH)
+async def update_permission(request: Request) -> Permissions:
+    app = owner_app(request)
+    update = await _input(request, PermissionUpdate)
+    current = _snapshot(app.config.home)
+    _check_revision(current, update.revision)
+    permission = next(item for item in PERMISSIONS if item.id == update.id)
+    document = tomlkit.parse(current.text)
+    table = document
+    *parents, key = permission.path
+    for name in parents:
+        if name not in table:
+            table[name] = tomlkit.table()
+        table = table[name]
+    value = tomlkit.item(update.enabled)
+    if key in table and hasattr(table[key], "trivia"):  # keep the comment beside the value
+        value.trivia.comment_ws = table[key].trivia.comment_ws
+        value.trivia.comment = table[key].trivia.comment
+    table[key] = value
+    text = tomlkit.dumps(document)
+    try:
+        saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
+        _write(current, saved)
+    except (OSError, ValueError):
+        raise HTTPException(409, "Could not save the setting. Check config.toml and its permissions.") from None
+    app.config = _with_permission(app.config, permission.path, update.enabled)
+    return _permissions(saved)
 
 
 def _redact(text: str, key: str | None) -> str:

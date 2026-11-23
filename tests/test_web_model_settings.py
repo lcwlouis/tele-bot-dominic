@@ -763,3 +763,62 @@ async def test_search_settings_spend_cap_allows_local_searxng_blocks_cloud_searc
             "model": "web", "api_key_env": "BACKUP_KEY",
         })
         assert cloud_save.status_code == 422 and "spend cap" in cloud_save.text
+
+
+PERMISSIONS = "/api/permissions"
+
+
+async def test_permissions_need_owner_auth_same_origin_and_json(dashboard):
+    app, path, browser = dashboard
+    async with browser(authorized=False) as client:
+        assert (await client.get(PERMISSIONS)).status_code == 403
+        assert (await client.post(PERMISSIONS, json={}, headers=ORIGIN_HEADER)).status_code == 403
+    async with browser() as client:
+        revision = (await client.get(PERMISSIONS)).json()["revision"]
+        body = {"revision": revision, "id": "leak_check", "enabled": False}
+        for headers in ({}, {"Origin": "https://other.example.test"}, {"Referer": ORIGIN}, {"HX-Request": "true"}):
+            assert (await client.post(PERMISSIONS, headers=headers, json=body)).status_code == 403
+        assert (await client.post(PERMISSIONS, headers=POST_HEADERS, data={})).status_code == 415
+        for bad in (
+            {**body, "id": "web"},  # only the listed switches, never an arbitrary config key
+            {**body, "enabled": "false"},  # strict booleans
+            {**body, "extra": 1},
+            {"id": "leak_check", "enabled": False},
+        ):
+            response = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json=bad)
+            assert response.status_code == 422, bad
+            assert "web" not in response.json()["detail"] and "extra" not in response.json()["detail"]
+        app.store.owner_id = None
+        assert (await client.get(PERMISSIONS)).status_code == 409
+    assert path.read_text() == START
+
+
+async def test_permission_save_writes_config_and_applies_without_restart(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START.replace("[custom]", "[openers]\nenabled = false  # keep me\nmax_per_day = 3\n\n[custom]"))
+    app.config = load_config(path.parent)
+    async with browser() as client:
+        initial = (await client.get(PERMISSIONS)).json()
+        assert {item["id"]: item["enabled"] for item in initial["items"]} == {
+            "memory_self_edit": False, "openers": False, "ephemeral_replies": False, "leak_check": True,
+        }
+        assert initial["revision"] == (await client.get(API)).json()["revision"]
+        result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={"revision": initial["revision"], "id": "openers", "enabled": True})
+        assert result.status_code == 200, result.text
+        after = result.json()
+        assert next(item for item in after["items"] if item["id"] == "openers")["enabled"] is True
+        assert app.config.openers.enabled is True and app.config.openers.max_per_day == 3
+        result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={"revision": after["revision"], "id": "leak_check", "enabled": False})
+        assert result.status_code == 200, result.text
+        assert app.config.leak_check is False
+        assert app.config.models == load_config(path.parent).models  # nothing else in the running config moved
+
+        stale = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={"revision": initial["revision"], "id": "memory_self_edit", "enabled": True})
+        assert stale.status_code == 409
+        assert app.config.memory_self_edit is False
+
+    text = path.read_text()
+    saved = tomllib.loads(text)
+    assert saved["openers"] == {"enabled": True, "max_per_day": 3} and saved["leak_check"] is False
+    assert "enabled = true  # keep me" in text and "# Keep this comment." in text
+    assert path.with_name("config.toml.orig").read_text().startswith(START.splitlines()[0])
