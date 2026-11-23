@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from dom.web.pages import _chats, _proposals, presence_line
@@ -94,7 +94,7 @@ async def home(app: App) -> dict:
             } if reminders else None,
         },
         "recent": [
-            {"chat": titles[row["chat_id"]], "text": row["text"], "at": _when(_local(row["created_at"], tz), now)}
+            {"chat": titles[row["chat_id"]], "text": _preview(row["text"]), "at": _when(_local(row["created_at"], tz), now)}
             for row in await app.store.recent_replies(3) if row["chat_id"] in titles
         ],
         "desktop": {
@@ -102,6 +102,12 @@ async def home(app: App) -> dict:
             "task": {"brief": desktop_tasks[0]["brief"], "status": desktop_tasks[0]["status"]} if desktop_tasks else None,
         },
     }
+
+
+def _preview(text: str, limit: int = 120) -> str:
+    """One line of a reply, enough to recognise it: the dashboard is not a place to read friends' chats."""
+    line = " ".join((text or "").split())
+    return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
 
 
 @router.get("/api/home")
@@ -112,8 +118,11 @@ async def home_api(request: Request) -> dict:
     return {"setup": False, **await home(app)}
 
 
-@router.get("/app")
-@router.get("/app/{path:path}")
+@router.api_route("/app", methods=["GET", "HEAD"])
+@router.api_route("/app/{path:path}", methods=["GET", "HEAD"])
 async def new_app(path: str = "") -> FileResponse:
-    """The Svelte app routes in the browser; every /app path gets the same built page."""
+    """The Svelte app routes in the browser; every /app page path gets the same built page. A missing file
+    (a path ending in an extension) is a 404, not the page, so a broken asset link fails plainly."""
+    if "." in path.rsplit("/", 1)[-1]:
+        raise HTTPException(status_code=404)
     return FileResponse(APP_INDEX, media_type="text/html")

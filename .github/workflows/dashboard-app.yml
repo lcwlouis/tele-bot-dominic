@@ -3,7 +3,10 @@ name: Dashboard app
 # The new dashboard (web/) is built here and its output committed under dom/web/static/app, so `/update` and the
 # Pi never run Node. This fails when the committed build does not match the sources, then checks the app under
 # Dom's real CSP with Playwright (screenshot comparison is skipped: the baselines are rendered on macOS).
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
@@ -11,6 +14,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web

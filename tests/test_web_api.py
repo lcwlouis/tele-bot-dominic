@@ -112,3 +112,19 @@ def test_built_app_files_name_no_external_host():
             assert not re.search(r"url\((?:['\"])?(?:https?:)?//", text), path.name
             assert "data:font" not in text and "data:image" not in text, path.name
 
+
+
+def test_a_recent_reply_is_a_one_line_preview():
+    from dom.web.api import _preview
+
+    assert _preview("See you\n  all at eight.") == "See you all at eight."
+    long = _preview("word " * 60)
+    assert len(long) == 120 and long.endswith("…")
+
+
+async def test_a_missing_file_under_app_is_a_404_not_the_page(make_app, browser):
+    async with browser(make_app()) as client:
+        missing = await client.get("/app/assets/missing.js")
+        head = await client.head("/app/gallery")
+    assert missing.status_code == 404
+    assert head.status_code == 200
