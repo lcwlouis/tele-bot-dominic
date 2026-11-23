@@ -176,3 +176,20 @@ def test_seccomp_constants_are_allowed_only_on_value_lines_in_the_profile(reposi
     assert f"{path}:3: Telegram ID" in result.stdout
     assert f"{path}:4: Telegram ID" in result.stdout
     assert "other.json:1: Telegram ID" in result.stdout
+
+
+def test_dashboard_app_sources_allow_npm_scopes_svelte_tags_and_css_rules_only_in_web(repository):
+    scope = "@" + "fontsource-variable/geist"
+    track(repository, "web/package.json", f'{{"devDependencies": {{"{scope}": "1.0.0"}}}}')
+    track(repository, "web/src/Page.svelte", "{" + "@" + "render children()}\n<style>@" + "keyframes spin {}</style>")
+    track(repository, "web/src/app.css", "@" + "custom-variant dark (&:where(.dark));\n@" + "utility card {}")
+    track(repository, "web/package-lock.json", PLANTED["Telegram handle"])
+    track(repository, "dom/web/static/app/assets/index.js", PLANTED["Telegram ID"])
+    assert scan(repository).returncode == 0
+
+    track(repository, "web/src/Note.svelte", f"Ask {PLANTED['Telegram handle']} for the link")
+    track(repository, "docs/readme.md", scope)
+    track(repository, "notes.txt", "{" + "@" + "render children()}")
+    result = scan(repository)
+    assert result.returncode == 1
+    assert result.stdout.count("Telegram handle") == 3

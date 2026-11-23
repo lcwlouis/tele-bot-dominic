@@ -1,0 +1,160 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./shadcn-svelte.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/* Quiet Orbit. main.ts sets data-theme on <html> before the app mounts. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Dark is the base theme. Colours from the owner's Quiet Orbit kit; every text pair is checked for WCAG AA
+   by tests/test_dashboard_app.py, so keep the --name: #hex; form. */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #0a111e;
+  --rail: #0d1725;
+  --surface: #101e2e;
+  --raised: #142537;
+  --line: #2b4054;
+  --text: #e2edf2;
+  --text-muted: #9bb0c0;
+  --signal: #86d6d8;
+  --signal-strong: #b9eded;
+  --tint: #173b45;
+  --primary-fill: #91d9db;
+  --on-primary: #09282f;
+  --coral: #e3a595;
+  --coral-tint: #3a2626;
+  --coral-fill: #d99a89;
+  --on-coral: #2a1612;
+  --amber: #d1bb8c;
+  --focus: #b9eded;
+  --grid: #86d6d80a;
+  --shadow: #030a1250;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f5f3ee;
+  --rail: #eeece6;
+  --surface: #fdfcf8;
+  --raised: #f0f3ef;
+  --line: #cdd6d0;
+  --text: #19343a;
+  --text-muted: #4d6468;
+  --signal: #1f6970;
+  --signal-strong: #13555c;
+  --tint: #dfefec;
+  --primary-fill: #1f6970;
+  --on-primary: #ffffff;
+  --coral: #a24f3f;
+  --coral-tint: #f8e6e1;
+  --coral-fill: #a24f3f;
+  --on-coral: #ffffff;
+  --amber: #7a6130;
+  --focus: #13555c;
+  --grid: #216d730b;
+  --shadow: #263b3914;
+}
+
+/* shadcn-svelte's names, mapped onto Quiet Orbit. */
+:root {
+  --radius: 0.95rem;
+  --background: var(--canvas);
+  --foreground: var(--text);
+  --card: var(--surface);
+  --card-foreground: var(--text);
+  --popover: var(--raised);
+  --popover-foreground: var(--text);
+  --primary: var(--primary-fill);
+  --primary-foreground: var(--on-primary);
+  --secondary: var(--tint);
+  --secondary-foreground: var(--signal-strong);
+  --muted: var(--raised);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--tint);
+  --accent-foreground: var(--text);
+  --destructive: var(--coral);
+  --destructive-foreground: var(--on-coral);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--focus);
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-lg: calc(var(--radius) - 2px);
+  --radius-xl: var(--radius);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-canvas: var(--canvas);
+  --color-rail: var(--rail);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-signal: var(--signal);
+  --color-signal-strong: var(--signal-strong);
+  --color-tint: var(--tint);
+  --color-line: var(--line);
+  --color-text-muted: var(--text-muted);
+  --color-coral: var(--coral);
+  --color-coral-tint: var(--coral-tint);
+  --color-coral-fill: var(--coral-fill);
+  --color-on-coral: var(--on-coral);
+  --color-amber: var(--amber);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  body {
+    @apply min-h-dvh;
+  }
+  /* One focus ring everywhere a keyboard can land, visible on both themes. */
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--tint);
+    color: var(--text);
+  }
+}
+
+@layer components {
+  /* The faint technical grid behind feature cards, as in the kit. */
+  .orbit-grid {
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  .kicker {
+    @apply font-mono text-[0.7rem] tracking-[0.16em] uppercase text-muted-foreground;
+  }
+}

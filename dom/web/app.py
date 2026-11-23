@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+from dom.web.api import router as api_router
 from dom.web.auth import Auth, request_origin, same_origin
 from dom.web.desktop import VIEWER_JSON_POSTS, VNC_PATH, VNC_SOCKET, router as desktop_router
 from dom.web.model_settings import JSON_POSTS, is_json, router as model_settings_router
@@ -86,6 +87,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.state.dom = dom
     web.state.auth = auth
     web.include_router(router)
+    web.include_router(api_router)
     web.include_router(desktop_router)
     web.include_router(model_settings_router)
     web.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
