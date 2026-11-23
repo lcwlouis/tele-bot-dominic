@@ -338,3 +338,41 @@ async def test_card_guard_uses_owner_attribution_and_the_spend_gate(make_app, mo
         second = (await app.proposals.pending())[-1]
         assert json.loads(second["body_json"])["leak_score"] is None
         assert len(requests) == 1
+
+
+def test_plain_forum_topic_messages_are_not_replies_to_the_owner():
+    from aiogram.types import Chat, ForumTopicCreated, Message
+
+    from dom.telegram.convert import mentions_owner
+    from tghelpers import NOW
+
+    forum = Chat(id=GROUP, type="supergroup", title="The Group", is_forum=True)
+    owner_user = User(id=OWNER, is_bot=False, first_name="Owner")
+    created = Message(
+        message_id=50, date=NOW, chat=forum, from_user=owner_user,
+        forum_topic_created=ForumTopicCreated(name="Trips", icon_color=0x6FB9F0),
+    )
+    plain = tg(chat_type="supergroup", reply_to=created, is_topic_message=True, message_thread_id=50)
+    assert not mentions_owner(plain, OWNER, "owner")
+
+    owners_post = Message(message_id=77, date=NOW, chat=forum, from_user=owner_user, text="who's in?",
+                          is_topic_message=True, message_thread_id=50)
+    reply = tg(msg_id=78, chat_type="supergroup", reply_to=owners_post, is_topic_message=True, message_thread_id=50)
+    assert mentions_owner(reply, OWNER, "owner")
+
+
+@pytest.mark.parametrize("value", [["a"], 5, {"x": 1}])
+def test_a_wrongly_typed_elsewhere_line_is_dropped_not_fatal(value):
+    from dom.agent import parse_actions
+
+    actions = parse_actions(json.dumps({"bubbles": [{"text": "hi", "reply_to": None}], "elsewhere": value}))
+    assert actions is not None and actions.elsewhere is None and actions.bubbles[0].text == "hi"
+
+
+async def test_friend_dm_card_says_no_leak_check_runs_there(make_app):
+    app = make_app()
+    await approve_chat(app, FRIEND, "Reader")
+    await draft(app, chat="reader", text="running late")
+    await process_ready(app)
+    [notice] = app.bot.of("send", OWNER)
+    assert "No leak check for a private chat" in notice[2] and "Leak check unavailable" not in notice[2]

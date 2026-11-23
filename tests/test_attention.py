@@ -281,3 +281,26 @@ async def test_a_held_reply_releases_attention_before_its_owner_notice_completes
         await asyncio.wait_for(drain_dispatch(app.dispatch), 2)
     assert not app.bot.of("send", GROUP)
     assert len(app.bot.of("send", OWNER)) == 2
+
+
+@pytest.mark.parametrize("queued, cancels", [(False, False), (True, True)])
+async def test_only_supersedes_while_queued_for_the_token_are_free_restarts(setup_dispatch, queued, cancels):
+    from dom.dispatch import TurnAttempt
+    from dom.telegram.convert import to_incoming
+    from tghelpers import tg
+
+    app, dispatch, clock = await setup_dispatch(FakeJev(done=1))
+    sleeper = asyncio.create_task(asyncio.sleep(10))
+    dispatch._tasks.add(sleeper)
+    try:
+        prior = [TurnAttempt(sleeper, msg_id, turn_log.TurnTrace(), clock(), queued=queued) for msg_id in (1, 2)]
+        dispatch._interrupted[GROUP] = prior
+        active = dispatch._active[GROUP] = TurnAttempt(sleeper, 3, turn_log.TurnTrace(), clock())
+        dispatch.notify(to_incoming(tg(msg_id=4)))
+        assert active.trace.superseded is cancels
+        assert active.later == ([] if cancels else [4])
+    finally:
+        dispatch._tasks.discard(sleeper)
+        sleeper.cancel()
+        dispatch._active.pop(GROUP, None)
+        dispatch._interrupted.pop(GROUP, None)

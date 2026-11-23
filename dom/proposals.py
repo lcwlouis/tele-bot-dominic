@@ -121,7 +121,12 @@ def summary(row: dict) -> str:
         return memory_edit_summary(heading, body)
     if row["kind"] == "cross_chat":
         score = body["leak_score"]
-        leak = "Leak check unavailable" if score is None else f"Leak score {score:g}/3"
+        if score is not None:
+            leak = f"Leak score {score:g}/3"
+        elif body["target_chat_id"] > 0:
+            leak = "No leak check for a private chat"
+        else:
+            leak = "Leak check unavailable"
         return f"{heading}\n\n{body['text']}\n\nReason: {body['reason']}\n{leak} · Expires in 2 h"
     return heading
 

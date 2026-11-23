@@ -39,6 +39,11 @@ def mentions_owner(message: Message, owner_id: int, owner_handle: str) -> bool:
     ):
         return False
     reply = message.reply_to_message
+    # In a forum, Telegram makes every plain topic message a "reply" to the topic's creation notice: not a reply.
+    if reply and (reply.forum_topic_created is not None or (
+        message.is_topic_message and reply.message_id == message.message_thread_id
+    )):
+        reply = None
     if reply and reply.sender_chat is None and reply.from_user and reply.from_user.id == owner_id:
         return True
     body = message.text or message.caption or ""

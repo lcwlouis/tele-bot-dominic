@@ -151,6 +151,7 @@ class TurnAttempt:
     credit: float = 0.0  # seconds "typing…" showed in attempts this one restarted
     shown: float = 0.0  # seconds it showed in this one
     visited: bool = False
+    queued: bool = False  # reached the attention queue; superseded there without a visit, it costs no restart
     resume_visit: bool = False
     stay_check: bool = False  # a reply went out, so Jev owes the after-turn staying-online decision
 
@@ -250,7 +251,7 @@ class Dispatcher:
             attempt is not None and attempt.thread_id == msg.thread_id
             and msg.msg_id > attempt.msg_id and not attempt.trace.superseded
         ):
-            restarts = sum(prior.visited for prior in self._interrupted.get(chat_id, ()))
+            restarts = sum(prior.visited or not prior.queued for prior in self._interrupted.get(chat_id, ()))
             if attempt.committed or restarts >= MAX_RESTARTS or attempt.task not in self._tasks:
                 attempt.later.append(msg.msg_id)
             else:
@@ -1585,6 +1586,7 @@ class Dispatcher:
         try:
             queued_at = monotonic()
             started = None
+            attempt.queued = True
             try:
                 async with self.attention.visit(
                     chat_id, scope, tier, attempt.started, resume=attempt.resume_visit,
