@@ -244,3 +244,129 @@ export type Reminder = {
 export type RemindersData = { reminders: Reminder[] };
 export type Brief = { filename: string; title: string; markdown: string; blocks: { kind: "heading" | "code" | "ul" | "ol" | "p"; lines: string[] }[] };
 export type BriefsData = { briefs: Brief[] };
+
+/** GET /api/waiting and its writes (dom/web/api_waiting.py). Every write answers { ok, message, ...WaitingData }. */
+export type Trial = { label: string; elapsed_ms: number; failed: boolean; detail: string };
+export type WaitingCard =
+  | { type: "import"; id: number; service: string; facts: { id: number; text: string }[] }
+  | ({ type: "proposal"; id: number; kind: string; label: string; title: string } & {
+      diff?: string[];
+      description?: string;
+      text?: string;
+      network?: boolean;
+      storage?: boolean;
+      test_run?: Trial | null;
+      review?: string;
+      old?: string;
+      new?: string;
+      address_name?: string;
+      places?: string[];
+      macs?: string[];
+      reason?: string;
+      leak_score?: number | null;
+    });
+export type WaitingData = {
+  count: number;
+  kind: string;
+  source: string;
+  kinds: string[];
+  sources: string[];
+  chats: { id: number; label: string; title: string; detail: string; first: string }[];
+  cards: WaitingCard[];
+  settled: { id: number; label: string; status: string; title: string; created_at: string }[];
+  notices: { network: string; storage: string };
+};
+
+/** GET /api/system/* and the plugin writes (dom/web/api_system.py). */
+export type PluginRow = { name: string; status: string; hash: string; available: boolean; network: boolean; storage: boolean; test_run: Trial | null };
+export type PluginsData = {
+  plugins: PluginRow[];
+  panels: { plugin: string; id: string; title: string }[];
+  notices: { network: string; storage: string };
+};
+export type PluginReview = {
+  name: string;
+  description: string;
+  status: string;
+  hash: string;
+  network: boolean;
+  storage: boolean;
+  surfaces_changed: boolean;
+  reviewed: boolean;
+  test_run: Trial | null;
+  tools: { name: string; scopes: string[] }[];
+  commands: { name: string; description: string; scopes: string[] }[];
+  panels: { id: string; title: string }[];
+  documents: { path: string; removed: boolean; text: string; changes: string[] }[];
+  notices: { network: string; storage: string };
+};
+export type PanelResult = {
+  plugin: string;
+  id: string;
+  error: string | null;
+  title: string;
+  paragraphs: string[];
+  pairs: string[][];
+  columns: string[];
+  rows: string[][];
+};
+export type Breakdown = { name: string; calls: number; spend: number }[];
+export type UsageData = {
+  spent: number;
+  cap: number;
+  ratio: number;
+  tone: "arc" | "amber" | "signal";
+  kinds: Record<string, string>;
+  fallbacks: number;
+  today_kinds: Breakdown;
+  today_models: Breakdown;
+  month_kinds: Breakdown;
+  month_models: Breakdown;
+  bars: { date: string; spent: number; fallbacks: number; parts: { kind: string; y: number; height: number }[] }[];
+};
+export type ModelCall = {
+  kind: string;
+  model: string;
+  host: string | null;
+  fallback: boolean | null;
+  duration_ms: number;
+  status: string | number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  gap_ms: number | null;
+  between_tokens: number | null;
+  system_hash: string | null;
+  tools_hash: string | null;
+  user_hash: string | null;
+  user_prefix_hash: string | null;
+};
+export type Turn = {
+  at: string;
+  time: string;
+  full_time: string;
+  title: string;
+  outcome: string;
+  first_bubble_ms: number | null;
+  last_bubble_ms: number | null;
+  duration_ms: number;
+  model: string;
+  fallback: boolean;
+  calls: number;
+  steps: string[];
+  visits: { reason: string; behind: string; capped: string }[];
+  timing: { label: string; ms: number }[];
+  segments: { stage: string; label: string; x: number; ms: number }[];
+  bar_ms: number;
+  model_calls: ModelCall[];
+};
+export type TurnsData = {
+  chat: string;
+  stages: Record<string, string>;
+  visible_stages: string[];
+  choices: { id: string; title: string }[];
+  visits: { title: string; duration_ms: number; depth: number; left: number; width: number; time: string }[];
+  cache: { gap: string; returns: number; hit: number | null; between: number | null }[];
+  cross_chat: { kind: string; source: string; target: string; status: string; drop_reason: string | null; created_at: string; queued_at: string | null; sending_at: string | null; updated_at: string; text: string }[];
+  turns: Turn[];
+};

@@ -90,7 +90,7 @@
 <PageHeader kicker="Conversations" title="Chats" subtitle={destination.blurb}>
   {#snippet aside()}
     {#if data && data.pending}
-      <Button href="/proposals" variant="secondary" size="sm">{data.pending} waiting for approval</Button>
+      <Button href="/app/waiting" variant="secondary" size="sm">{data.pending} waiting for approval</Button>
     {/if}
   {/snippet}
 </PageHeader>

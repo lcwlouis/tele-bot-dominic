@@ -57,7 +57,7 @@ def _waiting(proposals: dict) -> dict:
         else:
             items.append({"label": card["label"], "detail": card["title"]})
     items.extend({"label": chat["label"], "detail": chat["title"]} for chat in proposals["pending_chats"])
-    return {"count": proposals["count"], "items": items[:3], "href": "/proposals"}
+    return {"count": proposals["count"], "items": items[:3], "href": "/app/waiting"}
 
 
 async def home(app: App) -> dict:
