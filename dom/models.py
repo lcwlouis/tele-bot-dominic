@@ -70,3 +70,5 @@ class IncomingMessage(BaseModel):
     media: dict | None
     date: datetime
     thread_id: int | None = None  # forum topic to answer in
+    mentions_owner: bool = False
+    message_url: str | None = None

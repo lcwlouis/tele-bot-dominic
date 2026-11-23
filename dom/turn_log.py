@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     import httpx
 
+    from dom.attention import Attention, Entry
     from dom.models import Scope
     from dom.store import Store
 
@@ -50,6 +51,8 @@ class ModelCall:
     output_tokens: int | None = None
     cached_tokens: int | None = None
     host: str = ""
+    gap_ms: int | None = None
+    between_tokens: int | None = None
 
     def received(self, response: httpx.Response) -> None:
         self.status = response.status_code
@@ -82,6 +85,36 @@ class TurnTrace:
 
 _current: ContextVar[TurnTrace | None] = ContextVar("turn_trace", default=None)
 _inside_timed: ContextVar[bool] = ContextVar("inside_timed", default=False)  # a timed() block already counts nested calls
+_VISIT_STEP = "attention:"
+_visit: ContextVar[tuple[Attention, int, Callable[[], datetime], TurnTrace] | None] = ContextVar(
+    "attention_visit", default=None,
+)
+
+
+@contextmanager
+def attention_visit(attention: Attention, entry: Entry, started: datetime, now: Callable[[], datetime]):
+    trace = _current.get()
+    if trace is None:
+        yield
+        return
+    token = _visit.set((attention, entry.chat_id, now, trace))
+    try:
+        yield
+    finally:
+        _visit.reset(token)
+        trace.steps.append(_VISIT_STEP + json.dumps({
+            "chat_id": entry.chat_id, "at": started.isoformat(), "duration_ms": milliseconds(now() - started),
+            "reason": entry.reason, "behind": entry.behind, "depth": entry.depth, "capped": entry.capped,
+        }))
+
+
+def visits_in(trace: list[str]) -> list[dict]:
+    return [json.loads(step[len(_VISIT_STEP):]) for step in trace if step.startswith(_VISIT_STEP)]
+
+
+def visible_steps(trace: list[str]) -> list[str]:
+    return [step for step in trace if "@" not in step and not step.startswith(_VISIT_STEP)]
+
 
 
 @contextmanager
@@ -134,6 +167,16 @@ def model_call(
         prompt_hash(head) if marker else None,
         host=host,
     )
+    visit = _visit.get() if kind == "chat" else None
+    if visit is not None and trace is visit[3]:
+        attention, chat_id, now, _ = visit
+        at = now()
+        if not any(previous.kind == "chat" for previous in trace.model_calls):
+            if (previous := attention.previous_call(chat_id)) is not None:
+                previous_at, call.between_tokens = previous
+                call.gap_ms = milliseconds(at - previous_at)
+    else:
+        visit = None
     trace.model_calls.append(call)
     trace.calls += 1
     if kind == "chat" or (not trace.model and kind == "triage"):
@@ -150,6 +193,8 @@ def model_call(
         raise
     finally:
         call.duration_ms = round((monotonic() - start) * 1000)
+        if visit is not None:
+            attention.record_call(chat_id, at, call.input_tokens or 0)
         if _inside_timed.get():
             pass  # e.g. a plugin tool's leak-guard call: the enclosing tool timing already covers it
         elif kind == "chat":

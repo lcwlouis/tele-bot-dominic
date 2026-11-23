@@ -165,6 +165,13 @@ class Actions(BaseModel):
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     gif: str | None = Field(default=None, min_length=1, max_length=50, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list)
+    elsewhere: str | None = None
+
+    @field_validator("elsewhere", mode="before")
+    @classmethod
+    def _optional_elsewhere(cls, value: object) -> object:
+        """The elsewhere line is optional: a wrongly typed one is dropped instead of costing the reply a repair round."""
+        return value if isinstance(value, str) or value is None else None
 
     @model_validator(mode="before")
     @classmethod

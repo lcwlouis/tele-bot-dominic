@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, time, timedelta
 from functools import partial
 from pathlib import Path
+from statistics import median
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import parse_qs, urlencode
 from zoneinfo import ZoneInfo
@@ -21,7 +22,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
-from dom import memory_import, proposals, selfwork, skills, traits
+from dom import memory_import, proposals, selfwork, skills, traits, turn_log
 from dom.agent import unfence
 from dom.briefs import list_briefs, markdown_blocks
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
@@ -256,6 +257,8 @@ def _proposal_label(kind: str, source: str) -> str:
         return f"Memory imported from {IMPORT_SERVICES.get(service, service)}" if service else "Memory fact"
     if kind == "memory_edit":
         return "Memory edit"
+    if kind == "cross_chat":
+        return "Message to another chat"
     if kind == "skill":
         return "Skill proposed after a desktop task" if source == "desktop" else "Skill proposal"
     if kind == "lan_address":
@@ -362,6 +365,7 @@ TURN_STAGES = {
     "debounce": "Debounce",
     "media_wait": "Media wait",
     "lock_wait": "Lock wait",
+    "queue_wait": "Waiting for another chat",
     "triage": "Jev triage",
     "model": "Model",
     "retry_backoff": "Retry backoff",
@@ -402,25 +406,68 @@ def _turn_timings(row: dict, trace: list[str]) -> None:
     row.update(timing=timings, segments=segments, bar_ms=offset, model_calls=json.loads(row["model_calls"]))
 
 
+def _attention_stats(rows: list[dict], title, tz: ZoneInfo) -> dict:
+    visits = [visit for row in rows for visit in turn_log.visits_in(json.loads(row["trace"]))]
+    visits = sorted(visits, key=lambda visit: visit["at"])[-50:]
+    origin = datetime.fromisoformat(visits[0]["at"]) if visits else None
+    end = 1
+    for visit in visits:
+        at = datetime.fromisoformat(visit["at"])
+        visit.update(x=turn_log.milliseconds(at - origin), title=title(str(visit["chat_id"])), time=at.astimezone(tz))
+        end = max(end, visit["x"] + max(1, visit["duration_ms"]))
+    for visit in visits:
+        visit["left"] = min(998, round(1000 * visit["x"] / end))
+        visit["width"] = max(2, round(1000 * visit["duration_ms"] / end))
+    labels = ("Under 1 min", "1–5 min", "5–15 min", "15 min or more")
+    groups = [[] for _ in labels]
+    for row in rows:
+        for call in json.loads(row["model_calls"]):
+            gap = call.get("gap_ms")
+            if gap is not None:
+                bucket = sum(gap >= edge for edge in (60_000, 300_000, 900_000))
+                groups[bucket].append(call)
+    cache = []
+    for label, calls in zip(labels, groups):
+        measured = [call for call in calls if call.get("input_tokens") and call.get("cached_tokens") is not None]
+        prompt_tokens = sum(call["input_tokens"] for call in measured)
+        hits = 100 * sum(call["cached_tokens"] for call in measured) / prompt_tokens if prompt_tokens else None
+        between = median(call["between_tokens"] for call in calls) if calls else None
+        cache.append((label, len(calls), hits, between))
+    return {"visits": visits, "cache": cache}
+
+
 async def _turns(app: App, chat: str = "") -> dict:
     tz = ZoneInfo(app.config.timezone)
     known = {row["chat_id"]: row for row in await app.store.list_chats()}
     approved = {row["chat_id"]: row for row in await app.store.list_approved_chats()}
     known.update(approved)
     rows = await app.store.recent_turns(chat or None)
+    def title(key: str) -> str:
+        return _title(known.get(key, {"chat_id": key, "title": ""}), app.owner_id)
+
     for row in rows:
         key = row["chat_id"]
         known.setdefault(key, {"chat_id": key, "title": ""})
         row["time"] = datetime.fromisoformat(row["at"]).astimezone(tz)
         row["title"] = _title(known[key], app.owner_id)
         trace = json.loads(row["trace"])
-        row["steps"] = [item for item in trace if "@" not in item]
+        row["steps"] = turn_log.visible_steps(trace)
+        row["visits"] = turn_log.visits_in(trace)
+        for visit in row["visits"]:
+            visit["behind_title"] = title(str(visit["behind"])) if visit["behind"] is not None else ""
+            visit["capped_title"] = title(str(visit["capped"])) if visit["capped"] is not None else ""
         _turn_timings(row, trace)
     # The filter offers chats Dom is in, plus any that appear in the turns shown; a chat he left long ago does not
     # clutter it.
     offered = {*approved, *(row["chat_id"] for row in rows), chat}
+    cross_chat = await app.store.cross_chat_items()
+    for item in cross_chat:
+        item["source_title"] = title(str(item["source_chat_id"]))
+        item["target_title"] = title(str(item["target_chat_id"]))
     return {
+        "cross_chat": cross_chat,
         "rows": rows, "chat": chat, "stages": TURN_STAGES,
+        **_attention_stats(await app.store.recent_attention_turns(), title, tz),
         "visible_stages": {stage for row in rows for stage, _, _, _ in row["segments"]},
         "choices": [(key, _title(row, app.owner_id)) for key, row in known.items() if key in offered],
     }

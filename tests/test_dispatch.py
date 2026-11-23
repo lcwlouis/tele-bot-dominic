@@ -573,6 +573,8 @@ async def test_sender_done_can_skip_the_debounce(setup_dispatch, gated_sleep, co
     trace = json.loads(row["trace"])
     assert f"Jev done=yes confidence={confidence}" in trace
     assert row["first_bubble_ms"] == (0 if confidence >= 0.70 else 3000)
+    assert turn_log.visits_in(trace)[0]["reason"] == "next"
+    assert not any(step.startswith("queue_wait@") for step in trace)
     timings = {item.partition("@")[0] for item in trace if "@" in item}
     # Waiting on Jev's verdict is triage time; only a debounce that really ran out is debounce time.
     assert ("triage" in timings, "debounce" in timings) == (confidence >= 0.70, confidence < 0.70)
@@ -1062,6 +1064,10 @@ async def test_restart_cap_finishes_the_third_attempt_and_queues_a_followup(setu
     assert "message 4" in followup and "Messages with IDs 4 came in while you were answering" in followup
     assert len(app.bot.of("send", GROUP)) == 2
     assert not (dispatch._active or dispatch._interrupted or dispatch._followups)
+    rows = await app.store.recent_turns(str(GROUP))
+    reasons_by_turn = [[visit["reason"] for visit in turn_log.visits_in(json.loads(row["trace"]))] for row in rows]
+    assert sorted(reasons_by_turn) == [["next"], ["next", "resume", "resume"]]
+
 
 
 async def test_only_long_owner_dm_requests_get_a_rotating_ack(setup_dispatch):

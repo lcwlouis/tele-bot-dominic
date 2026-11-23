@@ -16,6 +16,7 @@ from aiogram.types import BufferedInputFile
 from dom import own_code
 from dom._version import VERSION
 from dom.briefs import LIMITS as BRIEF_LIMITS, write_brief
+from dom.cross_chat import MAX_REASON, MAX_TEXT
 from dom.guard import check_local_private_text
 
 from dom.home import Home
@@ -631,6 +632,50 @@ OWN_CODE_TOOL = Tool(
 )
 
 
+async def _message_chat(args: dict, ctx: TurnCtx) -> str:
+    if ctx.app is None or not ctx.is_owner_dm():
+        return "Only the owner can publish messages to other chats."
+    return await ctx.app.dispatch.cross_chat.message_chat(
+        ctx.chat_id, args.get("chat"), args.get("text"), args.get("reason"),
+    )
+
+
+async def _tell_owner(args: dict, ctx: TurnCtx) -> str:
+    if ctx.app is None or ctx.scope not in ("group", "friend_dm") or ctx.chat_id == ctx.owner_id:
+        return "This is only for contacting the owner from another conversation."
+    return await ctx.app.dispatch.cross_chat.tell_owner(ctx.chat_id, args.get("text"), args.get("reason"))
+
+
+_DELIVERY_FIELDS = {
+    "text": {"type": "string", "maxLength": MAX_TEXT},
+    "reason": {"type": "string", "maxLength": MAX_REASON},
+}
+MESSAGE_CHAT = Tool(
+    name="message_chat",
+    description=(
+        "Draft one ordinary text message to an approved group or friend's DM for the owner to approve. "
+        "Write as you would text that chat yourself. Only say the owner asked if he wants that said."
+    ),
+    schema={
+        "type": "object",
+        "properties": {"chat": {"type": "string", "description": "The chat title or numeric ID"}, **_DELIVERY_FIELDS},
+        "required": ["chat", "text", "reason"],
+    },
+    scopes={"owner_dm"},
+    handler=_message_chat,
+)
+TELL_OWNER = Tool(
+    name="tell_owner",
+    description=(
+        "Use this when something in this conversation needs the owner's attention. "
+        "Write as yourself texting him. Don't repeat what an alert already said."
+    ),
+    schema={"type": "object", "properties": _DELIVERY_FIELDS, "required": ["text", "reason"]},
+    scopes={"group", "friend_dm"},
+    handler=_tell_owner,
+)
+
+
 async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     """Offered tools in cache-stable order: shared tools first, owner-only tools last.
 
@@ -647,7 +692,7 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     plugin_tools = sorted(await offered(app, scope), key=lambda tool: tool.name)
     shared.extend(tool for tool in plugin_tools if not _is_owner_only(tool))
     if scope != "owner_dm":
-        return shared
+        return [*shared, TELL_OWNER]
 
     owner_only: list[Tool] = [
         REMIND_TOOL,
@@ -667,4 +712,4 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
 
         owner_only.extend(TOOLS)
     owner_only.extend(tool for tool in plugin_tools if _is_owner_only(tool))
-    return shared + owner_only
+    return [*shared, *owner_only, MESSAGE_CHAT]
