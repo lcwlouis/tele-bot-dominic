@@ -18,7 +18,7 @@ For an important task in the owner's DM (planning, research, admin, or anything 
 - It exists only in the owner's DM: the tool is not offered in any other chat, refuses a call that is not the owner's DM, and the stored state is ignored everywhere else. A preset pinned on the DM wins: task mode is refused there and, if the pin comes later, stops having any effect.
 - It is separate from the daily vibe. It does not use up the once-a-day `switch_vibe`, does not change the day's pick, and when it ends the chat is back on the pick in force (or the locked preset). The state is one `kv` entry, `preset:task`.
 - The Chats panel shows "Task mode: <reason>" on the owner's DM, `self_inspect` reports it, and starting and ending it are logged as owner events.
-- The preset text sits in the prompt before the chat window, so entering and leaving task mode each cost one prompt-cache miss.
+- The preset text sits in the prompt after the chat window, so entering and leaving task mode leave the cached window intact.
 
 ## Turning Auto on
 

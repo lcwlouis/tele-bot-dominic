@@ -17,6 +17,7 @@ MODEL_ROLES = {
     "media": ("Built in", "Attachment descriptions, transcriptions, desktop screenshot descriptions and previews of the sticker images in your listed sticker sets."),
     "drafting": ("Built in", "Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort."),
     "search": ("Optional", "Web search role with ordered provider fallback: `searxng` (self-hosted JSON API), `openrouter` (OpenRouter web plugin with ZDR), `deepseek` (DeepSeek Search API) and `tavily` (Tavily Search API). If `[models.search]` omits `base_url` with no other provider set, it uses the starter OpenRouter search settings."),
+    "escalation": ("Optional", "The bigger model offered on an owner-DM task card after two model rounds and more than 60 seconds (Switch / Keep local, or Retry after a failed task). Only the owner DM uses it, and only after the owner taps. Without `[models.escalation]` it uses the drafting role's providers."),
 }
 
 
@@ -63,7 +64,7 @@ def render() -> str:
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
         "A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.",
         table(fields(ProviderEndpoint, "models.<name>.")),
-        "Chat, fallback, media, drafting and search can also list additional providers.",
+        "Chat, fallback, media, drafting, search and escalation can also list additional providers.",
         table(fields(ModelEndpoint, "models.<name>.", exclude=ProviderEndpoint.model_fields.keys())),
         "Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. "
         "Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. "

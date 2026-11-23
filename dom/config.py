@@ -31,7 +31,7 @@ class ProviderEndpoint(BaseModel):
     base_url: str = Field(description="Provider API base URL, including its API version path.")
     model: str = Field(
         "",
-        description="Provider model ID. Required for chat, fallback, media, drafting, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily.",
+        description="Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily.",
     )
     api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for a compatible endpoint without authentication.")
     reasoning_effort: Literal["low", "medium"] | None = Field(

@@ -1806,7 +1806,7 @@ class Dispatcher:
         url = urlsplit(base)
         buttons = []
         if url.scheme == "https" and url.netloc and url.username is None and not (url.query or url.fragment):
-            link = f"{base}/app/work" + ("" if container == DEFAULT else "?" + urlencode({"container": container}))
+            link = f"{base}/desktop/vnc/index.html" + ("" if container == DEFAULT else "?" + urlencode({"container": container}))
             buttons.append(InlineKeyboardButton(text="Open Desktop", url=link))
         buttons.append(InlineKeyboardButton(text="Done", callback_data=f"desktop:done:{task_id}:{steps}"))
         sent = await executor.send_text(

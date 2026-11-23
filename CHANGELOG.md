@@ -17,7 +17,7 @@ A new dashboard, and Dom keeps up with several chats at once: one conversation a
 - Pacing. The first bubble goes out sooner (it counts the time already spent thinking); later bubbles of a long answer type at a believable pace instead of arriving a second apart.
 - Search with fallbacks. Search is its own role in Settings with an ordered chain: SearXNG, OpenRouter web, DeepSeek and Tavily, each with a test call.
 - Bigger model when stuck. In your DM a task that drags past two model rounds and a minute offers to switch to the escalation model, with a cost estimate; a task that failed can be retried on it once.
-- The desktop on your phone. A full-page viewer with zoom, pan, scroll mode, a key bar and explicit copy and paste. Its firewall rules survive Docker's resource saver. Stopping the computer no longer holds the dashboard. Task reports come in Dom's words, and he proposes a skill only when asked to remember or after finding a workaround, with a short card and the full procedure attached.
+- The desktop on your phone. A full-page viewer with zoom, pan, scroll mode, a key bar and explicit copy and paste. Stopping the computer no longer holds the dashboard. Task reports come in Dom's words, and he proposes a skill only when asked to remember or after finding a workaround, with a short card and the full procedure attached.
 - Fewer false alarms. Names and handles of people in a chat no longer count as private terms in the leak check, so a group reply that names you is not held back.
 - Edge cases. Forum topics are caught up one by one; a group upgraded to a supergroup mid-reply keeps the unsent rest; critical reminders resume mid-send after a restart; flood-limited catch-ups retry; Dom never reacts twice.
 

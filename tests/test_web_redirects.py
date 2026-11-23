@@ -113,7 +113,7 @@ async def test_the_plugin_review_link_dom_sends_opens_the_app_page(make_app, bro
         assert (await http.get(f"/api/system/plugins/convert/{row['hash']}")).status_code == 200
 
 
-async def test_the_desktop_handoff_link_opens_the_desk_on_the_right_computer(make_app):
+async def test_the_desktop_handoff_link_opens_the_live_viewer_on_the_right_computer(make_app):
     app = make_app()
     app.config = app.config.model_copy(update={
         "web": app.config.web.model_copy(update={"public_url": "https://example.org"}),
@@ -124,4 +124,4 @@ async def test_the_desktop_handoff_link_opens_the_desk_on_the_right_computer(mak
         button.url for call in app.bot.of("send", OWNER) for buttons in call[3]["reply_markup"].inline_keyboard
         for button in buttons if button.url
     ]
-    assert links == ["https://example.org/app/work", "https://example.org/app/work?container=shop"]
+    assert links == ["https://example.org/desktop/vnc/index.html", "https://example.org/desktop/vnc/index.html?container=shop"]
