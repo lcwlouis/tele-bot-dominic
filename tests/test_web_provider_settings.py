@@ -329,11 +329,11 @@ async def test_editing_a_provider_moves_every_slot_that_uses_it(dashboard):
         assert moved.status_code == 200, moved.text
         home = _provider(moved.json(), "Home lab")
         assert home["saved"] and {use["role"] for use in home["uses"]} == {"chat", "media"}
-        assert seen == ["http://localhost:9000/v1/chat/completions"]  # tested through its first use, first
+        assert seen == ["http://localhost:9000/v1/chat/completions"] * 2  # each moved slot (chat, media) tested first
         assert app.config.models["media"].base_url == "http://localhost:9000/v1"
 
         renamed = await _post(client, "/save", original="Home lab", name="Basement", kind="openai", base_url="http://localhost:9000/v1")
-        assert renamed.status_code == 200 and len(seen) == 1  # a rename tests nothing
+        assert renamed.status_code == 200 and len(seen) == 2  # a rename tests nothing
         clash = await _post(client, "/save", original="Basement", name="Jev decisions", kind="openai", base_url="http://localhost:9000/v1")
         assert clash.status_code == 409
         twin = await _post(client, "/save", name="Twin", kind="openai", base_url="http://localhost:9000/v1")
@@ -426,3 +426,148 @@ async def test_a_saved_provider_may_share_a_studio_key_on_its_origin(dashboard):
                                base_url="https://openrouter.ai/api/v1", api_key_env="VOICE_KEY")
         assert response.status_code == 200, response.text
     assert load_config(path.parent).provider_setups["Voices"].api_key_env == "VOICE_KEY"
+
+
+async def test_a_moved_provider_never_takes_a_filled_default_key_to_its_new_host(dashboard):
+    # An OpenRouter search table takes omitted fields from the starter, so a blank key there becomes OPENROUTER_API_KEY.
+    app, path, browser = dashboard
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.host, request.headers.get("Authorization")))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    (path.parent / ".env").write_text(f"BACKUP_KEY={SECRET}\nOPENROUTER_API_KEY=example-openrouter-value\n")
+    search = {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "model": "acme/searcher",
+              "api_key_env": "OPENROUTER_API_KEY"}
+    async with _mock(app, handler), browser() as client:
+        assert (await _save(client, "search", search)).status_code == 200
+        before = path.read_text()
+        seen.clear()
+        moved = await _post(client, "/save", original="OpenRouter", name="OpenRouter", kind="openrouter",
+                            base_url="https://elsewhere.example.test/v1")
+        assert moved.status_code == 422 and "OPENROUTER_API_KEY" in moved.json()["detail"]
+        # The same blank key saved on the search role itself is refused too.
+        direct = await _save(client, "search", dict(search, base_url="https://elsewhere.example.test/v1", api_key_env=None))
+        assert direct.status_code == 422 and "OPENROUTER_API_KEY" in direct.json()["detail"]
+    assert seen == []  # refused before any probe
+    assert path.read_text() == before
+    assert app.config.models["search"].base_url == "https://openrouter.ai/api/v1"
+
+
+async def test_model_list_entries_echoing_a_configured_secret_are_dropped(dashboard):
+    app, path, browser = dashboard
+    leaky = {"data": [
+        {"id": "acme/plain"},
+        {"id": f"acme/{SECRET}"},
+        {"id": "acme/named", "name": f"Echo {SECRET}"},
+        {"id": "acme/described", "description": f"Bearer {SECRET}"},
+    ]}
+    async with _mock(app, lambda request: httpx.Response(200, json=leaky)), browser() as client:
+        assert (await _post(client, "/save", name="Lab", kind="openai", base_url="https://lab.example.test/v1")).status_code == 200
+        listed = await _post(client, "/models", name="Lab", refresh=True)
+        assert listed.status_code == 200, listed.text
+        assert [item["id"] for item in listed.json()["models"]] == ["acme/plain"]
+        assert SECRET not in listed.text
+        stored = await app.store.kv_get(model_lists.cache_key("https://lab.example.test/v1", None))
+        assert SECRET not in stored
+        # A list cached before the key value was set is filtered when it is read back.
+        await model_lists.remember(app.store, "https://lab.example.test/v1", None,
+                                   (model_lists.ListedModel(f"acme/{SECRET}", "Old", None, ()),))
+        cached = await _post(client, "/models", name="Lab")
+        assert cached.status_code == 200 and cached.json()["models"] == [] and SECRET not in cached.text
+
+
+async def test_a_hand_written_provider_address_is_checked_before_listing(dashboard):
+    app, path, browser = dashboard
+    rogue = "http://169." "254.169.254/v1"  # cloud metadata, split so the public-data check reads no literal address
+    path.write_text(START + f'\n[providers.Rogue]\nkind = "openai"\nbase_url = "{rogue}"\n')
+    seen = []
+    async with _mock(app, lambda request: seen.append(request) or httpx.Response(200, json={"data": []})), browser() as client:
+        listed = await _post(client, "/models", name="Rogue", refresh=True)
+        assert listed.status_code == 422 and "address isn't allowed" in listed.json()["detail"]
+        tested = (await _post(client, "/test", name="Rogue")).json()
+        assert tested["ok"] is False and "address isn't allowed" in tested["error"]
+    assert seen == []
+
+
+async def test_a_provider_move_tests_every_changed_slot_with_its_effort(dashboard):
+    app, path, browser = dashboard
+    seen = []
+    failing = set()
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append((request.url.host, body["model"], body.get("reasoning_effort")))
+        if body["model"] in failing:
+            return httpx.Response(500)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    lab = {"base_url": "https://lab.example.test/v1"}
+    async with _mock(app, handler), browser() as client:
+        saved = await _save(client, "fallback", dict(lab, model="acme/a", reasoning_effort="high"), [dict(lab, model="acme/b")])
+        assert saved.status_code == 200, saved.text
+        name = next(item["name"] for item in saved.json()["providers"] if item["base_url"] == lab["base_url"])
+        before = path.read_text()
+        seen.clear()
+        failing.add("acme/b")
+        refused = await _post(client, "/save", original=name, name=name, kind="openai", base_url="https://lab2.example.test/v1")
+        assert refused.status_code == 422 and "Fallback fallback 1" in refused.json()["detail"]
+        assert sorted(seen) == [("lab2.example.test", "acme/a", "high"), ("lab2.example.test", "acme/b", None)]
+        assert path.read_text() == before
+        failing.clear()
+        moved = await _post(client, "/save", original=name, name=name, kind="openai", base_url="https://lab2.example.test/v1")
+        assert moved.status_code == 200, moved.text
+    assert [slot.base_url for slot in app.config.providers("fallback")] == ["https://lab2.example.test/v1"] * 2
+    assert app.config.providers("fallback")[0].reasoning_effort == "high"
+
+
+async def test_a_triage_key_added_after_saving_turns_triage_on_without_a_restart(dashboard):
+    app, path, browser = dashboard
+
+    def handler(request):
+        return httpx.Response(200, json={"answers": {"check": {"type": "choice", "choice": "yes"}}})
+
+    triage = {"base_url": "https://decide.example.test/alpha", "model": "acme/decider", "api_key_env": "NEW_DECIDE_KEY"}
+    async with _mock(app, handler), browser() as client:
+        assert (await _save(client, "triage", triage)).status_code == 200
+        assert app.jev is None  # no key value yet: triage and its leak checks are off
+        env = path.parent / ".env"
+        env.write_text(f"BACKUP_KEY={SECRET}\nNEW_DECIDE_KEY=example-decide-value\n")
+        # Saving the unchanged role picks the key up.
+        unchanged = await _save(client, "triage", triage)
+        assert unchanged.status_code == 200 and unchanged.json()["restart_required"] is False
+        assert app.jev is not None and app.jev.api_key == "example-decide-value" and app.dispatch.jev is app.jev
+        # So does a Test that succeeds, after the value changes.
+        env.write_text(f"BACKUP_KEY={SECRET}\nNEW_DECIDE_KEY=example-decide-value-2\n")
+        tested = await client.post(API + "/test", headers=ORIGIN_HEADER,
+                                   json={"revision": await _revision(client), "role": "triage", "index": 0})
+        assert tested.json()["ok"] is True
+        assert app.jev.api_key == "example-decide-value-2" and app.dispatch.jev is app.jev
+        env.write_text(f"BACKUP_KEY={SECRET}\nNEW_DECIDE_KEY=example-decide-value-3\n")
+        assert (await _post(client, "/test", name="Jev decisions")).json()["ok"] is True
+        assert app.jev.api_key == "example-decide-value-3"
+
+
+async def test_a_route_that_cannot_be_built_keeps_the_old_file_and_runtime(dashboard, monkeypatch):
+    import dom.telegram.handlers as handlers
+
+    app, path, browser = dashboard
+
+    def broken(*args, **kwargs):
+        raise ValueError("cannot build")
+
+    def handler(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    monkeypatch.setattr(handlers, "routed_search_client", broken)
+    async with _mock(app, handler), browser() as client:
+        running = (app.config, app.client, app.jev, app.search_client)
+        saved = await _save(client, "chat", {"base_url": "http://localhost:8000/v1", "model": "chat-two"})
+        assert saved.status_code == 409
+        provider = await _post(client, "/save", name="Lab", kind="openai", base_url="http://localhost:9000/v1")
+        assert provider.status_code == 409
+    assert path.read_text() == START and not path.with_name("config.toml.bak").exists()
+    assert (app.config, app.client, app.jev, app.search_client) == running

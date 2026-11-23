@@ -271,7 +271,9 @@
               {host(primary.base_url)}{primary.reasoning_effort ? ` · ${primary.reasoning_effort} effort` : ""}
             </p>
             {#if primary.api_key_env && !primary.key_set}
-              <p class="mt-2 text-sm text-coral">Add {primary.api_key_env} to .env</p>
+              <p class="mt-2 text-sm text-coral">
+                Add {primary.api_key_env} to .env{role === "triage" ? ", then press Test. Until then triage and the leak check are off." : ""}
+              </p>
             {/if}
             {#if role === "search"}
               <!-- The footer tests the whole chain; this tests the primary alone. -->

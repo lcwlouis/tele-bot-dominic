@@ -3,7 +3,9 @@
 OpenRouter's `/models` says which models reason (`supported_parameters`); any other OpenAI-compatible `/models`
 lists IDs only, so whether those reason is unknown. Lists are cached in the store's kv table for a day, keyed by
 the provider's address and key variable, so a role slot finds its list without knowing the provider's name.
-Fetching is a dashboard action, never on the reply path: one GET, no redirects, a timeout and a size cap.
+Fetching is a dashboard action, never on the reply path: one GET, no redirects, a timeout and a size cap. A
+provider could echo a credential back in a model's fields, so an entry holding any configured secret value is dropped
+before it is cached or shown.
 """
 
 from __future__ import annotations
@@ -13,11 +15,12 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Collection
 from dataclasses import asdict, dataclass
 
 import httpx
 
-from dom.config import EFFORT_PATTERN
+from dom.config import EFFORT_PATTERN, Config
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 
 LIST_TTL = 24 * 60 * 60
@@ -26,6 +29,8 @@ MAX_LIST_BYTES = 8 * 1024 * 1024
 MAX_MODELS = 3000
 MAX_ID = 200
 MAX_NAME = 120
+# Shorter values aren't credentials, and matching them would drop ordinary model names.
+MIN_SECRET = 8
 # Offered when a model reasons but its provider names no levels, and accepted when nothing is known about the model.
 DEFAULT_EFFORTS = ("low", "medium", "high")
 KNOWN_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
@@ -54,6 +59,15 @@ def cache_key(base_url: str, api_key_env: str | None) -> str:
     return f"model-list:{digest}"
 
 
+def secret_values(config: Config) -> frozenset[str]:
+    """The values of every key variable config.toml names, and the fixed credentials Dom reads, that are set."""
+    return frozenset(value for name in config.secret_names() if (value := config.secret(name)) and len(value) >= MIN_SECRET)
+
+
+def _holds_secret(texts: Collection[str], secrets: Collection[str]) -> bool:
+    return any(secret in text for secret in secrets for text in texts)
+
+
 def _usable_id(value: object) -> bool:
     return (
         isinstance(value, str) and 0 < len(value) <= MAX_ID
@@ -71,8 +85,8 @@ def _efforts(entry: dict, reasoning: bool | None) -> tuple[str, ...]:
     return DEFAULT_EFFORTS if reasoning is not False else ()
 
 
-def parse(payload: object) -> tuple[ListedModel, ...]:
-    """The `data` array of an OpenAI-style list; entries without a usable ID are skipped."""
+def parse(payload: object, secrets: Collection[str] = ()) -> tuple[ListedModel, ...]:
+    """The `data` array of an OpenAI-style list; entries without a usable ID, or holding a secret value, are skipped."""
     data = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(data, list):
         raise ListUnavailable("The provider's model list was not in the expected format.")
@@ -84,14 +98,20 @@ def parse(payload: object) -> tuple[ListedModel, ...]:
         reasoning = bool({"reasoning", "reasoning_effort", "include_reasoning"} & set(params)) if isinstance(params, list) else None
         name = entry.get("name")
         name = " ".join(name.split())[:MAX_NAME] if isinstance(name, str) and name.strip() else entry["id"]
-        models.setdefault(entry["id"], ListedModel(entry["id"], name, reasoning, _efforts(entry, reasoning)))
+        model = ListedModel(entry["id"], name, reasoning, _efforts(entry, reasoning))
+        if secrets and _holds_secret((json.dumps(entry, ensure_ascii=False), model.id, model.name, *model.efforts), secrets):
+            continue
+        models.setdefault(entry["id"], model)
         if len(models) >= MAX_MODELS:
             break
     return tuple(sorted(models.values(), key=lambda model: model.id.lower()))
 
 
-async def fetch(http: httpx.AsyncClient, base_url: str, key: str | None) -> tuple[ListedModel, ...]:
-    """GET {base_url}/models. The caller has already checked that `key` may go to this address."""
+async def fetch(
+    http: httpx.AsyncClient, base_url: str, key: str | None, *, secrets: Collection[str],
+) -> tuple[ListedModel, ...]:
+    """GET {base_url}/models. The caller has already checked that `key` may go to this address and that the address is
+    allowed; entries holding any of `secrets` (or `key`) are dropped."""
     url = base_url.rstrip("/") + "/models"
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     try:
@@ -113,7 +133,7 @@ async def fetch(http: httpx.AsyncClient, base_url: str, key: str | None) -> tupl
     except (httpx.HTTPError, httpx.InvalidURL, OSError):
         raise ListUnavailable("Could not reach the provider.") from None
     try:
-        return parse(json.loads(body))
+        return parse(json.loads(body), {*secrets, *([key] if key else [])})
     except ValueError:
         raise ListUnavailable("The provider's model list was not valid JSON.") from None
 
@@ -123,7 +143,10 @@ def listable(kind: str) -> bool:
     return kind in ("openai", "openrouter")
 
 
-async def cached(store, base_url: str, api_key_env: str | None, *, fresh_only: bool = True) -> ModelList | None:
+async def cached(
+    store, base_url: str, api_key_env: str | None, *, fresh_only: bool = True, secrets: Collection[str] = (),
+) -> ModelList | None:
+    """The cached list, without entries holding any of `secrets` (a list cached before a key value was set)."""
     raw = await store.kv_get(cache_key(base_url, api_key_env))
     if not raw:
         return None
@@ -137,6 +160,9 @@ async def cached(store, base_url: str, api_key_env: str | None, *, fresh_only: b
         return None
     if fresh_only and time.time() - listed.fetched_at > LIST_TTL:
         return None
+    if secrets:
+        kept = tuple(item for item in listed.models if not _holds_secret((item.id, item.name, *item.efforts), secrets))
+        listed = ModelList(kept, listed.fetched_at)
     return listed
 
 

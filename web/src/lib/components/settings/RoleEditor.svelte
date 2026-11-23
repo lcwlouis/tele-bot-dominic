@@ -362,7 +362,10 @@
         </div>
       {/if}
       {#if triage}
-        <p class="text-xs text-muted-foreground">Triage uses one decisions endpoint, with no fallbacks.</p>
+        <p class="text-xs text-muted-foreground">
+          Triage uses one decisions endpoint, with no fallbacks. Until its key variable has a value in
+          <code class="font-mono">.env</code>, triage and the leak check are off; once it does, press Test to turn them on.
+        </p>
       {:else if slots.length >= maxSlots}
         <p class="text-xs text-muted-foreground">A role has at most {MAX_SLOTS - 1} fallbacks.</p>
       {/if}

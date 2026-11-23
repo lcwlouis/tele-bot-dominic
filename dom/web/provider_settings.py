@@ -2,7 +2,8 @@
 
 POST /api/providers/save adds a provider (original null) or edits one (original: its current name) and returns
 ModelSettings. A provider is a `[providers.<name>]` table: kind, base URL and key variable. Editing one that roles
-use rewrites those slots' address and key variable in the same atomic save. POST /api/providers/remove refuses a
+use rewrites those slots' address and key variable in the same atomic save, after testing each changed slot as it
+will be sent (model and reasoning effort). POST /api/providers/remove refuses a
 provider a role still uses. POST /api/providers/test tests the provider through its first use, or by fetching its
 model list when nothing uses it yet. POST /api/providers/models returns the provider's model list, cached for a
 day; refresh fetches it again. Every POST takes the settings revision, like dom/web/model_settings.py, and keeps its
@@ -23,16 +24,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dom import model_lists
 from dom.config import PROVIDER_NAME_PATTERN, ProviderEndpoint, ProviderKind
-from dom.llm import FallbackClient
+from dom.llm import FallbackClient, MissingProviderKey
 from dom.web.model_settings import (
-    _CONFIG_WRITE,
+    DECISION_ROLES,
     ENV_NAME,
     MISSING_KEY,
     REVISION,
     KeyPairing,
     ModelSettings,
     ProviderSetupView,
+    ProviderUse,
     Snapshot,
+    SETTINGS_ROLES,
     TestResult,
     _check_keys,
     _check_revision,
@@ -40,12 +43,13 @@ from dom.web.model_settings import (
     _looks_like_secret,
     _probe,
     _probe_search,
+    _probe_tuple,
     _redact,
     _settings,
     _snapshot,
     _validate_url,
-    _write,
     chain,
+    commit,
     family,
     kind_fits,
     provider_catalog,
@@ -154,6 +158,8 @@ def _check_edit(snapshot: Snapshot, edit: ProviderSave) -> ProviderSetupView | N
 
 
 def _apply(current: Snapshot, edit: ProviderSave) -> Snapshot:
+    """The settings with the provider saved, validated (with the key pairing checked on the effective routes) but not
+    written."""
     original = _check_edit(current, edit)
     document = tomlkit.parse(current.text)
     if "providers" not in document:
@@ -178,9 +184,31 @@ def _apply(current: Snapshot, edit: ProviderSave) -> Snapshot:
                 for endpoint in chain(config, role)
             ]
             set_role(document, role, slots)
-    saved = validated(current, document)
-    _write(current, saved)
-    return saved
+    return validated(current, document)
+
+
+class ListRefused(ValueError):
+    """The list request would go somewhere it may not: a disallowed address or an unpaired key."""
+
+
+async def _fetch_list(app: App, config, setup: ProviderSetupView) -> tuple[model_lists.ListedModel, ...]:
+    """Fetch a provider's model list with the checks a role's probe makes: an allowed address (a hand-written table
+    may name one the dashboard refuses) and a key variable paired with it. Raises ListRefused, MissingProviderKey or
+    model_lists.ListUnavailable (with any key redacted)."""
+    try:
+        _validate_url(setup.base_url)
+        _check_keys(config, [ProviderEndpoint(base_url=setup.base_url, api_key_env=setup.api_key_env)])
+    except KeyPairing as exc:
+        raise ListRefused(str(exc)) from None
+    except ValueError:
+        raise ListRefused("This provider's address isn't allowed. Fix it on the Providers tab.") from None
+    key = config.secret(setup.api_key_env) if setup.api_key_env else None
+    if setup.api_key_env and not key:
+        raise MissingProviderKey
+    try:
+        return await model_lists.fetch(_http(app), setup.base_url, key, secrets=model_lists.secret_values(config))
+    except model_lists.ListUnavailable as exc:
+        raise model_lists.ListUnavailable(_redact(str(exc), key)) from None
 
 
 async def _probe_setup(app: App, config, setup: ProviderSetupView) -> TestResult:
@@ -199,17 +227,25 @@ async def _probe_setup(app: App, config, setup: ProviderSetupView) -> TestResult
     if not setup.listable:
         return TestResult(ok=False, latency_ms=0, error="Not tested: choose this provider for triage to test it.")
     try:
-        _check_keys(config, [ProviderEndpoint(base_url=setup.base_url, api_key_env=setup.api_key_env)])
-        key = config.secret(setup.api_key_env) if setup.api_key_env else None
-        if setup.api_key_env and not key:
-            return TestResult(ok=False, latency_ms=0, error=MISSING_KEY)
-        models = await model_lists.fetch(http, setup.base_url, key)
-    except KeyPairing as exc:
+        models = await _fetch_list(app, config, setup)
+    except ListRefused as exc:
         return TestResult(ok=False, latency_ms=0, error=str(exc))
+    except MissingProviderKey:
+        return TestResult(ok=False, latency_ms=0, error=MISSING_KEY)
     except model_lists.ListUnavailable as exc:
-        return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=_redact(str(exc), key))
+        return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=str(exc))
     await model_lists.remember(app.store, setup.base_url, setup.api_key_env, models)
     return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=f"Lists {len(models)} models")
+
+
+def _changed_slots(current: Snapshot, saved: Snapshot) -> list[tuple[str, int, ProviderEndpoint]]:
+    """Each role slot that will send something not already sent: a new address, key variable, model or effort."""
+    changed = []
+    for role in SETTINGS_ROLES:
+        before = {_probe_tuple(role, endpoint) for endpoint in chain(current.config, role)}
+        changed += [(role, index, endpoint) for index, endpoint in enumerate(chain(saved.config, role))
+                    if _probe_tuple(role, endpoint) not in before]
+    return changed
 
 
 @router.post(PREFIX + "/save")
@@ -218,26 +254,35 @@ async def save_provider(request: Request) -> ModelSettings:
     edit = await _input(request, ProviderSave)
     current = _snapshot(app.config.home)
     original = _check_edit(current, edit)
+    # Built first, so the key pairing is checked on the routes as they will be saved, before anything is sent.
+    try:
+        candidate = await asyncio.to_thread(_apply, current, edit)
+    except (OSError, ValueError):
+        raise HTTPException(409, "Could not save the provider. Check config.toml and its permissions.") from None
     changed = original is None or (original.base_url, original.api_key_env, original.kind) != (
         edit.base_url, edit.api_key_env, edit.kind)
-    if changed:  # a rename alone sends nothing anywhere
+    slots = _changed_slots(current, candidate)
+    if slots:  # every moved slot, as it will be sent
+        results = await asyncio.gather(*(_probe(app, _http(app), current.config, endpoint, role=role)
+                                         for role, _, endpoint in slots))
+        failures = [
+            f"{_use_label(ProviderUse(role=role, index=index))}: {result.error or 'Provider test failed.'}"
+            for (role, index, _), result in zip(slots, results)
+            if not result.ok and result.error != MISSING_KEY  # a new key variable is filled in after saving
+        ]
+        if failures:
+            raise HTTPException(422, f"{edit.name}: {'; '.join(failures)}")
+    elif changed and (original is None or not original.uses):  # a rename alone sends nothing anywhere
         setup = ProviderSetupView(
             name=edit.name, kind=edit.kind, base_url=edit.base_url, api_key_env=edit.api_key_env, key_set=False,
-            is_local=False, saved=True, listable=model_lists.listable(edit.kind), uses=original.uses if original else [],
+            is_local=False, saved=True, listable=model_lists.listable(edit.kind), uses=[],
         )
         result = await _probe_setup(app, current.config, setup)
         # A new key variable is filled in after saving, and a new Jev endpoint is tested once triage uses it.
-        if not result.ok and result.error != MISSING_KEY and not (edit.kind == "jev" and not setup.uses):
+        if not result.ok and result.error != MISSING_KEY and edit.kind != "jev":
             raise HTTPException(422, f"{edit.name}: {result.error or 'Provider test failed.'}")
-    async with _CONFIG_WRITE:
-        try:
-            saved = await asyncio.to_thread(lambda: _apply(_snapshot(app.config.home), edit))
-        except (OSError, ValueError):
-            raise HTTPException(409, "Could not save the provider. Check config.toml and its permissions.") from None
-        try:
-            app.apply_model_routes(saved.config)
-        except (OSError, ValueError, httpx.InvalidURL):
-            pass  # the response reports whether the running routes still differ
+    saved = await commit(app, lambda fresh: _apply(fresh, edit),
+                         "Could not save the provider. Check config.toml and its permissions.")
     return _settings(app, saved)
 
 
@@ -253,24 +298,15 @@ def _remove(current: Snapshot, ref: ProviderRef) -> Snapshot:
     document["providers"].pop(setup.name)
     if not document["providers"]:
         document.pop("providers")
-    saved = validated(current, document)
-    _write(current, saved)
-    return saved
+    return validated(current, document)
 
 
 @router.post(PREFIX + "/remove")
 async def remove_provider(request: Request) -> ModelSettings:
     app = owner_app(request)
     ref = await _input(request, ProviderRef)
-    async with _CONFIG_WRITE:
-        try:
-            saved = await asyncio.to_thread(lambda: _remove(_snapshot(app.config.home), ref))
-        except (OSError, ValueError):
-            raise HTTPException(409, "Could not remove the provider. Check config.toml and its permissions.") from None
-        try:
-            app.apply_model_routes(saved.config)
-        except (OSError, ValueError, httpx.InvalidURL):
-            pass
+    saved = await commit(app, lambda current: _remove(current, ref),
+                         "Could not remove the provider. Check config.toml and its permissions.")
     return _settings(app, saved)
 
 
@@ -280,7 +316,11 @@ async def test_provider(request: Request) -> TestResult:
     ref = await _input(request, ProviderRef)
     snapshot = _snapshot(app.config.home)
     _check_revision(snapshot, ref.revision)
-    return await _probe_setup(app, snapshot.config, _find(provider_catalog(snapshot.config), ref.name))
+    setup = _find(provider_catalog(snapshot.config), ref.name)
+    result = await _probe_setup(app, snapshot.config, setup)
+    if result.ok and any(use.role in DECISION_ROLES for use in setup.uses):
+        app.refresh_triage()  # a key added to .env after saving takes effect once it works
+    return result
 
 
 def _list_view(listed: model_lists.ModelList) -> ModelListView:
@@ -300,18 +340,16 @@ async def list_models(request: Request) -> ModelListView:
     setup = _find(provider_catalog(snapshot.config), query.name)
     if not setup.listable:
         return ModelListView(listable=False, models=[])
-    if not query.refresh and (listed := await model_lists.cached(app.store, setup.base_url, setup.api_key_env)):
+    secrets = model_lists.secret_values(snapshot.config)
+    if not query.refresh and (listed := await model_lists.cached(
+            app.store, setup.base_url, setup.api_key_env, secrets=secrets)):
         return _list_view(listed)
-    config = snapshot.config
     try:
-        _check_keys(config, [ProviderEndpoint(base_url=setup.base_url, api_key_env=setup.api_key_env)])
-    except KeyPairing as exc:
+        models = await _fetch_list(app, snapshot.config, setup)
+    except ListRefused as exc:
         raise HTTPException(422, str(exc)) from None
-    key = config.secret(setup.api_key_env) if setup.api_key_env else None
-    if setup.api_key_env and not key:
-        raise HTTPException(422, f"Add {setup.api_key_env} to .env, then refresh the list. You can type a model ID meanwhile.")
-    try:
-        models = await model_lists.fetch(_http(app), setup.base_url, key)
+    except MissingProviderKey:
+        raise HTTPException(422, f"Add {setup.api_key_env} to .env, then refresh the list. You can type a model ID meanwhile.") from None
     except model_lists.ListUnavailable as exc:
-        raise HTTPException(502, _redact(str(exc), key)) from None
+        raise HTTPException(502, str(exc)) from None
     return _list_view(await model_lists.remember(app.store, setup.base_url, setup.api_key_env, models))

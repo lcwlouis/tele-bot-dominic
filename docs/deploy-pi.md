@@ -148,6 +148,20 @@ mv -Tf "$root/app.next" "$root/app"
 systemctl --user start dom.service
 ```
 
+From v0.8.3 the dashboard can save any reasoning effort a provider lists, such as
+`high`. v0.8.2 and older accept only `low` and `medium`, and refuse to start with
+any other `reasoning_effort` in `config.toml`. Before rolling back past v0.8.3,
+restore the copy the last dashboard save kept, or set each effort back:
+
+```sh
+cp "$DOM_HOME/config.toml.bak" "$DOM_HOME/config.toml"   # the file before the last save
+grep -n reasoning_effort "$DOM_HOME/config.toml"           # or edit each to low or medium, or delete the line
+```
+
+`config.toml.bak` holds the file as it was before the most recent save, so it also
+undoes that save's other change; `config.toml.orig` is the file before the first
+save from the dashboard.
+
 Rollbacks rely on every migration staying readable and writable by the previous
 release: add tables, columns and indexes, or rebuild a table with the same columns
 (for example to widen a `CHECK`), but never remove or rename anything the previous

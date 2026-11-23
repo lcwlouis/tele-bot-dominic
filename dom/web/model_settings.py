@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import re
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -186,6 +187,34 @@ def _address(url: str) -> str | None:
         return None
 
 
+def _keyed_routes(config: Config) -> list:
+    """Everything in config.toml that sends a key variable to an address, after the starter defaults are applied."""
+    return [*(endpoint for _, endpoint in config.model_endpoints()), *config.provider_setups.values(),
+            *config.studio.voice_fallbacks, *config.studio.image_fallbacks]
+
+
+def _paired(config: Config) -> dict[str, set[str | None]]:
+    paired: dict[str, set[str | None]] = {}
+    for endpoint in _keyed_routes(config):
+        if endpoint.api_key_env:
+            paired.setdefault(endpoint.api_key_env, set()).add(_address(endpoint.base_url))
+    return paired
+
+
+def _check_effective_keys(disk: Config, saved: Config) -> None:
+    """The rule _check_keys applies to what the owner typed, applied to what the saved file will actually route:
+    the starter defaults can fill in a key the owner left blank (an OpenRouter search table takes
+    OPENROUTER_API_KEY), so a key variable that holds a value must not reach a host config.toml doesn't pair it with."""
+    paired = _paired(disk)
+    for endpoint in _keyed_routes(saved):
+        name = endpoint.api_key_env
+        if name and _address(endpoint.base_url) not in paired.get(name, ()) and disk.secret(name):
+            raise KeyPairing(
+                f"This change would send {name} to {_address(endpoint.base_url)}, which it isn't paired with "
+                "(a slot left without a key variable can take the starter's). Give that address its own key variable, "
+                "or edit config.toml by hand.")
+
+
 def _check_keys(disk: Config, providers: list[ProviderEndpoint]) -> None:
     """A key variable may go only to the scheme://host:port that config.toml already pairs it with, in a model
     role or a saved `[providers.<name>]` table (so triage's
@@ -193,11 +222,7 @@ def _check_keys(disk: Config, providers: list[ProviderEndpoint]) -> None:
     for one host, unless it already holds a value, names a non-model instance credential (the bot token, desktop
     keys, KLIPY_API_KEY, or an unpaired JEV_API_KEY), or belongs to another host. Pairing an existing key with a
     new host stays a hand edit of config.toml."""
-    paired: dict[str, set[str | None]] = {}
-    for endpoint in [*(endpoint for _, endpoint in disk.model_endpoints()), *disk.provider_setups.values(),
-                     *disk.studio.voice_fallbacks, *disk.studio.image_fallbacks]:
-        if endpoint.api_key_env:
-            paired.setdefault(endpoint.api_key_env, set()).add(_address(endpoint.base_url))
+    paired = _paired(disk)
     instance = disk.model_copy(update={"models": {}, "provider_setups": {}}).secret_names()
     claimed: dict[str, set[str | None]] = {}
     for provider in providers:
@@ -377,10 +402,15 @@ def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
     if "chat" not in saved.config.models:
         raise HTTPException(422, "Configure a primary chat provider.")
+    try:
+        _check_effective_keys(current.config, saved.config)
+    except KeyPairing as exc:
+        raise HTTPException(422, str(exc)) from None
     return saved
 
 
 def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
+    """The settings with `update` applied, validated but not written."""
     _check_revision(current, update.revision)
     try:
         _check_keys(current.config, [*([update.primary] if update.primary else []), *update.fallbacks])
@@ -388,9 +418,27 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
         raise HTTPException(422, str(exc)) from None
     document = tomlkit.parse(current.text)
     set_role(document, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
-    saved = validated(current, document)
-    _write(current, saved)
-    return saved
+    return validated(current, document)
+
+
+async def commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str) -> Snapshot:
+    """Apply `change` to config.toml and the running routes, or to neither. The new settings and every client they
+    route to are built before the file is replaced, so a route that can't be built keeps the old file and runtime.
+    One config write at a time; the disk work runs off the loop, and a cancelled request still finishes the swap."""
+
+    async def run() -> Snapshot:
+        async with _CONFIG_WRITE:
+            try:
+                current = await asyncio.to_thread(_snapshot, app.config.home)
+                saved = await asyncio.to_thread(change, current)
+                routes = app.model_routes(saved.config)
+                await asyncio.to_thread(_write, current, saved)
+            except (OSError, ValueError, httpx.InvalidURL):
+                raise HTTPException(409, failure) from None
+            app.use_model_routes(routes)
+            return saved
+
+    return await asyncio.shield(asyncio.ensure_future(run()))
 
 
 def _write(current: Snapshot, saved: Snapshot) -> None:
@@ -581,11 +629,15 @@ async def read_models(request: Request) -> ModelSettings:
     return _settings(app, _snapshot(app.config.home))
 
 
-def _probe_tuple(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None]:
+def _probe_tuple(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None, str | None]:
+    """What a probe sends: a slot whose tuple is already in the chain was tested when it was added."""
     kind = search_provider_kind(endpoint) if role == "search" else None
-    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind)
+    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind, endpoint.reasoning_effort)
 
 
+# A probe is sent as the role will send it, reasoning effort included; reasoning needs room before the reply.
+PROBE_TOKENS = 256
+REASONING_PROBE_TOKENS = 2048
 MISSING_KEY = "Not tested: this provider's key variable has no value in .env yet. Add it, then press Test."
 
 
@@ -614,12 +666,17 @@ async def update_models(request: Request):
         detail = "; ".join(f"{_slot_label(item['index'])}: {item['error']}" for item in effort_failures)
         return JSONResponse(status_code=422, content={"detail": detail, "errors": effort_failures})
 
-    # A slot already in the chain (at any position) was tested when it was added; the probe ignores reasoning effort,
-    # so a change to that alone tests nothing new either.
+    # Built first, so the key pairing is checked on the routes as they will be saved (with the starter's defaults
+    # filled in), and each slot is tested as it will be sent.
+    try:
+        candidate = await asyncio.to_thread(_save, current, update)
+    except (OSError, ValueError):
+        raise HTTPException(409, "Could not save valid model settings. Check config.toml and its permissions.") from None
+    # A slot already in the chain (at any position) was tested when it was added; a changed model or effort is tested.
     existing = {_probe_tuple(update.role, provider) for provider in chain(current.config, update.role)}
     to_test = [
         (index, provider)
-        for index, provider in enumerate(submitted)
+        for index, provider in enumerate(chain(candidate.config, update.role))
         if _probe_tuple(update.role, provider) not in existing
     ]
     if to_test:
@@ -636,16 +693,8 @@ async def update_models(request: Request):
             detail = "; ".join(f"{_slot_label(item['index'])}: {item['error']}" for item in failures)
             return JSONResponse(status_code=422, content={"detail": detail, "errors": failures})
 
-    # One config write at a time from reading to publishing the new runtime snapshot; the disk work runs off the loop.
-    async with _CONFIG_WRITE:
-        try:
-            saved = await asyncio.to_thread(lambda: _save(_snapshot(app.config.home), update))
-        except (OSError, ValueError):
-            raise HTTPException(409, "Could not save valid model settings. Check config.toml and its permissions.") from None
-        try:
-            app.apply_model_routes(saved.config)
-        except (OSError, ValueError, httpx.InvalidURL):
-            pass  # the response reports whether the running routes still differ
+    saved = await commit(app, lambda current: _save(current, update),
+                         "Could not save valid model settings. Check config.toml and its permissions.")
     return _settings(app, saved)
 
 
@@ -698,7 +747,10 @@ async def test_provider(request: Request) -> TestResult:
     if test.index >= len(providers):
         raise HTTPException(404, "There is no saved provider at that position.")
     provider = providers[test.index]
-    return await _probe(app, current.http, snapshot.config, provider, role=test.role)
+    result = await _probe(app, current.http, snapshot.config, provider, role=test.role)
+    if result.ok and test.role in DECISION_ROLES:
+        app.refresh_triage()  # a key added to .env after saving takes effect once it works
+    return result
 
 
 @dataclass(frozen=True)
@@ -1038,14 +1090,14 @@ async def _probe(
         )
         _check_keys(config, [provider])
         key = config.secret(provider.api_key_env) if provider.api_key_env else None
-        probe_endpoint = provider.model_copy(update={"reasoning_effort": None})
         kind = "escalation" if role == "escalation" else "chat"
-        client = ChatClient(probe_endpoint, key, http, sleep=app.sleep, usage=app.dispatch.usage, kind=kind)
+        client = ChatClient(provider, key, http, sleep=app.sleep, usage=app.dispatch.usage, kind=kind)
         async with asyncio.timeout(TEST_TIMEOUT):
             with model_request(kind, escalation_owner, allowed):
                 message = await client.complete(
                     [{"role": "user", "content": "Reply with OK."}], [],
-                    once=True, max_tokens=256, timeout=TEST_TIMEOUT,
+                    once=True, max_tokens=PROBE_TOKENS if provider.reasoning_effort is None else REASONING_PROBE_TOKENS,
+                    timeout=TEST_TIMEOUT,
                 )
         if not isinstance(message, dict):
             raise ValueError
