@@ -35,7 +35,11 @@ T = TypeVar("T")
 log = logging.getLogger("dom.executor")
 MAX_TYPING_SECONDS = 20  # typing time keeps scaling with length up to this; at 8 characters a second that is 160
 MAX_REPLY_TYPING_SECONDS = 30  # all of one reply's typing, the time already shown while thinking included
-BUBBLE_GAP_SECONDS = 1.0  # once that is spent, each later bubble still follows a short pause
+BUBBLE_GAP_SECONDS = 1.0  # the shortest pause before a later bubble
+# Once the reply's typing budget is spent, a later bubble still takes time for its length, typed twice as fast
+# (up to 6 s): a flat short pause made a long answer arrive several long bubbles a second apart.
+TAIL_SPEEDUP = 2.0
+MAX_TAIL_SECONDS = 6.0
 TYPING_REFRESH_SECONDS = 4  # Telegram's typing indicator lapses after about 5 seconds
 TYPING_EXPIRY_SECONDS = 5
 GROUP_QUIP_CHARS = 32
@@ -401,7 +405,7 @@ async def perform(
         seconds = min(human_time, MAX_TYPING_SECONDS, budget)
         budget -= seconds
         if index > 0:
-            seconds = max(seconds, BUBBLE_GAP_SECONDS)
+            seconds = max(seconds, min(human_time / TAIL_SPEEDUP, MAX_TAIL_SECONDS), BUBBLE_GAP_SECONDS)
         if seconds > 0:
             with turn_log.timed("typing"):
                 if index == 0 and typed_already is not None:

@@ -113,6 +113,7 @@ async def test_alert_limits_by_group_asker_and_shared_hour(make_app):
         await app.dispatch.cross_chat.alert(request)
         return len(await app.store.cross_chat_items())
 
+    assert await alert(GROUP, OWNER, 9) == 0  # the owner naming himself is no call for his attention
     assert await alert(GROUP, FRIEND, 1) == 1
     assert await alert(GROUP, FRIEND + 1, 2) == 1  # group cooldown
     clock.advance(minutes=15)
@@ -309,7 +310,14 @@ async def test_card_guard_uses_owner_attribution_and_the_spend_gate(make_app, mo
 
     app = make_app()
     await approve_chat(app, GROUP)
-    requests = []
+    requests, looked_up = [], []
+    names = app.store.chat_participant_names
+
+    async def record_lookup(chat_id):
+        looked_up.append(chat_id)
+        return await names(chat_id)
+
+    monkeypatch.setattr(app.store, "chat_participant_names", record_lookup)
 
     def jev_response(request):
         requests.append(json.loads(request.content))
@@ -324,6 +332,7 @@ async def test_card_guard_uses_owner_attribution_and_the_spend_gate(make_app, mo
             assert (await draft(app)).startswith("Waiting")
         [row] = await app.proposals.pending()
         assert json.loads(row["body_json"])["leak_score"] == 2.5
+        assert looked_up == [GROUP]  # the names of the chat the message goes to, not the owner's DM
         assert requests[0]["provider"] == {"zdr": True}
         assert [call.kind for call in trace.model_calls] == ["guard"]
         usage = await app.store._run(lambda: list(app.store._conn.execute("SELECT kind, chat_id FROM usage")))
@@ -376,3 +385,16 @@ async def test_friend_dm_card_says_no_leak_check_runs_there(make_app):
     await process_ready(app)
     [notice] = app.bot.of("send", OWNER)
     assert "No leak check for a private chat" in notice[2] and "Leak check unavailable" not in notice[2]
+
+
+async def test_tell_owner_refuses_when_the_owner_is_the_one_talking(make_app):
+    app = make_app()
+    await approve_chat(app, GROUP)
+    offered = {tool.name: tool for tool in await enabled_tools(app, "group")}
+    ctx = TurnCtx("group", GROUP, OWNER, app.home, app.store, OWNER, app=app)
+    result = await execute_tool_call(
+        {"function": {"name": "tell_owner", "arguments": json.dumps({"text": "he keeps asking", "reason": "x"})}},
+        offered, ctx,
+    )
+    assert "owner is the one talking to you here" in result
+    assert not await app.store.cross_chat_items()

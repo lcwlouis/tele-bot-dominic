@@ -247,7 +247,7 @@ async def test_tavily_request_shape_wrapping_and_usage(make_app):
 
 
 @pytest.mark.parametrize("failure_mode", ["connect_error", "timeout", "http_503", "http_403", "invalid_json", "unresponsive"])
-async def test_router_falls_through_when_searxng_fails_or_times_out(make_app, failure_mode):
+async def test_router_falls_through_when_searxng_fails_or_times_out(make_app, caplog, failure_mode):
     from dom.search import SearchClient, SearchRouter
 
     app = make_app()
@@ -286,6 +286,10 @@ async def test_router_falls_through_when_searxng_fails_or_times_out(make_app, fa
     assert len(trace.model_calls) == 2
     assert trace.model_calls[0].model == "searxng" and trace.model_calls[0].fallback is False
     assert trace.model_calls[1].model == "deepseek/deepseek-v4.1-flash-1017" and trace.model_calls[1].fallback is True
+    # The log says why our own checks failed, but never quotes the response body.
+    assert ("upstream engines unresponsive" in caplog.text) == (failure_mode == "unresponsive")
+    assert "Expecting value" not in caplog.text  # a JSON decode error's message quotes the body; only its name is logged
+    assert ("JSONDecodeError" in caplog.text) == (failure_mode == "invalid_json")
     assert trace.fallback is True
 
     # Answering provider is attributed with fallback=1 and its cost.

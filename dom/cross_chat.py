@@ -62,8 +62,8 @@ class CrossChat:
         return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
 
     async def alert(self, msg: IncomingMessage) -> None:
-        if not msg.mentions_owner or msg.is_bot or msg.chat_type == "private":
-            return
+        if not msg.mentions_owner or msg.is_bot or msg.chat_type == "private" or msg.sender_id == self.app.owner_id:
+            return  # the owner naming himself is no call for his attention
         name = " ".join(msg.sender_name.split())[:128] or "Someone"
         title = " ".join(msg.chat_title.split())[:128] or "a group"
         text = f'👋 {name} is asking for you in "{title}"'
@@ -110,7 +110,8 @@ class CrossChat:
             try:
                 with model_request("guard", source, partial(self.dispatch.model_allowed, source)):
                     await check_model_allowed()
-                    score = await guard.leak_score(self.dispatch.jev, guard.private_terms(self.app.home), text)
+                    terms = guard.private_terms(self.app.home, await self.store.chat_participant_names(target))
+                    score = await guard.leak_score(self.dispatch.jev, terms, text)
             except ModelCallSkipped:
                 pass
         at = self.now()

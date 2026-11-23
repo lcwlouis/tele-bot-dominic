@@ -230,9 +230,12 @@ def _display_time(stamp: str, tz: tzinfo | None) -> str:
     return moment.astimezone(tz).strftime("%Y-%m-%d %H:%M")
 
 
-def format_chat_window_xml(chat_id: str, messages: list[StoredMessage], tz: tzinfo | None = None) -> str:
+def format_chat_window_xml(
+    chat_id: str, messages: list[StoredMessage], tz: tzinfo | None = None, *, owner_id: int | None = None,
+) -> str:
     """Render messages as ``<chat_window>`` XML. ``previous_seen_text`` is shown only when
-    Dom actually saw the original before it was edited. With ``tz``, times are local."""
+    Dom actually saw the original before it was edited. With ``tz``, times are local. With ``owner_id``, the
+    owner's own messages carry ``owner="true"``, so Dom knows him in a group without his private profile."""
     out = [f"<chat_window chat_id={quoteattr(str(chat_id))}>"]
     for m in messages:
         if m.role == "event":
@@ -244,6 +247,8 @@ def format_chat_window_xml(chat_id: str, messages: list[StoredMessage], tz: tzin
         if m.sender_name:
             attrs.append(f"name={quoteattr(m.sender_name)}")
         attrs.append(f"role={quoteattr(m.role)}")
+        if owner_id is not None and m.role == "user" and m.sender_user_id == owner_id:
+            attrs.append('owner="true"')
         if m.reply_to_msg_id is not None:
             attrs.append(f"reply_to={quoteattr(str(m.reply_to_msg_id))}")
         attrs.append(f"time={quoteattr(_display_time(m.created_at, tz))}")
@@ -1374,6 +1379,29 @@ class Store:
     ) -> list[StoredMessage]:
         return await self._run(self._get_recent_chat_window, str(chat_id), limit, through_id, thread_id, filter_thread)
 
+    async def chat_participant_names(self, chat_id: int | str) -> list[list[str]]:
+        """For each person who has written in this chat, the names and Telegram handles they go by there: what they wrote
+        under, plus their current Telegram name and handle, which the chat sees too."""
+        return await self._run(self._chat_participant_names, str(chat_id))
+
+    def _chat_participant_names(self, chat_id: str) -> list[list[str]]:
+        aliases = sorted(self._chat_id_aliases(chat_id))
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        # One row per distinct sender label before the join, so a large chat probes people_identities once a person.
+        rows = self._conn.execute(
+            "SELECT m.sender_user_id, m.sender_name, m.sender_handle, p.display_name, p.current_handle FROM ("
+            "SELECT DISTINCT sender_user_id, sender_name, sender_handle FROM messages "
+            f"WHERE chat_id IN ({', '.join('?' * len(aliases))}) AND role = 'user' AND is_bot = 0 AND is_deleted = 0"
+            f"{hide}) m LEFT JOIN people_identities p ON p.telegram_user_id = m.sender_user_id",
+            aliases,
+        ).fetchall()
+        people: dict[object, dict[str, None]] = {}
+        for user_id, *names in rows:
+            # A legacy row without a user ID is one person per name and handle, so two nameless senders never merge.
+            person = people.setdefault(user_id if user_id is not None else (names[0], names[1]), {})
+            person.update((name, None) for name in names if name)
+        return [list(names) for names in people.values() if names]
+
     def _window_where(
         self, chat_id: str, through_id: int | None,
         *, thread_id: int | None = None, filter_thread: bool = False,
@@ -1422,7 +1450,9 @@ class Store:
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]
 
-    format_chat_window_xml = staticmethod(format_chat_window_xml)
+    def format_chat_window_xml(self, chat_id: int | str, messages: list[StoredMessage], tz: tzinfo | None = None) -> str:
+        owner = None if self._is_owner_chat(chat_id) else self.owner_id  # in his DM every message is his
+        return format_chat_window_xml(str(chat_id), messages, tz, owner_id=owner)
 
     async def reflection_messages(self, start: datetime, end: datetime, *, private: bool) -> str:
         return await self._run(self._reflection_messages, start.isoformat(), end.isoformat(), private)

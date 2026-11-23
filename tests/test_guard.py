@@ -46,6 +46,48 @@ def test_private_terms_extract_keywords_without_full_sentences(make_app):
     assert len(private_terms(app.home)) <= 800
 
 
+def test_private_terms_leave_out_names_of_people_in_the_chat(make_app):
+    from dom.guard import private_terms
+
+    app = make_app()
+    put(app.home, "private/USER.md", "- Bartholomew Quince, goes by Bart (@newbie). Bart's sister Glorbina has a keypad code 7319.\n")
+    put(app.home, "private/NOTES.md", "## Bartholomew surprise party\n")
+    everyone = private_terms(app.home).splitlines()
+    assert {"Bartholomew Quince", "Bart", "Bart's", "Glorbina", "7319"} <= set(everyone)
+
+    in_chat = private_terms(app.home, [["Bartholomew Quince", "@newbie"]]).splitlines()
+    assert not {"Bartholomew Quince", "Bart", "Bart's"} & set(in_chat)
+    # Someone else's name, a number, and a heading that only starts with a name stay private.
+    assert {"Glorbina", "7319", "Bartholomew surprise party"} <= set(in_chat)
+
+
+def test_names_in_the_chat_never_hide_codes_acronyms_or_someone_elses_full_name(make_app):
+    from dom.guard import private_terms
+
+    app = make_app()
+    put(app.home, "private/USER.md", "## PIN\n## Invite\n- Fran Quill keeps the code 7319.\n")
+    everyone = set(private_terms(app.home).splitlines())
+    assert {"PIN", "Invite", "Fran Quill", "7319"} <= everyone
+    people = [["Pinto"], ["Room 73190"], ["Fran"], ["Quilliam"], ["@inviter"]]
+    # An acronym is no short form of a name, a handle is matched whole, numbers always stay, and two people's
+    # names never add up to a third term.
+    assert everyone == set(private_terms(app.home, people).splitlines())
+
+
+async def test_a_reply_naming_someone_in_the_group_does_not_list_their_name_as_private(make_app):
+    app = make_app(contents=(OUTGOING,))
+    await online(app)
+    app.config = app.config.model_copy(update={"leak_check": True})
+    app.dispatch.jev = fake = FakeJev(0.1)
+    put(app.home, "private/USER.md", "- Fran is my friend. Fran Quill is her full name. Glorbina's keypad code is 7319.\n")
+    await deliver(app, tg())  # sent by Fran (@fran)
+
+    [(state, _)] = fake.scored
+    terms = state.split("<private_terms>\n")[1].split("\n</private_terms>")[0].splitlines()
+    # Fran wrote in the group, so her name is no secret there; a surname the group never saw still is.
+    assert "Fran" not in terms and {"Fran Quill", "Glorbina's", "7319"} <= set(terms)
+
+
 @pytest.mark.parametrize("score", [1.5, 3.0, 0.5, JevUnavailable("down"), None])
 async def test_guard_checks_bubbles_once_and_tells_owner_when_held(make_app, caplog, score):
     app = make_app(contents=(OUTGOING,))

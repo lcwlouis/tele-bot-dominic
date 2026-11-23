@@ -643,6 +643,8 @@ async def _message_chat(args: dict, ctx: TurnCtx) -> str:
 async def _tell_owner(args: dict, ctx: TurnCtx) -> str:
     if ctx.app is None or ctx.scope not in ("group", "friend_dm") or ctx.chat_id == ctx.owner_id:
         return "This is only for contacting the owner from another conversation."
+    if ctx.sender_id is not None and ctx.sender_id == ctx.owner_id:
+        return "The owner is the one talking to you here. Say it to him in this chat."
     return await ctx.app.dispatch.cross_chat.tell_owner(ctx.chat_id, args.get("text"), args.get("reason"))
 
 

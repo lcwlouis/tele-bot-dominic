@@ -350,7 +350,8 @@ async def test_one_reply_types_for_at_most_30_seconds_in_all(store):
     # Six 20-second bubbles were 2 minutes of typing after a task-mode reply was already written.
     actions = Actions(bubbles=[Bubble(text="x" * 160) for _ in range(6)])
     await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep)
-    assert sum(sleeps) == executor.MAX_REPLY_TYPING_SECONDS + 4 * executor.BUBBLE_GAP_SECONDS  # 20 + 10, then pauses
+    # 20 + 10, then each later bubble at double pace, capped: 160 characters would be 10 s
+    assert sum(sleeps) == executor.MAX_REPLY_TYPING_SECONDS + 4 * executor.MAX_TAIL_SECONDS
 
 
 async def test_time_spent_thinking_counts_against_the_reply_typing_budget(store):
@@ -365,20 +366,24 @@ async def test_time_spent_thinking_counts_against_the_reply_typing_budget(store)
     assert sleeps == [2.0, 2.0]
 
 
-@pytest.mark.parametrize(("chat", "length", "thinking", "pace", "expected"), [
-    (OWNER, 80, 1, executor.TYPING_CPS, (9.0, 15.0)),  # 10 s to type, 1 s already shown; then 120 characters
-    (OWNER, 80, 17, executor.TYPING_CPS, (0.0, 13.0)),  # a slow generation adds nothing; the rest of the 30 s remains
-    (OWNER, 80, 1, executor.ASSISTANT_TYPING_CPS, (4.0, 7.5)),
-    (GROUP, 24, 0, executor.TYPING_CPS, (0.6, 15.0)),  # a short group quip goes out fast
-    (OWNER, 400, 29, executor.TYPING_CPS, (1.0, 1.0)),  # the reply cap is spent: the short gap only
+@pytest.mark.parametrize(("chat", "length", "thinking", "pace", "expected", "later"), [
+    (OWNER, 80, 1, executor.TYPING_CPS, (9.0, 15.0), 120),  # 10 s to type, 1 s already shown; then 120 characters
+    (OWNER, 80, 17, executor.TYPING_CPS, (0.0, 13.0), 120),  # a slow generation adds nothing; the rest of the 30 s remains
+    (OWNER, 80, 1, executor.ASSISTANT_TYPING_CPS, (4.0, 7.5), 120),
+    (GROUP, 24, 0, executor.TYPING_CPS, (0.6, 15.0), 120),  # a short group quip goes out fast
+    (OWNER, 400, 29, executor.TYPING_CPS, (1.0, 6.0), 120),  # the reply cap is spent: 120 characters at double pace, capped
+    (OWNER, 400, 29, executor.ASSISTANT_TYPING_CPS, (0.0, 3.75), 120),  # 120 characters at 32 a second
+    (OWNER, 400, 29, executor.TYPING_CPS, (1.0, 1.0), 12),  # a short later bubble still waits the 1 s gap
 ])
-async def test_adaptive_typing_subtracts_thinking_and_paces_later_bubbles(store, chat, length, thinking, pace, expected):
+async def test_adaptive_typing_subtracts_thinking_and_paces_later_bubbles(
+    store, chat, length, thinking, pace, expected, later,
+):
     bot, spent = FakeBot(), ([], [])
 
     async def sleep(seconds):
         spent[len(bot.of("send", chat))].append(seconds)
 
-    actions = Actions(bubbles=[Bubble(text="x" * length), Bubble(text="y" * 120)])
+    actions = Actions(bubbles=[Bubble(text="x" * length), Bubble(text="y" * later)])
     await executor.perform(bot, store, chat, 1, actions, sleep=sleep, typing_cps=pace, typed_already=thinking)
     assert tuple(sum(group) for group in spent) == pytest.approx(expected)
 
