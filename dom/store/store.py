@@ -1374,6 +1374,30 @@ class Store:
     ) -> list[StoredMessage]:
         return await self._run(self._get_recent_chat_window, str(chat_id), limit, through_id, thread_id, filter_thread)
 
+    async def chat_participant_names(self, chat_id: int | str) -> list[str]:
+        """Every name and handle the people who have written in this chat go by there, known aliases included."""
+        return await self._run(self._chat_participant_names, str(chat_id))
+
+    def _chat_participant_names(self, chat_id: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT m.sender_name, m.sender_handle, p.display_name, p.preferred_name, p.current_handle, "
+            "p.known_handles_json FROM messages m "
+            "LEFT JOIN people_identities p ON p.telegram_user_id = m.sender_user_id "
+            "WHERE m.chat_id = ? AND m.role = 'user' AND m.is_bot = 0",
+            (chat_id,),
+        ).fetchall()
+        names: dict[str, None] = {}
+        for row in rows:
+            *fields, handles_json = row
+            try:
+                handles = json.loads(handles_json) if handles_json else []
+            except ValueError:
+                handles = []
+            for name in (*fields, *(h for h in handles if isinstance(h, str))):
+                if name:
+                    names[name] = None
+        return list(names)
+
     def _window_where(
         self, chat_id: str, through_id: int | None,
         *, thread_id: int | None = None, filter_thread: bool = False,

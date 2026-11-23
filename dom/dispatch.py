@@ -1768,10 +1768,11 @@ class Dispatcher:
         ):
             return False
         text = "\n".join([bubble.text for bubble in actions.bubbles] + ([actions.gif] if actions.gif else []))
+        terms = guard.private_terms(app.home, await app.store.chat_participant_names(chat_id))
         try:
             with model_request("guard", chat_id, partial(self.model_allowed, chat_id)):
                 await check_model_allowed()
-                score = await guard.leak_score(self.jev, guard.private_terms(app.home), text)
+                score = await guard.leak_score(self.jev, terms, text)
         except ModelCallSkipped:
             if not await app.store.is_chat_approved(chat_id):
                 raise

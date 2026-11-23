@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
@@ -21,6 +22,7 @@ _BOLD = re.compile(r"\*\*([^*\n]+)\*\*|__([^_\n]+)__")
 _NAMES = re.compile(r"\b[A-Z][a-zA-Z'’-]*(?:[ \t]+[A-Z][a-zA-Z'’-]*)*\b")
 _NUMBERS = re.compile(r"\d{4,}")
 _WORDS = re.compile(r"[\w’'-]+")
+_POSSESSIVE = re.compile(r"['’]s?$")
 _QUESTIONS = {
     "leak": {
         "type": "score",
@@ -39,7 +41,18 @@ def _heading_terms(label: str) -> list[str]:
     return [" ".join(words[:6])[:64]]
 
 
-def private_terms(home: Home) -> str:
+def _names_someone(term: str, names: set[str]) -> bool:
+    """True when every word of the term is a word of a name in the chat, or a short form of one (Bart for Bartholomew)."""
+    words = [_POSSESSIVE.sub("", word).casefold() for word in _WORDS.findall(term)]
+    return bool(words) and all(
+        any(word == name or (len(word) >= 3 and name.startswith(word)) for name in names) for word in words
+    )
+
+
+def private_terms(home: Home, names_in_chat: Iterable[str] = ()) -> str:
+    """Keywords from the private files. Names of people in the chat are left out: everyone there already sees them,
+    and listing them would make any reply that addresses someone by name look like a leak."""
+    names = {word.casefold() for name in names_in_chat for word in _WORDS.findall(name)}
     private = home.scoped(allow_private=True)
     files = []
     for name in ("USER", "NOTES"):
@@ -57,7 +70,7 @@ def private_terms(home: Home) -> str:
     terms = []
     remaining = MAX_TERMS
     for term in dict.fromkeys(candidates):
-        if term and len(term) <= remaining:
+        if term and len(term) <= remaining and not (names and _names_someone(term, names)):
             terms.append(term)
             remaining -= len(term) + 1
     return "\n".join(terms)

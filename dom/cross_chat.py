@@ -107,10 +107,11 @@ class CrossChat:
         await asyncio.to_thread(guard.check_local_private_text, self.app.config, self.app.home, [text])
         score = None
         if target < 0 and self.dispatch.jev is not None:
+            terms = guard.private_terms(self.app.home, await self.store.chat_participant_names(target))
             try:
                 with model_request("guard", source, partial(self.dispatch.model_allowed, source)):
                     await check_model_allowed()
-                    score = await guard.leak_score(self.dispatch.jev, guard.private_terms(self.app.home), text)
+                    score = await guard.leak_score(self.dispatch.jev, terms, text)
             except ModelCallSkipped:
                 pass
         at = self.now()

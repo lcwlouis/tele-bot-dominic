@@ -443,6 +443,8 @@ class SearchRouter:
                 if index + 1 == len(self.providers):
                     raise
                 detail = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+                if type(exc) is ValueError:  # our own reasons, such as "upstream engines unresponsive"; never a body excerpt
+                    detail = f"{detail}: {exc}"
                 log.warning(
                     "search provider %s on %s failed (%s); trying the next provider",
                     provider.usage_model, provider.address, detail,
