@@ -3,12 +3,15 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages = [
+const pages: { name: string; path: string; heading: string; tab?: string }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
   { name: "gallery", path: "/app/gallery", heading: "Component library" },
-] as const;
+  { name: "settings-models", path: "/app/system", heading: "Settings" },
+  { name: "settings-providers", path: "/app/system", heading: "Settings", tab: "Providers" },
+  { name: "settings-permissions", path: "/app/system", heading: "Settings", tab: "What Dom may do" },
+];
 
 /** Collect every CSP violation and every request that leaves Dom's origin. */
 async function watch(page: Page) {
@@ -33,12 +36,14 @@ for (const scheme of ["dark", "light"] as const) {
     test.describe(`${device} ${scheme}`, () => {
       test.use({ viewport, colorScheme: scheme });
 
-      for (const { name, path, heading } of pages) {
+      for (const { name, path, heading, tab } of pages) {
         test(name, async ({ page }) => {
           const problems = await watch(page);
           const response = await page.goto(path);
           expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
           await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
+          if (tab) await page.getByRole("tab", { name: tab }).click();
+          await page.waitForLoadState("networkidle");
           await page.evaluate(() => document.fonts.ready);
           // Grow the viewport to the whole page, so the phone's bottom bar and the desktop sidebar sit where a
           // person sees them instead of where a full-page capture would stitch them.
@@ -75,6 +80,49 @@ test.describe("interactions under the CSP", () => {
     // Floating UI places it with CSSOM styles, which the CSP allows: it must sit right above its trigger.
     const [tipBox, triggerBox] = [await tip.boundingBox(), await trigger.boundingBox()];
     expect(Math.abs(tipBox!.y + tipBox!.height - triggerBox!.y)).toBeLessThan(24);
+    expect(problems).toEqual([]);
+  });
+
+  test("settings: a switch saves at once, the leak check asks first, a provider test answers", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "What Dom may do" }).click();
+    const groups = page.getByRole("switch", { name: "Private replies in groups" });
+    await expect(groups).toHaveAttribute("aria-checked", "false");
+    await groups.click();
+    await expect(groups).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByRole("status").filter({ hasText: "Private replies in groups: on." })).toBeVisible();
+    await page.reload();
+    await page.getByRole("tab", { name: "What Dom may do" }).click();
+    await expect(groups).toHaveAttribute("aria-checked", "true");
+    await groups.click();
+    await expect(page.getByRole("status").filter({ hasText: "Private replies in groups: off." })).toBeVisible();
+
+    // The leak check: turning it on is one click; turning it off waits for the confirm dialog.
+    const leaks = page.getByRole("switch", { name: "Check replies for leaks" });
+    await leaks.click();
+    await expect(page.getByRole("status").filter({ hasText: "Check replies for leaks: on." })).toBeVisible();
+    await leaks.click();
+    const dialog = page.getByRole("alertdialog");
+    await dialog.getByRole("button", { name: "Keep it on" }).click();
+    await expect(leaks).toHaveAttribute("aria-checked", "true");
+    await leaks.click();
+    await dialog.getByRole("button", { name: "Turn off" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Check replies for leaks: off." })).toBeVisible();
+    await expect(leaks).toHaveAttribute("aria-checked", "false");
+
+    await page.getByRole("tab", { name: "Models" }).click();
+    await page.getByRole("button", { name: "Test Chat", exact: true }).click();
+    await expect(page.getByText(/OK · \d+\.\d s/).first()).toBeVisible();
+    // Every saved slot has its own Test, fallbacks included.
+    await page.getByRole("button", { name: "Test Drafting fallback 1" }).click();
+    await expect(page.getByText(/OK · \d+\.\d s/)).toHaveCount(2);
+
+    // The editor opens on the saved chain and cancels without writing.
+    await page.getByRole("button", { name: "Edit Drafting" }).click();
+    await expect(page.getByLabel("Base URL").first()).toHaveValue("https://drafts.example.net/v1");
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByRole("button", { name: "Edit Drafting" })).toBeEnabled();
     expect(problems).toEqual([]);
   });
 

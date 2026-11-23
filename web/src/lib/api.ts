@@ -1,4 +1,5 @@
 import type { Activity } from "$lib/components/Orbit.svelte";
+import { toast } from "$lib/toast.svelte";
 
 /** GET /api/home (dom/web/api.py). */
 export type HomeData =
@@ -27,3 +28,109 @@ export async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T>
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
   return (await response.json()) as T;
 }
+
+/** A failed write: the status and the server's `detail`, plus per-slot `errors` where the route gives them. */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly errors: { index: number; error: string }[] = [],
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * The write pattern every ported page uses: `send("/api/...", body)`.
+ *
+ * - Writes are POST with a JSON body. Dom's middleware (dom/web/app.py) lets a POST through only when it is
+ *   authenticated, its path is listed in a JSON_POSTS set, its Content-Type is application/json and its Origin is
+ *   Dom's own; a same-origin fetch sends that Origin itself. Add each new write route to JSON_POSTS.
+ * - On a 4xx/5xx or a network failure it shows the server's `detail` (or a plain message) as an error toast, then
+ *   throws an ApiError so the caller can put things back or mark the failing field. Pass `quiet` when the caller
+ *   shows the error itself.
+ * - Settings writes take the GET's `revision`; a 409 means the file moved under the page: reload, then retry.
+ * - Optimistic UI only where a write cannot fail on content (a switch): flip at once, flip back in the catch.
+ *   Anything the server checks or tests (a provider) waits for the answer.
+ */
+export async function send<T>(path: string, body: unknown, { quiet = false }: { quiet?: boolean } = {}): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return fail(new ApiError(0, "Couldn't reach Dom. Check the connection and try again."), quiet);
+  }
+  if (response.ok) {
+    try {
+      return (await response.json()) as T;
+    } catch {
+      return fail(new ApiError(response.status, "Dom answered with something that isn't JSON. Reload and try again."), quiet);
+    }
+  }
+  if (response.status === 403) return fail(new ApiError(403, "Dashboard access expired. Reload to sign in."), quiet);
+  let result: { detail?: unknown; errors?: { index: number; error: string }[] } = {};
+  try {
+    result = await response.json();
+  } catch {
+    // a plain-text error page: fall back to the status below
+  }
+  const detail = typeof result.detail === "string" ? result.detail : `Request failed (${response.status}).`;
+  return fail(new ApiError(response.status, detail, Array.isArray(result.errors) ? result.errors : []), quiet);
+}
+
+function fail(error: ApiError, quiet: boolean): never {
+  if (!quiet) toast.show("error", error.message);
+  throw error;
+}
+
+/** GET/POST /api/models and /api/models/test (dom/web/model_settings.py). */
+export type Role = "chat" | "fallback" | "media" | "drafting" | "search" | "escalation";
+export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily";
+export type Effort = "low" | "medium";
+
+export type Endpoint = {
+  base_url: string;
+  model: string;
+  api_key_env: string | null;
+  reasoning_effort: Effort | null;
+  provider: SearchProviderId | null;
+};
+
+export type ProviderView = Endpoint & {
+  kind: "local" | "cloud";
+  key_set: boolean;
+  data_retention: string | null;
+  policy_url: string | null;
+  policy_label: string | null;
+};
+
+export type SearchProviderInfo = {
+  id: SearchProviderId;
+  label: string;
+  default_base_url: string;
+  default_api_key_env: string;
+  needs_model: boolean;
+  needs_key: boolean;
+  data_retention: string;
+  policy_url: string | null;
+  policy_label: string | null;
+};
+
+export type ModelSettings = {
+  revision: string;
+  roles: Record<Role, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
+  triage: { model: string; base_url: string; api_key_env: string | null; key_set: boolean };
+  search_providers: SearchProviderInfo[];
+  restart_required: boolean;
+};
+
+export type TestResult = { ok: boolean; latency_ms: number; reply: string | null; error: string | null; provider: string | null };
+
+/** GET/POST /api/permissions (dom/web/model_settings.py). */
+export type Permission = { id: string; label: string; description: string; enabled: boolean };
+export type Permissions = { revision: string; items: Permission[] };

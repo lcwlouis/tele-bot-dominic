@@ -21,6 +21,7 @@
   import * as Tabs from "$lib/components/ui/tabs";
   import * as Tooltip from "$lib/components/ui/tooltip";
   import { theme } from "$lib/theme.svelte";
+  import { toast } from "$lib/toast.svelte";
 
   // Every component the new dashboard uses, in every state the kit shows. It stands in for a Storybook:
   // it runs inside the real app, so it is checked under Dom's real CSP (see web/README.md).
@@ -55,14 +56,7 @@
   let warmth = $state(65);
   let selected = $state(true);
   let unselected = $state(false);
-  let toast = $state<{ tone: "ok" | "error"; text: string } | null>(null);
-  let toastTimer: ReturnType<typeof setTimeout> | undefined;
-
-  function showToast(tone: "ok" | "error", text: string) {
-    toast = { tone, text };
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (toast = null), 4000);
-  }
+  const showToast = (tone: "ok" | "error", text: string) => toast.show(tone, text);
 </script>
 
 <PageHeader
@@ -303,15 +297,4 @@
       </ul>
     </Card.Content>
   </Card.Root>
-</div>
-
-<div class="pointer-events-none fixed inset-x-0 bottom-24 z-50 flex justify-center px-4 lg:bottom-6" role="status" aria-live="polite">
-  {#if toast}
-    <p
-      class="pointer-events-auto flex items-center gap-2.5 rounded-xl border bg-popover px-4 py-3 text-sm shadow-lg {toast.tone === 'error' ? 'border-coral/50' : 'border-signal/40'}"
-    >
-      {#if toast.tone === "error"}<TriangleAlert class="size-4 text-coral" aria-hidden="true" />{:else}<Check class="size-4 text-signal" aria-hidden="true" />{/if}
-      {toast.text}
-    </p>
-  {/if}
 </div>

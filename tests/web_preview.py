@@ -22,7 +22,7 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dom import traits  # noqa: E402
-from dom.config import Config, ModelEndpoint  # noqa: E402
+from dom.config import load_config  # noqa: E402
 from dom.dispatch import Dispatcher  # noqa: E402
 from dom.home import Home  # noqa: E402
 from dom.llm import ChatClient  # noqa: E402
@@ -40,9 +40,65 @@ NOW = datetime(2026, 11, 22, 20, 30, tzinfo=timezone.utc)  # a Sunday evening
 CREW, ALEX, SAM = -4001, 4002, 4003
 
 
+# The Settings page reads and writes this file. Fictional hosts; the one key below is a made-up value.
+CONFIG = """\
+timezone = "UTC"
+leak_check = false
+memory_self_edit = true
+
+[models.chat]
+base_url = "http://homelab:8000/v1"
+model = "example/chat-model"
+
+[[models.chat.fallbacks]]
+base_url = "https://llm.example.org/v1"
+model = "example/chat-large"
+api_key_env = "EXAMPLE_LLM_KEY"
+
+[models.fallback]
+base_url = "https://llm.example.org/v1"
+model = "example/chat-large"
+api_key_env = "EXAMPLE_LLM_KEY"
+
+[models.media]
+base_url = "https://llm.example.org/v1"
+model = "example/vision-model"
+api_key_env = "EXAMPLE_LLM_KEY"
+
+[models.drafting]
+base_url = "https://drafts.example.net/v1"
+model = "example/draft-model"
+api_key_env = "EXAMPLE_DRAFTS_KEY"
+reasoning_effort = "low"
+
+[[models.drafting.fallbacks]]
+base_url = "https://llm.example.org/v1"
+model = "example/chat-large"
+api_key_env = "EXAMPLE_LLM_KEY"
+
+[models.search]
+provider = "searxng"
+base_url = "http://searxng:8080"
+
+[[models.search.fallbacks]]
+provider = "tavily"
+base_url = "https://api.tavily.com"
+api_key_env = "TAVILY_API_KEY"
+
+[models.triage]
+base_url = "http://homelab:8000/v1"
+model = "example/classifier"
+
+[openers]
+enabled = true
+"""
+
+
 def build(home: Path, port: int) -> handlers.App:
-    endpoint = ModelEndpoint(base_url="https://llm.example.org/v1", model="example/chat-model", api_key_env=None)
-    config = Config(home=home, owner_id=OWNER, timezone="UTC", models={"chat": endpoint}, leak_check=False)
+    (home / "config.toml").write_text(CONFIG)
+    (home / ".env").write_text("EXAMPLE_LLM_KEY=preview-made-up-value\nTAVILY_API_KEY=preview-made-up-value\n")
+    config = load_config(home).model_copy(update={"owner_id": OWNER})
+    endpoint = config.models["chat"]
     config = config.model_copy(update={
         "web": config.web.model_copy(update={"dev_token_env": TOKEN_ENV, "bind": "127.0.0.1", "port": port}),
     })
