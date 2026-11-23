@@ -147,6 +147,17 @@ async def test_deciding_a_soul_edit_goes_through_the_proposals_store(make_app, b
         assert (await client.post("/api/memory/proposal", headers=JSON, json={"id": edit, "decision": "reject"})).status_code == 404
 
 
+async def test_the_memory_decision_route_never_decides_other_kinds(make_app, browser):
+    app = make_app()
+    skill = {"name": "report", "description": "Summarise a web table", "body": "Open the page and summarise the table."}
+    other = await app.proposals.create("skill", "Skill: report", skill, "chat", draft=False, notify=False)
+    async with browser(app) as client:
+        for decision in ("approve", "reject"):
+            response = await client.post("/api/memory/proposal", headers=JSON, json={"id": other, "decision": decision})
+            assert response.status_code == 404
+    assert [row["id"] for row in await app.proposals.pending()] == [other]
+
+
 async def test_import_uses_the_shared_pipeline_and_limits_then_review_decides_in_batches(make_app, browser):
     app = make_app()
     app.home.scoped(allow_private=True)._write_regular("private/USER.md", "- Prefers tea\n")

@@ -26,7 +26,7 @@ ChatId = int
 
 
 class Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)  # no coercion: true is not a slider value
 
 
 class ChatAction(Strict):
@@ -41,7 +41,7 @@ class PresetUpdate(Strict):
 
 class TraitsUpdate(Strict):
     chat_id: ChatId
-    traits: dict[str, float] = Field(min_length=1, max_length=len(NAMES))
+    traits: dict[str, int | float] = Field(min_length=1, max_length=len(NAMES))
 
 
 class TraitsReset(Strict):
