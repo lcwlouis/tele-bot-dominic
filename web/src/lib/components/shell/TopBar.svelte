@@ -3,7 +3,7 @@
   import Sun from "@lucide/svelte/icons/sun";
   import Orbit from "$lib/components/Orbit.svelte";
   import { Button } from "$lib/components/ui/button";
-  import { gallery, type Destination, type Tab } from "$lib/nav";
+  import type { Destination, Tab } from "$lib/nav";
   import { theme } from "$lib/theme.svelte";
 
   let { destination, tab, title }: { destination: Destination; tab?: Tab; title?: string } = $props();
@@ -31,9 +31,6 @@
       </ol>
     </nav>
     <div class="ml-auto flex items-center gap-2">
-      <Button href={gallery.href} variant="outline" size="icon" aria-label={gallery.label} title={gallery.label}>
-        <gallery.icon />
-      </Button>
       <Button
         variant="outline"
         size="icon"

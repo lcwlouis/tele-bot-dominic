@@ -65,6 +65,7 @@ export const workspace: { tab: Tab; home: string }[] = [
   ...["plugins", "usage", "turns"].map((id) => ({ tab: tabOf("system", id), home: "System" })),
 ];
 
+// A design reference, reachable only by its address: not in the navigation.
 export const gallery = { label: "Component library", href: "/app/gallery", icon: Layers };
 
 function tabOf(destination: string, id: string): Tab {
