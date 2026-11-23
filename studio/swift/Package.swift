@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "DomHiggsBench",
+    name: "StudioHiggs",
     platforms: [.macOS("15.0")],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),

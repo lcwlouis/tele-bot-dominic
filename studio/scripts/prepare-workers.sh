@@ -46,16 +46,20 @@ for bundle in "$higgs_bin"/*.bundle; do
     fi
 done
 
-uv venv --allow-existing --python 3.12 "$runtime/image"
-uv pip install --python "$runtime/image/bin/python" 'mlx==0.32.4' 'mflux==0.24.0'
+sync_worker() {
+    local kind=$1
+    uv venv --allow-existing --python 3.12 "$runtime/$kind"
+    uv pip sync --require-hashes --only-binary :all: --python "$runtime/$kind/bin/python" \
+        "$studio/locks/$kind.txt"
+}
+
+sync_worker image
 
 checkout https://github.com/manmastersg/soulX-flashHead-local.git e7dc9cbe563684b97670f66d19dcf8d2aa2c9045 "$runtime/flash-src"
 checkout https://github.com/Soul-AILab/SoulX-FlashHead.git 9bc03de06bb0de82cd6bc477804512ae06144bf2 "$runtime/flash-upstream"
 # Fill in the VAE source omitted by the Apple Silicon port.
 cp -Rn "$runtime/flash-upstream/flash_head/ltx_video/." "$runtime/flash-src/flash_head/ltx_video/"
-uv venv --allow-existing --python 3.12 "$runtime/flash"
-uv pip install --python "$runtime/flash/bin/python" -r "$runtime/flash-src/requirements.txt" \
-    'torch==2.15.0' 'transformers==4.57.6' 'diffusers==0.36.0' 'librosa==1.0.1'
+sync_worker flash
 "$runtime/flash/bin/python" - "$runtime/flash-src" <<'PY'
 from pathlib import Path
 import sys
@@ -71,4 +75,5 @@ PY
 checkout https://github.com/dgrauet/ltx-2-mlx.git 747b30ef10e92a011e85b2aa0f6c4ee86ced5218 "$runtime/ltx-src"
 (cd "$runtime/ltx-src" && uv sync --no-dev --locked --python 3.12 --package ltx-pipelines-mlx)
 
-uv run --no-project --with 'huggingface_hub==1.33.0' "$studio/scripts/models.py" "$runtime/models"
+sync_worker hub
+"$runtime/hub/bin/python" "$studio/scripts/models.py" "$runtime/models"

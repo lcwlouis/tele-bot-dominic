@@ -25,6 +25,7 @@ class Sources:
             else:
                 self.static.append(ip_network(source, strict=False))
         self.resolved = set()
+        self._by_name = {}
         self.local_addresses = {address(value) for value in (*local_addresses, config.bind_host)}
         self.denied = (*ALWAYS_DENY, *(ip_network(v, strict=False) for v in config.denied_sources))
 
@@ -35,10 +36,13 @@ class Sources:
                     name, None, type=socket.SOCK_STREAM
                 ), 5)
             except (OSError, TimeoutError):
-                return ()
+                return None
 
         results = await asyncio.gather(*(resolve(name) for name in self.names))
-        self.resolved = {address(entry[4][0]) for result in results for entry in result}
+        for name, result in zip(self.names, results):
+            if result is not None:
+                self._by_name[name] = {address(entry[4][0]) for entry in result}
+        self.resolved = set().union(*self._by_name.values())
 
     def permits(self, peer):
         if not peer:

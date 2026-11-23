@@ -7,7 +7,7 @@ from hmac import compare_digest
 import json
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from starlette.applications import Starlette
 from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse, Response
@@ -21,8 +21,14 @@ from .service import read_output
 VERSION = "0.8.3"
 MAX_BODY = 16 * 1024
 MIME = {"voice": "audio/ogg", "image": "image/png", "video": "video/mp4", "special": "video/mp4"}
-Text = Annotated[str, Field(min_length=1, max_length=600)]
-OutfitName = Annotated[str, Field(min_length=1, max_length=128)]
+VoiceText = Annotated[str, Field(min_length=1, max_length=600)]
+
+
+def bounded_outfit(name: str) -> str | None:
+    return name if 1 <= len(name) <= 128 else None
+
+
+OutfitName = Annotated[str, AfterValidator(bounded_outfit)]
 
 
 class Payload(BaseModel):
@@ -30,14 +36,20 @@ class Payload(BaseModel):
 
 
 class Voice(Payload):
-    text: Text
+    text: VoiceText
     seed: Annotated[int, Field(ge=0, le=2**64 - 1)] | None = None
 
 
 class Video(Payload):
-    text: Text
+    text: Annotated[str, Field(min_length=1, max_length=200)]
     special: bool = False
     outfit: OutfitName | None = None
+
+    @model_validator(mode="after")
+    def validate_special_text(self):
+        if self.special and len(self.text) > 120:
+            raise ValueError("special video text exceeds 120 characters")
+        return self
 
 
 class Image(Payload):

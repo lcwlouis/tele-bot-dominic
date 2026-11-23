@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import json
 import os
+from pathlib import Path
 import signal
+import sys
 import time
 
 
@@ -20,7 +22,9 @@ def offline_env():
 async def spawn(*command, **options):
     # Reap even if cancelled between OS process creation and receiving its handle.
     task = asyncio.create_task(asyncio.create_subprocess_exec(
-        *command, start_new_session=True, stderr=asyncio.subprocess.DEVNULL,
+        sys.executable, str(Path(__file__).with_name("_process_guard.py")),
+        str(os.getpid()), *command,
+        start_new_session=True, stderr=asyncio.subprocess.DEVNULL,
         env=offline_env(), **options
     ))
     try:

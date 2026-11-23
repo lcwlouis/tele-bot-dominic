@@ -44,7 +44,7 @@ def main():
             signal = signal.mean(axis=1)
         duration = len(signal) / source_rate
         signal = librosa.resample(signal, orig_sr=source_rate, target_sr=sample_rate)
-        # Round up to full windows, keeping the final window from Round 2's fix.
+        # Include the final window even when it is only partially filled.
         needed_frames = math.ceil(duration * fps)
         chunks = 1 + max(0, math.ceil((needed_frames - frame_num) / stride))
         padded_samples = (frame_num + (chunks - 1) * stride) * sample_rate // fps

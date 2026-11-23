@@ -35,5 +35,13 @@ PY
 domain="gui/$(id -u)"
 if launchctl print "$domain/org.dom.studio" >/dev/null 2>&1; then
     launchctl bootout "$domain/org.dom.studio"
+    deadline=$((SECONDS + 15))
+    while launchctl print "$domain/org.dom.studio" >/dev/null 2>&1; do
+        if (( SECONDS >= deadline )); then
+            echo "Timed out waiting for org.dom.studio to unload" >&2
+            exit 1
+        fi
+        sleep 0.2
+    done
 fi
 launchctl bootstrap "$domain" "$HOME/Library/LaunchAgents/org.dom.studio.plist"

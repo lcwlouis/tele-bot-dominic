@@ -1,6 +1,9 @@
 import asyncio
+from contextlib import suppress
 from ipaddress import ip_network
+import os
 from pathlib import Path
+import signal
 import socket
 import sys
 
@@ -87,7 +90,8 @@ def test_reserve_and_token(config):
     assert read_token(config.token_file) == TOKEN
 
 
-async def test_source_policy_and_dns_replacement(config, monkeypatch):
+@pytest.mark.parametrize("lookup_error", [socket.gaierror, TimeoutError])
+async def test_source_policy_and_dns_replacement(config, monkeypatch, lookup_error):
     allowed = ["0.0.0.0/0", "::/0"]
     deny = ["198.51.100.0/24"]
     source = Sources(config.model_copy(update={"allowed_sources": allowed, "denied_sources": deny}),
@@ -111,11 +115,21 @@ async def test_source_policy_and_dns_replacement(config, monkeypatch):
     assert source.permits(PEER)
 
     async def fail(*args, **kwargs):
-        raise socket.gaierror()
+        raise lookup_error()
 
     monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fail)
     await source.refresh()
+    assert source.permits(PEER)
+
+    replacement = ("192.0.2.4", 1234)
+
+    async def new_lookup(*args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", replacement)]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", new_lookup)
+    await source.refresh()
     assert not source.permits(PEER)
+    assert source.permits(replacement)
 
 
 @pytest.mark.parametrize("method,path,payload", [
@@ -136,9 +150,9 @@ async def test_auth_and_source(studio, method, path, payload):
 
 
 @pytest.mark.parametrize("path,payload,mime", [
-    ("voice", {"text": "hello", "seed": 42}, "audio/ogg"),
-    ("video_note", {"text": "hello"}, "video/mp4"),
-    ("video_note", {"text": "hello", "special": True}, "video/mp4"),
+    ("voice", {"text": "x" * 600, "seed": 2**64 - 1}, "audio/ogg"),
+    ("video_note", {"text": "x" * 200}, "video/mp4"),
+    ("video_note", {"text": "x" * 120, "special": True}, "video/mp4"),
     ("image", {"scene": "hello", "outfit": "unknown", "size": 768}, "image/png"),
 ])
 async def test_generate(studio, path, payload, mime):
@@ -166,16 +180,36 @@ async def test_portrait(studio):
 @pytest.mark.parametrize("path,payload", [
     ("voice", {"text": "x" * 601}),
     ("voice", {"text": "hello", "seed": -1}),
+    ("voice", {"text": "hello", "seed": 2**64}),
     ("voice", {"text": 12}),
     ("image", {"scene": "x" * 301}),
     ("image", {"scene": "hello", "size": 512}),
     ("image", {"scene": "hello", "size": 768.0}),
     ("video_note", {"text": "hello", "special": "true"}),
     ("video_note", {"text": "hello", "extra": "field"}),
+    ("video_note", {"text": "x" * 201}),
+    ("video_note", {"text": "x" * 121, "special": True}),
+    ("image", {"scene": "hello", "outfit": 12}),
 ])
 async def test_validation(studio, path, payload):
     async with client(studio) as http:
         assert (await http.post(f"/v1/{path}", json=payload)).status_code == 422
+
+
+@pytest.mark.parametrize("path,payload,mime", [
+    ("image", {"scene": "hello"}, "image/png"),
+    ("video_note", {"text": "hello"}, "video/mp4"),
+])
+@pytest.mark.parametrize("outfit", ["", "x" * 129])
+async def test_unusable_outfits_use_default(studio, path, payload, mime, outfit):
+    # Even a configured outfit with an overlong name is ignored.
+    studio.config.outfits["x" * 129] = studio.config.outfits["default"].model_copy(
+        update={"portrait": Path("wrong.png")},
+    )
+    async with client(studio) as http:
+        response = await http.post(f"/v1/{path}", json={**payload, "outfit": outfit})
+        assert response.status_code == 200
+        assert response.headers["content-type"] == mime
 
 
 async def test_body_limits(studio):
@@ -247,6 +281,50 @@ async def test_crash_backoff(studio):
     assert not worker.loaded
     with pytest.raises(WorkerError, match="backoff"):
         await worker.start()
+
+
+async def test_supervisor_death_reaps_inflight_process_group():
+    # A worker and its child both hold the stdout pipe. EOF proves both exited.
+    worker_code = """
+import os
+import subprocess
+import sys
+import time
+
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+print(os.getpgrp(), flush=True)
+time.sleep(60)
+"""
+    supervisor_code = """
+import asyncio
+import sys
+
+from studio_service.process import spawn
+
+async def main():
+    worker = await spawn(sys.executable, "-c", sys.argv[1])
+    await worker.wait()
+
+asyncio.run(main())
+"""
+    supervisor = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", supervisor_code, worker_code, stdout=asyncio.subprocess.PIPE,
+    )
+    group = None
+    try:
+        async with asyncio.timeout(5):
+            group = int(await supervisor.stdout.readline())
+            supervisor.kill()
+            assert await supervisor.stdout.read() == b""
+            group = None
+    finally:
+        if supervisor.returncode is None:
+            with suppress(ProcessLookupError):
+                supervisor.kill()
+        if group is not None:
+            with suppress(ProcessLookupError):
+                os.killpg(group, signal.SIGKILL)
+        await supervisor.wait()
 
 
 async def test_disconnect_reaps_render(studio):
