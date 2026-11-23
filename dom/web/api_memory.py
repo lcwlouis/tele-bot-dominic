@@ -8,15 +8,17 @@ auth, a same-origin Origin and a JSON body, like the settings routes.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from dom import memory_import
+from dom import memory_export, memory_import
 from dom.home import MAX_SOUL_EDIT, content_version
 from dom.telegram import owner
 from dom.web.model_settings import _input
@@ -36,6 +38,7 @@ from dom.web.shared import (
 log = logging.getLogger(__name__)
 router = APIRouter()
 PREFIX = "/api/memory"
+GUARDED_GETS = {f"{PREFIX}/export"}  # reads that build a download and leave a record: same-site browsers only
 JSON_POSTS = {f"{PREFIX}/save", f"{PREFIX}/soul", f"{PREFIX}/import", f"{PREFIX}/import-review", f"{PREFIX}/proposal"}
 MAX_SAVE = 1024 * 1024 + 4096  # a 1 MB file with JSON around it
 MAX_IMPORT = memory_import.MAX_DOCUMENT_BYTES * 4 // 3 + 4096  # the document as base64 with JSON around it
@@ -178,3 +181,19 @@ async def decide_memory_proposal(request: Request) -> dict:
     if message not in ("Approved", "Rejected"):
         raise HTTPException(409, message)
     return {"message": message, **await _waiting(app)}
+
+
+@router.get(PREFIX + "/export")
+async def export_memory(request: Request) -> Response:
+    """All of Dom's memory as a zip: owner-only, built off the event loop, and noted as an owner event."""
+    app = owner_app(request)
+    try:
+        data = await asyncio.to_thread(memory_export.build_export, app.home.root)
+    except memory_export.ExportTooLarge as exc:
+        raise HTTPException(413, str(exc)) from None
+    except OSError:
+        log.exception("could not build the memory export")
+        raise HTTPException(500, "Couldn't build the export. Check that Dom can read its notes.") from None
+    await owner.record_event(app, "Downloaded a memory export from the dashboard")
+    name = memory_export.export_name(app.dispatch.now())
+    return Response(data, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"'})

@@ -106,6 +106,7 @@ def test_owner_commands():
         ("ownwork", "List, cancel and delete self-directed tasks"),
         ("stickers", "Add or remove a sticker set"),
         ("import", "Bring memories from another assistant"),
+        ("export", "Get a zip of everything Dom remembers"),
         ("update", "Check for and install a new release"),
     ]
 

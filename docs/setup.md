@@ -104,6 +104,7 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/skills` | Lists, retires, restores and deletes skills (`/skills retire <name>`, `/skills restore <name>`, `/skills delete <name>`). |
 | `/stickers` | Adds and removes sticker sets, by short name or share link. |
 | `/import` | Starts an owner-reviewed memory import. |
+| `/export` | Sends a zip of everything Dom remembers: `SOUL.md`, `memory/`, `private/`, skills and presets. Never `.env`, `state.db` or backups; use `dom backup` for a full copy. |
 | `/tasks` | Lists, cancels and deletes finished desktop tasks (`/tasks delete <id>`). |
 | `/ownwork` | Lists, cancels and deletes finished self-directed tasks (`/ownwork delete <id>`). |
 | `/t3` | Shows T3 Code sign-in, linked machines and audit history ([T3 Code bridge](t3-bridge.md)). |

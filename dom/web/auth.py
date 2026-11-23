@@ -168,3 +168,10 @@ def same_origin(request: HTTPConnection, identity: Identity) -> bool:
     origins = request.headers.getlist("Origin")
     expected = request_origin(request, identity)
     return len(origins) == 1 and expected is not None and _origin(origins[0]) == expected
+
+
+def fetch_site_ok(request: HTTPConnection, identity: Identity) -> bool:
+    """For reads that do work or leave a record (the export, search): a browser must say the request came from this
+    dashboard. Only a bearer-token client, which is not a browser, may omit Sec-Fetch-Site."""
+    site = request.headers.get("Sec-Fetch-Site")
+    return site == "same-origin" or (site is None and identity == "local")

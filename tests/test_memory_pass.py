@@ -10,7 +10,7 @@ import pytest_asyncio
 from tghelpers import FINAL, FRIEND, GROUP, OWNER, drain_dispatch
 
 import dom.dispatch as dispatch_module
-from dom.memory_pass import SYSTEM_PROMPT, MemoryPass
+from dom.memory_pass import GROUP_RULES, SYSTEM_PROMPT, MemoryPass
 from dom.models import StoredMessage
 from dom.prompt import build_messages
 from dom.presence import parse_habits
@@ -102,7 +102,7 @@ async def test_request_is_one_system_message_the_current_notes_and_only_the_new_
 
     (request,) = app.script.requests
     system, user = request["messages"]
-    assert system == {"role": "system", "content": SYSTEM_PROMPT}
+    assert system == {"role": "system", "content": SYSTEM_PROMPT + " " + GROUP_RULES}
     content = user["content"]
     for expected in ("- Fran has a cat", "- Fran: tea", "- the Friday joke", "Lisbon", "<chat_window"):
         assert expected in content
@@ -479,7 +479,7 @@ async def test_a_pass_runs_when_an_online_session_ends(make_app, tmp_path):
     app.dispatch.now.advance(minutes=11)  # the session expires; the background poll notices
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
-    assert [r["messages"][0]["content"] for r in app.script.requests] == [SYSTEM_PROMPT]
+    assert [r["messages"][0]["content"] for r in app.script.requests] == [SYSTEM_PROMPT + " " + GROUP_RULES]
     assert files(tmp_path, "memory/MEMORY.md") == "- fact"
 
 
@@ -519,7 +519,7 @@ async def test_messages_about_to_leave_the_window_trigger_a_pass(make_app, tmp_p
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
     assert len(app.script.requests) == 2
-    assert "tools" in app.script.requests[0] and app.script.requests[1]["messages"][0]["content"] == SYSTEM_PROMPT
+    assert "tools" in app.script.requests[0] and app.script.requests[1]["messages"][0]["content"] == SYSTEM_PROMPT + " " + GROUP_RULES
     assert files(tmp_path, "memory/MEMORY.md") == "- fact"
 
 
@@ -746,3 +746,47 @@ def test_summary_never_repeats_the_noted_prefix(summary, shown):
     from dom.memory_pass import _parse
 
     assert _parse(ops(summary=summary)) == ([], shown)
+
+
+# ---- where a group pass puts a fact (D12) ---------------------------------------------------
+
+async def test_group_pass_prompt_says_where_each_kind_of_fact_goes(make_app, tmp_path):
+    app = make_app(contents=(ops(),))
+    await approve(app, GROUP)
+    await put(app, GROUP, 1, "we only talk about the quiz here")
+    await MemoryPass(app).run(GROUP)
+    system, user = app.script.requests[0]["messages"]
+    for rule in ("only what that person would say in any chat", "this group's notes", "Dom's own life", "never another person's private matters"):
+        assert rule in system["content"]
+    content = user["content"]
+    assert 'name="MEMORY.md" limit="' in content and "never other people's private matters" in content
+    assert "only what this person would say in any chat" in content and "group-specific or personal matters" in content
+
+
+async def test_friend_dm_and_owner_dm_passes_get_no_group_rules(make_app):
+    app = make_app(contents=(ops(), ops()))
+    await approve(app, FRIEND)
+    await put(app, FRIEND, 1, "hello", sender=FRIEND)
+    await put(app, OWNER, 1, "hello owner", sender=OWNER, name="Owner")
+    await MemoryPass(app).run(FRIEND)
+    await MemoryPass(app).run(OWNER)
+    for request in app.script.requests:
+        assert request["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
+        assert "purpose=" not in request["messages"][1]["content"]
+
+
+async def test_a_group_specific_fact_lands_in_the_group_notes_not_in_shared_or_people_notes(make_app, tmp_path):
+    app = make_app(contents=(ops(add("chats/-1009.md", "the group plans a surprise for Sam"), summary="x"),))
+    await approve(app, GROUP)
+    await put(app, GROUP, 1, "shh, surprise for Sam")
+    await MemoryPass(app).run(GROUP)
+    assert files(tmp_path, "memory/chats/-1009.md") == "- the group plans a surprise for Sam"
+    assert files(tmp_path, "memory/MEMORY.md") is None and files(tmp_path, "memory/people/222.md") is None
+
+
+async def test_a_group_pass_cannot_write_a_note_for_someone_who_did_not_speak(make_app, tmp_path):
+    app = make_app(contents=(ops(add("people/777.md", "secret about a bystander")),))
+    await approve(app, GROUP)
+    await put(app, GROUP, 1, "hi")
+    await MemoryPass(app).run(GROUP)
+    assert files(tmp_path, "memory/people/777.md") is None

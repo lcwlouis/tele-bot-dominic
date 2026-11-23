@@ -15,7 +15,7 @@ from test_guard import OUTGOING
 from test_usage import deliver, online
 from tghelpers import FRIEND, GROUP, OWNER, tg
 
-NAMES = {"search_history", "remind", "skill_manage"}
+NAMES = {"search", "remind", "skill_manage"}
 TWO_PARAGRAPHS = "Yeah, that sounds great. I will bring snacks!\n\nSee you at eight."
 FOUR_SENTENCES = "Honestly I loved it. The ending was odd. Still worth a watch. Tell me what you think."
 EIGHT_SENTENCES = " ".join(f"Sentence number {n} is here." for n in range(1, 9))
@@ -159,7 +159,7 @@ async def test_the_confidence_bars_are_inclusive():
     "<think>they want a greeting</think>Hey there, how are you?",
     "Hey there, how are you?</think>",
     "<thinking>hmm</thinking> hello friend",
-    "I will call search_history first and then answer.",
+    "I will call search(query) first and then answer.",
     "Let me use `remind` for that.",
     'I should set "no_response" here, so nothing.',
     "I'll answer with reply_to set.",
@@ -252,7 +252,7 @@ async def test_valid_actions_and_tool_calls_never_reach_the_rescue(env):  # noqa
         asked.append(text)
 
     script = Script(
-        reply(tool_calls=[{"id": "c", "type": "function", "function": {"name": "search_history", "arguments": "{}"}}]),
+        reply(tool_calls=[{"id": "c", "type": "function", "function": {"name": "search", "arguments": "{}"}}]),
         reply(content=json.dumps(FINAL)),
     )
     await run_turn(make_client(script), [], core_tools(), ctx_for(env), rescue=rescue_spy)

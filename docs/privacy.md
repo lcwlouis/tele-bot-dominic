@@ -28,6 +28,47 @@ and `private/` notes cannot be moved into `memory/`, respects each file's size
 bounds, and cannot touch `SOUL.md`, `HABITS.md`, `config.toml`, skills or
 plugins.
 
+## Memory across chats
+
+The background memory pass writes notes after a chat goes quiet. Which files a pass may write is fixed in code, by
+the chat's scope:
+
+- the owner DM writes only `private/USER.md` and `private/NOTES.md`;
+- a friend's DM writes only that DM's own chat notes (`memory/chats/<id>.md`);
+- a group writes that group's chat notes, the people notes of the people who spoke in the batch
+  (`memory/people/<id>.md`) and the shared `memory/MEMORY.md`.
+
+Every chat reads `MEMORY.md`, and a group or DM reads the people notes of its participants. So a fact that lands in a
+people note or in `MEMORY.md` can come up in another chat. What a friend tells Dom in a DM never leaves that DM, apart
+from the owner DM's facts-only "elsewhere" lines.
+
+Until v0.8.3 the pass was told only to keep durable facts. Since v0.8.3 a group pass is also told where each kind of
+fact goes, and each offered note carries its purpose:
+
+- a person's notes hold only what that person would say in any chat;
+- anything specific to the group, or personal, goes in the group's notes;
+- `MEMORY.md` holds Dom's own life and general facts, never other people's private matters;
+- when unsure, the group's notes.
+
+The code enforces which files a pass can write; the model decides what goes into them, so these rules lower the
+chance of a leak and do not rule it out. A later release will record where Dom learned each fact and use it only in
+chats whose members were there.
+
+## Search and export
+
+The dashboard's search box covers chats (FTS5), memory files, briefs, reminders, desktop tasks, skills and plugins. It is
+owner-only. Messages from the owner DM show in full; a message from any other chat comes back as a one-line preview, and
+the API sends no more than that.
+
+Dom's `search` tool follows the scope. In the owner DM it covers the same items as the dashboard. In a friend's DM or a
+group it searches that chat's own history and nothing else: memory files, other chats and `private/` cannot surface,
+whatever the model asks for. The code checks the scope on every call.
+
+The memory export is a zip of `SOUL.md`, `memory/`, `private/`, skills and presets, built off the event loop with a size
+cap. It never holds `.env`, `state.db`, transcripts or backups; use `dom backup` for a full copy. Only the owner can get it,
+from the dashboard's Memory page or with `/export` in the owner DM, and each one is logged as an owner event. The zip
+holds private notes: keep it as safe as the instance home.
+
 The backup command makes an archive of the instance home and a consistent
 SQLite snapshot. Archives include credentials and private data. Keep the
 instance home and its backups outside the checkout and restrict access to them.
@@ -39,7 +80,7 @@ permissions and backup policy.
 
 | Scope | Context and access |
 | --- | --- |
-| Owner DM | Chat context, shared notes, owner notes and enabled owner tools. The owner can also search across chats. |
+| Owner DM | Chat context, shared notes, owner notes and enabled owner tools. The owner can also search across chats, memory files and the rest of the dashboard's search. |
 | Approved friend DM | Its own chat history, the relevant person's notes, shared memory and chat-scoped tools. |
 | Approved group | That group's chat history, notes about its participants, shared memory and chat-scoped tools. |
 | Pending or ignored chat | No model requests for that chat. The owner can review pending chats in the owner DM. |

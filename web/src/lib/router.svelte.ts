@@ -3,6 +3,7 @@ export const BASE = "/app";
 
 class Route {
   path = $state(normalise(location.pathname));
+  search = $state(location.search);
 }
 
 function normalise(path: string): string {
@@ -16,6 +17,7 @@ export function navigate(href: string) {
   const url = new URL(href, location.href);
   history.pushState({}, "", url);
   route.path = normalise(url.pathname);
+  route.search = url.search;
   window.scrollTo({ top: 0 });
   // Move focus to the new page's heading so keyboard and screen-reader users land on it.
   queueMicrotask(() => document.querySelector<HTMLElement>("main h1")?.focus());
@@ -39,4 +41,5 @@ export function interceptLinks(event: MouseEvent) {
 
 addEventListener("popstate", () => {
   route.path = normalise(location.pathname);
+  route.search = location.search;
 });

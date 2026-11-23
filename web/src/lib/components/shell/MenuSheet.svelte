@@ -1,10 +1,11 @@
 <script lang="ts">
   import Inbox from "@lucide/svelte/icons/inbox";
   import Menu from "@lucide/svelte/icons/menu";
+  import Search from "@lucide/svelte/icons/search";
   import X from "@lucide/svelte/icons/x";
   import { buttonVariants } from "$lib/components/ui/button";
   import * as Sheet from "$lib/components/ui/sheet";
-  import { destinations, waiting, type Destination } from "$lib/nav";
+  import { destinations, search, waiting, type Destination } from "$lib/nav";
   import { shell } from "$lib/shell.svelte";
   import { cn } from "$lib/utils";
 
@@ -60,6 +61,15 @@
         <span class={cn("rounded-full px-2 py-0.5 font-mono text-xs", shell.waiting ? "bg-signal text-primary-foreground" : "bg-raised text-muted-foreground")}>
           {shell.waiting}<span class="sr-only"> waiting</span>
         </span>
+      </a>
+      <a
+        href={search.href}
+        onclick={go}
+        aria-current={path === search.href ? "page" : undefined}
+        class={cn(link, "mb-3", path === search.href && active)}
+      >
+        <Search class="size-[1.15rem]" aria-hidden="true" />
+        {search.label}
       </a>
       <ul class="grid gap-1">
         {#each destinations as destination (destination.id)}

@@ -31,6 +31,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "menu", path: "/app/work/briefs", heading: "Briefs", menu: true, phoneOnly: true },
   // A chat's recent messages, and the soul request on its own screen.
   { name: "chats-messages", path: "/app/chats", heading: "Chats", click: "Messages in Weekend crew" },
+  // The search page: grouped hits, with another chat's message shown as a preview only.
+  { name: "search", path: "/app/search?q=plan", heading: "Search" },
   { name: "memory-soul", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul" },
 ];
 
@@ -427,6 +429,24 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Talk to Dom about his soul" }).click();
     await expect(page.getByRole("textbox", { name: "What should Dom change?" })).toBeFocused();
     await expect(page.getByRole("navigation", { name: "Memory files" })).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("phone: the search page has its own labelled form, prefilled and usable", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app");
+    await page.getByRole("button", { name: /^Menu/ }).click();
+    await page.getByRole("dialog").getByRole("link", { name: "Search" }).click();
+    await expect(page).toHaveURL(/\/app\/search$/);
+    const field = page.getByRole("searchbox", { name: "Search Dom" });
+    await expect(field).toBeVisible();
+    await field.fill("plan");
+    await field.press("Enter");
+    await expect(page).toHaveURL(/\/app\/search\?q=plan$/);
+    await expect(page.getByText("Results for “plan”.")).toBeVisible();
+    await page.reload();
+    await expect(field).toHaveValue("plan");
     expect(problems).toEqual([]);
   });
 

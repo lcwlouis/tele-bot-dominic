@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import (
     BotCommand,
+    BufferedInputFile,
     BotCommandScopeChat,
     BotCommandScopeDefault,
     InlineKeyboardButton,
@@ -25,7 +26,7 @@ from aiogram.types import (
     Message,
 )
 
-from dom import memory_import, proposals, release, skills, traits
+from dom import memory_export, memory_import, proposals, release, skills, traits
 from dom._version import VERSION
 from dom.deletion import (
     STALE_MESSAGE,
@@ -64,6 +65,7 @@ OWNER_COMMANDS = [
     BotCommand(command="ownwork", description="List, cancel and delete self-directed tasks"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
     BotCommand(command="import", description="Bring memories from another assistant"),
+    BotCommand(command="export", description="Get a zip of everything Dom remembers"),
     BotCommand(command="update", description="Check for and install a new release"),
 ]
 
@@ -958,6 +960,24 @@ async def refresh_sticker_descriptions(app: App) -> str:
             result = "Sticker descriptions: no stickers to describe."
     await app.store.record_owner_event(result)
     return result
+
+
+async def export_memory(app: App) -> str | None:
+    """Send the owner a zip of Dom's memory as a document. Returns an error line for the DM, or None when it was sent."""
+    try:
+        data = await asyncio.to_thread(memory_export.build_export, app.home.root)
+    except memory_export.ExportTooLarge as exc:
+        return str(exc)
+    except OSError:
+        log.exception("could not build the memory export")
+        return "Couldn't build the export. Check that Dom can read his notes."
+    name = memory_export.export_name(app.dispatch.now())
+    await retry_telegram(
+        lambda: app.bot.send_document(app.owner_id, BufferedInputFile(data, filename=name), caption="Everything Dom remembers, as a zip."),
+        sleep=app.sleep,
+    )
+    await record_event(app, "Ran /export")
+    return None
 
 
 async def import_memory(app: App, message: Message, text: str) -> tuple[str, str, str | None]:

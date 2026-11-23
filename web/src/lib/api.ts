@@ -145,6 +145,11 @@ export type MemoryIndex = MemoryWaiting & {
   export_prompt: string;
   max_soul_request: number;
 };
+/** GET /api/search (dom/web/api_search.py): hits by kind; `full` is false for another chat's one-line preview. */
+export type SearchData = {
+  query: string;
+  groups: { kind: string; label: string; hits: { title: string; text: string; href: string; at: string; full: boolean }[] }[];
+};
 export type MemoryFile = { file: string; label: string; readonly: boolean; limit: number | null; content: string; version: string };
 
 /** GET /api/chats and the chat writes (dom/web/api_chats.py). Every write answers { message, ...ChatsData }. */

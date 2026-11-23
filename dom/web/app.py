@@ -17,11 +17,12 @@ from fastapi.staticfiles import StaticFiles
 
 from dom.web.api import router as api_router
 from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
-from dom.web.api_memory import JSON_POSTS as MEMORY_POSTS, router as memory_router
+from dom.web.api_memory import GUARDED_GETS as MEMORY_GETS, JSON_POSTS as MEMORY_POSTS, router as memory_router
+from dom.web.api_search import GUARDED_GETS as SEARCH_GETS, router as search_router
 from dom.web.api_system import JSON_POSTS as SYSTEM_POSTS, router as system_router
 from dom.web.api_waiting import JSON_POSTS as WAITING_POSTS, router as waiting_router
 from dom.web.api_work import JSON_POSTS as WORK_POSTS, router as work_router
-from dom.web.auth import Auth, request_origin, same_origin
+from dom.web.auth import Auth, fetch_site_ok, request_origin, same_origin
 from dom.web.desktop import VIEWER_JSON_POSTS, VNC_PATH, VNC_SOCKET, router as desktop_router
 from dom.web.model_settings import JSON_POSTS, is_json, router as model_settings_router
 from dom.web.redirects import router as redirects_router
@@ -60,6 +61,8 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
         identity = await auth.authenticate(request)
         if identity is None:
             response = PlainTextResponse("Forbidden", status_code=403)
+        elif request.url.path in MEMORY_GETS | SEARCH_GETS and not fetch_site_ok(request, identity):
+            response = PlainTextResponse("Forbidden", status_code=403)
         elif request.method not in ("GET", "HEAD") and not (
             request.method == "POST"
             and request.url.path in (JSON_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS | MEMORY_POSTS | WORK_POSTS | WAITING_POSTS | SYSTEM_POSTS)
@@ -94,6 +97,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.include_router(api_router)
     web.include_router(chats_router)
     web.include_router(memory_router)
+    web.include_router(search_router)
     web.include_router(work_router)
     web.include_router(waiting_router)
     web.include_router(system_router)
