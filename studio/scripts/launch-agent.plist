@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.dom.studio</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>PYTHON_EXECUTABLE</string>
+        <string>-m</string>
+        <string>studio_service</string>
+        <string>CONFIG_FILE</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>STUDIO_DIR</string>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>LOG_FILE</string>
+    <key>StandardErrorPath</key>
+    <string>LOG_FILE</string>
+</dict>
+</plist>
