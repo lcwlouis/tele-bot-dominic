@@ -609,18 +609,15 @@ async def decide_proposal(
     return response
 
 
-@router.post("/proposals/import/{proposal_id:int}", response_class=HTMLResponse)
-async def decide_import(request: Request, proposal_id: int, kind: str = "", source: str = ""):
-    app = owner_app(request)
+async def decide_import_batch(app: App, proposal_id: int, decision: str, selected: set[str]) -> tuple[str, bool]:
+    """Approve (the selected facts or all) or reject one import's pending facts through the proposals store.
+    Returns the owner's message and whether the whole batch is now settled."""
     rows = [_proposal_body(row) for row in await app.proposals.pending()]
     anchor = next((row for row in rows if row["id"] == proposal_id), None)
     if anchor is None or (key := _import_key(anchor)) is None:
-        return render("proposals.html", context=await _proposals(app, kind, source) | {"message": "Already handled."})
-    data = await form(request)
-    decision = data.get("decision", [""])[0]
+        return "Already handled.", False
     if decision not in ("selected", "all", "reject"):
         raise HTTPException(400, "Choose an import action.")
-    selected = set(data.get("selected", []))
     results = [
         await app.proposals.decide(row["id"], decision != "reject")
         for row in rows if _import_key(row) == key and (decision != "selected" or str(row["id"]) in selected)
@@ -630,8 +627,18 @@ async def decide_import(request: Request, proposal_id: int, kind: str = "", sour
     message = f"{label} {results.count(label)}."
     if errors:
         message += f" {len(errors)} still pending. {errors[0]}"
+    return message, len(results) == sum(_import_key(row) == key for row in rows) and not errors
+
+
+@router.post("/proposals/import/{proposal_id:int}", response_class=HTMLResponse)
+async def decide_import(request: Request, proposal_id: int, kind: str = "", source: str = ""):
+    app = owner_app(request)
+    data = await form(request)
+    message, settled = await decide_import_batch(
+        app, proposal_id, data.get("decision", [""])[0], set(data.get("selected", [])),
+    )
     response = render("proposals.html", context=await _proposals(app, kind, source) | {"message": message})
-    if len(results) == sum(_import_key(row) == key for row in rows) and not errors:
+    if settled:
         response.headers["X-Dom-Decided"] = "true"
     return response
 
@@ -878,7 +885,8 @@ SOUL_INSTRUCTIONS = (
 )
 
 
-async def _memory(app: App, file: str = MEMORY, *, soul_chat: bool = False) -> dict:
+async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
+    """The memory files the dashboard lists, by section: (path, label). Private files sit only under "Only in your DM"."""
     people, chats = app.home.list_memory_notes()
     known = {c["chat_id"]: c for c in await app.store.list_chats()}
     known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
@@ -889,9 +897,9 @@ async def _memory(app: App, file: str = MEMORY, *, soul_chat: bool = False) -> d
             owner_notes.append((rel, "Your DM notes"))
         else:
             chat = known.get(chat_id, {"chat_id": chat_id, "title": ""})
-            label = _title(chat, app.owner_id) if chat_id.startswith("-") else f"Friend DM · {_title(chat, app.owner_id)}"
+            label = _title(chat, app.owner_id) if chat_id.startswith("-") else f"Friend DM \u00b7 {_title(chat, app.owner_id)}"
             chat_notes.append((rel, label))
-    sections = [
+    return [
         ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
         ("People", [(rel, Path(rel).name) for rel in people]),
         ("Chats", chat_notes),
@@ -900,6 +908,11 @@ async def _memory(app: App, file: str = MEMORY, *, soul_chat: bool = False) -> d
             ("private/JOURNAL.md", "Private journal"), *owner_notes,
         ]),
     ]
+
+
+async def _memory_file(app: App, file: str) -> dict:
+    """One listed memory file and its text. Only listed files open, and a private one opens only in the private scope."""
+    sections = await _memory_sections(app)
     labels = {rel: label for _, files in sections for rel, label in files}
     if file not in labels:
         raise HTTPException(404, "Unknown memory file.")
@@ -910,10 +923,14 @@ async def _memory(app: App, file: str = MEMORY, *, soul_chat: bool = False) -> d
         raise HTTPException(404, "Memory file unavailable.") from None
     return {
         "sections": sections, "file": file, "label": labels[file], "readonly": file == HABITS,
-        "limit": MAX_SOUL if file == SOUL else limit_for(file), "soul_chat": soul_chat,
+        "limit": MAX_SOUL if file == SOUL else limit_for(file),
         "content": content, "version": content_version(content),
-        "import_services": IMPORT_SERVICES,
-        "skills": await _skills(app),
+    }
+
+
+async def _memory(app: App, file: str = MEMORY, *, soul_chat: bool = False) -> dict:
+    return await _memory_file(app, file) | {
+        "soul_chat": soul_chat, "import_services": IMPORT_SERVICES, "skills": await _skills(app),
     }
 
 
@@ -952,21 +969,24 @@ async def save_memory(request: Request):
     })
 
 
-@router.post("/memory/soul", response_class=HTMLResponse)
-async def soul_chat(request: Request):
-    app = owner_app(request)
-    context = await _memory(app, SOUL, soul_chat=True)
-    data = await form(request, max_bytes=MAX_SOUL_EDIT * 12 + 1024)
-    text = data.get("message", [""])[0].strip()
+class OwnerError(Exception):
+    """A failure with a sentence the owner can read."""
+
+
+async def propose_soul_edit(app: App, text: str) -> tuple[dict, int]:
+    """Ask Dom for one SOUL.md change and file it as a proposal. Never writes SOUL.md. Raises OwnerError."""
+    text = text.strip()
     if not text or len(text) > MAX_SOUL_EDIT:
-        return render("memory.html", context=context | {
-            "error": f"Enter a message of 1 to {MAX_SOUL_EDIT:,} characters.",
-        })
-    if len(context["content"]) > MAX_SOUL:
-        return render("memory.html", context=context | {"error": "Shorten SOUL.md before asking for a proposal."})
+        raise OwnerError(f"Enter a message of 1 to {MAX_SOUL_EDIT:,} characters.")
+    try:
+        content = app.home.scoped(allow_private=False).read_memory_file(SOUL)
+    except (OSError, ValueError):
+        raise OwnerError("SOUL.md is unavailable.") from None
+    if len(content) > MAX_SOUL:
+        raise OwnerError("Shorten SOUL.md before asking for a proposal.")
     messages = [
         {"role": "system", "content": SOUL_INSTRUCTIONS},
-        {"role": "user", "content": json.dumps({"soul": context["content"], "request": text}, ensure_ascii=False)},
+        {"role": "user", "content": json.dumps({"soul": content, "request": text}, ensure_ascii=False)},
     ]
     chat_id = app.owner_id
     try:
@@ -983,13 +1003,24 @@ async def soul_chat(request: Request):
         proposal_id = await app.proposals.create("soul_edit", "Soul edit from the dashboard", edit, "dashboard", notify=False)
     except ValueError as exc:
         error = str(exc) if not isinstance(exc, json.JSONDecodeError) else "Dom didn't return an edit. Try again."
-        return render("memory.html", context=context | {"error": error, "request_text": text})
+        raise OwnerError(error) from None
     except Exception as exc:
         log.warning("dashboard soul chat failed (%s)", type(exc).__name__)
-        return render("memory.html", context=context | {
-            "error": "Couldn't get a proposal from Dom. Try again.", "request_text": text,
-        })
+        raise OwnerError("Couldn't get a proposal from Dom. Try again.") from None
     await owner.record_event(app, f"Dom proposed a soul edit (#{proposal_id}) from the dashboard")
+    return edit, proposal_id
+
+
+@router.post("/memory/soul", response_class=HTMLResponse)
+async def soul_chat(request: Request):
+    app = owner_app(request)
+    context = await _memory(app, SOUL, soul_chat=True)
+    data = await form(request, max_bytes=MAX_SOUL_EDIT * 12 + 1024)
+    text = data.get("message", [""])[0].strip()
+    try:
+        edit, proposal_id = await propose_soul_edit(app, text)
+    except OwnerError as exc:
+        return render("memory.html", context=context | {"error": str(exc), "request_text": text})
     return render("memory.html", context=context | {
         "request_text": text, "edit": edit, "proposal_id": proposal_id,
     })
@@ -998,9 +1029,20 @@ async def soul_chat(request: Request):
 IMPORT_FORM_OVERHEAD = 16 * 1024  # multipart boundaries and the service field around the file
 
 
+async def run_memory_import(app: App, service: str, filename: str | None, raw: bytes) -> tuple[str, int]:
+    """The dashboard's /import: the same MemoryImport.run and the same document limits as Telegram.
+    Returns the summary line and the number of facts filed. Raises ValueError with a sentence for the owner."""
+    if service not in memory_import.SERVICES:
+        raise ValueError("Choose ChatGPT, Claude or Muse.")
+    memory_import.validate_document_meta(filename, len(raw))
+    parsed = await app.memory_import.run(service, memory_import.decode_document(raw))
+    message = memory_import.summary(service, parsed)
+    await owner.record_event(app, message)
+    return message, len(parsed.facts)
+
+
 @router.post("/memory/import", response_class=HTMLResponse)
 async def import_memories(request: Request):
-    """The dashboard's /import: the same MemoryImport.run and the same document limits as Telegram."""
     app = owner_app(request)
     context = await _memory(app, MEMORY) | {"import_open": True}
     service = ""
@@ -1019,15 +1061,14 @@ async def import_memories(request: Request):
             if not isinstance(upload, UploadFile):
                 raise ValueError("Send a .txt or .md document for the import.")
             memory_import.validate_document_meta(upload.filename, upload.size)
-            text = memory_import.decode_document(await upload.read(memory_import.MAX_DOCUMENT_BYTES + 1))
+            raw = await upload.read(memory_import.MAX_DOCUMENT_BYTES + 1)
         finally:
             await data.close()
-        parsed = await app.memory_import.run(service, text)
+        message, count = await run_memory_import(app, service, upload.filename, raw)
     except (OSError, ValueError) as exc:
         error = str(exc) if isinstance(exc, ValueError) else "Could not read the import or existing notes."
         return render("memory.html", context=context | {"import_service": service, "import_error": error})
-    message = memory_import.summary(service, parsed)
-    await owner.record_event(app, message)
     return render("memory.html", context=context | {
-        "import_service": service, "import_message": message, "import_count": len(parsed.facts),
+        "import_service": service, "import_message": message, "import_count": count,
     })
+

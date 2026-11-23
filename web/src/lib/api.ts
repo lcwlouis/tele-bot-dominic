@@ -134,3 +134,37 @@ export type TestResult = { ok: boolean; latency_ms: number; reply: string | null
 /** GET/POST /api/permissions (dom/web/model_settings.py). */
 export type Permission = { id: string; label: string; description: string; enabled: boolean };
 export type Permissions = { revision: string; items: Permission[] };
+
+/** GET /api/memory, GET /api/memory/file and the memory writes (dom/web/api_memory.py). */
+export type MemoryImportCard = { id: number; service: string; facts: { id: number; text: string }[] };
+export type MemoryEdit = { id: number; kind: "soul_edit" | "memory_edit"; label: string; title: string; diff: string[] };
+export type MemoryWaiting = { imports: MemoryImportCard[]; edits: MemoryEdit[] };
+export type MemoryIndex = MemoryWaiting & {
+  sections: { heading: string; files: { path: string; label: string }[] }[];
+  services: { id: string; label: string }[];
+  max_soul_request: number;
+};
+export type MemoryFile = { file: string; label: string; readonly: boolean; limit: number | null; content: string; version: string };
+
+/** GET /api/chats and the chat writes (dom/web/api_chats.py). Every write answers { message, ...ChatsData }. */
+export type ChatSlider = { name: string; value: number; custom: boolean };
+export type Chat = {
+  id: number;
+  title: string;
+  scope: "owner_dm" | "friend_dm" | "group";
+  state: "online" | "asleep" | "offline";
+  until: string;
+  unread: number;
+  preset: { name: string; title: string } | null;
+  own_preset: string;
+  task: { reason: string; until: string } | null;
+  sliders: ChatSlider[];
+};
+export type ChatsData = {
+  chats: Chat[];
+  presets: { name: string; title: string; description: string }[];
+  everywhere: string;
+  pending: number;
+  vibe: { mode: "auto" | "locked" | "none"; title: string; description: string; reason: string; source: string; since: string };
+  stickers: string[];
+};

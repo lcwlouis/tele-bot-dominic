@@ -16,6 +16,8 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from dom.web.api import router as api_router
+from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
+from dom.web.api_memory import JSON_POSTS as MEMORY_POSTS, router as memory_router
 from dom.web.auth import Auth, request_origin, same_origin
 from dom.web.desktop import VIEWER_JSON_POSTS, VNC_PATH, VNC_SOCKET, router as desktop_router
 from dom.web.model_settings import JSON_POSTS, is_json, router as model_settings_router
@@ -58,7 +60,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
         elif request.method not in ("GET", "HEAD") and not (
             request.method == "POST" and (
                 request.headers.get("HX-Request") == "true"
-                or (request.url.path in (JSON_POSTS | VIEWER_JSON_POSTS) and is_json(request) and "Origin" in request.headers)
+                or (request.url.path in (JSON_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS | MEMORY_POSTS) and is_json(request) and "Origin" in request.headers)
             )
             and same_origin(request, identity)
         ):
@@ -88,6 +90,8 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.state.auth = auth
     web.include_router(router)
     web.include_router(api_router)
+    web.include_router(chats_router)
+    web.include_router(memory_router)
     web.include_router(desktop_router)
     web.include_router(model_settings_router)
     web.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")

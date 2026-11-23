@@ -7,7 +7,9 @@
   import { gallery, locate } from "$lib/nav";
   import { interceptLinks, route } from "$lib/router.svelte";
   import Gallery from "./routes/Gallery.svelte";
+  import Chats from "./routes/Chats.svelte";
   import Home from "./routes/Home.svelte";
+  import Memory from "./routes/Memory.svelte";
   import Section from "./routes/Section.svelte";
   import Settings from "./routes/Settings.svelte";
 
@@ -38,6 +40,10 @@
           <Gallery />
         {:else if where.destination.id === "home"}
           <Home />
+        {:else if where.destination.id === "chats"}
+          <Chats destination={where.destination} />
+        {:else if where.destination.id === "memory"}
+          <Memory destination={where.destination} />
         {:else if where.tab?.id === "settings"}
           <Settings destination={where.destination} tab={where.tab} />
         {:else}

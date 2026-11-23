@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages: { name: string; path: string; heading: string; tab?: string }[] = [
+const pages: { name: string; path: string; heading: string; tab?: string; click?: string }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
@@ -11,6 +11,11 @@ const pages: { name: string; path: string; heading: string; tab?: string }[] = [
   { name: "settings-models", path: "/app/system", heading: "Settings" },
   { name: "settings-providers", path: "/app/system", heading: "Settings", tab: "Providers" },
   { name: "settings-permissions", path: "/app/system", heading: "Settings", tab: "What Dom may do" },
+  { name: "chats", path: "/app/chats", heading: "Chats" },
+  { name: "chats-personality", path: "/app/chats", heading: "Chats", click: "Personality" },
+  { name: "memory", path: "/app/memory", heading: "Memory" },
+  // On a phone the list is its own screen and a file opens full width; on a desktop the list stays beside it.
+  { name: "memory-file", path: "/app/memory", heading: "Memory", click: "MEMORY.md" },
 ];
 
 /** Collect every CSP violation and every request that leaves Dom's origin. */
@@ -36,13 +41,14 @@ for (const scheme of ["dark", "light"] as const) {
     test.describe(`${device} ${scheme}`, () => {
       test.use({ viewport, colorScheme: scheme });
 
-      for (const { name, path, heading, tab } of pages) {
+      for (const { name, path, heading, tab, click } of pages) {
         test(name, async ({ page }) => {
           const problems = await watch(page);
           const response = await page.goto(path);
           expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
           await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
           if (tab) await page.getByRole("tab", { name: tab }).click();
+          if (click) await page.getByRole("button", { name: click, exact: true }).first().click();
           await page.waitForLoadState("networkidle");
           await page.evaluate(() => document.fonts.ready);
           // Grow the viewport to the whole page, so the phone's bottom bar and the desktop sidebar sit where a
@@ -123,6 +129,81 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByLabel("Base URL").first()).toHaveValue("https://drafts.example.net/v1");
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByRole("button", { name: "Edit Drafting" })).toBeEnabled();
+    expect(problems).toEqual([]);
+  });
+
+  test("chats: send Dom to sleep and wake him, move a slider, reset it, all through confirmed writes", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/chats");
+    await page.getByRole("button", { name: "Send Dom to sleep in Your DM" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Dom is asleep in Your DM" })).toBeVisible();
+    await page.getByRole("button", { name: "Wake Dom in Your DM" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Dom is up in Your DM" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Send Dom to sleep in Your DM" })).toBeVisible();
+
+    // A slider saves when it is released; the keyboard commits each step.
+    await page.getByRole("button", { name: "Personality" }).first().click();
+    const humor = page.getByRole("slider", { name: /Humor/ }).first();
+    await humor.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("status").filter({ hasText: /Traits for .*humor/ })).toBeVisible();
+    await expect(page.getByText("(custom)")).toBeVisible();
+    await page.getByRole("list", { name: "Chats" }).getByRole("button", { name: "Reset to default" }).click();
+    const dialog = page.getByRole("alertdialog");
+    await dialog.getByRole("button", { name: "Keep my changes" }).click();
+    await expect(page.getByText("(custom)")).toBeVisible();
+    await page.getByRole("list", { name: "Chats" }).getByRole("button", { name: "Reset to default" }).click();
+    await dialog.getByRole("button", { name: "Reset to default" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "reset to default" })).toBeVisible();
+    await expect(page.getByText("(custom)")).toBeHidden();
+
+    // The everywhere preset and a chat's own preset.
+    await page.getByRole("button", { name: "Smooth", exact: true }).first().click();
+    await expect(page.getByRole("status").filter({ hasText: "Smooth" })).toBeVisible();
+    await page.getByRole("button", { name: "Same as everywhere" }).first().click();
+    await expect(page.getByRole("status").filter({ hasText: "Preset for" })).toBeVisible();
+
+    // Leaving a group asks first.
+    await page.getByRole("button", { name: "Leave Weekend crew" }).click();
+    await dialog.getByRole("button", { name: "Stay" }).click();
+    await expect(dialog).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("memory: edit and save a file, a dirty draft asks before leaving, a waiting edit can be approved", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory");
+    const editor = page.getByRole("textbox", { name: "MEMORY.md" });
+    await expect(editor).toHaveValue(/Travel notes/);
+    const original = await editor.inputValue();
+    await editor.fill(original + "- Prefers aisle seats.\n");
+    const save = page.getByRole("button", { name: "Save changes" });
+    await save.click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved MEMORY.md." })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole("textbox", { name: "MEMORY.md" })).toHaveValue(/aisle seats/);
+
+    // Unsaved edits ask before another file opens.
+    await page.getByRole("textbox", { name: "MEMORY.md" }).fill("scratch");
+    await page.getByRole("button", { name: "river.md" }).click();
+    const dialog = page.getByRole("alertdialog");
+    await dialog.getByRole("button", { name: "Keep editing" }).click();
+    await expect(page.getByRole("textbox", { name: "MEMORY.md" })).toHaveValue("scratch");
+    await page.getByRole("button", { name: "river.md" }).click();
+    await dialog.getByRole("button", { name: "Discard changes" }).click();
+    await expect(page.getByRole("textbox", { name: "river.md" })).toHaveValue(/early train/);
+
+    // Put MEMORY.md back as it was.
+    await page.getByRole("button", { name: "MEMORY.md", exact: true }).click();
+    await page.getByRole("textbox", { name: "MEMORY.md" }).fill(original);
+    await save.click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved MEMORY.md." })).toBeVisible();
+
+    // The private files are listed apart, and Reject on an import waits for its confirm dialog.
+    await expect(page.getByRole("heading", { name: "Only in your DM" })).toBeVisible();
+    await page.getByRole("button", { name: "Reject all" }).click();
+    await dialog.getByRole("button", { name: "Keep them" }).click();
+    await expect(dialog).toBeHidden();
     expect(problems).toEqual([]);
   });
 
