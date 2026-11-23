@@ -38,6 +38,7 @@ from dom.jobs import DailyJobs
 from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
+from dom.studio.cloud import providers as studio_providers
 from dom.studio.policy import enabled as studio_enabled, outfits, turn_note as studio_turn_note
 from dom.studio.profile import maintain as maintain_studio
 from dom.presence import Habits, Presence, State, read_habits
@@ -2168,8 +2169,12 @@ class Dispatcher:
         if sender_id is not None:
             participants.append(sender_id)
         sliders, preset = await for_chat(app.home, app.store, chat_id, self.now())
-        if not final_bot_turn and app.studio is not None and app.studio.ready:
+        local_ready = app.studio is not None and app.studio.ready
+        if not final_bot_turn and (local_ready or app.cloud_studio is not None):
             remaining = await app.studio_quota.remaining(app.config.studio, scope, chat_id, self.now())
+            if not local_ready:
+                remaining = {kind: count for kind, count in remaining.items()
+                             if studio_providers(app.config.studio, kind)}
             if media_note := studio_turn_note(remaining, outfits(app.config.studio, preset)):
                 note += f"\n{media_note}"
         if attempt is not None:

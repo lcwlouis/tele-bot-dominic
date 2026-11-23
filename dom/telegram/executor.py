@@ -29,6 +29,7 @@ from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, SendFile, utf16_le
 from dom.gifs import GifSearch
 from dom.models import StoredMessage
 from dom.store import Store
+from dom.studio.cloud import providers as studio_providers
 from dom.studio.policy import Kind, enabled
 from dom.stickers import resolve_sticker, sticker_fallback
 from dom.telegram.format import TextChunk, format_delivery, format_text, with_entities
@@ -704,27 +705,46 @@ async def deliver_studio(
     budget = FloodBudget()
 
     async def allowed(kind: Kind) -> bool:
-        return enabled(app.config.studio, scope, kind) and await app.dispatch._approved(chat_id)
+        return (
+            (scope != "owner_dm" or chat_id == app.owner_id)
+            and enabled(app.config.studio, scope, kind)
+            and await app.dispatch._approved(chat_id)
+        )
 
     async def generate(kind: Kind, text: str) -> bool | None:
         # None is a refused job. A failed video job may still fall back to an allowed voice note.
-        if not await allowed(kind) or client is None or not client.ready:
+        if not await allowed(kind):
+            return None
+        local_ready = client is not None and client.ready
+        cloud = app.cloud_studio
+        cloud_ready = cloud is not None and studio_providers(app.config.studio, kind)
+        voice_backup = cloud is not None and studio_providers(app.config.studio, "voice")
+        if not local_ready and not cloud_ready and not (kind in {"video_note", "special"} and voice_backup):
             return None
         async with app.studio_quota.reserve(app.config.studio, scope, chat_id, kind, now()) as reserved:
             if not reserved or not await allowed(kind):
                 return None
             if kind == "voice":
                 action, filename, send = "record_voice", "voice.ogg", app.bot.send_voice
-                request = client.voice(text)
+                request = client.voice(text) if local_ready else None
             elif kind == "photo":
                 action, filename, send = "upload_photo", "photo.png", app.bot.send_photo
-                request = client.image(text, actions.outfit)
+                request = client.image(text, actions.outfit) if local_ready else None
             else:
                 action, filename, send = "record_video_note", "video.mp4", app.bot.send_video_note
-                request = client.video(text, kind == "special", actions.outfit)
+                request = client.video(text, kind == "special", actions.outfit) if local_ready else None
+            async def cloud_allowed() -> bool:
+                if not await allowed(kind):
+                    return False
+                return not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
+
+            if request is None and not cloud_ready:
+                return False
             indicator = asyncio.create_task(_studio_indicator(app.bot, chat_id, thread_id, action))
             try:
-                data = await request
+                data = await request if request is not None else None
+                if data is None and cloud_ready:
+                    data = await cloud.generate(app.config, kind, text, actions.outfit, chat_id, cloud_allowed)
             finally:
                 indicator.cancel()
                 await asyncio.gather(indicator, return_exceptions=True)

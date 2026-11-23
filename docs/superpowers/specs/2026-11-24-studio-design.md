@@ -108,3 +108,70 @@ S1–S4 cover the HTTP service, memory guard, pinned worker runtimes and LaunchA
 6. Verify outbound leak screening with a private fixture and run the public-repository scan. Complete both E59 reviews before tagging v0.8.3.
 
 Performance and quality depend on speech duration, host load, portrait and model. FlashHead's lip alignment can lag and LTX can drift. The watchdog samples periodically, so a brief excursion can fall between readings. Model revisions, source pins and dependency locks prevent unreviewed component upgrades. The image, FlashHead and model downloader environments sync from hash-checked Python 3.12 wheel locks generated on macOS arm64. Keep the pinned studio snapshots when cleaning shared caches.
+
+## Cloud fallbacks
+
+Cloud routes are opt-in. Configure ordered `[[studio.voice_fallbacks]]` and
+`[[studio.image_fallbacks]]` tables. With either list empty, that kind uses
+local generation alone. Every render uses the existing screening, feature
+switches, chat approval and quota reservation. When the local Studio is ready,
+Dom awaits its response before considering cloud. Busy, offline, timed-out and
+failed requests can move to the next provider. Cloud generation also checks the
+daily spend cap in every chat, including the owner DM. Provider names stay out
+of the replies.
+
+- **OpenRouter images** use `POST /api/v1/images` with the model ID, scene,
+  `provider: {"zdr": true}` and an inline `input_references` image when available.
+  The response carries inline `data[0].b64_json` and any reported
+  `usage.cost`. Dom accepts PNG. The image catalog includes Gemini Flash Image,
+  GPT Image, Seedream and Flux models. Check each endpoint's reference and output
+  capabilities before choosing it. The public endpoint catalogs list an
+  image-reference endpoint and ZDR eligibility for
+  `google/gemini-2.5-flash-image`. [Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation) ·
+  [Model endpoints](https://openrouter.ai/api/v1/images/models/google/gemini-2.5-flash-image/endpoints) ·
+  [ZDR endpoints](https://openrouter.ai/api/v1/endpoints/zdr).
+- **OpenRouter speech** uses `POST /api/v1/audio/speech` with `input`,
+  `voice: "Achird"`, `response_format: "pcm"`, and `provider: {"zdr": true}`.
+  The speech catalog for `google/gemini-3.8-flash-lite-tts` lists Achird, and
+  the public ZDR catalog includes the model. Dom encodes the returned 24 kHz
+  mono PCM to OGG/Opus using ffmpeg. When the response supplies a generation
+  ID, Dom makes a bounded metadata lookup for the reported `total_cost`.
+  [Speech API](https://openrouter.ai/docs/guides/overview/multimodal/tts) ·
+  [Speech model](https://openrouter.ai/api/v1/audio/speech/models/google/gemini-3.8-flash-lite-tts) ·
+  [Generation metadata](https://openrouter.ai/docs/api/api-reference/generations/get-generation).
+- **Direct Gemini speech** is an optional paid route. It uses
+  `POST /v1beta/models/{model}:generateContent` with `x-goog-api-key`,
+  the screened text, an AUDIO response modality and a prebuilt Achird voice.
+  The response carries base64 audio in `candidates[].content.parts[].inlineData`.
+  Dom extracts PCM samples from the WAV data chunk, dropping the header and
+  any trailing C2PA metadata before encoding. Gemini reports token usage.
+  Google's unpaid terms permit product improvement and human review. Paid
+  Services exclude product improvement and allow limited logging for safety
+  and legal requirements. The owner must confirm a paid project explicitly
+  with `paid = true`. [Speech generation](https://ai.google.dev/gemini-api/docs/speech-generation) ·
+  [Gemini API terms](https://ai.google.dev/gemini-api/terms).
+- **Everyday and special video notes** use the local renderer. OpenRouter
+  offers asynchronous video generation via `POST /api/v1/videos`, job polling
+  and authenticated download. It accepts frame images or reference images
+  on compatible models. The provider cites roughly 30 seconds to a few
+  minutes. Pricing varies by model, resolution, duration and audio, with Veo
+  3.1 Fast listed from $0.10 per second. Temporary output storage makes this
+  endpoint ineligible for ZDR. Failed video generation can become a voice
+  note using the voice chain within its own caps, then text. [Video request API](https://openrouter.ai/docs/api/api-reference/video-generation/create-videos) ·
+  [Video latency, cost and retention](https://openrouter.ai/blog/tutorials/video-generation-api/) ·
+  [Video prices](https://openrouter.ai/collections/video-models).
+
+Store approved cloud reference PNGs as `studio-portraits/<outfit>.png` on
+the bot host, outside the memory directories. This keeps the reference available
+during a complete Studio outage. Set `supports_reference = false` for a model
+that lacks image input. A missing or unsupported reference skips that provider
+unless `allow_without_reference = true`.
+
+Credentials stay in `.env` and each variable is paired with its provider's
+fixed HTTPS origin. Cloud requests use per-kind deadlines, exact MIME checks,
+bounded response bodies and inline media, with redirects disabled. Limits are
+25 MiB for decoded photos, 4 MiB for references and 3 MiB for voice PCM. Usage
+is recorded by media kind and chat with costs when supplied. Live acceptance
+covers one synthetic request per enabled provider, the routed OpenRouter ZDR
+endpoints, Telegram playback, the owner's Achird audition, and photo identity
+during a Studio outage.

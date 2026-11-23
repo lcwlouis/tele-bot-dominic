@@ -39,6 +39,7 @@ from dom.plugins import surfaces
 from dom.plugins.runner import PluginRunner
 from dom.gifs import GifSearch
 from dom.studio.client import StudioClient
+from dom.studio.cloud import CloudStudio
 from dom.studio.policy import StudioQuota
 from dom.stickers import Stickers
 from dom.store import Store
@@ -71,6 +72,7 @@ class App:
     search_client: SearchClient | SearchRouter | None = None
     gifs: GifSearch | None = None
     studio: StudioClient | None = None
+    cloud_studio: CloudStudio | None = None
     studio_quota: StudioQuota = field(init=False)
     draft_client: ChatClient | FallbackClient | None = None
     escalation_client: FallbackClient | None = None

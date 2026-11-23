@@ -296,6 +296,29 @@ class StudioTimeouts(BaseModel):
     portrait: float = Field(10, gt=0, allow_inf_nan=False, description="Wardrobe portrait request deadline in seconds.")
 
 
+class StudioFallback(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: Literal["openrouter_image", "openrouter_tts", "gemini_tts"] = Field(description="Cloud media provider.")
+    model: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$", description="Provider model ID.")
+    api_key_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", description="Secret variable paired with the provider's fixed HTTPS origin.")
+    paid: bool = Field(False, description="Owner confirms this direct Gemini key uses Paid Services. Required for Gemini.")
+    supports_reference: bool = Field(True, description="For OpenRouter image models that accept an image reference.")
+    allow_without_reference: bool = Field(False, description="Allow cloud photos when an approved reference cannot be sent.")
+
+    @property
+    def base_url(self) -> str:
+        if self.provider == "gemini_tts":
+            return "https://generativelanguage.googleapis.com/v1beta"
+        return "https://openrouter.ai/api/v1"
+
+    @model_validator(mode="after")
+    def _model_id(self) -> StudioFallback:
+        if self.provider == "gemini_tts" and ("/" in self.model or ":" in self.model):
+            raise ValueError("Direct Gemini requires a bare model ID")
+        return self
+
+
 class StudioConfig(BaseModel):
     enabled: bool = Field(False, description="Connect to a self-hosted media studio.")
     base_url: str = Field("", description="Studio server origin, without /v1.")
@@ -309,6 +332,17 @@ class StudioConfig(BaseModel):
                                description="Wardrobe ID to use when the active preset has no outfit list.")
     limits: StudioLimits = Field(default_factory=StudioLimits)
     timeouts: StudioTimeouts = Field(default_factory=StudioTimeouts)
+
+    voice_fallbacks: tuple[StudioFallback, ...] = Field((), description="Ordered cloud backups for voice notes.")
+    image_fallbacks: tuple[StudioFallback, ...] = Field((), description="Ordered cloud backups for photos.")
+
+    @model_validator(mode="after")
+    def _fallback_kinds(self) -> StudioConfig:
+        if any(p.provider == "openrouter_image" for p in self.voice_fallbacks):
+            raise ValueError("studio.voice_fallbacks requires speech providers")
+        if any(p.provider != "openrouter_image" for p in self.image_fallbacks):
+            raise ValueError("studio.image_fallbacks requires image providers")
+        return self
 
     @field_validator("base_url")
     @classmethod
@@ -386,6 +420,24 @@ class Config(BaseModel):
                 for item in endpoints:
                     if (item.provider or "openrouter") == "openrouter" and not item.model:
                         raise ValueError("OpenRouter search requires a model ID")
+        return self
+
+    @model_validator(mode="after")
+    def _studio_key_pairing(self) -> Config:
+        fallbacks = self.studio.voice_fallbacks + self.studio.image_fallbacks
+        if not fallbacks:
+            return self
+        studio = self.studio.model_copy(update={"voice_fallbacks": (), "image_fallbacks": ()})
+        reserved = self.model_copy(update={"models": {}, "studio": studio}).secret_names()
+        model_routes = [endpoint for _, endpoint in self.model_endpoints()]
+        for provider in fallbacks:
+            origin = httpx.URL(provider.base_url).copy_with(path="/")
+            if provider.api_key_env in reserved or any(
+                endpoint.api_key_env == provider.api_key_env
+                and httpx.URL(endpoint.base_url).copy_with(path="/", query=None, fragment=None) != origin
+                for endpoint in (*model_routes, *fallbacks)
+            ):
+                raise ValueError("A studio key variable must be paired only with its provider's HTTPS origin")
         return self
 
     def providers(self, role: ModelRole) -> tuple[ProviderEndpoint, ...]:
