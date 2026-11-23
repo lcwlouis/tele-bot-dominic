@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("dom.dispatch")
 TICK_SECONDS = 60
 HANDOFF_CARD = "desktop-handoff-card:"  # + task id -> the Telegram message id of its log-in card
+BUDGET_CARD = "desktop-budget-card:"  # + task id -> the Telegram message id of its "keep going?" card
 DEBOUNCE_CAP = timedelta(seconds=15)  # a steady stream of messages cannot postpone a turn longer
 MAX_RESTARTS = 2
 ACK_INTERVAL = timedelta(minutes=1)
@@ -214,8 +215,10 @@ class Dispatcher:
         self._arrivals: dict[int, dict[int, Arrival]] = {}
         self._slots: dict[int, asyncio.Future] = {}
         self._active: dict[int, TurnAttempt] = {}
-        self._interrupted: dict[int, list[TurnAttempt]] = {}
-        self._followups: dict[int, list[int]] = {}
+        # Restarted attempts and follow-up message ids, per chat and then per forum topic (None: General or no forum),
+        # so a restart in one topic never counts against, or resumes into, another topic's turn.
+        self._interrupted: dict[int, dict[int | None, list[TurnAttempt]]] = {}
+        self._followups: dict[int, dict[int | None, list[int]]] = {}
         self._last_ack: datetime | None = None
         self._next_ack = 0
         self._ack_task: asyncio.Task | None = None
@@ -257,7 +260,9 @@ class Dispatcher:
             attempt is not None and attempt.thread_id == msg.thread_id
             and msg.msg_id > attempt.msg_id and not attempt.trace.superseded
         ):
-            restarts = sum(prior.visited or not prior.queued for prior in self._interrupted.get(chat_id, ()))
+            restarts = sum(
+                prior.visited or not prior.queued for prior in self._interrupted_in(chat_id, attempt.thread_id)
+            )
             if attempt.committed or attempt.escalation_retry or restarts >= MAX_RESTARTS or attempt.task not in self._tasks:
                 attempt.later.append(msg.msg_id)
             else:
@@ -338,7 +343,8 @@ class Dispatcher:
         if pending.get(msg.msg_id) is not arrival or not arrival.feedback:
             return
         attempt = self._active.get(chat_id)
-        if (attempt is None or attempt.msg_id == msg.msg_id) and not self._followups.get(chat_id):
+        followups = self._followups.get(chat_id, {}).get(msg.thread_id)
+        if (attempt is None or attempt.msg_id == msg.msg_id) and not followups:
             if verdict.confident and verdict.action == "react" and verdict.emoji:
                 arrival.reaction = self._spawn(self._perform_reaction(chat_id, msg.msg_id, verdict.emoji))
             elif verdict.action == "reply" or not verdict.confident:
@@ -1156,8 +1162,8 @@ class Dispatcher:
         if escalation_retry is not None:
             attempt.escalation_retry = escalation_retry
             attempt.tool_results = dict(escalation_retry.tool_results)
-        prior = self._interrupted.get(chat_id)
-        if escalation_retry is None and prior and prior[-1].thread_id == topic_thread_id:
+        prior = self._interrupted_in(chat_id, topic_thread_id)
+        if escalation_retry is None and prior:
             attempt.tool_results = prior[-1].tool_results
             attempt.notices, prior[-1].notices = prior[-1].notices, []
             attempt.credit = prior[-1].credit + prior[-1].shown
@@ -1168,7 +1174,8 @@ class Dispatcher:
                 # and so does this attempt, even if it is itself restarted before reaching the model
                 attempt.answering, attempt.catch_up, attempt.away = True, catch_up, count if catch_up else 0
         arrival = self._arrivals.get(chat_id, {}).get(newest.msg_id)
-        followup = [msg_id for msg_id in self._followups.get(chat_id, ()) if msg_id <= newest.msg_id]
+        topic_followups = self._followups.get(chat_id, {}).get(topic_thread_id, ())
+        followup = [msg_id for msg_id in topic_followups if msg_id <= newest.msg_id]
         completed = False
         restarting = False
         migrating = False
@@ -1193,7 +1200,7 @@ class Dispatcher:
                 trace.add_timing("triage" if waits.early else "debounce", waited)
             if waits.media_ms is not None:
                 trace.add_timing("media_wait", waits.media_ms)
-            if waits.lock_ms is not None and not self._interrupted.get(chat_id):
+            if waits.lock_ms is not None and not self._interrupted_in(chat_id, topic_thread_id):
                 # On a restart the slot was held by the attempt being replaced, finishing a tool: that time is already
                 # in its timings, which are merged in below, so counting the wait too would show it twice.
                 trace.add_timing("lock_wait", waits.lock_ms)
@@ -1214,8 +1221,8 @@ class Dispatcher:
                     trace.model_calls[:0] = calls
                     trace.calls += len(calls)
                     if not trace.superseded:
-                        interrupted = self._interrupted.get(chat_id, ())
-                        if interrupted and interrupted[-1].thread_id == topic_thread_id:
+                        interrupted = self._interrupted_in(chat_id, topic_thread_id)
+                        if interrupted:
                             trace.steps[:0] = [
                                 "Restarted before sending" if item.visited else "Superseded before composing"
                                 for item in interrupted
@@ -1251,21 +1258,22 @@ class Dispatcher:
                 else:
                     self._stay_running[chat_id] = self._spawn(self._stay_checks(chat_id, trace.row_id))
             if trace.superseded:
-                self._interrupted.setdefault(chat_id, []).append(attempt)
+                self._interrupted.setdefault(chat_id, {}).setdefault(topic_thread_id, []).append(attempt)
             else:
                 if not migrating and attempt.escalation_retry is None:  # a retry must not discard a newer turn's restarts
-                    prior_int = self._interrupted.get(chat_id)
-                    if prior_int and prior_int[-1].thread_id == topic_thread_id:
-                        self._discard_interrupted(chat_id)
-                pending = self._followups.get(chat_id, [])
+                    self._discard_topic_interrupted(chat_id, topic_thread_id)
+                topics = self._followups.setdefault(chat_id, {})
+                pending = topics.get(topic_thread_id, [])
                 if completed:
                     pending = [msg_id for msg_id in pending if msg_id > newest.msg_id]
                 if trace.first_bubble_ms is not None:
                     pending.extend(attempt.later)
                 if pending:
-                    self._followups[chat_id] = pending
+                    topics[topic_thread_id] = pending
                 else:
-                    self._followups.pop(chat_id, None)
+                    topics.pop(topic_thread_id, None)
+                if not topics:
+                    del self._followups[chat_id]
             if bot_key is not None:
                 self._bots_in_flight.remove(bot_key)
             if not restarting and not migrating:
@@ -1341,12 +1349,29 @@ class Dispatcher:
         """A dispatch that will not answer: its arrivals are done, and an interrupted attempt must not leak into the
         next, unrelated turn or count against its restart cap."""
         self._take_arrivals(chat_id, through, thread_id=thread_id, filter_thread=filter_thread)
-        self._discard_interrupted(chat_id)
+        if filter_thread:
+            self._discard_topic_interrupted(chat_id, thread_id)
+        else:
+            self._discard_interrupted(chat_id)
+
+    def _interrupted_in(self, chat_id: int, thread_id: int | None) -> list[TurnAttempt]:
+        return self._interrupted.get(chat_id, {}).get(thread_id, [])
 
     def _discard_interrupted(self, chat_id: int, *, notice_chat_id: int | None = None) -> None:
+        """Drop every restarted attempt in the chat, sending any notices they held."""
         target = chat_id if notice_chat_id is None else notice_chat_id
-        for attempt in self._interrupted.pop(chat_id, ()):
-            self._finish_notices(target, attempt)
+        for attempts in self._interrupted.pop(chat_id, {}).values():
+            for attempt in attempts:
+                self._finish_notices(target, attempt)
+
+    def _discard_topic_interrupted(self, chat_id: int, thread_id: int | None) -> None:
+        """Drop one topic's restarted attempts; the chat's other topics keep theirs."""
+        topics = self._interrupted.get(chat_id, {})
+        attempts = topics.pop(thread_id, [])
+        if not topics:
+            self._interrupted.pop(chat_id, None)
+        for attempt in attempts:
+            self._finish_notices(chat_id, attempt)
 
     def _finish_notices(self, chat_id: int, attempt: TurnAttempt) -> None:
         if attempt.notices:
@@ -1875,10 +1900,41 @@ class Dispatcher:
         if isinstance(message_id := getattr(sent, "message_id", None), int):
             await app.store.kv_set(f"{HANDOFF_CARD}{task_id}", str(message_id))
 
+    async def desktop_budget_ask(
+        self, task_id: int, steps: int, chat_id: int, extra: int, token: str, container: str = DEFAULT,
+    ) -> bool:
+        """A desktop task used its step budget before finishing: ask the owner to keep going or wrap up now. The
+        buttons carry the pause's single-use token. False when no card went out, so nobody can answer."""
+        app = self.app
+        if chat_id != app.owner_id:
+            return False
+        where = "" if container == DEFAULT else f" on the {container} desktop"
+        buttons = [
+            InlineKeyboardButton(text=f"Keep going (+{extra} steps)", callback_data=f"desktop:more:{task_id}:{token}"),
+            InlineKeyboardButton(text="Wrap up now", callback_data=f"desktop:wrap:{task_id}:{token}"),
+        ]
+        sent = await executor.send_text(
+            app.bot, chat_id,
+            f"Desktop task #{task_id}{where} has used its {steps} steps and isn't done yet. "
+            "Keep going, or wrap up with what it has so far? With no answer it wraps up.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]), literal=True, sleep=app.sleep,
+        )
+        if not isinstance(message_id := getattr(sent, "message_id", None), int):
+            return False
+        await app.store.kv_set(f"{BUDGET_CARD}{task_id}", str(message_id))
+        return True
+
     async def settle_handoff_card(self, task_id: int, label: str) -> None:
         """Replace the log-in card's Done button with what happened, however the task moved on (Done on the
         dashboard or in Telegram, a cancel, a timeout or a restart), so a stale Done is not left to tap."""
-        app, key = self.app, f"{HANDOFF_CARD}{task_id}"
+        await self._settle_card(f"{HANDOFF_CARD}{task_id}", label)
+
+    async def settle_budget_card(self, task_id: int, label: str) -> None:
+        """The same for the step budget card's buttons, once the owner answered, it timed out or the task ended."""
+        await self._settle_card(f"{BUDGET_CARD}{task_id}", label)
+
+    async def _settle_card(self, key: str, label: str) -> None:
+        app = self.app
         raw = await app.store.kv_get(key)
         if not raw or not raw.isdigit() or app.owner_id is None:
             return
@@ -1890,7 +1946,7 @@ class Dispatcher:
                 sleep=app.sleep,
             )
         except TelegramBadRequest:
-            log.info("could not settle the log-in card of desktop task %s", task_id)
+            log.info("could not settle the desktop card %s", key)
 
     async def grumble_after_command(self, chat_id: int, name: str, args: str) -> None:
         """The owner woke Dom with a plugin command. Its result is already sent; add one in-character line.

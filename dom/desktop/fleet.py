@@ -171,6 +171,10 @@ class DesktopFleet:
         lane = await self._lane_of(chat_id, task_id)
         return lane is not None and await lane.worker.resume(chat_id, task_id, steps)
 
+    async def extend(self, chat_id: int, task_id: int, token: str, keep_going: bool) -> bool:
+        lane = await self._lane_of(chat_id, task_id)
+        return lane is not None and await lane.worker.extend(chat_id, task_id, token, keep_going)
+
     async def recover(self) -> None:
         """After a restart: remove every container the last process left, restart queued tasks, fail the rest."""
         store, chat_id = self.app.store, self.app.owner_id

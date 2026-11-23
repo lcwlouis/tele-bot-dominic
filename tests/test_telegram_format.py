@@ -65,9 +65,17 @@ def test_unsupported_links_and_telegram_incompatible_nesting():
     assert ("code", "code") in types
     assert ("italic", "italic") in types and ("strikethrough", "gone") in types
     assert not any(e.type == "text_link" for e in entities)
+    assert ("bold", "label") in types  # the unsafe link drops its URL, not the bold inside it
     code, = (e for e in entities if e.type == "code")
     assert not any(e.offset < code.offset + code.length and code.offset < e.offset + e.length
                    for e in entities if e != code)
+
+
+@pytest.mark.parametrize("href", ["ftp://example.org", "mailto:dom@example.org", "tg://resolve?domain=dombot"])
+def test_nested_styles_survive_an_unsafe_link(href):
+    (text, entities), = format_text(f"see [a **bold** and *italic* bit]({href}) here")
+    assert text == "see a bold and italic bit here"
+    assert [(e.type, entity_text(text, e)) for e in entities] == [("bold", "bold"), ("italic", "italic")]
 
 
 def test_style_spanning_link_in_quote_has_only_nested_ranges():

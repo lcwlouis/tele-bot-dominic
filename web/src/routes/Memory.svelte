@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CodeEditor from "$lib/components/code/CodeEditor.svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Copy from "@lucide/svelte/icons/copy";
   import Download from "@lucide/svelte/icons/download";
@@ -245,7 +246,7 @@
               <Card.Description class="break-words">{edit.title}</Card.Description>
             </Card.Header>
             <Card.Content class="grid gap-4">
-              <DiffLines lines={edit.diff} />
+              <DiffLines lines={edit.diff} language="markdown" />
               <div class="flex flex-wrap gap-2">
                 <Button disabled={deciding} onclick={() => decide("/api/memory/proposal", { id: edit.id, decision: "approve" })}>Approve</Button>
                 <Button variant="outline" disabled={deciding} onclick={() => decide("/api/memory/proposal", { id: edit.id, decision: "reject" })}>Reject</Button>
@@ -336,7 +337,7 @@
             {#if proposed}
               <div class="grid gap-2" role="status">
                 <p class="text-sm font-medium">Dom proposed this change</p>
-                <DiffLines lines={proposed} />
+                <DiffLines lines={proposed} language="markdown" />
               </div>
             {/if}
             <form class="grid gap-2" onsubmit={(event) => (event.preventDefault(), ask())}>
@@ -368,15 +369,16 @@
           </Card.Header>
           <Card.Content class="grid gap-3">
             <Label for="memory-text" class="sr-only">{file.label}</Label>
-            <textarea
+            <CodeEditor
               id="memory-text"
-              class={cn(field, "min-h-[22rem] resize-y font-mono leading-relaxed lg:min-h-[28rem]")}
+              class={cn(field, "min-h-[22rem] resize-y leading-relaxed lg:min-h-[28rem]")}
+              language={file.file}
               spellcheck="false"
               readonly={file.readonly}
               aria-describedby="memory-count"
               aria-invalid={over || undefined}
               bind:value={draft}
-            ></textarea>
+            />
             <p id="memory-count" class={cn("text-sm text-muted-foreground", over && "text-coral")}>
               {count(used)}
               {#if file.limit != null}of {count(file.limit)} characters{:else}characters · No character limit{/if}{over ? ". Over the limit: shorten it to save." : ""}

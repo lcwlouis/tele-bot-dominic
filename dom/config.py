@@ -129,6 +129,9 @@ class DesktopHost(BaseModel):
         return LOCAL_MEMORY_FLOOR_MB if self.mode == "local" else 0
 
 
+MIN_DESKTOP_STEPS, MAX_DESKTOP_STEPS = 10, 100
+
+
 class DesktopConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -143,6 +146,11 @@ class DesktopConfig(BaseModel):
     network: str = Field("dom-desktop", description="Docker bridge name for local isolation. Every local container joins it.")
     subnet: str = Field("172.30.0.0/24", description="IPv4 CIDR of the desktop bridge. Choose a subnet separate from your LAN and other bridges.")
     port: int = Field(18080, ge=1, le=65535, description="Loopback host port for the default local container. Further containers take the next free ports.")
+    max_steps: int = Field(
+        30, ge=MIN_DESKTOP_STEPS, le=MAX_DESKTOP_STEPS,
+        description="Step budget (tool calls and model turns) of a desktop task the owner asked for. When a task is about "
+        "to run out, the owner may extend it, up to three times this budget in all. Dom's own tasks keep their planned budgets.",
+    )
     task_cost_cap_usd: float = Field(0.5, ge=0, allow_inf_nan=False, description="Per-desktop-task USD limit. Zero disables this limit.")
     lan_probes: list[str] = Field([], description="LAN targets local mode must prove it cannot reach, as IPv4:port or <name>.local:port (resolved on every check). Required in local mode.")
     probe_image: str = Field("alpine:3.22", description="Pre-pulled image used for local isolation probes.")

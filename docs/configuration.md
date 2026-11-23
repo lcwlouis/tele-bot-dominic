@@ -100,6 +100,7 @@ Init creates the tables below. Omitted triage, media and drafting tables use the
 | `desktop.network` | `"dom-desktop"` | Docker bridge name for local isolation. Every local container joins it. |
 | `desktop.subnet` | `"172.30.0.0/24"` | IPv4 CIDR of the desktop bridge. Choose a subnet separate from your LAN and other bridges. |
 | `desktop.port` | `18080` | Loopback host port for the default local container. Further containers take the next free ports. |
+| `desktop.max_steps` | `30` | Step budget (tool calls and model turns) of a desktop task the owner asked for. When a task is about to run out, the owner may extend it, up to three times this budget in all. Dom's own tasks keep their planned budgets. |
 | `desktop.task_cost_cap_usd` | `0.5` | Per-desktop-task USD limit. Zero disables this limit. |
 | `desktop.lan_probes` | `[]` | LAN targets local mode must prove it cannot reach, as IPv4:port or <name>.local:port (resolved on every check). Required in local mode. |
 | `desktop.probe_image` | `"alpine:3.22"` | Pre-pulled image used for local isolation probes. |

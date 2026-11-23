@@ -133,7 +133,7 @@ export type TestResult = { ok: boolean; latency_ms: number; reply: string | null
 
 /** GET/POST /api/permissions (dom/web/model_settings.py). */
 export type Permission = { id: string; label: string; description: string; enabled: boolean };
-export type Permissions = { revision: string; items: Permission[] };
+export type Permissions = { revision: string; items: Permission[]; desktop_steps: { value: number; min: number; max: number } };
 
 /** GET /api/memory, GET /api/memory/file and the memory writes (dom/web/api_memory.py). */
 export type MemoryImportCard = { id: number; service: string; facts: { id: number; text: string }[] };
@@ -178,7 +178,9 @@ export type ChatsData = {
 };
 
 /** GET /api/work/* and the Work writes (dom/web/api_work.py). Every write answers { ok, message, ...the tab's data }. */
-export type DeskTask = { id: number; status: string; steps: number; brief: string; error: string | null };
+// steps_budget: the step budget the task started with (null on tasks from before v0.8.3); extra_steps: steps the owner added.
+export type StepBudget = { steps_budget: number | null; extra_steps: number };
+export type DeskTask = { id: number; status: string; steps: number; brief: string; error: string | null } & StepBudget;
 export type DeskContainer = {
   name: string;
   host: string;
@@ -199,7 +201,7 @@ export type DeskHistory = {
   error: string;
   finished: string;
   created_at: string;
-};
+} & StepBudget;
 export type DeskData = {
   enabled: boolean;
   status: string;
@@ -251,7 +253,7 @@ export type Reminder = {
   created_at: string;
 };
 export type RemindersData = { reminders: Reminder[] };
-export type Brief = { filename: string; title: string; markdown: string; blocks: { kind: "heading" | "code" | "ul" | "ol" | "p"; lines: string[] }[] };
+export type Brief = { filename: string; title: string; markdown: string; blocks: { kind: "heading" | "code" | "ul" | "ol" | "p"; lines: string[]; language: string }[] };
 export type BriefsData = { briefs: Brief[] };
 
 /** GET /api/waiting and its writes (dom/web/api_waiting.py). Every write answers { ok, message, ...WaitingData }. */

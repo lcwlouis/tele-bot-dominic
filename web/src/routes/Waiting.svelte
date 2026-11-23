@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Code from "$lib/components/code/Code.svelte";
   import { onMount } from "svelte";
   import type { WaitingData, WaitingCard } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
@@ -129,11 +130,11 @@
               </Card.Header>
               <Card.Content class="grid gap-3 text-sm">
                 {#if card.kind === "soul_edit" || card.kind === "memory_edit"}
-                  {#if card.diff?.length}<DiffLines lines={card.diff} />{/if}
+                  {#if card.diff?.length}<DiffLines lines={card.diff} language="markdown" />{/if}
                 {:else if card.kind === "skill"}
                   <p>{card.description}</p>
-                  <pre class="max-h-64 overflow-auto rounded-lg border bg-raised/50 p-3 font-mono text-[0.8rem] break-words whitespace-pre-wrap">{card.text}</pre>
-                  {#if card.diff?.length}<DiffLines lines={card.diff} />{/if}
+                  <Code text={card.text ?? ""} language="markdown" focusable class="max-h-64 overflow-auto rounded-lg border bg-raised/50 p-3 text-[0.8rem] break-words whitespace-pre-wrap" />
+                  {#if card.diff?.length}<DiffLines lines={card.diff} language="markdown" />{/if}
                 {:else if card.kind === "plugin"}
                   <p>{card.description}</p>
                   <Notices network={!!card.network} storage={!!card.storage} notices={data.notices} storageOff />

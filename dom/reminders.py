@@ -255,12 +255,14 @@ class Reminders:
         owner = self.app.owner_id
         return await self.app.store.list_reminders(owner, limit=limit) if owner is not None else []
 
-    async def cancel(self, reminder_id: int) -> bool:
+    async def cancel(self, reminder_id: int, expected_created_at: str | None = None) -> bool:
+        """Cancel one reminder; with `expected_created_at`, only if it is still the one created then."""
         app = self.app
         async with self._delivery_lock:
-            changed = await app.store.cancel_reminder(app.owner_id, reminder_id)
-            self._deliveries.pop(reminder_id, None)
-            await self._clear_retry_state(reminder_id)
+            changed = await app.store.cancel_reminder(app.owner_id, reminder_id, expected_created_at)
+            if changed or expected_created_at is None:  # a stale stamp leaves another reminder's delivery state alone
+                self._deliveries.pop(reminder_id, None)
+                await self._clear_retry_state(reminder_id)
         if changed:
             await app.store.record_owner_event(f"Cancelled reminder #{reminder_id}")
         return changed

@@ -28,8 +28,9 @@ PREFIX = "/api/work"
 JSON_POSTS = {
     f"{PREFIX}/desk/computer", f"{PREFIX}/desk/done", f"{PREFIX}/desk/delete",
     f"{PREFIX}/own/cancel", f"{PREFIX}/own/delete", f"{PREFIX}/skills/action",
-    f"{PREFIX}/reminders/cancel", f"{PREFIX}/reminders/delete",
+    f"{PREFIX}/reminders/cancel", f"{PREFIX}/reminders/delete", f"{PREFIX}/reminders/bulk",
 }
+MAX_BULK = 100
 ID = Field(gt=0, lt=2**63)
 SHOWN_RESULT = 4000  # a task's result and error are short by construction; this only bounds a hostile row
 
@@ -57,6 +58,12 @@ class Cancel(Strict):
     id: int = ID
 
 
+class Bulk(Strict):
+    """Several reminders at once, after one confirm. A delete names each row's created-at stamp, as a single one does."""
+    action: Literal["cancel", "delete"]
+    items: list[Remove] = Field(min_length=1, max_length=MAX_BULK)
+
+
 class SkillAction(Strict):
     name: str = Field(max_length=64)
     action: Literal["retire", "restore", "delete"]
@@ -76,7 +83,14 @@ def _short(text: str | None) -> str:
 
 
 def _task(row: dict | None) -> dict | None:
-    return None if row is None else {key: row[key] for key in ("id", "status", "steps", "brief", "error")}
+    if row is None:
+        return None
+    return {**{key: row[key] for key in ("id", "status", "steps", "brief", "error")}, **_budget(row)}
+
+
+def _budget(row: dict) -> dict:
+    """The step budget a task started with (None on tasks older than v0.8.3) and the steps the owner added."""
+    return {"steps_budget": row.get("steps_budget"), "extra_steps": row.get("extra_steps") or 0}
 
 
 async def _desk(app, lane) -> dict:
@@ -101,7 +115,7 @@ async def _desk(app, lane) -> dict:
         } for host in state["hosts"]],
         "history": [{
             "id": row["id"], "status": row["status"], "container": row["container"], "steps": row["steps"],
-            "brief": row["brief"], "result": _short(row.get("result")), "error": _short(row.get("error")),
+            **_budget(row), "brief": row["brief"], "result": _short(row.get("result")), "error": _short(row.get("error")),
             "finished": row["finished_local"], "created_at": row["created_at"],
         } for row in history],
     }
@@ -248,6 +262,32 @@ async def delete_reminder(request: Request) -> dict:
     return {"ok": True, "message": message, **await _reminder_rows(app)}
 
 
+@router.post(PREFIX + "/reminders/bulk")
+async def bulk_reminders(request: Request) -> dict:
+    """Cancel or delete the selected reminders one by one, as their single routes do; one that cannot be (gone,
+    changed, being delivered) is reported and the rest still go ahead."""
+    app = owner_app(request)
+    update = await _input(request, Bulk)
+    reminders = app.dispatch.reminders
+    ids = list(dict.fromkeys(item.id for item in update.items))
+    stamps = {item.id: item.expected for item in update.items}
+    failed: list[str] = []
+    for reminder_id in ids:
+        if update.action == "cancel":
+            if not await reminders.cancel(reminder_id, stamps[reminder_id]):
+                failed.append(f"Reminder #{reminder_id} is no longer active or has changed.")
+        else:
+            ok, message = await reminders.delete(reminder_id, stamps[reminder_id])
+            if not ok:
+                failed.append(message)
+    done = len(ids) - len(failed)
+    verb = "Cancelled" if update.action == "cancel" else "Deleted"
+    message = f"{verb} {done} of {len(ids)} reminders." + (" " + " ".join(failed) if failed else "")
+    if not failed:
+        message = f"{verb} {done} reminder{'' if done == 1 else 's'}."
+    return {"ok": not failed, "message": message, **await _reminder_rows(app)}
+
+
 # --- briefs -----------------------------------------------------------------------------------------------------
 
 
@@ -261,5 +301,7 @@ async def read_briefs(request: Request) -> dict:
         raise HTTPException(500, "Could not read the briefs folder.") from None
     return {"briefs": [{
         "filename": brief.filename, "title": brief.title, "markdown": brief.markdown,
-        "blocks": [{"kind": kind, "lines": lines} for kind, lines in markdown_blocks(brief.markdown)],
+        "blocks": [
+            {"kind": kind, "lines": lines, "language": language} for kind, lines, language in markdown_blocks(brief.markdown)
+        ],
     } for brief in briefs]}

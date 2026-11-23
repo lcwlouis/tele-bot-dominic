@@ -179,7 +179,7 @@ async def test_waiting_supersedes_keep_age_and_do_not_use_restart_budget(setup_d
             assert dispatch.attention.waiting[GROUP].since == since
             assert not dispatch.attention.waiting[GROUP].resume
             clock.advance(seconds=1)
-        assert sum(attempt.visited for attempt in dispatch._interrupted[GROUP]) == 0
+        assert sum(attempt.visited for attempt in dispatch._interrupted[GROUP][None]) == 0
     await asyncio.wait_for(drain_dispatch(dispatch), 2)
     [row] = await app.store.recent_turns()
     [visit] = turn_log.visits_in(json.loads(row["trace"]))
@@ -290,7 +290,7 @@ async def test_only_supersedes_while_queued_for_the_token_are_free_restarts(setu
     dispatch._tasks.add(sleeper)
     try:
         prior = [TurnAttempt(sleeper, msg_id, turn_log.TurnTrace(), clock(), queued=queued) for msg_id in (1, 2)]
-        dispatch._interrupted[GROUP] = prior
+        dispatch._interrupted[GROUP] = {None: prior}
         active = dispatch._active[GROUP] = TurnAttempt(sleeper, 3, turn_log.TurnTrace(), clock())
         dispatch.notify(to_incoming(tg(msg_id=4)))
         assert active.trace.superseded is cancels
@@ -300,3 +300,44 @@ async def test_only_supersedes_while_queued_for_the_token_are_free_restarts(setu
         sleeper.cancel()
         dispatch._active.pop(GROUP, None)
         dispatch._interrupted.pop(GROUP, None)
+
+
+async def test_restarts_in_one_forum_topic_do_not_count_against_another(setup_dispatch):
+    """`_interrupted` is per topic (E60): two restarts in topic 9 leave topic 7's restart budget untouched."""
+    from dom.dispatch import TurnAttempt
+    from dom.telegram.convert import to_incoming
+    from tghelpers import tg
+
+    app, dispatch, clock = await setup_dispatch(FakeJev(done=1))
+    sleeper = asyncio.create_task(asyncio.sleep(10))
+    dispatch._tasks.add(sleeper)
+    try:
+        other = [TurnAttempt(sleeper, msg_id, turn_log.TurnTrace(), clock(), thread_id=9) for msg_id in (1, 2)]
+        dispatch._interrupted[GROUP] = {9: other}
+        active = dispatch._active[GROUP] = TurnAttempt(sleeper, 3, turn_log.TurnTrace(), clock(), thread_id=7)
+        dispatch.notify(to_incoming(tg(
+            msg_id=4, chat_type="supergroup", is_topic_message=True, message_thread_id=7,
+        )))
+        assert active.trace.superseded and active.later == []  # restarted: topic 9's restarts are not its own
+    finally:
+        dispatch._tasks.discard(sleeper)
+        sleeper.cancel()
+        dispatch._active.pop(GROUP, None)
+        dispatch._interrupted.pop(GROUP, None)
+
+
+async def test_restarted_attempts_are_discarded_per_topic(setup_dispatch):
+    """Discarding one topic's restarted attempts keeps the other topic's."""
+    from dom.dispatch import TurnAttempt
+
+    app, dispatch, clock = await setup_dispatch(FakeJev(done=1))
+    task = asyncio.current_task()
+    dispatch._interrupted[GROUP] = {
+        7: [TurnAttempt(task, 1, turn_log.TurnTrace(), clock(), thread_id=7)],
+        9: [TurnAttempt(task, 2, turn_log.TurnTrace(), clock(), thread_id=9)],
+    }
+    dispatch._discard_topic_interrupted(GROUP, 7)
+    assert list(dispatch._interrupted[GROUP]) == [9]
+    assert [a.msg_id for a in dispatch._interrupted_in(GROUP, 9)] == [2] and dispatch._interrupted_in(GROUP, 7) == []
+    dispatch._discard_topic_interrupted(GROUP, 9)
+    assert GROUP not in dispatch._interrupted

@@ -22,6 +22,7 @@ WRITES = [
     ("/api/work/skills/action", {"name": "notes", "action": "retire"}),
     ("/api/work/reminders/cancel", {"id": 1}),
     ("/api/work/reminders/delete", {"id": 1, "expected": "x"}),
+    ("/api/work/reminders/bulk", {"action": "cancel", "items": [{"id": 1, "expected": "x"}]}),
 ]
 READS = ["desk", "own", "reminders", "briefs"]
 
@@ -314,3 +315,60 @@ async def test_two_stops_at_once_start_one_background_stop_and_a_booting_compute
         slow.release.set()
         await claimed
         assert "background desktop stop failed" in caplog.text
+
+
+def test_brief_code_blocks_carry_their_fence_language_for_highlighting():
+    from dom.briefs import markdown_blocks
+
+    blocks = markdown_blocks("# Title\n\n## Change\n\n```Python extra\nprint('hi')\n```\n\n~~~\nplain\n~~~\n\nText")
+    assert blocks == [
+        ("heading", ["Change"], ""), ("code", ["print('hi')"], "python"), ("code", ["plain"], ""), ("p", ["Text"], ""),
+    ]
+
+
+async def test_reminders_bulk_cancel_and_delete_report_each_one_they_could_not_do(make_app, browser):
+    app = make_app()
+    ids = [await app.dispatch.reminders.create(f"2026-06-0{day}T12:00", f"Reminder {day}") for day in (1, 2, 3)]
+    stamps = {i: (await app.store.get_reminder(OWNER, i))["created_at"] for i in ids}
+    items = lambda *chosen: [{"id": i, "expected": stamps.get(i, "x")} for i in chosen]  # noqa: E731
+    bulk = lambda action, chosen: client.post(  # noqa: E731
+        "/api/work/reminders/bulk", headers=JSON, json={"action": action, "items": chosen},
+    )
+    async with browser(app) as client:
+        for bad in ({"action": "snooze", "items": items(ids[0])}, {"action": "cancel", "items": []},
+                    {"action": "cancel", "items": items(*range(1, 102))}, {"action": "cancel", "items": [{"id": 0, "expected": "x"}]},
+                    {"action": "cancel", "items": items(ids[0]), "extra": 1}):
+            assert (await client.post("/api/work/reminders/bulk", headers=JSON, json=bad)).status_code == 422, bad
+
+        cancelled = (await bulk("cancel", items(ids[0], ids[1], ids[0]))).json()
+        assert cancelled["ok"] is True and cancelled["message"] == "Cancelled 2 reminders."
+        assert {r["id"]: r["status"] for r in cancelled["reminders"]}[ids[2]] == "active"
+        assert {r["id"]: r["status"] == "active" for r in cancelled["reminders"]} == {ids[0]: False, ids[1]: False, ids[2]: True}
+
+        again = (await bulk("cancel", items(ids[0], ids[2]))).json()
+        assert again["ok"] is False
+        assert again["message"] == f"Cancelled 1 of 2 reminders. Reminder #{ids[0]} is no longer active or has changed."
+
+        stale = items(*ids)
+        stale[1]["expected"] = "1999-01-01T00:00:00+00:00"
+        deleted = (await bulk("delete", stale)).json()
+        assert deleted["ok"] is False and deleted["message"].startswith("Deleted 2 of 3 reminders.")
+        assert [r["id"] for r in deleted["reminders"]] == [ids[1]]  # the changed one stays
+        assert await app.store.get_reminder(OWNER, ids[0]) is None and await app.store.get_reminder(OWNER, ids[2]) is None
+
+
+async def test_reminders_bulk_cancel_never_cancels_a_new_reminder_that_reused_a_deleted_ones_id(make_app, browser):
+    app = make_app()
+    first = await app.dispatch.reminders.create("2026-06-01T12:00", "Water the plants")
+    stale = (await app.store.get_reminder(OWNER, first))["created_at"]
+    await app.store.delete_reminder(OWNER, first, stale, "Deleted in another tab", stale)
+    app.dispatch.now.advance(minutes=1)
+    reused = await app.dispatch.reminders.create("2026-06-02T12:00", "Call the plumber")
+    assert reused == first  # SQLite handed the deleted reminder's id to the new one
+    async with browser(app) as client:
+        result = (await client.post(
+            "/api/work/reminders/bulk", headers=JSON,
+            json={"action": "cancel", "items": [{"id": first, "expected": stale}]},
+        )).json()
+    assert result["ok"] is False and "has changed" in result["message"]
+    assert (await app.store.get_reminder(OWNER, reused))["status"] == "active"

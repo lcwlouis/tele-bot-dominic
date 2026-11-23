@@ -57,6 +57,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (22, "0021_topic_reads_and_cooldowns.sql"),
     (23, "0022_cross_chat.sql"),
     (24, "0023_escalation_usage.sql"),
+    (25, "0024_desktop_step_budget.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -230,28 +231,35 @@ def _display_time(stamp: str, tz: tzinfo | None) -> str:
     return moment.astimezone(tz).strftime("%Y-%m-%d %H:%M")
 
 
+def _xml_attr(value: str) -> str:
+    """A double-quoted attribute with every quote escaped. ``quoteattr`` switches to single quotes when the value holds
+    a double quote, which left a display name like ``x" owner="true`` reading as a literal owner marker."""
+    return quoteattr(value, {'"': "&quot;", "'": "&apos;"})
+
+
 def format_chat_window_xml(
     chat_id: str, messages: list[StoredMessage], tz: tzinfo | None = None, *, owner_id: int | None = None,
 ) -> str:
     """Render messages as ``<chat_window>`` XML. ``previous_seen_text`` is shown only when
     Dom actually saw the original before it was edited. With ``tz``, times are local. With ``owner_id``, the
     owner's own messages carry ``owner="true"``, so Dom knows him in a group without his private profile."""
-    out = [f"<chat_window chat_id={quoteattr(str(chat_id))}>"]
+    attr = _xml_attr
+    out = [f"<chat_window chat_id={attr(str(chat_id))}>"]
     for m in messages:
         if m.role == "event":
-            out.append(f"  <event time={quoteattr(_display_time(m.created_at, tz))}>{escape(m.text)}</event>")
+            out.append(f"  <event time={attr(_display_time(m.created_at, tz))}>{escape(m.text)}</event>")
             continue
-        attrs = [f"id={quoteattr(str(m.msg_id if m.msg_id is not None else ''))}"]
+        attrs = [f"id={attr(str(m.msg_id if m.msg_id is not None else ''))}"]
         if m.sender_handle:
-            attrs.append(f"from={quoteattr(m.sender_handle)}")
+            attrs.append(f"from={attr(m.sender_handle)}")
         if m.sender_name:
-            attrs.append(f"name={quoteattr(m.sender_name)}")
-        attrs.append(f"role={quoteattr(m.role)}")
+            attrs.append(f"name={attr(m.sender_name)}")
+        attrs.append(f"role={attr(m.role)}")
         if owner_id is not None and m.role == "user" and m.sender_user_id == owner_id:
             attrs.append('owner="true"')
         if m.reply_to_msg_id is not None:
-            attrs.append(f"reply_to={quoteattr(str(m.reply_to_msg_id))}")
-        attrs.append(f"time={quoteattr(_display_time(m.created_at, tz))}")
+            attrs.append(f"reply_to={attr(str(m.reply_to_msg_id))}")
+        attrs.append(f"time={attr(_display_time(m.created_at, tz))}")
         if m.is_edited:
             attrs.append('edited="true"')
         body = escape(m.text)
@@ -259,9 +267,9 @@ def format_chat_window_xml(
         kind = media.get("kind") or media.get("type")
         if isinstance(kind, str) and kind:
             emoji, description = media.get("emoji"), media.get("description")
-            emoji_attr = f" emoji={quoteattr(emoji)}" if isinstance(emoji, str) and emoji else ""
+            emoji_attr = f" emoji={attr(emoji)}" if isinstance(emoji, str) and emoji else ""
             description = escape(description) if isinstance(description, str) else ""
-            body += f"<media kind={quoteattr(kind)}{emoji_attr}>{description}</media>"
+            body += f"<media kind={attr(kind)}{emoji_attr}>{description}</media>"
         if m.is_edited and m.original_seen_before_edit and m.previous_seen_text is not None:
             body += f"<previous_seen_text>{escape(m.previous_seen_text)}</previous_seen_text>"
         out.append(f"  <msg {' '.join(attrs)}>{body}</msg>")
@@ -1312,16 +1320,17 @@ class Store:
 
     def _get_unread_topics(self, chat_id: str) -> list[tuple[int | None, int, StoredMessage]]:
         hide = "" if self._is_owner_chat(chat_id) else f" AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        # One row per topic: its newest unread message joined back by the unique (chat_id, msg_id).
         rows = self._conn.execute(
-            f"SELECT {_MESSAGE_COLUMNS_M} FROM messages m "
-            f"WHERE m.chat_id = ? AND m.is_deleted = 0 AND m.role = 'user' AND {_UNREAD_SQL}{hide} "
-            "ORDER BY m.msg_id ASC",
-            (chat_id,),
+            "WITH topics AS ("
+            "SELECT m.thread_id, MIN(m.msg_id) AS first_id, MAX(m.msg_id) AS last_id, COUNT(*) AS unread_count "
+            f"FROM messages m WHERE m.chat_id = ? AND m.is_deleted = 0 AND m.role = 'user' AND {_UNREAD_SQL}{hide} "
+            "GROUP BY m.thread_id) "
+            f"SELECT {_MESSAGE_COLUMNS_M}, t.unread_count FROM topics t "
+            "JOIN messages m ON m.chat_id = ? AND m.msg_id = t.last_id ORDER BY t.first_id ASC",
+            (chat_id, chat_id),
         ).fetchall()
-        grouped: dict[int | None, list[sqlite3.Row]] = {}
-        for row in rows:
-            grouped.setdefault(row["thread_id"], []).append(row)
-        return [(tid, len(items), _row_to_message(items[-1])) for tid, items in grouped.items()]
+        return [(row["thread_id"], row["unread_count"], _row_to_message(row)) for row in rows]
 
     async def has_unread_human(
         self, chat_id: int | str, *, thread_id: int | None = None, filter_thread: bool = False,
@@ -1759,6 +1768,13 @@ class Store:
             return dict(row) if row else None
 
         return await self._run(update)
+
+    async def set_desktop_budget(self, task_id: int, steps_budget: int, extra_steps: int = 0) -> None:
+        """Record a running task's step budget: the one it started with and the steps the owner added since."""
+        await self._run(lambda: self._conn.execute(
+            "UPDATE desktop_tasks SET steps_budget = ?, extra_steps = ? WHERE id = ? AND status IN ('running', 'waiting_owner')",
+            (steps_budget, extra_steps, task_id),
+        ))
 
     # ---- self-directed tasks (W13) ----------------------------------------
 
@@ -2414,11 +2430,25 @@ class Store:
             "SELECT 1 FROM reminders WHERE id = ? AND status = 'active'", (reminder_id,),
         ).fetchone() is not None)
 
-    async def cancel_reminder(self, chat_id: int | None, reminder_id: int) -> bool:
-        return await self._run(lambda: self._conn.execute(
-            "UPDATE reminders SET status = 'cancelled' WHERE chat_id = ? AND id = ? AND status = 'active'",
-            (str(chat_id), reminder_id),
-        ).rowcount == 1)
+    async def cancel_reminder(
+        self, chat_id: int | None, reminder_id: int, expected_created_at: str | None = None,
+    ) -> bool:
+        """Cancel an active reminder. With `expected_created_at`, only the reminder created then: the check and the
+        update share one transaction, so a stale selection never cancels a new reminder that reused the id."""
+        def cancel() -> bool:
+            with self._tx() as conn:
+                if expected_created_at is not None:
+                    row = conn.execute(
+                        "SELECT created_at FROM reminders WHERE chat_id = ? AND id = ?", (str(chat_id), reminder_id),
+                    ).fetchone()
+                    if row is None or not stamp_matches(row["created_at"], expected_created_at):
+                        return False
+                return conn.execute(
+                    "UPDATE reminders SET status = 'cancelled' WHERE chat_id = ? AND id = ? AND status = 'active'",
+                    (str(chat_id), reminder_id),
+                ).rowcount == 1
+
+        return await self._run(cancel)
 
     async def finish_reminder(self, reminder_id: int, fired_at: str, next_due: str | None) -> None:
         await self._run(self._conn.execute,

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import math
 import posixpath
+import secrets
 import shlex
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import PurePosixPath
@@ -63,6 +65,7 @@ OWN_SYSTEM_PROMPT = (
     "its path in finish files."
 )
 ACTIVE = ("queued", "running", "waiting_owner")
+BUDGET_CAP = 3  # an owner's task may be extended up to this many times its starting step budget in all
 WRAP_UP = (
     "You have used every step this task had. Do not use any other tool. Call finish now with what you found so far, "
     "how far you got, and what is still left undone, so the owner knows how close the task came. Never add facts "
@@ -113,19 +116,26 @@ class Run:
     deadline: float  # on the event loop's clock; a handoff moves it
     step: Callable[[int, float], Awaitable[None]]  # records progress; raises CancelledError once the task is cancelled
     tool: Callable[[SandboxClient, str, dict], Awaitable[object]]
+    # Owner tasks only: asked when the budget is used up, before the wrap-up; returns the steps the owner added (0: wrap up).
+    # Self-directed tasks have none, so they keep their planned budgets.
+    ask_more: Callable[[Run, int], Awaitable[int]] | None = None
+    base_steps: int = field(init=False)  # the budget it started with; max_steps grows when the owner extends it
+
+    def __post_init__(self) -> None:
+        self.base_steps = self.max_steps
 
 
 class DesktopWorker:
     def __init__(
         self, app: App, sandbox: LocalSandbox | RemoteSandbox, *,
-        max_steps: int = 30, work_seconds: float = 600, handoff_seconds: float = 900, container: str = DEFAULT,
+        max_steps: int | None = None, work_seconds: float = 600, handoff_seconds: float = 900, container: str = DEFAULT,
     ):
         """One container's worker: it runs one task at a time on `sandbox`. DesktopFleet holds one per container."""
         self.app = app
         self.sandbox = sandbox
         self.container = container
         self._where = "" if container == DEFAULT else f" in {container}"
-        self.max_steps = max_steps
+        self._max_steps = max_steps  # None: desktop.max_steps, read when each task starts so a dashboard save applies
         self.work_seconds = work_seconds
         self.handoff_seconds = handoff_seconds
         self._job: asyncio.Task | None = None
@@ -133,10 +143,15 @@ class DesktopWorker:
         self.control = asyncio.Lock()
         self._screen_lock = asyncio.Lock()
         self._handoff: tuple[int, int, asyncio.Event] | None = None
+        # (task, steps, the card's single-use token, the owner's answer). Ids and step counts can repeat (SQLite may
+        # reuse a deleted task's id; two pauses can share a count), so only the token says which card was tapped.
+        self._budget_ask: tuple[int, int, str, asyncio.Future[bool]] | None = None
+        self._chores: set[asyncio.Task] = set()  # card edits left to finish outside `control`
         self.handoff_host: str | None = None  # the page the owner is asked to log in on
         self.handoff_reason: str | None = None
         self.handoff_deadline: float | None = None
         self.screen_resolution: str = DEFAULT_RESOLUTION
+        self._stops = 0  # counts container stops, so a resize that a stop overtook does not write its size back
         # A remote sandbox survives Dom crashes; restore 1280x1024 on first task if needed.
         self._needs_screen_restore: bool = getattr(sandbox, "stop", None) is None
         if hasattr(sandbox, "alert"):
@@ -147,6 +162,10 @@ class DesktopWorker:
     async def _alert_owner(self, text: str) -> None:
         if (owner_id := self.app.owner_id) is not None:
             await send_text(self.app.bot, owner_id, text, sleep=self.app.sleep, literal=True)
+
+    @property
+    def max_steps(self) -> int:
+        return self._max_steps if self._max_steps is not None else self.app.config.desktop.max_steps
 
     def available(self) -> bool:
         return self.sandbox.status() in ("stopped", "starting", "ready")
@@ -179,6 +198,7 @@ class DesktopWorker:
 
     def screen_reset(self) -> None:
         """Reset tracked screen state after a local container stops or restarts."""
+        self._stops += 1
         self.screen_resolution = DEFAULT_RESOLUTION
         self._needs_screen_restore = getattr(self.sandbox, "stop", None) is None
 
@@ -194,10 +214,15 @@ class DesktopWorker:
             if setter is None:
                 raise SandboxError("desktop is not ready")
             target = PHONE_RESOLUTION if phone else DEFAULT_RESOLUTION
+            stops = self._stops
             if target != DEFAULT_RESOLUTION:
                 self._needs_screen_restore = True
             async with asyncio.timeout(10):
                 await setter(target, timeout=10)
+            if self._stops != stops:
+                # The container stopped meanwhile and its next start is 1280x1024: keep the reset state, so the viewer
+                # does not show phone mode on a desktop that no longer has it.
+                raise ScreenBusy("the desktop stopped while the screen was being resized")
             self.screen_resolution = target
             self._needs_screen_restore = target != DEFAULT_RESOLUTION
             self.sandbox.touch()
@@ -323,6 +348,7 @@ class DesktopWorker:
         if self._job is not None:
             self._job.cancel()
             await asyncio.gather(self._job, return_exceptions=True)
+        await asyncio.gather(*self._chores, return_exceptions=True)
 
     async def cancel(self, chat_id: int, task_id: int) -> bool:
         async with self.control:
@@ -370,11 +396,68 @@ class DesktopWorker:
         await self._settle_card(task_id, "✅ Resumed")
         return True
 
+    async def extend(self, chat_id: int, task_id: int, token: str, keep_going: bool) -> bool:
+        """The owner's answer to a task that is about to run out of steps: keep going, or wrap up now. False when
+        that question is no longer open (answered, timed out, or the task ended) or the token is not its card's."""
+        async with self.control:
+            ask = self._budget_ask
+            if (
+                chat_id != self.app.owner_id or ask is None or ask[0] != task_id or ask[3].done()
+                or not token.isascii() or not hmac.compare_digest(ask[2], token)
+            ):
+                return False
+            self._budget_ask = None  # single use
+            steps = ask[1]
+            ask[3].set_result(keep_going)
+            await self.app.store.record_owner_event(
+                f"{'Extended' if keep_going else 'Wrapped up'} desktop task #{task_id} at {steps} steps",
+            )
+        return True
+
+    async def _ask_more(self, run: Run, steps: int) -> int:
+        """Pause a task that used its budget and ask the owner whether to keep going. Each Keep going adds the starting
+        budget again, up to BUDGET_CAP times it in all. No answer within the handoff window wraps up, as before."""
+        grant = min(run.base_steps, run.base_steps * BUDGET_CAP - run.max_steps)
+        if grant <= 0:
+            return 0
+        answer: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        token = secrets.token_hex(8)
+        self._budget_ask = (run.task_id, steps, token, answer)
+        label = "Wrapped up"
+        try:
+            async with asyncio.timeout(self.handoff_seconds):
+                try:
+                    sent = await self.app.dispatch.desktop_budget_ask(
+                        run.task_id, steps, run.chat_id, grant, token, self.container,
+                    )
+                except Exception as exc:  # Telegram or the network failed: nobody can answer, so wrap up as before
+                    log.warning("could not ask to extend desktop task %s (%s)", run.task_id, type(exc).__name__)
+                    sent = False
+                if not sent:
+                    return 0
+                keep_going = await answer
+        except TimeoutError:
+            keep_going, label = False, "No answer: wrapped up"
+        finally:
+            self._budget_ask = None
+        if keep_going:
+            label = f"➕ Kept going (+{grant} steps)"
+            await self.app.store.set_desktop_budget(run.task_id, run.base_steps, run.max_steps + grant - run.base_steps)
+        await self._settle_budget_card(run.task_id, label)
+        return grant if keep_going else 0
+
     async def _settle_card(self, task_id: int, label: str) -> None:
         try:
             await self.app.dispatch.settle_handoff_card(task_id, label)
         except Exception:  # cosmetic: the task itself has moved on either way
             log.exception("could not settle the log-in card of desktop task %s", task_id)
+        await self._settle_budget_card(task_id, label)
+
+    async def _settle_budget_card(self, task_id: int, label: str) -> None:
+        try:
+            await self.app.dispatch.settle_budget_card(task_id, label)
+        except Exception:  # cosmetic, as above
+            log.exception("could not settle the step budget card of desktop task %s", task_id)
 
     async def _report(self, row: dict, files: tuple[SendFile, ...] = ()) -> None:
         try:
@@ -387,7 +470,11 @@ class DesktopWorker:
             await self._run_task(task_id, chat_id)
         finally:
             discard_bound(self.app.home.root, task_id)
-            await self._settle_card(task_id, "Task ended")  # only if it ended while still waiting for the owner
+            # Only if it ended while still waiting for the owner. A separate task: a cancel awaits this job under
+            # `control`, and a slow Telegram edit must not hold that lock.
+            chore = asyncio.create_task(self._settle_card(task_id, "Task ended"))
+            self._chores.add(chore)
+            chore.add_done_callback(self._chores.discard)
 
     async def _run_task(self, task_id: int, chat_id: int) -> None:
         store = self.app.store
@@ -470,9 +557,12 @@ class DesktopWorker:
         system_prompt = WORKER_SYSTEM_PROMPT + REPOSITORY_NOTE.format(url=self.app.config.update.repo_url)
         if skills := skills_list(self.app.home):
             system_prompt += "\nApproved skill names and descriptions: " + json.dumps(skills, ensure_ascii=False)
+        budget = self.max_steps
+        await self.app.store.set_desktop_budget(task_id, budget)
         run = Run(
-            task_id, chat_id, row["started_at"], system_prompt, brief, frozenset(tools.NAMES), self.max_steps, deadline,
+            task_id, chat_id, row["started_at"], system_prompt, brief, frozenset(tools.NAMES), budget, deadline,
             step=lambda steps, until: self._step(task_id, chat_id, steps, until), tool=self._tool,
+            ask_more=self._ask_more,
         )
         return await self._loop(client, run, progress)
 
@@ -532,68 +622,79 @@ class DesktopWorker:
             return not progress.paused
 
         with model_request("desktop", run.chat_id, allowed):
-            while steps < run.max_steps:
-                async with asyncio.timeout_at(run.deadline):
-                    await check_model_allowed()
-                    reply = await self.app.client.complete(messages, schemas)
-                calls = reply.get("tool_calls")
-                if not calls or not _well_formed(calls):
-                    steps += 1
-                    progress.steps = steps
-                    await run.step(steps, run.deadline)
-                    content = reply.get("content")
-                    if isinstance(content, str) and content.strip():
-                        progress.note = client.redact(content)[:tools.RESULT_LIMIT]
-                    messages.append({"role": "user", "content": "Use a desktop tool or call finish with the result."})
-                    continue
+            while True:
+                while steps < run.max_steps:
+                    async with asyncio.timeout_at(run.deadline):
+                        await check_model_allowed()
+                        reply = await self.app.client.complete(messages, schemas)
+                    calls = reply.get("tool_calls")
+                    if not calls or not _well_formed(calls):
+                        steps += 1
+                        progress.steps = steps
+                        await run.step(steps, run.deadline)
+                        content = reply.get("content")
+                        if isinstance(content, str) and content.strip():
+                            progress.note = client.redact(content)[:tools.RESULT_LIMIT]
+                        messages.append({"role": "user", "content": "Use a desktop tool or call finish with the result."})
+                        continue
 
-                if len(calls) > run.max_steps - steps:
-                    break
-                messages.append(reply)
-                for call in calls:
-                    steps += 1
-                    progress.steps = steps
-                    await run.step(steps, run.deadline)
-                    self.sandbox.touch()
-                    try:
-                        name, args = tools.arguments(call["function"])
-                        if name not in run.names:
-                            raise ValueError("this run does not offer that tool")
-                        if name == "finish":
-                            result = client.redact(args["result"]).strip()[:tools.RESULT_LIMIT]
-                            if not result:
-                                raise ValueError("finish needs a result")
-                            async with asyncio.timeout_at(run.deadline):
-                                documents = await download_results(client, args.get("files", []))
-                            return result, tuple(documents), draft
-                        if name == "handoff":
-                            reason = client.redact(args["reason"]).strip()[:500]
-                            if not reason:
-                                raise ValueError("handoff needs a reason")
-                            host = await self._browser_host(client)
-                            observed = self.app.dispatch.now()
-                        elif name == "propose_skill":
-                            if proposed:
-                                result = "A worker may propose a skill only once per task."
+                    if len(calls) > run.max_steps - steps:
+                        break
+                    messages.append(reply)
+                    for call in calls:
+                        steps += 1
+                        progress.steps = steps
+                        await run.step(steps, run.deadline)
+                        self.sandbox.touch()
+                        try:
+                            name, args = tools.arguments(call["function"])
+                            if name not in run.names:
+                                raise ValueError("this run does not offer that tool")
+                            if name == "finish":
+                                result = client.redact(args["result"]).strip()[:tools.RESULT_LIMIT]
+                                if not result:
+                                    raise ValueError("finish needs a result")
+                                async with asyncio.timeout_at(run.deadline):
+                                    documents = await download_results(client, args.get("files", []))
+                                return result, tuple(documents), draft
+                            if name == "handoff":
+                                reason = client.redact(args["reason"]).strip()[:500]
+                                if not reason:
+                                    raise ValueError("handoff needs a reason")
+                                host = await self._browser_host(client)
+                                observed = self.app.dispatch.now()
+                            elif name == "propose_skill":
+                                if proposed:
+                                    result = "A worker may propose a skill only once per task."
+                                else:
+                                    proposed = True
+                                    draft = Skill(**{key: client.redact(value) for key, value in args.items()})
+                                    result = "Skill drafted for owner approval if the task finishes successfully."
                             else:
-                                proposed = True
-                                draft = Skill(**{key: client.redact(value) for key, value in args.items()})
-                                result = "Skill drafted for owner approval if the task finishes successfully."
+                                async with asyncio.timeout_at(run.deadline):
+                                    result = await run.tool(client, name, args)
+                        except (SandboxError, ValueError, TypeError) as exc:
+                            result = f"Tool error: {exc}" if isinstance(exc, SandboxError) else "Tool error: invalid arguments"
                         else:
-                            async with asyncio.timeout_at(run.deadline):
-                                result = await run.tool(client, name, args)
-                    except (SandboxError, ValueError, TypeError) as exc:
-                        result = f"Tool error: {exc}" if isinstance(exc, SandboxError) else "Tool error: invalid arguments"
-                    else:
-                        if name == "handoff":
-                            before = clock()
-                            await self._wait_for_owner(run.task_id, run.chat_id, steps, reason, host, observed)
-                            run.deadline += clock() - before
-                            result = "Owner confirmed the handoff is done."
-                    messages.append({
-                        "role": "tool", "tool_call_id": str(call.get("id") or ""),
-                        "content": tools.untrusted(self._result_text(client, result)),
-                    })
+                            if name == "handoff":
+                                before = clock()
+                                await self._wait_for_owner(run.task_id, run.chat_id, steps, reason, host, observed)
+                                run.deadline += clock() - before
+                                result = "Owner confirmed the handoff is done."
+                        messages.append({
+                            "role": "tool", "tool_call_id": str(call.get("id") or ""),
+                            "content": tools.untrusted(self._result_text(client, result)),
+                        })
+                if run.ask_more is None:
+                    break
+                before = clock()
+                granted = await run.ask_more(run, steps)
+                run.deadline += clock() - before  # the wait for the owner is not working time
+                if not granted:
+                    break
+                # More steps come with a matching share of working time.
+                run.max_steps += granted
+                run.deadline += self.work_seconds * granted / run.base_steps
             await self._wrap_up(client, run, messages, progress)
         raise SandboxError("desktop task step limit reached")
 

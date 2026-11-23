@@ -148,6 +148,17 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("status").filter({ hasText: "Check replies for leaks: off." })).toBeVisible();
     await expect(leaks).toHaveAttribute("aria-checked", "false");
 
+    // The desktop step budget: out of range is refused before saving; a valid one saves and moves the revision.
+    const steps = page.getByLabel("Step budget");
+    await steps.fill("500");
+    await expect(page.getByText("Enter a whole number from 10 to 100.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+    await steps.fill("40");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Desktop tasks now start with 40 steps." })).toBeVisible();
+    await leaks.click();  // the next save uses the revision that one returned
+    await expect(page.getByRole("status").filter({ hasText: "Check replies for leaks: on." })).toBeVisible();
+
     await page.getByRole("tab", { name: "Models" }).click();
     await page.getByRole("button", { name: "Test Chat", exact: true }).click();
     await expect(page.getByText(/OK · \d+\.\d s/).first()).toBeVisible();
@@ -273,6 +284,15 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Cancel reminder 3" }).click();
     await dialog.getByRole("button", { name: "Keep it" }).click();
     await expect(page.getByText("Pack a charger")).toBeVisible();
+    // Bulk: pick two, one confirm cancels both.
+    await page.getByRole("checkbox", { name: "Select reminder 1" }).click();
+    await page.getByRole("checkbox", { name: "Select reminder 2" }).click();
+    await expect(page.getByText("2 selected")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel 2 reminders selected" }).click();
+    await expect(dialog.getByText("Cancel 2 reminders?")).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel reminders" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Cancelled 2 reminders." })).toBeVisible();
+    await expect(page.getByText("None selected")).toBeVisible();
 
     await page.goto("/app/work/briefs");
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);

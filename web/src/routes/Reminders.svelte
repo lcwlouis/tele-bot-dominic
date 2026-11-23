@@ -8,6 +8,7 @@
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
+  import { Checkbox } from "$lib/components/ui/checkbox";
   import Confirm from "$lib/components/work/Confirm.svelte";
   import type { Destination, Tab } from "$lib/nav";
   import { WorkPage } from "$lib/work.svelte";
@@ -17,11 +18,31 @@
   const page = new WorkPage<RemindersData>("/api/work/reminders");
   let cancelling = $state<Reminder | null>(null);
   let deleting = $state<Reminder | null>(null);
+  // Bulk: the selected ids, and which action waits on its one confirm.
+  let selected = $state<number[]>([]);
+  let bulk = $state<"cancel" | "delete" | null>(null);
 
   onMount(() => page.load());
 
   const tone = (row: Reminder) => (row.status === "active" ? (row.undeliverable ? "destructive" : "secondary") : "outline");
   const label = (row: Reminder) => (row.status !== "active" ? row.status : row.undeliverable ? "undeliverable" : "active");
+  const rows = $derived(page.data?.reminders ?? []);
+  // A reminder that left the list (deleted elsewhere) drops out of the selection.
+  const chosen = $derived(rows.filter((row) => selected.includes(row.id)));
+  const active = $derived(chosen.filter((row) => row.status === "active"));
+  const all = $derived(rows.length > 0 && chosen.length === rows.length);
+  const plural = (count: number) => `${count} reminder${count === 1 ? "" : "s"}`;
+
+  function toggle(id: number, on: boolean) {
+    selected = on ? [...selected, id] : selected.filter((other) => other !== id);
+  }
+
+  async function runBulk(action: "cancel" | "delete") {
+    const targets = action === "cancel" ? active : chosen;
+    const items = targets.map((row) => ({ id: row.id, expected: row.created_at }));
+    if (items.length && (await page.write("/api/work/reminders/bulk", { action, items }))) selected = [];
+    else selected = selected.filter((id) => rows.some((row) => row.id === id)); // keep what is still there to retry
+  }
 </script>
 
 <PageHeader kicker={destination.label} title={tab.label} subtitle={tab.blurb} />
@@ -33,15 +54,45 @@
   </StatusNote>
 {:else if page.data === null}
   <div class="h-40 animate-pulse rounded-xl border bg-surface" aria-hidden="true"></div>
-{:else if page.data.reminders.length === 0}
+{:else if rows.length === 0}
   <StatusNote title="No reminders yet" detail="Ask Dom to remind you of something and it shows up here." />
 {:else}
+  <!-- Sticky on a phone, so the bulk actions stay in reach while picking from a long list. -->
+  <div
+    role="toolbar"
+    aria-label="Selected reminders"
+    class="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border bg-surface/95 px-4 py-2.5 backdrop-blur"
+  >
+    <label class="flex items-center gap-2 text-sm font-medium">
+      <Checkbox
+        checked={all}
+        indeterminate={chosen.length > 0 && !all}
+        onCheckedChange={(on) => (selected = on ? rows.map((row) => row.id) : [])}
+      />
+      Select all
+    </label>
+    <span class="text-sm text-muted-foreground" role="status">{chosen.length ? `${chosen.length} selected` : "None selected"}</span>
+    <div class="ml-auto flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" disabled={page.busy || active.length === 0} aria-label={`Cancel ${plural(active.length)} selected`} onclick={() => (bulk = "cancel")}>
+        Cancel{active.length ? ` ${active.length}` : ""}
+      </Button>
+      <Button variant="destructive" size="sm" disabled={page.busy || chosen.length === 0} aria-label={`Delete ${plural(chosen.length)} selected`} onclick={() => (bulk = "delete")}>
+        Delete{chosen.length ? ` ${chosen.length}` : ""}
+      </Button>
+    </div>
+  </div>
   <ul class="grid gap-3" aria-label="Reminders">
-    {#each page.data.reminders as row (row.id)}
+    {#each rows as row (row.id)}
       <li>
-        <Card.Root>
+        <Card.Root class={selected.includes(row.id) ? "border-signal/45" : ""}>
           <Card.Content class="flex flex-wrap items-center gap-x-4 gap-y-3">
-            <span class="grid size-9 shrink-0 place-items-center rounded-lg border bg-raised text-signal" aria-hidden="true"><Bell class="size-4" /></span>
+            <Checkbox
+              id={`reminder-${row.id}`}
+              aria-label={`Select reminder ${row.id}`}
+              checked={selected.includes(row.id)}
+              onCheckedChange={(on) => toggle(row.id, on === true)}
+            />
+            <span class="hidden size-9 shrink-0 place-items-center rounded-lg border bg-raised text-signal sm:grid" aria-hidden="true"><Bell class="size-4" /></span>
             <div class="min-w-0 flex-1">
               <p class="font-medium break-words">{row.text}</p>
               <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
@@ -50,7 +101,8 @@
                 <Badge variant={tone(row)}>{label(row)}</Badge>
               </p>
             </div>
-            <div class="flex gap-2">
+            <!-- On a phone the buttons take their own line, so the reminder's text keeps the width. -->
+            <div class="flex gap-2 max-sm:basis-full max-sm:justify-end">
               {#if row.status === "active"}
                 <Button variant="outline" size="sm" disabled={page.busy} aria-label={`Cancel reminder ${row.id}`} onclick={() => (cancelling = row)}>Cancel</Button>
               {/if}
@@ -78,4 +130,14 @@
   keep="Keep it"
   action="Delete reminder"
   onconfirm={() => deleting && page.write("/api/work/reminders/delete", { id: deleting.id, expected: deleting.created_at })}
+/>
+<Confirm
+  bind:open={() => bulk !== null, (open) => !open && (bulk = null)}
+  title={bulk === "cancel" ? `Cancel ${plural(active.length)}?` : `Delete ${plural(chosen.length)}?`}
+  description={bulk === "cancel"
+    ? `Dom won't remind you of these. They stay in the list as cancelled.${active.length < chosen.length ? " Selected reminders that are already done or cancelled are left as they are." : ""}`
+    : "A copy of each is saved to the deletion archive."}
+  keep="Keep them"
+  action={bulk === "cancel" ? "Cancel reminders" : "Delete reminders"}
+  onconfirm={() => bulk && runBulk(bulk)}
 />
