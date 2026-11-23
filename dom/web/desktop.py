@@ -186,26 +186,30 @@ async def _change_computer(app, sandbox, action: str) -> str:
     return "Computer ready." if action == "start" else "Computer stopped."
 
 
+async def run_computer_action(app, lane, action: str) -> str:
+    """Start or stop a lane's computer from the dashboard and say what happened."""
+    sandbox, worker = lane.sandbox, lane.worker
+    if action == "start":
+        # Booting takes a while; the worker's lock must stay free for cancel and resume meanwhile.
+        return await _change_computer(app, sandbox, action)
+    if not isinstance(sandbox, LocalSandbox):
+        raise HTTPException(409, "Manage the remote computer on its host.")
+    async with worker.control:
+        if await app.store.desktop_tasks(app.owner_id, active=True, container=lane.name):
+            return "Cancel the current task before stopping the computer."
+        message = await _change_computer(app, sandbox, action)
+        if sandbox.status() == "stopped":
+            worker.screen_reset()
+        return message
+
+
 @router.post("/computer/{action}")
 async def computer_action(request: Request, action: Literal["start", "stop"], container: str = ""):
     app = owner_app(request)
     lane = _lane(app, container)
     if lane is None:
         raise HTTPException(409, "The desktop is off.")
-    sandbox, worker = lane.sandbox, lane.worker
-    if action == "start":
-        # Booting takes a while; the worker's lock must stay free for cancel and resume meanwhile.
-        message = await _change_computer(app, sandbox, action)
-    else:
-        if not isinstance(sandbox, LocalSandbox):
-            raise HTTPException(409, "Manage the remote computer on its host.")
-        async with worker.control:
-            if await app.store.desktop_tasks(app.owner_id, active=True, container=lane.name):
-                message = "Cancel the current task before stopping the computer."
-            else:
-                message = await _change_computer(app, sandbox, action)
-                if sandbox.status() == "stopped":
-                    worker.screen_reset()
+    message = await run_computer_action(app, lane, action)
     return render("desktop_state.html", context=await _context(app, lane, message))
 
 
@@ -222,9 +226,8 @@ async def desktop_delete_task(request: Request, task_id: int):
     return response
 
 
-@router.post("/tasks/{task_id:int}/{steps:int}/done")
-async def desktop_done(request: Request, task_id: int, steps: int):
-    app = owner_app(request)
+async def resume_handoff(app, task_id: int, steps: int) -> tuple[str, object]:
+    """Resume a task waiting for the owner. Returns the message and the lane the task runs in."""
     if app.desktop_worker is None:
         raise HTTPException(409, "The desktop is off.")
     resumed = await app.desktop_worker.resume(app.owner_id, task_id, steps)
@@ -232,7 +235,14 @@ async def desktop_done(request: Request, task_id: int, steps: int):
     # The task id says which container; show that one.
     task = next((row for row in await app.store.desktop_tasks(app.owner_id) if row["id"] == task_id), None)
     lane = app.desktop_worker.lanes.get(task["container"]) if task is not None else None
-    return render("desktop_state.html", context=await _context(app, lane or _lane(app, ""), message))
+    return message, lane or _lane(app, "")
+
+
+@router.post("/tasks/{task_id:int}/{steps:int}/done")
+async def desktop_done(request: Request, task_id: int, steps: int):
+    app = owner_app(request)
+    message, lane = await resume_handoff(app, task_id, steps)
+    return render("desktop_state.html", context=await _context(app, lane, message))
 
 
 async def _json_body(request: Request, max_bytes: int = _JSON_BODY_LIMIT) -> dict:

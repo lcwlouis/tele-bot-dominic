@@ -166,6 +166,14 @@ def task_files(home: Path, task_id: int) -> Path:
     return home / FILES_DIR / str(task_id)
 
 
+def read_task_file(home: Path, task_id: int, name: str) -> bytes:
+    """A task's saved file, never through a symlink: a link in the folder could otherwise serve .env or private notes."""
+    folder, path = task_files(home, task_id), task_files(home, task_id) / name
+    if folder.is_symlink() or path.is_symlink() or not path.resolve().is_relative_to((home / FILES_DIR).resolve()):
+        raise FileNotFoundError(name)
+    return path.read_bytes()
+
+
 class SelfWork:
     def __init__(self, app: App):
         self.app = app

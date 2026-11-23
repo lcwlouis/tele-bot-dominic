@@ -168,3 +168,79 @@ export type ChatsData = {
   vibe: { mode: "auto" | "locked" | "none"; title: string; description: string; reason: string; source: string; since: string };
   stickers: string[];
 };
+
+/** GET /api/work/* and the Work writes (dom/web/api_work.py). Every write answers { ok, message, ...the tab's data }. */
+export type DeskTask = { id: number; status: string; steps: number; brief: string; error: string | null };
+export type DeskContainer = {
+  name: string;
+  host: string;
+  status: string;
+  state: string;
+  tone: "waiting" | "starting" | "running" | "refused" | "error" | "off";
+  detail: string;
+  selected: boolean;
+  task: { id: number; status: string } | null;
+};
+export type DeskHistory = {
+  id: number;
+  status: string;
+  container: string;
+  steps: number;
+  brief: string;
+  result: string;
+  error: string;
+  finished: string;
+  created_at: string;
+};
+export type DeskData = {
+  enabled: boolean;
+  status: string;
+  container: string | null;
+  on_this_machine: boolean;
+  error: string | null;
+  handoff_host: string | null;
+  task: DeskTask | null;
+  viewer: string;
+  containers: DeskContainer[];
+  history: DeskHistory[];
+};
+export type OwnTask = {
+  id: number;
+  goal: string;
+  why: string;
+  status: string;
+  tools: string[];
+  sites: string[];
+  minutes: number;
+  steps_budget: number;
+  steps: number;
+  announced: string;
+  starts: string;
+  finished: string;
+  result: string;
+  error: string;
+  files: string[];
+  announced_at: string;
+};
+export type Skill = { name: string; description: string; body: string; hash: string; retired: boolean };
+export type OwnData = {
+  enabled: boolean;
+  active: boolean;
+  delay_hours: number;
+  guard: { ok: boolean; detail: string; at: string } | null;
+  tasks: OwnTask[];
+  skills: Skill[];
+};
+export type Reminder = {
+  id: number;
+  due: string;
+  importance: string;
+  repeat: string | null;
+  status: string;
+  undeliverable: boolean;
+  text: string;
+  created_at: string;
+};
+export type RemindersData = { reminders: Reminder[] };
+export type Brief = { filename: string; title: string; markdown: string; blocks: { kind: "heading" | "code" | "ul" | "ol" | "p"; lines: string[] }[] };
+export type BriefsData = { briefs: Brief[] };

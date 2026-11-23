@@ -12,7 +12,9 @@ import argparse
 import asyncio
 import os
 import sys
+import struct
 import tempfile
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -23,11 +25,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from dom import traits  # noqa: E402
 from dom.config import load_config  # noqa: E402
+from dom.briefs import write_brief  # noqa: E402
+from dom.desktop.fleet import DesktopFleet  # noqa: E402
 from dom.dispatch import Dispatcher  # noqa: E402
 from dom.home import Home  # noqa: E402
 from dom.llm import ChatClient  # noqa: E402
 from dom.models import StoredMessage  # noqa: E402
 from dom.presence import Presence, read_habits  # noqa: E402
+from dom.selfwork import task_files  # noqa: E402
+from dom import skills  # noqa: E402
+from dom.skills import Skill, write_skill  # noqa: E402
 from dom.store import Store  # noqa: E402
 from dom.telegram import handlers, owner  # noqa: E402
 from dom.web.app import create_app  # noqa: E402
@@ -94,10 +101,31 @@ enabled = true
 """
 
 
+class Computer:
+    """A desktop that is always ready, so the Desk shows a live computer. It never runs anything."""
+
+    error = None
+    client = None
+
+    def status(self) -> str:
+        return "ready"
+
+    def touch(self) -> None:
+        pass
+
+
+def screenshot() -> bytes:
+    """A small plain PNG standing in for a screenshot Dom took."""
+    width, height = 320, 200
+    rows = b"".join(b"\x00" + b"".join(bytes((18 + y // 12, 52 + x // 8 % 60, 66 + y // 6)) for x in range(width)) for y in range(height))
+    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))  # noqa: E731
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
 def build(home: Path, port: int) -> handlers.App:
     (home / "config.toml").write_text(CONFIG)
     (home / ".env").write_text("EXAMPLE_LLM_KEY=preview-made-up-value\nTAVILY_API_KEY=preview-made-up-value\n")
-    config = load_config(home).model_copy(update={"owner_id": OWNER})
+    config = load_config(home).model_copy(update={"owner_id": OWNER, "desktop_mode": "local"})
     endpoint = config.models["chat"]
     config = config.model_copy(update={
         "web": config.web.model_copy(update={"dev_token_env": TOKEN_ENV, "bind": "127.0.0.1", "port": port}),
@@ -107,6 +135,7 @@ def build(home: Path, port: int) -> handlers.App:
         config=config, home=Home(home), store=Store(home, owner_id=OWNER), client=client,
         bot=FakeBot(), bot_username="dombot", sleep=no_sleep, bot_id=BOT_USER.id,
     )
+    app.desktop_worker = DesktopFleet(app, sandbox_factory=lambda host, name: Computer())
     clock = Clock(NOW)
     app.dispatch = Dispatcher(app, Presence(app.store, app.dispatch.presence.tz, FixedRandom(), clock), None, no_sleep, clock)
     return app
@@ -171,6 +200,30 @@ async def seed(app: handlers.App) -> None:
         await store.record_turn(now - timedelta(minutes=4 * index), CREW, "group", 1, [], "example/chat-model", False, 900, outcome)
     await store.record_usage(now.isoformat(), "chat", "example/chat-model", "llm.example.org", CREW, 900, 300, 0.42, 0)
     await app.dispatch.reminders.create("2026-11-22T21:45:00", "Water the plants")
+    await app.dispatch.reminders.create("2026-11-23T08:00:00", "Check train times for Saturday")
+    await app.dispatch.reminders.create("2026-11-24T18:30:00", "Pack a charger")
+
+    # Work: a desktop task waiting for a sign-in, one finished, Dom's own tasks, skills and a brief.
+    waiting = await store.enqueue_desktop_task(OWNER, "Find a train from Central to Harbor after 6 pm.")
+    await store.update_desktop_task(waiting, OWNER, ("queued",), "waiting_owner", error="Sign in to continue.")
+    finished = await store.enqueue_desktop_task(OWNER, "Look up opening hours for the library.", "shop")
+    await store.update_desktop_task(finished, OWNER, ("queued",), "done", result="The library opens at 9 am on weekdays.")
+    planned, ran = await store.add_self_tasks([
+        {"goal": "Read about slow-travel itineraries", "why": "The owner plans a trip.", "tools": ["browse"], "sites": ["travel.example.org"], "minutes": 10, "steps": 20},
+        {"goal": "Check the weather page for Saturday", "why": "To suggest a coat.", "tools": ["browse"], "sites": [], "minutes": 5, "steps": 10},
+    ], now - timedelta(hours=30), now - timedelta(hours=6))
+    await store.update_self_task(ran["id"], ("planned",), "done", result="Saturday looks clear, 14 degrees.", files=["weather.png"])
+    ended = (now - timedelta(hours=3)).isoformat()  # the store stamps real time; the screenshots need a fixed day
+    store._conn.execute("UPDATE desktop_tasks SET finished_at = ? WHERE id = ?", (ended, finished))
+    store._conn.execute("UPDATE self_tasks SET finished_at = ? WHERE id = ?", (ended, ran["id"]))
+    shots = task_files(app.home.root, ran["id"])
+    shots.mkdir(parents=True)
+    (shots / "weather.png").write_bytes(screenshot())
+    write_skill(app.home, Skill("trip-notes", "Keep a short note for each trip the owner plans", "Open the trip note.\nAdd the dates and the stations.\nKeep it under ten lines."), "")
+    write_skill(app.home, Skill("weekly-recap", "Summarise the week on Sunday evening", "List the chats that were busy.\nName one thing to follow up."), "")
+    skills.retire_skill(app.home, "weekly-recap")
+    write_brief(app.home, now.date(), title="Wake groups gently", problem="Dom wakes a group the moment anyone says his name, even at 3 am.",
+                proposal="- Wait for a second message\n- Skip the wake between 1 and 6 am", acceptance="1. No wake at 3 am\n2. Still wakes at 9 am")
     await app.dispatch.presence.wake(OWNER, read_habits(app.home), minutes=180)
 
 

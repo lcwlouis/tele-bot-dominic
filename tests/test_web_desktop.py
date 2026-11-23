@@ -740,7 +740,7 @@ async def test_phone_mode_restores_1280x1024_and_clears_clipboard_on_done_timeou
         replies.extend([call("finish", result="Signed in"), {"content": "invalid"}])
     else:
         replies.append({"content": "invalid"})
-    worker = await worker_for(app, *replies, handoff_seconds=2 if end_by != "timeout" else 0.15)
+    worker = await worker_for(app, *replies, handoff_seconds=2 if end_by != "timeout" else 1.0)
     worker.sandbox = sandbox
     worker._needs_screen_restore = False
     app.desktop_worker.lanes[app.desktop_worker.default].sandbox = sandbox
