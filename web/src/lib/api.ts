@@ -196,7 +196,7 @@ export type DeskData = {
   enabled: boolean;
   status: string;
   container: string | null;
-  local: boolean;
+  on_this_machine: boolean;
   error: string | null;
   handoff_host: string | null;
   task: DeskTask | null;

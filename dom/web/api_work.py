@@ -86,7 +86,7 @@ async def _desk(app, lane) -> dict:
         "enabled": state["enabled"],
         "status": state["status"],
         "container": state["container"],
-        "local": state["local"],
+        "on_this_machine": state["local"],
         "error": state["error"],
         "handoff_host": state["handoff_host"],
         "task": _task(state["task"]),

@@ -57,7 +57,7 @@ async def test_desk_shows_containers_and_starts_the_chosen_one(make_app, browser
     task = await app.store.enqueue_desktop_task(OWNER, "read the shop manuals", "shop")
     async with browser(app) as client:
         main = (await client.get("/api/work/desk")).json()
-        assert main["enabled"] and main["container"] == "default" and main["task"] is None
+        assert main["enabled"] and main["container"] == "default" and main["task"] is None and main["on_this_machine"] is False
         assert main["viewer"] == "/desktop/vnc/index.html"
         assert [(c["name"], c["selected"]) for c in main["containers"]] == [("default", True), ("shop", False)]
         shop = (await client.get("/api/work/desk", params={"container": "shop"})).json()

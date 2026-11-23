@@ -130,12 +130,12 @@
       </Card.Content>
       <Card.Footer class="flex flex-wrap gap-2">
         {#if data.status === "stopped" || data.status === "error"}
-          <Button disabled={page.busy} onclick={() => computer("start")}>{data.local ? "Start computer" : "Connect to computer"}</Button>
+          <Button disabled={page.busy} onclick={() => computer("start")}>{data.on_this_machine ? "Start computer" : "Connect to computer"}</Button>
         {/if}
         {#if data.status === "ready"}
           <Button href={data.viewer} variant="secondary">Full-screen viewer <ExternalLink data-icon="inline-end" aria-hidden="true" /></Button>
         {/if}
-        {#if data.local && (data.status === "ready" || data.status === "error") && !data.task}
+        {#if data.on_this_machine && (data.status === "ready" || data.status === "error") && !data.task}
           <Button variant="outline" disabled={page.busy} onclick={() => computer("stop")}>Stop computer</Button>
         {/if}
       </Card.Footer>
