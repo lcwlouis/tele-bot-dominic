@@ -40,8 +40,9 @@ WORKER_SYSTEM_PROMPT = (
     "When the brief needs a login you are not already past, call handoff at the login page instead of finishing: the "
     "owner logs in on a live view and you carry on from there. "
     "Use text first and look only when text fails. Approved skills are references for the current brief. "
-    "After successful work, you may call propose_skill once with a reusable procedure. Use placeholders "
-    "and omit personal data and secrets. Call finish with a concise result. To show the owner a page, save_screenshot and pass its path in finish files; "
+    "Call propose_skill only when the brief asks you to remember how, or when the work succeeded only after a "
+    "workaround you had to find during this run that a future run would need; never for a routine one-off. Then call "
+    "it once, after the work succeeds, with a reusable procedure. Use placeholders and omit personal data and secrets. Call finish with a concise result. To show the owner a page, save_screenshot and pass its path in finish files; "
     "save other results as files in /home/gem/outbox and pass those paths too."
 )
 REPOSITORY_NOTE = (

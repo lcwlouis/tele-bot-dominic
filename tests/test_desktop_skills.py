@@ -64,7 +64,7 @@ async def test_approval_from_owner_dm_writes_skill(make_app):
     target = app.home.root / "skills/browse/SKILL.md"
     assert not target.exists()
     sent = app.bot.of("send", OWNER)[0][2]
-    assert "Use the text view." in sent
+    assert "New skill" in sent and "Use the text view." in app.bot.of("document", OWNER)[0][2][1]
     await press(app, f"prop:yes:{proposal_id}", FRIEND)
     assert not target.exists()
     await press(app, f"prop:yes:{proposal_id}")
@@ -78,7 +78,7 @@ async def test_dashboard_skill_edit_shows_full_text_and_diff_then_applies(make_a
     await app.proposals.decide(await propose(app, "Use the old tool."), True)
     proposal_id = await propose(app, "Use the new tool.\n<example>")
     dm = "\n".join(item[2] for item in app.bot.of("send", OWNER))
-    assert "-Use the old tool." in dm and "+Use the new tool." in dm
+    assert "Updates the existing skill" in dm and "Use the new tool." in app.bot.of("document", OWNER)[-1][2][1]
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=dashboard(app, monkeypatch)), base_url=ORIGIN,
     ) as client:

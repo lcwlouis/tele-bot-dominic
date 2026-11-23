@@ -1895,6 +1895,15 @@ class Dispatcher:
                     await check_model_allowed()
                     reply = await app.client.complete(messages, [], once=True)
                 actions = parse_actions(reply.get("content"))
+                if actions is None and self.jev is not None:
+                    # The same rescue as a chat turn: prose Jev is sure is a ready message becomes the bubbles, so
+                    # the owner hears Dom's words instead of the raw task output.
+                    with model_request("triage", chat_id, allowed):
+                        state = chat_state(persona_card(app.home), "")
+                        saved = await salvage.rescue(self.jev, state, reply.get("content"), "owner_dm", set())
+                    if saved is not None:
+                        actions = saved.actions
+                        log.info("salvaged desktop task %s report: %d bubbles", task_id, len(actions.bubbles))
                 if actions is None:
                     log.info("desktop task %s report was not usable: %s", task_id, malformed_shape(reply))
             except Exception as exc:
