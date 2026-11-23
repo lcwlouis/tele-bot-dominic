@@ -174,7 +174,8 @@ def _check_keys(disk: Config, providers: list[ProviderEndpoint]) -> None:
     keys, KLIPY_API_KEY, or an unpaired JEV_API_KEY), or belongs to another host. Pairing an existing key with a
     new host stays a hand edit of config.toml."""
     paired: dict[str, set[str | None]] = {}
-    for _, endpoint in disk.model_endpoints():
+    for endpoint in [*(endpoint for _, endpoint in disk.model_endpoints()),
+                     *disk.studio.voice_fallbacks, *disk.studio.image_fallbacks]:
         if endpoint.api_key_env:
             paired.setdefault(endpoint.api_key_env, set()).add(_address(endpoint.base_url))
     instance = disk.model_copy(update={"models": {}}).secret_names()

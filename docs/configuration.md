@@ -136,6 +136,21 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | `studio.special` | `false` | Allow special video notes in the owner DM. |
 | `studio.profile_photo_follows_preset` | `false` | Use the Everywhere preset's portrait as the bot profile photo. |
 | `studio.default_outfit` | `""` | Wardrobe ID to use when the active preset has no outfit list. |
+| `studio.voice_fallbacks` | `[]` | Ordered cloud backups for voice notes. |
+| `studio.image_fallbacks` | `[]` | Ordered cloud backups for photos. |
+
+### Studio cloud fallbacks
+
+Add one `[[studio.voice_fallbacks]]` or `[[studio.image_fallbacks]]` table per provider, in the order they should be tried after the local studio.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `studio.<kind>_fallbacks[].provider` | Required | Cloud media provider. |
+| `studio.<kind>_fallbacks[].model` | Required | Provider model ID. |
+| `studio.<kind>_fallbacks[].api_key_env` | Required | Secret variable paired with the provider's fixed HTTPS origin. |
+| `studio.<kind>_fallbacks[].paid` | `false` | Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. Gemini reports tokens, not a price, so its calls are recorded at no cost and do not count toward daily_spend_cap_usd; only OpenRouter-reported costs do. |
+| `studio.<kind>_fallbacks[].supports_reference` | `true` | For OpenRouter image models that accept an image reference. |
+| `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos when an approved reference cannot be sent. |
 
 ### Studio limits
 

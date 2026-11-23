@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderEndpoint, SelfWorkConfig, StudioConfig, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, starter_config
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderEndpoint, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -96,6 +96,10 @@ def render() -> str:
         table(fields(DesktopHost, "desktop.hosts[].")),
         "## Studio",
         table(fields(StudioConfig, "studio.", exclude={"limits", "timeouts"})),
+        "### Studio cloud fallbacks",
+        "Add one `[[studio.voice_fallbacks]]` or `[[studio.image_fallbacks]]` table per provider, "
+        "in the order they should be tried after the local studio.",
+        table(fields(StudioFallback, "studio.<kind>_fallbacks[].")),
         "### Studio limits",
         table([
             *fields(StudioLimits, "studio.limits.", exclude={"owner_dm", "friend_dm", "group"}),

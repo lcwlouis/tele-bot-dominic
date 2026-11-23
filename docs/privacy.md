@@ -125,6 +125,15 @@ Cloudflare. Keep local bearer-token testing on loopback.
   and Dom keeps the speech or scene in the originating chat's history.
   Generation runs on the local server. Plain HTTP exposes the request to
   anyone able to observe that connection. See [Studio](studio.md).
+  Optional cloud fallbacks are off by default and receive the screened scene
+  or transcript only after the local Studio cannot serve the request.
+  OpenRouter speech and image requests enforce ZDR routing. Photos can also
+  send the approved outfit portrait as inline PNG. Direct Gemini gets the
+  transcript and the prebuilt voice name only when the owner marks its key
+  paid. Google's Paid Services terms exclude model improvement and allow
+  limited safety and legal logging. Video rendering stays local.
+  [OpenRouter ZDR](https://openrouter.ai/docs/guides/features/zdr) ·
+  [Gemini API terms](https://ai.google.dev/gemini-api/terms).
 - **Jev** can receive recent chat context for triage. The outbound leak check sends proposed text and a
   bounded selection of headings, names, numbers and other terms from owner notes
   to the configured Jev endpoint. At or above the configured threshold Dom holds

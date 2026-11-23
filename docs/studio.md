@@ -57,3 +57,28 @@ terms for the checkpoints and the voice and portrait references you install.
   for its repository. Check the terms of the Lite model's upstream dependencies.
 - [LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3) uses the LTX-2 Community
   License.
+
+## Optional cloud fallbacks
+
+Configure only the providers you want to use when the local Studio cannot
+complete a request. Put the key value in the instance's `.env`. Keep
+`[studio]` and the corresponding media switches enabled.
+
+```toml
+[[studio.voice_fallbacks]]
+provider = "openrouter_tts"
+model = "google/gemini-3.8-flash-lite-tts"
+api_key_env = "OPENROUTER_API_KEY"
+
+[[studio.image_fallbacks]]
+provider = "openrouter_image"
+model = "google/gemini-2.5-flash-image"
+api_key_env = "OPENROUTER_API_KEY"
+```
+
+Voice conversion requires `ffmpeg` with `libopus` on the **bot host**. Copy each
+approved reference to `DOM_HOME/studio-portraits/<outfit>.png` so the bot can
+use it when the local Studio is unreachable. References must be PNG files no
+larger than 4 MiB. Direct Gemini (`provider = "gemini_tts"`) requires a direct
+Gemini model ID, a separate key variable and `paid = true`. See the
+[configuration reference](configuration.md) and [provider data handling](privacy.md).

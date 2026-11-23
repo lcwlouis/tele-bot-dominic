@@ -22,6 +22,7 @@ from dom.desktop import network as desktop_network
 from dom.home import Home, init_home
 from dom.gifs import GifSearch
 from dom.studio.client import StudioClient
+from dom.studio.cloud import CloudStudio
 from dom.importer import import_v2
 from dom.jev import JevClient
 from dom.llm import FallbackClient, routed_client
@@ -136,6 +137,7 @@ async def run(home: Path) -> None:
                 media_describer=MediaDescriber(media, bot) if media.available else None,
                 search_client=search_client(config, http, usage), gifs=gif_search(config, http),
                 studio=StudioClient(studio, studio_token, studio_http) if studio_token else None,
+                cloud_studio=CloudStudio(studio_http, usage),
                 draft_client=routed_client(config, "drafting", http, usage),
                 escalation_client=routed_client(config, "escalation", http, usage),
             )

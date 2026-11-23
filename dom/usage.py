@@ -23,7 +23,8 @@ if TYPE_CHECKING:
     from dom.config import Config
     from dom.store import Store
 
-Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation"]
+Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation",
+               "studio_voice", "studio_image", "studio_video"]
 log = logging.getLogger("dom.usage")
 
 
