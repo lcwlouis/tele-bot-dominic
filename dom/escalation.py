@@ -200,6 +200,7 @@ class EscalationTurn:
         self.manager, self.chat_id, self.provider, self.local_model = manager, chat_id, provider, local_model
         self.deadline = manager.clock() + OFFER_AFTER_SECONDS
         self.rounds = self.failures = 0
+        self.permanent = False  # a failure a second try on the same model cannot fix (400, 401, missing key)
         self.choice: str | None = None
         self.token = uuid4().hex
         self.timer: asyncio.Task | None = None
@@ -226,7 +227,7 @@ class EscalationTurn:
         away_count: int, skill: str | None,
     ) -> bool:
         if (
-            self.failures < OFFER_AFTER_FAILURES or self.choice is not None
+            (self.failures < OFFER_AFTER_FAILURES and not self.permanent) or self.choice is not None
             or newest.msg_id is None or newest.id is None
         ):
             return False
@@ -347,6 +348,8 @@ class EscalationTurn:
             except MODEL_FAILURES as exc:
                 self.failed()
                 self.rounds += 1
+                if not _can_recover(exc):
+                    self.permanent = True  # where a bigger model helps most: offer the retry after this one round
                 if (
                     self.choice == "switch" or recovery or on_fallback
                     or self.failures >= OFFER_AFTER_FAILURES or not _can_recover(exc)

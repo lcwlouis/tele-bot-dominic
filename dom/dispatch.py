@@ -935,6 +935,7 @@ class Dispatcher:
         try:
             async with self._dispatch_slot(chat_id) as waits:
                 if not await self.turn_allowed(chat_id, "owner_dm"):
+                    await self._retry_not_run(chat_id)
                     return
                 original = await self.app.store.get_message(chat_id, retry.msg_id)
                 if original is None or original.id != retry.row_id:
@@ -948,9 +949,20 @@ class Dispatcher:
                     total_unread=1, escalation_retry=retry,
                 )
         except ModelCallSkipped:
-            return
+            await self._retry_not_run(chat_id)
         except Exception:
             log.exception("could not retry owner DM task")
+
+    async def _retry_not_run(self, chat_id: int) -> None:
+        """The card already said "Retry requested": say it did not run, rather than nothing."""
+        try:
+            await executor.retry_telegram(
+                lambda: self.app.bot.send_message(chat_id, "The retry did not run: model calls are paused right now.",
+                                                  disable_notification=True),
+                sleep=self.app.sleep,
+            )
+        except Exception as exc:
+            log.warning("could not tell the owner the retry did not run (%s)", type(exc).__name__)
 
     async def _maybe_send_spend_cap_line(self, chat_id: int) -> None:
         """Send one short in-character line per local day to a friend's DM paused by the spend cap (never groups)."""
@@ -1238,7 +1250,7 @@ class Dispatcher:
             if trace.superseded:
                 self._interrupted.setdefault(chat_id, []).append(attempt)
             else:
-                if not migrating:
+                if not migrating and attempt.escalation_retry is None:  # a retry must not discard a newer turn's restarts
                     prior_int = self._interrupted.get(chat_id)
                     if prior_int and prior_int[-1].thread_id == topic_thread_id:
                         self._discard_interrupted(chat_id)

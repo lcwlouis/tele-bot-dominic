@@ -377,3 +377,56 @@ async def test_slow_price_fetch_can_outlast_the_local_reply(make_app, monkeypatc
             priced.set()
         await drain_dispatch(app.dispatch)
     assert cards(app) == []
+
+
+async def test_a_failure_another_try_cannot_fix_offers_the_retry_after_one_round(make_app):
+    app = make_app()
+    app.dispatch.escalation.clock = lambda: 0
+    attempts = []
+
+    async def respond(request):
+        if request.method == "GET":
+            return price_list(request)
+        model = json.loads(request.content)["model"]
+        attempts.append(model)
+        if model == "local":
+            return httpx.Response(400, json={"error": {"message": "model not found"}})
+        return answer()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        wire(app, http, explicit=True)
+        await start(app, text="original task")
+        await drain_dispatch(app.dispatch)
+        assert attempts == ["local"]
+        [(_, _, text, options)] = [call for call in app.bot.of("send", OWNER) if "Retry on cloud?" in call[2]]
+        [buttons] = options["reply_markup"].inline_keyboard
+        await handle_callback(app, tap_for(buttons[0], msg_id=app.bot._next_id))
+        await asyncio.sleep(0)
+        await drain_dispatch(app.dispatch)
+    assert attempts == ["local", "cloud"]
+
+
+async def test_a_retry_the_cap_blocks_says_so(make_app, monkeypatch):
+    app = make_app()
+    app.dispatch.escalation.clock = lambda: 0
+
+    async def respond(request):
+        if request.method == "GET":
+            return price_list(request)
+        return httpx.Response(400, json={"error": {"message": "model not found"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        wire(app, http, explicit=True)
+        await start(app, text="original task")
+        await drain_dispatch(app.dispatch)
+        [turn] = app.dispatch.escalation.pending.values()
+        allowed = app.dispatch.turn_allowed
+
+        async def blocked(chat_id, scope):
+            return False
+
+        monkeypatch.setattr(app.dispatch, "turn_allowed", blocked)
+        await app.dispatch.retry_escalation(turn.retry_task)  # what a Retry tap spawns
+        monkeypatch.setattr(app.dispatch, "turn_allowed", allowed)
+        await drain_dispatch(app.dispatch)
+    assert app.bot.of("send", OWNER)[-1][2] == "The retry did not run: model calls are paused right now."
