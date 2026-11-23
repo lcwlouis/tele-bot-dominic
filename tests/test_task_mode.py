@@ -12,7 +12,6 @@ from dom.traits import (
     AUTO_PICKS_KEY, TASK_QUIET, end_task_mode, for_chat, start_task_mode, task_mode, vibe,
 )
 from test_vibe import auto, ctx, install, pick
-from test_web_pages import browser  # noqa: F401  (fixture)
 from test_owner_controls import approve
 
 
@@ -180,11 +179,10 @@ async def test_self_inspect_and_the_dashboard_show_task_mode(make_app, browser):
     await pick_vibe(app)
     assert json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))["preset"]["task_mode"] == {"on": False}
     async with browser(app) as client:
-        assert "Task mode" not in (await client.get("/chats")).text
+        assert all(chat["task"] is None for chat in (await client.get("/api/chats")).json()["chats"])
         await go(app, "plan <b>the</b> move")
-        text = (await client.get("/chats")).text
-        assert 'id="task-mode"' in text and "plan &lt;b&gt;the&lt;/b&gt; move" in text and text.count("Task mode:") == 1
-        assert "if the chat goes quiet" in text and "Assistant, " in text
+        tasks = [chat["task"] for chat in (await client.get("/api/chats")).json()["chats"] if chat["task"]]
+        assert len(tasks) == 1 and tasks[0]["reason"] == "plan <b>the</b> move" and tasks[0]["until"]
     found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))["preset"]["task_mode"]
     assert found["on"] and found["reason"] == "plan <b>the</b> move"
 

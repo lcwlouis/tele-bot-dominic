@@ -11,7 +11,6 @@ from dom.skills import Skill, is_retired, skill_hash, write_skill
 from test_desktop_worker import call, wait_status, wait_task, worker_for
 from test_web_api_memory_chats import JSON
 from test_web_desktop import two_containers
-from test_web_pages import browser  # noqa: F401 (fixture)
 from tghelpers import OWNER
 
 WRITES = [

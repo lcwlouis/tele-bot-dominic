@@ -7,8 +7,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
-
 from dom import deletion
 from dom.deletion import (
     MANIFEST_FILE,
@@ -28,9 +26,8 @@ from dom.telegram.owner import OWNER_COMMANDS
 from dom.tools import SKILL_VIEW_TOOL, SKILLS_LIST_TOOL, TurnCtx
 from test_owner_events import events, press
 from test_plugin_surfaces import SURFACES, approve as approve_surface_plugin
-from test_plugin_tools import MANIFEST, draft as draft_plugin, review_path, status as plugin_status
+from test_plugin_tools import MANIFEST, draft as draft_plugin, status as plugin_status
 from test_web_auth import POST_HEADERS
-from test_web_pages import browser  # noqa: F401
 from tghelpers import FRIEND, OWNER, tg
 
 BODY = "Open the page, check the table, and write a brief note."
@@ -43,6 +40,24 @@ def _archives(home: Path) -> set[Path]:
 
 def _new_archives(home: Path, before: set[Path]) -> list[Path]:
     return sorted(_archives(home) - before)
+
+
+async def act(client, path, body, headers=POST_HEADERS):
+    """One JSON write to the dashboard's API, with the same-origin headers a real page sends."""
+    return await client.post(path, json=body, headers=headers)
+
+
+def detail(response) -> str:
+    return response.json()["detail"]
+
+
+SKILL_API = "/api/work/skills/action"
+REMINDER_DELETE = "/api/work/reminders/delete"
+DESK_DELETE = "/api/work/desk/delete"
+OWN_DELETE = "/api/work/own/delete"
+PLUGIN_DECIDE = "/api/system/plugins/decide"
+PLUGIN_DELETE = "/api/system/plugins/delete"
+PROPOSAL_DELETE = "/api/waiting/delete"
 
 
 def _manifest(folder: Path) -> dict:
@@ -62,15 +77,14 @@ async def test_skill_retire_survives_approved_edit_restore_and_delete(make_app, 
     ctx = TurnCtx("owner_dm", OWNER, OWNER, app.home, app.store, OWNER, app=app)
 
     async with browser(app) as client:
-        page = (await client.get("/memory")).text
-        assert 'id="skills"' in page and "notes" in page and "hx-confirm=" in page
-        assert (await client.post("/skills/notes/retire")).status_code == 403
-        assert (await client.post("/skills/notes/delete")).status_code == 403
-        assert (await client.post("/skills/Bad Name/delete", headers=POST_HEADERS, data={"expected": "x"})).status_code == 404
+        assert [skill["name"] for skill in (await client.get("/api/work/own")).json()["skills"]] == ["notes"]
+        assert (await act(client, SKILL_API, {"name": "notes", "action": "retire"}, headers={})).status_code == 403
+        assert (await act(client, SKILL_API, {"name": "notes", "action": "delete"}, headers={})).status_code == 403
+        assert (await act(client, SKILL_API, {"name": "Bad Name", "action": "delete", "expected": "x"})).status_code == 404
 
         # Retire: files stay on disk, Dom no longer lists or uses it
-        retired = await client.post("/skills/notes/retire", headers=POST_HEADERS)
-        assert retired.status_code == 200 and "Retired skill notes." in retired.text
+        retired = await act(client, SKILL_API, {"name": "notes", "action": "retire"})
+        assert retired.status_code == 200 and "Retired skill notes." in retired.json()["message"]
         assert is_retired(app.home, "notes")
         assert skills_list(app.home) == []
         assert skill_view(app.home, "notes") is None
@@ -94,21 +108,21 @@ async def test_skill_retire_survives_approved_edit_restore_and_delete(make_app, 
         assert new_hash != old_hash
 
         # Stale confirmation with old_hash is refused!
-        stale = await client.post("/skills/notes/delete", headers=POST_HEADERS, data={"expected": old_hash})
-        assert stale.status_code == 409 and STALE_MESSAGE in stale.text
+        stale = await act(client, SKILL_API, {"name": "notes", "action": "delete", "expected": old_hash})
+        assert stale.status_code == 409 and STALE_MESSAGE in detail(stale)
         assert (app.home.root / "skills" / "notes" / "SKILL.md").is_file()
         assert _new_archives(app.home.root, before) == []
 
         # Explicit Restore clears .retired and Dom sees the updated v2 text
-        restored = await client.post("/skills/notes/restore", headers=POST_HEADERS)
-        assert restored.status_code == 200 and "Restored skill notes." in restored.text
+        restored = await act(client, SKILL_API, {"name": "notes", "action": "restore"})
+        assert restored.status_code == 200 and "Restored skill notes." in restored.json()["message"]
         assert not is_retired(app.home, "notes")
         assert skill_view(app.home, "notes") == BODY + " v2"
         assert any("Restored skill notes" in row["text"] for row in await events(app))
 
         # Delete with current hash moves files (including .bak and state.db*) into deletion archive
-        deleted = await client.post("/skills/notes/delete", headers=POST_HEADERS, data={"expected": new_hash})
-        assert deleted.status_code == 200 and "Deleted skill notes." in deleted.text
+        deleted = await act(client, SKILL_API, {"name": "notes", "action": "delete", "expected": new_hash})
+        assert deleted.status_code == 200 and "Deleted skill notes." in deleted.json()["message"]
         assert not (app.home.root / "skills" / "notes").exists()
         (archive,) = _new_archives(app.home.root, before)
         assert (archive / STATE_FILE).read_text().strip() == "committed"
@@ -118,7 +132,7 @@ async def test_skill_retire_survives_approved_edit_restore_and_delete(make_app, 
         assert (archive / "files" / "0" / "extra.bak").read_text() == "backup-named"
         assert (archive / "files" / "0" / "state.db.note").read_text() == "state-named"
         assert any("Deleted skill notes" in row["text"] for row in await events(app))
-        assert (await client.post("/skills/notes/delete", headers=POST_HEADERS, data={"expected": new_hash})).status_code == 404
+        assert (await act(client, SKILL_API, {"name": "notes", "action": "delete", "expected": new_hash})).status_code == 404
 
 
 async def test_skill_dm_commands_retire_restore_delete_and_long_name(make_app):
@@ -187,7 +201,6 @@ async def test_plugin_retire_delete_mid_call_stale_and_menu_retry(make_app, brow
     before = _archives(app.home.root)
     await approve_surface_plugin(app, browser)
     row = await plugin_status(app)
-    route = review_path(row)
     app.store.write_plugin_storage("convert", row["hash"], '{"count": 2}')  # real plugin storage (PR #5)
 
     # Make set_my_commands fail during retire to verify background tick republish
@@ -202,17 +215,17 @@ async def test_plugin_retire_delete_mid_call_stale_and_menu_retry(make_app, brow
     app.bot.set_my_commands = flaky_set
 
     async with browser(app) as client:
-        page = (await client.get("/plugins")).text
-        assert "hx-confirm=" in page and 'action="/plugins/convert/delete"' in page
-        assert "/plugin-panels/convert/summary" in page
-        assert (await client.post("/plugins/convert/delete")).status_code == 403
+        listed = (await client.get("/api/system/plugins")).json()
+        assert [plugin["name"] for plugin in listed["plugins"]] == ["convert"]
+        assert [panel["id"] for panel in listed["panels"]] == ["summary"]
+        assert (await act(client, PLUGIN_DELETE, {"name": "convert", "expected": row["hash"]}, headers={})).status_code == 403
 
         # Retire fails set_my_commands -> marks menu_dirty; files kept, panel disappears
-        retired = await client.post(f"{route}/retire", headers=POST_HEADERS)
-        assert retired.status_code == 200 and "Disabled" in retired.text
+        retired = await act(client, PLUGIN_DECIDE, {"name": "convert", "digest": row["hash"], "decision": "disable"})
+        assert retired.status_code == 200 and retired.json()["message"] == "Disabled"
         assert app.menu_dirty is True
         assert (app.home.root / "plugins" / "convert" / "main.py").is_file()
-        assert "/plugin-panels/convert/summary" not in (await client.get("/plugins")).text
+        assert (await client.get("/api/system/plugins")).json()["panels"] == []
 
         # Next background tick republishes from current registry state once Telegram recovers
         fail_menu = False
@@ -226,19 +239,19 @@ async def test_plugin_retire_delete_mid_call_stale_and_menu_retry(make_app, brow
 
         # Mid-call refusal
         with app.plugin_runner.active("convert"):
-            busy = await client.post("/plugins/convert/delete", headers=POST_HEADERS, data={"expected": row["hash"]})
-            assert busy.status_code == 409 and "running" in busy.text.lower()
+            busy = await act(client, PLUGIN_DELETE, {"name": "convert", "expected": row["hash"]})
+            assert busy.status_code == 409 and "running" in detail(busy).lower()
         assert _new_archives(app.home.root, before) == []
 
         # Stale hash refusal
-        stale = await client.post("/plugins/convert/delete", headers=POST_HEADERS, data={"expected": "0" * 64})
-        assert stale.status_code == 409 and STALE_MESSAGE in stale.text
+        stale = await act(client, PLUGIN_DELETE, {"name": "convert", "expected": "0" * 64})
+        assert stale.status_code == 409 and STALE_MESSAGE in detail(stale)
         assert _new_archives(app.home.root, before) == []
 
         # Delete with matching hash -> archives files + DB + KV, deletes all, refreshes menu
         app.bot.calls.clear()
-        deleted = await client.post("/plugins/convert/delete", headers=POST_HEADERS, data={"expected": row["hash"]})
-        assert deleted.status_code == 200 and "Deleted" in deleted.text
+        deleted = await act(client, PLUGIN_DELETE, {"name": "convert", "expected": row["hash"]})
+        assert deleted.status_code == 200 and deleted.json()["message"] == "Deleted"
         assert not (app.home.root / "plugins" / "convert").exists()
         assert await app.store.list_plugins() == []
         assert await app.store.kv_get("plugin-files:convert") is None
@@ -323,26 +336,21 @@ async def test_reminder_delete_stale_id_reuse_and_in_use(make_app, browser):
     row1 = await app.store.get_reminder(OWNER, r1)
 
     async with browser(app) as client:
-        page = (await client.get("/reminders")).text
-        assert "First reminder" in page and "hx-confirm=" in page
-        assert (await client.post(f"/reminders/{r1}/delete")).status_code == 403
+        assert [item["text"] for item in (await client.get("/api/work/reminders")).json()["reminders"]] == ["First reminder"]
+        assert (await act(client, REMINDER_DELETE, {"id": r1, "expected": row1["created_at"]}, headers={})).status_code == 403
 
         # Refuses while mid-delivery
         app.dispatch.reminders._in_flight.add(r1)
         try:
-            busy = await client.post(
-                f"/reminders/{r1}/delete", headers=POST_HEADERS, data={"expected": row1["created_at"]},
-            )
-            assert busy.status_code == 409 and "delivered" in busy.text.lower()
+            busy = await act(client, REMINDER_DELETE, {"id": r1, "expected": row1["created_at"]})
+            assert busy.status_code == 409 and "delivered" in detail(busy).lower()
             assert _new_archives(app.home.root, before) == []
         finally:
             app.dispatch.reminders._in_flight.discard(r1)
 
         # Delete r1 succeeds
-        deleted = await client.post(
-            f"/reminders/{r1}/delete", headers=POST_HEADERS, data={"expected": row1["created_at"]},
-        )
-        assert deleted.status_code == 200 and f"Deleted reminder #{r1}." in deleted.text
+        deleted = await act(client, REMINDER_DELETE, {"id": r1, "expected": row1["created_at"]})
+        assert deleted.status_code == 200 and f"Deleted reminder #{r1}." in deleted.json()["message"]
         assert await app.store.get_reminder(OWNER, r1) is None
         assert len(_new_archives(app.home.root, before)) == 1
 
@@ -354,10 +362,8 @@ async def test_reminder_delete_stale_id_reuse_and_in_use(make_app, browser):
         assert row_reused["created_at"] != row1["created_at"]
 
         # Stale confirmation bound to old created_at is refused!
-        stale = await client.post(
-            f"/reminders/{reused}/delete", headers=POST_HEADERS, data={"expected": row1["created_at"]},
-        )
-        assert stale.status_code == 409 and STALE_MESSAGE in stale.text
+        stale = await act(client, REMINDER_DELETE, {"id": reused, "expected": row1["created_at"]})
+        assert stale.status_code == 409 and STALE_MESSAGE in detail(stale)
         assert await app.store.get_reminder(OWNER, reused) is not None
 
         # Stale DM callback bound to old created_at fingerprint is refused too!
@@ -390,29 +396,23 @@ async def test_desktop_task_delete_archives_outside_home_inbox_and_refuses_stale
     (inbox / "report.bak").write_text("attachment-outside-home")
 
     async with browser(app) as client:
-        page = (await client.get("/desktop")).text
-        assert "Finished task" in page and "hx-confirm=" in page
-        assert (await client.post(f"/desktop/tasks/{done_id}/delete")).status_code == 403
+        history = (await client.get("/api/work/desk")).json()["history"]
+        assert [task["brief"] for task in history] == ["Finished task"]
+        assert (await act(client, DESK_DELETE, {"id": done_id, "expected": done_row["created_at"]}, headers={})).status_code == 403
 
         # Active refused
-        refused = await client.post(
-            f"/desktop/tasks/{active_id}/delete", headers=POST_HEADERS, data={"expected": active_row["created_at"]},
-        )
-        assert refused.status_code == 409 and "queued" in refused.text.lower()
+        refused = await act(client, DESK_DELETE, {"id": active_id, "expected": active_row["created_at"]})
+        assert refused.status_code == 409 and "queued" in detail(refused).lower()
         assert _new_archives(app.home.root, before) == []
 
         # Stale created_at refused
-        stale = await client.post(
-            f"/desktop/tasks/{done_id}/delete", headers=POST_HEADERS, data={"expected": "2000-01-01T00:00:00+00:00"},
-        )
-        assert stale.status_code == 409 and STALE_MESSAGE in stale.text
+        stale = await act(client, DESK_DELETE, {"id": done_id, "expected": "2000-01-01T00:00:00+00:00"})
+        assert stale.status_code == 409 and STALE_MESSAGE in detail(stale)
         assert inbox.exists()
 
         # Matching created_at moves outside-home inbox folder into archive and deletes row
-        deleted = await client.post(
-            f"/desktop/tasks/{done_id}/delete", headers=POST_HEADERS, data={"expected": done_row["created_at"]},
-        )
-        assert deleted.status_code == 200 and f"Deleted desktop task #{done_id}." in deleted.text
+        deleted = await act(client, DESK_DELETE, {"id": done_id, "expected": done_row["created_at"]})
+        assert deleted.status_code == 200 and f"Deleted desktop task #{done_id}." in deleted.json()["message"]
         assert await app.store.get_desktop_task(OWNER, done_id) is None
         assert not inbox.exists()
         (archive,) = _new_archives(app.home.root, before)
@@ -440,29 +440,22 @@ async def test_self_work_delete_dashboard_and_ownwork_dm_command(make_app, brows
     (shots / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
     async with browser(app) as client:
-        page = (await client.get("/own-work")).text
-        assert f'action="/own-work/{done_web["id"]}/delete"' in page and "hx-confirm=" in page
-        assert f'/own-work/{planned["id"]}/delete' not in page
-        assert (await client.post(f"/own-work/{done_web['id']}/delete")).status_code == 403
+        tasks = (await client.get("/api/work/own")).json()["tasks"]
+        assert {task["goal"] for task in tasks} >= {"Web delete", "Active plan"}
+        assert (await act(client, OWN_DELETE, {"id": done_web["id"], "expected": done_web["announced_at"]}, headers={})).status_code == 403
 
         # Active refused
-        refused = await client.post(
-            f"/own-work/{planned['id']}/delete", headers=POST_HEADERS, data={"expected": planned["announced_at"]},
-        )
-        assert refused.status_code == 409 and "planned" in refused.text.lower()
+        refused = await act(client, OWN_DELETE, {"id": planned["id"], "expected": planned["announced_at"]})
+        assert refused.status_code == 409 and "planned" in detail(refused).lower()
 
         # Stale refused
-        stale = await client.post(
-            f"/own-work/{done_web['id']}/delete", headers=POST_HEADERS, data={"expected": "1999-01-01T00:00:00+00:00"},
-        )
-        assert stale.status_code == 409 and STALE_MESSAGE in stale.text
+        stale = await act(client, OWN_DELETE, {"id": done_web["id"], "expected": "1999-01-01T00:00:00+00:00"})
+        assert stale.status_code == 409 and STALE_MESSAGE in detail(stale)
         assert shots.exists()
 
         # Valid web delete archives screenshots and removes row
-        deleted = await client.post(
-            f"/own-work/{done_web['id']}/delete", headers=POST_HEADERS, data={"expected": done_web["announced_at"]},
-        )
-        assert deleted.status_code == 200 and f"Deleted task #{done_web['id']}." in deleted.text
+        deleted = await act(client, OWN_DELETE, {"id": done_web["id"], "expected": done_web["announced_at"]})
+        assert deleted.status_code == 200 and f"Deleted task #{done_web['id']}." in deleted.json()["message"]
         assert await app.store.get_self_task(done_web["id"]) is None
         assert not shots.exists()
         (archive,) = _new_archives(app.home.root, before)
@@ -506,29 +499,20 @@ async def test_proposals_delete_settled_only_and_stale_refusal(make_app, browser
     settled_row = await app.store.get_proposal(settled_id)
 
     async with browser(app) as client:
-        page = (await client.get("/proposals")).text
-        assert "Settled (1)" in page and f'action="/proposals/{settled_id}/delete' in page and "hx-confirm=" in page
-        assert "\u00b7" not in page
-        assert (await client.post(f"/proposals/{settled_id}/delete")).status_code == 403
+        assert (await act(client, PROPOSAL_DELETE, {"id": settled_id, "expected": settled_row["created_at"]}, headers={})).status_code == 403
 
         # Pending refused
-        refused = await client.post(
-            f"/proposals/{pending_id}/delete", headers=POST_HEADERS, data={"expected": pending_row["created_at"]},
-        )
-        assert refused.status_code == 409 and "pending" in refused.text.lower()
+        refused = await act(client, PROPOSAL_DELETE, {"id": pending_id, "expected": pending_row["created_at"]})
+        assert refused.status_code == 409 and "pending" in detail(refused).lower()
         assert _new_archives(app.home.root, before) == []
 
         # Stale refused
-        stale = await client.post(
-            f"/proposals/{settled_id}/delete", headers=POST_HEADERS, data={"expected": "1999-01-01T00:00:00+00:00"},
-        )
-        assert stale.status_code == 409 and STALE_MESSAGE in stale.text
+        stale = await act(client, PROPOSAL_DELETE, {"id": settled_id, "expected": "1999-01-01T00:00:00+00:00"})
+        assert stale.status_code == 409 and STALE_MESSAGE in detail(stale)
 
         # Settled deletes with archive and owner event
-        deleted = await client.post(
-            f"/proposals/{settled_id}/delete", headers=POST_HEADERS, data={"expected": settled_row["created_at"]},
-        )
-        assert deleted.status_code == 200 and f"Deleted proposal #{settled_id}." in deleted.text
+        deleted = await act(client, PROPOSAL_DELETE, {"id": settled_id, "expected": settled_row["created_at"]})
+        assert deleted.status_code == 200 and f"Deleted proposal #{settled_id}." in deleted.json()["message"]
         assert await app.store.get_proposal(settled_id) is None
         (archive,) = _new_archives(app.home.root, before)
         assert _manifest(archive)["rows"]["proposal"]["id"] == settled_id

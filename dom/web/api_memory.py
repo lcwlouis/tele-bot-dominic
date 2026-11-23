@@ -1,7 +1,7 @@
 """JSON API for the Memory page: the file list, a file's text and its save, the soul request, memory imports and
 the memory proposals waiting for review.
 
-Every read and check is the old /memory page's own (dom/web/pages.py): a file opens only when it is listed, a private
+Every read and check lives in dom/web/shared.py: a file opens only when it is listed, a private
 file only in the private scope, HABITS.md never saves. Every POST sits in JSON_POSTS, so it needs the dashboard's
 auth, a same-origin Origin and a JSON body, like the settings routes.
 """
@@ -20,7 +20,7 @@ from dom import memory_import
 from dom.home import MAX_SOUL_EDIT, content_version
 from dom.telegram import owner
 from dom.web.model_settings import _input
-from dom.web.pages import (
+from dom.web.shared import (
     HABITS,
     IMPORT_SERVICES,
     OwnerError,

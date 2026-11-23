@@ -34,7 +34,7 @@ EXAMPLE_EMAIL_DOMAIN = re.compile(r"(?:[a-z0-9-]+\.)*example\.[a-z0-9-]+")
 DOC_NETWORKS = tuple(map(ipaddress.IPv4Network, ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")))
 CARRIER_NAT = ipaddress.IPv4Network("100.64.0.0/10")
 VENDORED = ("dom/web/static/novnc/", "dom/web/static/fonts/", "dom/web/static/app/")  # app/: built from web/, scanned there
-EXCLUDED = {"uv.lock", "web/package-lock.json", "dom/web/static/htmx.min.js"}
+EXCLUDED = {"uv.lock", "web/package-lock.json"}
 POLICY_PATH = Path("scripts/check_public.toml")
 CSS_RULES = {
     "charset", "container", "import", "keyframes", "layer", "media", "namespace", "starting", "supports",

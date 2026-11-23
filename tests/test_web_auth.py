@@ -12,7 +12,7 @@ from dom.home import init_home
 
 TOKEN = "test-token-" + "a" * 32
 ORIGIN = "https://dashboard.example.org"
-POST_HEADERS = {"HX-Request": "true", "Origin": ORIGIN}
+POST_HEADERS = {"Origin": ORIGIN, "Content-Type": "application/json"}
 ISSUER = "https://example-team.cloudflareaccess.com"
 
 
@@ -78,14 +78,14 @@ async def test_access_jwt_validation_and_key_rotation(tmp_path, access_keys, clo
 
     web = create_app(SimpleNamespace(owner_id=None), Auth(config, jwks))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        assert (await client.get("/", headers=header())).status_code == 200
+        assert (await client.get("/app", headers=header())).status_code == 200
         for invalid in (
             {}, header(aud="other"), header(exp=0), header(next_key), header(iss=ORIGIN), header(exp=None),
         ):
-            assert (await client.get("/", headers=invalid)).status_code == 403
+            assert (await client.get("/app", headers=invalid)).status_code == 403
         assert len(calls) == 1
         clock.now += 61
-        assert (await client.get("/", headers=header(next_key, "second"))).status_code == 200
+        assert (await client.get("/app", headers=header(next_key, "second"))).status_code == 200
     assert calls == [f"{issuer}/cdn-cgi/access/certs"] * 2
 
 
@@ -98,7 +98,7 @@ async def test_dev_token_and_security_headers(tmp_path, monkeypatch):
     web = create_app(SimpleNamespace(owner_id=None), Auth(config))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
         for header, expected in (("Bearer incorrect", 403), (f"Bearer {TOKEN}", 200)):
-            response = await client.get("/", headers={"Authorization": header})
+            response = await client.get("/app", headers={"Authorization": header})
             assert response.status_code == expected
             assert "default-src 'self'" in response.headers["Content-Security-Policy"]
             assert "'unsafe-inline'" not in response.headers["Content-Security-Policy"]
@@ -126,35 +126,33 @@ def test_incomplete_auth_refused(tmp_path, web, monkeypatch):
         Auth(Config(home=tmp_path, web=web))
 
 
-async def test_post_requires_htmx_and_same_origin(tmp_path, monkeypatch):
+async def test_post_requires_a_json_body_and_same_origin(tmp_path, monkeypatch):
     from dom.web.app import create_app
     from dom.web.auth import Auth
 
     monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
     config = Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"})
     web = create_app(SimpleNamespace(owner_id=None), Auth(config))
-
-    @web.api_route("/action", methods=["POST", "PUT"])
-    async def action():
-        return "done"
+    path = "/api/permissions"  # a JSON write; with no owner yet it answers 409 once the request is let in
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=web), base_url=ORIGIN,
         headers={"Authorization": f"Bearer {TOKEN}"},
     ) as client:
-        assert (await client.post("/action", headers=POST_HEADERS)).status_code == 200
-        assert (await client.post("/action", headers={
-            "HX-Request": "true", "Referer": f"{ORIGIN}/chats",
-        })).status_code == 200
+        assert (await client.post(path, content="{}", headers=POST_HEADERS)).status_code == 409
         for invalid in (
-            {}, {"Origin": ORIGIN}, {"HX-Request": "true"},
+            {}, {"Origin": ORIGIN}, {"Content-Type": "application/json"},
+            {"Referer": f"{ORIGIN}/app", "Content-Type": "application/json"},  # a Referer is not an Origin
             POST_HEADERS | {"Origin": "http://dashboard.example.org"},
             POST_HEADERS | {"Origin": f"{ORIGIN}:8443"},
-            POST_HEADERS | {"Origin": f"{ORIGIN}.example.org", "Referer": f"{ORIGIN}/chats"},
-            POST_HEADERS | {"Origin": "null", "Referer": f"{ORIGIN}/chats"},
+            POST_HEADERS | {"Origin": f"{ORIGIN}.example.org", "Referer": f"{ORIGIN}/app"},
+            POST_HEADERS | {"Origin": "null", "Referer": f"{ORIGIN}/app"},
+            POST_HEADERS | {"Content-Type": "application/x-www-form-urlencoded"},
+            {"HX-Request": "true", "Origin": ORIGIN},  # the old htmx header no longer opens anything
         ):
-            assert (await client.post("/action", headers=invalid)).status_code == 403
-        assert (await client.put("/action", headers=POST_HEADERS)).status_code == 403
+            assert (await client.post(path, content="{}", headers=invalid)).status_code == 403
+        assert (await client.put(path, content="{}", headers=POST_HEADERS)).status_code == 403
+        assert (await client.post("/settings", content="{}", headers=POST_HEADERS)).status_code == 403  # not a JSON write
 
 
 # --- JWKS refresh policy -------------------------------------------------------------------------
@@ -190,10 +188,10 @@ async def test_unknown_kids_fetch_once_per_minute(tmp_path, access_keys, clock):
 
     async with access_dashboard(tmp_path, jwks) as client:
         for number in range(5):
-            assert (await client.get("/", headers=assertion(key, f"junk-{number}"))).status_code == 403
+            assert (await client.get("/app", headers=assertion(key, f"junk-{number}"))).status_code == 403
         assert len(calls) == 1
         clock.now += 61
-        assert (await client.get("/", headers=assertion(key, "junk-later"))).status_code == 403
+        assert (await client.get("/app", headers=assertion(key, "junk-later"))).status_code == 403
         assert len(calls) == 2
 
 
@@ -208,7 +206,7 @@ async def test_concurrent_requests_share_one_refresh(tmp_path, access_keys, cloc
         return {"keys": [jwk]}
 
     async with access_dashboard(tmp_path, jwks) as client:
-        requests = [asyncio.create_task(client.get("/", headers=assertion(key, "first"))) for _ in range(5)]
+        requests = [asyncio.create_task(client.get("/app", headers=assertion(key, "first"))) for _ in range(5)]
         for _ in range(20):
             await asyncio.sleep(0)
         gate.set()
@@ -228,13 +226,13 @@ async def test_cached_key_is_not_delayed_by_a_stalled_refresh(tmp_path, access_k
         return {"keys": [jwk]}
 
     async with access_dashboard(tmp_path, jwks) as client:
-        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 200
+        assert (await client.get("/app", headers=assertion(key, "first"))).status_code == 200
         clock.now += 61
-        stalled = asyncio.create_task(client.get("/", headers=assertion(key, "unknown")))
+        stalled = asyncio.create_task(client.get("/app", headers=assertion(key, "unknown")))
         for _ in range(20):
             await asyncio.sleep(0)
         assert len(calls) == 2
-        response = await asyncio.wait_for(client.get("/", headers=assertion(key, "first")), 1)
+        response = await asyncio.wait_for(client.get("/app", headers=assertion(key, "first")), 1)
         assert response.status_code == 200
         gate.set()
         assert (await stalled).status_code == 403
@@ -249,12 +247,12 @@ async def test_failed_refresh_is_cached_for_thirty_seconds(tmp_path, access_keys
         raise httpx.ConnectError("unreachable")
 
     async with access_dashboard(tmp_path, jwks) as client:
-        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 403
+        assert (await client.get("/app", headers=assertion(key, "first"))).status_code == 403
         clock.now += 10
-        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 403
+        assert (await client.get("/app", headers=assertion(key, "first"))).status_code == 403
         assert len(calls) == 1
         clock.now += 21
-        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 403
+        assert (await client.get("/app", headers=assertion(key, "first"))).status_code == 403
         assert len(calls) == 2
 
 
@@ -268,7 +266,7 @@ async def test_refresh_gives_up_after_the_timeout(tmp_path, access_keys, clock, 
         await asyncio.Event().wait()
 
     async with access_dashboard(tmp_path, jwks) as client:
-        response = await asyncio.wait_for(client.get("/", headers=assertion(key, "first")), 2)
+        response = await asyncio.wait_for(client.get("/app", headers=assertion(key, "first")), 2)
         assert response.status_code == 403
         assert len(calls) == 1
 
@@ -284,12 +282,12 @@ async def test_previous_keys_survive_a_failed_refresh_for_a_day(tmp_path, access
         return {"keys": [jwk]}
 
     async with access_dashboard(tmp_path, jwks) as client:
-        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 200
+        assert (await client.get("/app", headers=assertion(key, "first"))).status_code == 200
         clock.now += 3601
-        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 200
+        assert (await client.get("/app", headers=assertion(key, "first"))).status_code == 200
         assert len(calls) == 2
         clock.now += 86400
-        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 403
+        assert (await client.get("/app", headers=assertion(key, "first"))).status_code == 403
         assert len(calls) == 3
 
 
@@ -304,8 +302,8 @@ async def test_clock_skew_of_a_minute_is_tolerated(tmp_path, access_keys, claim)
     async with access_dashboard(tmp_path, jwks) as client:
         near = assertion(key, "first", **{claim: now + timedelta(seconds=30)})
         far = assertion(key, "first", **{claim: now + timedelta(seconds=120)})
-        assert (await client.get("/", headers=near)).status_code == 200
-        assert (await client.get("/", headers=far)).status_code == 403
+        assert (await client.get("/app", headers=near)).status_code == 200
+        assert (await client.get("/app", headers=far)).status_code == 403
 
 
 # --- dev token hardening -------------------------------------------------------------------------
@@ -379,7 +377,7 @@ async def test_access_emails_restrict_the_verified_identity(tmp_path, access_key
     })
     web = create_app(SimpleNamespace(owner_id=None), Auth(config, jwks))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        assert (await client.get("/", headers=assertion(key, "first", **claims))).status_code == expected
+        assert (await client.get("/app", headers=assertion(key, "first", **claims))).status_code == expected
 
 
 async def test_any_admitted_user_passes_without_access_emails(tmp_path, access_keys):
@@ -389,8 +387,8 @@ async def test_any_admitted_user_passes_without_access_emails(tmp_path, access_k
         return {"keys": [jwk]}
 
     async with access_dashboard(tmp_path, jwks) as client:
-        assert (await client.get("/", headers=assertion(key, "first"))).status_code == 200
-        assert (await client.get("/", headers=assertion(key, "first", email="anyone@example.org"))).status_code == 200
+        assert (await client.get("/app", headers=assertion(key, "first"))).status_code == 200
+        assert (await client.get("/app", headers=assertion(key, "first", email="anyone@example.org"))).status_code == 200
 
 
 def test_blank_access_email_refused(tmp_path):

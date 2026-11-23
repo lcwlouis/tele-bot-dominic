@@ -8,7 +8,6 @@ from dom.presence import read_habits
 from dom.web.api import APP_INDEX, activity
 
 from tghelpers import FRIEND, GROUP
-from test_web_pages import browser  # noqa: F401 (fixture)
 
 
 async def reply(app, chat_id, text, msg_id, at):

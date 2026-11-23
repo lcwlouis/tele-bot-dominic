@@ -39,7 +39,6 @@ from test_owner_events import events
 from test_reminders import add as add_reminder
 from test_traits import put
 from test_usage import deliver, online
-from test_web_pages import browser, today_rows  # noqa: F401
 from tghelpers import FRIEND, GROUP, NOW, OWNER, Clock, FixedRandom, drain_dispatch, no_sleep, tg, turn_requests
 
 
@@ -866,16 +865,17 @@ async def test_undeliverable_critical_reminder_shown_in_dm_dashboard_and_exclude
     assert f"#{rem_id}" in dm_text and "undeliverable" in dm_text
 
     async with browser(app) as client:
-        # Dashboard /reminders shows it as undeliverable.
-        rem_page = (await client.get("/reminders")).text
-        assert f"#{rem_id}" in rem_page and "(critical, undeliverable)" in rem_page
+        # The reminders API lists it as undeliverable.
+        listed, = (await client.get("/api/work/reminders")).json()["reminders"]
+        assert listed["id"] == rem_id and listed["importance"] == "critical" and listed["undeliverable"] is True
 
         # Home page "Next reminder" excludes the undeliverable critical reminder.
-        assert today_rows((await client.get("/")).text)["Next reminder"] == "No reminders"
+        assert (await client.get("/api/home")).json()["today"]["next_reminder"] is None
 
         # When a later deliverable reminder exists, home shows the deliverable one.
         await app.dispatch.reminders.create("2026-01-01T15:00", "Call the dentist", "normal")
-        assert today_rows((await client.get("/")).text)["Next reminder"] == "15:00 Call the dentist"
+        upcoming = (await client.get("/api/home")).json()["today"]["next_reminder"]
+        assert upcoming["text"] == "Call the dentist" and "15:00" in upcoming["when"]
 
 
 async def test_remaining_telegram_send_paths_retry_on_flood_control(make_app):

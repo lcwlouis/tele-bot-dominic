@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 
 import httpx
@@ -155,18 +156,19 @@ async def test_dashboard_done_resumes_task_with_csrf(make_app, monkeypatch):
     row = await wait_status(app, task_id, "waiting_owner")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
         auth = {"Authorization": f"Bearer {TOKEN}"}
-        page = await client.get("/desktop", headers=auth)
-        assert page.status_code == 200
-        assert "Dom needs you to log in: Sign in &lt;here&gt;" in page.text
-        assert "Logins you make here are kept for later tasks." in page.text
+        desk = (await client.get("/api/work/desk", headers=auth)).json()
+        assert desk["status"] == "ready" and desk["task"]["status"] == "waiting_owner"
+        assert desk["task"]["error"] == "Sign in <here>" and desk["handoff_host"] is None
+        assert desk["viewer"] == "/desktop/vnc/index.html"
         worker.handoff_host = "login.example.org"
-        assert "Dom needs you to log in on login.example.org: Sign in &lt;here&gt;" in (await client.get("/desktop", headers=auth)).text
-        assert "/desktop/vnc/index.html" in page.text
-        done = f"/desktop/tasks/{task_id}/{row['steps']}/done"
-        assert (await client.post(done, headers=POST_HEADERS)).status_code == 403
-        assert (await client.post(done, headers=auth | {"HX-Request": "true"})).status_code == 403
-        assert (await client.post(done, headers=auth | POST_HEADERS | {"Origin": "https://attacker.example.org"})).status_code == 403
-        assert (await client.post(done, headers=auth | POST_HEADERS)).status_code == 200
+        assert (await client.get("/api/work/desk", headers=auth)).json()["handoff_host"] == "login.example.org"
+        done, body = "/api/work/desk/done", {"task_id": task_id, "steps": row["steps"]}
+        assert (await client.post(done, json=body, headers=POST_HEADERS)).status_code == 403
+        assert (await client.post(done, json=body, headers=auth)).status_code == 403
+        assert (await client.post(done, json=body, headers=auth | {"HX-Request": "true"})).status_code == 403
+        assert (await client.post(done, json=body, headers=auth | POST_HEADERS | {"Origin": "https://attacker.example.org"})).status_code == 403
+        resumed = await client.post(done, json=body, headers=auth | POST_HEADERS)
+        assert resumed.status_code == 200 and resumed.json()["message"] == "Task resumed."
     await wait_task(worker)
     assert any("Resumed desktop task" in row.text for row in await app.store.get_recent_chat_window(str(OWNER), 10))
 
@@ -185,7 +187,7 @@ async def test_start_does_not_hold_the_worker_lock_while_the_computer_boots(make
     web = dashboard(app, monkeypatch)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
         request = asyncio.create_task(client.post(
-            "/desktop/computer/start", headers={"Authorization": f"Bearer {TOKEN}"} | POST_HEADERS,
+            "/api/work/desk/computer", json={"action": "start"}, headers={"Authorization": f"Bearer {TOKEN}"} | POST_HEADERS,
         ))
         await asyncio.wait_for(entered.wait(), 2)
         async with asyncio.timeout(1):
@@ -259,7 +261,7 @@ def two_containers(app):
     return fleet, computers
 
 
-async def test_the_page_lists_every_container_and_shows_the_chosen_one(make_app, monkeypatch):
+async def test_the_desk_lists_every_container_and_shows_the_chosen_one(make_app, monkeypatch):
     app = make_app()
     fleet, computers = two_containers(app)
     computers["shop"].state = "ready"
@@ -267,18 +269,18 @@ async def test_the_page_lists_every_container_and_shows_the_chosen_one(make_app,
     web = dashboard(app, monkeypatch)
     auth = {"Authorization": f"Bearer {TOKEN}"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        main = (await client.get("/desktop", headers=auth)).text
-        assert "Computer ready" in main and "No task running" in main and "read the shop manuals" not in main
-        assert 'href="/desktop?container=shop"' in main and ">shop<" in main and "pi" in main
-        shop = (await client.get("/desktop?container=shop", headers=auth)).text
-        assert f"Task #{task}" in shop and "read the shop manuals" in shop
-        assert 'hx-get="/desktop/state?container=shop"' in shop
-        assert 'data-src="/desktop/vnc/index.html?container=shop"' in shop
-        assert "<strong>shop</strong> · Computer ready" in shop
-        assert (await client.get("/desktop?container=nope", headers=auth)).status_code == 404
-        assert (await client.get("/desktop?container=Bad Name", headers=auth)).status_code == 404
+        main = (await client.get("/api/work/desk", headers=auth)).json()
+        assert main["status"] == "ready" and main["task"] is None and main["container"] == "default"
+        assert {item["name"]: item["selected"] for item in main["containers"]} == {"default": True, "shop": False}
+        assert main["hosts"] == [{"name": "pi", "running": 2, "max_containers": 2, "memory_floor": "512 MB"}]
+        shop = (await client.get("/api/work/desk?container=shop", headers=auth)).json()
+        assert shop["container"] == "shop" and shop["task"]["id"] == task and shop["task"]["brief"] == "read the shop manuals"
+        assert shop["viewer"] == "/desktop/vnc/index.html?container=shop"
+        assert (await client.get("/api/work/desk?container=nope", headers=auth)).status_code == 404
+        assert (await client.get("/api/work/desk?container=Bad Name", headers=auth)).status_code == 404
         viewer = await client.get("/desktop/vnc/index.html?container=shop", headers=auth)
         assert "shop" in viewer.text and "<script>" not in viewer.text.replace('<script type="module" src', "")
+        assert 'data-back-url="/app/work?container=shop"' in viewer.text
         # A phone gets a keyboard from a real field, and a password manager can fill it in password mode.
         assert 'name="viewport"' in viewer.text
         assert 'id="type-text"' in viewer.text and 'autocomplete="username"' in viewer.text
@@ -291,9 +293,9 @@ async def test_start_and_done_act_on_the_chosen_container(make_app, monkeypatch)
     web = dashboard(app, monkeypatch)
     headers = {"Authorization": f"Bearer {TOKEN}"} | POST_HEADERS
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        assert (await client.post("/desktop/computer/start?container=shop", headers=headers)).status_code == 200
+        assert (await client.post("/api/work/desk/computer", json={"action": "start", "container": "shop"}, headers=headers)).status_code == 200
         assert (computers["shop"].started, computers["default"].started) == (1, 0)
-        assert (await client.post("/desktop/computer/start?container=nope", headers=headers)).status_code == 404
+        assert (await client.post("/api/work/desk/computer", json={"action": "start", "container": "nope"}, headers=headers)).status_code == 404
 
 
 async def test_the_viewer_socket_relays_to_the_chosen_container(make_app, monkeypatch):
@@ -334,30 +336,24 @@ async def test_the_viewer_socket_relays_to_the_chosen_container(make_app, monkey
     assert urls[-1][0] == "wss://main.example.org/websockify"
 
 
-# ---- home page desktop tile (W12) ----------------------------------------------------------------------
-
-from unittest.mock import AsyncMock
+# ---- the Desk's containers, states and host limits ----------------------------------------------------
 
 
-async def test_home_desktop_tile_when_off_shows_muted_line_without_polling(make_app, monkeypatch):
+async def test_the_desk_is_off_and_the_old_pages_and_partials_are_gone(make_app, monkeypatch):
     app = make_app()
     web = dashboard(app, monkeypatch)
     auth = {"Authorization": f"Bearer {TOKEN}"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        assert (await client.get("/desktop/tile")).status_code == 403
-        home = (await client.get("/", headers=auth)).text
-        assert 'id="desktop-tile"' in home
-        assert "Desktop is off." in home
-        assert 'hx-get="/desktop/tile"' not in home
-        assert 'hx-trigger="every 4s"' not in home
-        assert 'href="/desktop?container=' not in home
-        tile = await client.get("/desktop/tile", headers=auth)
-        assert tile.status_code == 200
-        assert "<!doctype html>" not in tile.text.lower()
-        assert "Desktop is off." in tile.text
+        assert (await client.get("/api/work/desk")).status_code == 403
+        desk = (await client.get("/api/work/desk", headers=auth)).json()
+        assert desk["enabled"] is False and desk["status"] == "off" and desk["containers"] == [] and desk["viewer"] == ""
+        for gone in ("/desktop/tile", "/desktop/state", "/desktop/history"):
+            assert (await client.get(gone, headers=auth)).status_code == 404
+        for gone in ("/desktop/computer/start", "/desktop/tasks/1/delete", "/desktop/tasks/1/1/done"):
+            assert (await client.post(gone, headers=auth | POST_HEADERS)).status_code == 403  # no longer a write the dashboard accepts
 
 
-async def test_home_desktop_tile_shows_containers_states_briefs_links_and_host_limits(make_app, monkeypatch):
+async def test_the_desk_shows_containers_states_briefs_and_host_limits(make_app, monkeypatch):
     app = make_app()
     app.config = app.config.model_copy(update={
         "desktop_mode": "local",
@@ -389,70 +385,31 @@ async def test_home_desktop_tile_shows_containers_states_briefs_links_and_host_l
     web = dashboard(app, monkeypatch)
     auth = {"Authorization": f"Bearer {TOKEN}"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        home = (await client.get("/", headers=auth)).text
-        assert "<style" not in home and " style=" not in home
-        assert 'id="desktop-tile"' in home
-        assert 'hx-get="/desktop/tile"' in home
-        assert 'hx-trigger="every 4s"' in home
-        assert 'hx-swap="outerHTML"' in home
-        assert 'hx-sync="this:drop"' in home
+        desk = (await client.get("/api/work/desk", headers=auth)).json()
+        items = {item["name"]: item for item in desk["containers"]}
+        assert set(items) == {"default", "booting", "full", "studio"}
+        assert items["default"]["host"] == "pi" and items["studio"]["host"] == "studio"
+        assert items["default"]["state"] == "running" and items["booting"]["state"] == "starting"
+        assert items["studio"]["state"] == "waiting for you" and items["full"]["state"] == "refused"
+        # The brief is cut to one short line; the text is data, shown by the app as text.
+        assert items["default"]["detail"].startswith("Check the <quarterly> report") and items["default"]["detail"].endswith("…")
+        assert long_brief not in json.dumps(desk) or len(items["default"]["detail"]) < len(long_brief)
+        assert items["studio"]["detail"] == "Sign in to the supplier portal"
+        assert desk["hosts"] == [
+            {"name": "pi", "running": 2, "max_containers": 2, "memory_floor": "512 MB"},
+            {"name": "studio", "running": 1, "max_containers": 1, "memory_floor": "16 GB"},
+        ]
 
-        tile = (await client.get("/desktop/tile", headers=auth)).text
-        assert "<!doctype html>" not in tile.lower()
-        assert "\u00b7" not in tile
-        for html in (home, tile):
-            # Container names and hosts
-            assert "default" in html and "booting" in html and "full" in html and "studio" in html
-            assert "pi" in html
-            # States
-            assert "running" in html
-            assert "starting" in html
-            assert "waiting for you" in html
-            assert "refused" in html
-            # Truncated and autoescaped brief (full untruncated brief not dumped raw)
-            assert "&lt;quarterly&gt;" in html
-            assert "<quarterly>" not in html
-            assert long_brief not in html
-            assert "…" in html
-            assert "Sign in to the supplier portal" in html
-            # Open links to the viewer
-            assert 'href="/desktop"' in html
-            assert 'href="/desktop?container=booting"' in html
-            assert 'href="/desktop?container=full"' in html
-            assert 'href="/desktop?container=studio"' in html
-            assert "Open" in html
-            # Host limits in small text
-            assert "pi:" in html and "2/2" in html and "512 MB" in html
-            assert "studio:" in html and "1/1" in html and "16 GB" in html
-
-        # State change reflected on next htmx poll
+        # A state change shows on the next read.
         computers["booting"].state = "stopped"
         computers["booting"].error = None
         computers["default"].state = "stopped"
-        polled = (await client.get("/desktop/tile", headers=auth)).text
-        assert "off" in polled
-        assert "0/2" in polled
+        again = (await client.get("/api/work/desk", headers=auth)).json()
+        assert {item["name"]: item["state"] for item in again["containers"]}["default"] == "off"
+        assert again["hosts"][0]["running"] == 0
 
 
-async def test_home_and_desktop_pages_share_one_state_function(make_app, monkeypatch):
-    from dom.web import desktop as web_desktop
-
-    app = make_app()
-    two_containers(app)
-    spy = AsyncMock(wraps=web_desktop.desktop_context)
-    monkeypatch.setattr(web_desktop, "desktop_context", spy)
-
-    web = dashboard(app, monkeypatch)
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        assert (await client.get("/", headers=auth)).status_code == 200
-        assert (await client.get("/desktop", headers=auth)).status_code == 200
-        assert (await client.get("/desktop/state", headers=auth)).status_code == 200
-        assert (await client.get("/desktop/tile", headers=auth)).status_code == 200
-    assert spy.await_count == 4
-
-
-async def test_home_desktop_tile_handles_zero_floor_multiline_brief_error_and_unclaimed(make_app, monkeypatch):
+async def test_the_desk_handles_a_zero_floor_a_multiline_brief_an_error_and_an_unclaimed_dom(make_app, monkeypatch):
     app = make_app()
     app.config = app.config.model_copy(update={
         "desktop_mode": "remote",
@@ -470,18 +427,18 @@ async def test_home_desktop_tile_handles_zero_floor_multiline_brief_error_and_un
     web = dashboard(app, monkeypatch)
     auth = {"Authorization": f"Bearer {TOKEN}"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as client:
-        tile = (await client.get("/desktop/tile", headers=auth)).text
-        assert "error" in tile and "remote health check failed" in tile
-        assert "studio:" in tile and "0/1" in tile and "free floor" not in tile
+        desk = (await client.get("/api/work/desk", headers=auth)).json()
+        assert desk["status"] == "error" and desk["error"] == "remote health check failed"
+        assert desk["hosts"] == [{"name": "studio", "running": 0, "max_containers": 1, "memory_floor": ""}]
 
         computer.state = "ready"
         computer.error = None
         await app.store.enqueue_desktop_task(OWNER, "Line one\n\n  Line two", "studio")
-        tile = (await client.get("/desktop/tile", headers=auth)).text
-        assert "Line one Line two" in tile
+        desk = (await client.get("/api/work/desk", headers=auth)).json()
+        assert desk["containers"][0]["detail"] == "Line one Line two"
 
         monkeypatch.setattr(app.store, "owner_id", None)
-        assert (await client.get("/desktop/tile", headers=auth)).status_code == 409
+        assert (await client.get("/api/work/desk", headers=auth)).status_code == 409
 
 
 # ---- phone remote-desktop viewer (v0.8.2 W3) ------------------------------------------------------------
@@ -592,7 +549,6 @@ async def test_viewer_routes_require_owner_auth_and_csrf(make_app, monkeypatch):
             ):
                 assert (await client.post(path, json=body, headers=auth | bad_headers)).status_code == 403
             assert (await client.post(path, data={"mode": "phone"}, headers=auth | json_origin)).status_code == 403
-            assert (await client.post(path, data={"mode": "phone"}, headers=auth | POST_HEADERS)).status_code == 415
             assert (await client.put(path, json=body, headers=auth | json_origin)).status_code == 403
 
         # Unknown container rejected with 404.

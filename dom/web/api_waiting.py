@@ -1,10 +1,10 @@
 """JSON API for the "Waiting for you" page: every pending proposal, chat approval and import, and the settled ones.
 
-Every read and decision is the old /proposals page's own (dom/web/pages.py): the same proposals store decides, a
+Every read and decision lives in dom/web/shared.py: the same proposals store decides, a
 stranger's chat is approved or ignored through dom.telegram.owner, an import is decided in batches, and a settled
 proposal is deleted only with its created-at stamp. Every POST sits in JSON_POSTS, so it needs the dashboard's auth, a
 same-origin Origin and a JSON body. Each write answers `{ok, message, ...fresh page data}`; the page filter
-(kind, source) rides along so the answer keeps it. Only what the old page showed leaves here.
+(kind, source) rides along so the answer keeps it. Only what the page shows leaves here.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from dom.plugins.manifest import NETWORK_NOTICE
 from dom.plugins.trial import STORAGE_NOTICE, test_run_detail
 from dom.telegram import owner
 from dom.web.model_settings import _input
-from dom.web.pages import WHO, _proposals, decide_import_batch, owner_app
+from dom.web.shared import WHO, _proposals, decide_import_batch, owner_app
 
 router = APIRouter()
 PREFIX = "/api/waiting"
@@ -67,7 +67,7 @@ def _trial(result: dict | None) -> dict | None:
 
 
 def _card(row: dict) -> dict:
-    """One pending proposal as the old page showed it: its label and title, and the part of its body that kind shows."""
+    """One pending proposal: its label and title, and the part of its body that kind shows."""
     body, kind = row["body"], row["kind"]
     card = {"type": "proposal", "id": row["id"], "kind": kind, "label": row["label"], "title": row["title"]}
     if kind == "soul_edit":
@@ -77,7 +77,7 @@ def _card(row: dict) -> dict:
     elif kind == "plugin":
         card |= {
             "description": body["description"], "network": bool(body.get("network")), "storage": bool(body.get("storage")),
-            "test_run": _trial(body.get("test_run")), "review": f"/app/system/plugins/{body['name']}/{body['hash']}",
+            "test_run": _trial(body.get("test_run")), "review": row["review_path"],
         }
     elif kind == "lan_address":
         card |= {

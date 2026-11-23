@@ -8,7 +8,6 @@ import pytest
 from test_plugin_surfaces import SURFACES, fake_runner
 from test_plugin_tools import draft, status
 from test_web_api_memory_chats import JSON
-from test_web_pages import browser  # noqa: F401 (fixture)
 from tghelpers import GROUP, OWNER
 
 HASH = "a" * 64

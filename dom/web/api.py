@@ -1,7 +1,5 @@
-"""JSON API for the new dashboard app (served at /app), one endpoint per page as each page is ported.
-
-Read-only for now. Every route sits behind the dashboard's auth middleware in app.py, like the server-rendered pages.
-"""
+"""The dashboard app (served at /app) and the JSON API for its Home page. Every route sits behind the dashboard's auth
+middleware in app.py; each other page has its own api_*.py."""
 
 from __future__ import annotations
 
@@ -13,7 +11,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from dom.web.pages import _chats, _proposals, presence_line
+from dom.web.shared import _chats, _proposals, presence_line
 
 if TYPE_CHECKING:
     from dom.telegram.handlers import App

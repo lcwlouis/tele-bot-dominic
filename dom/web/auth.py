@@ -163,6 +163,8 @@ def request_origin(request: HTTPConnection, identity: Identity) -> tuple[str, st
 
 
 def same_origin(request: HTTPConnection, identity: Identity) -> bool:
+    """Exactly one Origin header, naming this dashboard. No Referer fallback: every caller is a script's fetch or a
+    websocket, both of which send Origin."""
+    origins = request.headers.getlist("Origin")
     expected = request_origin(request, identity)
-    origin = request.headers.get("Origin", request.headers.get("Referer", ""))
-    return expected is not None and _origin(origin) == expected
+    return len(origins) == 1 and expected is not None and _origin(origins[0]) == expected

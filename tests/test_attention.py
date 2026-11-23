@@ -8,7 +8,7 @@ from dom import turn_log
 from dom.attention import Attention
 from dom.presence import parse_habits
 from dom.telegram.handlers import handle_message
-from dom.web.pages import _turns, render
+from dom.web.shared import _turns
 from test_dispatch import FakeJev, setup_dispatch  # shared dispatcher fixture
 from tghelpers import FRIEND, GROUP, OWNER, Clock, drain_dispatch, tg
 
@@ -129,10 +129,6 @@ async def test_composing_is_serial_typing_is_deferred_and_sending_is_parallel(se
     friend = next(row for row in view["rows"] if row["chat_id"] == str(FRIEND))
     assert ("Waiting for another chat", 5000) in friend["timing"]
     assert friend["visits"][0]["behind"] == GROUP
-    html = render("turns.html", context=view).body.decode()
-    assert html.count('<svg class="attention-track"') == 2
-    assert '<rect x="0" width="1000" height="10">' in html
-    assert '<rect x="998" width="2" height="10">' in html
 
 
 async def test_failed_visit_frees_token_and_spend_cap_skips_compose(setup_dispatch, monkeypatch):

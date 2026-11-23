@@ -157,10 +157,10 @@ These are the risks considered for commands and panels, and what Dom does.
   removed. They are not stored in chat history, so plugin output cannot steer
   Dom's later turns.
 - **Injection through panel data.** Panels are data only, checked against a
-  strict schema and escaped by the template. Plugins have no way to add markup,
+  strict schema and returned as data that the app shows as text. Plugins have no way to add markup,
   styles, scripts, links or images to the dashboard.
 - **Cross-site requests.** Running a panel is a POST, so it needs the same
-  same-origin htmx request as every other dashboard action. A link or image on
+  same-origin JSON request as every other dashboard action. A link or image on
   another site cannot make Dom run a plugin.
 - **Context leaks.** Commands get the text and the scope only. Panels get
   nothing. Neither sees chat IDs, people, notes, memory, transcripts or secrets.

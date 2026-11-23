@@ -546,7 +546,7 @@ async def test_dashboard_refresh_descriptions_is_owner_only_and_runs_in_backgrou
     web_app = create_app(app, Auth(config))
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web_app), base_url=ORIGIN) as anon:
-        denied = await anon.post("/stickers/refresh", headers=POST_HEADERS)
+        denied = await anon.post("/api/stickers/refresh", json={}, headers=POST_HEADERS)
         assert denied.status_code in (401, 403)
 
     version["n"] = 2
@@ -554,11 +554,10 @@ async def test_dashboard_refresh_descriptions_is_owner_only_and_runs_in_backgrou
         transport=httpx.ASGITransport(app=web_app), base_url=ORIGIN,
         headers={"Authorization": f"Bearer {TOKEN}"},
     ) as client:
-        chats = await client.get("/chats")
-        assert "/stickers/refresh" in chats.text
-        resp = await client.post("/stickers/refresh", headers=POST_HEADERS)
+        assert (await client.get("/api/chats")).json()["stickers"]
+        resp = await client.post("/api/stickers/refresh", json={}, headers=POST_HEADERS)
         assert resp.status_code == 200
-        assert "Sticker descriptions: describing 1 sticker in the background." in resp.text
+        assert "Sticker descriptions: describing 1 sticker in the background." in resp.json()["message"]
 
     await drain_dispatch(app.dispatch)
     assert "Book cat v2" in app.stickers.turn_note()

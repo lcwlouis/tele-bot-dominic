@@ -18,15 +18,15 @@
 
   const REFRESH_MS = 4000;
   const page = new WorkPage<DeskData>("/api/work/desk");
-  // The container being looked at; "" is the default one. It rides along on every read and write.
-  let container = $state("");
+  // The container being looked at; "" is the default one. It rides along on every read and write. A handoff link names it.
+  let container = $state(new URLSearchParams(location.search).get("container") ?? "");
   let deleting = $state<DeskHistory | null>(null);
 
   const query = () => (container ? `?container=${encodeURIComponent(container)}` : "");
   const refresh = () => !page.busy && page.load(query());
 
   onMount(() => {
-    page.load();
+    page.load(query());
     const timer = setInterval(() => document.visibilityState === "visible" && refresh(), REFRESH_MS);
     const onVisible = () => document.visibilityState === "visible" && refresh();
     document.addEventListener("visibilitychange", onVisible);
@@ -85,6 +85,14 @@
                 <span class="font-mono text-xs text-muted-foreground">{item.host}{item.task ? ` · #${item.task.id} ${words(item.task.status)}` : ""}</span>
                 {#if item.detail}<span class="text-sm break-words text-muted-foreground">{item.detail}</span>{/if}
               </button>
+            </li>
+          {/each}
+        </ul>
+        <ul aria-label="Host limits" class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+          {#each data.hosts as host (host.name)}
+            <li>
+              {host.name}: <span class="font-mono">{host.running}/{host.max_containers}</span>
+              {host.max_containers === 1 ? "container" : "containers"}{#if host.memory_floor}, <span class="font-mono">{host.memory_floor}</span> free floor{/if}
             </li>
           {/each}
         </ul>

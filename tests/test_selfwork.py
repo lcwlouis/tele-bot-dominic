@@ -21,7 +21,6 @@ from dom.desktop.worker import OWN_SYSTEM_PROMPT
 from dom.selfwork import CONTAINER, GUARD_KEY, parse_plan, parse_task
 from dom.telegram.handlers import handle_callback
 from test_desktop_worker import Model, call
-from test_web_pages import browser  # noqa: F401  (fixture)
 from test_web_auth import POST_HEADERS
 from tghelpers import FRIEND, OWNER, tg
 
@@ -533,19 +532,18 @@ async def test_dashboard_shows_the_plan_results_and_guard_and_cancels(make_app, 
     (folder / "shot.png").write_bytes(PNG)
     await app.store.kv_set(GUARD_KEY, json.dumps({"ok": True, "at": app.dispatch.now().isoformat(), "detail": "verified"}))
     async with browser(app) as client:
-        page = (await client.get("/own-work")).text
-        assert "Read about tide pools" in page and "en.wikipedia.org" in page and "verified from inside the sandbox" in page
-        assert "Wrote three &lt;b&gt;examples&lt;/b&gt;" in page
-        assert f'hx-post="/own-work/{row["id"]}/cancel"' in page
-        assert f'hx-post="/own-work/{other["id"]}/cancel"' not in page
-        assert f'src="/own-work/{other["id"]}/files/shot.png"' in page
-        image = await client.get(f"/own-work/{other['id']}/files/shot.png")
+        data = (await client.get("/api/work/own")).json()
+        plan, finished = (next(task for task in data["tasks"] if task["id"] == item["id"]) for item in (row, other))
+        assert "Read about tide pools" in plan["goal"] and "en.wikipedia.org" in plan["sites"]
+        assert data["guard"]["ok"] is True and "verified" in data["guard"]["detail"]
+        assert finished["result"] == "Wrote three <b>examples</b>" and finished["files"] == ["shot.png"]
+        assert plan["status"] == "planned" and finished["status"] == "done"
+        image = await client.get(f"/api/work/own/{other['id']}/files/shot.png")
         assert image.status_code == 200 and image.content == PNG and image.headers["content-type"] == "image/png"
-        assert (await client.get(f"/own-work/{other['id']}/files/..%2Fsecret.png")).status_code == 404
-        assert "Own work" in (await client.get("/")).text  # the home view shows an upcoming plan
-        response = await client.post(f"/own-work/{row['id']}/cancel", headers=POST_HEADERS)
-        assert response.status_code == 200 and f"Cancelled task #{row['id']}." in response.text
-        assert (await client.post(f"/own-work/{row['id']}/cancel")).status_code == 403  # not an htmx same-origin post
+        assert (await client.get(f"/api/work/own/{other['id']}/files/..%2Fsecret.png")).status_code == 404
+        response = await client.post("/api/work/own/cancel", json={"id": row["id"]}, headers=POST_HEADERS)
+        assert response.status_code == 200 and f"Cancelled task #{row['id']}." in response.json()["message"]
+        assert (await client.post("/api/work/own/cancel", json={"id": row["id"]})).status_code == 403  # no same-origin header
     assert (await status(app, row["id"]))["status"] == "cancelled"
 
 

@@ -13,9 +13,7 @@ from dom.presence import read_habits
 from dom.telegram import handlers
 from dom.telegram.owner import OWNER_COMMANDS
 from test_owner_events import press
-from test_plugin_tools import draft, review_code, review_path, status
-from test_web_auth import POST_HEADERS
-from test_web_pages import browser  # noqa: F401  (fixture)
+from test_plugin_tools import JSON, decide, draft, read_review, review_code, status
 from tghelpers import FRIEND, GROUP, OWNER, drain_dispatch, tg
 
 BASE = """name = "convert"
@@ -36,6 +34,8 @@ id = "summary"
 title = "Weekly summary"
 """
 SURFACES = BASE + TOOL + COMMAND + PANEL
+PANEL_API = "/api/system/plugins/panel"
+PANEL_BODY = {"name": "convert", "panel_id": "summary"}
 
 
 # ---- manifest ---------------------------------------------------------------------------
@@ -113,10 +113,10 @@ def test_network_plugin_commands_stay_in_the_owner_dm():
 
 async def approve(app, browser, manifest=SURFACES, monkeypatch=None):
     proposal = await draft(app, manifest=manifest)
-    route = review_path(await status(app))
+    row = await status(app)
     async with browser(app) as client:
-        await review_code(client, route)
-        assert (await client.post(f"{route}/approve", headers=POST_HEADERS)).status_code == 200
+        await review_code(client, row)
+        assert (await decide(client, row)).status_code == 200
     if monkeypatch is not None:
         monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
     return proposal
@@ -130,9 +130,9 @@ async def test_review_dm_and_dashboard_show_declared_surfaces(make_app, browser)
     assert "Commands: /weather (owner_dm, group)" in sent[2]
     assert "Panels: summary (Weekly summary)" in sent[2]
     async with browser(app) as client:
-        page = (await client.get(review_path(await status(app)))).text
-    assert "/weather" in page and "Weather right now" in page and "owner_dm, group" in page
-    assert "Weekly summary" in page
+        review = (await read_review(client, await status(app))).json()
+    assert review["commands"] == [{"name": "weather", "description": "Weather right now", "scopes": ["owner_dm", "group"]}]
+    assert review["panels"] == [{"id": "summary", "title": "Weekly summary"}]
 
 
 async def test_changing_declared_surfaces_needs_fresh_approval(make_app, browser, monkeypatch):
@@ -147,8 +147,8 @@ async def test_changing_declared_surfaces_needs_fresh_approval(make_app, browser
     assert await app.plugins.command_entries("group") == []
     assert await app.plugins.panel_entries() == []
     async with browser(app) as client:
-        page = (await client.get(review_path(row))).text
-    assert "Declared commands, panels, tools, network access or storage changed" in page
+        review = (await read_review(client, row)).json()
+    assert review["surfaces_changed"] is True
 
 
 async def test_command_names_cannot_collide_between_plugins(make_app, browser):
@@ -404,18 +404,19 @@ async def test_panels_render_structured_data_escaped(make_app, browser, monkeypa
         "items": [["<b>key</b>", "value"]], "table": {"columns": ["<i>c</i>"], "rows": [["<a href='javascript:x'>"]]},
     })
     async with browser(app) as client:
-        page = (await client.get("/plugins")).text
-        assert 'hx-post="/plugin-panels/convert/summary"' in page and "Weekly summary" in page
-        home = (await client.get("/")).text
-        assert 'hx-post="/plugin-panels/convert/summary"' in home
-        assert (await client.get("/plugin-panels/convert/summary")).status_code == 405
-        assert (await client.post("/plugin-panels/convert/summary")).status_code == 403  # no htmx/origin headers
-        rendered = await client.post("/plugin-panels/convert/summary", headers=POST_HEADERS)
+        listed = (await client.get("/api/system/plugins")).json()
+        assert listed["panels"] == [{"plugin": "convert", "id": "summary", "title": "Weekly summary"}]
+        assert (await client.get(PANEL_API)).status_code == 405
+        assert (await client.post(PANEL_API, json=PANEL_BODY)).status_code == 403  # no Origin
+        rendered = await client.post(PANEL_API, json=PANEL_BODY, headers=JSON)
     assert rendered.status_code == 200
     assert calls == [{"panel": "summary"}]
-    for raw in ("<script>", "<img", "<b>key", "<i>c", "<a href"):
-        assert raw not in rendered.text
-    assert "&lt;script&gt;" in rendered.text and "&lt;img src=x" in rendered.text
+    # The API returns the plugin's text as data only; the app shows it as text, never as markup.
+    assert rendered.json() == {
+        "plugin": "convert", "id": "summary", "error": None, "title": "<script>alert(1)</script>",
+        "paragraphs": ["<img src=x onerror=alert(1)>"], "pairs": [["<b>key</b>", "value"]],
+        "columns": ["<i>c</i>"], "rows": [["<a href='javascript:x'>"]],
+    }
 
 
 async def test_invalid_panel_data_and_errors_show_a_message(make_app, browser, monkeypatch):
@@ -423,14 +424,14 @@ async def test_invalid_panel_data_and_errors_show_a_message(make_app, browser, m
     await approve(app, browser, monkeypatch=monkeypatch)
     fake_runner(app, monkeypatch, {"html": "<b>x</b>"})
     async with browser(app) as client:
-        rendered = await client.post("/plugin-panels/convert/summary", headers=POST_HEADERS)
-        assert rendered.status_code == 200 and "returned data Dom cannot show" in rendered.text
+        rendered = await client.post(PANEL_API, json=PANEL_BODY, headers=JSON)
+        assert rendered.status_code == 200 and "returned data Dom cannot show" in rendered.json()["error"]
         assert "<b>x</b>" not in rendered.text
         fake_runner(app, monkeypatch, PluginError("panel <broke>"))
-        rendered = await client.post("/plugin-panels/convert/summary", headers=POST_HEADERS)
-        assert "panel &lt;broke&gt;" in rendered.text
-        assert (await client.post("/plugin-panels/convert/missing", headers=POST_HEADERS)).status_code == 404
-        assert (await client.post("/plugin-panels/Bad/summary", headers=POST_HEADERS)).status_code == 404
+        rendered = await client.post(PANEL_API, json=PANEL_BODY, headers=JSON)
+        assert "panel <broke>" in rendered.json()["error"]
+        assert (await client.post(PANEL_API, json=PANEL_BODY | {"panel_id": "missing"}, headers=JSON)).status_code == 404
+        assert (await client.post(PANEL_API, json={"name": "Bad", "panel_id": "summary"}, headers=JSON)).status_code == 404
 
 
 async def test_pending_plugin_panels_are_not_shown_or_run(make_app, browser, monkeypatch):
@@ -439,8 +440,8 @@ async def test_pending_plugin_panels_are_not_shown_or_run(make_app, browser, mon
     calls = fake_runner(app, monkeypatch, {})
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
     async with browser(app) as client:
-        assert "/plugin-panels/" not in (await client.get("/plugins")).text
-        assert (await client.post("/plugin-panels/convert/summary", headers=POST_HEADERS)).status_code == 404
+        assert (await client.get("/api/system/plugins")).json()["panels"] == []
+        assert (await client.post(PANEL_API, json=PANEL_BODY, headers=JSON)).status_code == 404
     assert calls == []
 
 
@@ -522,13 +523,13 @@ async def test_plugin_panels_stay_after_approve_and_vanish_with_disable(make_app
     app = make_app()
     await draft(app, manifest=SURFACES)
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
-    route = review_path(await status(app))
+    row = await status(app)
     async with browser(app) as client:
-        await review_code(client, route)
-        approved = await client.post(f"{route}/approve", headers=POST_HEADERS)
-        assert 'hx-post="/plugin-panels/convert/summary"' in approved.text
-        disabled = await client.post(f"{route}/disable", headers=POST_HEADERS)
-        assert disabled.status_code == 200 and 'hx-post="/plugin-panels/' not in disabled.text
+        await review_code(client, row)
+        approved = await decide(client, row)
+        assert [panel["id"] for panel in approved.json()["panels"]] == ["summary"]
+        disabled = await decide(client, row, "disable")
+        assert disabled.status_code == 200 and disabled.json()["panels"] == []
 
 
 async def test_checking_whether_dom_is_asleep_never_writes_presence(make_app, browser, monkeypatch):

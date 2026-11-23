@@ -83,14 +83,14 @@ async def test_dashboard_skill_edit_shows_full_text_and_diff_then_applies(make_a
         transport=httpx.ASGITransport(app=dashboard(app, monkeypatch)), base_url=ORIGIN,
     ) as client:
         auth = {"Authorization": f"Bearer {TOKEN}"}
-        page = await client.get("/proposals?kind=skill", headers=auth)
-        assert "Skill proposed after a desktop task" in page.text
-        assert "<del>- Use the old tool." in page.text
-        assert "<ins>+ Use the new tool." in page.text
-        assert "&lt;example&gt;" in page.text
-        assert "Approved" in (await client.post(
-            f"/proposals/{proposal_id}/approve", headers=auth | POST_HEADERS,
-        )).text
+        card, = (await client.get("/api/waiting?kind=skill", headers=auth)).json()["cards"]
+        assert card["label"] == "Skill proposed after a desktop task"
+        assert "-Use the old tool." in card["diff"]
+        assert "+Use the new tool." in card["diff"]
+        assert "<example>" in card["text"]
+        assert (await client.post(
+            "/api/waiting/decide", json={"id": proposal_id, "decision": "approve"}, headers=auth | POST_HEADERS,
+        )).json()["message"] == "Approved"
     assert skill_view(app.home, "browse") == "Use the new tool.\n<example>"
 
 

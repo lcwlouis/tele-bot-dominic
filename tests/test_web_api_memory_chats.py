@@ -7,12 +7,11 @@ import json
 import pytest
 
 from dom import traits
-from dom.home import MAX_SOUL
+from dom.home import MAX_SOUL, limit_for
 from dom.memory_import import MAX_DOCUMENT_BYTES
 
 from test_stickers import SET, sticker_bot
 from test_web_auth import ORIGIN
-from test_web_pages import browser  # noqa: F401 (fixture)
 from tghelpers import FRIEND, GROUP, OWNER
 
 JSON = {"Origin": ORIGIN, "Content-Type": "application/json"}
@@ -97,6 +96,8 @@ async def test_save_checks_limits_versions_and_habits(make_app, browser):
         save = lambda **body: client.post("/api/memory/save", headers=JSON, json=body)  # noqa: E731
         over = await save(file="SOUL.md", version=version(""), content="x" * (MAX_SOUL + 1))
         assert over.status_code == 422 and "over limit" in over.json()["detail"] and app.home.read("SOUL.md") == ""
+        too_long = await save(file=memory, version=version(""), content="x" * (limit_for(memory) + 1))
+        assert too_long.status_code == 422 and app.home.read(memory) == ""
         ok = await save(file=memory, version=version(""), content="- Likes tea\r\n")
         assert ok.status_code == 200 and ok.json()["message"] == "Saved MEMORY.md."
         assert app.home.read(memory) == "- Likes tea\n" and ok.json()["version"] == version("- Likes tea\n")

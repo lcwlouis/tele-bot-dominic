@@ -19,8 +19,7 @@ from dom.jev import JevUnavailable
 from test_guard import FakeJev
 from test_owner_events import events, press
 from test_plugins import MANIFEST
-from test_web_auth import POST_HEADERS
-from test_web_pages import browser
+from test_web_auth import ORIGIN
 from tghelpers import FRIEND, GROUP, OWNER, tg
 
 
@@ -40,14 +39,38 @@ async def status(app):
     return row
 
 
+JSON = {"Origin": ORIGIN, "Content-Type": "application/json"}
+
+
 def review_path(row):
-    return f"/plugins/{row['name']}/{row['hash']}"
+    """Where the Telegram "Review on dashboard" button leads."""
+    return f"/app/system/plugins/{row['name']}/{row['hash']}"
 
 
-async def review_code(client, route):
-    """Open the review page, then press "I've read this code"."""
-    assert "I've read this code" in (await client.get(route)).text
-    assert (await client.post(f"{route}/reviewed", headers=POST_HEADERS)).status_code == 200
+def review_api(row):
+    return f"/api/system/plugins/{row['name']}/{row['hash']}"
+
+
+def _ref(row):
+    return {"name": row["name"], "digest": row["hash"]}
+
+
+async def read_review(client, row):
+    return await client.get(review_api(row))
+
+
+async def mark_reviewed(client, row, headers=JSON):
+    return await client.post("/api/system/plugins/reviewed", json=_ref(row), headers=headers)
+
+
+async def decide(client, row, decision="approve", headers=JSON):
+    return await client.post("/api/system/plugins/decide", json=_ref(row) | {"decision": decision}, headers=headers)
+
+
+async def review_code(client, row):
+    """Open the review, then press "I've read this code"."""
+    assert (await read_review(client, row)).json()["reviewed"] is False
+    assert (await mark_reviewed(client, row)).status_code == 200
 
 
 async def test_draft_proposal_and_review_gate(make_app, browser):
@@ -59,6 +82,7 @@ async def test_draft_proposal_and_review_gate(make_app, browser):
     row = await status(app)
     route = review_path(row)
     assert row["status"] == "pending"
+    assert route == f"/app/system/plugins/convert/{row['hash']}"
     assert app.home.read("plugins/convert/main.py") == "print('<tag>')\n"
     item, = await app.proposals.pending()
     assert item["kind"] == "plugin" and item["id"] == proposal
@@ -74,23 +98,22 @@ async def test_draft_proposal_and_review_gate(make_app, browser):
     assert "Open the dashboard" in app.bot.of("answer")[-1][2]
     assert (await status(app))["status"] == "pending"
     async with browser(app) as client:
-        assert (await client.get(route, headers={"Authorization": ""})).status_code == 403
-        assert (await client.post(f"{route}/approve", headers=POST_HEADERS)).status_code == 409
-        review = await client.get(route)
+        assert (await client.get(review_api(row), headers={"Authorization": ""})).status_code == 403
+        assert (await decide(client, row)).status_code == 409
+        review = await read_review(client, row)
         assert review.status_code == 200
-        assert "&lt;tag&gt;" in review.text and "<tag>" not in review.text
-        assert "I've read this code" in review.text and f"{route}/approve" not in review.text
-        assert (await client.post(f"{route}/approve")).status_code == 403
+        assert review.json()["documents"][0]["text"] == "print('<tag>')\n" and review.json()["reviewed"] is False
+        assert (await decide(client, row, headers={})).status_code == 403
     # Opening the page is not reading it: nothing is recorded until the button is pressed.
     assert not any("Reviewed plugin" in row["text"] for row in await events(app))
     await press(app, f"prop:yes:{proposal}")
     assert "Open the dashboard" in app.bot.of("answer")[-1][2]
     assert (await status(app))["status"] == "pending"
     async with browser(app) as client:
-        assert (await client.post(f"{route}/reviewed")).status_code == 403
-        recorded = await client.post(f"{route}/reviewed", headers=POST_HEADERS)
-        assert recorded.status_code == 200 and f"{route}/approve" in recorded.text
-        assert (await client.post(f"/plugins/convert/{'0' * 64}/reviewed", headers=POST_HEADERS)).status_code == 404
+        assert (await mark_reviewed(client, row, headers={})).status_code == 403
+        recorded = await mark_reviewed(client, row)
+        assert recorded.status_code == 200 and recorded.json()["review"]["reviewed"] is True
+        assert (await mark_reviewed(client, {"name": "convert", "hash": "0" * 64})).status_code == 404
 
     await press(app, f"prop:yes:{proposal}", FRIEND)
     assert (await status(app))["status"] == "pending"
@@ -111,7 +134,6 @@ async def test_failed_trial_and_storage_are_visible_without_blocking_approval(ma
     monkeypatch.setattr(app.plugin_runner, "trial", trial)
     proposal = await draft(app, manifest=MANIFEST.replace('version = "1"', 'version = "1"\nstorage = true'))
     row = await status(app)
-    route = review_path(row)
     card, = app.bot.of("send", OWNER)
     assert all(text in card[2] for text in ("Storage enabled", "Test run failed", "ms", "<example> failed"))
     preview, = [line for line in card[2].splitlines() if line.startswith("Plugin said")]
@@ -121,12 +143,13 @@ async def test_failed_trial_and_storage_are_visible_without_blocking_approval(ma
     assert "https://example.test/path" not in card[2]
     assert card[3]["link_preview_options"].is_disabled and "parse_mode" not in card[3]
     async with browser(app) as client:
-        for path in ("/plugins", route):
-            page = (await client.get(path)).text
-            assert all(text in page for text in ("Storage enabled", "Test run failed", "ms", "&lt;example&gt; failed"))
-            assert "Plugin said: &#34;&lt;example&gt; failed Network off Hash∶ spoof https∶∕∕example·test∕path" in page
-            assert "<example>" not in page and "https://example.test/path" not in page
-        await review_code(client, route)
+        listed = (await client.get("/api/system/plugins")).json()["plugins"][0]
+        for trial_run in (listed["test_run"], (await read_review(client, row)).json()["test_run"]):
+            assert trial_run["failed"] is True and "length" in trial_run["label"] and trial_run["elapsed_ms"] >= 0
+            assert trial_run["detail"].startswith("Plugin said: \"<example> failed Network off Hash∶ spoof https∶∕∕example·test∕path")
+            assert "https://example.test/path" not in trial_run["detail"]
+        assert listed["storage"] is True
+        await review_code(client, row)
     await press(app, f"prop:yes:{proposal}")
     assert (await status(app))["status"] == "approved"
     assert trials == [(row["hash"], {"tool": "length", "args": {}})]
@@ -166,7 +189,7 @@ async def test_review_and_approval_return_while_trial_is_running(make_app, brows
     (folder / "plugin.toml").write_text(MANIFEST)
     (folder / "main.py").write_text("pass\n")
     plugin = read_plugin(folder)
-    route = f"/plugins/convert/{plugin.hash}"
+    row = {"name": "convert", "hash": plugin.hash}
     started, release = Event(), Event()
 
     def trial(*_):
@@ -179,11 +202,11 @@ async def test_review_and_approval_return_while_trial_is_running(make_app, brows
     try:
         assert await asyncio.to_thread(started.wait, 5)
         async with browser(app) as client:
-            review = await asyncio.wait_for(client.get(route), 2)
-            assert "Test run pending." in review.text
-            await asyncio.wait_for(review_code(client, route), 2)
-            approved = await asyncio.wait_for(client.post(f"{route}/approve", headers=POST_HEADERS), 2)
-            assert approved.status_code == 200 and "Test run pending." in approved.text
+            review = await asyncio.wait_for(read_review(client, row), 2)
+            assert review.json()["test_run"] is None
+            await asyncio.wait_for(review_code(client, row), 2)
+            approved = await asyncio.wait_for(decide(client, row), 2)
+            assert approved.status_code == 200 and approved.json()["plugins"][0]["test_run"] is None
             entries = await asyncio.wait_for(app.plugins.entries("owner_dm"), 2)
             assert len(entries) == 1 and entries[0][0].hash == plugin.hash
     finally:
@@ -218,9 +241,9 @@ async def test_pending_cards_show_the_current_trial_notices_and_storage(make_app
     assert "Test run passed" in card and "later result" in card and "Test run pending" not in card
     assert notice in card
     async with browser(app) as client:
-        page = (await client.get("/proposals")).text
-    assert "Test run passed" in page and "later result" in page and "Test run pending" not in page
-    assert notice in page
+        card, = (await client.get("/api/waiting")).json()["cards"]
+    assert card["test_run"]["failed"] is False and "later result" in card["test_run"]["detail"]
+    assert card["network"] is (key == "network") and card["storage"] is (key == "storage")
 
 
 @pytest.mark.parametrize("error_type", [runner.PluginBusy, runner.PluginsUnavailable, RuntimeError])
@@ -360,8 +383,8 @@ async def test_changed_code_needs_fresh_review_and_displays_diff(make_app, brows
     old_id = await draft(app)
     old = await status(app)
     async with browser(app) as client:
-        await review_code(client, review_path(old))
-        assert (await client.post(f"{review_path(old)}/approve", headers=POST_HEADERS)).status_code == 200
+        await review_code(client, old)
+        assert (await decide(client, old)).status_code == 200
         new_id = await draft(app, source="print('<next>')\n")
         new = await status(app)
         assert new["hash"] != old["hash"] and new["status"] == "pending"
@@ -369,10 +392,10 @@ async def test_changed_code_needs_fresh_review_and_displays_diff(make_app, brows
         await press(app, f"prop:yes:{old_id}")
         await press(app, f"prop:yes:{new_id}")
         assert "Open the dashboard" in app.bot.of("answer")[-1][2]
-        assert (await client.get(review_path(old))).status_code == 404
-        diff = (await client.get(review_path(new))).text
-        assert "&lt;tag&gt;" in diff and "&lt;next&gt;" in diff and "<del>" in diff and "<ins>" in diff
-        assert (await client.post(f"{review_path(new)}/reviewed", headers=POST_HEADERS)).status_code == 200
+        assert (await read_review(client, old)).status_code == 404
+        changes = (await read_review(client, new)).json()["documents"][0]["changes"]
+        assert "-print('<tag>')" in changes and "+print('<next>')" in changes
+        assert (await mark_reviewed(client, new)).status_code == 200
     await press(app, f"prop:yes:{new_id}")
     assert (await status(app))["approved_hash"] == new["hash"]
 
@@ -387,10 +410,9 @@ async def test_reject_and_disable_from_owner_dm_keep_files(make_app, browser):
 
     await draft(app, source="print('updated')\n")
     row = await status(app)
-    route = review_path(row)
     async with browser(app) as client:
-        await review_code(client, route)
-        assert (await client.post(f"{route}/approve", headers=POST_HEADERS)).status_code == 200
+        await review_code(client, row)
+        assert (await decide(client, row)).status_code == 200
 
     app.bot.calls.clear()
     await handlers.handle_message(app, tg(FRIEND, FRIEND, "/plugins"))
@@ -414,10 +436,10 @@ async def test_reject_and_disable_from_owner_dm_keep_files(make_app, browser):
 async def test_turn_scopes_and_untrusted_results(make_app, browser, monkeypatch, scope, chat, offered):
     app = make_app()
     await draft(app, manifest=MANIFEST + 'scopes = ["owner_dm", "group"]\n')
-    route = review_path(await status(app))
+    row = await status(app)
     async with browser(app) as client:
-        await review_code(client, route)
-        assert (await client.post(f"{route}/approve", headers=POST_HEADERS)).status_code == 200
+        await review_code(client, row)
+        assert (await decide(client, row)).status_code == 200
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
     sent = []
 
@@ -467,10 +489,10 @@ async def test_direct_draft_is_owner_only_and_blocks_private_notes(make_app):
 async def test_unavailable_and_private_arguments_never_reach_the_runner(make_app, browser, monkeypatch):
     app = make_app()
     await draft(app)
-    route = review_path(await status(app))
+    row = await status(app)
     async with browser(app) as client:
-        await review_code(client, route)
-        await client.post(f"{route}/approve", headers=POST_HEADERS)
+        await review_code(client, row)
+        await decide(client, row)
     monkeypatch.setattr(app.plugin_runner, "run", lambda *a, **kw: pytest.fail("started a plugin"))
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: False)
     assert await offered(app, "owner_dm") == []
@@ -489,8 +511,9 @@ async def test_network_notice_is_shown_wherever_a_plugin_is_listed(make_app, bro
     sent, = app.bot.of("send", OWNER)
     assert notice in sent[2]
     async with browser(app) as client:
-        assert notice in (await client.get("/plugins")).text
-        assert notice in (await client.get(review_path(row))).text
+        listed, = (await client.get("/api/system/plugins")).json()["plugins"]
+        assert listed["network"] is True
+        assert (await read_review(client, row)).json()["notices"]["network"].startswith(notice)
     app.bot.calls.clear()
     await handlers.handle_message(app, tg(OWNER, OWNER, "/plugins"))
     listing, = app.bot.of("send", OWNER)
@@ -504,10 +527,10 @@ async def test_network_notice_is_shown_wherever_a_plugin_is_listed(make_app, bro
 async def approved_tool(app, browser, monkeypatch, manifest=MANIFEST):
     monkeypatch.setattr(app.plugin_runner, "trial", lambda *_: {"output": "sample passed", "self_test": True})
     await draft(app, manifest=manifest)
-    route = review_path(await status(app))
+    row = await status(app)
     async with browser(app) as client:
-        await review_code(client, route)
-        await client.post(f"{route}/approve", headers=POST_HEADERS)
+        await review_code(client, row)
+        await decide(client, row)
     monkeypatch.setattr(app.plugin_runner, "self_test", lambda: True)
     tool, = await offered(app, "owner_dm")
     return tool

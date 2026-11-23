@@ -1,6 +1,6 @@
 """JSON API for System's pages: plugins and their review, plugin panels, usage and the turn log.
 
-Every read and check is the old page's own (dom/web/pages.py): the registry reviews and decides a plugin by name and
+Every read and check lives in dom/web/shared.py: the registry reviews and decides a plugin by name and
 digest, "I've read this code" is recorded only by its own POST, a delete needs the plugin's hash, and a panel is run
 only when it is approved. Plugin content is only ever data here: file text, a manifest's declared surfaces and a
 panel's schema-checked values, which the page prints as text and never as markup. Every POST sits in JSON_POSTS, so it
@@ -19,7 +19,7 @@ from dom.plugins.manifest import NETWORK_NOTICE, validate_name
 from dom.plugins.trial import STORAGE_NOTICE, test_run_detail
 from dom.telegram import owner
 from dom.web.model_settings import _input
-from dom.web.pages import _plugin_panels, _turns, _usage, owner_app
+from dom.web.shared import _plugin_panels, _turns, _usage, owner_app
 
 router = APIRouter()
 PREFIX = "/api/system"

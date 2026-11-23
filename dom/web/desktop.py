@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
-from typing import Literal
+from pathlib import Path
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
@@ -22,9 +23,13 @@ from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE, ScreenBusy
 from dom.telegram import owner
 from dom.web.auth import same_origin
 from dom.web.model_settings import is_json
-from dom.web.pages import _bounded_stream, form, owner_app, panel, render
+from dom.web.shared import _bounded_stream, owner_app
 
 router = APIRouter(prefix="/desktop")
+templates = Environment(
+    loader=FileSystemLoader(Path(__file__).with_name("templates")), autoescape=select_autoescape(("html",)),
+    trim_blocks=True, lstrip_blocks=True,
+)
 VNC_PATH = "/desktop/vnc/"
 VNC_SOCKET = VNC_PATH + "websockify"
 VIEWER_JSON_POSTS = frozenset({"/desktop/viewer/screen", "/desktop/viewer/done"})
@@ -153,27 +158,12 @@ async def _context(app, lane, message: str = "") -> dict:
     }
 
 
-async def desktop_context(app, container: str = "", message: str = "") -> dict:
-    """Compute the desktop state shared by the Desktop page, its state partial and the home tile."""
-    return await _context(app, _lane(app, container), message)
 
 
-@router.get("")
-async def desktop(request: Request, container: str = ""):
-    app = owner_app(request)
-    return panel(request, "desktop", **await desktop_context(app, container))
 
 
-@router.get("/state")
-async def desktop_state(request: Request, container: str = ""):
-    app = owner_app(request)
-    return render("desktop_state.html", context=await desktop_context(app, container))
 
 
-@router.get("/tile")
-async def desktop_tile(request: Request):
-    app = owner_app(request)
-    return render("desktop_tile.html", context=await desktop_context(app))
 
 
 async def _change_computer(app, sandbox, action: str) -> str:
@@ -203,27 +193,8 @@ async def run_computer_action(app, lane, action: str) -> str:
         return message
 
 
-@router.post("/computer/{action}")
-async def computer_action(request: Request, action: Literal["start", "stop"], container: str = ""):
-    app = owner_app(request)
-    lane = _lane(app, container)
-    if lane is None:
-        raise HTTPException(409, "The desktop is off.")
-    message = await run_computer_action(app, lane, action)
-    return render("desktop_state.html", context=await _context(app, lane, message))
 
 
-@router.post("/tasks/{task_id:int}/delete")
-async def desktop_delete_task(request: Request, task_id: int):
-    app = owner_app(request)
-    if not 0 < task_id < 2**63:
-        raise HTTPException(404)
-    expected = (await form(request)).get("expected", [""])[0]
-    ok, message = await owner.delete_desktop_task(app, task_id, expected)
-    response = render("desktop_history.html", context=await desktop_history_context(app, message))
-    if not ok:
-        response.status_code = 404 if "not found" in message else 409
-    return response
 
 
 async def resume_handoff(app, task_id: int, steps: int) -> tuple[str, object]:
@@ -238,11 +209,6 @@ async def resume_handoff(app, task_id: int, steps: int) -> tuple[str, object]:
     return message, lane or _lane(app, "")
 
 
-@router.post("/tasks/{task_id:int}/{steps:int}/done")
-async def desktop_done(request: Request, task_id: int, steps: int):
-    app = owner_app(request)
-    message, lane = await resume_handoff(app, task_id, steps)
-    return render("desktop_state.html", context=await _context(app, lane, message))
 
 
 async def _json_body(request: Request, max_bytes: int = _JSON_BODY_LIMIT) -> dict:
@@ -307,12 +273,11 @@ async def vnc_viewer(request: Request, container: str = ""):
     lane = _lane(app, container)
     fleet = app.desktop_worker
     q = _query(lane.name, fleet.default) if lane is not None and fleet is not None else ""
-    back_url = "/desktop?panel=1" if not q else f"/desktop{q}&panel=1"
+    back_url = "/app/work" + q
     status = lane.status() if lane is not None else "off"
     handoff = lane.worker.handoff_state() if lane is not None else None
     resolution = lane.worker.screen_resolution if lane is not None and status == "ready" else DEFAULT_RESOLUTION
-    return render(
-        "desktop_viewer.html",
+    return HTMLResponse(templates.get_template("desktop_viewer.html").render(
         container=lane.name if lane is not None else "",
         q=q,
         back_url=back_url,
@@ -321,7 +286,7 @@ async def vnc_viewer(request: Request, container: str = ""):
         phone_mode=resolution == PHONE_RESOLUTION,
         can_resize=lane.worker.can_resize_screen() if lane is not None else False,
         handoff=handoff,
-    )
+    ))
 
 
 @router.get("/viewer/status")

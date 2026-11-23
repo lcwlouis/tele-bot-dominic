@@ -1,7 +1,7 @@
 """JSON API for the Chats page: every approved chat with its presence, preset and sliders, the everywhere preset
 and vibe, and the sticker sets.
 
-Each write runs the same dom.telegram.owner function the old /chats page and the Telegram buttons use, so every
+Each write runs the same dom.telegram.owner function the Telegram buttons use, so every
 check and owner event is shared. A write answers with its message and the fresh page data. A write that did nothing
 (an unknown chat, a preset that is gone) is a 4xx carrying that message. Only counts and titles leave here: no chat's
 message text is read.
@@ -18,7 +18,7 @@ from dom.telegram import owner
 from dom.traits import NAMES
 from dom.web.api import _when
 from dom.web.model_settings import _input
-from dom.web.pages import WHO, _chats, owner_app
+from dom.web.shared import WHO, _chats, owner_app
 
 router = APIRouter()
 JSON_POSTS = {"/api/chats/action", "/api/chats/preset", "/api/chats/traits", "/api/chats/traits/reset", "/api/stickers", "/api/stickers/refresh"}

@@ -75,7 +75,7 @@ def buttons(proposal_id: int, *, numbered: bool = False) -> list[InlineKeyboardB
 
 
 def plugin_review_path(body: dict) -> str:
-    return f"/plugins/{body['name']}/{body['hash']}"
+    return f"/app/system/plugins/{body['name']}/{body['hash']}"
 
 
 def review_button(app: App, body: dict) -> InlineKeyboardButton | None:
