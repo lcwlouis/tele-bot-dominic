@@ -381,7 +381,8 @@ async def test_backoff_doubles_and_caps_at_an_hour(make_app):
 
 async def test_chunks_already_sent_are_not_resent_on_retry(make_app):
     app = make_app()
-    text = "".join(chr(ord("a") + i // 2000) * 2000 for i in range(5))[:9000]
+    parts = [chr(ord("a") + i) * 2800 for i in range(5)]
+    text = "\n\n".join(parts)
     await app.dispatch.reminders.create("2026-01-01T12:01", text, "normal", "")
     attempts = _flaky_sends(app, {3})
     app.dispatch.now.advance(minutes=1)
@@ -390,7 +391,7 @@ async def test_chunks_already_sent_are_not_resent_on_retry(make_app):
     await app.dispatch.tick()
     sent = [call[2] for call in app.bot.of("send", OWNER)]
     assert len(attempts) == 6 and len(sent) == 5
-    assert "".join(sent) == f"hey\n⏰ {text}"
+    assert sent == [f"hey\n⏰ {parts[0]}", *parts[1:]]
     assert await app.dispatch.reminders.active() == []
 
 

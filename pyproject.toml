@@ -9,6 +9,7 @@ dependencies = [
     "fastapi",
     "httpx>=0.28",
     "jinja2",
+    "markdown-it-py>=4.3.0",
     "pydantic>=2.11",
     "PyJWT[crypto]",
     "python-multipart>=0.0.34",

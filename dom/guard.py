@@ -8,6 +8,8 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
+from aiogram.types import LinkPreviewOptions
+
 from dom.config import Config
 from dom.home import Home, PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
@@ -126,13 +128,10 @@ async def notify_held(app: App, notice: str) -> None:
     except Exception:
         log.exception("could not record the held-message event")
     try:
-        from dom.telegram.executor import FloodBudget, retry_telegram
+        from dom.telegram.executor import FloodBudget, send_text
 
-        budget = FloodBudget()
-        # Each character can occupy two UTF-16 code units in Telegram.
-        for start in range(0, len(notice), 2000):
-            chunk = notice[start:start + 2000]
-            await retry_telegram(lambda c=chunk: app.bot.send_message(app.owner_id, c), sleep=app.sleep, budget=budget)
+        await send_text(app.bot, app.owner_id, notice, sleep=app.sleep, budget=FloodBudget(),
+                        link_preview_options=LinkPreviewOptions(is_disabled=True), literal=True)
     except Exception:
         log.exception("could not notify the owner about a held message")
 

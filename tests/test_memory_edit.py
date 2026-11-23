@@ -655,7 +655,7 @@ async def test_review_fixes_card_is_inert_off_means_off_ids_are_ascii_and_diffs_
     )
     proposal_id = json.loads(raw)["id"]
     (sent,) = app.bot.of("send", OWNER)
-    assert sent[3]["parse_mode"] is None and sent[3]["link_preview_options"].is_disabled
+    assert "parse_mode" not in sent[3] and sent[3]["link_preview_options"].is_disabled
     (entity,) = sent[3]["entities"]
     assert entity.type == "pre" and entity.offset == 0 and entity.length == len(sent[2].encode("utf-16-le")) // 2
 

@@ -26,6 +26,7 @@ from dom.search import SearchClient, SearchRouter
 from dom.skills import BODY_LIMIT, NAME_LIMIT, skills_list, view_text
 from dom.store import Store
 from dom.telegram.executor import FloodBudget, FloodBudgetExhausted, retry_telegram
+from dom.telegram.format import format_text
 from dom.traits import AUTO, TASK_QUIET, clean_reason, global_preset_name
 from dom.usage import ModelCallSkipped, model_request
 
@@ -360,11 +361,12 @@ async def _write_brief(args: dict, ctx: TurnCtx) -> str:
         return "error: could not save the brief"
     await app.store.record_owner_event(f"Dom wrote a core-change brief ({brief.filename})")
     data = brief.markdown.encode("utf-8")
+    caption, _ = format_text(f"Core-change brief: {brief.title}", limit=1024, literal=True)[0]
     try:
         await retry_telegram(
             lambda: app.bot.send_document(
                 ctx.chat_id, BufferedInputFile(data, filename=brief.filename),
-                caption=f"Core-change brief: {brief.title}",
+                caption=caption,
             ),
             sleep=app.sleep,
             budget=FloodBudget(),

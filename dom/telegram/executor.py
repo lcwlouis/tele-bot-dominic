@@ -24,11 +24,12 @@ from aiogram.types import (
 from pydantic import ValidationError
 
 from dom import turn_log
-from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, SendFile, split_text, utf16_len
+from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, SendFile, utf16_len
 from dom.gifs import GifSearch
 from dom.models import StoredMessage
 from dom.store import Store
 from dom.stickers import resolve_sticker, sticker_fallback
+from dom.telegram.format import TextChunk, format_delivery, format_text, with_entities
 
 T = TypeVar("T")
 
@@ -230,8 +231,64 @@ async def _tell_owner_held_back(store: Store, chat_id: int, why: str) -> None:
         log.exception("could not record the held-back private reply")
 
 
+async def send_chunk(
+    bot, chat_id: int, chunk: TextChunk, *, sleep=asyncio.sleep, budget: FloodBudget | None = None,
+    retry_refused: bool = False, authorize_message: Callable[[], Awaitable[None]] | None = None, **options,
+):
+    async def send(text, **kwargs):
+        async def attempt():
+            if authorize_message is not None:
+                await authorize_message()
+            return await bot.send_message(chat_id, text, **kwargs)
+
+        return await retry_telegram(attempt, sleep=sleep, budget=budget, retry_refused=retry_refused)
+
+    return await with_entities(send, *chunk, **options)
+
+
+async def send_text(
+    bot, chat_id: int, text: str, *, sleep=asyncio.sleep, budget: FloodBudget | None = None,
+    literal: bool = False, pre: bool = False, reply_markup=None, **options,
+):
+    """Send a notice or card. Its keyboard belongs to the final message."""
+    chunks = format_text(text, literal=literal, pre=pre)
+    sent = None
+    for index, chunk in enumerate(chunks):
+        if reply_markup is not None and index == len(chunks) - 1:
+            options["reply_markup"] = reply_markup
+        sent = await send_chunk(bot, chat_id, chunk, sleep=sleep, budget=budget, **options)
+    return sent
+
+
+async def edit_text(bot, chat_id: int, message_id: int, text: str, *, sleep=asyncio.sleep, literal: bool = False, **options):
+    """Replace a single status card in place, within Telegram's message length."""
+    chunks = format_text(text, literal=literal)
+    if not chunks:
+        return None
+
+    async def edit(text, **kwargs):
+        return await retry_telegram(
+            lambda: bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, **kwargs), sleep=sleep,
+        )
+
+    return await with_entities(edit, *chunks[0], **options)
+
+
+def _delivery_bubbles(bubbles: Sequence[Bubble]) -> list[Bubble]:
+    delivery = []
+    for bubble in bubbles:
+        if bubble._telegram_chunk is not None:
+            delivery.append(bubble)
+            continue
+        for index, (chunk, history) in enumerate(format_delivery(bubble.text)):
+            piece = bubble.model_copy(update={"text": history, "reply_to": None if index else bubble.reply_to})
+            piece._telegram_chunk = chunk
+            delivery.append(piece)
+    return delivery
+
+
 async def _private_reply_to_dm(
-    bot, store: Store, chat_id: int, texts: list[str], reason: str,
+    bot, store: Store, chat_id: int, chunks: list[TextChunk], reason: str,
     *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, budget: FloodBudget | None = None,
     on_sent: Callable[[int], Awaitable[None]] | None = None,
 ) -> list[int]:
@@ -245,11 +302,12 @@ async def _private_reply_to_dm(
     why = "Telegram lets me send those only when I'm a group admin" if "ADMIN" in reason.upper() else "Telegram refused it"
     sent_ids = []
     try:
-        for text in _pack([f"My private reply in {title} (it couldn't go there: {why}):", *texts]):
+        header = format_text(f"My private reply in {title} (it couldn't go there: {why}):", literal=True)
+        for chunk in _pack([*header, *chunks]):
             with turn_log.timed("send"):
-                sent = await retry_telegram(
-                    lambda t=text: bot.send_message(owner, t, link_preview_options=LinkPreviewOptions(is_disabled=True)),
-                    sleep=sleep, budget=budget,
+                sent = await send_chunk(
+                    bot, owner, chunk, sleep=sleep, budget=budget,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
                 )
             turn_log.bubble_sent()
             sent_ids.append(sent.message_id)
@@ -267,18 +325,18 @@ async def _private_reply_to_dm(
     return sent_ids
 
 
-_utf16 = utf16_len
-
-
-def _pack(texts: list[str]) -> list[str]:
-    """Join texts with blank lines into as few messages as fit Telegram's limit; split any item over the limit."""
-    messages: list[str] = []
-    for raw in texts:
-        for text in split_text(raw, TELEGRAM_TEXT_LIMIT):
-            if messages and _utf16(messages[-1]) + 2 + _utf16(text) <= TELEGRAM_TEXT_LIMIT:
-                messages[-1] += "\n\n" + text
-            else:
-                messages.append(text)
+def _pack(chunks: list[TextChunk]) -> list[TextChunk]:
+    """Pack adjacent rendered chunks while keeping entity offsets relative to the new message."""
+    messages: list[TextChunk] = []
+    for text, entities in chunks:
+        if messages and (offset := utf16_len(messages[-1][0]) + 2) + utf16_len(text) <= TELEGRAM_TEXT_LIMIT:
+            prev, previous_entities = messages[-1]
+            messages[-1] = (
+                prev + "\n\n" + text,
+                previous_entities + [entity.model_copy(update={"offset": entity.offset + offset}) for entity in entities],
+            )
+        else:
+            messages.append((text, entities))
     return messages
 
 
@@ -318,6 +376,7 @@ async def perform(
     if actions.no_response:
         return PerformResult()
     flood = FloodBudget(remaining=flood_budget)
+    bubbles = _delivery_bubbles(actions.bubbles)
     if actions.private and chat_id < 0:
         if ephemeral_recipient is None or ephemeral_recipient != store.owner_id:
             why = ephemeral_ineligible_reason or (
@@ -329,38 +388,36 @@ async def perform(
             await _tell_owner_held_back(store, chat_id, why)
             return PerformResult()
         if not ephemeral_in_chat:  # Dom is not an admin there, so Telegram would refuse: straight to the DM
-            if actions.bubbles and before_send is not None:
+            if bubbles and before_send is not None:
                 before_send()
             moved = await _private_reply_to_dm(
-                bot, store, chat_id, [b.text for b in actions.bubbles], "BOT_NOT_ADMIN",
+                bot, store, chat_id, [b._telegram_chunk for b in bubbles], "BOT_NOT_ADMIN",
                 sleep=sleep, budget=flood, on_sent=on_sent,
             )
             return PerformResult(moved, flood_limited=flood.exhausted)
         parameters = EphemeralMessageParameters(receiver_user_id=ephemeral_recipient)
         # Keep these bubbles out of the group's history and skip public side effects.
         sent_ids: list[int] = []
-        for index, bubble in enumerate(actions.bubbles):
+        for index, bubble in enumerate(bubbles):
             if before_send is not None:
                 before_send()
             try:
                 with turn_log.timed("send"):
-                    sent = await retry_telegram(
-                        lambda b=bubble: bot.send_message(
-                            chat_id, b.text, message_thread_id=thread_id, ephemeral_message_parameters=parameters,
-                        ),
-                        sleep=sleep, budget=flood,
+                    sent = await send_chunk(
+                        bot, chat_id, bubble._telegram_chunk, sleep=sleep, budget=flood,
+                        message_thread_id=thread_id, ephemeral_message_parameters=parameters,
                     )
             except TelegramMigrateToChat:
                 if on_migrate is not None:
-                    on_migrate(Actions(private=True, bubbles=_strip_reply_to(actions.bubbles[index:])))
+                    on_migrate(actions.model_copy(update={"bubbles": _strip_reply_to(bubbles[index:])}))
                 raise
             except FloodBudgetExhausted:
                 return PerformResult(sent_ids, flood_limited=True)
             except TelegramAPIError as error:
                 log.warning("ephemeral send failed in chat %s: %s", chat_id, error.message)
-                rest = actions.bubbles[len(sent_ids):]
+                rest = bubbles[index:]
                 moved = await _private_reply_to_dm(
-                    bot, store, chat_id, [b.text for b in rest], error.message,
+                    bot, store, chat_id, [b._telegram_chunk for b in rest], error.message,
                     sleep=sleep, budget=flood, on_sent=on_sent,
                 )
                 return PerformResult(sent_ids + moved, flood_limited=flood.exhausted)
@@ -395,10 +452,11 @@ async def perform(
     # "typing" already showed while Dom thought, so that time counts against the reply's budget; a long reply in
     # many bubbles would otherwise keep the friend waiting minutes after it was written.
     budget = max(0.0, MAX_REPLY_TYPING_SECONDS - (typed_already or 0.0))
-    for index, bubble in enumerate(actions.bubbles):
-        human_time = len(bubble.text) / typing_cps
+    for index, bubble in enumerate(bubbles):
+        chunk = bubble._telegram_chunk
+        human_time = len(chunk[0]) / typing_cps
         if index == 0 and typed_already is not None:
-            if chat_id < 0 and len(bubble.text) <= GROUP_QUIP_CHARS:
+            if chat_id < 0 and len(chunk[0]) <= GROUP_QUIP_CHARS:
                 human_time = min(human_time, GROUP_QUIP_SECONDS)
             # Reply time counts even when the indicator was late or failed. It overlaps visible typing.
             human_time = max(0.0, human_time - max(typed_already, reply_elapsed))
@@ -423,22 +481,14 @@ async def perform(
         try:
             if not await enter_send_boundary():
                 return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
-            async def send_message():
-                if authorize_message is not None:
-                    await authorize_message()
-                return await bot.send_message(
-                    chat_id, bubble.text, reply_parameters=reply, message_thread_id=thread_id, **options,
-                )
-
             with turn_log.timed("send"):
-                sent = await retry_telegram(send_message, sleep=sleep, budget=flood, retry_refused=retry_refused)
+                sent = await send_chunk(
+                    bot, chat_id, chunk, reply_parameters=reply, message_thread_id=thread_id,
+                    sleep=sleep, budget=flood, retry_refused=retry_refused, authorize_message=authorize_message, **options,
+                )
         except TelegramMigrateToChat:
             if on_migrate is not None:
-                on_migrate(Actions(
-                    bubbles=_strip_reply_to(actions.bubbles[index:]),
-                    sticker=actions.sticker,
-                    gif=actions.gif,
-                ))
+                on_migrate(actions.model_copy(update={"bubbles": _strip_reply_to(bubbles[index:]), "react": None}))
             raise
         except FloodBudgetExhausted:
             return PerformResult(
@@ -550,10 +600,8 @@ async def perform(
             if not await enter_send_boundary():
                 return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
             with turn_log.timed("send"):
-                sent = await retry_telegram(
-                    lambda t=fallback_text, o=options: bot.send_message(chat_id, t, message_thread_id=thread_id, **o),
-                    sleep=sleep, budget=flood,
-                )
+                sent = await send_text(bot, chat_id, fallback_text, sleep=sleep, budget=flood,
+                                       message_thread_id=thread_id, **options)
         except TelegramMigrateToChat:
             if on_migrate is not None:
                 on_migrate(Actions(bubbles=[Bubble(text=fallback_text)]))
@@ -681,9 +729,6 @@ async def send_files(
         except TelegramAPIError:
             log.warning("could not send a desktop result document")
             try:
-                await retry_telegram(
-                    lambda f=file: bot.send_message(chat_id, f"Couldn't send {f.filename}."),
-                    sleep=sleep, budget=flood,
-                )
+                await send_text(bot, chat_id, f"Couldn't send {file.filename}.", sleep=sleep, budget=flood, literal=True)
             except FloodBudgetExhausted:
                 return

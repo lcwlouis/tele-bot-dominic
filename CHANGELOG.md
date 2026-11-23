@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Telegram replies and skill proposals render Markdown as bold, links, and code. Long code blocks continue as code in the next message.
+
 - Dom composes replies one chat at a time, with priority for the owner's DM after resuming an interrupted reply. The Turn log shows attention waits, visits, cache use on return, and cross-chat deliveries.
 - A group mention or reply to the owner can send an alert, and Dom can text the owner from a group or friend's DM. Both are rate-limited. Messages to other chats need individual approval of the exact text and expire after two hours.
 

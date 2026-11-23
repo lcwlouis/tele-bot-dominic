@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MessageEntity
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from dom.agent import unfence
 from dom.config import replace_host
@@ -269,36 +269,26 @@ class Proposals:
         review = None
         options = {}
         if row["kind"] == "plugin":
-            options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
+            options = {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
             body = json.loads(row["body_json"])
             review = review_button(app, body)
             if review is None:
                 text += f"\nOpen {plugin_review_path(body)} in the dashboard to review."
-        from dom.telegram.executor import FloodBudget, retry_telegram
+        from dom.telegram.executor import FloodBudget, send_text
 
-        budget = None
-        if row["kind"] == "cross_chat":
-            options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
-            budget = FloodBudget()
-        sent = None
-        for start in range(0, len(text), 2000):
-            markup = None
-            if start + 2000 >= len(text):
-                keyboard = [buttons(row["id"])]
-                if review is not None:
-                    keyboard.insert(0, [review])
-                markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-            chunk = text[start:start + 2000]
-            entities = None
-            if row["kind"] == "memory_edit":  # model-written diff: shown verbatim, nothing in it becomes tappable
-                options = {"parse_mode": None, "link_preview_options": LinkPreviewOptions(is_disabled=True)}
-                entities = [MessageEntity(type="pre", offset=0, length=len(chunk.encode("utf-16-le")) // 2)]
-            sent = await retry_telegram(
-                lambda c=chunk, m=markup, e=entities, o=dict(options): app.bot.send_message(
-                    app.owner_id, c, disable_notification=True, reply_markup=m, entities=e, **o,
-                ),
-                sleep=app.sleep, budget=budget,
-            )
+        kind = row["kind"]
+        if kind in ("cross_chat", "memory_edit"):
+            options = {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+        keyboard = [buttons(row["id"])]
+        if review is not None:
+            keyboard.insert(0, [review])
+        sent = await send_text(
+            app.bot, app.owner_id, text, sleep=app.sleep,
+            budget=FloodBudget() if kind == "cross_chat" else None,
+            # Keep the exact cross-chat text visible for approval, including any link destinations.
+            literal=kind == "cross_chat", pre=kind == "memory_edit",
+            disable_notification=True, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), **options,
+        )
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):
             await app.store.update_proposal_cards(CARDS_KEY, {str(row["id"]): [message_id]})

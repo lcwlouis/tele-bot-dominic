@@ -19,6 +19,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from dom.agent import NoFinalAnswer
 from dom.llm import ChatClient, FallbackClient, MissingProviderKey, _retryable, openrouter_host
 from dom.models import Scope, StoredMessage
+from dom.telegram.executor import edit_text, send_text
 from dom.usage import model_request, on_own_network
 
 if TYPE_CHECKING:
@@ -144,9 +145,7 @@ class Escalation:
 
     async def settle(self, chat_id: int, message_id: int, text: str) -> None:
         try:
-            await self.app.bot.edit_message_text(
-                text, chat_id=chat_id, message_id=message_id, reply_markup=None, parse_mode=None,
-            )
+            await edit_text(self.app.bot, chat_id, message_id, text, reply_markup=None, sleep=self.app.sleep)
         except Exception as exc:
             log.info("could not settle model switch card (%s)", type(exc).__name__)
 
@@ -311,12 +310,10 @@ class EscalationTurn:
                     for label, action in choices
                 ]])
                 if self.message_id is None:
-                    sent = await app.bot.send_message(self.chat_id, text, reply_markup=markup, parse_mode=None)
+                    sent = await send_text(app.bot, self.chat_id, text, reply_markup=markup, sleep=app.sleep)
                     self.message_id = sent.message_id
                 else:
-                    await app.bot.edit_message_text(
-                        text, chat_id=self.chat_id, message_id=self.message_id, reply_markup=markup, parse_mode=None,
-                    )
+                    await edit_text(app.bot, self.chat_id, self.message_id, text, reply_markup=markup, sleep=app.sleep)
                 if version == self.card_version:
                     if self.retry_until is not None:
                         self.prompt = ([], [])
