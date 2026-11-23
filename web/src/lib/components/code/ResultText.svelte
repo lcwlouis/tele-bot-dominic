@@ -23,4 +23,4 @@
 </script>
 
 <!-- On one line: the text keeps its own whitespace, so the markup must add none. -->
-<div class={cn("wrap-anywhere whitespace-pre-wrap", className)}>{#each parts as part, index (index)}{#if part.code}<Code text={part.text} language={part.language} class="my-1 overflow-x-auto rounded-md border bg-raised/50 p-2 text-[0.8rem] whitespace-pre" />{:else}{part.text}{/if}{/each}</div>
+<div class={cn("wrap-anywhere whitespace-pre-wrap", className)}>{#each parts as part, index (index)}{#if part.code}<Code text={part.text} language={part.language} focusable class="my-1 overflow-x-auto rounded-md border bg-raised/50 p-2 text-[0.8rem] whitespace-pre" />{:else}{part.text}{/if}{/each}</div>

@@ -246,7 +246,7 @@
               <Card.Description class="break-words">{edit.title}</Card.Description>
             </Card.Header>
             <Card.Content class="grid gap-4">
-              <DiffLines lines={edit.diff} />
+              <DiffLines lines={edit.diff} language="markdown" />
               <div class="flex flex-wrap gap-2">
                 <Button disabled={deciding} onclick={() => decide("/api/memory/proposal", { id: edit.id, decision: "approve" })}>Approve</Button>
                 <Button variant="outline" disabled={deciding} onclick={() => decide("/api/memory/proposal", { id: edit.id, decision: "reject" })}>Reject</Button>
@@ -337,7 +337,7 @@
             {#if proposed}
               <div class="grid gap-2" role="status">
                 <p class="text-sm font-medium">Dom proposed this change</p>
-                <DiffLines lines={proposed} />
+                <DiffLines lines={proposed} language="markdown" />
               </div>
             {/if}
             <form class="grid gap-2" onsubmit={(event) => (event.preventDefault(), ask())}>

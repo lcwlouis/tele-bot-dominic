@@ -216,7 +216,8 @@ async def seed(app: handlers.App) -> None:
     await store.update_desktop_task(finished, OWNER, ("queued",), "done", result=(
         "The library opens at 9 am on weekdays. Source: https://library.example.org/opening-hours/central-branch/"
         "weekdays-and-weekends-including-public-holidays-and-the-summer-timetable?ref=dom-desktop-task-lookup\n"
-        "    Mon–Fri  09:00–18:00\n    Sat      10:00–16:00\n    Sun      closed"
+        "    Mon–Fri  09:00–18:00\n    Sat      10:00–16:00\n    Sun      closed\n"
+        "As data:\n```json\n{\"weekdays\": \"09:00-18:00\", \"saturday\": \"10:00-16:00\", \"sunday\": null}\n```"
     ))
     planned, ran = await store.add_self_tasks([
         {"goal": "Read about slow-travel itineraries", "why": "The owner plans a trip.", "tools": ["browse"], "sites": ["travel.example.org"], "minutes": 10, "steps": 20},
@@ -225,6 +226,9 @@ async def seed(app: handlers.App) -> None:
     await store.update_self_task(ran["id"], ("planned",), "done", result="Saturday looks clear, 14 degrees.", files=["weather.png"])
     ended = (now - timedelta(hours=3)).isoformat()  # the store stamps real time; the screenshots need a fixed day
     store._conn.execute("UPDATE desktop_tasks SET finished_at = ? WHERE id = ?", (ended, finished))
+    # Budgets: the waiting task started with 30 steps; the finished one was extended once with Keep going.
+    store._conn.execute("UPDATE desktop_tasks SET steps = 12, steps_budget = 30 WHERE id = ?", (waiting,))
+    store._conn.execute("UPDATE desktop_tasks SET steps = 41, steps_budget = 30, extra_steps = 30 WHERE id = ?", (finished,))
     store._conn.execute("UPDATE self_tasks SET finished_at = ? WHERE id = ?", (ended, ran["id"]))
     shots = task_files(app.home.root, ran["id"])
     shots.mkdir(parents=True)
@@ -233,7 +237,8 @@ async def seed(app: handlers.App) -> None:
     write_skill(app.home, Skill("weekly-recap", "Summarise the week on Sunday evening", "List the chats that were busy.\nName one thing to follow up."), "")
     skills.retire_skill(app.home, "weekly-recap")
     write_brief(app.home, now.date(), title="Wake groups gently", problem="Dom wakes a group the moment anyone says his name, even at 3 am.",
-                proposal="- Wait for a second message\n- Skip the wake between 1 and 6 am", acceptance="1. No wake at 3 am\n2. Still wakes at 9 am")
+                proposal="- Wait for a second message\n- Skip the wake between 1 and 6 am\n\n```python\n"
+                "if 1 <= now.hour < 6 and not urgent:\n    return None  # wait for the morning\n```", acceptance="1. No wake at 3 am\n2. Still wakes at 9 am")
     await app.dispatch.presence.wake(OWNER, read_habits(app.home), minutes=180)
 
 

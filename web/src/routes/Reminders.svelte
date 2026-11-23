@@ -92,7 +92,7 @@
               checked={selected.includes(row.id)}
               onCheckedChange={(on) => toggle(row.id, on === true)}
             />
-            <span class="grid size-9 shrink-0 place-items-center rounded-lg border bg-raised text-signal" aria-hidden="true"><Bell class="size-4" /></span>
+            <span class="hidden size-9 shrink-0 place-items-center rounded-lg border bg-raised text-signal sm:grid" aria-hidden="true"><Bell class="size-4" /></span>
             <div class="min-w-0 flex-1">
               <p class="font-medium break-words">{row.text}</p>
               <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
@@ -101,7 +101,8 @@
                 <Badge variant={tone(row)}>{label(row)}</Badge>
               </p>
             </div>
-            <div class="flex gap-2">
+            <!-- On a phone the buttons take their own line, so the reminder's text keeps the width. -->
+            <div class="flex gap-2 max-sm:basis-full max-sm:justify-end">
               {#if row.status === "active"}
                 <Button variant="outline" size="sm" disabled={page.busy} aria-label={`Cancel reminder ${row.id}`} onclick={() => (cancelling = row)}>Cancel</Button>
               {/if}
