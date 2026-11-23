@@ -77,7 +77,8 @@ async def test_manage_creates_a_proposal_the_owner_must_approve(make_app, scope,
     proposal, = await app.proposals.pending()
     assert result["id"] == proposal["id"] and proposal["kind"] == "skill" and proposal["source"] == "chat"
     assert skill_view(app.home, "report") is None
-    assert BODY in app.bot.of("send", OWNER)[-1][2]
+    (_, _, (filename, attached), _), = app.bot.of("document", OWNER)  # the card is short; the procedure is a file
+    assert filename == "report.md" and BODY in attached and BODY not in app.bot.of("send", OWNER)[-1][2]
     await press(app, f"prop:yes:{proposal['id']}")
     assert skill_view(app.home, "report") == BODY
     # the card now says so, and its Approve and Reject buttons are gone
@@ -116,7 +117,8 @@ async def test_manage_update_shows_a_diff_against_the_approved_text(make_app):
         {"name": "report", "description": "Summarise a web table", "body": "Read the table twice."}, ctx(app),
     )
     sent = app.bot.of("send", OWNER)[-1][2]
-    assert f"-{BODY}" in sent and "+Read the table twice." in sent
+    assert "Updates the existing skill: 2 changed lines." in sent
+    assert "Read the table twice." in app.bot.of("document", OWNER)[-1][2][1]
     assert skill_view(app.home, "report") == BODY
 
 

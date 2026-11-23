@@ -32,6 +32,11 @@ class FakeBot:
         self.calls.append(("send", chat_id, text, kw))
         return SimpleNamespace(message_id=self._next_id)
 
+    async def send_document(self, chat_id, document, **kw):
+        self._next_id += 1
+        self.calls.append(("document", chat_id, (document.filename, document.data.decode()), kw))
+        return SimpleNamespace(message_id=self._next_id)
+
     async def set_message_reaction(self, chat_id, message_id, reaction=None, **kw):
         self.calls.append(("react", chat_id, message_id, reaction))
 

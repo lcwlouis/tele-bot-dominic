@@ -165,21 +165,19 @@ async def test_executor_paces_chunks_and_keeps_original_markdown(make_app):
     assert stored[-1].text.endswith("## 6. Verify visually")
 
 
-async def test_proposal_sends_long_skill_with_markup_on_final_chunk(make_app):
+async def test_a_long_skill_proposal_is_a_short_card_with_the_procedure_attached(make_app):
     app = make_app()
     row = {
         "id": 12, "kind": "skill", "title": "Desktop navigation",
-        "body_json": json.dumps({"old": "", "new": LONG_SKILL}),
+        "body_json": json.dumps({"name": "desktop-navigation", "description": "Drive the browser", "old": "", "new": LONG_SKILL}),
     }
     await app.proposals.send(row)
-    calls = app.bot.of("send", OWNER)
-    assert len(calls) == 3
-    assert all(utf16_len(text) <= 4096 and "```" not in text for _, _, text, _ in calls)
-    assert all(kw.get("reply_markup") is None for _, _, _, kw in calls[:-1])
-    assert calls[-1][3]["reply_markup"].inline_keyboard[0][0].callback_data == "prop:yes:12"
-    assert json.loads(await app.store.kv_get(CARDS_KEY)) == {"12": [5003]}
-    code = [entity_text(text, e) for _, _, text, kw in calls for e in kw.get("entities", []) if e.type == "pre"]
-    assert "\n".join(code) == (SHELL * 64).rstrip("\n")
+    (_, _, card, options), = app.bot.of("send", OWNER)
+    assert "Drive the browser" in card and "The full procedure is attached." in card and "xdotool" not in card
+    assert options["reply_markup"].inline_keyboard[0][0].callback_data == "prop:yes:12"
+    assert json.loads(await app.store.kv_get(CARDS_KEY)) == {"12": [5001]}
+    (_, _, (filename, attached), _), = app.bot.of("document", OWNER)
+    assert filename == "desktop-navigation.md" and attached == LONG_SKILL
 
 
 async def test_entity_rejection_retries_once_as_rendered_plain_text(make_app, caplog):

@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from dom.agent import unfence
 from dom.config import replace_host
@@ -92,8 +92,13 @@ def summary(row: dict) -> str:
     if row["kind"] == "soul_edit":
         return f"{heading}\n\nReplace:\n{body['old']}\n\nWith:\n{body['new']}"
     if row["kind"] == "skill":
-        changes = "\n".join(skill_diff(body["old"], body["new"])) if body["old"] else ""
-        return "\n\n".join(filter(None, (heading, changes, body["new"])))
+        # The card stays short: what the skill is for and how big a change it is. The full procedure follows as a file.
+        if body["old"]:
+            changed = sum(1 for line in skill_diff(body["old"], body["new"]) if line[:1] in "+-" and line[:3] not in ("+++", "---"))
+            change = f"Updates the existing skill: {changed} changed lines."
+        else:
+            change = f"New skill, {len(body['new'].splitlines())} lines."
+        return "\n\n".join((heading, body.get("description") or "", f"{change} The full procedure is attached."))
     if row["kind"] == "plugin":
         tools = [f"{tool['name']} ({', '.join(tool['scopes']) or 'no scopes'})" for tool in body["tools"]]
         commands = [f"/{command['name']} ({', '.join(command['scopes'])})" for command in body.get("commands", [])]
@@ -292,6 +297,14 @@ class Proposals:
         message_id = getattr(sent, "message_id", None)
         if isinstance(message_id, int):
             await app.store.update_proposal_cards(CARDS_KEY, {str(row["id"]): [message_id]})
+        if kind == "skill":
+            body = json.loads(row["body_json"])
+            from dom.telegram.executor import retry_telegram
+
+            document = BufferedInputFile(body["new"].encode(), filename=f"{body['name']}.md")
+            await retry_telegram(
+                lambda: app.bot.send_document(app.owner_id, document, disable_notification=True), sleep=app.sleep,
+            )
 
     async def _cards(self) -> dict[str, list[int]]:
         try:

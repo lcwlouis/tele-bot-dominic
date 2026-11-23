@@ -277,6 +277,26 @@ async def test_plain_fallback_is_truncated_without_previews_and_not_stored_as_a_
     assert f"Desktop task #{task_id} result sent as plain text" in str(window)
 
 
+async def test_a_report_written_as_prose_still_goes_out_in_doms_words(make_app):
+    class Jev:
+        async def decide(self, state, questions):
+            sure = {"type": "choice", "confidence": 0.99}
+            return {"ready": {**sure, "choice": "yes"}, "meta": {**sure, "choice": "no"}, "bubbles": {**sure, "choice": "1"}}
+
+    app = make_app()
+    prose = {"role": "assistant", "content": "got the page up, screenshot's in"}
+    worker = await worker_for(app, call("finish", result="Raw task output " + "r" * 500), prose)
+    app.dispatch.jev = Jev()
+    task_id = await worker.enqueue(OWNER, "Example")
+    await wait_task(worker)
+    await asyncio.sleep(0.05)
+    sent = [call[2] for call in app.bot.of("send", OWNER)]
+    assert "got the page up, screenshot's in" in sent
+    assert not any("Raw task output" in text for text in sent)
+    window = await app.store.get_recent_chat_window(str(OWNER), 20)
+    assert f"Dom reported desktop task #{task_id}" in str(window)
+
+
 async def test_out_of_steps_the_task_says_how_far_it_got(make_app):
     # A Reddit inbox-and-watchlist brief ran out of its 30 steps and the owner heard only "Stopped after 30 steps".
     app = make_app()

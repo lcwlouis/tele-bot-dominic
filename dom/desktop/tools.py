@@ -40,7 +40,8 @@ _TOOLS = {
     "write_file": ("Write a text file inside the sandbox.", {"path": _STRING, "content": _STRING}),
     "handoff": ("Pause for the owner at a login, captcha or payment.", {"reason": _STRING}),
     "skill_view": ("Read an owner-approved skill by name.", {"name": _STRING}),
-    "propose_skill": ("Draft a reusable public skill once, after the work succeeds and before finish.", {
+    "propose_skill": ("Only when asked to remember how, or when success needed a workaround found in this run: draft a "
+                      "reusable public skill once, after the work succeeds and before finish.", {
         "name": {"type": "string", "maxLength": NAME_LIMIT},
         "description": {"type": "string", "maxLength": DESCRIPTION_LIMIT},
         "body": {"type": "string", "maxLength": BODY_LIMIT},
