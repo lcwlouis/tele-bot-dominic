@@ -19,9 +19,9 @@ STUDIO_NOTE = (
 )
 ACTION_NOTES = {
     "voice": '"voice": spoken text (up to 600 characters)',
-    "video_note": '"video_note": {"text": spoken text up to 600 characters}',
+    "video_note": '"video_note": {"text": spoken text up to 200 characters}',
     "photo": '"image": a scene up to 300 characters (a selfie anywhere, or a scene in cyberspace; leave clothing to the outfit)',
-    "special": '"video_note": {"text": spoken text up to 600 characters, "special": true} '
+    "special": '"video_note": {"text": spoken text up to 120 characters, "special": true} '
                "for a milestone, birthday or an explicit request",
 }
 
@@ -39,7 +39,7 @@ def outfits(config: StudioConfig, preset: Preset | None) -> tuple[str, ...]:
 def turn_note(remaining: dict[Kind, int], wardrobe: tuple[str, ...]) -> str:
     if not remaining:
         return ""
-    lines = [STUDIO_NOTE]
+    lines = [STUDIO_NOTE, "At most one of these per reply."]
     for kind, count in remaining.items():
         lines.append(f"Optional action {ACTION_NOTES[kind]} ({count} left in its rolling limit).")
     if wardrobe and any(kind != "voice" for kind in remaining):

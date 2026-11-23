@@ -59,7 +59,8 @@ class StudioClient:
                     "GET" if payload is None else "POST", self.config.base_url + "/v1/" + path,
                     json=payload, headers=self._headers, timeout=timeout, follow_redirects=False,
                 ) as response:
-                    if response.status_code == 503:
+                    if response.status_code == 503 and not path.startswith("portrait/"):
+                        # The renderer is busy or short of memory. A missing portrait is not: it pauses nothing.
                         self._busy_until = self._clock() + 15
                     response.raise_for_status()
                     if response.headers.get("content-type", "").split(";")[0].strip().lower() != mime:
@@ -73,11 +74,15 @@ class StudioClient:
                     if not data:
                         raise ValueError("empty response")
                     return bytes(data)
-        except (httpx.TransportError, TimeoutError) as error:
+        except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+            # Only a studio that cannot be reached is away. A slow render (a special note can take minutes) or a
+            # dropped stream fails this one request without pausing the others.
             self._away_since = self._away_since or datetime.now(timezone.utc)
             self._away_until = self._clock() + AWAY_SECONDS
             self._health = None
             log.warning("studio connection failed (%s)", type(error).__name__)
+        except (httpx.TransportError, TimeoutError) as error:
+            log.warning("studio request timed out or broke off (%s)", type(error).__name__)
         except (httpx.HTTPError, httpx.InvalidURL, ValueError) as error:
             log.warning("studio request failed (%s)", type(error).__name__)
         return None

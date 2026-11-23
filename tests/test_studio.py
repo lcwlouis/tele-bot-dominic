@@ -235,3 +235,35 @@ async def test_studio_command_is_owner_only(make_app, studio_server):
 def test_studio_action_fields_are_strict_and_bounded(bad):
     with pytest.raises(ValidationError):
         Actions.model_validate(bad)
+
+
+async def test_a_slow_render_fails_only_that_request_and_a_missing_portrait_pauses_nothing():
+    clock = [0.0]
+
+    def respond(request):
+        if request.url.path == "/v1/voice":
+            raise httpx.ReadTimeout("slow render")
+        if request.url.path.startswith("/v1/portrait/"):
+            return httpx.Response(503, json={"error": "portrait-unavailable"})
+        return httpx.Response(200, json={})
+
+    config = StudioConfig(enabled=True, base_url="https://studio.example.test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = StudioClient(config, TOKEN, http, lambda: clock[0])
+        await client.refresh()
+        assert await client.voice("Hi") is None
+        assert client.ready and client.status == "on"
+        assert await client.portrait("default") is None
+        assert client.ready and client.status == "on"
+
+
+def test_video_note_text_caps():
+    import pydantic
+
+    from dom.actions import SPECIAL_TEXT_MAX, VIDEO_TEXT_MAX, VideoNote
+
+    VideoNote(text="x" * VIDEO_TEXT_MAX)
+    VideoNote(text="x" * SPECIAL_TEXT_MAX, special=True)
+    for bad in ({"text": "x" * (VIDEO_TEXT_MAX + 1)}, {"text": "x" * (SPECIAL_TEXT_MAX + 1), "special": True}):
+        with pytest.raises(pydantic.ValidationError):
+            VideoNote(**bad)
