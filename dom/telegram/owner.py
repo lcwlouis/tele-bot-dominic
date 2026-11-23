@@ -967,7 +967,7 @@ async def import_memory(app: App, message: Message, text: str) -> tuple[str, str
     code = None
     if not args and message.document is None:
         response = (
-            "Paste the prompt below into ChatGPT, Claude or Muse (tap it to copy). Reply here with /import <service> "
+            "Paste the prompt below into ChatGPT, Claude, Muse or any other assistant (tap it to copy). Reply here with /import <service> "
             "on the first line and the export below. You can also reply to the export with /import <service>, or "
             "attach a .txt or .md document with that caption."
         )
@@ -976,7 +976,7 @@ async def import_memory(app: App, message: Message, text: str) -> tuple[str, str
         response = "Siri has no exportable memory."
         event = "Ran /import siri"
     elif len(args) != 1 or args[0].lower() not in memory_import.SERVICES:
-        response = "Use /import chatgpt, /import claude or /import muse."
+        response = "Use /import chatgpt, /import claude, /import muse or /import other."
     else:
         service = args[0].lower()
         try:

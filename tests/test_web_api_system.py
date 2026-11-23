@@ -18,6 +18,7 @@ WRITES = [
     ("/api/waiting/delete", {"id": 1, "expected": "x"}),
     ("/api/system/plugins/reviewed", {"name": "convert", "digest": HASH}),
     ("/api/system/plugins/decide", {"name": "convert", "digest": HASH, "decision": "approve"}),
+    ("/api/system/plugins/review-again", {"name": "convert", "digest": HASH}),
     ("/api/system/plugins/delete", {"name": "convert", "expected": HASH}),
     ("/api/system/plugins/panel", {"name": "convert", "panel_id": "summary"}),
 ]
@@ -185,6 +186,38 @@ async def test_a_plugin_is_approved_only_after_the_read_button_and_its_digest_st
         assert retired["message"] == "Disabled" and retired["plugins"][0]["status"] == "disabled" and retired["panels"] == []
 
 
+async def test_a_rejected_or_retired_plugin_says_so_and_goes_back_to_review_only_as_unreviewed(make_app, browser, monkeypatch):
+    app = make_app()
+    monkeypatch.setattr(app.plugin_runner, "trial", lambda *_: {"output": "ok", "self_test": True})
+    await draft(app, manifest=SURFACES)
+    row = await status(app)
+    body = {"name": "convert", "digest": row["hash"]}
+    again = lambda: client.post("/api/system/plugins/review-again", headers=JSON, json=body)  # noqa: E731
+    async with browser(app) as client:
+        assert (await client.get("/api/system/plugins")).json()["plugins"][0]["ended"] is None
+        assert (await again()).status_code == 409  # pending: it is already waiting
+        rejected = (await client.post("/api/system/plugins/decide", headers=JSON, json={**body, "decision": "reject"})).json()
+        assert rejected["plugins"][0]["status"] == "disabled" and rejected["plugins"][0]["ended"] == "rejected"
+        assert (await client.post("/api/system/plugins/review-again", headers=JSON, json={**body, "digest": "c" * 64})).status_code == 409
+
+        back = await again()
+        assert back.status_code == 200 and back.json()["ok"] is True and back.json()["plugins"][0]["status"] == "pending"
+        waiting = [proposal for proposal in await app.proposals.pending() if proposal["kind"] == "plugin"]
+        assert [json.loads(proposal["body_json"])["hash"] for proposal in waiting] == [row["hash"]]
+        # Back in review means unread: approving needs "I've read this code" again, then this exact hash.
+        early = await client.post("/api/system/plugins/decide", headers=JSON, json={**body, "decision": "approve"})
+        assert early.status_code == 409 and "review" in early.json()["detail"]
+        assert await app.plugins.approved() == []
+        await client.post("/api/system/plugins/reviewed", headers=JSON, json=body)
+        assert (await client.post("/api/system/plugins/decide", headers=JSON, json={**body, "decision": "approve"})).json()["message"] == "Approved"
+
+        retired = (await client.post("/api/system/plugins/decide", headers=JSON, json={**body, "decision": "disable"})).json()
+        assert retired["plugins"][0]["ended"] == "retired"
+        assert (await again()).json()["plugins"][0]["status"] == "pending"
+        assert (await client.get(f"/api/system/plugins/convert/{row['hash']}")).json()["reviewed"] is False
+        assert (await client.post("/api/system/plugins/review-again", headers=JSON, json={"name": "Bad!", "digest": row["hash"]})).status_code == 404
+
+
 async def test_a_plugin_is_deleted_only_with_its_hash(make_app, browser, monkeypatch):
     app = make_app()
     monkeypatch.setattr(app.plugin_runner, "trial", lambda *_: {"output": "ok", "self_test": True})
@@ -240,6 +273,10 @@ async def test_usage_reports_spend_by_kind_and_model(make_app, browser):
         assert {row["name"] for row in data["month_models"]} == {"example-model", "search-model"}
         assert len(data["bars"]) == 30 and data["bars"][-1]["fallbacks"] == 1 and data["bars"][-1]["parts"][0]["kind"] == "chat"
         assert data["kinds"]["chat"] == "Replies"
+        # A bar segment carries what a tap on it shows: that kind's calls, spend and tokens, by model.
+        part = data["bars"][-1]["parts"][0]
+        assert (part["calls"], part["spend"], part["input_tokens"], part["output_tokens"]) == (1, pytest.approx(0.8), 2, 3)
+        assert part["models"] == [{"model": "example-model", "calls": 1, "spend": pytest.approx(0.8), "input_tokens": 2, "output_tokens": 3}]
 
 
 async def test_the_turn_log_filters_by_chat_and_keeps_to_what_the_old_page_showed(make_app, browser):

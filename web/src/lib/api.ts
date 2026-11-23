@@ -6,7 +6,7 @@ export type HomeData =
   | { setup: true }
   | {
       setup: false;
-      now: { greeting: string; date: string; clock: string };
+      now: { greeting: string; date: string; clock: string; iso: string };
       presence: { state: "online" | "asleep" | "offline"; title: string; detail: string };
       activity: Activity;
       vibe: { mode: "auto" | "locked" | "none"; title: string; description: string; reason: string; since: string };
@@ -142,12 +142,15 @@ export type MemoryWaiting = { imports: MemoryImportCard[]; edits: MemoryEdit[] }
 export type MemoryIndex = MemoryWaiting & {
   sections: { heading: string; files: { path: string; label: string }[] }[];
   services: { id: string; label: string }[];
+  export_prompt: string;
   max_soul_request: number;
 };
 export type MemoryFile = { file: string; label: string; readonly: boolean; limit: number | null; content: string; version: string };
 
 /** GET /api/chats and the chat writes (dom/web/api_chats.py). Every write answers { message, ...ChatsData }. */
 export type ChatSlider = { name: string; value: number; custom: boolean };
+/** GET /api/chats/{id}/messages: full text only in the owner's DM (`full`), one line per message elsewhere. */
+export type ChatMessages = { chat_id: number; full: boolean; messages: { who: string; mine: boolean; text: string; at: string }[] };
 export type Chat = {
   id: number;
   title: string;
@@ -279,7 +282,7 @@ export type WaitingData = {
 };
 
 /** GET /api/system/* and the plugin writes (dom/web/api_system.py). */
-export type PluginRow = { name: string; status: string; hash: string; available: boolean; network: boolean; storage: boolean; test_run: Trial | null };
+export type PluginRow = { name: string; status: string; ended: "rejected" | "retired" | null; hash: string; available: boolean; network: boolean; storage: boolean; test_run: Trial | null };
 export type PluginsData = {
   plugins: PluginRow[];
   panels: { plugin: string; id: string; title: string }[];
@@ -312,6 +315,9 @@ export type PanelResult = {
   rows: string[][];
 };
 export type Breakdown = { name: string; calls: number; spend: number }[];
+export type UsageTokens = { calls: number; spend: number; input_tokens: number; output_tokens: number };
+/** One kind's share of a day's bar, with what a tap on it shows. */
+export type UsagePart = UsageTokens & { kind: string; y: number; height: number; models: (UsageTokens & { model: string })[] };
 export type UsageData = {
   spent: number;
   cap: number;
@@ -323,7 +329,7 @@ export type UsageData = {
   today_models: Breakdown;
   month_kinds: Breakdown;
   month_models: Breakdown;
-  bars: { date: string; spent: number; fallbacks: number; parts: { kind: string; y: number; height: number }[] }[];
+  bars: { date: string; spent: number; fallbacks: number; parts: UsagePart[] }[];
 };
 export type ModelCall = {
   kind: string;

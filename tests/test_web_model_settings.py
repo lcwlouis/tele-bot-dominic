@@ -829,3 +829,33 @@ async def test_triage_view_names_its_missing_key_variable(dashboard):
     async with browser() as client:
         triage = (await client.get(API)).json()["triage"]
     assert triage["api_key_env"] == "TRIAGE_KEY" and triage["key_set"] is False
+
+
+async def test_a_permission_save_waits_on_the_disk_once_and_off_the_event_loop(dashboard, monkeypatch):
+    import asyncio
+    import os
+    import threading
+    import time
+
+    _, path, browser = dashboard
+    synced, threads = [], []
+    real_fsync = os.fsync
+
+    def slow_fsync(fd):  # an SD card under load
+        synced.append(fd)
+        threads.append(threading.current_thread() is threading.main_thread())
+        time.sleep(0.3)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", slow_fsync)
+    async with browser() as client:
+        revision = (await client.get(PERMISSIONS)).json()["revision"]
+        save = asyncio.create_task(client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={"revision": revision, "id": "openers", "enabled": True}))
+        await asyncio.sleep(0.05)
+        started = time.monotonic()
+        assert (await client.get(PERMISSIONS)).status_code == 200  # served while the save waits on the disk
+        assert time.monotonic() - started < 0.25 and not save.done()
+        assert (await save).status_code == 200
+    # Only config.toml itself is synced; the .orig and .bak copies are not worth a wait. None of it on the loop.
+    assert len(synced) == 1 and threads == [False]
+    assert tomllib.loads(path.read_text())["openers"]["enabled"] is True

@@ -1,10 +1,11 @@
 <script lang="ts">
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+  import Copy from "@lucide/svelte/icons/copy";
   import FileText from "@lucide/svelte/icons/file-text";
   import Lock from "@lucide/svelte/icons/lock";
   import Sparkles from "@lucide/svelte/icons/sparkles";
   import Upload from "@lucide/svelte/icons/upload";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { getJSON, send, ApiError, type MemoryFile, type MemoryIndex, type MemoryWaiting } from "$lib/api";
   import DiffLines from "$lib/components/memory/DiffLines.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
@@ -106,6 +107,13 @@
   let asking = $state(false);
   let proposed = $state<string[] | null>(null);
 
+  // On a phone the panel replaces the file list; on both, the request box takes focus (and so comes into view).
+  async function startTalking() {
+    proposed = null;
+    await tick();
+    document.getElementById("soul-request")?.focus();
+  }
+
   async function ask() {
     if (asking || !request.trim()) return;
     asking = true;
@@ -183,6 +191,15 @@
     }
   }
 
+  async function copyPrompt() {
+    try {
+      await navigator.clipboard.writeText(index?.export_prompt ?? "");
+      toast.show("ok", "Prompt copied.");
+    } catch {
+      toast.show("error", "Couldn't copy. Open “Show the prompt” and copy it from there.");
+    }
+  }
+
   const serviceLabel = (id: string) => index?.services.find((item) => item.id === id)?.label ?? id;
   const count = (n: number) => n.toLocaleString("en-US");
 </script>
@@ -192,7 +209,7 @@
     <Button
       variant={talking ? "default" : "secondary"}
       aria-pressed={talking}
-      onclick={() => guard(() => ((talking = !talking), talking && (proposed = null)))}
+      onclick={() => guard(() => ((talking = !talking), talking && startTalking()))}
     >
       <Sparkles aria-hidden="true" /> Talk to Dom about his soul
     </Button>
@@ -274,7 +291,7 @@
 
   <div class="grid items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
     <!-- On a phone the file list is a screen of its own, and a file opens full width with a way back. -->
-    <nav aria-label="Memory files" class={cn("rounded-xl border bg-surface p-3", open !== null && "max-lg:hidden")}>
+    <nav aria-label="Memory files" class={cn("rounded-xl border bg-surface p-3", (open !== null || talking) && "max-lg:hidden")}>
       {#each memory.sections as section (section.heading)}
         <h2 class="kicker px-2 pt-3 pb-1.5 first:pt-1">{section.heading}</h2>
         <ul class="grid gap-0.5">
@@ -369,7 +386,7 @@
           </Card.Content>
           {#if !file.readonly}
             <!-- Sticky on a phone, so Save stays in reach however long the file is. -->
-            <Card.Footer class="sticky bottom-20 z-10 flex flex-wrap gap-2 border-t bg-card py-3 lg:static">
+            <Card.Footer class="sticky bottom-0 z-10 flex flex-wrap gap-2 border-t bg-card py-3 lg:static">
               <Button disabled={!dirty || over || saving} onclick={save}>{saving ? "Saving…" : "Save changes"}</Button>
               <Button variant="outline" disabled={!dirty || saving} onclick={() => ((draft = file?.content ?? ""), (saveError = ""))}>Discard</Button>
             </Card.Footer>
@@ -385,9 +402,20 @@
   <Card.Root class="mt-6">
     <Card.Header>
       <Card.Title class="text-lg">Import memories</Card.Title>
-      <Card.Description>Upload a .txt or .md export from another assistant. Its facts wait above for your review.</Card.Description>
+      <Card.Description>Bring in what another assistant knows about you. Its facts wait above for your review.</Card.Description>
     </Card.Header>
-    <Card.Content>
+    <Card.Content class="grid gap-5">
+      <div class="grid gap-2">
+        <p class="text-sm"><span class="kicker mr-2 text-signal">1</span>Paste this prompt into ChatGPT, Claude, Muse or any other assistant, and save its answer as a .txt or .md file.</p>
+        <div class="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onclick={copyPrompt}><Copy aria-hidden="true" /> Copy prompt</Button>
+        </div>
+        <details class="rounded-lg border bg-canvas/50 px-3 py-2 text-sm">
+          <summary class="cursor-pointer font-medium">Show the prompt</summary>
+          <pre class="mt-2 max-h-64 overflow-auto font-mono text-[0.8rem] leading-relaxed break-words whitespace-pre-wrap">{memory.export_prompt}</pre>
+        </details>
+      </div>
+      <p class="text-sm"><span class="kicker mr-2 text-signal">2</span>Upload that file here.</p>
       <form class="grid gap-4 sm:grid-cols-[12rem_minmax(0,1fr)_auto] sm:items-end" onsubmit={(event) => (event.preventDefault(), runImport())}>
         <div class="grid gap-1.5">
           <Label id="import-service-label">Service</Label>
@@ -411,8 +439,8 @@
         </div>
         <Button type="submit" disabled={!exportFile || importing}><Upload aria-hidden="true" /> {importing ? "Importing…" : "Import"}</Button>
       </form>
-      {#if importError}<p role="alert" class="mt-3 text-sm text-coral">{importError}</p>{/if}
-      {#if importResult}<p role="status" class="mt-3 text-sm text-muted-foreground">{importResult}</p>{/if}
+      {#if importError}<p role="alert" class="text-sm text-coral">{importError}</p>{/if}
+      {#if importResult}<p role="status" class="text-sm text-muted-foreground">{importResult}</p>{/if}
     </Card.Content>
   </Card.Root>
 {/if}

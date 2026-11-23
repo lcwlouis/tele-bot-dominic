@@ -121,7 +121,7 @@ async def desk_computer(request: Request) -> dict:
     if lane is None:
         raise HTTPException(409, "The desktop is off.")
     message = await run_computer_action(app, lane, update.action)
-    ok = message in ("Computer ready.", "Computer stopped.")
+    ok = message in ("Computer ready.", "Stopping the computer.")
     return {"ok": ok, "message": message, **await _desk(app, lane)}
 
 

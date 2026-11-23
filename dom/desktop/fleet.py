@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from dom.config import HOST_NAME
@@ -31,8 +32,12 @@ class Lane:
     host: Host
     sandbox: LocalSandbox | RemoteSandbox
     worker: DesktopWorker
+    # A dashboard stop in flight: `docker stop` can take a while, so it runs apart from the request that asked.
+    stopping: asyncio.Task | None = field(default=None, compare=False)
 
     def status(self) -> str:
+        if self.stopping is not None and not self.stopping.done():
+            return "stopping"
         return self.sandbox.status()
 
     def idle(self) -> bool:
@@ -204,6 +209,10 @@ class DesktopFleet:
 
     async def close(self) -> None:
         lanes = list(self.lanes.values())
+        for lane in lanes:
+            # A dashboard stop still running in the background finishes before the sandbox is closed under it.
+            if lane.stopping is not None and not lane.stopping.done():
+                await asyncio.gather(lane.stopping, return_exceptions=True)
         for lane in lanes:
             await lane.worker.close()
         for lane in lanes:

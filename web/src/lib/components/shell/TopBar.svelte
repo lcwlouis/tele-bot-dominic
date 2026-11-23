@@ -3,17 +3,19 @@
   import Sun from "@lucide/svelte/icons/sun";
   import Orbit from "$lib/components/Orbit.svelte";
   import { Button } from "$lib/components/ui/button";
+  import MenuSheet from "$lib/components/shell/MenuSheet.svelte";
   import type { Destination, Tab } from "$lib/nav";
   import { theme } from "$lib/theme.svelte";
 
-  let { destination, tab, title }: { destination: Destination; tab?: Tab; title?: string } = $props();
+  // Phone: one slim line (logo, menu, theme) that scrolls away with the page. Desktop: the breadcrumb.
+  let { destination, tab, title, path, current }: { destination: Destination; tab?: Tab; title?: string; path: string; current: Destination } = $props();
 </script>
 
-<header class="sticky top-0 z-30 border-b border-transparent bg-background/85 backdrop-blur lg:static lg:bg-transparent lg:backdrop-blur-none">
-  <div class="mx-auto flex h-16 max-w-[68rem] items-center gap-3 px-4 sm:px-6 lg:h-20 lg:px-9">
-    <a href="/app" class="flex items-center gap-2.5 lg:hidden">
-      <Orbit size="sm" activity="idle" />
-      <span class="text-xl font-semibold tracking-tight">dom<span class="text-signal">.</span></span>
+<header>
+  <div class="mx-auto flex h-12 max-w-[68rem] items-center gap-2 px-4 sm:px-6 lg:h-20 lg:gap-3 lg:px-9">
+    <a href="/app" class="flex items-center gap-2 lg:hidden">
+      <Orbit size="sm" activity="idle" class="size-7" />
+      <span class="text-lg font-semibold tracking-tight">dom<span class="text-signal">.</span></span>
     </a>
     <nav aria-label="Breadcrumb" class="hidden text-sm lg:block">
       <ol class="flex items-center gap-2 text-muted-foreground">
@@ -31,6 +33,7 @@
       </ol>
     </nav>
     <div class="ml-auto flex items-center gap-2">
+      <MenuSheet {path} {current} />
       <Button
         variant="outline"
         size="icon"

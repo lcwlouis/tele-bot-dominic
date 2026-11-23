@@ -205,12 +205,19 @@ async def seed(app: handlers.App) -> None:
     await app.dispatch.reminders.create("2026-11-22T21:45:00", "Water the plants")
     await app.dispatch.reminders.create("2026-11-23T08:00:00", "Check train times for Saturday")
     await app.dispatch.reminders.create("2026-11-24T18:30:00", "Pack a charger")
+    await app.dispatch.reminders.create(
+        "2026-11-25T07:15:00", "Check https://trains.example.org/timetables/central-to-harbor/saturday-early-departures-and-platform-changes",
+    )
 
     # Work: a desktop task waiting for a sign-in, one finished, Dom's own tasks, skills and a brief.
     waiting = await store.enqueue_desktop_task(OWNER, "Find a train from Central to Harbor after 6 pm.")
     await store.update_desktop_task(waiting, OWNER, ("queued",), "waiting_owner", error="Sign in to continue.")
     finished = await store.enqueue_desktop_task(OWNER, "Look up opening hours for the library.", "shop")
-    await store.update_desktop_task(finished, OWNER, ("queued",), "done", result="The library opens at 9 am on weekdays.")
+    await store.update_desktop_task(finished, OWNER, ("queued",), "done", result=(
+        "The library opens at 9 am on weekdays. Source: https://library.example.org/opening-hours/central-branch/"
+        "weekdays-and-weekends-including-public-holidays-and-the-summer-timetable?ref=dom-desktop-task-lookup\n"
+        "    Mon–Fri  09:00–18:00\n    Sat      10:00–16:00\n    Sun      closed"
+    ))
     planned, ran = await store.add_self_tasks([
         {"goal": "Read about slow-travel itineraries", "why": "The owner plans a trip.", "tools": ["browse"], "sites": ["travel.example.org"], "minutes": 10, "steps": 20},
         {"goal": "Check the weather page for Saturday", "why": "To suggest a coat.", "tools": ["browse"], "sites": [], "minutes": 5, "steps": 10},
@@ -261,6 +268,15 @@ parameters = {type = "object"}
 id = "today"
 title = "On the calendar"
 """
+TIDES = """name = "tide_times"
+description = "Show today's tide times"
+version = "1"
+
+[[tools]]
+name = "tides"
+description = "List today's tides"
+parameters = {type = "object"}
+"""
 PANEL = {
     "title": "Trips this week",
     "paragraphs": ["Two day trips are planned. The Saturday one has the most stops."],
@@ -285,6 +301,13 @@ async def seed_system(app: handlers.App) -> None:
     calendar = next(row for row in await store.list_plugins() if row["name"] == "wall_calendar")
     await app.plugins.mark_reviewed("wall_calendar", calendar["hash"])
     await app.plugins.decide("wall_calendar", calendar["hash"], "approve")
+    # A plugin the owner turned down: it shows as Rejected, with Review again.
+    await DRAFT_PLUGIN_TOOL.handler({
+        "name": "tide_times", "description": "Show today's tide times", "files": {"main.py": "def tides():\n    return []\n"},
+        "manifest_toml": TIDES,
+    }, ctx)
+    tides = next(row for row in await store.list_plugins() if row["name"] == "tide_times")
+    await app.plugins.decide("tide_times", tides["hash"], "reject")
 
     await app.proposals.create(
         "skill", "Skill: packing-list", {"name": "packing-list", "description": "Keep a packing list for each trip", "body": "Open the trip note.\nList what to bring.\nTick items off."},
@@ -321,6 +344,11 @@ async def seed_system(app: handlers.App) -> None:
     await store.record_turn(
         now - timedelta(minutes=3), OWNER, "owner_dm", 1, ["final", "model@1300", "typing@800"], "example/chat-model", False, 2100,
         "Held back: leak check", model_calls=[{**call, "duration_ms": 1300, "cached_tokens": 0}], first_bubble_ms=None, last_bubble_ms=None,
+    )
+    # A turn that searched twice and called the model twice: repeated steps and stages must still render.
+    await store.record_turn(
+        now - timedelta(minutes=5), OWNER, "owner_dm", 1, ["web_search", "web_search", "final", "model@700", "web_search@400", "model@900", "send@100"],
+        "example/chat-model", False, 2100, "Replied in 1 bubble", model_calls=[call, {**call, "duration_ms": 900}], first_bubble_ms=2000, last_bubble_ms=2100,
     )
 
 

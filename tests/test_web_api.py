@@ -72,6 +72,12 @@ async def test_home_api_reads_presence_vibe_waiting_today_and_recent_replies(mak
         ("Book Club", "See you all at eight."), ("DM with Reader", "Take your time."),
     ]
     assert body["desktop"] == {"enabled": False, "task": None}
+    # Dom's own clock, with seconds and its UTC offset, so the page can keep it ticking in Dom's time zone.
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d", body["now"]["iso"])
+
+    async with browser(app) as client:
+        assert (await client.get("/api/shell")).json() == {"waiting": 1}
+        assert (await client.get("/api/shell", headers={"Authorization": ""})).status_code == 403
 
 
 @pytest.mark.parametrize(("replying", "desktop_task", "presence", "expected"), [

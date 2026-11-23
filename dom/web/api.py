@@ -73,7 +73,7 @@ async def home(app: App) -> dict:
         await app.store.desktop_tasks(app.owner_id, active=True) if app.desktop_worker is not None else []
     )
     return {
-        "now": {"greeting": _greeting(now), "date": f"{now:%A} {now.day} {now:%b}", "clock": f"{now:%H:%M}"},
+        "now": {"greeting": _greeting(now), "date": f"{now:%A} {now.day} {now:%b}", "clock": f"{now:%H:%M}", "iso": now.isoformat(timespec="seconds")},
         "presence": {"state": state, "title": title, "detail": detail},
         "activity": activity(replying=app.dispatch.turn_running(), desktop_task=bool(desktop_tasks), presence=state),
         "vibe": {
@@ -114,6 +114,13 @@ async def home_api(request: Request) -> dict:
     if app.owner_id is None:
         return {"setup": True}
     return {"setup": False, **await home(app)}
+
+
+@router.get("/api/shell")
+async def shell_api(request: Request) -> dict:
+    """What the navigation shows on every page: how many things wait for the owner's yes or no."""
+    app: App = request.app.state.dom
+    return {"waiting": 0 if app.owner_id is None else (await _proposals(app))["count"]}
 
 
 @router.api_route("/app", methods=["GET", "HEAD"])

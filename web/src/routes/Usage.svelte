@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { Breakdown, UsageData } from "$lib/api";
+  import type { Breakdown, UsageData, UsagePart } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
   import type { Destination, Tab } from "$lib/nav";
+  import { cn } from "$lib/utils";
   import { WorkPage } from "$lib/work.svelte";
 
   let { destination, tab }: { destination: Destination; tab: Tab } = $props();
@@ -28,6 +29,17 @@
     escalation: "fill-foreground",
   };
   const fillOf = (kind: string) => fills[kind] ?? "fill-muted-foreground";
+  // The segment whose breakdown shows under the chart: a click, a tap, or Enter or Space on a focused segment.
+  let picked = $state<{ date: string; part: UsagePart } | null>(null);
+  const pick = (date: string, part: UsagePart) =>
+    (picked = picked?.date === date && picked.part.kind === part.kind ? null : { date, part });
+  const keyPick = (event: KeyboardEvent, date: string, part: UsagePart) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      pick(date, part);
+    }
+  };
+  const count = (n: number) => n.toLocaleString("en-US");
   const stroke = (data: UsageData) => (data.tone === "signal" ? "stroke-coral" : data.tone === "amber" ? "stroke-amber" : "stroke-signal");
 </script>
 
@@ -86,13 +98,28 @@
       <Card.Header><Card.Title class="text-lg">Last 30 days</Card.Title></Card.Header>
       <Card.Content>
         <figure>
-          <svg viewBox="0 0 300 72" preserveAspectRatio="none" class="h-40 w-full" role="img" aria-label={`30 days of spend by kind, ${data.fallbacks} fallback calls`}>
+          <svg viewBox="0 0 300 72" preserveAspectRatio="none" class="h-40 w-full" role="group" aria-label={`30 days of spend by kind, ${data.fallbacks} fallback calls`}>
             {#each data.bars as day, index (day.date)}
               <g>
                 <title>{day.date} · {money(day.spent)}{day.fallbacks ? ` · ${day.fallbacks} fallback calls` : ""}</title>
                 <rect x={index * 10} y="68" width="7" height="2" class={index === data.bars.length - 1 ? "fill-signal" : "fill-line"} />
                 {#each day.parts as part (part.kind)}
-                  <rect x={index * 10} y={part.y} width="7" height={part.height} class={fillOf(part.kind)} />
+                  {@const on = picked?.date === day.date && picked.part.kind === part.kind}
+                  <rect
+                    x={index * 10}
+                    y={part.y}
+                    width="7"
+                    height={Math.max(part.height, 0.8)}
+                    role="button"
+                    tabindex="0"
+                    aria-pressed={on}
+                    aria-label={`${day.date}, ${data.kinds[part.kind] ?? part.kind}: ${money(part.spend)}`}
+                    class={cn(fillOf(part.kind), "cursor-pointer outline-none focus-visible:stroke-foreground", on && "stroke-foreground")}
+                    stroke-width={on ? 2 : undefined}
+                    vector-effect="non-scaling-stroke"
+                    onclick={() => pick(day.date, part)}
+                    onkeydown={(event) => keyPick(event, day.date, part)}
+                  />
                 {/each}
                 {#if day.fallbacks}<rect x={index * 10} y="1" width="7" height="3" class="fill-coral" />{/if}
               </g>
@@ -106,7 +133,40 @@
               <li class="flex items-center gap-1.5"><svg viewBox="0 0 10 10" class="size-2.5" aria-hidden="true"><rect width="10" height="10" class="fill-coral" /></svg>{data.fallbacks} fallback calls</li>
             {/if}
           </ul>
+          <p class="mt-2 text-xs text-muted-foreground">Tap a bar segment for its breakdown.</p>
         </figure>
+        {#if picked}
+          {@const part = picked.part}
+          <section aria-live="polite" aria-label="Segment breakdown" class="mt-4 rounded-lg border bg-raised/40 p-3 text-sm">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 class="font-semibold">{data.kinds[part.kind] ?? part.kind} · {picked.date}</h3>
+              <Button variant="ghost" size="xs" onclick={() => (picked = null)}>Close</Button>
+            </div>
+            <p class="mt-1 font-mono text-xs text-muted-foreground">
+              {money(part.spend)} · {count(part.calls)} {part.calls === 1 ? "call" : "calls"} · {count(part.input_tokens)} in · {count(part.output_tokens)} out tokens
+            </p>
+            <div class="mt-2 overflow-x-auto">
+              <table class="w-full min-w-[22rem]">
+                <thead>
+                  <tr class="text-left text-muted-foreground">
+                    <th scope="col" class="py-1.5 pr-3 font-medium">Model</th>
+                    <th scope="col" class="px-3 py-1.5 text-right font-medium">Spend</th>
+                    <th scope="col" class="py-1.5 pl-3 text-right font-medium">Tokens in / out</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each part.models as row (row.model)}
+                    <tr class="border-t">
+                      <th scope="row" class="py-1.5 pr-3 text-left font-normal break-all">{row.model}</th>
+                      <td class="px-3 py-1.5 text-right font-mono">{money(row.spend)}</td>
+                      <td class="py-1.5 pl-3 text-right font-mono">{count(row.input_tokens)} / {count(row.output_tokens)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        {/if}
       </Card.Content>
     </Card.Root>
   </div>

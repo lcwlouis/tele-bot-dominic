@@ -24,7 +24,7 @@ export type Destination = {
   tabs?: Tab[];
 };
 
-/** The five destinations: the phone's bottom bar and the desktop sidebar's "Control surface" group. */
+/** The five destinations: the phone's menu and the desktop sidebar's "Control surface" group. */
 export const destinations: Destination[] = [
   { id: "home", label: "Home", href: "/app", icon: House, blurb: "What Dom is doing and what waits for you." },
   {

@@ -8,6 +8,7 @@
   import { onMount } from "svelte";
   import { getJSON, type HomeData } from "$lib/api";
   import HourlyBars from "$lib/components/HourlyBars.svelte";
+  import LocalClock from "$lib/components/LocalClock.svelte";
   import Orbit, { ACTIVITY_LABELS } from "$lib/components/Orbit.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
@@ -85,7 +86,12 @@
             {stateWord[home.presence.state]}
           </h2>
           <p class="mt-2 text-sm text-muted-foreground">
-            {home.presence.state === "online" ? home.presence.title.replace(/^Online /, "") + " · " : ""}{home.presence.detail}
+            {#if home.presence.state === "offline"}
+              Local time <LocalClock iso={home.now.iso} class="font-mono" />
+            {:else}
+              {home.presence.state === "online" ? home.presence.title.replace(/^Online /, "") + " · " : ""}{home.presence.detail}
+              · Local time <LocalClock iso={home.now.iso} class="font-mono" />
+            {/if}
           </p>
           <div class="mt-4 flex flex-wrap items-center gap-2">
             <Badge variant="secondary" aria-label={`Activity: ${ACTIVITY_LABELS[home.activity]}`}>

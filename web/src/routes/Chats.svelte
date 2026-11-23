@@ -5,6 +5,7 @@
   import Sparkles from "@lucide/svelte/icons/sparkles";
   import { onMount } from "svelte";
   import { getJSON, send, type Chat, type ChatsData } from "$lib/api";
+  import ChatMessages from "$lib/components/ChatMessages.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
@@ -27,6 +28,7 @@
   let failed = $state("");
   let busy = $state(false); // one write at a time: each answer replaces the page data
   let openChat = $state<number | null>(null); // the chat whose personality is showing
+  let reading = $state<number | null>(null); // the chat whose recent messages are showing
   let dragging = $state<Record<string, number>>({}); // `${chat}:${trait}` -> value while a slider moves
   let leaving = $state<Chat | null>(null);
   let resetting = $state<Chat | null>(null);
@@ -182,11 +184,22 @@
                 >
                   Personality{changed(chat) ? ` · ${changed(chat)} changed` : ""}
                 </Button>
+                <Button
+                  variant="ghost"
+                  aria-expanded={reading === chat.id}
+                  aria-label={`Messages in ${chat.title}`}
+                  onclick={() => (reading = reading === chat.id ? null : chat.id)}
+                >
+                  Messages
+                </Button>
                 {#if chat.scope === "group"}
                   <Button variant="destructive" disabled={busy} aria-label={`Leave ${chat.title}`} onclick={() => (leaving = chat)}>Leave group</Button>
                 {/if}
               </div>
 
+              {#if reading === chat.id}
+                <ChatMessages chatId={chat.id} title={chat.title} />
+              {/if}
               {#if expanded}
                 <div id={`personality-${chat.id}`} class="grid gap-5 border-t pt-4">
                   <div class="grid gap-2">

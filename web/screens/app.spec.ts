@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages: { name: string; path: string; heading: string; tab?: string; click?: string; link?: string }[] = [
+const pages: { name: string; path: string; heading: string; tab?: string; click?: string; link?: string; menu?: boolean; phoneOnly?: boolean }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
@@ -27,6 +27,11 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "system-usage", path: "/app/system/usage", heading: "Usage" },
   { name: "system-turns", path: "/app/system/turns", heading: "Turn log" },
   { name: "waiting", path: "/app/waiting", heading: "Waiting for you" },
+  // The phone's menu, open over a page: every destination with its tabs, and what waits for the owner.
+  { name: "menu", path: "/app/work/briefs", heading: "Briefs", menu: true, phoneOnly: true },
+  // A chat's recent messages, and the soul request on its own screen.
+  { name: "chats-messages", path: "/app/chats", heading: "Chats", click: "Messages in Weekend crew" },
+  { name: "memory-soul", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul" },
 ];
 
 /** Collect every CSP violation and every request that leaves Dom's origin. */
@@ -52,7 +57,8 @@ for (const scheme of ["dark", "light"] as const) {
     test.describe(`${device} ${scheme}`, () => {
       test.use({ viewport, colorScheme: scheme });
 
-      for (const { name, path, heading, tab, click, link } of pages) {
+      for (const { name, path, heading, tab, click, link, menu, phoneOnly } of pages) {
+        if (phoneOnly && device !== "phone") continue;
         test(name, async ({ page }) => {
           const problems = await watch(page);
           const response = await page.goto(path);
@@ -66,11 +72,19 @@ for (const scheme of ["dark", "light"] as const) {
           if (click) await page.getByRole("button", { name: click, exact: true }).first().click();
           await page.waitForLoadState("networkidle");
           await page.evaluate(() => document.fonts.ready);
-          // Grow the viewport to the whole page, so the phone's bottom bar and the desktop sidebar sit where a
-          // person sees them instead of where a full-page capture would stitch them.
-          const height = await page.evaluate(() => document.documentElement.scrollHeight);
-          await page.setViewportSize({ width: viewport.width, height: Math.max(viewport.height, height) });
-          await expect(page).toHaveScreenshot(`${name}-${device}-${scheme}.png`);
+          // Nothing on any page is wider than the screen: long results wrap or scroll inside their own box.
+          expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+          if (menu) {
+            await page.getByRole("button", { name: /^Menu/ }).click();
+            await expect(page.getByRole("dialog")).toBeVisible();
+          } else {
+            // Grow the viewport to the whole page, so the desktop sidebar sits where a person sees it instead of
+            // where a full-page capture would stitch it.
+            const height = await page.evaluate(() => document.documentElement.scrollHeight);
+            await page.setViewportSize({ width: viewport.width, height: Math.max(viewport.height, height) });
+          }
+          // Dom's local clock ticks each second, so it is masked.
+          await expect(page).toHaveScreenshot(`${name}-${device}-${scheme}.png`, { mask: [page.locator("[data-clock]")] });
           const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
           expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
           expect(problems).toEqual([]);
@@ -314,6 +328,105 @@ test.describe("interactions under the CSP", () => {
     await page.goto("/app/system/turns");
     await page.getByLabel("Chat").selectOption({ label: "Weekend crew" });
     await expect(page.getByText("Held back: leak check")).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("w8: turns with repeated steps render, a chat links to its turns, segments and plugins answer", async ({ page }) => {
+    const problems = await watch(page);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const dialog = page.getByRole("alertdialog");
+
+    // A turn that searched twice renders (it threw each_key_duplicate and left the log empty).
+    await page.goto("/app/system/turns");
+    await expect(page.getByRole("list", { name: "Turns, newest first" }).getByRole("listitem")).not.toHaveCount(0);
+    const twice = page.getByRole("list", { name: "Turns, newest first" }).locator("details").filter({ has: page.locator("summary", { hasText: /DM · Replied in 1 bubble/ }) }).first();
+    await twice.locator("summary").click();
+    await expect(twice.getByText("Search", { exact: true })).toHaveCount(2);
+
+    // A chat's messages link to the turn log filtered to that chat, which reads the chat from the address.
+    await page.goto("/app/chats");
+    await page.getByRole("button", { name: "Messages in Weekend crew" }).click();
+    await expect(page.getByText("One line per message")).toBeVisible();
+    await page.getByRole("link", { name: "Turn log for this chat" }).click();
+    await expect(page).toHaveURL(/\/app\/system\/turns\?chat=-4001$/);
+    await expect(page.getByLabel("Chat")).toHaveValue("-4001");
+    await expect(page.getByText("Held back: leak check")).toBeHidden();
+
+    // A usage segment shows its breakdown on click and from the keyboard.
+    await page.goto("/app/system/usage");
+    const segment = page.getByRole("button", { name: /Replies: \$/ }).last();
+    await segment.focus();
+    await page.keyboard.press("Enter");
+    const detail = page.getByRole("region", { name: "Segment breakdown" });
+    await expect(detail.getByRole("rowheader", { name: "example/chat-model" })).toBeVisible();
+    await expect(detail.getByText(/tokens/)).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(detail).toBeHidden();
+
+    // A rejected plugin says so and goes back to review only through its confirm dialog.
+    await page.goto("/app/system/plugins");
+    await expect(page.getByText("Rejected", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Review tide_times again" }).click();
+    await dialog.getByRole("button", { name: "Leave it off" }).click();
+    await expect(page.getByRole("button", { name: "Review tide_times again" })).toBeVisible();
+    await page.getByRole("button", { name: "Review tide_times again" }).click();
+    await dialog.getByRole("button", { name: "Review again" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "tide_times is waiting for your review again." })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Review code of tide_times" })).toBeVisible();
+
+    // Editing one model slot says why the others wait.
+    await page.goto("/app/system");
+    await page.getByRole("button", { name: "Edit Drafting" }).click();
+    await expect(page.getByText("Finish editing Drafting first.").first()).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+
+    // The import prompt is one tap away, and "Other" covers any assistant.
+    await page.goto("/app/memory");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.getByRole("button", { name: "Copy prompt" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Prompt copied." })).toBeVisible();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("Export everything you remember about me.");
+    await page.getByText("Show the prompt").click();
+    await expect(page.getByText(/one fact per line/)).toBeVisible();
+    await page.getByRole("combobox").click();
+    await expect(page.getByRole("option", { name: "Other assistant" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    expect(errors).toEqual([]);
+    expect(problems).toEqual([]);
+  });
+
+  test("w8 phone: the menu navigates and closes, the tab pill keeps its place, the soul request opens", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app");
+    await expect(page.getByRole("navigation", { name: "Main" })).toBeHidden(); // no bottom bar, no rail
+    const menu = page.getByRole("button", { name: /^Menu/ });
+    await expect(menu).toHaveAccessibleName(/waiting for you/);
+    await menu.click();
+    const sheet = page.getByRole("dialog");
+    await expect(sheet.getByRole("link", { name: /Waiting for you/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+    await expect(menu).toBeFocused();
+    await menu.click();
+    await sheet.getByRole("link", { name: "Briefs" }).click();
+    await expect(sheet).toBeHidden();
+    await expect(page).toHaveURL(/\/app\/work\/briefs$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Briefs" })).toBeVisible();
+
+    // The pill shows the current tab, even when it sits past the pill's right edge.
+    const pill = page.getByRole("navigation", { name: "Work pages" }).getByRole("list");
+    const current = pill.getByRole("link", { name: "Briefs" });
+    const [pillBox, tabBox] = [await pill.boundingBox(), await current.boundingBox()];
+    expect(tabBox!.x + tabBox!.width).toBeLessThanOrEqual(pillBox!.x + pillBox!.width + 1);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+
+    // The soul request replaces the file list on a phone and takes focus.
+    await page.goto("/app/memory");
+    await page.getByRole("button", { name: "Talk to Dom about his soul" }).click();
+    await expect(page.getByRole("textbox", { name: "What should Dom change?" })).toBeFocused();
+    await expect(page.getByRole("navigation", { name: "Memory files" })).toBeHidden();
     expect(problems).toEqual([]);
   });
 
