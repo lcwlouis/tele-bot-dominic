@@ -101,7 +101,8 @@ cycle.
 **What goes in.** At the end of every group or friend-DM visit, the model adds one fact line about what it just did.
 The instruction is in that chat's turn note: *"Also add `"elsewhere"`: one short line of plain facts about what you did
 here, for your own memory. No quotes, no names of people outside this chat."* `Actions` gains an optional
-`elsewhere: str | None`. `FRAME` stays as it is, so the shared system message does not change. The line costs about 30
+`elsewhere: str | None`. `FRAME` stays as it is for this, so the shared system message does not change. (After the live tests, PR #32 added one
+sentence to `FRAME` for the `owner="true"` message marker; see the plan's W8 rows.) The line costs about 30
 output tokens and no extra call. Owner-DM visits write no line, because nothing from the owner DM goes anywhere else.
 
 **Filter, in code.** A line is dropped, not repaired, when either of these is true:
@@ -241,7 +242,8 @@ words.
   own control, not Dom's internals, and the existing owner-DM exception in `MACHINERY_RULE` covers it. The tool
   description tells Dom to write the text as he would text that chat himself, without "the owner asked me to" unless
   that is what the owner wants said.
-- `FRAME` and `MACHINERY_RULE` do not change.
+- `FRAME` and `MACHINERY_RULE` do not change for cross-chat. (PR #32 later added the `owner="true"` sentence to `FRAME`,
+  and `tell_owner` refuses a turn the owner triggered, since a note to the owner about the owner's own message is pointless.)
 
 ## 6. Spend cap and usage attribution
 

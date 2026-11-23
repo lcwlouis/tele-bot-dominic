@@ -102,8 +102,8 @@ Cloudflare. Keep local bearer-token testing on loopback.
   goes to the owner's DM instead, and the group's history records only that the
   owner was answered privately, never the answer.
 - **Escalation model** (`[models.escalation]`, or the drafting providers when it
-  is unset) receives the owner-DM task prompt only after the owner taps Switch or
-  Retry on its card. It never runs in other chats. OpenRouter calls request
+  is unset) receives the whole owner-DM task prompt, owner notes included, only
+  after the owner taps Switch or Retry on its card. It never runs in other chats. OpenRouter calls request
   `provider.zdr`. To estimate the cost, Dom fetches OpenRouter's public model
   price list (`openrouter.ai/api/v1/models`), which carries no chat data.
 
@@ -121,11 +121,12 @@ beyond the models listed above.
   own messages.
 - **Messages to other chats.** Text Dom drafts in the owner DM for another chat
   is shown to the owner on a card. Nothing is sent until the owner approves that
-  exact text, and the card expires after two hours. The leak check scores it
-  against the target chat's participants.
+  exact text, and the card expires after two hours. Before the card is shown,
+  Jev's leak check scores the text against the owner's private terms, minus the
+  names of the target chat's participants.
 - **"Elsewhere" notes.** After a conversation in a group or friend DM, Dom can
-  keep a one-line, facts-only note of it. Only the owner DM's prompt sees these
-  notes. Other chats learn only that Dom "was just in another conversation",
+  keep a one-line, facts-only note of it. These notes go into the owner DM's
+  prompt only, and so to the chat model when the owner DM is answered. Other chats learn only that Dom "was just in another conversation",
   never where or what. Nothing from the owner DM or private notes becomes such
   a note.
 
