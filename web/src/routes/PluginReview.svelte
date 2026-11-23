@@ -38,6 +38,7 @@
     } catch (error) {
       missing = error instanceof Error && error.message.startsWith("404");
       failed = error instanceof Error ? error.message : "Unknown error";
+      if (missing) review = null; // the version changed: never leave its stale code and buttons on screen
     }
   }
   onMount(load);
