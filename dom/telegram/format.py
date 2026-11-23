@@ -25,7 +25,7 @@ _FORMATTED_INLINE = {*_INLINE_STYLES, "link", "code_inline"}
 # Only text with clear structure is rendered. A casual line such as "lol *sigh*" or "5*6*7" goes out exactly as
 # written, because a lone pair of asterisks or underscores in chat is rarely meant as Markdown.
 _STRUCTURED = re.compile(
-    r"```|~~~|`[^`\n]+`|\*\*\S[^\n]*?\*\*|__\S[^\n]*?__|^#{1,6}[ \t]+\S|\[[^\]\n]+\]\([^)\s]+\)|^>[ \t]",
+    r"```|~~~|^[ \t]*\|.*\|[ \t]*\n[ \t]*\|?[ \t]*:?-{3,}|`[^`\n]+`|\*\*\S[^\n]*?\*\*|__\S[^\n]*?__|^#{1,6}[ \t]+\S|\[[^\]\n]+\]\([^)\s]+\)|^>[ \t]",
     re.MULTILINE,
 )
 _BLANK_LINE = re.compile(r"(?:^[ \t]*\r?\n)+|(?:\r?\n[ \t]*)+$")
@@ -113,8 +113,20 @@ class _Render:
                     self.inline(inline)
                 if node.type == "heading":
                     self.spans.append(_Span("bold", start, self.pos))
-            elif node.type in ("fence", "code_block", "table"):
-                code = self.raw(node) if node.type == "table" else node.content
+            elif node.type == "table":
+                # Telegram has no tables: a monospace block with aligned columns, one line per source line.
+                rows = [
+                    [cell.children[0].content.strip() if cell.children else "" for cell in row.children]
+                    for section in node.children for row in section.children
+                ]
+                lines = _table_lines(rows)
+                for index, line in enumerate(lines):
+                    self.mark(node.map[0] + index, self.pos)
+                    self.write(line + ("\n" if index + 1 < len(lines) else ""))
+                if start < self.pos:
+                    self.spans.append(_Span("pre", start, self.pos))
+            elif node.type in ("fence", "code_block"):
+                code = node.content
                 if _unclosed_fence(node):
                     self.write(self.raw(node))
                     continue
@@ -206,6 +218,25 @@ def _compatible_spans(text: str, spans: list[_Span]) -> list[_Span]:
         ):
             result.append(span)
     return result
+
+
+def _display_width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 0 if unicodedata.combining(ch) else 1
+               for ch in text)
+
+
+def _table_lines(rows: list[list[str]]) -> list[str]:
+    """The header, a rule, then the body rows, each column padded to its widest cell."""
+    if not rows:
+        return []
+    columns = max(len(row) for row in rows)
+    rows = [row + [""] * (columns - len(row)) for row in rows]
+    widths = [max(_display_width(row[c]) for row in rows) for c in range(columns)]
+
+    def line(cells: list[str]) -> str:
+        return "  ".join(cell + " " * (width - _display_width(cell)) for cell, width in zip(cells, widths)).rstrip()
+
+    return [line(rows[0]), "  ".join("─" * width for width in widths), *(line(row) for row in rows[1:])]
 
 
 def _unclosed_fence(node: SyntaxTreeNode) -> bool:

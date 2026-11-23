@@ -9,7 +9,7 @@ import pytest
 from dom.actions import Actions, Bubble, utf16_len
 from dom.proposals import CARDS_KEY
 from dom.telegram.executor import perform
-from dom.telegram.format import format_text
+from dom.telegram.format import format_delivery, format_text
 from tghelpers import GROUP, OWNER, no_sleep
 
 
@@ -137,10 +137,10 @@ def test_splits_oversized_entity_on_grapheme_boundaries(markdown, kind):
         assert entity.type == kind and entity_text(text, entity) == text
 
 
-def test_preserves_table_as_code_and_splits_at_line_before_word():
+def test_table_becomes_aligned_code_and_splits_at_line_before_word():
     (text, entities), = format_text("## Table\n\n| A | B |\n|---|---|\n| x | y |")
     assert [e.type for e in entities] == ["bold", "pre"]
-    assert entity_text(text, entities[-1]) == "| A | B |\n|---|---|\n| x | y |"
+    assert entity_text(text, entities[-1]) == "A  B\n─  ─\nx  y"
     assert format_text("one\ntwo three four", limit=10)[0][0] == "one"
 
 
@@ -257,3 +257,13 @@ def test_emphasis_renders_once_the_text_has_clear_structure():
     [(text, entities)] = [(chunk[0], chunk[1]) for chunk in format_text("**done** and *nearly*")]
     assert text == "done and nearly"
     assert [(e.type, e.offset, e.length) for e in entities] == [("bold", 0, 4), ("italic", 9, 6)]
+
+
+def test_a_table_goes_out_as_aligned_columns_in_a_code_block():
+    source = "| thing | status |\n|---|---|\n| bold | works |\n| 東京 | ok |\n\nafter"
+    [(text, entities)] = [(chunk[0], chunk[1]) for chunk in format_text(source)]
+    table = "thing  status\n─────  ──────\nbold   works\n東京   ok"
+    assert text == f"{table}\n\nafter"
+    assert [(e.type, e.offset, e.length) for e in entities] == [("pre", 0, utf16_len(table))]
+    pieces = format_delivery(source)
+    assert "".join(recorded for _, recorded in pieces) == source
