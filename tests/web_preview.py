@@ -126,6 +126,7 @@ async def seed(app: handlers.App) -> None:
         "---\ntitle: Classic\ndescription: Keeping it easy today. A little wit, a little warmth, and no unnecessary drama."
         "\ntraits:\n  humor: 0.6\n---\n"
     ))
+    app.home.write_preset("smooth", "---\ntitle: Smooth\ndescription: Calm and easy.\ntraits:\n  humor: 0.4\n---\n")
     await traits.record_pick(store, traits.load_preset(app.home, "classic"), "A slow Sunday.", "reflection",
                              since=now.replace(hour=8, minute=4), now=now)
     await owner.set_global_preset(app, traits.AUTO, "The owner")
@@ -150,6 +151,15 @@ async def seed(app: handlers.App) -> None:
         msg_id += 1
 
     app.home._write_regular("SOUL.md", "Dom likes quiet evenings.")
+    app.home._write_regular("memory/MEMORY.md", "# Travel notes\n\n- Check weekday times.\n- Use Central as the default station.\n")
+    app.home._write_regular("memory/people/river.md", "River prefers the early train.")
+    app.home._write_regular(f"memory/chats/{CREW}.md", "The crew plans a trip on Saturdays.")
+    app.home.scoped(allow_private=True)._write_regular("private/USER.md", "- Likes long walks\n")
+    app.home._write_regular("stickers.toml", 'sets = ["example_set_by_examplebot"]\n')
+    await app.proposals.create(
+        "memory_edit", "", {"file": "memory/MEMORY.md", "op": "add", "text": "- Check weekend times too.", "reason": "The next trip is on Saturday."},
+        "chat", notify=False,
+    )
     await app.proposals.create(
         "soul_edit", "Mention that Dom enjoys board games", {"old": "Dom likes quiet evenings.", "new": "Dom likes quiet evenings and board games."},
         "reflection",

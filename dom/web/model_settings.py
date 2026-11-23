@@ -406,11 +406,11 @@ def is_json(request: Request) -> bool:
     return request.headers.get("Content-Type", "").partition(";")[0].strip().lower() == "application/json"
 
 
-async def _input(request: Request, model: type[Input]) -> Input:
+async def _input(request: Request, model: type[Input], max_bytes: int = MAX_BODY) -> Input:
     if not is_json(request):
         raise HTTPException(415, "Expected application/json.")
     body = bytearray()
-    async for chunk in _bounded_stream(request, MAX_BODY):
+    async for chunk in _bounded_stream(request, max_bytes):
         body.extend(chunk)
     try:
         return model.model_validate_json(body)

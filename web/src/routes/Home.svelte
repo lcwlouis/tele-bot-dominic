@@ -119,7 +119,7 @@
           <p class="font-mono text-[0.7rem] tracking-[0.12em] text-muted-foreground uppercase">
             {#if home.vibe.mode === "locked"}Fixed by you{:else if home.vibe.mode === "auto" && home.vibe.title}Picked by Dom{home.vibe.since ? ` · ${home.vibe.since}` : ""}{:else}Dom picks his own{/if}
           </p>
-          <Button href="/chats" variant="secondary" size="sm">Change vibe</Button>
+          <Button href="/app/chats" variant="secondary" size="sm">Change vibe</Button>
         </div>
       </Card.Content>
     </Card.Root>

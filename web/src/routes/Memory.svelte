@@ -1,0 +1,449 @@
+<script lang="ts">
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+  import FileText from "@lucide/svelte/icons/file-text";
+  import Lock from "@lucide/svelte/icons/lock";
+  import Sparkles from "@lucide/svelte/icons/sparkles";
+  import Upload from "@lucide/svelte/icons/upload";
+  import { onMount } from "svelte";
+  import { getJSON, send, ApiError, type MemoryFile, type MemoryIndex, type MemoryWaiting } from "$lib/api";
+  import DiffLines from "$lib/components/memory/DiffLines.svelte";
+  import PageHeader from "$lib/components/PageHeader.svelte";
+  import StatusNote from "$lib/components/StatusNote.svelte";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog";
+  import { Badge } from "$lib/components/ui/badge";
+  import { Button } from "$lib/components/ui/button";
+  import * as Card from "$lib/components/ui/card";
+  import { Checkbox } from "$lib/components/ui/checkbox";
+  import { Input } from "$lib/components/ui/input";
+  import { Label } from "$lib/components/ui/label";
+  import * as Select from "$lib/components/ui/select";
+  import type { Destination } from "$lib/nav";
+  import { cn } from "$lib/utils";
+  import { toast } from "$lib/toast.svelte";
+
+  let { destination }: { destination: Destination } = $props();
+
+  const SOUL = "SOUL.md";
+  const FIRST = "memory/MEMORY.md";
+  const MAX_DOCUMENT_BYTES = 1024 * 1024;
+  const field =
+    "w-full rounded-[0.65rem] border border-input bg-canvas/50 px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground hover:border-muted-foreground/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
+
+  let index = $state<MemoryIndex | null>(null);
+  let failed = $state("");
+  // `open` is the file in the editor; null shows the file list alone on a phone. `talking` is the soul request panel.
+  let open = $state<string | null>(null);
+  let talking = $state(false);
+  let file = $state<MemoryFile | null>(null);
+  let fileError = $state("");
+  let draft = $state("");
+  let saving = $state(false);
+  let saveError = $state("");
+  let leaving = $state<(() => void) | null>(null); // a switch waiting on the discard-changes dialog
+
+  const dirty = $derived(file !== null && draft !== file.content);
+  const used = $derived(draft.length);
+  const over = $derived(file?.limit != null && used > file.limit);
+
+  async function load() {
+    try {
+      index = await getJSON<MemoryIndex>("/api/memory");
+      failed = "";
+      if (open === null && matchMedia("(min-width: 1024px)").matches) await openFile(FIRST);
+    } catch (error) {
+      failed = error instanceof Error ? error.message : "Unknown error";
+    }
+  }
+
+  onMount(load);
+
+  function waiting(result: MemoryWaiting) {
+    if (index) index = { ...index, imports: result.imports, edits: result.edits };
+  }
+
+  async function openFile(path: string) {
+    open = path;
+    talking = false;
+    file = null;
+    fileError = "";
+    saveError = "";
+    try {
+      file = await getJSON<MemoryFile>(`/api/memory/file?file=${encodeURIComponent(path)}`);
+      draft = file.content;
+    } catch (error) {
+      fileError = error instanceof Error ? error.message : "Unknown error";
+    }
+  }
+
+  /** Go somewhere else; a draft with changes asks first. */
+  function guard(action: () => void) {
+    if (dirty) leaving = action;
+    else action();
+  }
+
+  async function save() {
+    if (!file || saving) return;
+    saving = true;
+    saveError = "";
+    try {
+      const result = await send<{ message: string; content: string; version: string }>(
+        "/api/memory/save",
+        { file: file.file, version: file.version, content: draft },
+        { quiet: true },
+      );
+      file = { ...file, content: result.content, version: result.version };
+      draft = result.content;
+      toast.show("ok", result.message);
+    } catch (error) {
+      saveError = error instanceof ApiError ? error.message : "Couldn't save this file.";
+    } finally {
+      saving = false;
+    }
+  }
+
+  // The soul request: Dom proposes one change, which then waits in "Waiting for you" with its diff.
+  let request = $state("");
+  let asking = $state(false);
+  let proposed = $state<string[] | null>(null);
+
+  async function ask() {
+    if (asking || !request.trim()) return;
+    asking = true;
+    proposed = null;
+    try {
+      const result = await send<{ id: number; diff: string[] }>("/api/memory/soul", { message: request });
+      proposed = result.diff;
+      request = "";
+      toast.show("ok", "Dom proposed a change. Review it under Waiting for you.");
+      waiting(await getJSON<MemoryWaiting>("/api/memory"));
+    } catch {
+      // the toast says why; the request stays in the box
+    } finally {
+      asking = false;
+    }
+  }
+
+  // Waiting for you: imports and edits to review.
+  let deciding = $state(false);
+  let picked = $state<Record<number, boolean>>({}); // fact id -> unchecked; facts start checked
+  let rejecting = $state<number | null>(null); // an import card waiting on its reject-all confirm
+
+  async function decide<T extends MemoryWaiting & { message: string }>(path: string, body: object) {
+    if (deciding) return;
+    deciding = true;
+    try {
+      const result = await send<T>(path, body);
+      waiting(result);
+      toast.show("ok", result.message);
+    } catch {
+      // the toast says why
+    } finally {
+      deciding = false;
+    }
+  }
+
+  const chosen = (card: MemoryWaiting["imports"][number]) => card.facts.filter((fact) => picked[fact.id] !== false).map((fact) => fact.id);
+
+  // Import: a .txt or .md export, sent as base64 so the server applies the same document checks as Telegram.
+  let service = $state("chatgpt");
+  let exportFile = $state<File | null>(null);
+  let importing = $state(false);
+  let importError = $state("");
+  let importResult = $state("");
+
+  async function base64(blob: Blob): Promise<string> {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = "";
+    for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+    return btoa(binary);
+  }
+
+  async function runImport() {
+    if (!exportFile || importing) return;
+    importError = "";
+    importResult = "";
+    if (exportFile.size > MAX_DOCUMENT_BYTES) {
+      importError = "Import documents must be 1 MB or smaller.";
+      return;
+    }
+    importing = true;
+    try {
+      const result = await send<{ message: string } & MemoryWaiting>(
+        "/api/memory/import",
+        { service, filename: exportFile.name, data: await base64(exportFile) },
+        { quiet: true },
+      );
+      importResult = result.message;
+      waiting(result);
+      exportFile = null;
+    } catch (error) {
+      importError = error instanceof ApiError ? error.message : "Couldn't read that file.";
+    } finally {
+      importing = false;
+    }
+  }
+
+  const serviceLabel = (id: string) => index?.services.find((item) => item.id === id)?.label ?? id;
+  const count = (n: number) => n.toLocaleString("en-US");
+</script>
+
+<PageHeader kicker="Destination" title="Memory" subtitle={destination.blurb}>
+  {#snippet aside()}
+    <Button
+      variant={talking ? "default" : "secondary"}
+      aria-pressed={talking}
+      onclick={() => guard(() => ((talking = !talking), talking && (proposed = null)))}
+    >
+      <Sparkles aria-hidden="true" /> Talk to Dom about his soul
+    </Button>
+  {/snippet}
+</PageHeader>
+
+{#if index === null && failed}
+  <StatusNote tone="error" title="Couldn't load memory" detail={`Dom's dashboard answered: ${failed}.`}>
+    <Button variant="secondary" onclick={load}>Retry</Button>
+  </StatusNote>
+{:else if index === null}
+  <p class="sr-only" role="status">Loading memory…</p>
+  <div class="grid gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]" aria-hidden="true">
+    <div class="h-72 animate-pulse rounded-xl border bg-surface"></div>
+    <div class="h-96 animate-pulse rounded-xl border bg-surface"></div>
+  </div>
+{:else}
+  {@const memory = index}
+  {#if memory.imports.length || memory.edits.length}
+    <section aria-labelledby="waiting-title" class="mb-6">
+      <h2 id="waiting-title" class="kicker mb-3">Waiting for you</h2>
+      <div class="grid gap-4 lg:grid-cols-2">
+        {#each memory.edits as edit (edit.id)}
+          <Card.Root>
+            <Card.Header>
+              <Card.Title class="text-base">{edit.label}</Card.Title>
+              <Card.Description class="break-words">{edit.title}</Card.Description>
+            </Card.Header>
+            <Card.Content class="grid gap-4">
+              <DiffLines lines={edit.diff} />
+              <div class="flex flex-wrap gap-2">
+                <Button disabled={deciding} onclick={() => decide("/api/memory/proposal", { id: edit.id, decision: "approve" })}>Approve</Button>
+                <Button variant="outline" disabled={deciding} onclick={() => decide("/api/memory/proposal", { id: edit.id, decision: "reject" })}>Reject</Button>
+              </div>
+            </Card.Content>
+          </Card.Root>
+        {/each}
+        {#each memory.imports as card (card.id)}
+          {@const ids = chosen(card)}
+          <Card.Root>
+            <Card.Header>
+              <Card.Title class="text-base">
+                {count(card.facts.length)} {card.facts.length === 1 ? "memory" : "memories"} imported from {card.service}
+              </Card.Title>
+              <Card.Description>Tick the ones to keep. They go to your private USER.md.</Card.Description>
+            </Card.Header>
+            <Card.Content class="grid gap-4">
+              <ul class="grid max-h-64 gap-2 overflow-y-auto">
+                {#each card.facts as fact (fact.id)}
+                  <li class="flex items-start gap-2.5">
+                    <Checkbox
+                      id={`fact-${fact.id}`}
+                      class="mt-0.5"
+                      checked={picked[fact.id] !== false}
+                      onCheckedChange={(value) => (picked[fact.id] = value)}
+                    />
+                    <Label for={`fact-${fact.id}`} class="items-start text-sm leading-snug font-normal break-words">{fact.text}</Label>
+                  </li>
+                {/each}
+              </ul>
+              <div class="flex flex-wrap gap-2">
+                <Button
+                  disabled={deciding || ids.length === 0}
+                  onclick={() => decide("/api/memory/import-review", { id: card.id, decision: "selected", selected: ids })}
+                >
+                  Approve selected
+                </Button>
+                <Button variant="secondary" disabled={deciding} onclick={() => decide("/api/memory/import-review", { id: card.id, decision: "all" })}>
+                  Approve all
+                </Button>
+                <Button variant="destructive" disabled={deciding} onclick={() => (rejecting = card.id)}>Reject all</Button>
+              </div>
+            </Card.Content>
+          </Card.Root>
+        {/each}
+      </div>
+    </section>
+  {/if}
+
+  <div class="grid items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
+    <!-- On a phone the file list is a screen of its own, and a file opens full width with a way back. -->
+    <nav aria-label="Memory files" class={cn("rounded-xl border bg-surface p-3", open !== null && "max-lg:hidden")}>
+      {#each memory.sections as section (section.heading)}
+        <h2 class="kicker px-2 pt-3 pb-1.5 first:pt-1">{section.heading}</h2>
+        <ul class="grid gap-0.5">
+          {#each section.files as item (item.path)}
+            {@const here = open === item.path && !talking}
+            <li>
+              <button
+                type="button"
+                aria-current={here ? "page" : undefined}
+                onclick={() => guard(() => openFile(item.path))}
+                class={cn(
+                  "flex min-h-11 w-full items-center gap-2.5 rounded-[0.6rem] px-2.5 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-raised hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-9",
+                  here && "bg-tint text-signal-strong hover:bg-tint hover:text-signal-strong",
+                )}
+              >
+                {#if item.path.startsWith("private/")}<Lock class="size-4 shrink-0" aria-hidden="true" />{:else}<FileText class="size-4 shrink-0" aria-hidden="true" />{/if}
+                <span class="min-w-0 truncate">{item.label}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/each}
+    </nav>
+
+    <div class={cn("min-w-0", open === null && !talking && "max-lg:hidden")}>
+      {#if talking}
+        <Card.Root>
+          <Card.Header>
+            <Button variant="ghost" size="sm" class="mb-1 w-fit lg:hidden" onclick={() => ((talking = false), (open = null))}>
+              <ArrowLeft aria-hidden="true" /> Files
+            </Button>
+            <Card.Title class="text-lg">Talk to Dom about his soul</Card.Title>
+            <Card.Description>Ask for one change to SOUL.md. Dom proposes it; nothing changes until you approve it.</Card.Description>
+          </Card.Header>
+          <Card.Content class="grid gap-4">
+            {#if proposed}
+              <div class="grid gap-2" role="status">
+                <p class="text-sm font-medium">Dom proposed this change</p>
+                <DiffLines lines={proposed} />
+              </div>
+            {/if}
+            <form class="grid gap-2" onsubmit={(event) => (event.preventDefault(), ask())}>
+              <Label for="soul-request">What should Dom change?</Label>
+              <textarea id="soul-request" class={cn(field, "min-h-28")} maxlength={memory.max_soul_request} bind:value={request}></textarea>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <p class="text-xs text-muted-foreground">{count(request.length)} of {count(memory.max_soul_request)} characters</p>
+                <Button type="submit" disabled={asking || !request.trim()}>{asking ? "Asking Dom…" : "Send to Dom"}</Button>
+              </div>
+            </form>
+          </Card.Content>
+        </Card.Root>
+      {:else if fileError}
+        <StatusNote tone="error" title="Couldn't open that file" detail={fileError}>
+          <Button variant="secondary" onclick={() => open && openFile(open)}>Retry</Button>
+        </StatusNote>
+      {:else if file}
+        <Card.Root>
+          <Card.Header>
+            <Button variant="ghost" size="sm" class="mb-1 w-fit lg:hidden" onclick={() => guard(() => (open = null))}>
+              <ArrowLeft aria-hidden="true" /> Files
+            </Button>
+            <Card.Title class="font-mono text-lg">{file.label}</Card.Title>
+            {#if file.readonly}
+              <Card.Description>Dom writes this from message counts, so it is read-only.</Card.Description>
+            {:else if file.file.startsWith("private/")}
+              <Card.Description>Only in your DM: Dom never shares this file with other chats.</Card.Description>
+            {/if}
+          </Card.Header>
+          <Card.Content class="grid gap-3">
+            <Label for="memory-text" class="sr-only">{file.label}</Label>
+            <textarea
+              id="memory-text"
+              class={cn(field, "min-h-[22rem] resize-y font-mono leading-relaxed lg:min-h-[28rem]")}
+              spellcheck="false"
+              readonly={file.readonly}
+              aria-describedby="memory-count"
+              aria-invalid={over || undefined}
+              bind:value={draft}
+            ></textarea>
+            <p id="memory-count" class={cn("text-sm text-muted-foreground", over && "text-coral")}>
+              {count(used)}
+              {#if file.limit != null}of {count(file.limit)} characters{:else}characters · No character limit{/if}{over ? ". Over the limit: shorten it to save." : ""}
+            </p>
+            {#if saveError}
+              <div role="alert" class="rounded-lg border border-coral/45 bg-coral-tint px-3.5 py-3 text-sm text-coral">
+                <p>{saveError}</p>
+                {#if saveError.includes("changed since")}
+                  <Button variant="outline" size="sm" class="mt-2" onclick={() => file && openFile(file.file)}>Discard my edit and reload</Button>
+                {/if}
+              </div>
+            {/if}
+          </Card.Content>
+          {#if !file.readonly}
+            <!-- Sticky on a phone, so Save stays in reach however long the file is. -->
+            <Card.Footer class="sticky bottom-20 z-10 flex flex-wrap gap-2 border-t bg-card py-3 lg:static">
+              <Button disabled={!dirty || over || saving} onclick={save}>{saving ? "Saving…" : "Save changes"}</Button>
+              <Button variant="outline" disabled={!dirty || saving} onclick={() => ((draft = file?.content ?? ""), (saveError = ""))}>Discard</Button>
+            </Card.Footer>
+          {/if}
+        </Card.Root>
+      {:else}
+        <p class="sr-only" role="status">Loading the file…</p>
+        <div class="h-96 animate-pulse rounded-xl border bg-surface" aria-hidden="true"></div>
+      {/if}
+    </div>
+  </div>
+
+  <Card.Root class="mt-6">
+    <Card.Header>
+      <Card.Title class="text-lg">Import memories</Card.Title>
+      <Card.Description>Upload a .txt or .md export from another assistant. Its facts wait above for your review.</Card.Description>
+    </Card.Header>
+    <Card.Content>
+      <form class="grid gap-4 sm:grid-cols-[12rem_minmax(0,1fr)_auto] sm:items-end" onsubmit={(event) => (event.preventDefault(), runImport())}>
+        <div class="grid gap-1.5">
+          <Label id="import-service-label">Service</Label>
+          <Select.Root type="single" bind:value={service}>
+            <Select.Trigger class="h-9 w-full" aria-labelledby="import-service-label">{serviceLabel(service)}</Select.Trigger>
+            <Select.Content>
+              {#each memory.services as item (item.id)}
+                <Select.Item value={item.id} label={item.label} />
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </div>
+        <div class="grid gap-1.5">
+          <Label for="import-file">Export file (.txt or .md)</Label>
+          <Input
+            id="import-file"
+            type="file"
+            accept=".txt,.md,text/plain,text/markdown"
+            onchange={(event) => (exportFile = event.currentTarget.files?.[0] ?? null)}
+          />
+        </div>
+        <Button type="submit" disabled={!exportFile || importing}><Upload aria-hidden="true" /> {importing ? "Importing…" : "Import"}</Button>
+      </form>
+      {#if importError}<p role="alert" class="mt-3 text-sm text-coral">{importError}</p>{/if}
+      {#if importResult}<p role="status" class="mt-3 text-sm text-muted-foreground">{importResult}</p>{/if}
+    </Card.Content>
+  </Card.Root>
+{/if}
+
+<AlertDialog.Root open={leaving !== null} onOpenChange={(value) => !value && (leaving = null)}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Discard your changes?</AlertDialog.Title>
+      <AlertDialog.Description>{file?.label} has edits you haven't saved. Leaving drops them.</AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel variant="outline">Keep editing</AlertDialog.Cancel>
+      <AlertDialog.Action variant="destructive-solid" onclick={() => { const go = leaving; leaving = null; go?.(); }}>Discard changes</AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<AlertDialog.Root open={rejecting !== null} onOpenChange={(value) => !value && (rejecting = null)}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Reject this whole import?</AlertDialog.Title>
+      <AlertDialog.Description>Dom drops every fact still waiting in it. You can import the file again later.</AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel variant="outline">Keep them</AlertDialog.Cancel>
+      <AlertDialog.Action
+        variant="destructive-solid"
+        onclick={() => { const id = rejecting; rejecting = null; id !== null && decide("/api/memory/import-review", { id, decision: "reject" }); }}
+      >
+        Reject all
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
