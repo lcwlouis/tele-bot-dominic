@@ -3,6 +3,8 @@ its limits elsewhere, the dashboard routes and the /export command."""
 
 import io
 import json
+import os
+from pathlib import Path
 import zipfile
 
 import pytest
@@ -42,6 +44,46 @@ def test_export_holds_every_memory_file_and_nothing_secret(tmp_path):
         "SOUL.md", "memory/MEMORY.md", "memory/HABITS.md", "memory/JOURNAL.md", "memory/people/222.md",
         "memory/chats/-1009.md", "private/USER.md", "private/NOTES.md", "skills/tea/SKILL.md", "presets/classic.md",
     }
+
+
+@pytest.mark.parametrize("folder", ["memory", "skills", "private"])
+def test_export_leaves_secrets_databases_backups_and_links_out_wherever_they_sit(tmp_path, folder):
+    seed_home(tmp_path)
+    base = tmp_path / folder
+    planted = [
+        ".env", ".env.local", "state.db", "x.db-wal", "x.db-shm", "keep.md.bak", "keep.md.bak.1", "old.orig",
+        "backups/dom.tar.gz", "sub/backups/inner.md", "sub/deep/.env", "sub/state.db",
+    ]
+    for rel in planted:
+        (base / rel).parent.mkdir(parents=True, exist_ok=True)
+        (base / rel).write_text("secret")
+    (base / "sub" / "link.md").symlink_to(tmp_path / "SOUL.md")
+    (base / "sub" / "linkdir").symlink_to(tmp_path / "private", target_is_directory=True)
+    (base / "sub" / "keep.md").write_text("fine")
+    os.mkfifo(base / "sub" / "pipe.md")
+    found = names(memory_export.build_export(tmp_path))
+    assert f"{folder}/sub/keep.md" in found
+    assert not any(any(part in name for part in (".env", ".db", ".bak", ".orig", "backups", "link", "pipe")) for name in found
+                   if name.startswith(folder + "/"))
+
+
+def test_export_reads_at_most_the_budget_left_plus_one_byte(tmp_path, monkeypatch):
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "big.md").write_bytes(b"x" * 1000)
+    sizes = []
+    real = Path.open
+
+    def spy(self, *args, **kwargs):
+        handle = real(self, *args, **kwargs)
+        if self.name == "big.md":
+            read = handle.read
+            handle.read = lambda n=-1: sizes.append(n) or read(n)
+        return handle
+
+    monkeypatch.setattr(Path, "open", spy)
+    with pytest.raises(memory_export.ExportTooLarge):
+        memory_export.build_export(tmp_path, max_bytes=10)
+    assert sizes == [11]
 
 
 def test_export_stops_at_the_size_cap(tmp_path):
@@ -140,6 +182,43 @@ async def test_search_route_needs_auth_and_returns_grouped_hits_with_previews_on
         assert any(hit["href"] == "/app/memory?file=private%2FUSER.md" for hit in groups["memory"]["hits"])
         assert (await client.get("/api/search", params={"q": ""})).json()["groups"] == []
         assert (await client.get("/api/search", params={"q": "x" * 201})).status_code == 422
+
+
+async def test_cross_site_browsers_cannot_reach_search_or_export(make_app, browser):
+    app = make_app()
+    seed_home(app.home.root)
+    async with browser(app) as client:
+        for path in ("/api/search?q=x", "/api/memory/export"):
+            assert (await client.get(path, headers={"Sec-Fetch-Site": "cross-site"})).status_code == 403
+            assert (await client.get(path, headers={"Sec-Fetch-Site": "same-site"})).status_code == 403
+            assert (await client.get(path, headers={"Sec-Fetch-Site": "none"})).status_code == 403
+            assert (await client.get(path, headers={"Sec-Fetch-Site": "same-origin"})).status_code == 200
+    events = [m.text for m in await app.store.get_recent_chat_window(OWNER, 10) if m.role == "event"]
+    assert len(events) == 1  # only the same-origin download was logged
+
+
+def test_an_access_session_must_send_same_origin_fetch_metadata():
+    from starlette.requests import Request
+    from dom.web.auth import fetch_site_ok
+
+    def req(site):
+        headers = [(b"sec-fetch-site", site.encode())] if site else []
+        return Request({"type": "http", "headers": headers})
+
+    assert fetch_site_ok(req("same-origin"), "access") and not fetch_site_ok(req(None), "access")
+    assert fetch_site_ok(req(None), "local") and not fetch_site_ok(req("cross-site"), "local")
+
+
+async def test_search_gives_the_owner_dm_text_whole(make_app, browser):
+    app = make_app()
+    long_text = f"{WORD} first line\n\nsecond   paragraph " + "word " * 80
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(OWNER), msg_id=1, text=long_text, visibility_scope=app.store.visibility_for(OWNER),
+        created_at="2026-11-18T10:00:00+00:00"))
+    async with browser(app) as client:
+        data = (await client.get("/api/search", params={"q": WORD})).json()
+    hit = next(g for g in data["groups"] if g["kind"] == "chat")["hits"][0]
+    assert hit["full"] and hit["text"] == long_text
 
 
 async def test_export_route_is_owner_only_logs_an_event_and_returns_the_zip(make_app, browser):

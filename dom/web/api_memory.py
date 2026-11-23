@@ -38,6 +38,7 @@ from dom.web.shared import (
 log = logging.getLogger(__name__)
 router = APIRouter()
 PREFIX = "/api/memory"
+GUARDED_GETS = {f"{PREFIX}/export"}  # reads that build a download and leave a record: same-site browsers only
 JSON_POSTS = {f"{PREFIX}/save", f"{PREFIX}/soul", f"{PREFIX}/import", f"{PREFIX}/import-review", f"{PREFIX}/proposal"}
 MAX_SAVE = 1024 * 1024 + 4096  # a 1 MB file with JSON around it
 MAX_IMPORT = memory_import.MAX_DOCUMENT_BYTES * 4 // 3 + 4096  # the document as base64 with JSON around it

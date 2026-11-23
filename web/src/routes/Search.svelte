@@ -5,13 +5,25 @@
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
+  import { Input } from "$lib/components/ui/input";
   import { search } from "$lib/nav";
-  import { route } from "$lib/router.svelte";
+  import { navigate, route } from "$lib/router.svelte";
 
   const query = $derived((new URLSearchParams(route.search).get("q") ?? "").trim());
+  let value = $state("");
   let data = $state<SearchData | null>(null);
   let failed = $state("");
   let loading = $state(false);
+
+  $effect(() => {
+    value = query;
+  });
+
+  function submit(event: SubmitEvent) {
+    event.preventDefault();
+    const text = value.trim();
+    navigate(text ? `${search.href}?q=${encodeURIComponent(text)}` : search.href);
+  }
 
   async function load(text: string, signal: AbortSignal) {
     loading = true;
@@ -42,8 +54,14 @@
 
 <PageHeader kicker="Everything" title={search.label} subtitle={search.blurb} />
 
+<form role="search" onsubmit={submit} class="mb-4 flex gap-2">
+  <label for="search-page-query" class="sr-only">Search Dom</label>
+  <Input id="search-page-query" type="search" bind:value maxlength={200} placeholder="Search chats, memory, work…" class="min-w-0 flex-1" />
+  <Button type="submit">Search</Button>
+</form>
+
 <p class="mb-5 text-sm text-muted-foreground" aria-live="polite">
-  {#if !query}Type in the search box to look through Dom.{:else if loading}Searching for “{query}”…{:else if data}Results for “{data.query}”.{/if}
+  {#if !query}Type a few words above to look through Dom.{:else if loading}Searching for “{query}”…{:else if data}Results for “{data.query}”.{/if}
 </p>
 
 {#if failed}

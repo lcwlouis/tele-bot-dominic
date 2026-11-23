@@ -432,6 +432,24 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("phone: the search page has its own labelled form, prefilled and usable", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app");
+    await page.getByRole("button", { name: /^Menu/ }).click();
+    await page.getByRole("dialog").getByRole("link", { name: "Search" }).click();
+    await expect(page).toHaveURL(/\/app\/search$/);
+    const field = page.getByRole("searchbox", { name: "Search Dom" });
+    await expect(field).toBeVisible();
+    await field.fill("plan");
+    await field.press("Enter");
+    await expect(page).toHaveURL(/\/app\/search\?q=plan$/);
+    await expect(page.getByText("Results for “plan”.")).toBeVisible();
+    await page.reload();
+    await expect(field).toHaveValue("plan");
+    expect(problems).toEqual([]);
+  });
+
   test("keyboard focus is visible and the skip link leads to the page", async ({ page }) => {
     await page.goto("/app");
     await page.keyboard.press("Tab");

@@ -108,7 +108,7 @@ async def search_all(store: Store, home: Home, query: str, chat_titles: dict[str
         text = row["text"] or ""
         result["chat"].append(Hit(
             "chat", "Your DM" if mine else titles.get(chat_id, chat_id),
-            snippet(text, tokens) if mine else one_line(text, PREVIEW), chat_id, row["created_at"], full=mine,
+            text if mine else one_line(text, PREVIEW), chat_id, row["created_at"], full=mine,
         ))
 
     memory, found_briefs, found_skills = await asyncio.to_thread(_search_files, home, tokens)
