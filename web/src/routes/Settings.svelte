@@ -41,7 +41,8 @@
   let editing = $state<Role | null>(null);
   let tests = $state<Record<string, TestResult | "running">>({});
   let pending = $state<Permission | null>(null); // a switch waiting on its confirm dialog
-  let busy = $state<Record<string, boolean>>({});
+  // One permission save at a time: each takes the revision the last one returned.
+  let savingPermission = $state(false);
 
   async function load() {
     try {
@@ -83,7 +84,7 @@
   async function setPermission(item: Permission, enabled: boolean) {
     pending = null;
     item.enabled = enabled;
-    busy[item.id] = true;
+    savingPermission = true;
     try {
       const result = await send<Permissions>("/api/permissions", { revision, id: item.id, enabled });
       permissions = result.items;
@@ -92,11 +93,12 @@
     } catch {
       item.enabled = !enabled;
     } finally {
-      busy[item.id] = false;
+      savingPermission = false;
     }
   }
 
   function flip(item: Permission, enabled: boolean) {
+    if (savingPermission) return;
     // Turning the leak check off lets Dom send without the privacy screen: ask first.
     if (item.id === "leak_check" && !enabled) pending = item;
     else setPermission(item, enabled);
@@ -106,6 +108,11 @@
   type KeyState = "none" | "set" | "missing";
   type Provider = { id: string; name: string; endpoint: ProviderView | null; base_url: string; kind: "local" | "cloud"; key: string | null; keyState: KeyState; uses: Usage[] };
   const keyState = (variable: string | null, set: boolean): KeyState => (!variable ? "none" : set ? "set" : "missing");
+  const RANK: Record<KeyState, number> = { none: 0, set: 1, missing: 2 };
+  /** A group of slots shows its worst key: one missing key makes the provider's key missing. */
+  function worse(entry: Provider, key: string | null, state: KeyState) {
+    if (RANK[state] > RANK[entry.keyState]) [entry.key, entry.keyState] = [key, state];
+  }
 
   /** Every saved endpoint, grouped by address (and search provider): who serves Dom, and which roles use it. */
   function providers(settings: ModelSettings, searchOnly: boolean): Provider[] {
@@ -123,6 +130,7 @@
         uses: [],
       };
       entry.uses.push(use);
+      worse(entry, endpoint.api_key_env, keyState(endpoint.api_key_env, endpoint.key_set));
       found.set(id, entry);
     };
     for (const role of ROLES) {
@@ -133,11 +141,14 @@
     if (!searchOnly && settings.triage.base_url) {
       const id = ` ${settings.triage.base_url}`;
       const entry = found.get(id);
-      if (entry) entry.uses.push({ role: "triage", index: 0 });
-      else {
+      const triageKey = keyState(settings.triage.api_key_env, settings.triage.key_set);
+      if (entry) {
+        entry.uses.push({ role: "triage", index: 0 });
+        worse(entry, settings.triage.api_key_env, triageKey);
+      } else {
         found.set(id, {
           id, name: host(settings.triage.base_url), endpoint: null, base_url: settings.triage.base_url,
-          kind: /^http:/.test(settings.triage.base_url) ? "local" : "cloud", key: null, keyState: settings.triage.key_set ? "set" : "none",
+          kind: /^http:/.test(settings.triage.base_url) ? "local" : "cloud", key: settings.triage.api_key_env, keyState: triageKey,
           uses: [{ role: "triage", index: 0 }],
         });
       }
@@ -159,9 +170,15 @@
   {/if}
 {/snippet}
 
+{#snippet slotTest(role: Role, index: number, name: string)}
+  <Button variant="ghost" size="xs" onclick={() => test(role, index)} disabled={tests[`${role}:${index}`] === "running"}>
+    <Activity data-icon="inline-start" aria-hidden="true" /> Test <span class="sr-only">{name}</span>
+  </Button>
+{/snippet}
+
 {#snippet result(key: string)}
   {@const outcome = tests[key]}
-  <p class="min-h-5 text-sm" aria-live="polite">
+  <p class="min-h-5 text-sm empty:min-h-0" aria-live="polite">
     {#if outcome === "running"}
       <span class="text-muted-foreground">Testing…</span>
     {:else if outcome?.ok}
@@ -232,15 +249,25 @@
                     {#if primary.api_key_env && !primary.key_set}
                       <p class="mt-2 text-sm text-coral">Add {primary.api_key_env} to .env</p>
                     {/if}
+                    {#if role === "search"}
+                      <!-- The footer tests the whole chain; this tests the primary alone. -->
+                      <div class="mt-2">{@render slotTest(role, 0, `${info.label} primary`)}</div>
+                      {@render result(`${role}:0`)}
+                    {/if}
                   </div>
                   <div>
                     <p class="kicker">If it fails</p>
                     {#if route.fallbacks.length}
                       <ol class="mt-1.5 grid gap-1">
                         {#each route.fallbacks as fallback, index (index)}
-                          <li class="flex gap-2 text-sm">
-                            <span class="font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
-                            <span class="min-w-0 font-mono break-all">{fallback.model || settings.search_providers.find((item) => item.id === fallback.provider)?.label} · {host(fallback.base_url)}</span>
+                          <li class="text-sm">
+                            <div class="flex items-start gap-2">
+                              <span class="font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
+                              <span class="min-w-0 flex-1 font-mono break-all">{fallback.model || settings.search_providers.find((item) => item.id === fallback.provider)?.label} · {host(fallback.base_url)}</span>
+                              {@render slotTest(role, index + 1, `${info.label} fallback ${index + 1}`)}
+                            </div>
+                            {#if fallback.api_key_env && !fallback.key_set}<p class="ml-6 text-coral">Add {fallback.api_key_env} to .env</p>{/if}
+                            <div class="ml-6">{@render result(`${role}:${index + 1}`)}</div>
                           </li>
                         {/each}
                       </ol>
@@ -286,9 +313,12 @@
             <div class="rounded-xl border bg-raised/40 p-3.5">
               <div class="flex items-start justify-between gap-2">
                 <p class="min-w-0 font-mono text-sm break-all text-signal-strong">{settings.triage.model}</p>
-                {@render keyBadge(settings.triage.key_set ? "set" : "none")}
+                {@render keyBadge(keyState(settings.triage.api_key_env, settings.triage.key_set))}
               </div>
               <p class="mt-1 text-sm break-all text-muted-foreground">{host(settings.triage.base_url)}</p>
+              {#if settings.triage.api_key_env && !settings.triage.key_set}
+                <p class="mt-2 text-sm text-coral">Add {settings.triage.api_key_env} to .env</p>
+              {/if}
             </div>
             <p class="text-xs text-muted-foreground">
               Jev, a fixed classifier: it cannot be swapped for a chat model here. Change it in config.toml.
@@ -377,7 +407,7 @@
                 id={`perm-${item.id}`}
                 aria-describedby={`perm-${item.id}-hint`}
                 bind:checked={() => item.enabled, (value) => flip(item, value)}
-                disabled={busy[item.id]}
+                disabled={savingPermission}
               />
             </li>
           {/each}

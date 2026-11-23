@@ -88,7 +88,9 @@ async def test_save_backs_up_config_and_applies_new_routes_without_restart(dashb
         assert initial["roles"]["fallback"]["primary"]["key_set"] is True
         assert initial["roles"]["chat"]["primary"]["kind"] == "local"
         assert initial["roles"]["fallback"]["primary"]["kind"] == "cloud"
-        assert initial["triage"] == {"model": "classifier", "base_url": "https://classifier.example.test/decisions", "key_set": False}
+        assert initial["triage"] == {
+            "model": "classifier", "base_url": "https://classifier.example.test/decisions", "api_key_env": None, "key_set": False,
+        }
         assert SECRET not in json.dumps(initial)
         update = {"revision": initial["revision"], "role": "media", "primary": route, "fallbacks": [BACKUP]}
         result = await client.post(API, headers=ORIGIN_HEADER, json=update)
@@ -822,3 +824,11 @@ async def test_permission_save_writes_config_and_applies_without_restart(dashboa
     assert saved["openers"] == {"enabled": True, "max_per_day": 3} and saved["leak_check"] is False
     assert "enabled = true  # keep me" in text and "# Keep this comment." in text
     assert path.with_name("config.toml.orig").read_text().startswith(START.splitlines()[0])
+
+
+async def test_triage_view_names_its_missing_key_variable(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START.replace('model = "classifier"', 'model = "classifier"\napi_key_env = "TRIAGE_KEY"'))
+    async with browser() as client:
+        triage = (await client.get(API)).json()["triage"]
+    assert triage["api_key_env"] == "TRIAGE_KEY" and triage["key_set"] is False

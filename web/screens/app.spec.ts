@@ -112,8 +112,11 @@ test.describe("interactions under the CSP", () => {
     await expect(leaks).toHaveAttribute("aria-checked", "false");
 
     await page.getByRole("tab", { name: "Models" }).click();
-    await page.getByRole("button", { name: "Test Chat" }).click();
+    await page.getByRole("button", { name: "Test Chat", exact: true }).click();
     await expect(page.getByText(/OK · \d+\.\d s/).first()).toBeVisible();
+    // Every saved slot has its own Test, fallbacks included.
+    await page.getByRole("button", { name: "Test Drafting fallback 1" }).click();
+    await expect(page.getByText(/OK · \d+\.\d s/)).toHaveCount(2);
 
     // The editor opens on the saved chain and cancels without writing.
     await page.getByRole("button", { name: "Edit Drafting" }).click();

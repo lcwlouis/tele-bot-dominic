@@ -65,7 +65,13 @@ export async function send<T>(path: string, body: unknown, { quiet = false }: { 
   } catch {
     return fail(new ApiError(0, "Couldn't reach Dom. Check the connection and try again."), quiet);
   }
-  if (response.ok) return (await response.json()) as T;
+  if (response.ok) {
+    try {
+      return (await response.json()) as T;
+    } catch {
+      return fail(new ApiError(response.status, "Dom answered with something that isn't JSON. Reload and try again."), quiet);
+    }
+  }
   if (response.status === 403) return fail(new ApiError(403, "Dashboard access expired. Reload to sign in."), quiet);
   let result: { detail?: unknown; errors?: { index: number; error: string }[] } = {};
   try {
@@ -118,7 +124,7 @@ export type SearchProviderInfo = {
 export type ModelSettings = {
   revision: string;
   roles: Record<Role, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
-  triage: { model: string; base_url: string; key_set: boolean };
+  triage: { model: string; base_url: string; api_key_env: string | null; key_set: boolean };
   search_providers: SearchProviderInfo[];
   restart_required: boolean;
 };

@@ -218,6 +218,7 @@ class TriageView(BaseModel):
 
     model: str
     base_url: str
+    api_key_env: str | None
     key_set: bool
 
 
@@ -270,12 +271,12 @@ def _snapshot(home: Path) -> Snapshot:
         text = (home / "config.toml").read_bytes().decode("utf-8")
         return Snapshot(validate_config(home, tomllib.loads(text)), text)
     except (OSError, ValueError, TypeError, AttributeError):
-        raise HTTPException(409, "Fix config.toml before editing model settings.") from None
+        raise HTTPException(409, "Fix config.toml before editing settings.") from None
 
 
 def _check_revision(current: Snapshot, revision: str) -> None:
     if current.revision != revision:
-        raise HTTPException(409, "Configuration changed. Reload model settings and try again.")
+        raise HTTPException(409, "Configuration changed. Reload settings and try again.")
 
 
 def _dump_slot(role: ModelRole, provider: ProviderInput) -> dict:
@@ -392,7 +393,7 @@ def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
     return ModelSettings(
         revision=snapshot.revision,
         roles=roles,
-        triage=TriageView(model=triage.model, base_url=triage.base_url, key_set=triage.key_set),
+        triage=TriageView(model=triage.model, base_url=triage.base_url, api_key_env=triage.api_key_env, key_set=triage.key_set),
         search_providers=_search_provider_infos(),
         restart_required=any(config.providers(role) != app.config.providers(role) for role in MODEL_ROLES),
     )
@@ -421,7 +422,7 @@ async def _input(request: Request, model: type[Input]) -> Input:
             error = exc.errors(include_input=False, include_context=False, include_url=False)[0]
             detail = error["msg"]
             if error["type"] == "literal_error":
-                detail = "Choose a supported role, search provider or reasoning effort."
+                detail = "Choose one of the supported values."
         raise HTTPException(422, detail) from None
 
 
