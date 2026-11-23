@@ -77,12 +77,23 @@ Cloudflare. Keep local bearer-token testing on loopback.
 - **KLIPY** (GIF search, only with `KLIPY_API_KEY`) receives the short search query Dom wrote, from the Dom
   host. It sees no chat, user or owner identifier. Outside the owner DM the query goes through the outbound
   leak check when that is on. Telegram then fetches the chosen file from KLIPY. See [GIFs](gifs.md).
+- **Studio**, when enabled, receives Dom's screened speech or scene and, for a
+  photo or round video, an outfit ID. Profile updates request a portrait by
+  outfit ID. Dom sends these to the owner's configured server with a bearer
+  token. Private replies use text only. Telegram receives the generated media,
+  and Dom keeps the speech or scene in the originating chat's history.
+  Generation runs on the local server. Plain HTTP exposes the request to
+  anyone able to observe that connection. See [Studio](studio.md).
 - **Jev** can receive recent chat context for triage. The outbound leak check sends proposed text and a
   bounded selection of headings, names, numbers and other terms from owner notes
   to the configured Jev endpoint. At or above the configured threshold Dom holds
   back the text and alerts the owner. If Jev cannot score the text, Dom may send
   it and record that the check was unavailable. `leak_check = false` turns off
-  this additional check. The chat-scope boundary still applies.
+  this additional check. The chat-scope boundary still applies. Proposed studio
+  speech and scenes go through a local credential and private-note check and
+  the configured Jev check, including in the owner DM, before media generation.
+  When a configured Jev check cannot score speech or a scene, Dom holds that
+  media back and can still send the other bubbles.
 
   Jev also sees the text of a chat reply in every chat type, the owner DM included, when the chat model answers in
   plain prose instead of the JSON actions object. Dom sends that reply and the same recent messages that triage

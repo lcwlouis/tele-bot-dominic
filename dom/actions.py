@@ -42,6 +42,24 @@ class Bubble(BaseModel):
     _telegram_chunk: TextChunk | None = PrivateAttr(default=None)
 
 
+# Video renders slowly (about 10 s per second of speech for an everyday note, about 36 s for a special one), so its
+# text is capped to what finishes inside the studio's deadlines (180 s and 420 s). The studio enforces the same caps.
+VIDEO_TEXT_MAX = 200
+SPECIAL_TEXT_MAX = 120
+
+
+class VideoNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=VIDEO_TEXT_MAX, strict=True)
+    special: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def _special_is_shorter(self) -> VideoNote:
+        if self.special and len(self.text) > SPECIAL_TEXT_MAX:
+            raise ValueError(f"a special video note's text is at most {SPECIAL_TEXT_MAX} characters")
+        return self
+
+
 MAX_BUBBLES = 6
 
 
@@ -53,6 +71,10 @@ class Actions(BaseModel):
     react: str | None = None
     sticker: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     gif: str | None = Field(default=None, min_length=1, max_length=50, strict=True)
+    voice: str | None = Field(default=None, min_length=1, max_length=600, strict=True)
+    video_note: VideoNote | None = None
+    image: str | None = Field(default=None, min_length=1, max_length=300, strict=True)
+    outfit: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list)
     elsewhere: str | None = None
 

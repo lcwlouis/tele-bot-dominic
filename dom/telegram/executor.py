@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from errno import ECONNREFUSED
 from random import choice
 from time import monotonic
-from typing import Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Awaitable, Callable, TypeVar
 
 from aiohttp import ClientConnectorError
 from aiogram.exceptions import (
@@ -29,8 +29,12 @@ from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, SendFile, utf16_le
 from dom.gifs import GifSearch
 from dom.models import StoredMessage
 from dom.store import Store
+from dom.studio.policy import Kind, enabled
 from dom.stickers import resolve_sticker, sticker_fallback
 from dom.telegram.format import TextChunk, format_delivery, format_text, with_entities
+
+if TYPE_CHECKING:
+    from dom.telegram.handlers import App
 
 T = TypeVar("T")
 
@@ -372,6 +376,7 @@ async def perform(
     before_send: Callable[[], None] | None = None,
     on_migrate: Callable[[Actions], None] | None = None,
     flood_budget: float = MAX_FLOOD_WAIT_SECONDS,
+    queue_studio: Callable[[], None] | None = None,
 ) -> PerformResult:
     """Send the bubbles, reaction, sticker and GIF; returns the sent message ids. no_response does nothing at all."""
     if actions.no_response:
@@ -635,6 +640,10 @@ async def perform(
         if not await enter_send_boundary():
             return PerformResult(sent_ids, reacted=False, reaction_result=None, flood_limited=True)
 
+    if queue_studio is not None and not actions.private and not flood.exhausted:
+        if await enter_send_boundary():
+            queue_studio()
+
     return PerformResult(
         sent_ids,
         reacted=reaction_result is True,
@@ -645,10 +654,11 @@ async def perform(
 
 
 async def _send_media(
-    sending: Callable[[], Awaitable], store: Store, chat_id: int, kind: str, media: dict,
+    sending: Callable[[], Awaitable], store: Store, chat_id: int, kind: str, media: dict | None,
     now: Callable[[], datetime] | None, on_sent: Callable[[int], Awaitable[None]] | None,
     *, thread_id: int | None = None, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, record: bool = True,
     budget: FloodBudget | None = None, trigger_msg_id: int | None = None,
+    history_text: str | None = None,
 ) -> int | None:
     """Await one media send and record it; a Telegram refusal is logged and means nothing was sent."""
     try:
@@ -663,12 +673,109 @@ async def _send_media(
     if record:
         await store.record_new_message(StoredMessage(
             chat_id=str(chat_id), msg_id=sent.message_id, reply_to_msg_id=trigger_msg_id, thread_id=thread_id,
-            is_bot=True, role="assistant", visibility_scope=store.visibility_for(chat_id), text=f"[{kind}]", media_json=json.dumps(media),
+            is_bot=True, role="assistant", visibility_scope=store.visibility_for(chat_id),
+            text=history_text if history_text is not None else f"[{kind}]",
+            media_json=json.dumps(media) if media is not None else None,
             created_at=(now() if now is not None else datetime.now(timezone.utc)).isoformat(),
         ))
     if on_sent is not None:
         await on_sent(sent.message_id)
     return sent.message_id
+
+
+async def _studio_indicator(bot, chat_id: int, thread_id: int | None, action: str) -> None:
+    while True:
+        try:
+            await bot.send_chat_action(chat_id, action, message_thread_id=thread_id)
+        except TelegramAPIError:
+            return
+        await asyncio.sleep(TYPING_REFRESH_SECONDS)
+
+
+async def deliver_studio(
+    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
+    actions: Actions, on_sent: Callable[[int], Awaitable[None]],
+) -> None:
+    """Generate and send screened media after the text, without occupying a turn."""
+    if actions.private or actions.no_response:
+        return
+    client = app.studio
+    now = app.dispatch.now
+    budget = FloodBudget()
+
+    async def allowed(kind: Kind) -> bool:
+        return enabled(app.config.studio, scope, kind) and await app.dispatch._approved(chat_id)
+
+    async def generate(kind: Kind, text: str) -> bool | None:
+        # None is a refused job. A failed video job may still fall back to an allowed voice note.
+        if not await allowed(kind) or client is None or not client.ready:
+            return None
+        async with app.studio_quota.reserve(app.config.studio, scope, chat_id, kind, now()) as reserved:
+            if not reserved or not await allowed(kind):
+                return None
+            if kind == "voice":
+                action, filename, send = "record_voice", "voice.ogg", app.bot.send_voice
+                request = client.voice(text)
+            elif kind == "photo":
+                action, filename, send = "upload_photo", "photo.png", app.bot.send_photo
+                request = client.image(text, actions.outfit)
+            else:
+                action, filename, send = "record_video_note", "video.mp4", app.bot.send_video_note
+                request = client.video(text, kind == "special", actions.outfit)
+            indicator = asyncio.create_task(_studio_indicator(app.bot, chat_id, thread_id, action))
+            try:
+                data = await request
+            finally:
+                indicator.cancel()
+                await asyncio.gather(indicator, return_exceptions=True)
+            if data is None:
+                return False
+            if not await allowed(kind):
+                return None
+            message_kind = "video_note" if kind == "special" else kind
+            key = "scene" if kind == "photo" else "text"
+            media = {"kind": message_kind, key: text}
+            if kind == "special":
+                media["special"] = True
+            with app.dispatch.protect_send() as commit:
+                commit()
+                delivered = await _send_media(
+                    lambda: send(chat_id, BufferedInputFile(data, filename=filename), message_thread_id=thread_id),
+                    app.store, chat_id, message_kind, media, now, on_sent, thread_id=thread_id,
+                    sleep=app.sleep, budget=budget, trigger_msg_id=trigger_msg_id, history_text=f"[{message_kind}] {text}",
+                )
+            return delivered is not None
+
+    async def fallback(kind: Kind, text: str) -> None:
+        if not await allowed(kind):
+            return
+        with app.dispatch.protect_send() as commit:
+            commit()
+            await _send_media(
+                lambda: send_text(app.bot, chat_id, text, literal=True, sleep=app.sleep, budget=budget,
+                                  message_thread_id=thread_id,
+                                  link_preview_options=LinkPreviewOptions(is_disabled=True)),
+                app.store, chat_id, "text", None, now, on_sent, thread_id=thread_id,
+                sleep=app.sleep, budget=budget, trigger_msg_id=trigger_msg_id, history_text=text,
+            )
+
+    try:
+        if actions.voice and not await generate("voice", actions.voice):
+            await fallback("voice", actions.voice)
+        if actions.video_note:
+            video = actions.video_note
+            kind = "special" if video.special else "video_note"
+            result = await generate(kind, video.text)
+            if result is False and await allowed(kind) and await generate("voice", video.text):
+                result = True
+            if not result:
+                await fallback(kind, video.text)
+        if actions.image:
+            await generate("photo", actions.image)
+    except (TelegramMigrateToChat, FloodBudgetExhausted):
+        log.warning("studio delivery stopped in chat %s", chat_id)
+    except Exception as error:
+        log.warning("studio delivery failed (%s)", type(error).__name__)
 
 
 async def react(

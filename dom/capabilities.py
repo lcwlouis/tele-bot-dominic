@@ -48,6 +48,18 @@ def describe(app: App, scope: Scope, offered: list[Tool] | None = None) -> str:
             offered.append(START_DESKTOP_TASK)
     names = [tool.name for tool in offered if scope in tool.scopes]
     media = ", photos, GIFs, video, voice" if app.media_describer is not None else ""
+    can_send = ""
+    if app.studio is not None and app.studio.ready and app.config.studio.enabled:
+        config = app.config.studio
+        features = [
+            label for label, active in (
+                ("voice notes", config.voice),
+                ("round videos", config.video_notes or (scope == "owner_dm" and config.special)),
+                ("photos", config.images),
+            ) if active
+        ]
+        if features:
+            can_send = f"\ncan send: {', '.join(features)}"
     t3_status = ""
     if scope == "owner_dm":
         bridge = app.t3
@@ -57,7 +69,7 @@ def describe(app: App, scope: Scope, offered: list[Tool] | None = None) -> str:
             count = bridge.reachable if bridge.reachable is not None else "unknown"
             t3_status = f"\nT3 bridge: on, reachable machines: {count}"
     rest = (
-        f"\nunderstands: text{media}\ndesktop: {desktop_status(app, scope)}{t3_status}\n"
+        f"\nunderstands: text{media}\ndesktop: {desktop_status(app, scope)}{t3_status}{can_send}\n"
         "cannot see read receipts, see deleted messages, or read chats he isn't in"
     )
     return _tool_line(names, 600 - len(rest)) + rest

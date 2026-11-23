@@ -38,6 +38,8 @@ from dom.plugins.registry import PluginRegistry
 from dom.plugins import surfaces
 from dom.plugins.runner import PluginRunner
 from dom.gifs import GifSearch
+from dom.studio.client import StudioClient
+from dom.studio.policy import StudioQuota
 from dom.stickers import Stickers
 from dom.store import Store
 from dom.search import SearchClient, SearchRouter, routed_search_client
@@ -68,6 +70,8 @@ class App:
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | SearchRouter | None = None
     gifs: GifSearch | None = None
+    studio: StudioClient | None = None
+    studio_quota: StudioQuota = field(init=False)
     draft_client: ChatClient | FallbackClient | None = None
     escalation_client: FallbackClient | None = None
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
@@ -86,6 +90,7 @@ class App:
         def now() -> datetime:
             return datetime.now(timezone.utc)
 
+        self.studio_quota = StudioQuota(self.store)
         self.plugin_runner = PluginRunner(home=self.home.root, store=self.store)
         self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self), runner=self.plugin_runner)
         self.proposals = Proposals(self)
@@ -287,6 +292,12 @@ async def handle_message(app: App, message: Message) -> None:
             else:
                 await owner.show_plugins(app)
                 await owner.record_event(app, f"{_person(msg.sender_name)} ran /plugins")
+        return
+    if command == "/studio":
+        if owner_dm:
+            from dom.studio.profile import status_text
+
+            await _send(app, msg.chat_id, await status_text(app))
         return
     if command == "/skills":
         if owner_dm:
