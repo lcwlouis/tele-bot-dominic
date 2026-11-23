@@ -77,7 +77,6 @@ class _Render:
 
     def inline(self, node: SyntaxTreeNode) -> None:
         start = self.pos
-        first_span = len(self.spans)
         kind = _INLINE_STYLES.get(node.type)
         url = None
         if node.type in ("text", "html_inline", "code_inline"):
@@ -90,10 +89,9 @@ class _Render:
             url = _http_url(node.attrGet("href") or "")
             if url:
                 kind = "text_link"
+        # An unsafe link loses only its URL: the text and any bold or italic inside it stay.
         for child in node.children:
             self.inline(child)
-        if node.type == "link" and not url:
-            del self.spans[first_span:]
         if kind and start < self.pos:
             self.spans.append(_Span(kind, start, self.pos, url=url))
 

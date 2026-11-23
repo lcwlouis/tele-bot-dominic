@@ -78,8 +78,8 @@ async def test_migration_reserves_both_turn_slots_and_clears_the_old_chat(setup_
     dispatch._latest[old] = msg
     dispatch._first_notify[old] = clock()
     debounce = dispatch._debounces[old] = dispatch._spawn(asyncio.Event().wait())
-    dispatch._interrupted[old] = []
-    dispatch._followups[old] = [msg.msg_id]
+    dispatch._interrupted[old] = {None: []}
+    dispatch._followups[old] = {None: [msg.msg_id]}
     dispatch._trim_seq[old] = 2
     dispatch._stay_marks[old] = msg.msg_id
     dispatch._stay_pending[old] = None
@@ -151,7 +151,7 @@ async def test_migration_flushes_pending_coding_notice_to_new_chat_id(setup_disp
     interrupted = TurnAttempt(
         asyncio.current_task(), 1, turn_log.TurnTrace(), clock(), notices=["checked progress"],
     )
-    dispatch._interrupted[old] = [interrupted]
+    dispatch._interrupted[old] = {None: [interrupted]}
     assert await dispatch.migrate_chat(old, new) == "migrated"
     await drain_dispatch(dispatch)
     assert app.bot.of("send", old) == []

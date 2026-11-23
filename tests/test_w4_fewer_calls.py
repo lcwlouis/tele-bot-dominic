@@ -192,7 +192,7 @@ async def test_follow_up_turn_still_gets_the_skill_of_its_message(setup_dispatch
     await approved(app)
     await dispatch.presence.go_online(GROUP, parse_habits(""))
     await deliver(app)
-    dispatch._followups[GROUP] = [0]  # an earlier bubble went out before this message came in
+    dispatch._followups[GROUP] = {None: [0]}  # an earlier bubble went out before this message came in
     await deliver(app, 2, text="and one more")
     assert "came in while you were answering" in note(app, 1)
     assert BODY in note(app, 0) and BODY in note(app, 1)
