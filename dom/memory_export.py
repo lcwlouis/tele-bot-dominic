@@ -26,13 +26,17 @@ def export_name(now: datetime) -> str:
     return f"dom-memory-{now:%Y%m%d-%H%M%S}.zip"
 
 
+NOTE_SUFFIXES = (".md", ".txt")  # Dom's notes, skills and presets are text files; nothing else is memory
+
+
 def _skip_file(name: str) -> bool:
+    """An allowlist, not a denylist: a renamed database copy or a stray archive is never swept in."""
     lower = name.lower()
-    return lower.startswith(".env") or ".bak" in lower or lower.endswith((".orig", ".db", ".db-wal", ".db-shm", ".db-journal"))
+    return not lower.endswith(NOTE_SUFFIXES) or lower.startswith(".") or ".bak" in lower
 
 
 def _files(home: Path) -> list[Path]:
-    """Regular files only: no symlinks, no secrets, no databases, no backups, wherever they sit under a folder."""
+    """Regular text-note files only: no symlinks, secrets, databases, archives or backups, wherever they sit."""
     found = [home / name for name in ROOT_FILES]
     for folder in ROOT_FOLDERS:
         base = home / folder

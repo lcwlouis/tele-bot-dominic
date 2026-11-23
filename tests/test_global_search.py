@@ -53,6 +53,7 @@ def test_export_leaves_secrets_databases_backups_and_links_out_wherever_they_sit
     planted = [
         ".env", ".env.local", "state.db", "x.db-wal", "x.db-shm", "keep.md.bak", "keep.md.bak.1", "old.orig",
         "backups/dom.tar.gz", "sub/backups/inner.md", "sub/deep/.env", "sub/state.db",
+        "state.db.copy", "snapshots/dom-old.tar.gz", "sub/notes.sqlite", "sub/key.pem", "sub/.hidden.md",
     ]
     for rel in planted:
         (base / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,9 @@ def test_export_leaves_secrets_databases_backups_and_links_out_wherever_they_sit
     assert f"{folder}/sub/keep.md" in found
     assert not any(any(part in name for part in (".env", ".db", ".bak", ".orig", "backups", "link", "pipe")) for name in found
                    if name.startswith(folder + "/"))
+    # Only text notes leave: anything else under the folder, however it is named, stays behind.
+    assert all(name.endswith((".md", ".txt")) for name in found)
+    assert not any(part in name for name in found for part in ("snapshots", "sqlite", ".pem", ".hidden"))
 
 
 def test_export_reads_at_most_the_budget_left_plus_one_byte(tmp_path, monkeypatch):
