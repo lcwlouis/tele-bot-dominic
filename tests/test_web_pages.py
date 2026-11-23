@@ -151,7 +151,7 @@ async def test_deciding_on_the_dashboard_settles_the_telegram_card(make_app, bro
     app = make_app()
     skill = {"name": "report", "description": "Summarise a web table", "body": "Open the page and summarise the table."}
     proposal_id = await app.proposals.create("skill", "Skill: report", skill, "chat")
-    card_id = app.bot._next_id  # the card is the last message sent
+    card_id = app.bot._next_id - 1  # the card, then the skill's procedure attached as a file
     async with browser(app) as client:
         response = await client.post(f"/proposals/{proposal_id}/approve", headers=POST_HEADERS)
     assert response.status_code == 200
