@@ -3,6 +3,7 @@
   import Sun from "@lucide/svelte/icons/sun";
   import Orbit from "$lib/components/Orbit.svelte";
   import { Button } from "$lib/components/ui/button";
+  import SearchBox from "$lib/components/shell/SearchBox.svelte";
   import MenuSheet from "$lib/components/shell/MenuSheet.svelte";
   import type { Destination, Tab } from "$lib/nav";
   import { theme } from "$lib/theme.svelte";
@@ -33,6 +34,7 @@
       </ol>
     </nav>
     <div class="ml-auto flex items-center gap-2">
+      <SearchBox />
       <MenuSheet {path} {current} />
       <Button
         variant="outline"

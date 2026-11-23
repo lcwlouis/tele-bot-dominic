@@ -75,7 +75,7 @@ async def test_tool_call_then_final_actions(env):
         chat_id="-1009", msg_id=1, text="banana bread", visibility_scope="chat:-1009",
         created_at="2026-11-18T10:00:00+00:00"))
     script = Script(
-        reply(tool_calls=[call("search_history", {"query": "banana"})]),
+        reply(tool_calls=[call("search", {"query": "banana"})]),
         reply(content=json.dumps(FINAL)),
     )
     actions = await run_turn(make_client(script), [{"role": "user", "content": "hi"}], core_tools(), ctx_for(env))
@@ -92,14 +92,14 @@ async def test_tool_call_then_final_actions(env):
 async def test_replies_cannot_write_notes(env, scope):
     root, _, _ = env
     assert {t.name for t in core_tools()} == {
-        "search_history", "remind", "skills_list", "skill_view", "skill_manage", "read_notes",
+        "search", "remind", "skills_list", "skill_view", "skill_manage", "read_notes",
     }
     script = Script(
         reply(tool_calls=[call("memory", {"file": "MEMORY.md", "op": "add", "text": "pwned"})]),
         reply(content=json.dumps(FINAL)),
     )
     await run_turn(make_client(script), [], core_tools(), ctx_for(env, scope=scope, chat_id=OWNER, sender=OWNER))
-    expected = {"search_history", "skills_list", "skill_view", "skill_manage", "read_notes"}
+    expected = {"search", "skills_list", "skill_view", "skill_manage", "read_notes"}
     if scope == "owner_dm":
         expected.add("remind")
     assert {t["function"]["name"] for t in script.requests[0]["tools"]} == expected
@@ -151,7 +151,7 @@ async def test_unoffered_tool_call_gets_error_result(env):
 
 
 async def test_unknown_tool_and_bad_arguments_get_error_results(env):
-    bad_args = {"id": "c2", "type": "function", "function": {"name": "search_history", "arguments": "{not json"}}
+    bad_args = {"id": "c2", "type": "function", "function": {"name": "search", "arguments": "{not json"}}
     script = Script(
         reply(tool_calls=[call("nope", {}, "c1"), bad_args]),
         reply(content=json.dumps(FINAL)),
@@ -194,7 +194,7 @@ async def test_a_refused_tool_call_is_marked_in_the_turn_log_and_says_why_in_the
 
 async def test_max_steps_exhausted_asks_for_the_final_answer_without_tools(env):
     script = Script(
-        *[reply(tool_calls=[call("search_history", {"query": "x"})]) for _ in range(3)],
+        *[reply(tool_calls=[call("search", {"query": "x"})]) for _ in range(3)],
         reply(content=json.dumps(FINAL)),
     )
     actions = await run_turn(make_client(script), [], core_tools(), ctx_for(env), max_steps=3)
@@ -206,14 +206,14 @@ async def test_max_steps_exhausted_asks_for_the_final_answer_without_tools(env):
 
 async def test_max_steps_exhausted_and_no_final_answer_raises(env):
     script = Script(
-        *[reply(tool_calls=[call("search_history", {"query": "x"})]) for _ in range(3)],
+        *[reply(tool_calls=[call("search", {"query": "x"})]) for _ in range(3)],
         reply(content="prose"),
     )
     with pytest.raises(NoFinalAnswer):
         await run_turn(make_client(script), [], core_tools(), ctx_for(env), max_steps=3)
 
 
-async def test_search_history_scoping(env):
+async def test_search_scoping(env):
     _, _, store = env
 
     async def add(chat_id, msg_id, text):
@@ -225,7 +225,7 @@ async def test_search_history_scoping(env):
     await add(-1009, 1, "banana in the group")
     await add(222, 1, "banana in a friend dm")
     await add(OWNER, 1, "banana in owner dm")
-    search = next(t for t in core_tools() if t.name == "search_history")
+    search = next(t for t in core_tools() if t.name == "search")
 
     async def texts(**kw):
         out = json.loads(await search.handler({"query": "banana"}, ctx_for(env, **kw)))
@@ -233,7 +233,8 @@ async def test_search_history_scoping(env):
 
     assert await texts(scope="group", chat_id=-1009) == ["banana in the group"]
     assert await texts(scope="friend_dm", chat_id=222) == ["banana in a friend dm"]
-    assert len(await texts(scope="owner_dm", chat_id=OWNER, sender=OWNER)) == 3
+    found = json.loads(await search.handler({"query": "banana"}, ctx_for(env, scope="owner_dm", chat_id=OWNER, sender=OWNER)))
+    assert len([hit for hit in found if hit["kind"] == "chat"]) == 3
 
 
 async def test_retries_on_429(env):
@@ -432,7 +433,7 @@ async def test_a_tool_call_in_the_correction_is_not_run(env):
 
 async def test_two_malformed_finals_use_the_fallback_model_with_the_tool_results(env):
     primary = Script(
-        reply(tool_calls=[call("search_history", {"query": "example"})]),
+        reply(tool_calls=[call("search", {"query": "example"})]),
         reply(content="plain text after tool results"),
         reply(content="still plain text"),
     )
@@ -519,7 +520,7 @@ def test_a_reaction_only_answer_with_a_disallowed_emoji_is_empty_actions_not_mal
 
 async def test_tool_results_are_followed_by_a_reminder_of_the_answer_format(env):
     # The homelab model usually forgot the JSON-only format once it had read tool results.
-    script = Script(reply(tool_calls=[call("search_history", {"query": "x"})]), reply(content=json.dumps(FINAL)))
+    script = Script(reply(tool_calls=[call("search", {"query": "x"})]), reply(content=json.dumps(FINAL)))
     await run_turn(make_client(script), ASKED, core_tools(), ctx_for(env))
     messages = script.requests[1]["messages"]
     assert messages[-2]["role"] == "tool"

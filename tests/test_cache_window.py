@@ -248,7 +248,7 @@ async def test_timings_are_recorded_for_each_step_of_a_turn(make_app):
 
     app = make_app()
     client = make_client(Script(
-        reply(tool_calls=[call("search_history", {"query": "x"})]), reply(content=json.dumps(ACTIONS)),
+        reply(tool_calls=[call("search", {"query": "x"})]), reply(content=json.dumps(ACTIONS)),
     ))
     ctx = TurnCtx("group", GROUP, FRIEND, app.home, app.store, None)
     async with turn_log.capture(app.store, datetime(2026, 1, 1, tzinfo=timezone.utc), GROUP, "group"):
@@ -257,9 +257,9 @@ async def test_timings_are_recorded_for_each_step_of_a_turn(make_app):
         await run_turn(client, [{"role": "user", "content": "hi"}], core_tools(), ctx)
     [row] = await app.store.recent_turns()
     trace = json.loads(row["trace"])
-    assert [item for item in trace if "@" not in item] == ["search_history", "final"]
+    assert [item for item in trace if "@" not in item] == ["search", "final"]
     timings = [item.rpartition("@") for item in trace if "@" in item]
-    assert [what for what, _, _ in timings] == ["typing", "model", "search_history", "model"]
+    assert [what for what, _, _ in timings] == ["typing", "model", "search", "model"]
     assert all(ms.isdigit() for _, _, ms in timings)
 
 

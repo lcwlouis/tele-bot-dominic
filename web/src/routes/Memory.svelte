@@ -1,6 +1,7 @@
 <script lang="ts">
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Copy from "@lucide/svelte/icons/copy";
+  import Download from "@lucide/svelte/icons/download";
   import FileText from "@lucide/svelte/icons/file-text";
   import Lock from "@lucide/svelte/icons/lock";
   import Sparkles from "@lucide/svelte/icons/sparkles";
@@ -12,7 +13,7 @@
   import StatusNote from "$lib/components/StatusNote.svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
-  import { Button } from "$lib/components/ui/button";
+  import { Button, buttonVariants } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
   import { Checkbox } from "$lib/components/ui/checkbox";
   import { Input } from "$lib/components/ui/input";
@@ -50,7 +51,9 @@
     try {
       index = await getJSON<MemoryIndex>("/api/memory");
       failed = "";
-      if (open === null && matchMedia("(min-width: 1024px)").matches) await openFile(FIRST);
+      const wanted = new URLSearchParams(location.search).get("file"); // a search result opens its file
+      if (open === null && wanted) await openFile(wanted);
+      else if (open === null && matchMedia("(min-width: 1024px)").matches) await openFile(FIRST);
     } catch (error) {
       failed = error instanceof Error ? error.message : "Unknown error";
     }
@@ -206,6 +209,9 @@
 
 <PageHeader kicker="Destination" title="Memory" subtitle={destination.blurb}>
   {#snippet aside()}
+    <a href="/api/memory/export" download class={buttonVariants({ variant: "outline" })}>
+      <Download aria-hidden="true" /> Export memory
+    </a>
     <Button
       variant={talking ? "default" : "secondary"}
       aria-pressed={talking}

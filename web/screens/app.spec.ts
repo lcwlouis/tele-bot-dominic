@@ -31,6 +31,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "menu", path: "/app/work/briefs", heading: "Briefs", menu: true, phoneOnly: true },
   // A chat's recent messages, and the soul request on its own screen.
   { name: "chats-messages", path: "/app/chats", heading: "Chats", click: "Messages in Weekend crew" },
+  // The search page: grouped hits, with another chat's message shown as a preview only.
+  { name: "search", path: "/app/search?q=plan", heading: "Search" },
   { name: "memory-soul", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul" },
 ];
 

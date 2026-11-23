@@ -13,7 +13,7 @@ import httpx
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile
 
-from dom import own_code
+from dom import global_search, own_code
 from dom._version import VERSION
 from dom.briefs import LIMITS as BRIEF_LIMITS, write_brief
 from dom.cross_chat import MAX_REASON, MAX_TEXT
@@ -78,34 +78,39 @@ class Tool:
         }
 
 
-# ---- search_history ------------------------------------------------------------
+# ---- search ----------------------------------------------------------------------
 
-async def _search_history(args: dict, ctx: TurnCtx) -> str:
+async def _search(args: dict, ctx: TurnCtx) -> str:
+    """The owner's DM searches everything Dom holds (dom/global_search.py). Anywhere else the scope is fixed in code to
+    this chat's own history: memory files, other chats and private notes cannot surface, whatever the model asks."""
+    query = str(args.get("query", ""))
+    if ctx.scope == "owner_dm" and ctx.chat_id == ctx.owner_id and ctx.sender_id in (None, ctx.owner_id):
+        found = await global_search.search_all(ctx.store, ctx.home, query)
+        return json.dumps(
+            [{"kind": h.kind, "title": h.title, "text": h.text, "at": h.at} for hits in found.values() for h in hits],
+            ensure_ascii=False,
+        )
     limit = args.get("limit", 10)
-    hits = await ctx.store.search_chat_history(
-        str(args.get("query", "")), str(ctx.chat_id), limit if isinstance(limit, int) else 10
-    )
+    hits = await ctx.store.search_chat_history(query, str(ctx.chat_id), limit if isinstance(limit, int) else 10)
     return json.dumps(
-        [
-            {k: h[k] for k in ("chat_id", "msg_id", "sender_name", "text", "created_at")}
-            for h in hits
-        ],
+        [{k: h[k] for k in ("chat_id", "msg_id", "sender_name", "text", "created_at")} for h in hits],
         ensure_ascii=False,
     )
 
 
-SEARCH_HISTORY_TOOL = Tool(
-    name="search_history",
+SEARCH_TOOL = Tool(
+    name="search",
     description=(
         "Full-text search of older messages beyond the chat window, to recall what was said earlier. "
-        "Searches this chat only; in the owner's DM it searches every chat."
+        "Searches this chat only; in the owner's DM it searches everything you hold: every chat, memory files, "
+        "briefs, reminders, desktop tasks, skills and plugins."
     ),
     schema={
         "type": "object",
         "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
         "required": ["query"],
     },
-    handler=_search_history,
+    handler=_search,
     scopes=set(ALL_SCOPES),
 )
 
@@ -327,7 +332,7 @@ def _is_owner_only(tool: Tool) -> bool:
 
 def _shared_core_tools(search: SearchClient | SearchRouter | None = None) -> list[Tool]:
     tools = [
-        SEARCH_HISTORY_TOOL,
+        SEARCH_TOOL,
         SKILLS_LIST_TOOL,
         SKILL_VIEW_TOOL,
         SKILL_MANAGE_TOOL,

@@ -339,6 +339,10 @@ async def handle_message(app: App, message: Message) -> None:
                 await owner.show_tasks(app)
                 await owner.record_event(app, f"{_person(msg.sender_name)} ran /tasks")
         return
+    if command == "/export":
+        if owner_dm and (error := await owner.export_memory(app)):
+            await _send(app, msg.chat_id, error)
+        return
     if command == "/import":
         if owner_dm:
             response, event, code = await owner.import_memory(app, message, msg.text)

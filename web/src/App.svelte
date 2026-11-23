@@ -3,7 +3,7 @@
   import TopBar from "$lib/components/shell/TopBar.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
   import * as Tooltip from "$lib/components/ui/tooltip";
-  import { gallery, locate, waiting } from "$lib/nav";
+  import { gallery, locate, search, waiting } from "$lib/nav";
   import { interceptLinks, route } from "$lib/router.svelte";
   import { shell } from "$lib/shell.svelte";
   import Gallery from "./routes/Gallery.svelte";
@@ -19,10 +19,12 @@
   import Turns from "./routes/Turns.svelte";
   import Usage from "./routes/Usage.svelte";
   import Waiting from "./routes/Waiting.svelte";
+  import Search from "./routes/Search.svelte";
   import Settings from "./routes/Settings.svelte";
 
   const isGallery = $derived(route.path === gallery.href);
   const isWaiting = $derived(route.path === waiting.href);
+  const isSearch = $derived(route.path === search.href);
   const where = $derived(locate(route.path));
   // /app/system/plugins/{name}/{digest}: one plugin version's code review.
   const review = $derived(where.tab?.id === "plugins" ? route.path.slice(where.tab.href.length + 1).split("/") : []);
@@ -38,7 +40,7 @@
   });
 
   $effect(() => {
-    const page = isGallery ? gallery.label : isWaiting ? waiting.label : (where.tab?.label ?? where.destination.label);
+    const page = isGallery ? gallery.label : isWaiting ? waiting.label : isSearch ? search.label : (where.tab?.label ?? where.destination.label);
     document.title = page === "Home" ? "Dom" : `${page} · Dom`;
   });
 </script>
@@ -58,7 +60,7 @@
       <TopBar
         destination={where.destination}
         tab={where.tab}
-        title={isGallery ? gallery.label : isWaiting ? waiting.label : undefined}
+        title={isGallery ? gallery.label : isWaiting ? waiting.label : isSearch ? search.label : undefined}
         path={route.path}
         current={isGallery ? { ...where.destination, id: "" } : where.destination}
       />
@@ -67,6 +69,8 @@
           <Gallery />
         {:else if isWaiting}
           <Waiting />
+        {:else if isSearch}
+          <Search />
         {:else if where.destination.id === "home"}
           <Home />
         {:else if where.destination.id === "chats"}

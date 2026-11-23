@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from dom.web.api import router as api_router
 from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
 from dom.web.api_memory import JSON_POSTS as MEMORY_POSTS, router as memory_router
+from dom.web.api_search import router as search_router
 from dom.web.api_system import JSON_POSTS as SYSTEM_POSTS, router as system_router
 from dom.web.api_waiting import JSON_POSTS as WAITING_POSTS, router as waiting_router
 from dom.web.api_work import JSON_POSTS as WORK_POSTS, router as work_router
@@ -94,6 +95,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.include_router(api_router)
     web.include_router(chats_router)
     web.include_router(memory_router)
+    web.include_router(search_router)
     web.include_router(work_router)
     web.include_router(waiting_router)
     web.include_router(system_router)
