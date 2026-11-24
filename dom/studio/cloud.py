@@ -360,8 +360,8 @@ class CloudStudio:
                 data = json.loads(raw)["data"]
                 return {"cost": data.get("total_cost"), "input_tokens": data.get("tokens_prompt"),
                         "output_tokens": data.get("tokens_completion")}
-        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, AttributeError, TypeError):
-            return {}
+        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, AttributeError, TypeError, RuntimeError):
+            return {}  # RuntimeError: the HTTP client closed during shutdown
 
     def _track_reconcile(self, work: Awaitable[None]) -> None:
         task = asyncio.ensure_future(work)
@@ -378,12 +378,23 @@ class CloudStudio:
             await asyncio.sleep(delay)
             usage = await self._speech_usage(base, headers, generation_id)
             cost = usage.get("cost")
-            if type(cost) in (int, float) and 0 <= cost < math.inf:
+            if type(cost) in (int, float) and 0 < cost < math.inf:  # 0 can mean the stats haven't settled yet
                 inputs, outputs, _ = token_counts(usage)
-                await asyncio.shield(self.usage.store.set_usage_cost(
-                    row, float(cost), input_tokens=inputs, output_tokens=outputs,
-                ))
+                try:
+                    await asyncio.shield(self.usage.store.set_usage_cost(
+                        row, float(cost), input_tokens=inputs, output_tokens=outputs,
+                    ))
+                except Exception as error:
+                    log.warning("could not record a voice note's cost (%s)", type(error).__name__)
                 return
+
+    async def aclose(self) -> None:
+        """At shutdown, before the HTTP client closes: stop the background cost checks. A voice cost not yet
+        reported stays at 0 (bounded spend, not money lost); a video job's estimate survives in the store."""
+        tasks = list(self._reconciling)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def generate(
         self, config: Config, kind: Kind, text: str, outfit: str | None, chat_id: int,
@@ -520,6 +531,10 @@ class CloudStudio:
                             continue
                         entry = await self._video_entry(provider.base_url, provider.model)
                         plan = video_plan(entry)
+                    except VideoUnsupported:
+                        log.warning("video backup %s isn't a supported lip-sync avatar; replace it in Settings → Models",
+                                    provider.model)
+                        continue
                     except (httpx.HTTPError, TimeoutError, ValueError, OSError, TypeError, AttributeError):
                         continue
                     if references is None:

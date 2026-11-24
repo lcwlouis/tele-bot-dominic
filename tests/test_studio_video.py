@@ -7,6 +7,8 @@ import wave
 import shutil
 import subprocess
 
+import httpx
+
 import pytest
 from aiohttp import web
 from pydantic import ValidationError
@@ -400,3 +402,29 @@ async def test_avatar_uses_local_voice_after_local_video_fails(make_app, studio_
     assert [row[:2] for row in usage_rows(app) if row[0].startswith("studio_")] == [
         ("studio_voice", "local-studio"), ("studio_video", VIDEO.model),
     ]
+
+
+async def test_a_retired_avatar_backup_is_logged_and_never_submitted(make_app, cloud_server, clip, caplog):
+    app = make_app()
+    retired = VIDEO.model_copy(update={"model": "heygen/avatar-iv"})
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(retired,))
+    portrait(app)
+    serve_video(cloud_server, clip)
+    with caplog.at_level("WARNING", logger="dom.studio.cloud"):
+        assert await render(app, "video_note", "Hello", "casual") is None
+    assert not created(cloud_server)
+    assert "heygen/avatar-iv isn't a supported lip-sync avatar" in caplog.text
+
+
+async def test_aclose_stops_background_cost_checks():
+    studio = cloud.CloudStudio(httpx.AsyncClient(), None)
+    started = asyncio.Event()
+
+    async def forever():
+        started.set()
+        await asyncio.sleep(3600)
+
+    studio._track_reconcile(forever())
+    await started.wait()
+    await studio.aclose()
+    assert not studio._reconciling

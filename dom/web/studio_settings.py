@@ -236,7 +236,8 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
             async with asyncio.timeout(TEST_TIMEOUT):
                 entry = (await video_models(_http(app), backup.base_url)).get(backup.model)
             if entry is None:
-                raise VideoUnsupported("Pick a lip-sync avatar that takes both a portrait and an audio track.")
+                raise VideoUnsupported(f"{backup.model} isn't a supported lip-sync avatar. "
+                                       "Pick Avatar 6 Turbo or Avatar 6, which take a portrait and an audio track.")
             plan = video_plan(entry)
             price = video_rate(entry, plan)
             reply = f"The key works. Notes use {plan['resolution']} video (square Telegram crop) at ${price:g} per second."
