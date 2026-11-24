@@ -1,4 +1,6 @@
 import json
+
+from dom.studio.policy import UNAVAILABLE_NOTE
 import socket
 from datetime import timedelta
 from types import SimpleNamespace
@@ -111,8 +113,24 @@ async def test_away_studio_does_not_advertise_media(make_app, studio_server):
     await online(app, OWNER)
     await deliver(app, tg(chat_id=OWNER, sender=OWNER))
     assert studio_server[2] == [("/v1/health", None)]
-    assert 'Optional action "voice"' not in turn_requests(app)[0]["messages"][1]["content"]
+    content = turn_requests(app)[0]["messages"][1]["content"]
+    assert 'Optional action "voice"' not in content
+    assert UNAVAILABLE_NOTE in content  # else Dom imitates his past media from the window as text
     assert [call[2] for call in app.bot.of("send")] == ["hey", "A quiet hello"]
+
+
+async def test_a_spent_media_limit_says_not_now_and_fake_media_bubbles_are_dropped(make_app, studio_server):
+    app = make_app(contents=(
+        json.dumps({"bubbles": ["hey"], "voice": "A quiet hello"}),
+        json.dumps({"bubbles": ["one pic coming up", '[photo] the view\n\n<media kind="photo"></media>', "landed?"]}),
+    ))
+    await connect(app, studio_server)
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER, msg_id=2, text="send a pic"))
+    second = turn_requests(app)[1]["messages"][1]["content"]
+    assert 'Optional action' not in second and UNAVAILABLE_NOTE in second
+    assert [call[2] for call in app.bot.of("send")][-2:] == ["one pic coming up", "landed?"]
 
 
 async def test_failed_video_uses_voice_when_available(make_app, studio_server):

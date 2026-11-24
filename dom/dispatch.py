@@ -41,7 +41,7 @@ from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
 from dom.provider_budget import ProviderBudgetNotices
 from dom.studio.cloud import providers as studio_providers
-from dom.studio.policy import enabled as studio_enabled, outfits, turn_note as studio_turn_note
+from dom.studio.policy import UNAVAILABLE_NOTE as STUDIO_UNAVAILABLE, enabled as studio_enabled, outfits, turn_note as studio_turn_note
 from dom.studio.profile import maintain as maintain_studio
 from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import PromptCache, build_messages, online_window_note, report_messages
@@ -2219,8 +2219,10 @@ class Dispatcher:
                     if any(config.secret(backup.api_key_env) for backup in studio_providers(config.studio, kind))
                 })
                 remaining = {kind: count for kind, count in remaining.items() if kind in keyed}
-            if media_note := studio_turn_note(remaining, outfits(app.config.studio, preset)):
-                note += f"\n{media_note}"
+            # Without a note, Dom sees his past media in the window and may imitate it in text: say it's not now.
+            note += f"\n{studio_turn_note(remaining, outfits(app.config.studio, preset)) or STUDIO_UNAVAILABLE}"
+        elif not final_bot_turn and app.studio is not None:  # set up but away right now
+            note += f"\n{STUDIO_UNAVAILABLE}"
         if attempt is not None:
             attempt.assistant = preset is not None and preset.name == ASSISTANT
         if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:

@@ -18,6 +18,10 @@ STUDIO_NOTE = (
     "Most replies stay text. Use these sparingly when they add something. Never speak private details aloud, "
     "describe the machinery behind these actions, or use media in a private reply."
 )
+UNAVAILABLE_NOTE = (
+    "You can't send voice notes, video notes or photos right now. Never write one out as text or promise one; "
+    "if asked, say not right now, in your own words."
+)
 ACTION_NOTES = {
     "voice": '"voice": spoken text (up to 600 characters)',
     "video_note": '"video_note": {"text": spoken text up to 200 characters}',
