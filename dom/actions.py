@@ -116,33 +116,48 @@ class Actions(BaseModel):
         cleaned = [{k: v for k, v in b.items() if k != "private"} if isinstance(b, dict) else b for b in bubbles]
         return {**data, "bubbles": cleaned, **({"private": True} if marked else {})}
 
-    @model_validator(mode="before")
+    # The media field set from a bubble written as text (see _media_written_as_text), else None. Such media goes out
+    # only if its kind was offered on the turn, and never falls back to text.
+    _inferred: str | None = PrivateAttr(default=None)
+
+    @property
+    def inferred_media(self) -> str | None:
+        return self._inferred
+
+    @model_validator(mode="wrap")
     @classmethod
-    def _media_written_as_text(cls, data: object) -> object:
+    def _media_written_as_text(cls, data: object, handler):
         """Models copy how media reads in the chat window ("[photo] a scene", <media kind="photo">) instead of setting
-        the action field. The intent is plain, so the first such bubble becomes the action when no media field is set;
-        whether it is offered and allowed is still decided at send time. _fold_extra_bubbles drops the rest."""
-        if not isinstance(data, dict) or not isinstance(data.get("bubbles"), list):
-            return data
-        if any(data.get(field) for field in ("voice", "video_note", "image")):
-            return data
-        for item in data["bubbles"]:
-            text = item if isinstance(item, str) else item.get("text") if isinstance(item, dict) else None
-            match = _MEDIA_LABEL.match(text) if isinstance(text, str) else None
-            if match is None:
-                continue
-            content = _MEDIA_TAG.sub("", text[match.end():]).strip()
-            kind = match.group(1).lower().replace("_", " ")
-            if not content:
-                return data
-            if kind in ("photo", "image", "picture"):
-                return {**data, "image": content[:300]}
-            if kind in ("voice", "voice note"):
-                return {**data, "voice": content[:600]}
-            if kind in ("video note", "video"):
-                return {**data, "video_note": {"text": content[:VIDEO_TEXT_MAX]}}
-            return data
-        return data
+        the action field. The intent is plain, so the first such bubble becomes the action when no media field is set.
+        A bubble set to delete itself stays text (dropped by _fold_extra_bubbles), since media can't."""
+        inferred = None
+        if (isinstance(data, dict) and isinstance(data.get("bubbles"), list)
+                and not any(data.get(field) for field in ("voice", "video_note", "image"))):
+            for item in data["bubbles"]:
+                if isinstance(item, dict) and item.get("delete_after") is not None:
+                    continue
+                text = item if isinstance(item, str) else item.get("text") if isinstance(item, dict) else None
+                match = _MEDIA_LABEL.match(text) if isinstance(text, str) else None
+                content = _MEDIA_TAG.sub("", text[match.end():]).strip() if match else ""
+                if not content:
+                    continue
+                kind = match.group(1).lower().replace("_", " ")
+                if kind in ("photo", "image", "picture"):
+                    inferred, data = "image", {**data, "image": content[:300]}
+                elif kind in ("voice", "voice note"):
+                    inferred, data = "voice", {**data, "voice": content[:600]}
+                elif kind in ("video note", "video"):
+                    inferred, data = "video_note", {**data, "video_note": {"text": content[:VIDEO_TEXT_MAX]}}
+                break
+        actions = handler(data)
+        actions._inferred = inferred
+        return actions
+
+    def without_inferred_media(self) -> Actions:
+        """These actions without the media field inferred from a bubble."""
+        if self._inferred is None:
+            return self
+        return self.model_copy(update={self._inferred: None})
 
     @field_validator("bubbles", mode="before")
     @classmethod

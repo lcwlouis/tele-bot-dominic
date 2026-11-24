@@ -317,3 +317,33 @@ async def test_a_photo_written_as_text_is_sent_as_the_real_photo(make_app, studi
     assert route == "/v1/image" and payload["scene"] == "A sunny park"
     assert [call[2] for call in app.bot.of("send")] == ["pic again ah", "landed?"]
     assert app.bot.of("photo")
+
+
+async def test_voice_written_as_text_is_never_resent_as_text_when_the_studio_is_away(make_app, studio_server):
+    app = make_app(contents=(json.dumps({"bubbles": ["hey", "[voice] a quiet hello"]}),))
+    studio_server[3]["/v1/health"] = 503
+    await connect(app, studio_server)
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert [call[2] for call in app.bot.of("send")] == ["hey"]
+
+
+async def test_a_photo_written_as_text_is_not_made_when_photos_were_not_offered(make_app, studio_server):
+    app = make_app(contents=(json.dumps({"bubbles": ["ok", "[photo] A sunny park"]}),))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={"studio": app.config.studio.model_copy(update={"images": False})})
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER, text="send a pic"))
+    assert "Optional action \"image\"" not in turn_requests(app)[0]["messages"][1]["content"]
+    assert "/v1/image" not in [route for route, _ in studio_server[2]]
+    assert [call[2] for call in app.bot.of("send")] == ["ok"]
+
+
+@pytest.mark.parametrize("bubbles,image,texts", [
+    (["[voice]", "[photo] a park", "hi"], "a park", ["hi"]),  # an empty marker doesn't stop the scan
+    ([{"text": "[photo] a park", "delete_after": 2}, "ok"], None, ["ok"]),  # a vanishing bubble stays text, dropped
+])
+def test_media_written_as_text_edge_cases(bubbles, image, texts):
+    from dom.actions import Actions
+    actions = Actions.model_validate({"bubbles": bubbles})
+    assert actions.image == image and [b.text for b in actions.bubbles] == texts
