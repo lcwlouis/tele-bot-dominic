@@ -96,7 +96,10 @@ export type SettingsRole = Role | "triage";
 export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily";
 /** A provider's own effort names (low, medium, high, and any others it lists). */
 export type Effort = string;
-export type ProviderKind = "openai" | "openrouter" | "jev" | "searxng" | "deepseek" | "tavily";
+/** The service a provider talks to (dom/config.py ProviderKind). */
+export type ProviderKind = "openai" | "openrouter" | "gemini" | "searxng" | "deepseek" | "tavily";
+/** What a provider is for: model roles, studio backups, triage or web search (dom/config.py ProviderType). */
+export type ProviderType = "chat" | "media" | "decisions" | "search";
 
 /** What OpenRouter endpoints may do with a studio backup's request: zdr is the default (dom/config.py). Chat routes
  * always use zdr. */
@@ -134,20 +137,22 @@ export type SearchProviderInfo = {
 export type ProviderSetup = {
   name: string;
   kind: ProviderKind;
+  type: ProviderType;
   base_url: string;
   api_key_env: string | null;
   key_set: boolean;
   is_local: boolean;
   saved: boolean;
   listable: boolean;
-  uses: { role: SettingsRole; index: number }[];
+  /** A role's slot, or a studio backup chain's (voice, image, video). */
+  uses: { role: SettingsRole | StudioChain; index: number }[];
 };
 
 export type ModelSettings = {
   revision: string;
   roles: Record<SettingsRole, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
   providers: ProviderSetup[];
-  provider_presets: { name: string; kind: "openai" | "openrouter"; base_url: string; api_key_env: string | null; model: string | null }[];
+  provider_presets: { name: string; kind: ProviderKind; type: ProviderType; base_url: string; api_key_env: string | null; model: string | null }[];
   /** The studio's cloud backups ([[studio.<chain>_fallbacks]]), in the order they're tried. */
   studio: Record<StudioChain, StudioFallback[]>;
   search_providers: SearchProviderInfo[];

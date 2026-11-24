@@ -1,16 +1,17 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { send, type ModelSettings, type ProviderKind, type ProviderSetup } from "$lib/api";
+  import { send, type ModelSettings, type ProviderKind, type ProviderSetup, type ProviderType } from "$lib/api";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import * as Select from "$lib/components/ui/select";
   import RoutePrivacy from "./RoutePrivacy.svelte";
-  import { KEY_PATTERN, KIND_INFO, KINDS, useLabel } from "./roles";
+  import { KEY_PATTERN, KIND_INFO, TYPE_INFO, TYPES, useLabel } from "./roles";
 
   // Adds a provider (original null) or edits one. Saving tests it first (dom/web/provider_settings.py): through the
-  // first role that uses it, or by fetching its model list. Editing the address or key moves every role that uses it.
+  // first role or backup that uses it, or by fetching its model list. Editing the address or key moves every slot that
+  // uses it. A provider has a type (chat, media, decisions or search) and a service that can be that type.
   let {
     original,
     settings,
@@ -27,25 +28,30 @@
 
   const start = untrack(() => original);
   let name = $state(start?.name ?? "");
+  let type = $state<ProviderType>(start?.type ?? "chat");
   let kind = $state<ProviderKind>(start?.kind ?? "openai");
   let baseUrl = $state(start?.base_url ?? "");
   // A new provider starts with an empty key variable: the owner names one (PR #11's rule).
   let keyEnv = $state(start?.api_key_env ?? "");
   let presetName = $state("");
   const suggestedModel = $derived(settings.provider_presets.find((item) =>
-    item.base_url === baseUrl.trim().replace(/\/+$/, "") && item.kind === kind)?.model);
+    item.base_url === baseUrl.trim().replace(/\/+$/, "") && item.kind === kind && item.type === type)?.model);
+  // A media provider's address is fixed by its service: the studio backups call it.
+  const fixedUrl = $derived(type === "media" ? (KIND_INFO[kind].url.media ?? "") : "");
   let saving = $state(false);
   let error = $state("");
   const id = "provider-editor";
 
-  const suggestion = (value: ProviderKind) =>
-    settings.search_providers.find((item) => item.id === value)?.default_base_url || KIND_INFO[value].url;
+  const suggestion = (value: ProviderKind, of: ProviderType) =>
+    settings.search_providers.find((item) => item.id === value)?.default_base_url || KIND_INFO[value].url[of] || "";
 
-  /** A kind fills in its usual address, unless the owner typed their own. */
-  function pickKind(value: ProviderKind) {
-    const suggested = new Set(KINDS.map(suggestion));
-    if (!baseUrl || suggested.has(baseUrl)) baseUrl = suggestion(value);
-    kind = value;
+  /** A service fills in its usual address for the type, unless the owner typed their own. */
+  function pick(nextType: ProviderType, nextKind: ProviderKind) {
+    const suggested = new Set(TYPES.flatMap((of) => TYPE_INFO[of].kinds.map((value) => suggestion(value, of))));
+    if (!TYPE_INFO[nextType].kinds.includes(nextKind)) nextKind = TYPE_INFO[nextType].kinds[0];
+    if (!baseUrl || suggested.has(baseUrl)) baseUrl = suggestion(nextKind, nextType);
+    type = nextType;
+    kind = nextKind;
     error = "";
   }
 
@@ -54,6 +60,7 @@
     if (!preset) return;
     presetName = value;
     if (!start) name = preset.name;
+    type = preset.type;
     kind = preset.kind;
     baseUrl = preset.base_url;
     keyEnv = preset.api_key_env ?? "";
@@ -70,7 +77,8 @@
         original: start?.name ?? null,
         name: name.trim(),
         kind,
-        base_url: baseUrl.trim(),
+        type,
+        base_url: (fixedUrl || baseUrl).trim(),
         api_key_env: keyEnv.trim() || null,
       }, { quiet: true }));
     } catch (failure) {
@@ -108,34 +116,53 @@
           </Select.Content>
         </Select.Root>
       </div>
-      <div class="grid gap-1.5">
-        <Label for={`${id}-name`}>Name</Label>
-        <Input id={`${id}-name`} bind:value={name} oninput={() => (error = "")} required maxlength={40} pattern={"[A-Za-z0-9][A-Za-z0-9 ._\\-]*"} autocomplete="off" />
+      <div class="grid content-start gap-1.5">
+        <Label id={`${id}-type-label`}>Type</Label>
+        <Select.Root type="single" value={type} onValueChange={(value) => pick(value as ProviderType, kind)}>
+          <Select.Trigger class="h-9 w-full" aria-labelledby={`${id}-type-label`} aria-describedby={`${id}-type-hint`}>
+            {TYPE_INFO[type].label}
+          </Select.Trigger>
+          <Select.Content>
+            {#each TYPES as value (value)}
+              <Select.Item {value} label={TYPE_INFO[value].label} />
+            {/each}
+          </Select.Content>
+        </Select.Root>
+        <p id={`${id}-type-hint`} class="text-xs text-muted-foreground">{TYPE_INFO[type].summary}</p>
       </div>
-      <div class="grid gap-1.5">
-        <Label id={`${id}-kind-label`}>Kind</Label>
-        <Select.Root type="single" value={kind} onValueChange={(value) => pickKind(value as ProviderKind)}>
+      <div class="grid content-start gap-1.5">
+        <Label id={`${id}-kind-label`}>Service</Label>
+        <Select.Root type="single" value={kind} onValueChange={(value) => pick(type, value as ProviderKind)}>
           <Select.Trigger class="h-9 w-full" aria-labelledby={`${id}-kind-label`}>{KIND_INFO[kind].label}</Select.Trigger>
           <Select.Content>
-            {#each KINDS as value (value)}
+            {#each TYPE_INFO[type].kinds as value (value)}
               <Select.Item {value} label={KIND_INFO[value].label} />
             {/each}
           </Select.Content>
         </Select.Root>
       </div>
       <div class="grid gap-1.5 sm:col-span-2">
+        <Label for={`${id}-name`}>Name</Label>
+        <Input id={`${id}-name`} bind:value={name} oninput={() => (error = "")} required maxlength={40} pattern={"[A-Za-z0-9][A-Za-z0-9 ._\\-]*"} autocomplete="off" />
+      </div>
+      <div class="grid gap-1.5 sm:col-span-2">
         <Label for={`${id}-url`}>Base URL</Label>
-        <Input
-          id={`${id}-url`}
-          type="url"
-          required
-          bind:value={baseUrl}
-          oninput={() => (error = "")}
-          placeholder="https://models.example.org/v1"
-          class="font-mono"
-          autocomplete="off"
-          spellcheck={false}
-        />
+        {#if fixedUrl}
+          <Input id={`${id}-url`} value={fixedUrl} readonly class="font-mono" aria-describedby={`${id}-url-hint`} />
+          <p id={`${id}-url-hint`} class="text-xs text-muted-foreground">Fixed for {KIND_INFO[kind].label} media.</p>
+        {:else}
+          <Input
+            id={`${id}-url`}
+            type="url"
+            required
+            bind:value={baseUrl}
+            oninput={() => (error = "")}
+            placeholder="https://models.example.org/v1"
+            class="font-mono"
+            autocomplete="off"
+            spellcheck={false}
+          />
+        {/if}
       </div>
       <div class="grid gap-1.5 sm:col-span-2">
         <Label for={`${id}-key`}>Key variable</Label>
@@ -153,6 +180,10 @@
         <p id={`${id}-key-hint`} class="text-xs text-muted-foreground">
           The name of a variable in <code class="font-mono">.env</code>, never the key itself. A variable that already
           holds a key can't be pointed at a new host from here.
+          {#if type === "media"}
+            Use a media-only key, such as <code class="font-mono">OPENROUTER_MEDIA_API_KEY</code>. A key that chat uses
+            can't serve media.
+          {/if}
         </p>
       </div>
       {#if suggestedModel}
@@ -160,8 +191,12 @@
           Selecting this provider for a model role starts with <code class="font-mono">{suggestedModel}</code>.
         </p>
       {/if}
-      {#if kind === "openrouter"}
-        <p class="text-xs text-muted-foreground sm:col-span-2">OpenRouter chat uses zero data retention.</p>
+      {#if kind === "openrouter" && type !== "media"}
+        <p class="text-xs text-muted-foreground sm:col-span-2">
+          OpenRouter {type === "decisions" ? "decisions" : "chat"} uses zero data retention.
+        </p>
+      {:else if type === "media"}
+        <p class="text-xs text-muted-foreground sm:col-span-2">Each studio backup sets its own data policy.</p>
       {/if}
       <RoutePrivacy url={baseUrl} class="sm:col-span-2" />
       {#if error}

@@ -26,9 +26,30 @@ SEARCH_PROVIDERS = get_args(SearchProvider)
 ModelRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation"]
 MODEL_ROLES = get_args(ModelRole)
 
-# What a saved provider is: an OpenAI-compatible chat endpoint, OpenRouter, Jev's decisions API or a search service.
-ProviderKind = Literal["openai", "openrouter", "jev", "searxng", "deepseek", "tavily"]
+# The service a saved provider talks to: any OpenAI-compatible endpoint, OpenRouter, Google Gemini (direct, for media)
+# or a search service.
+ProviderKind = Literal["openai", "openrouter", "gemini", "searxng", "deepseek", "tavily"]
 PROVIDER_KINDS = get_args(ProviderKind)
+# What a saved provider is for (owner decision E70): chat completions (the model roles), studio media (the cloud
+# backups), OpenRouter's Decisions API (triage) or web search. One service can be saved once per type, each with
+# its own key variable.
+ProviderType = Literal["chat", "media", "decisions", "search"]
+PROVIDER_TYPES = get_args(ProviderType)
+SEARCH_KINDS = ("searxng", "deepseek", "tavily")
+TYPE_KINDS: dict[str, tuple[str, ...]] = {
+    "chat": ("openai", "openrouter"),
+    "media": ("openrouter", "gemini"),
+    "decisions": ("openrouter",),
+    "search": SEARCH_KINDS,
+}
+# A media provider's address is fixed by its service: the studio's cloud backups call these (StudioFallback.base_url).
+MEDIA_BASE_URLS = {"openrouter": "https://openrouter.ai/api/v1", "gemini": "https://generativelanguage.googleapis.com/v1beta"}
+
+
+def default_type(kind: str) -> ProviderType:
+    """The type of a provider table that names none: search for the search services, else chat."""
+    return "search" if kind in SEARCH_KINDS else "chat"
+
 # A provider reports its own effort names (low, medium, high, and more); config.toml takes any one lowercase word.
 EFFORT_PATTERN = r"^[a-z][a-z0-9_-]{0,23}$"
 PROVIDER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$"
@@ -57,6 +78,11 @@ MEDIA_KEY_RULE = (
     "A studio backup needs its own key variable, such as OPENROUTER_MEDIA_API_KEY: {name} is also used by a model "
     "role or a saved provider. Use a separate variable for studio backups."
 )
+MEDIA_PROVIDER_KEY_RULE = (
+    "A media provider needs its own key variable, such as OPENROUTER_MEDIA_API_KEY: {name} is also used by a model "
+    "role or a chat or decisions provider. Use a separate variable for media."
+)
+MEDIA_ADDRESS_RULE = "A media provider uses its service's fixed address: {url}."
 
 
 def routing_preferences(policy: DataPolicy) -> dict:
@@ -103,16 +129,42 @@ class ModelEndpoint(ProviderEndpoint):
 
 
 class ProviderSetup(BaseModel):
-    """A provider saved from the dashboard's Providers tab. Model roles keep their own address and key variable, so
-    routing never depends on this table; the dashboard uses it to offer providers and fetch their model lists."""
+    """A provider saved from the dashboard's Providers tab. Model roles and studio backups keep their own address and
+    key variable, so routing never depends on this table; the dashboard uses it to offer each role the providers of
+    its type and to fetch their model lists."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: ProviderKind = Field(
-        "openai", description="openai (any OpenAI-compatible endpoint), openrouter, jev (decisions), searxng, deepseek or tavily.",
+        "openai", description="The service: openai (any OpenAI-compatible endpoint), openrouter, gemini (direct Google "
+        "Gemini, media only), searxng, deepseek or tavily.",
+    )
+    type: ProviderType = Field(
+        "chat", description="What the provider is for: chat (model roles), media (studio cloud backups), decisions "
+        "(triage) or search. Unset means search for the search services, else chat.",
     )
     base_url: str = Field(description="Provider API base URL, including its API version path.")
     api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for an endpoint without authentication.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _typed(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        if data.get("kind") == "jev":  # before v0.8.3 a decisions provider was its own kind, always OpenRouter's API
+            data = {**data, "kind": "openrouter", "type": data.get("type", "decisions")}
+        if "type" not in data:
+            data = {**data, "type": default_type(data.get("kind", "openai"))}
+        return data
+
+    @model_validator(mode="after")
+    def _kind_fits_type(self) -> ProviderSetup:
+        if self.kind not in TYPE_KINDS[self.type]:
+            raise ValueError(f"A {self.type} provider uses {' or '.join(TYPE_KINDS[self.type])}, not {self.kind}.")
+        fixed = MEDIA_BASE_URLS.get(self.kind) if self.type == "media" else None
+        if fixed and self.base_url.rstrip("/") != fixed:
+            raise ValueError(MEDIA_ADDRESS_RULE.format(url=fixed))
+        return self
 
 
 class OpenersConfig(BaseModel):
@@ -383,9 +435,12 @@ class StudioFallback(BaseModel):
 
     @property
     def base_url(self) -> str:
-        if self.provider == "gemini_tts":
-            return "https://generativelanguage.googleapis.com/v1beta"
-        return "https://openrouter.ai/api/v1"
+        return MEDIA_BASE_URLS[self.kind]
+
+    @property
+    def kind(self) -> ProviderKind:
+        """The media provider service this backup calls."""
+        return "gemini" if self.provider == "gemini_tts" else "openrouter"
 
     @model_validator(mode="after")
     def _model_id(self) -> StudioFallback:
@@ -532,7 +587,7 @@ class Config(BaseModel):
         studio = self.studio.model_copy(update={f"{chain}_fallbacks": () for chain in STUDIO_CHAINS})
         reserved = self.model_copy(update={"models": {}, "provider_setups": {}, "studio": studio}).secret_names()
         model_routes = [*(endpoint for _, endpoint in self.model_endpoints()), *self.provider_setups.values()]
-        chat_keys = {route.api_key_env for route in model_routes if route.api_key_env}
+        chat_keys = self.chat_keys()
         for provider in fallbacks:
             if provider.api_key_env in chat_keys:  # a media key's looser data policy never reaches chat content
                 raise ValueError(MEDIA_KEY_RULE.format(name=provider.api_key_env))
@@ -544,6 +599,22 @@ class Config(BaseModel):
             ):
                 raise ValueError("A studio key variable must be paired only with its provider's HTTPS origin")
         return self
+
+    @model_validator(mode="after")
+    def _media_keys_apart(self) -> Config:
+        """A media provider's key may take a looser data policy (E66), so no chat or decisions route may share it."""
+        chat_keys = self.chat_keys()
+        for setup in self.provider_setups.values():
+            if setup.type == "media" and setup.api_key_env in chat_keys:
+                raise ValueError(MEDIA_PROVIDER_KEY_RULE.format(name=setup.api_key_env))
+        return self
+
+    def chat_keys(self) -> set[str]:
+        """Key variables that carry conversation content: the model roles' and the chat, decisions and search
+        providers'. Studio backups and media providers never use one."""
+        routes = [*(endpoint for _, endpoint in self.model_endpoints()),
+                  *(setup for setup in self.provider_setups.values() if setup.type != "media")]
+        return {route.api_key_env for route in routes if route.api_key_env}
 
     @field_validator("provider_setups")
     @classmethod

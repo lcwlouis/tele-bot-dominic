@@ -32,7 +32,7 @@
   import RoutePrivacy from "$lib/components/settings/RoutePrivacy.svelte";
   import RoleEditor from "$lib/components/settings/RoleEditor.svelte";
   import {
-    DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, ZDR_RECOMMENDATION, host, isDeepSeekChat, seconds, slotLabel, useLabel,
+    DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, TYPE_INFO, TYPES, ZDR_RECOMMENDATION, host, isDeepSeekChat, seconds, slotLabel, useLabel,
   } from "$lib/components/settings/roles";
   import StudioBackupEditor from "$lib/components/settings/StudioBackupEditor.svelte";
   import { CHAIN_INFO, CHAINS, STUDIO_PROVIDERS } from "$lib/components/settings/studio";
@@ -403,7 +403,8 @@
 
 {#snippet providerCard(settings: ModelSettings, provider: ProviderSetup, n: string)}
   {@const testKey = `provider:${provider.name}`}
-  {@const search = settings.search_providers.find((item) => item.id === provider.kind)}
+  <!-- A media provider's backups each set their own data policy, so the search services' notes don't apply. -->
+  {@const search = provider.type === "media" ? undefined : settings.search_providers.find((item) => item.id === provider.kind)}
   {#if isEditingProvider(provider.name)}
     <ProviderEditor original={provider} {settings} {revision} onsaved={providerSaved} oncancel={() => (editing = null)} />
   {:else}
@@ -416,6 +417,7 @@
           <div class="min-w-0">
             <Card.Title id={`provider-${n}`} class="text-base break-all">{provider.name}</Card.Title>
             <div class="mt-1 flex flex-wrap gap-1">
+              <Badge variant="secondary">{TYPE_INFO[provider.type].label}</Badge>
               <Badge variant="outline">{KIND_INFO[provider.kind].label}</Badge>
               <Badge variant={provider.is_local ? "default" : "outline"}>{provider.is_local ? "Local" : "Cloud"}</Badge>
               {@render keyBadge(keyState(provider.api_key_env, provider.key_set))}
@@ -444,7 +446,7 @@
           <p class="mt-1 text-sm">{provider.uses.length ? provider.uses.map(useLabel).join(" · ") : "Nothing yet"}</p>
         </div>
         {#if !provider.saved}
-          <p class="text-xs text-muted-foreground">Found in config.toml's roles. Edit to name and save it here.</p>
+          <p class="text-xs text-muted-foreground">Found in config.toml's {provider.type === "media" ? "studio backups" : "roles"}. Edit to name and save it here.</p>
         {/if}
         {@render result(testKey)}
       </Card.Content>
@@ -521,11 +523,11 @@
             {@const chain = settings.studio[chainName]}
             {@const busy = editing !== null || reordering !== ""}
             {#if isEditingStudio(chainName, null)}
-              <StudioBackupEditor chain={chainName} index={null} original={null} {revision} onsaved={(result) => saved(result, `${group.label}: backup saved.`)} oncancel={() => (editing = null)} />
+              <StudioBackupEditor chain={chainName} index={null} original={null} providers={settings.providers} {revision} onsaved={(result) => saved(result, `${group.label}: backup saved.`)} oncancel={() => (editing = null)} />
             {/if}
             {#each chain as item, index (index)}
               {#if isEditingStudio(chainName, index)}
-                <StudioBackupEditor chain={chainName} {index} original={item} {revision} onsaved={(result) => saved(result, `${group.label}: backup saved.`)} oncancel={() => (editing = null)} />
+                <StudioBackupEditor chain={chainName} {index} original={item} providers={settings.providers} {revision} onsaved={(result) => saved(result, `${group.label}: backup saved.`)} oncancel={() => (editing = null)} />
               {/if}
             {/each}
             <Card.Root aria-labelledby={`studio-${chainName}-title`}>
@@ -611,15 +613,21 @@
       {#if isEditingProvider(null)}
         <div class="mb-8 grid"><ProviderEditor original={null} {settings} {revision} onsaved={providerSaved} oncancel={() => (editing = null)} /></div>
       {/if}
-      {#each ["models", "search"] as group (group)}
-        {@const list = settings.providers.filter((item) => KIND_INFO[item.kind].group === group)}
-        <section aria-labelledby={`providers-${group}`} class="mb-8">
+      {#each TYPES as group (group)}
+        {@const list = settings.providers.filter((item) => item.type === group)}
+        <section aria-labelledby={`providers-${group}`} aria-describedby={`providers-${group}-summary`} class="mb-8">
           <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
-            <h2 id={`providers-${group}`} class="text-lg font-semibold">{group === "search" ? "Web search" : "Model providers"}</h2>
+            <div>
+              <h2 id={`providers-${group}`} class="text-lg font-semibold">{TYPE_INFO[group].heading}</h2>
+              <p id={`providers-${group}-summary`} class="text-sm text-muted-foreground">{TYPE_INFO[group].summary}</p>
+            </div>
             <p class="kicker">{String(list.length).padStart(2, "0")} {list.length === 1 ? "provider" : "providers"}</p>
           </div>
           {#if list.length === 0}
-            <StatusNote title={group === "search" ? "No search providers" : "No model providers"} detail="Add one with Add provider, then pick it for a role under Models." />
+            <StatusNote
+              title={`No ${TYPE_INFO[group].heading.toLowerCase()}`}
+              detail={group === "media" ? "Add one with Add provider, then pick it for a studio backup under Models." : "Add one with Add provider, then pick it for a role under Models."}
+            />
           {/if}
           <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {#each list as provider, n (provider.name)}{@render providerCard(settings, provider, `${group}-${n}`)}{/each}

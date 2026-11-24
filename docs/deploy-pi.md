@@ -146,8 +146,9 @@ release, then repoint `app`, using the folder name `dom deploy` reported as kept
 
 From v0.8.3 the dashboard can save any reasoning effort a provider lists, such as
 `high`. v0.8.2 and older accept only `low` and `medium`, and refuse to start with
-any other `reasoning_effort` in `config.toml`. So when rolling back past v0.8.3,
-check the config **before** starting the old release:
+any other `reasoning_effort` in `config.toml`. v0.8.3 also saves media and
+decisions providers with a `type` line, which older releases refuse. So when
+rolling back past v0.8.3, check the config **before** starting the old release:
 
 ```sh
 systemctl --user stop dom.service
@@ -157,6 +158,10 @@ grep -n 'reasoning_effort' "$home/config.toml"
 # or delete the line. (config.toml.bak is the file before the most recent dashboard save and
 # config.toml.orig the file before the first; either may already hold a newer effort, so check
 # whichever you restore with the same grep.)
+grep -n -e '^type = ' -e '^kind = "gemini"' "$home/config.toml"
+# v0.8.2 and older don't know provider types. Delete each [providers.<name>] table that has a
+# type line or kind = "gemini" (media and decisions providers). Roles and studio backups keep
+# their own address and key, so nothing else changes.
 ln -s "releases/<previous>" "$root/app.next"
 mv -Tf "$root/app.next" "$root/app"
 systemctl --user start dom.service

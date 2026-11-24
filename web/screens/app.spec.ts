@@ -16,6 +16,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   // Provider setup, and a role's editor with its model picker open on the provider's fetched list.
   { name: "settings-provider-editor", path: "/app/system", heading: "Settings", tab: "Providers", click: "Add provider" },
   { name: "settings-model-picker", path: "/app/system", heading: "Settings", click: "Edit Chat", fill: ["Model ID", "example/c"] },
+  // Triage's editor with its picker open on OpenRouter's decision models (E71).
+  { name: "settings-triage-picker", path: "/app/system", heading: "Settings", click: "Edit Triage", fill: ["Model ID", "decider"] },
   // A studio cloud backup's editor: provider, model from OpenRouter's video list, key, voice path and data policy.
   { name: "settings-studio-backup", path: "/app/system", heading: "Settings", click: "Add backup for video notes" },
   { name: "chats", path: "/app/chats", heading: "Chats" },
@@ -100,6 +102,19 @@ for (const scheme of ["dark", "light"] as const) {
         await expect(page.getByLabel("Base URL")).toHaveValue("https://openrouter.ai/api/v1");
         await expect(page.getByLabel("Key variable")).toHaveValue("OPENROUTER_API_KEY");
         await expect(page.getByText("OpenRouter chat uses zero data retention.")).toBeVisible();
+
+        // OpenRouter comes once per type: media has a fixed address and its own key; decisions is the alpha API.
+        await picker.click();
+        await page.getByRole("option", { name: "OpenRouter media", exact: true }).click();
+        await expect(page.getByRole("combobox", { name: "Type" })).toHaveText("Media");
+        await expect(page.getByLabel("Base URL")).toHaveValue("https://openrouter.ai/api/v1");
+        await expect(page.getByLabel("Base URL")).toHaveAttribute("readonly", "");
+        await expect(page.getByLabel("Key variable")).toHaveValue("OPENROUTER_MEDIA_API_KEY");
+        await picker.click();
+        await page.getByRole("option", { name: "OpenRouter decisions", exact: true }).click();
+        await expect(page.getByRole("combobox", { name: "Type" })).toHaveText("Decisions");
+        await expect(page.getByLabel("Base URL")).toHaveValue("https://openrouter.ai/api/alpha");
+        await expect(page.getByText("OpenRouter decisions uses zero data retention.")).toBeVisible();
 
         await picker.click();
         await page.getByRole("option", { name: "Ollama", exact: true }).click();
@@ -356,7 +371,8 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("status").filter({ hasText: "Voice notes: order saved." })).toBeVisible();
     await page.getByRole("button", { name: "Add backup for video notes" }).click();
     await page.getByLabel("Model", { exact: true }).fill("heygen/heygen-avatar-6-turbo");
-    await page.getByLabel("Key variable").last().fill("EXAMPLE_VOICE_KEY");
+    // The key comes from the media provider the voice backups already use.
+    await expect(page.getByRole("combobox", { name: "Media provider" })).toHaveText("OpenRouter media");
     await page.getByRole("button", { name: "Add backup", exact: true }).click();
     await expect(page.getByRole("status").filter({ hasText: "Video notes: backup saved." })).toBeVisible();
     await page.getByRole("button", { name: "Move down Video notes backup 1" }).click();
@@ -366,9 +382,16 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("status").filter({ hasText: "Video notes: backup removed." })).toBeVisible();
     await expect(page.getByText("heygen/heygen-avatar-6-turbo")).toBeVisible();
 
-    // Triage is edited and tested like any role; its test is a real decisions request.
+    // Triage is edited and tested like any role: it picks from OpenRouter's decision models, and its test is a real
+    // decisions request.
     await page.getByRole("button", { name: "Edit Triage" }).click();
-    await page.getByLabel("Model ID").first().fill("example/classifier-2");
+    await expect(page.getByRole("combobox", { name: "Provider", exact: true })).toHaveText("OpenRouter decisions · OpenRouter");
+    const triageModel = page.getByLabel("Model ID").first();
+    await triageModel.fill("flash");
+    await expect(options).toHaveCount(1);
+    await options.first().click();
+    await expect(triageModel).toHaveValue("example/decider-flash:free");
+    await expect(page.getByText("3 models · fetched")).toBeVisible();
     await page.getByRole("button", { name: "Save triage" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Saved." }).last()).toBeVisible();
     await page.getByRole("button", { name: "Test Triage", exact: true }).click();

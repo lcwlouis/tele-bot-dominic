@@ -64,7 +64,8 @@ The dashboard's Providers tab saves each provider as a `[providers.<name>]` tabl
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `providers.<name>.kind` | `"openai"` | openai (any OpenAI-compatible endpoint), openrouter, jev (decisions), searxng, deepseek or tavily. |
+| `providers.<name>.kind` | `"openai"` | The service: openai (any OpenAI-compatible endpoint), openrouter, gemini (direct Google Gemini, media only), searxng, deepseek or tavily. |
+| `providers.<name>.type` | `"chat"` | What the provider is for: chat (model roles), media (studio cloud backups), decisions (triage) or search. Unset means search for the search services, else chat. |
 | `providers.<name>.base_url` | Required | Provider API base URL, including its API version path. |
 | `providers.<name>.api_key_env` | Unset | Secret variable name. Leave unset for an endpoint without authentication. |
 

@@ -123,7 +123,9 @@ class App:
         routed = (*MODEL_ROLES, "triage")
         models = {name: endpoint for name, endpoint in self.config.models.items() if name not in routed}
         models.update({name: saved.models[name] for name in routed if name in saved.models})
-        config = self.config.model_copy(update={"models": models, "provider_setups": saved.provider_setups})
+        # A provider save can move studio backups to a new key variable; backups are read from the config on each use.
+        config = self.config.model_copy(update={"models": models, "provider_setups": saved.provider_setups,
+                                                "studio": saved.studio})
         current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
         chat, media, draft, escalation = (routed_client(config, role, current.http, current.usage)
                                           for role in ("chat", "media", "drafting", "escalation"))

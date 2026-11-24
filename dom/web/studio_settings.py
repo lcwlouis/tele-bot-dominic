@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dom import model_lists
-from dom.config import CHAIN_PROVIDERS, MEDIA_KEY_RULE, ProviderEndpoint, StudioChain, StudioFallback, StudioProvider
+from dom.config import CHAIN_PROVIDERS, MEDIA_BASE_URLS, MEDIA_KEY_RULE, ProviderEndpoint, StudioChain, StudioFallback, StudioProvider
 from dom.web.model_settings import (
     _CONFIG_WRITE,
     ENV_NAME,
@@ -42,6 +42,7 @@ from dom.web.model_settings import (
     _settings,
     _snapshot,
     _write,
+    set_backups,
     validated,
 )
 from dom.studio.cloud import VideoUnsupported, video_models, video_plan, video_rate
@@ -58,6 +59,7 @@ TEST_TIMEOUT = 8
 # OpenRouter lists each output kind's models separately; every list is public.
 MODEL_LISTS = {"openrouter_image": "/images/models", "openrouter_tts": "/audio/speech/models",
                "openrouter_video": "/videos/models"}
+MEDIA_NEEDS_KEY = "A media provider needs a key variable."
 UNPAID_GEMINI = ("Tick the Paid Services box to use a direct Gemini key. Google may use audio made on an unpaid key to "
                  "improve its products, with human review, so Dom never runs Gemini without it.")
 
@@ -111,16 +113,7 @@ def _chain(snapshot: Snapshot, chain: StudioChain) -> list[StudioFallback]:
 def _with_chain(current: Snapshot, chain: StudioChain, backups: list[StudioFallback]) -> Snapshot:
     """The settings with one studio chain replaced, validated (key pairing included) but not written."""
     document = tomlkit.parse(current.text)
-    if "studio" not in document:
-        document["studio"] = tomlkit.table()
-    key = f"{chain}_fallbacks"
-    if backups:
-        tables = tomlkit.aot()
-        for item in backups:
-            tables.append(tomlkit.item(item.model_dump(exclude_defaults=True)))
-        document["studio"][key] = tables
-    else:
-        document["studio"].pop(key, None)
+    set_backups(document, chain, backups)
     return validated(current, document)
 
 
@@ -132,10 +125,7 @@ def _check_backup(current: Snapshot, edit: BackupSave) -> StudioFallback:
         raise HTTPException(422, "That provider can't make this kind of media.")
     if backup.provider == "gemini_tts" and not backup.paid:
         raise HTTPException(422, UNPAID_GEMINI)
-    config = current.config
-    chat_keys = {route.api_key_env for _, route in config.model_endpoints()} | {
-        setup.api_key_env for setup in config.provider_setups.values()}
-    if backup.api_key_env in chat_keys:
+    if backup.api_key_env in current.config.chat_keys():
         raise HTTPException(422, MEDIA_KEY_RULE.format(name=backup.api_key_env))
     backups = _chain(current, edit.chain)
     if edit.index is None and len(backups) >= MAX_FALLBACKS:
@@ -275,6 +265,34 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
         error = "The provider's model list was not in the expected format."
     else:
         return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=reply)
+    return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=_redact(error, key))
+
+
+async def probe_key(app: App, config, kind: str, api_key_env: str | None) -> TestResult:
+    """Check a media provider's key without generating media: OpenRouter's key endpoint, or Gemini's model list."""
+    start = monotonic()
+    base = MEDIA_BASE_URLS[kind]
+    key = None
+    try:
+        _check_keys(config, [ProviderEndpoint(base_url=base, api_key_env=api_key_env)])
+        key = await asyncio.to_thread(config.secret, api_key_env) if api_key_env else None
+        if not key:
+            return TestResult(ok=False, latency_ms=0, error=MISSING_KEY if api_key_env else MEDIA_NEEDS_KEY)
+        if kind == "gemini":
+            await _get(app, f"{base}/models?pageSize=1", {"x-goog-api-key": key})
+        else:
+            await _get(app, base + "/key", {"Authorization": f"Bearer {key}"})
+    except KeyPairing as exc:
+        error = str(exc)
+    except (TimeoutError, httpx.TimeoutException):
+        error = "Provider test timed out."
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        error = "The provider refused the key." if status in (401, 403) else f"Provider returned HTTP {status}."
+    except (httpx.HTTPError, httpx.InvalidURL, OSError):
+        error = "Could not reach the provider."
+    else:
+        return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply="The key works.")
     return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=_redact(error, key))
 
 
