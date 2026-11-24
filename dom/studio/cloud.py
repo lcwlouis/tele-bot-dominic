@@ -19,11 +19,12 @@ from pathlib import Path
 from time import monotonic
 
 import httpx
+from PIL import Image, ImageOps
 
 from dom.config import Config, StudioFallback, routing_preferences
 from dom.studio.client import MAX_MEDIA_BYTES
 from dom.studio.policy import Kind, backups as providers
-from dom.usage import ModelCallSkipped, UsageRecorder, check_model_allowed, model_request, response_usage
+from dom.usage import ModelCallSkipped, UsageRecorder, check_model_allowed, model_request, response_usage, token_counts
 
 log = logging.getLogger(__name__)
 PNG = b"\x89PNG\r\n\x1a\n"
@@ -34,10 +35,10 @@ VIDEO_POLL_SECONDS = 5
 VIDEO_NOTE_SIDE = 640  # Telegram's round video notes are square, at most 640 px
 VIDEO_NOTE_SECONDS = 59  # Telegram's limit is 60 s
 MAX_VIDEO_SECONDS = 10  # a note stays short, so it stays cheap
-AVATAR_IV = "heygen/avatar-iv"
-AVATAR_6 = {"heygen/heygen-avatar-6", "heygen/heygen-avatar-6-turbo"}
-AVATAR_MODELS = {AVATAR_IV, *AVATAR_6}
-AVATAR_MOTION = "Look into the camera with relaxed, natural expressions and subtle head movement."
+AVATAR_MODELS = {"heygen/heygen-avatar-6", "heygen/heygen-avatar-6-turbo"}
+SPEECH_COST_DELAYS = (0, 5, 10, 15, 15)
+PHOTO_SIDE = 1280
+PHOTO_BYTES = 2 * 1024 * 1024
 VOICE_SAMPLE_RATE = 24000
 JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 VIDEO_MODELS_TTL = 24 * 60 * 60
@@ -68,12 +69,7 @@ def video_plan(entry: dict) -> dict:
                    if (lines := _resolution_lines(value)) is not None)
     if not sizes:
         raise VideoUnsupported("The model doesn't publish a video resolution.")
-    plan = {"resolution": sizes[0][1]}
-    if entry["avatar"] == AVATAR_IV:
-        if "1:1" not in (entry.get("supported_aspect_ratios") or []):
-            raise VideoUnsupported("Avatar IV doesn't list square output.")
-        plan["aspect_ratio"] = "1:1"
-    return plan
+    return {"resolution": sizes[0][1]}
 
 
 def video_rate(entry: dict, plan: dict) -> float:
@@ -309,6 +305,26 @@ def _decode(encoded: str, maximum: int) -> bytes:
     return data
 
 
+def _prepare_photo(encoded: str, mime: str) -> bytes:
+    formats = {"image/png": "PNG", "image/jpeg": "JPEG"}
+    if mime not in formats:
+        raise ValueError("unexpected image type")
+    data = _decode(encoded, MAX_MEDIA_BYTES)
+    try:
+        with Image.open(io.BytesIO(data), formats=[formats[mime]]) as image:
+            if image.width * image.height > 25_000_000:
+                raise ValueError("image dimensions too large")
+            if len(data) <= PHOTO_BYTES and max(image.size) <= PHOTO_SIDE:
+                return data
+            photo = ImageOps.exif_transpose(image).convert("RGB")
+            photo.thumbnail((PHOTO_SIDE, PHOTO_SIDE), Image.Resampling.LANCZOS)
+            with io.BytesIO() as output:
+                photo.save(output, format="JPEG", quality=90, optimize=True)
+                return output.getvalue()
+    except Image.DecompressionBombError as error:
+        raise ValueError("image dimensions too large") from error
+
+
 class CloudStudio:
     def __init__(self, http: httpx.AsyncClient, usage: UsageRecorder):
         self.http = http
@@ -334,9 +350,7 @@ class CloudStudio:
                 body.extend(chunk)
             return bytes(body), response.headers
 
-    async def _speech_usage(self, base: str, headers: dict, generation_id: str | None) -> dict:
-        if not generation_id:
-            return {}
+    async def _speech_usage(self, base: str, headers: dict, generation_id: str) -> dict:
         try:
             async with asyncio.timeout(2):
                 raw, _ = await self._read(
@@ -348,6 +362,28 @@ class CloudStudio:
                         "output_tokens": data.get("tokens_completion")}
         except (httpx.HTTPError, TimeoutError, ValueError, KeyError, AttributeError, TypeError):
             return {}
+
+    def _track_reconcile(self, work: Awaitable[None]) -> None:
+        task = asyncio.ensure_future(work)
+        self._reconciling.add(task)
+        task.add_done_callback(self._reconciling.discard)
+
+    async def _reconcile_speech(
+        self, base: str, headers: dict, generation_id: str, recorded: asyncio.Task,
+    ) -> None:
+        row = await recorded
+        if row is None:
+            return
+        for delay in SPEECH_COST_DELAYS:
+            await asyncio.sleep(delay)
+            usage = await self._speech_usage(base, headers, generation_id)
+            cost = usage.get("cost")
+            if type(cost) in (int, float) and 0 <= cost < math.inf:
+                inputs, outputs, _ = token_counts(usage)
+                await asyncio.shield(self.usage.store.set_usage_cost(
+                    row, float(cost), input_tokens=inputs, output_tokens=outputs,
+                ))
+                return
 
     async def generate(
         self, config: Config, kind: Kind, text: str, outfit: str | None, chat_id: int,
@@ -393,6 +429,8 @@ class CloudStudio:
                 text = "Keep the same identity and appearance as the reference. " + text
             path = "/images"
             payload["prompt"] = text
+            if re.fullmatch(r"bytedance-seed/seedream-5-5(?:-[0-9]{8})?", provider.model):
+                payload.update(resolution="1K", aspect_ratio="1:1")
             maximum = MAX_MEDIA_BYTES * 4 // 3 + 65536
             timeout = config.studio.timeouts.images
         elif provider.provider == "openrouter_tts":
@@ -412,24 +450,22 @@ class CloudStudio:
 
         usage_kind = "studio_image" if kind == "photo" else "studio_voice"
         usage: dict = {}
+        generation_id = None
         with model_request(usage_kind, chat_id, allowed):
             await check_model_allowed()
             try:
                 async with asyncio.timeout(timeout):
                     raw, response_headers = await self._read(base + path, headers, mime, maximum, payload=payload)
                     if provider.provider == "openrouter_tts":
-                        usage = await self._speech_usage(base, headers, response_headers.get("X-Generation-Id"))
+                        generation_id = response_headers.get("X-Generation-Id")
                         return await _opus(speech_pcm(raw))
                     result = await asyncio.to_thread(json.loads, raw)
                     if kind == "photo":
                         usage = response_usage(result)
                         image = result["data"][0]
-                        if image.get("media_type", "image/png") != "image/png":
-                            raise ValueError("unexpected image type")
-                        data = await asyncio.to_thread(_decode, image["b64_json"], MAX_MEDIA_BYTES)
-                        if not data.startswith(PNG):
-                            raise ValueError("invalid PNG")
-                        return data
+                        return await asyncio.to_thread(
+                            _prepare_photo, image["b64_json"], image.get("media_type", "image/png"),
+                        )
                     metadata = result.get("usageMetadata") or {}
                     usage = {"input_tokens": metadata.get("promptTokenCount"),
                              "output_tokens": metadata.get("candidatesTokenCount")}
@@ -442,9 +478,12 @@ class CloudStudio:
                         raise ValueError("invalid WAV")
                     return await _opus(speech_pcm(data))
             finally:
-                await asyncio.shield(self.usage.record(
+                recorded = asyncio.create_task(self.usage.record(
                     usage_kind, provider.model, httpx.URL(base).host, usage, chat_id, fallback=True,
                 ))
+                if generation_id:
+                    self._track_reconcile(self._reconcile_speech(base, headers, generation_id, recorded))
+                await asyncio.shield(recorded)
 
     async def _video_entry(self, base: str, model: str) -> dict:
         if self._video_models is None or monotonic() - self._video_models[0] > VIDEO_MODELS_TTL:
@@ -508,12 +547,6 @@ class CloudStudio:
         base, headers = provider.base_url, {"Authorization": f"Bearer {key}"}
         payload = {"model": provider.model, **plan, "input_references": references,
                    "provider": routing_preferences(provider.data_policy)}
-        if entry["avatar"] == AVATAR_IV:
-            payload["provider"]["options"] = {"heygen": {
-                "motion_prompt": AVATAR_MOTION, "remove_background": False,
-            }}
-        else:
-            payload["prompt"] = AVATAR_MOTION
         estimate = video_estimate(entry, plan, duration)
         with model_request("studio_video", chat_id, allowed):
             await check_model_allowed()
@@ -545,9 +578,7 @@ class CloudStudio:
                     async def reconcile() -> None:
                         await self._reconcile(base, headers, job_id, await accepted)
 
-                    task = asyncio.create_task(reconcile())
-                    self._reconciling.add(task)
-                    task.add_done_callback(self._reconciling.discard)
+                    self._track_reconcile(reconcile())
 
     async def _record_job(self, provider: StudioFallback, chat_id: int, job_id: str, estimate: float) -> int | None:
         row = await self.usage.record(

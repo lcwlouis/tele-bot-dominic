@@ -165,7 +165,7 @@ Add one `[[studio.voice_fallbacks]]`, `[[studio.image_fallbacks]]`, or `[[studio
 | `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos when an approved reference cannot be sent. |
 | `studio.<kind>_fallbacks[].data_policy` | `"zdr"` | OpenRouter data policy for this media backup: zdr (zero data retention, the default), no_training (providers that may keep but never train on the data) or any. Ignored by direct Gemini. OpenRouter video keeps its output for download, so a video backup needs no_training or any. |
 
-Video models must support lip-sync driven by an approved portrait and Dom’s voice audio. Replace older text-to-video backups with an avatar such as `heygen/avatar-iv`. The reference flags apply to photos.
+Video fallbacks support `heygen/heygen-avatar-6-turbo` and `heygen/heygen-avatar-6`. They drive lip-sync from an approved portrait and Dom’s voice audio. Replace older backups, including Avatar IV, which rejected inline WAV with an HTTPS-only error in the 2026-11-24 live test. The reference flags apply to photos. Seedream 5.5 requests 1K square photos. [OpenRouter Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation) · [Seedream 5.5](https://openrouter.ai/bytedance-seed/seedream-5-5/).
 
 ### Studio limits
 

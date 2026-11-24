@@ -203,7 +203,7 @@ async def _list(app: App, provider: str, *, refresh: bool) -> model_lists.ModelL
     base = StudioFallback.model_construct(provider=provider).base_url
     address = base + MODEL_LISTS[provider]
     if provider == "openrouter_video":
-        address += "?input=portrait-and-audio"
+        address += "?input=portrait-and-inline-audio"
     if not refresh and (listed := await model_lists.cached(app.store, address, None)):
         return listed
     secrets = await asyncio.to_thread(model_lists.secret_values, app.config)
@@ -238,9 +238,8 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
             if entry is None:
                 raise VideoUnsupported("Pick a lip-sync avatar that takes both a portrait and an audio track.")
             plan = video_plan(entry)
-            shape = plan.get("aspect_ratio", "square Telegram crop")
             price = video_rate(entry, plan)
-            reply = f"The key works. Notes use {plan['resolution']} video ({shape}) at ${price:g} per second."
+            reply = f"The key works. Notes use {plan['resolution']} video (square Telegram crop) at ${price:g} per second."
         if not key:
             return TestResult(ok=False, latency_ms=0, error=MISSING_KEY)
         if backup.provider == "gemini_tts":

@@ -117,7 +117,7 @@ api_key_env = "EXAMPLE_VOICE_KEY"
 
 [[studio.video_fallbacks]]
 provider = "openrouter_video"
-model = "heygen/avatar-iv"
+model = "heygen/heygen-avatar-6-turbo"
 api_key_env = "EXAMPLE_VOICE_KEY"
 data_policy = "no_training"
 
@@ -168,8 +168,8 @@ PREVIEW_MEDIA_MODELS = {"data": [
 ]}
 
 PREVIEW_AVATAR_MODELS = {"data": [
-    {"id": "heygen/avatar-iv", "name": "Avatar IV", "supported_resolutions": ["720p"],
-     "supported_aspect_ratios": ["1:1"], "pricing_skus": {"duration_seconds": "0.05"},
+    {"id": "heygen/heygen-avatar-6", "name": "Avatar 6", "supported_resolutions": ["1080p"],
+     "pricing_skus": {"duration_seconds_1080p": "0.10"},
      "architecture": {"input_modalities": ["image", "audio"], "output_modalities": ["video"]}},
     {"id": "heygen/heygen-avatar-6-turbo", "name": "Avatar 6 Turbo", "supported_resolutions": ["1080p"],
      "pricing_skus": {"duration_seconds_1080p": "0.05"},

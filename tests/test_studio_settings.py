@@ -103,7 +103,7 @@ async def test_credential_like_backup_fields_are_never_shown(dashboard, monkeypa
     assert shown["model"] == "" and shown["key_set"] is True
 
 
-def _studio_mock(app, *, key_status=200, models=("acme/voice", "heygen/avatar-iv"), inputs=("image", "audio")):
+def _studio_mock(app, *, key_status=200, models=("acme/voice", "heygen/heygen-avatar-6-turbo", "heygen/heygen-avatar-6", "heygen/avatar-iv"), inputs=("image", "audio")):
     seen = []
 
     def respond(request):
@@ -112,9 +112,9 @@ def _studio_mock(app, *, key_status=200, models=("acme/voice", "heygen/avatar-iv
             return httpx.Response(key_status, json={"data": {}})
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [
-                {"id": model, "supported_aspect_ratios": ["1:1"], "supported_resolutions": ["720p"],
+                {"id": model, "supported_resolutions": ["1080p"],
                  "pricing_skus": {"duration_seconds": "0.05"}, "architecture": {
-                     "input_modalities": list(inputs) if model == "heygen/avatar-iv" else ["text"],
+                     "input_modalities": list(inputs) if model.startswith("heygen/") else ["text"],
                      "output_modalities": ["video"],
                  }} for model in models
             ]})
@@ -131,7 +131,7 @@ async def _studio(client, path, **body):
 
 
 VOICE_BACKUP = {"provider": "openrouter_tts", "model": "acme/voice", "api_key_env": MEDIA_KEY}
-VIDEO_BACKUP = {"provider": "openrouter_video", "model": "heygen/avatar-iv", "api_key_env": MEDIA_KEY,
+VIDEO_BACKUP = {"provider": "openrouter_video", "model": "heygen/heygen-avatar-6-turbo", "api_key_env": MEDIA_KEY,
                 "data_policy": "no_training"}
 
 
@@ -162,6 +162,8 @@ async def test_studio_backups_add_edit_move_remove_with_a_media_key(dashboard, m
         tested = await _studio(client, "/test", chain="voice", index=0)
         assert tested.json()["ok"] is True, tested.text
         assert seen == ["/api/v1/key", "/api/v1/audio/speech/models"]  # no media was generated
+        legacy = await _studio(client, "/save", chain="video", backup={**VIDEO_BACKUP, "model": "heygen/avatar-iv"})
+        assert legacy.status_code == 422, legacy.text
         video = await _studio(client, "/save", chain="video", backup=VIDEO_BACKUP)
         assert video.status_code == 200, video.text
         assert app.config.studio.video_fallbacks[0].data_policy == "no_training"  # applies at once
@@ -225,7 +227,7 @@ async def test_studio_backup_list_is_the_output_kinds_list(dashboard):
     seen, http = _studio_mock(app)
     async with http, browser() as client:
         listed = await _studio(client, "/models", provider="openrouter_video")
-        assert [item["id"] for item in listed.json()["models"]] == ["heygen/avatar-iv"]
+        assert [item["id"] for item in listed.json()["models"]] == ["heygen/heygen-avatar-6", "heygen/heygen-avatar-6-turbo"]
         assert (await _studio(client, "/models", provider="gemini_tts")).json() == {"listable": False, "models": [],
                                                                                    "fetched_at": None}
     assert sorted(seen) == ["/api/v1/models", "/api/v1/videos/models"]
@@ -368,4 +370,4 @@ async def test_video_backup_test_refuses_a_model_that_cannot_take_the_portrait(d
         assert saved.status_code == 200, saved.text
         tested = await _studio(client, "/test", chain="video", index=0)
         assert tested.json()["ok"]
-        assert "720p video (1:1) at $0.05 per second" in tested.json()["reply"]
+        assert "1080p video (square Telegram crop) at $0.05 per second" in tested.json()["reply"]

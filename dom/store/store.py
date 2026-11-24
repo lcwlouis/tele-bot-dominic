@@ -2549,9 +2549,16 @@ class Store:
         )
         return cursor.lastrowid
 
-    async def set_usage_cost(self, usage_id: int, cost_usd: float) -> None:
-        """Correct a recorded estimate (an accepted cloud video job) to the cost the provider reported."""
-        await self._run(self._conn.execute, "UPDATE usage SET cost_usd = ? WHERE id = ?", (cost_usd, usage_id))
+    async def set_usage_cost(
+        self, usage_id: int, cost_usd: float, *, input_tokens: int | None = None, output_tokens: int | None = None,
+    ) -> None:
+        """Set the reported cost and any token counts that arrived after the call."""
+        await self._run(
+            self._conn.execute,
+            "UPDATE usage SET cost_usd = ?, input_tokens = COALESCE(?, input_tokens), "
+            "output_tokens = COALESCE(?, output_tokens) WHERE id = ?",
+            (cost_usd, input_tokens, output_tokens, usage_id),
+        )
 
     async def last_usage_id(self) -> int:
         return await self._run(lambda: self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM usage").fetchone()[0])
