@@ -264,3 +264,36 @@ async def test_direct_deepseek_exhausted_balance_is_a_budget_refusal():
         with pytest.raises(ChatBudgetExhausted) as failed:
             await client.complete([], [])
         assert failed.value.refusals[0].source == "deepseek_credits"
+
+
+async def test_direct_deepseek_turns_thinking_off_and_sends_no_openrouter_fields():
+    bodies = []
+
+    def handler(request):
+        bodies.append(__import__("json").loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                                         "usage": {"prompt_tokens": 3, "completion_tokens": 1}})
+
+    endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", api_key_env=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await ChatClient(endpoint, None, http).complete([{"role": "user", "content": "hi"}], [])
+        effortful = ChatClient(endpoint.model_construct(**{**endpoint.__dict__, "reasoning_effort": "high"}), None, http)
+        with pytest.raises(ValueError):
+            await effortful.complete([], [])
+    assert len(bodies) == 1
+    assert bodies[0]["thinking"] == {"type": "disabled"}
+    assert not {"provider", "reasoning", "reasoning_effort"} & bodies[0].keys()
+
+
+async def test_a_budget_exhausted_drafting_route_still_gives_a_draft_sentence():
+    from dom.llm import BudgetRefusal, ChatBudgetExhausted
+    from dom.proposals import Proposals
+
+    class Refusing:
+        async def complete(self, *args, **kwargs):
+            raise ChatBudgetExhausted((BudgetRefusal("openrouter_workspace_budget", "workspace", 0.5, 0.51, None),))
+
+    manager = Proposals.__new__(Proposals)
+    manager.app = __import__("types").SimpleNamespace(draft_client=Refusing(), client=None)
+    with pytest.raises(ValueError, match="out of budget"):
+        await manager._write_draft("skill", {"name": "example", "brief": "x"})
