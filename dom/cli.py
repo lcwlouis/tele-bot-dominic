@@ -173,6 +173,8 @@ async def run(home: Path) -> None:
                         tasks_shutdown_timeout=SHUTDOWN_DRAIN_SECONDS, close_bot_session=False,
                     )
                 finally:
+                    if app.cloud_studio is not None:
+                        await app.cloud_studio.aclose()
                     await app.self_work.close()
                     if app.desktop_worker is not None:
                         await app.desktop_worker.close()

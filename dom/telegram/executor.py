@@ -774,6 +774,8 @@ async def deliver_studio(
                 return False
             if not await allowed(kind):
                 return None
+            if kind == "photo" and data.startswith(b"\xff\xd8\xff"):
+                filename = "photo.jpg"
             message_kind = "video_note" if kind == "special" else kind
             key = "scene" if kind == "photo" else "text"
             media = {"kind": message_kind, key: text}

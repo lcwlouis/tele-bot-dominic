@@ -10,9 +10,11 @@ import httpx
 import pytest
 import pytest_asyncio
 from aiohttp import web
+from PIL import Image
 from pydantic import ValidationError
 
 from dom.config import Config, StudioConfig, StudioFallback
+from dom.studio import cloud
 from dom.studio.cloud import MAX_AUDIO_BYTES, CloudStudio, speech_pcm
 from test_studio import connect, studio_server
 from test_traits import put
@@ -125,12 +127,43 @@ async def test_local_first_then_openrouter_speech(make_app, studio_server, cloud
         assert cloud_server[1] == []
         assert app.bot.of("voice")
     else:
+        await asyncio.wait_for(asyncio.gather(*app.cloud_studio._reconciling), 5)
         assert cloud_server[1] == [
             ("/api/v1/audio/speech", {"model": VOICE.model, "input": "A quiet hello",
              "voice": "Achird", "response_format": "pcm", "provider": {"zdr": True}}),
             ("/api/v1/generation", None),
         ]
         assert ("studio_voice", VOICE.model, "openrouter.ai", OWNER, 0, 0, 0.02, 1) in usage_rows(app)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="requires ffmpeg")
+async def test_voice_cost_retries_outside_the_audio_path(make_app, cloud_server, monkeypatch):
+    app = make_app()
+    configure(app, cloud_server, voice=(VOICE,))
+    monkeypatch.setattr(cloud, "SPEECH_COST_DELAYS", (0, 0, 0))
+    lookup_started, release_lookup = asyncio.Event(), asyncio.Event()
+    replies = iter((web.Response(status=404), web.json_response({"data": {}}),
+                    web.json_response({"data": {"total_cost": 0.017, "tokens_prompt": 9, "tokens_completion": 12}})))
+
+    async def generation(request):
+        assert request.query["id"] == "gen-fixture"
+        lookup_started.set()
+        await release_lookup.wait()
+        return next(replies)
+
+    cloud_server[2]["/api/v1/generation"] = generation
+    try:
+        audio = await asyncio.wait_for(
+            app.cloud_studio.generate(app.config, "voice", "Hi", None, OWNER, allowed), 5,
+        )
+        assert audio.startswith(b"OggS")
+        await asyncio.wait_for(lookup_started.wait(), 5)
+        assert [row[4:7] for row in usage_rows(app)] == [(0, 0, 0)]
+    finally:
+        release_lookup.set()
+        await asyncio.wait_for(asyncio.gather(*app.cloud_studio._reconciling), 5)
+    assert [row[4:7] for row in usage_rows(app)] == [(9, 12, 0.017)]
+    assert [path for path, _ in cloud_server[1]].count("/api/v1/generation") == 3
 
 
 async def test_gemini_paid_only_and_second_in_chain(make_app, cloud_server):
@@ -265,6 +298,39 @@ async def test_away_studio_advertises_photo_and_sends_approved_outfit(make_app, 
     assert cloud_server[1][0][1]["input_references"]
     _, usage = await app.store.studio_usage(OWNER, app.dispatch.now())
     assert [kind for kind, _ in usage] == ["photo"]
+
+
+async def test_seedream_requests_1k_square_and_sends_oversized_photo_as_jpeg(make_app, cloud_server):
+    app = make_app(contents=('{"bubbles":["hey"],"image":"A sunny park"}',))
+    image = IMAGE.model_copy(update={"model": "bytedance-seed/seedream-5-5", "allow_without_reference": True})
+    configure(app, cloud_server, images=(image,), default_outfit="casual")
+    original = io.BytesIO()
+    Image.new("RGB", (2048, 2048), "green").save(original, format="PNG")
+
+    async def oversized(request):
+        return web.json_response({
+            "data": [{"media_type": "image/png", "b64_json": base64.b64encode(original.getvalue()).decode()}],
+            "usage": {"cost": 0.02},
+        })
+
+    sent = []
+
+    async def send(chat_id, file, **kwargs):
+        sent.append((file.filename, file.data))
+        return await app.bot.send_message(chat_id, "fixture photo", **kwargs)
+
+    app.bot.send_photo = send
+    cloud_server[2]["/api/v1/images"] = oversized
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    [(filename, data)] = sent
+    assert filename == "photo.jpg"
+    with Image.open(io.BytesIO(data)) as photo:
+        assert photo.format == "JPEG" and photo.size == (1280, 1280)
+    [(route, payload)] = cloud_server[1]
+    assert route == "/api/v1/images"
+    assert (payload["resolution"], payload["aspect_ratio"]) == ("1K", "1:1")
+    assert usage_rows(app)[-1][6] == 0.02
 
 
 async def test_failed_special_video_uses_cloud_voice(make_app, cloud_server, studio_server):

@@ -123,7 +123,12 @@ of the replies.
 - **OpenRouter images** use `POST /api/v1/images` with the model ID, scene,
   `provider: {"zdr": true}` and an inline `input_references` image when available.
   The response carries inline `data[0].b64_json` and any reported
-  `usage.cost`. Dom accepts PNG. The image catalog includes Gemini Flash Image,
+  `usage.cost`. Dom accepts PNG and JPEG. Seedream 5.5 lists 1K and 1:1
+  support and gets top-level `resolution: "1K"` and `aspect_ratio: "1:1"`.
+  Photos above 1280 px on either side or 2 MiB are re-encoded off the event loop
+  as JPEG at quality 90, with a maximum side of 1280 px.
+  [Seedream 5.5](https://openrouter.ai/bytedance-seed/seedream-5-5/).
+  The image catalog includes Gemini Flash Image,
   GPT Image, Seedream and Flux models. Check each endpoint's reference and output
   capabilities before choosing it. The public endpoint catalogs list an
   image-reference endpoint and ZDR eligibility for
@@ -135,7 +140,9 @@ of the replies.
   The speech catalog for `google/gemini-3.8-flash-lite-tts` lists Achird, and
   the public ZDR catalog includes the model. Dom encodes the returned 24 kHz
   mono PCM to OGG/Opus using ffmpeg. When the response supplies a generation
-  ID, Dom makes a bounded metadata lookup for the reported `total_cost`.
+  ID, Dom records the usage row immediately and retries the metadata lookup
+  in the background for up to about 55 seconds, updating the original row with
+  the reported `total_cost` and token counts.
   [Speech API](https://openrouter.ai/docs/guides/overview/multimodal/tts) ·
   [Speech model](https://openrouter.ai/api/v1/audio/speech/models/google/gemini-3.8-flash-lite-tts) ·
   [Generation metadata](https://openrouter.ai/docs/api/api-reference/generations/get-generation).
@@ -163,32 +170,21 @@ of the replies.
   defines `input_references` entries
   `{type: "image_url", image_url: {url}}` and
   `{type: "audio_url", audio_url: {url}}`.
-  [Avatar IV](https://openrouter.ai/heygen/avatar-iv) documents lip-sync to a
-  supplied audio track and advertises 1:1 at 720p and $0.05/s.
   [Avatar 6](https://openrouter.ai/heygen/heygen-avatar-6) and
-  [Avatar 6 Turbo](https://openrouter.ai/heygen/heygen-avatar-6-turbo) explicitly
-  derive the video duration from one audio track. Dom lets the audio determine
-  the duration for all three. Avatar 6 models publish 1080p as their smallest
-  resolution and do not advertise an aspect-ratio parameter. Dom square-crops
-  their output for Telegram. The picker and save probe join
-  [video settings and prices](https://openrouter.ai/api/v1/videos/models) to
-  [input and output modalities](https://openrouter.ai/api/v1/models?output_modalities=video)
-  and require a documented lip-sync avatar with both image and audio inputs.
+  [Avatar 6 Turbo](https://openrouter.ai/heygen/heygen-avatar-6-turbo) derive
+  video duration from one audio track. Both publish 1080p as their smallest
+  resolution. Dom square-crops their output for Telegram. The picker and save
+  probe join [video settings and prices](https://openrouter.ai/api/v1/videos/models)
+  to [input and output modalities](https://openrouter.ai/api/v1/models?output_modalities=video)
+  and list those two models when they advertise both image and audio inputs.
 - **Media and motion.** The request uses inline data URLs for the approved PNG
   (up to 4 MiB) and mono 24 kHz PCM WAV (up to 10 seconds and about 480 KB).
-  OpenRouter's [official video skill](https://github.com/OpenRouterTeam/skills/tree/main/skills/openrouter-video)
-  documents image data URLs. Its schema illustrates the audio field with an
-  HTTPS MP3 URL. [HeyGen's own audio API guide](https://developers.heygen.com/audio-to-video)
-  documents WAV and MP3 asset uploads up to 32 MB and audio-driven rendering
-  up to 30 minutes. Those limits apply to direct HeyGen calls. OpenRouter does
-  not publish the HeyGen route's attachment limits or guarantee inline WAV
-  or Ogg support.
-  Confirm inline WAV acceptance live before enabling the backup. Dom keeps
-  the assets inline to avoid uploading private media to a public host.
-  Avatar IV gets a natural `motion_prompt` under `provider.options.heygen`,
-  with background removal off and no caption, title or voice ID. Avatar 6
-  receives only a motion prompt in `prompt`. Dom uses neither an inferred
-  duration nor a transcript for avatar submission.
+  In the 2026-11-24 live test, OpenRouter rejected Avatar IV's inline WAV with
+  HTTP 400 and “Only HTTPS URLs are allowed.” Avatar 6 Turbo accepted the PNG
+  and WAV inline with `data_collection: "deny"`, returning a 1080p clip.
+  Inline references keep private media off public hosts. OpenRouter documents
+  `prompt` as a motion instruction. Dom leaves it out to match the successful
+  Turbo request and lets the audio drive the motion and length.
 - **Job and privacy.** `POST /api/v1/videos` accepts the job. Dom polls the
   fixed-origin job URL, downloads authenticated content, and uses ffmpeg to
   encode square H.264/AAC MP4 at up to 640px. It always maps the original voice

@@ -76,6 +76,13 @@ model = "google/gemini-2.5-flash-image"
 api_key_env = "OPENROUTER_MEDIA_API_KEY"
 ```
 
+OpenRouter speech usage is recorded immediately. A background check updates the
+same row when the provider reports the cost. Seedream 5.5 photos request 1K
+square output. Cloud photos above 1280 px on either side or 2 MiB are encoded
+as JPEG at quality 90 before delivery.
+[OpenRouter Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation) ·
+[Seedream 5.5](https://openrouter.ai/bytedance-seed/seedream-5-5/).
+
 An optional video backup makes round video notes through OpenRouter when the
 local studio can't. It must not be zero data retention (OpenRouter keeps each
 video for download), so it takes `no_training` or `any`:
@@ -83,14 +90,18 @@ video for download), so it takes `no_training` or `any`:
 ```toml
 [[studio.video_fallbacks]]
 provider = "openrouter_video"
-model = "heygen/avatar-iv"
+model = "heygen/heygen-avatar-6-turbo"
 api_key_env = "OPENROUTER_MEDIA_API_KEY"
 data_policy = "no_training"
 ```
 
 Dom makes the audio through the voice note path, then sends the voice track and
-the outfit's approved portrait to the avatar for lip-sync. Avatar IV renders
-at 1:1 and 720p. The cloud job shares one deadline from speech through encoding.
+the outfit's approved portrait to the avatar for lip-sync. The supported models
+are `heygen/heygen-avatar-6-turbo` and `heygen/heygen-avatar-6`, with 1080p
+as their smallest advertised resolution. In the 2026-11-24 live test, Avatar IV
+rejected inline WAV with an HTTPS-only error, while Avatar 6 Turbo accepted it.
+Replace existing Avatar IV backups in Settings → Models. The cloud job shares
+one deadline from speech through encoding.
 Dom downloads the clip through OpenRouter's authenticated content URL and
 maps his own audio into the Telegram video note. If the avatar fails, eligible
 voice-note fallback can reuse that audio. See [provider data handling](privacy.md#separate-media-key)

@@ -6,6 +6,10 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Cloud video backups.** Avatar 6 Turbo and Avatar 6 are available in the picker. Replace existing Avatar IV backups after its inline audio refusal.
+- **Cloud voice costs.** The Usage log records speech calls immediately and fills in costs when OpenRouter reports them.
+- **Smaller cloud photos.** Seedream 5.5 requests 1K square output. Oversized photos are resized and encoded as JPEG for Telegram.
+
 - Studio cloud backups are edited on Settings → Models: add, edit, test, remove and reorder voice, photo and video backups, with OpenRouter's model list for each kind. Saving checks the key and the model without making any media.
 - Round video notes can fall back to OpenRouter video when the local studio can't make them. Dom makes the voice line first and lip-syncs the approved outfit portrait to it. If the avatar fails, voice fallback reuses the generated audio. Replace legacy text-to-video backups with a supported lip-sync avatar.
 - Data policy for studio cloud backups only: zero data retention (the default), no training, or any endpoint. Every chat route stays on zero data retention, and a backup's key variable may not be one a chat route uses. See docs/privacy.md for a separate media key.

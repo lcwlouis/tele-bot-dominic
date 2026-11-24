@@ -7,6 +7,8 @@ import wave
 import shutil
 import subprocess
 
+import httpx
+
 import pytest
 from aiohttp import web
 from pydantic import ValidationError
@@ -20,14 +22,13 @@ from test_traits import put
 from test_usage import deliver, online, usage_rows
 from tghelpers import GROUP, OWNER, tg
 
-VIDEO = StudioFallback(provider="openrouter_video", model=cloud.AVATAR_IV, api_key_env="ROUTER_TEST",
+VIDEO = StudioFallback(provider="openrouter_video", model="heygen/heygen-avatar-6-turbo", api_key_env="ROUTER_TEST",
                        data_policy="no_training")
 # As OpenRouter's /videos/models publishes it (fictional prices in the shape of the real list).
 VIDEO_ENTRY = {
-    "id": VIDEO.model, "supported_resolutions": ["720p", "1080p"],
-    "supported_aspect_ratios": ["16:9", "9:16", "1:1", "4:3"],
+    "id": VIDEO.model, "supported_resolutions": ["2K", "1080p"],
     "pricing_skus": {
-        "cents_per_image_input": "1", "cents_per_video_output_second_720p": "2", "cents_per_video_output_second_1080p": "14",
+        "cents_per_image_input": "1", "cents_per_video_output_second_1080p": "2", "cents_per_video_output_second_2k": "14",
     },
 }
 ESTIMATE = 0.012  # 0.1 s at 2 cents plus 1 cent for the portrait
@@ -142,14 +143,14 @@ async def test_video_job_polls_downloads_and_makes_a_round_note(make_app, cloud_
         input=note, capture_output=True, check=True,
     ).stdout.decode().split()
     assert probe == ["h264,480,480", "aac"]  # square, at most 640 px, H.264 with sound
-    paths = [path for path, _ in cloud_server[1]]
+    await asyncio.wait_for(asyncio.gather(*app.cloud_studio._reconciling), 5)
+    paths = [path for path, _ in cloud_server[1] if path != "/api/v1/generation"]
     # The job's own URLs are never followed: every request goes to the fixed origin.
     assert sorted(paths[:2]) == ["/api/v1/models", "/api/v1/videos/models"]
-    assert paths[2:] == ["/api/v1/audio/speech", "/api/v1/generation", "/api/v1/videos", "/api/v1/videos/job-1", "/api/v1/videos/job-1", "/api/v1/videos/job-1",
+    assert paths[2:] == ["/api/v1/audio/speech", "/api/v1/videos", "/api/v1/videos/job-1", "/api/v1/videos/job-1", "/api/v1/videos/job-1",
                      "/api/v1/videos/job-1/content"]
     [payload] = created(cloud_server)
-    assert payload["provider"]["data_collection"] == "deny"
-    assert payload["provider"]["options"]["heygen"]["remove_background"] is False
+    assert payload["provider"] == {"data_collection": "deny"}
     image, audio = payload["input_references"]
     assert image["type"] == "image_url"
     assert base64.b64decode(image["image_url"]["url"].removeprefix("data:image/png;base64,")) == PORTRAIT
@@ -157,8 +158,8 @@ async def test_video_job_polls_downloads_and_makes_a_round_note(make_app, cloud_
     wav = base64.b64decode(audio["audio_url"]["url"].removeprefix("data:audio/wav;base64,"))
     with wave.open(io.BytesIO(wav)) as track:
         assert track.readframes(track.getnframes()) == PCM
-    assert (payload["aspect_ratio"], payload["resolution"]) == ("1:1", "720p")
-    assert not {"frame_images", "prompt", "duration", "generate_audio"} & payload.keys()
+    assert payload["resolution"] == "1080p"
+    assert not {"frame_images", "prompt", "duration", "generate_audio", "aspect_ratio"} & payload.keys()
     # The fake avatar returns a tone. The final note must have only the original silent track.
     decoded = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-f", "s16le", "pipe:1"],
@@ -344,7 +345,7 @@ async def test_unresolved_estimates_count_toward_the_spend_cap(make_app, cloud_s
 def test_video_plan_requires_portrait_and_audio_and_estimates_from_track_duration():
     entry = {**VIDEO_ENTRY, "avatar": VIDEO.model, "inputs": ["image", "audio"]}
     plan = cloud.video_plan(entry)
-    assert plan == {"resolution": "720p", "aspect_ratio": "1:1"}
+    assert plan == {"resolution": "1080p"}
     assert cloud.video_rate(entry, plan) == 0.02
     assert cloud.video_estimate(entry, plan, 2.5) == 0.06
     with pytest.raises(cloud.VideoUnsupported, match="portrait and an audio"):
@@ -401,3 +402,29 @@ async def test_avatar_uses_local_voice_after_local_video_fails(make_app, studio_
     assert [row[:2] for row in usage_rows(app) if row[0].startswith("studio_")] == [
         ("studio_voice", "local-studio"), ("studio_video", VIDEO.model),
     ]
+
+
+async def test_a_retired_avatar_backup_is_logged_and_never_submitted(make_app, cloud_server, clip, caplog):
+    app = make_app()
+    retired = VIDEO.model_copy(update={"model": "heygen/avatar-iv"})
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(retired,))
+    portrait(app)
+    serve_video(cloud_server, clip)
+    with caplog.at_level("WARNING", logger="dom.studio.cloud"):
+        assert await render(app, "video_note", "Hello", "casual") is None
+    assert not created(cloud_server)
+    assert "heygen/avatar-iv isn't a supported lip-sync avatar" in caplog.text
+
+
+async def test_aclose_stops_background_cost_checks():
+    studio = cloud.CloudStudio(httpx.AsyncClient(), None)
+    started = asyncio.Event()
+
+    async def forever():
+        started.set()
+        await asyncio.sleep(3600)
+
+    studio._track_reconcile(forever())
+    await started.wait()
+    await studio.aclose()
+    assert not studio._reconciling

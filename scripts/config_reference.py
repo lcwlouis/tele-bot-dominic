@@ -107,8 +107,12 @@ def render() -> str:
         "Add one `[[studio.voice_fallbacks]]`, `[[studio.image_fallbacks]]`, or `[[studio.video_fallbacks]]` table per provider, "
         "in the order they should be tried after the local studio.",
         table(fields(StudioFallback, "studio.<kind>_fallbacks[].")),
-        "Video models must support lip-sync driven by an approved portrait and Dom’s voice audio. "
-        "Replace older text-to-video backups with an avatar such as `heygen/avatar-iv`. The reference flags apply to photos.",
+        "Video fallbacks support `heygen/heygen-avatar-6-turbo` and `heygen/heygen-avatar-6`. "
+        "They drive lip-sync from an approved portrait and Dom’s voice audio. Replace older backups, including Avatar IV, "
+        "which rejected inline WAV with an HTTPS-only error in the 2026-11-24 live test. The reference flags apply to photos. "
+        "Seedream 5.5 requests 1K square photos. "
+        "[OpenRouter Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation) · "
+        "[Seedream 5.5](https://openrouter.ai/bytedance-seed/seedream-5-5/).",
         "### Studio limits",
         table([
             *fields(StudioLimits, "studio.limits.", exclude={"owner_dm", "friend_dm", "group"}),
