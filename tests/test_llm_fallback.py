@@ -277,12 +277,36 @@ async def test_direct_deepseek_turns_thinking_off_and_sends_no_openrouter_fields
     endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", api_key_env=None)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         await ChatClient(endpoint, None, http).complete([{"role": "user", "content": "hi"}], [])
-        effortful = ChatClient(endpoint.model_construct(**{**endpoint.__dict__, "reasoning_effort": "high"}), None, http)
-        with pytest.raises(ValueError):
-            await effortful.complete([], [])
-    assert len(bodies) == 1
     assert bodies[0]["thinking"] == {"type": "disabled"}
     assert not {"provider", "reasoning", "reasoning_effort"} & bodies[0].keys()
+
+
+async def test_direct_deepseek_thinking_fills_reasoning_for_another_models_tool_calls():
+    """DeepSeek's thinking mode refuses (400, verified live) an assistant tool call with no reasoning_content,
+    as when a fallback made the turn's first step; its own steps keep their reasoning untouched."""
+    bodies = []
+
+    def handler(request):
+        bodies.append(__import__("json").loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+
+    call = [{"id": "c1", "type": "function", "function": {"name": "get_time", "arguments": "{}"}}]
+    history = [
+        {"role": "user", "content": "time?"},
+        {"role": "assistant", "content": "", "tool_calls": call},
+        {"role": "tool", "tool_call_id": "c1", "content": "10:00"},
+        {"role": "assistant", "content": "", "tool_calls": call, "reasoning_content": "mine"},
+        {"role": "assistant", "content": "plain"},
+    ]
+    endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", api_key_env=None, reasoning_effort="high")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await ChatClient(endpoint, None, http).complete(history, [])
+    body = bodies[0]
+    assert body["thinking"] == {"type": "enabled"} and body["reasoning_effort"] == "high" and "provider" not in body
+    assert [message.get("reasoning_content") for message in body["messages"]] == [None, "", None, "mine", None]
+    assert "reasoning_content" not in history[1]  # the agent's own transcript is untouched
+    with pytest.raises(ValueError, match="low, high or max"):
+        ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", reasoning_effort="medium")
 
 
 async def test_a_budget_exhausted_drafting_route_still_gives_a_draft_sentence():

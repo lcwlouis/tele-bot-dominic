@@ -87,6 +87,8 @@ export function endpointHostname(url: string): string {
 }
 
 export const isDeepSeekChat = (url: string) => endpointHostname(url) === "api.deepseek.com";
+/** The levels DeepSeek's own API takes (dom/config.py DEEPSEEK_EFFORTS); without one Dom keeps thinking off. */
+export const DEEPSEEK_EFFORTS = ["low", "high", "max"];
 export const ZDR_RECOMMENDATION = "Zero data retention is recommended.";
 
 export const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;

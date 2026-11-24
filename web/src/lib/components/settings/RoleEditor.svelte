@@ -14,7 +14,7 @@
   import ModelPicker from "./ModelPicker.svelte";
   import RoutePrivacy from "./RoutePrivacy.svelte";
   import { effortsFor, findModel } from "./modelLists.svelte";
-  import { CLEARABLE, KEY_PATTERN, KIND_INFO, MAX_SLOTS, ROLE_INFO, family, host, isDeepSeekChat, kindsFor, slotLabel } from "./roles";
+  import { CLEARABLE, KEY_PATTERN, KIND_INFO, MAX_SLOTS, ROLE_INFO, family, host, isDeepSeekChat, kindsFor, slotLabel, DEEPSEEK_EFFORTS } from "./roles";
 
   // Edits one role's chain: its primary, then its own fallbacks in order. Each slot picks a provider (from the
   // Providers tab) and a model from that provider's list, or a custom address. Nothing is written until Save, which
@@ -88,10 +88,12 @@
 
   function effortOptions(slot: Slot) {
     const model = findModel(slot.source === CUSTOM ? null : slot.source, slot.model.trim());
-    const listed = effortsFor(model);
+    const deepseek = isDeepSeekChat(slot.base_url); // Dom keeps DeepSeek's thinking off unless a level is chosen
+    const listed = deepseek ? DEEPSEEK_EFFORTS : effortsFor(model);
     const values = slot.effort !== "default" && !listed.includes(slot.effort) ? [...listed, slot.effort] : listed;
     const label = (value: string) => (value === "none" ? "None (no thinking)" : value[0].toUpperCase() + value.slice(1));
-    const fallback = model?.default_effort ? `Provider default (${label(model.default_effort)})` : "Provider default";
+    const fallback = deepseek ? "Thinking off (default)"
+      : model?.default_effort ? `Provider default (${label(model.default_effort)})` : "Provider default";
     return [{ value: "default", label: fallback }, ...values.map((value) => ({ value, label: label(value) }))];
   }
 
@@ -126,7 +128,7 @@
       if (!search && !triage) {
         const model = suggestedModel(found.base_url);
         if (model) slot.model = model;
-        if (isDeepSeekChat(found.base_url)) slot.effort = "default";
+        if (isDeepSeekChat(found.base_url) && !DEEPSEEK_EFFORTS.includes(slot.effort)) slot.effort = "default";
       }
       if (search) slot.provider = searchKind(found.kind);
       if (search && !providerInfo(slot.provider).needs_model) slot.model = "";
@@ -171,7 +173,7 @@
       base_url: slot.base_url.trim(),
       model: slot.model.trim(),
       api_key_env,
-      reasoning_effort: slot.effort === "default" || isDeepSeekChat(slot.base_url) ? null : slot.effort,
+      reasoning_effort: slot.effort === "default" ? null : slot.effort,
     };
   }
 
@@ -324,9 +326,7 @@
                   </div>
                 {/if}
 
-                {#if !search && !triage && isDeepSeekChat(slot.base_url)}
-                  <p class="text-xs text-muted-foreground">Thinking is off for direct DeepSeek routes.</p>
-                {:else if !search && !triage}
+                {#if !search && !triage}
                   <div class="grid gap-1.5">
                     <Label id={`${id}-effort-label`}>Reasoning effort</Label>
                     <Select.Root type="single" bind:value={slot.effort} onValueChange={edited}>

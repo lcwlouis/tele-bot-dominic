@@ -654,7 +654,7 @@ api_key_env = "DEEPSEEK_API_KEY"
         invalid = await client.post(API, headers=ORIGIN_HEADER, json={
             "revision": response.json()["revision"], "role": "chat", "fallbacks": [],
             "primary": {"base_url": deepseek["base_url"], "model": deepseek["model"],
-                        "api_key_env": deepseek["api_key_env"], "reasoning_effort": "high"},
+                        "api_key_env": deepseek["api_key_env"], "reasoning_effort": "medium"},
         })
-        assert invalid.status_code == 422 and "Remove the reasoning effort" in invalid.json()["detail"]
+        assert invalid.status_code == 422 and "low, high or max" in invalid.json()["detail"]
         assert len(requests) == 1

@@ -38,7 +38,9 @@ def deepseek_chat_host(host: str | None) -> bool:
     return bool(host and host.rstrip(".").lower() == "api.deepseek.com")
 
 
-DEEPSEEK_EFFORT_ERROR = "Direct DeepSeek uses thinking off. Remove the reasoning effort from this route."
+# DeepSeek's own API: thinking stays off unless a route asks for one of these levels (api-docs.deepseek.com/guides/thinking_mode).
+DEEPSEEK_EFFORTS = ("low", "high", "max")
+DEEPSEEK_EFFORT_ERROR = "Direct DeepSeek takes a low, high or max reasoning effort, or none to keep thinking off."
 
 # What OpenRouter may do with a studio backup's request (its provider routing preferences). zdr routes only to
 # zero-data-retention endpoints; no_training excludes endpoints that may train on or sell the data
@@ -86,7 +88,7 @@ class ProviderEndpoint(BaseModel):
 
     @model_validator(mode="after")
     def _direct_deepseek_effort(self) -> ProviderEndpoint:
-        if self.reasoning_effort is not None:
+        if self.reasoning_effort is not None and self.reasoning_effort not in DEEPSEEK_EFFORTS:
             try:
                 host = httpx.URL(self.base_url).host
             except httpx.InvalidURL:

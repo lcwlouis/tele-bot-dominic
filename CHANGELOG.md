@@ -7,7 +7,7 @@ named `vX.Y.Z`.
 ## [Unreleased]
 
 - **Provider presets.** Start with editable connection details for 13 cloud and local chat providers in Settings → Providers.
-- **Direct DeepSeek chat.** Use `deepseek-flash` or another model from DeepSeek’s own API with thinking off. Usage estimates USD cost from cache hits, cache misses and output tokens. Cloud chat routes show a zero-data-retention recommendation where applicable.
+- **Direct DeepSeek chat.** Use `deepseek-flash` or another model from DeepSeek’s own API. Thinking is off unless the route picks low, high or max. Usage estimates USD cost from cache hits, cache misses and output tokens. Cloud chat routes show a zero-data-retention recommendation where applicable.
 - **Provider budget notices.** When every chat provider is blocked by a supported budget or credit limit, the owner gets one private notice per reset window. Home and `/status` show the active restriction and its local reset time when available.
 - **Real reasoning levels.** The model picker now offers the levels each OpenRouter model lists (for example none, low, high and max for DeepSeek V4.1 Flash) and shows the provider default, instead of a generic low, medium and high.
 - **Cloud video backups.** Avatar 6 Turbo and Avatar 6 are available in the picker. Replace existing Avatar IV backups after its inline audio refusal.

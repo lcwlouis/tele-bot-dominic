@@ -14,7 +14,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from dom import turn_log
-from dom.config import DEEPSEEK_EFFORT_ERROR, Config, ModelRole, ProviderEndpoint, deepseek_chat_host
+from dom.config import DEEPSEEK_EFFORT_ERROR, DEEPSEEK_EFFORTS, Config, ModelRole, ProviderEndpoint, deepseek_chat_host
 from dom.usage import Kind, UsageRecorder, check_model_allowed, provider_address, request_kind
 
 TIMEOUT_SECONDS = 90
@@ -37,6 +37,18 @@ def _fallback_worthy(status: int) -> bool:
 def openrouter_host(host: str) -> bool:
     host = host.rstrip(".")
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
+def _with_reasoning_slots(messages: list[dict]) -> list[dict]:
+    """DeepSeek's thinking mode answers 400 when an assistant tool call in the history has no `reasoning_content`
+    (verified live 2026-11-24). DeepSeek's own replies keep theirs, since the agent appends them verbatim; a step
+    made by another model (a fallback or an escalation mid-turn) gets an empty one, which DeepSeek accepts."""
+    return [
+        {**message, "reasoning_content": ""}
+        if message.get("role") == "assistant" and message.get("tool_calls") and "reasoning_content" not in message
+        else message
+        for message in messages
+    ]
 
 
 class MissingProviderKey(RuntimeError):
@@ -172,9 +184,13 @@ class ChatClient:
         openrouter = openrouter_host(self.host)
         deepseek = deepseek_chat_host(self.host)
         if deepseek:
-            if self.endpoint.reasoning_effort is not None:
+            if self.endpoint.reasoning_effort is None:
+                body["thinking"] = {"type": "disabled"}
+            elif self.endpoint.reasoning_effort in DEEPSEEK_EFFORTS:
+                body["thinking"] = {"type": "enabled"}
+                body["messages"] = _with_reasoning_slots(messages)
+            else:
                 raise ValueError(DEEPSEEK_EFFORT_ERROR)
-            body["thinking"] = {"type": "disabled"}
         if openrouter:
             body["provider"] = {"zdr": True}
         if self.endpoint.reasoning_effort is not None:

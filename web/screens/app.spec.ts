@@ -163,7 +163,10 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("combobox", { name: "Provider", exact: true }).first().click();
     await page.getByRole("option", { name: "DeepSeek · OpenAI-compatible", exact: true }).click();
     await expect(page.getByLabel("Model ID").first()).toHaveValue("deepseek-flash");
-    await expect(page.getByText("Thinking is off for direct DeepSeek routes.")).toBeVisible();
+    // Thinking stays off unless a DeepSeek level is chosen: low, high or max.
+    await page.getByRole("combobox", { name: "Reasoning effort" }).first().click();
+    await expect(page.getByRole("option")).toHaveText(["Thinking off (default)", "Low", "High", "Max"]);
+    await page.keyboard.press("Escape");
     await expect(page.getByRole("tabpanel", { name: "Models" }).getByText(
       /DeepSeek keeps inputs in China.*Zero data retention is recommended/,
     )).toBeVisible();
