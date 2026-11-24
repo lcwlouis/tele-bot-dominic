@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -61,6 +63,17 @@ class VideoNote(BaseModel):
 
 
 MAX_BUBBLES = 6
+# How Dom's own media and Telegram media read in the chat window: a "[kind]" label on his sent media and a
+# <media kind=...> tag on any message with media.
+_FAKE_MEDIA = re.compile(
+    r"<media\s+kind=|</media>|^\s*\[(?:photo|image|picture|voice|voice note|video|video note|video_note|special|"
+    r"sticker|gif|animation|audio|document)\](?!\()",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def fake_media(text: str) -> bool:
+    """Whether a bubble's text imitates a media message instead of being something to say."""
+    return bool(_FAKE_MEDIA.search(text))
 
 
 class Actions(BaseModel):
@@ -107,6 +120,10 @@ class Actions(BaseModel):
             return value
         # Models sometimes write a bubble as a bare string; it means the same as {"text": ...}.
         value = [{"text": item} if isinstance(item, str) else item for item in value]
+        # A bubble that imitates how media looks in the chat window ("[photo] ...", <media kind=...>) stands in for
+        # media that was never made: drop it rather than send machinery as text.
+        value = [item for item in value
+                 if not (isinstance(item, dict) and isinstance(item.get("text"), str) and fake_media(item["text"]))]
         if len(value) > MAX_BUBBLES:
             tail = value[MAX_BUBBLES - 1:]
             if not all(isinstance(item, dict) and isinstance(item.get("text"), str) for item in tail):
