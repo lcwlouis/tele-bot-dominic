@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import tomllib
 from datetime import datetime, time, timedelta
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -123,7 +124,8 @@ async def home_api(request: Request) -> dict:
 
 @cache
 def running_version() -> str:
-    """The release Dom runs, plus the commit when it runs from a git checkout (a development copy). Read once."""
+    """The release Dom runs. A git checkout (a development copy) reads the version being built from pyproject.toml,
+    marks it a pre-release unless HEAD carries that release's tag, and adds the commit. Read once."""
     try:
         release = f"v{package_version('dom')}"
     except PackageNotFoundError:
@@ -132,12 +134,21 @@ def running_version() -> str:
     if not (root / ".git").exists():
         return release
     try:
-        commit = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=2, check=True,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        commit = ""
+        release = f"v{tomllib.loads((root / 'pyproject.toml').read_text())['project']['version']}"
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(
+                ["git", "-C", str(root), *args], capture_output=True, text=True, timeout=2, check=True,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    if release.startswith("v") and release not in git("tag", "--points-at", "HEAD").split():
+        release += " pre-release"
+    commit = git("rev-parse", "--short", "HEAD")
     return f"{release} · {commit}" if commit else release
 
 

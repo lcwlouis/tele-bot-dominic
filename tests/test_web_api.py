@@ -78,7 +78,7 @@ async def test_home_api_reads_presence_vibe_waiting_today_and_recent_replies(mak
     async with browser(app) as client:
         shell = (await client.get("/api/shell")).json()
         assert shell["waiting"] == 1
-        assert re.fullmatch(r"v\d+\.\d+\.\d+(?: · [0-9a-f]{4,40})?", shell["version"]), shell["version"]
+        assert re.fullmatch(r"v\d+\.\d+\.\d+(?: pre-release)?(?: · [0-9a-f]{4,40})?", shell["version"]), shell["version"]
         assert (await client.get("/api/shell", headers={"Authorization": ""})).status_code == 403
 
 
