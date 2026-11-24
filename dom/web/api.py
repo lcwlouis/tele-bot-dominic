@@ -3,7 +3,11 @@ middleware in app.py; each other page has its own api_*.py."""
 
 from __future__ import annotations
 
+import asyncio
+import subprocess
 from datetime import datetime, time, timedelta
+from functools import cache
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
@@ -116,11 +120,34 @@ async def home_api(request: Request) -> dict:
     return {"setup": False, **await home(app)}
 
 
+@cache
+def running_version() -> str:
+    """The release Dom runs, plus the commit when it runs from a git checkout (a development copy). Read once."""
+    try:
+        release = f"v{package_version('dom')}"
+    except PackageNotFoundError:
+        release = "unknown version"
+    root = Path(__file__).resolve().parents[2]
+    if not (root / ".git").exists():
+        return release
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = ""
+    return f"{release} · {commit}" if commit else release
+
+
 @router.get("/api/shell")
 async def shell_api(request: Request) -> dict:
-    """What the navigation shows on every page: how many things wait for the owner's yes or no."""
+    """What the navigation shows on every page: how many things wait for the owner's yes or no, and the version."""
     app: App = request.app.state.dom
-    return {"waiting": 0 if app.owner_id is None else (await _proposals(app))["count"]}
+    return {
+        "waiting": 0 if app.owner_id is None else (await _proposals(app))["count"],
+        "version": await asyncio.to_thread(running_version),
+    }
 
 
 @router.api_route("/app", methods=["GET", "HEAD"])

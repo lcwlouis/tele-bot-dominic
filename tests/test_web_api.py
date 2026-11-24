@@ -76,7 +76,9 @@ async def test_home_api_reads_presence_vibe_waiting_today_and_recent_replies(mak
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d", body["now"]["iso"])
 
     async with browser(app) as client:
-        assert (await client.get("/api/shell")).json() == {"waiting": 1}
+        shell = (await client.get("/api/shell")).json()
+        assert shell["waiting"] == 1
+        assert re.fullmatch(r"v\d+\.\d+\.\d+(?: · [0-9a-f]{4,40})?", shell["version"]), shell["version"]
         assert (await client.get("/api/shell", headers={"Authorization": ""})).status_code == 403
 
 

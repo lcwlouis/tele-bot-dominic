@@ -40,6 +40,7 @@ from dom.skills import Skill, write_skill  # noqa: E402
 from dom.store import Store  # noqa: E402
 from dom.telegram import handlers, owner  # noqa: E402
 from dom.tools import TurnCtx  # noqa: E402
+from dom.web import api as web_api  # noqa: E402
 from dom.web.app import create_app  # noqa: E402
 from dom.web.auth import Auth  # noqa: E402
 from tghelpers import BOT_USER, OWNER, Clock, FakeBot, FixedRandom, ModelScript, no_sleep  # noqa: E402
@@ -433,6 +434,7 @@ async def main(port: int) -> None:
         app = build(Path(tmp), port)
         await seed(app)
         await seed_system(app)
+        web_api.running_version = lambda: "v0.0.0 · preview"  # a fixed version, so the screens never change with each commit
         server = uvicorn.Server(uvicorn.Config(
             create_app(app, Auth(app.config)), host="127.0.0.1", port=port, log_level="warning", access_log=False,
         ))

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Orbit from "$lib/components/Orbit.svelte";
   import { destinations, workspace, type Destination } from "$lib/nav";
+  import { shell } from "$lib/shell.svelte";
   import { cn } from "$lib/utils";
 
   let { path, current }: { path: string; current: Destination } = $props();
@@ -55,5 +56,8 @@
     </ul>
   </nav>
 
+  {#if shell.version}
+    <p class="mt-4 px-3 font-mono text-[0.68rem] text-muted-foreground">Dom {shell.version}</p>
+  {/if}
 </aside>
 </div>
