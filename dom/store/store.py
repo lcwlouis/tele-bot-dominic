@@ -705,6 +705,21 @@ class Store:
             (json.dumps(traits), _now(), chat_id),
         ).rowcount == 1
 
+    async def opener_candidates(
+        self, owner_id: int, after: str, limit: int, *, groups: bool, friends: bool,
+    ) -> list[dict[str, Any]]:
+        """A page of approved non-owner chats in stable chat-id order."""
+        return await self._run(self._opener_candidates, str(owner_id), after, limit, groups, friends)
+
+    def _opener_candidates(self, owner: str, after: str, limit: int, groups: bool, friends: bool) -> list[dict[str, Any]]:
+        return [dict(row) for row in self._conn.execute(
+            "SELECT chat_id, chat_type FROM chats WHERE chat_id > ? AND chat_id != ? "
+            "AND authorization_status = 'approved' "
+            "AND ((? AND chat_type IN ('group', 'supergroup')) OR (? AND chat_type = 'private')) "
+            "ORDER BY chat_id LIMIT ?",
+            (after, owner, groups, friends, limit),
+        )]
+
     async def list_approved_chats(self) -> list[dict[str, Any]]:
         """Read-only (never creates a row): every approved chat with its presence columns, when it last
         saw a message and, for private chats, the other person's name. The owner's DM always comes first."""

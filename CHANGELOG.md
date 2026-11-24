@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Dom can message first in more chats.** Turn on openers for approved groups or friends’ DMs in Settings → What Dom may do. Both switches start off. The daily limit applies to each chat.
+
 - **Provider presets.** Start with editable connection details for 13 cloud and local chat providers in Settings → Providers.
 - **Direct DeepSeek chat.** Use `deepseek-flash` or another model from DeepSeek’s own API. Thinking is off unless the route picks low, high or max. Usage estimates USD cost from cache hits, cache misses and output tokens. Cloud chat routes show a zero-data-retention recommendation where applicable.
 - **Provider budget notices.** When every chat provider is blocked by a supported budget or credit limit, the owner gets one private notice per reset window. Home and `/status` show the active restriction and its local reset time when available. Testing or saving a model in Settings says the same instead of a bare HTTP 403. On the desktop, a refused screenshot description costs only that look: Dom reads the page's text instead of the task failing.
