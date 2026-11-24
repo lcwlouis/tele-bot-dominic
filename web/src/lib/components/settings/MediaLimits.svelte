@@ -35,6 +35,8 @@
   let drafts = $state<Record<StudioScope, Draft> | null>(null);
   let daily = $state<number | null>(null);
   let saving = $state(false);
+  // Any edit since the limits were last shown, valid or not: a reload must never overwrite it.
+  let edited = $state(false);
 
   const toDraft = (tier: StudioTier): Draft => ({
     voice: tier.voice_daily,
@@ -47,11 +49,16 @@
     view = loaded;
     drafts = { owner_dm: toDraft(loaded.limits.owner_dm), friend_dm: toDraft(loaded.limits.friend_dm), group: toDraft(loaded.limits.group) };
     daily = loaded.limits.daily;
+    edited = false;
   }
 
   async function load() {
     try {
-      show(await getJSON<StudioLimitsView>("/api/studio/limits"));
+      const loaded = await getJSON<StudioLimitsView>("/api/studio/limits");
+      if (!edited) show(loaded);
+      // With edits in progress (even half-typed ones) the drafts stay. If another save left the limits as they were,
+      // the editor just takes the new revision; if it changed them, saving gets a 409 rather than losing either.
+      else if (view && JSON.stringify(loaded.limits) === JSON.stringify(view.limits)) view = loaded;
       failed = "";
     } catch (error) {
       failed = error instanceof Error ? error.message : "Unknown error";
@@ -102,7 +109,7 @@
   $effect(() => {
     const current = revision;
     untrack(() => {
-      if (view && current && current !== view.revision && !saving && !changed) void load();
+      if (view && current && current !== view.revision && !saving) void load();
     });
   });
 
@@ -203,7 +210,7 @@
         </p>
       </section>
 
-      <form onsubmit={save}>
+      <form onsubmit={save} oninput={() => (edited = true)} onchange={() => (edited = true)}>
         <div class="grid gap-5 md:grid-cols-3">
           {#each SCOPES as { scope, label } (scope)}
             {@const d = drafts[scope]}

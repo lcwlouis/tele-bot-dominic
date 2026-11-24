@@ -362,10 +362,13 @@ test.describe("interactions under the CSP", () => {
     await expect(gap).toHaveValue("0");
     await expect(limits.getByRole("combobox", { name: "Photos: per day or per week" }).first()).toHaveText("per week");
 
-    // Another save on the page moves the revision; the limits load again and still save after it.
+    // Another save on the page moves the revision; the limits load again and still save after it. A half-typed
+    // (empty) field survives that reload.
+    await gap.fill("");
     const groups = page.getByRole("switch", { name: "Private replies in groups" });
     await groups.click();
     await expect(page.getByRole("status").filter({ hasText: "Private replies in groups: on." })).toBeVisible();
+    await expect(gap).toHaveValue("");
     // Back as it was.
     await gap.fill("30");
     await limits.getByRole("combobox", { name: "Photos: per day or per week" }).first().click();
