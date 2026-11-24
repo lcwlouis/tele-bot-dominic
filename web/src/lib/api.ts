@@ -169,7 +169,7 @@ export type StudioBackup = {
 export type StudioFallback = StudioBackup & { key_set: boolean };
 
 /** POST /api/providers/models (dom/web/provider_settings.py): reasoning null means the provider doesn't say. */
-export type ListedModel = { id: string; name: string; reasoning: boolean | null; efforts: string[] };
+export type ListedModel = { id: string; name: string; reasoning: boolean | null; efforts: string[]; default_effort?: string | null };
 export type ModelList = { listable: boolean; models: ListedModel[]; fetched_at: number | null };
 
 export type TestResult = { ok: boolean; latency_ms: number; reply: string | null; error: string | null; provider: string | null };

@@ -15,7 +15,7 @@ ROUTES = [PROVIDERS + path for path in ("/save", "/remove", "/test", "/models")]
 OPENROUTER_MODELS = {"data": [
     {"id": "acme/thinker", "name": "Acme: Thinker", "supported_parameters": ["tools", "reasoning"]},
     {"id": "acme/plain", "name": "Acme: Plain", "supported_parameters": ["tools"]},
-    {"id": "acme/deep", "supported_parameters": ["reasoning"], "supported_reasoning_efforts": ["low", "high", "xhigh"]},
+    {"id": "acme/deep", "supported_parameters": ["reasoning"], "reasoning": {"supported_efforts": ["xhigh", "high", "low", "none"], "default_effort": "high"}},
     {"id": "bad id with spaces"},
     "not an object",
 ]}
@@ -146,9 +146,10 @@ async def test_model_list_is_cached_for_a_day_and_refreshed_on_request(dashboard
         assert listing["listable"] is True and listing["fetched_at"]
         models = {item["id"]: item for item in listing["models"]}
         assert set(models) == {"acme/thinker", "acme/plain", "acme/deep"}
-        assert models["acme/thinker"] == {"id": "acme/thinker", "name": "Acme: Thinker", "reasoning": True, "efforts": ["low", "medium", "high"]}
+        assert models["acme/thinker"] == {"id": "acme/thinker", "name": "Acme: Thinker", "reasoning": True, "efforts": ["low", "medium", "high"], "default_effort": None}
         assert models["acme/plain"]["reasoning"] is False and models["acme/plain"]["efforts"] == []
-        assert models["acme/deep"]["efforts"] == ["low", "high", "xhigh"]
+        assert models["acme/deep"]["efforts"] == ["none", "low", "high", "xhigh"]
+        assert models["acme/deep"]["default_effort"] == "high"
         # The paired key goes to its own host only.
         assert seen == [("https://fallback.example.test/v1/models", f"Bearer {SECRET}")]
 
@@ -362,6 +363,24 @@ async def test_provider_test_uses_its_first_use_or_its_model_list(dashboard):
         chat = next(item["name"] for item in (await client.get(API)).json()["providers"] if item["uses"] and item["uses"][0]["role"] == "chat")
         assert (await _post(client, "/test", name=chat)).json()["ok"]
     assert seen == ["https://lab.example.test/v1/models", "http://localhost:8000/v1/chat/completions"]
+
+
+def test_parse_reads_openrouter_reasoning_levels_and_default():
+    """OpenRouter's /models puts each model's levels in `reasoning`; DeepSeek V4.1 Flash takes none/low/high/max and
+    thinks at high unless told otherwise, so the picker must not offer a generic low/medium/high."""
+    models = {item.id: item for item in model_lists.parse({"data": [
+        {"id": "example/flash", "supported_parameters": ["reasoning", "reasoning_effort"],
+         "reasoning": {"mandatory": False, "default_enabled": True, "supported_efforts": ["max", "high", "low", "none"],
+                       "default_effort": "high"}},
+        {"id": "example/off", "supported_parameters": ["reasoning"],
+         "reasoning": {"default_enabled": False, "supported_efforts": ["high", "low"], "default_effort": "low"}},
+        {"id": "example/vague", "supported_parameters": ["reasoning"]},
+    ]})}
+    assert models["example/flash"].efforts == ("none", "low", "high", "max")
+    assert models["example/flash"].default_effort == "high"
+    assert models["example/off"].default_effort == "none"
+    assert models["example/vague"].efforts == model_lists.DEFAULT_EFFORTS and models["example/vague"].default_effort is None
+    assert model_lists.effort_error(model_lists.ModelList(tuple(models.values()), 0), "example/flash", "medium")
 
 
 def test_parse_skips_unusable_entries_and_caps_names():

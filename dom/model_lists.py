@@ -33,7 +33,8 @@ MAX_NAME = 120
 MIN_SECRET = 8
 # Offered when a model reasons but its provider names no levels, and accepted when nothing is known about the model.
 DEFAULT_EFFORTS = ("low", "medium", "high")
-KNOWN_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+# Every level a provider is known to take, in order from none to most. OpenRouter lists each model's own subset.
+KNOWN_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 class ListUnavailable(Exception):
@@ -46,6 +47,7 @@ class ListedModel:
     name: str
     reasoning: bool | None  # None: the provider doesn't say
     efforts: tuple[str, ...]
+    default_effort: str | None = None  # what the provider uses when Dom sends no effort; "none" when it doesn't reason by default
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,7 @@ class ModelList:
 
 def cache_key(base_url: str, api_key_env: str | None) -> str:
     digest = hashlib.sha256(f"{base_url}\n{api_key_env or ''}".encode()).hexdigest()
-    return f"model-list:{digest}"
+    return f"model-list:v2:{digest}"  # v2: levels read from OpenRouter's `reasoning` object
 
 
 def secret_values(config: Config) -> frozenset[str]:
@@ -76,13 +78,23 @@ def _usable_id(value: object) -> bool:
     )
 
 
-def _efforts(entry: dict, reasoning: bool | None) -> tuple[str, ...]:
-    listed = entry.get("supported_reasoning_efforts")
-    if isinstance(listed, list):
-        names = tuple(dict.fromkeys(item for item in listed if isinstance(item, str) and re.fullmatch(EFFORT_PATTERN, item)))
-        if names:
-            return names
-    return DEFAULT_EFFORTS if reasoning is not False else ()
+def _effort_name(value: object) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(EFFORT_PATTERN, value) else None
+
+
+def _efforts(entry: dict, reasoning: bool | None) -> tuple[tuple[str, ...], str | None]:
+    """The model's levels and its default, from OpenRouter's `reasoning` object:
+    {"supported_efforts": [...], "default_effort": "high", "default_enabled": true, "mandatory": false}."""
+    details = entry.get("reasoning")
+    details = details if isinstance(details, dict) else {}
+    listed = details.get("supported_efforts")
+    names = tuple(dict.fromkeys(name for item in listed if (name := _effort_name(item)))) if isinstance(listed, list) else ()
+    rank = {name: index for index, name in enumerate(KNOWN_EFFORTS)}
+    names = tuple(sorted(names, key=lambda name: rank.get(name, len(rank))))
+    default = "none" if details.get("default_enabled") is False else _effort_name(details.get("default_effort"))
+    if names:
+        return names, default
+    return (DEFAULT_EFFORTS if reasoning is not False else ()), default
 
 
 def parse(payload: object, secrets: Collection[str] = ()) -> tuple[ListedModel, ...]:
@@ -98,7 +110,8 @@ def parse(payload: object, secrets: Collection[str] = ()) -> tuple[ListedModel, 
         reasoning = bool({"reasoning", "reasoning_effort", "include_reasoning"} & set(params)) if isinstance(params, list) else None
         name = entry.get("name")
         name = " ".join(name.split())[:MAX_NAME] if isinstance(name, str) and name.strip() else entry["id"]
-        model = ListedModel(entry["id"], name, reasoning, _efforts(entry, reasoning))
+        efforts, default_effort = _efforts(entry, reasoning)
+        model = ListedModel(entry["id"], name, reasoning, efforts, default_effort)
         if secrets and _holds_secret((json.dumps(entry, ensure_ascii=False), model.id, model.name, *model.efforts), secrets):
             continue
         models.setdefault(entry["id"], model)
@@ -154,7 +167,10 @@ async def cached(
     try:
         data = json.loads(raw)
         listed = ModelList(
-            tuple(ListedModel(item["id"], item["name"], item["reasoning"], tuple(item["efforts"])) for item in data["models"]),
+            tuple(
+                ListedModel(item["id"], item["name"], item["reasoning"], tuple(item["efforts"]), item.get("default_effort"))
+                for item in data["models"]
+            ),
             float(data["fetched_at"]),
         )
     except (ValueError, KeyError, TypeError):

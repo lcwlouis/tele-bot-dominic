@@ -110,6 +110,7 @@ class ListedModelView(BaseModel):
     name: str
     reasoning: bool | None
     efforts: list[str]
+    default_effort: str | None = None
 
 
 class ModelListView(BaseModel):
@@ -326,7 +327,8 @@ async def test_provider(request: Request) -> TestResult:
 def _list_view(listed: model_lists.ModelList) -> ModelListView:
     return ModelListView(
         listable=True, fetched_at=listed.fetched_at,
-        models=[ListedModelView(id=item.id, name=item.name, reasoning=item.reasoning, efforts=list(item.efforts))
+        models=[ListedModelView(id=item.id, name=item.name, reasoning=item.reasoning, efforts=list(item.efforts),
+                                  default_effort=item.default_effort)
                 for item in listed.models],
     )
 
