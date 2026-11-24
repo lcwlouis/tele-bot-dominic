@@ -169,6 +169,17 @@ async def test_private_media_stays_off_the_wire(make_app, studio_server, chat, a
     assert [call[2] for call in app.bot.of("send", chat)] == ["hey"]
 
 
+async def test_owner_dm_media_skips_the_model_leak_check(make_app, studio_server):
+    app = make_app(contents=(json.dumps({"bubbles": ["morning pic"], "image": "Dom at his desk with kopi"}),))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={"leak_check": True})
+    app.dispatch.jev = FakeJev(3.0)
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert not app.dispatch.jev.scored
+    assert studio_server[2][-1][0] == "/v1/image"
+
+
 async def test_health_cache_and_connection_backoff():
     clock = [0.0]
     calls = []

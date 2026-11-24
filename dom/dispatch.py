@@ -1864,7 +1864,10 @@ class Dispatcher:
             except (ValueError, OSError):
                 turn_log.step("Held back media: possible leak")
                 return actions.model_copy(update=dict.fromkeys(update))
-            if await self._hold_text_for_leak_check(chat_id, "\n".join(texts), title, hold_if_unavailable=True):
+            # Like text, media for the owner's own DM skips the model check: the owner may see anything Dom knows.
+            if scope != "owner_dm" and await self._hold_text_for_leak_check(
+                chat_id, "\n".join(texts), title, hold_if_unavailable=True,
+            ):
                 turn_log.step("Held back media: possible leak")
                 return actions.model_copy(update=dict.fromkeys(update))
         return actions.model_copy(update=update)
