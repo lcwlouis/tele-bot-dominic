@@ -3,7 +3,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import X from "@lucide/svelte/icons/x";
   import { untrack } from "svelte";
-  import { ApiError, send, type ModelSettings, type ProviderSetup, type SearchProviderId, type SettingsRole } from "$lib/api";
+  import { ApiError, send, type ModelSettings, type ProviderSetup, type ProviderType, type SearchProviderId, type SettingsRole } from "$lib/api";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
@@ -14,7 +14,7 @@
   import ModelPicker from "./ModelPicker.svelte";
   import RoutePrivacy from "./RoutePrivacy.svelte";
   import { effortsFor, findModel } from "./modelLists.svelte";
-  import { CLEARABLE, KEY_PATTERN, KIND_INFO, MAX_SLOTS, ROLE_INFO, family, host, isDeepSeekChat, kindsFor, slotLabel, DEEPSEEK_EFFORTS } from "./roles";
+  import { CLEARABLE, KEY_PATTERN, KIND_INFO, MAX_SLOTS, ROLE_INFO, fitsRole, host, isDeepSeekChat, slotLabel, DEEPSEEK_EFFORTS } from "./roles";
 
   // Edits one role's chain: its primary, then its own fallbacks in order. Each slot picks a provider (from the
   // Providers tab) and a model from that provider's list, or a custom address. Nothing is written until Save, which
@@ -51,20 +51,26 @@
   let nextKey = 0;
   // The editor opens on the saved chain; later changes to the props (a reload) don't reset what the owner typed.
   const route = untrack(() => settings.roles[role]);
-  const choices = untrack(() => settings.providers.filter((item) => kindsFor(role).includes(item.kind)));
-  const searchKind = (kind: ProviderSetup["kind"]): SearchProviderId => (kind === "openai" || kind === "jev" ? "openrouter" : kind);
+  // Only providers of the role's type (E70): chat roles take chat providers, triage decisions providers.
+  const choices = untrack(() => settings.providers.filter((item) => fitsRole(item, role)));
+  const searchKind = (kind: ProviderSetup["kind"]): SearchProviderId =>
+    kind === "searxng" || kind === "deepseek" || kind === "tavily" ? kind : "openrouter";
 
-  function sourceOf(base_url: string, api_key_env: string | null, kind: string): string {
-    const found = choices.find(
-      (item) => item.base_url === base_url && item.api_key_env === api_key_env && family(item.kind) === family(kind as ProviderSetup["kind"]),
-    );
+  /** The type of provider a saved slot uses: OpenRouter web search is a chat provider. */
+  function slotType(provider: SearchProviderId | null): ProviderType {
+    if (triage) return "decisions";
+    return search && provider && provider !== "openrouter" ? "search" : "chat";
+  }
+
+  function sourceOf(base_url: string, api_key_env: string | null, type: ProviderType): string {
+    const found = choices.find((item) => item.base_url === base_url && item.api_key_env === api_key_env && item.type === type);
     return found?.name ?? CUSTOM;
   }
 
   let slots = $state<Slot[]>(
     [route.primary, ...route.fallbacks].filter((item) => item !== null).map((item) => ({
       key: nextKey++,
-      source: sourceOf(item.base_url, item.api_key_env, triage ? "jev" : (item.provider ?? "openai")),
+      source: sourceOf(item.base_url, item.api_key_env, slotType(item.provider)),
       base_url: item.base_url,
       model: item.model,
       api_key_env: item.api_key_env ?? "",

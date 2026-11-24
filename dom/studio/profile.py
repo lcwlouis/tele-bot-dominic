@@ -77,7 +77,7 @@ SWITCH_NAMES = {
 def _has_key(config: Config) -> Callable[[str], bool]:
     def has_key(name: str) -> bool:
         try:
-            return bool(config.secret(name))
+            return bool(config.media_secret(name))  # a backup whose key is also chat's never serves
         except (OSError, ValueError):
             return False
     return has_key

@@ -6,8 +6,9 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Typed providers.** Each provider says what it is for: chat, media or decisions (web search services stay as they are). Add OpenRouter once per type, each with its own key variable. Roles offer only providers of their type: chat roles take chat providers, triage takes decisions providers, and studio backups take media providers. Existing configs load unchanged; an old `kind = "jev"` table reads as an OpenRouter decisions provider.
+- **Pick the triage model from a list.** Triage now has the same searchable model picker as the chat roles, filled from OpenRouter's decision models and cached for a day with Refresh. A typed ID still works. A refused Test says why in one sentence, including a refusal under your zero data retention policy.
 - **Dom can message first in more chats.** Turn on openers for approved groups or friends’ DMs in Settings → What Dom may do. Both switches start off. The daily limit applies to each chat.
-
 - **Provider presets.** Start with editable connection details for 13 cloud and local chat providers in Settings → Providers.
 - **Direct DeepSeek chat.** Use `deepseek-flash` or another model from DeepSeek’s own API. Thinking is off unless the route picks low, high or max. Usage estimates USD cost from cache hits, cache misses and output tokens. Cloud chat routes show a zero-data-retention recommendation where applicable.
 - **Provider budget notices.** When every chat provider is blocked by a supported budget or credit limit, the owner gets one private notice per reset window. Home and `/status` show the active restriction and its local reset time when available. Testing or saving a model in Settings says the same instead of a bare HTTP 403. On the desktop, a refused screenshot description costs only that look: Dom reads the page's text instead of the task failing.
@@ -27,6 +28,7 @@ named `vX.Y.Z`.
 - Studio switches turn on only when the studio or a backup with its key set can serve them, and `/status` says when one is on with nothing behind it. A backup alone now serves its switch without the local studio. `/studio` shows availability per kind; worker and memory details stay on the dashboard.
 - The profile photo changes at most every 1, 7, 14 or 30 days (default 14) instead of every hour.
 
+- Rollback note: v0.8.2 and older refuse a `[providers.<name>]` table with a `type` line or `kind = "gemini"`. Delete those tables before starting an older release (see docs/deploy-pi.md, "Roll back by hand").
 - Rollback note: a reasoning effort other than `low` or `medium` (such as `high`) saved from Settings makes v0.8.2 and older refuse to start. Before starting the older release, set each `reasoning_effort` in `config.toml` back to `low` or `medium` (or delete it), and check again after restoring any backup copy (see docs/deploy-pi.md, "Roll back by hand").
 
 ## [0.8.2] - 2026-11-23

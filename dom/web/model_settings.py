@@ -20,7 +20,7 @@ import asyncio
 import hashlib
 import re
 import tomllib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -37,23 +37,28 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from dom.config import (
     DEEPSEEK_EFFORT_ERROR,
     MAX_DESKTOP_STEPS,
+    MEDIA_ADDRESS_RULE,
     MEDIA_KEY_RULE,
+    MEDIA_PROVIDER_KEY_RULE,
     MIN_DESKTOP_STEPS,
     MODEL_ROLES,
     SEARCH_PROVIDERS,
     STUDIO_CHAINS,
+    MEDIA_BASE_URLS,
     Config,
     DataPolicy,
     ProviderEndpoint,
     ProviderKind,
+    ProviderType,
     SearchProvider,
     StudioChain,
+    StudioFallback,
     _replace_file,
     validate_config,
 )
 from dom import model_lists
 from dom.doctor import _probe_hint, is_zdr_refusal
-from dom.jev import JevClient, JevUnavailable
+from dom.jev import DEFAULT_BASE_URL as DECISIONS_BASE_URL, JevClient, JevUnavailable
 from dom.llm import ChatClient, FallbackClient, MissingProviderKey, ProviderBudgetError, openrouter_host
 from dom.provider_budget import budget_line
 from dom.search import PROVIDER_INFO, SearchClient, search_provider_kind
@@ -282,7 +287,9 @@ class RoleView(BaseModel):
 
 
 class ProviderUse(BaseModel):
-    role: SettingsRole
+    """A slot that uses a provider: a role's chain position, or a studio backup chain's (voice, image, video)."""
+
+    role: SettingsRole | StudioChain
     index: int
 
 
@@ -291,6 +298,7 @@ class ProviderSetupView(BaseModel):
 
     name: str
     kind: ProviderKind
+    type: ProviderType
     base_url: str
     api_key_env: str | None
     key_set: bool
@@ -317,15 +325,23 @@ class ProviderPreset(BaseModel):
     name: str
     base_url: str
     api_key_env: str | None = None
-    kind: Literal["openai", "openrouter"] = "openai"
+    kind: ProviderKind = "openai"
+    type: ProviderType = "chat"
     model: str | None = None
 
 
 # Chat presets use the OpenAI-compatible endpoint, including DeepSeek (the separate
-# "deepseek" kind in this editor is for search).
+# "deepseek" kind in this editor is for search). OpenRouter comes once per type, each with its own key variable: a
+# media key may take a looser data policy, so it never serves chat.
 PROVIDER_PRESETS = (
     ProviderPreset(name="OpenRouter", base_url="https://openrouter.ai/api/v1",
                    api_key_env="OPENROUTER_API_KEY", kind="openrouter"),
+    ProviderPreset(name="OpenRouter media", base_url=MEDIA_BASE_URLS["openrouter"],
+                   api_key_env="OPENROUTER_MEDIA_API_KEY", kind="openrouter", type="media"),
+    ProviderPreset(name="OpenRouter decisions", base_url=DECISIONS_BASE_URL,
+                   api_key_env="OPENROUTER_API_KEY", kind="openrouter", type="decisions"),
+    ProviderPreset(name="Google Gemini media", base_url=MEDIA_BASE_URLS["gemini"],
+                   api_key_env="GEMINI_MEDIA_API_KEY", kind="gemini", type="media"),
     ProviderPreset(name="OpenAI", base_url="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"),
     ProviderPreset(name="Anthropic", base_url="https://api.anthropic.com/v1", api_key_env="ANTHROPIC_API_KEY"),
     ProviderPreset(name="Google Gemini", base_url="https://generativelanguage.googleapis.com/v1beta/openai",
@@ -430,13 +446,28 @@ def set_role(document: tomlkit.TOMLDocument, role: SettingsRole, slots: list[Pro
         models()[role] = primary
 
 
+def set_backups(document: tomlkit.TOMLDocument, studio_chain: StudioChain, backups: list[StudioFallback]) -> None:
+    """Write one studio backup chain ([[studio.<chain>_fallbacks]]) into config.toml's document, or drop it."""
+    if "studio" not in document:
+        document["studio"] = tomlkit.table()
+    key = f"{studio_chain}_fallbacks"
+    if backups:
+        tables = tomlkit.aot()
+        for item in backups:
+            tables.append(tomlkit.item(item.model_dump(exclude_defaults=True)))
+        document["studio"][key] = tables
+    else:
+        document["studio"].pop(key, None)
+
+
 def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     text = tomlkit.dumps(document)
     try:
         saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
     except ValidationError as exc:
         # These validation messages use trusted templates and tell the owner how to fix the setting.
-        rules = (MEDIA_KEY_RULE.partition("{name}")[2], DEEPSEEK_EFFORT_ERROR)
+        rules = (MEDIA_KEY_RULE.partition("{name}")[2], MEDIA_PROVIDER_KEY_RULE.partition("{name}")[2],
+                 MEDIA_ADDRESS_RULE.partition("{url}")[0], DEEPSEEK_EFFORT_ERROR)
         message = next(
             (error["msg"] for error in exc.errors(include_input=False) if any(rule in error["msg"] for rule in rules)),
             None,
@@ -453,9 +484,25 @@ def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     return saved
 
 
+TYPE_NAMES = {"chat": "a chat", "media": "a media", "decisions": "a decisions", "search": "a web search"}
+
+
+def _check_role_types(config: Config, role: SettingsRole, slots: list[ProviderEndpoint]) -> None:
+    """A slot on a saved provider's address and key variable must use a provider of the role's type (E70); a custom
+    address that matches no saved provider is still allowed."""
+    for index, slot in enumerate(slots):
+        matches = [(name, setup) for name, setup in config.provider_setups.items()
+                   if same_url(setup.base_url, slot.base_url) and setup.api_key_env == (slot.api_key_env or None)]
+        if matches and not any(kind_fits(setup.kind, setup.type, role, slot) for _, setup in matches):
+            name, setup = matches[0]
+            raise HTTPException(422, f"{_slot_label(index)}: {name} is {TYPE_NAMES[setup.type]} provider, which "
+                                     f"{role} can't use. Pick a provider of the right type.")
+
+
 def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     """The settings with `update` applied, validated but not written."""
     _check_revision(current, update.revision)
+    _check_role_types(current.config, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
     try:
         _check_keys(current.config, [*([update.primary] if update.primary else []), *update.fallbacks])
     except KeyPairing as exc:
@@ -476,7 +523,9 @@ async def commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str)
             try:
                 current = await asyncio.to_thread(_snapshot, app.config.home)
                 saved = await asyncio.to_thread(change, current)
-                routes = app.model_routes(saved.config)
+                chains = [name for name in STUDIO_CHAINS if getattr(current.config.studio, f"{name}_fallbacks")
+                          != getattr(saved.config.studio, f"{name}_fallbacks")]
+                routes = app.model_routes(saved.config, studio_chains=chains)
                 await asyncio.to_thread(_write, current, saved)
             except (OSError, ValueError, httpx.InvalidURL):
                 raise HTTPException(409, failure) from None
@@ -546,35 +595,36 @@ def _search_provider_infos() -> list[SearchProviderInfo]:
     ]
 
 
-def slot_kind(role: SettingsRole, endpoint: ProviderEndpoint) -> ProviderKind:
-    """The provider kind a role's slot implies, for an address not saved under [providers] yet."""
+def slot_kind(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[ProviderKind, ProviderType]:
+    """The service and type a role's slot implies, for an address not saved under [providers] yet: triage is a
+    decisions provider, search a search service (or OpenRouter chat, for OpenRouter's web search), the rest chat."""
     if role in DECISION_ROLES:
-        return "jev"
-    if role == "search":
-        return search_provider_kind(endpoint)
+        return "openrouter", "decisions"
+    if role == "search":  # its provider is explicit: an OpenRouter search route on any host stays OpenRouter
+        kind = search_provider_kind(endpoint)
+        return kind, "chat" if kind == "openrouter" else "search"
     try:
-        return "openrouter" if openrouter_host(httpx.URL(endpoint.base_url).host) else "openai"
+        return ("openrouter" if openrouter_host(httpx.URL(endpoint.base_url).host) else "openai"), "chat"
     except httpx.InvalidURL:
-        return "openai"
+        return "openai", "chat"
 
 
-KIND_LABELS: dict[str, str] = {"openrouter": "OpenRouter", "jev": "Jev decisions"} | {
+TYPE_LABELS: dict[str, str] = {"chat": "", "media": "media", "decisions": "decisions", "search": ""}
+KIND_LABELS: dict[str, str] = {"openrouter": "OpenRouter", "gemini": "Google Gemini"} | {
     name: PROVIDER_INFO[name].label for name in ("searxng", "deepseek", "tavily")
 }
 
 
-def kind_fits(kind: ProviderKind, role: SettingsRole, endpoint: ProviderEndpoint) -> bool:
-    """Whether a provider of this kind can serve the slot: triage takes Jev, search its own kind, the rest chat."""
+def kind_fits(kind: ProviderKind, type_: ProviderType, role: SettingsRole | StudioChain, endpoint) -> bool:
+    """Whether a provider can serve the slot (E70): triage takes a decisions provider, a studio backup a media provider
+    of its own service, search its own service (OpenRouter's search is a chat provider), the other roles chat."""
+    if role in STUDIO_CHAINS:
+        return type_ == "media" and kind == endpoint.kind
     if role in DECISION_ROLES:
-        return kind == "jev"
+        return type_ == "decisions"
     if role == "search":
-        return kind == search_provider_kind(endpoint)
-    return kind in ("openai", "openrouter")
-
-
-def family(kind: ProviderKind) -> str:
-    """Providers at one address and key variable are one provider, unless they serve different kinds of call."""
-    return kind if kind in ("jev", "searxng", "deepseek", "tavily") else "chat"
+        return kind == search_provider_kind(endpoint) and type_ in ("search", "chat")
+    return type_ == "chat"
 
 
 def _key_set(config: Config, variable: str | None) -> bool:
@@ -584,34 +634,57 @@ def _key_set(config: Config, variable: str | None) -> bool:
         return False
 
 
-def provider_catalog(config: Config) -> list[ProviderSetupView]:
-    """Saved providers first, then each other address (and key variable) a role uses, with every slot that uses it."""
-    found: dict[tuple[str, str | None, str], ProviderSetupView] = {}
-    for name, setup in config.provider_setups.items():
-        found.setdefault((setup.base_url, setup.api_key_env, family(setup.kind)), ProviderSetupView(
-            name=name, kind=setup.kind, base_url=setup.base_url, api_key_env=setup.api_key_env,
-            key_set=_key_set(config, setup.api_key_env), is_local=_is_local(setup.base_url), saved=True,
-            listable=model_lists.listable(setup.kind), uses=[],
-        ))
-    names = {view.name.lower() for view in found.values()}
+def same_url(a: str, b: str) -> bool:
+    """Whether two base URLs name the same address: a trailing slash doesn't make a different provider."""
+    return a.rstrip("/") == b.rstrip("/")
+
+
+def _uses(config: Config) -> Iterator[tuple[SettingsRole | StudioChain, int, ProviderEndpoint | StudioFallback]]:
+    """Every slot a provider can serve: each role's chain, then each studio backup chain."""
     for role in SETTINGS_ROLES:
         for index, endpoint in enumerate(chain(config, role)):
-            view = _provider_view(config, endpoint, role=role)
+            yield role, index, endpoint
+    for studio_chain in STUDIO_CHAINS:
+        for index, backup in enumerate(getattr(config.studio, f"{studio_chain}_fallbacks")):
+            yield studio_chain, index, backup
+
+
+def provider_catalog(config: Config) -> list[ProviderSetupView]:
+    """Saved providers first, then each other address, key variable and type a role or studio backup uses, with every
+    slot that uses it. One address and key is one provider per type (E70)."""
+    found: dict[tuple[str, str | None, str], ProviderSetupView] = {}
+    for name, setup in config.provider_setups.items():
+        found.setdefault((setup.base_url.rstrip("/"), setup.api_key_env, setup.type), ProviderSetupView(
+            name=name, kind=setup.kind, type=setup.type, base_url=setup.base_url, api_key_env=setup.api_key_env,
+            key_set=_key_set(config, setup.api_key_env), is_local=_is_local(setup.base_url), saved=True,
+            listable=model_lists.listable(setup.kind, setup.type, setup.base_url), uses=[],
+        ))
+    names = {view.name.lower() for view in found.values()}
+    for role, index, slot in _uses(config):
+        if role in STUDIO_CHAINS:
+            kind, type_, base_url, variable = slot.kind, "media", slot.base_url, slot.api_key_env
+            if not ENV_NAME.fullmatch(variable) or _looks_like_secret(variable):
+                continue  # a hand-written variable the settings API can't show
+            key_set = _key_set(config, variable)
+        else:
+            view = _provider_view(config, slot, role=role)
             if not view.base_url:  # a hand-written address the settings API can't show
                 continue
-            kind = slot_kind(role, endpoint)
-            key = (view.base_url, view.api_key_env, family(kind))
-            if key not in found:
-                base = re.sub(r"[^A-Za-z0-9 ._-]+", " ", KIND_LABELS.get(kind) or httpx.URL(view.base_url).host).strip()[:36] or "Provider"
-                name, n = base, 2
-                while name.lower() in names:
-                    name, n = f"{base} {n}", n + 1
-                names.add(name.lower())
-                found[key] = ProviderSetupView(
-                    name=name, kind=kind, base_url=view.base_url, api_key_env=view.api_key_env, key_set=view.key_set,
-                    is_local=view.kind == "local", saved=False, listable=model_lists.listable(kind), uses=[],
-                )
-            found[key].uses.append(ProviderUse(role=role, index=index))
+            (kind, type_), base_url, variable, key_set = slot_kind(role, slot), view.base_url, view.api_key_env, view.key_set
+        key = (base_url.rstrip("/"), variable, type_)  # a trailing slash names the same address
+        if key not in found:
+            service = KIND_LABELS.get(kind) if kind != "openrouter" or openrouter_host(httpx.URL(base_url).host) else None
+            label = " ".join(filter(None, (service or httpx.URL(base_url).host, TYPE_LABELS[type_])))
+            base = re.sub(r"[^A-Za-z0-9 ._-]+", " ", label).strip()[:36] or "Provider"
+            name, n = base, 2
+            while name.lower() in names:
+                name, n = f"{base} {n}", n + 1
+            names.add(name.lower())
+            found[key] = ProviderSetupView(
+                name=name, kind=kind, type=type_, base_url=base_url, api_key_env=variable, key_set=key_set,
+                is_local=_is_local(base_url), saved=False, listable=model_lists.listable(kind, type_, base_url), uses=[],
+            )
+        found[key].uses.append(ProviderUse(role=role, index=index))
     return list(found.values())
 
 
@@ -881,8 +954,13 @@ def _permission_value(config: Config, permission: Permission) -> bool:
 def _servable(config: Config, permission: Permission) -> bool:
     """Whether anything set up can serve the switch (a backup counts once its key has a value); only studio switches
     need something. Reads .env: call it off the event loop."""
-    return permission.path[0] != "studio" or switch_servable(
-        config.studio, permission.path[1], lambda name: _key_set(config, name))
+    def media_key(name: str) -> bool:  # a backup whose key is also chat's never serves
+        try:
+            return bool(config.media_secret(name))
+        except (OSError, ValueError):
+            return False
+
+    return permission.path[0] != "studio" or switch_servable(config.studio, permission.path[1], media_key)
 
 
 def _permissions(snapshot: Snapshot) -> Permissions:
@@ -1111,6 +1189,23 @@ async def _probe_search_chain(
     )
 
 
+DECISIONS_REFUSALS = {
+    401: "The provider refused the key. Check its value in .env.",
+    402: "The provider refused it: the account is out of credits.",
+    403: "The provider refused it: this key may not use this model.",
+    404: "The provider doesn't offer that decisions model. Pick one from the list.",
+    429: "The provider is limiting requests on this key. Try again in a minute.",
+}
+
+
+def _decisions_refusal(response: httpx.Response) -> str:
+    """A refused decisions request in one sentence. A zero-data-retention refusal (the key's policy) says so first."""
+    if is_zdr_refusal(response):
+        return ("The provider refused it: no endpoint for this model meets your zero data retention policy. "
+                "Pick another decisions model.")
+    return DECISIONS_REFUSALS.get(response.status_code, f"Provider returned HTTP {response.status_code}.")
+
+
 async def _probe_decisions(app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint) -> TestResult:
     """A real Jev decisions request with one yes/no question, recorded as triage usage."""
     local = _is_local(provider.base_url)
@@ -1151,8 +1246,7 @@ async def _probe_decisions(app: App, http: httpx.AsyncClient, config: Config, pr
     except JevUnavailable as exc:
         cause = exc.__cause__
         if isinstance(cause, httpx.HTTPStatusError):
-            error = (_probe_hint(cause.response) if is_zdr_refusal(cause.response)
-                     else f"Provider returned HTTP {cause.response.status_code}.")
+            error = _decisions_refusal(cause.response)
         elif isinstance(cause, httpx.TimeoutException):
             error = "Provider test timed out."
         elif isinstance(cause, httpx.HTTPError):

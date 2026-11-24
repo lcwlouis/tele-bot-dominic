@@ -1,8 +1,9 @@
 """Model lists fetched from each provider for the dashboard's model picker (D8), with reasoning efforts (D9).
 
 OpenRouter's `/models` says which models reason (`supported_parameters`); any other OpenAI-compatible `/models`
-lists IDs only, so whether those reason is unknown. Lists are cached in the store's kv table for a day, keyed by
-the provider's address and key variable, so a role slot finds its list without knowing the provider's name.
+lists IDs only, so whether those reason is unknown. A decisions provider (triage) lists OpenRouter's decision models,
+`/api/v1/models?output_modalities=decisions` on its origin. Lists are cached in the store's kv table for a day, keyed
+by the provider's address, key variable and type, so a role slot finds its list without knowing the provider's name.
 Fetching is a dashboard action, never on the reply path: one GET, no redirects, a timeout and a size cap. A
 provider could echo a credential back in a model's fields, so an entry holding any configured secret value is dropped
 before it is cached or shown.
@@ -56,8 +57,9 @@ class ModelList:
     fetched_at: float
 
 
-def cache_key(base_url: str, api_key_env: str | None) -> str:
-    digest = hashlib.sha256(f"{base_url}\n{api_key_env or ''}".encode()).hexdigest()
+def cache_key(base_url: str, api_key_env: str | None, type_: str = "chat") -> str:
+    identity = f"{base_url}\n{api_key_env or ''}" + ("" if type_ == "chat" else f"\n{type_}")
+    digest = hashlib.sha256(identity.encode()).hexdigest()
     return f"model-list:v2:{digest}"  # v2: levels read from OpenRouter's `reasoning` object
 
 
@@ -152,16 +154,36 @@ async def fetch(
         raise ListUnavailable("The provider's model list was not valid JSON.") from None
 
 
-def listable(kind: str) -> bool:
-    """Kinds with a `/models` list. Jev's decisions API and the search services don't list models."""
-    return kind in ("openai", "openrouter")
+DECISIONS_LIST = "/api/v1/models?output_modalities=decisions"
+
+
+def list_location(kind: str, type_: str, base_url: str) -> tuple[str, str] | None:
+    """Where a provider's model list is, as (base, path) for fetch(), or None when it has none: chat providers list
+    `{base_url}/models`; OpenRouter's decisions models are on its origin's v1 API; media providers and the search
+    services list nothing here (studio backups fetch each media kind's list themselves)."""
+    if type_ == "chat" and kind in ("openai", "openrouter"):
+        return base_url, "/models"
+    if type_ == "decisions" and kind == "openrouter":
+        try:
+            url = httpx.URL(base_url)
+        except httpx.InvalidURL:
+            return None
+        host = (url.host or "").rstrip(".")
+        if host == "openrouter.ai" or host.endswith(".openrouter.ai"):
+            return str(url.copy_with(path="/", query=None, fragment=None)).rstrip("/"), DECISIONS_LIST
+    return None
+
+
+def listable(kind: str, type_: str = "chat", base_url: str = "") -> bool:
+    return list_location(kind, type_, base_url) is not None
 
 
 async def cached(
     store, base_url: str, api_key_env: str | None, *, fresh_only: bool = True, secrets: Collection[str] = (),
+    type_: str = "chat",
 ) -> ModelList | None:
     """The cached list, without entries holding any of `secrets` (a list cached before a key value was set)."""
-    raw = await store.kv_get(cache_key(base_url, api_key_env))
+    raw = await store.kv_get(cache_key(base_url, api_key_env, type_))
     if not raw:
         return None
     try:
@@ -183,10 +205,12 @@ async def cached(
     return listed
 
 
-async def remember(store, base_url: str, api_key_env: str | None, models: tuple[ListedModel, ...]) -> ModelList:
+async def remember(
+    store, base_url: str, api_key_env: str | None, models: tuple[ListedModel, ...], *, type_: str = "chat",
+) -> ModelList:
     listed = ModelList(models, time.time())
     payload = {"fetched_at": listed.fetched_at, "models": [asdict(model) for model in models]}
-    await store.kv_set(cache_key(base_url, api_key_env), json.dumps(payload, separators=(",", ":")))
+    await store.kv_set(cache_key(base_url, api_key_env, type_), json.dumps(payload, separators=(",", ":")))
     return listed
 
 

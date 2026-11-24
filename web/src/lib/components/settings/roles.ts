@@ -6,7 +6,7 @@ import PenLine from "@lucide/svelte/icons/pen-line";
 import Rocket from "@lucide/svelte/icons/rocket";
 import Scale from "@lucide/svelte/icons/scale";
 import Search from "@lucide/svelte/icons/search";
-import type { DataPolicy, ProviderKind, Role, SettingsRole } from "$lib/api";
+import type { DataPolicy, ProviderKind, ProviderSetup, ProviderType, Role, SettingsRole, StudioChain } from "$lib/api";
 
 /** What each model role does, in the owner's words, with the notes the old settings page gave. */
 export const ROLE_INFO: Record<SettingsRole, { label: string; summary: string; note?: string; icon: Component }> = {
@@ -30,7 +30,7 @@ export const ROLE_INFO: Record<SettingsRole, { label: string; summary: string; n
   },
   triage: {
     label: "Triage", summary: "Decides whether and when to reply.", icon: Scale,
-    note: "A decisions model (Jev): it also screens replies for leaks. Its test sends a real decision request.",
+    note: "A decisions model, such as Jev: it also screens replies for leaks. Its test sends a real decision request.",
   },
 };
 
@@ -38,28 +38,50 @@ export const ROLE_INFO: Record<SettingsRole, { label: string; summary: string; n
 export const ROLES: Role[] = ["chat", "fallback", "media", "drafting", "search", "escalation"];
 export const DECISION_ROLES: SettingsRole[] = ["triage"];
 
-export const KIND_INFO: Record<ProviderKind, { label: string; url: string; group: "models" | "search" }> = {
-  openai: { label: "OpenAI-compatible", url: "", group: "models" },
-  openrouter: { label: "OpenRouter", url: "https://openrouter.ai/api/v1", group: "models" },
-  jev: { label: "Jev decisions", url: "https://openrouter.ai/api/alpha", group: "models" },
-  searxng: { label: "SearXNG", url: "", group: "search" },
-  deepseek: { label: "DeepSeek web search", url: "", group: "search" },
-  tavily: { label: "Tavily", url: "", group: "search" },
+/** Each service's name and usual address for a type (dom/config.py MEDIA_BASE_URLS; the decisions API is Jev's). */
+export const KIND_INFO: Record<ProviderKind, { label: string; url: Partial<Record<ProviderType, string>> }> = {
+  openai: { label: "OpenAI-compatible", url: {} },
+  openrouter: {
+    label: "OpenRouter",
+    url: { chat: "https://openrouter.ai/api/v1", media: "https://openrouter.ai/api/v1", decisions: "https://openrouter.ai/api/alpha" },
+  },
+  gemini: { label: "Google Gemini", url: { media: "https://generativelanguage.googleapis.com/v1beta" } },
+  searxng: { label: "SearXNG", url: {} },
+  deepseek: { label: "DeepSeek web search", url: {} },
+  tavily: { label: "Tavily", url: {} },
 };
-export const KINDS = Object.keys(KIND_INFO) as ProviderKind[];
 
-/** Which provider kinds can serve a role's slot. */
-export function kindsFor(role: SettingsRole): ProviderKind[] {
-  if (role === "triage") return ["jev"];
-  if (role === "search") return ["searxng", "openrouter", "deepseek", "tavily"];
-  return ["openai", "openrouter"];
+/** What each provider type is for, and the services that can be one (dom/config.py TYPE_KINDS). */
+export const TYPE_INFO: Record<ProviderType, { label: string; heading: string; summary: string; kinds: ProviderKind[] }> = {
+  chat: {
+    label: "Chat", heading: "Chat providers", kinds: ["openai", "openrouter"],
+    summary: "Used by chat, fallback, drafting, escalation, photos and voice, and OpenRouter web search.",
+  },
+  media: {
+    label: "Media", heading: "Media providers", kinds: ["openrouter", "gemini"],
+    summary: "Used by the studio's cloud backups for voice notes, photos and video notes.",
+  },
+  decisions: {
+    label: "Decisions", heading: "Decision providers", kinds: ["openrouter"],
+    summary: "Used by triage, through OpenRouter's Decisions API.",
+  },
+  search: { label: "Web search", heading: "Web search", kinds: ["searxng", "deepseek", "tavily"], summary: "Used by web search." },
+};
+export const TYPES = Object.keys(TYPE_INFO) as ProviderType[];
+
+/** Whether a provider can serve a role's slot (model_settings.kind_fits): triage takes decisions providers, search
+ * its own services or OpenRouter chat, the other roles chat providers. */
+export function fitsRole(provider: Pick<ProviderSetup, "kind" | "type">, role: SettingsRole): boolean {
+  if (role === "triage") return provider.type === "decisions";
+  if (role === "search") return provider.type === "search" || (provider.type === "chat" && provider.kind === "openrouter");
+  return provider.type === "chat";
 }
 
-/** Providers at one address and key are one provider unless they serve different kinds of call (model_settings.family). */
-export const family = (kind: ProviderKind) => (kind === "openai" || kind === "openrouter" ? "chat" : kind);
+const BACKUP_LABELS: Record<StudioChain, string> = { voice: "Voice notes", image: "Photos", video: "Video notes" };
 
-export function useLabel(use: { role: SettingsRole; index: number }): string {
-  const label = ROLE_INFO[use.role].label;
+export function useLabel(use: { role: SettingsRole | StudioChain; index: number }): string {
+  if (use.role in BACKUP_LABELS) return `${BACKUP_LABELS[use.role as StudioChain]} backup ${use.index + 1}`;
+  const label = ROLE_INFO[use.role as SettingsRole].label;
   return use.index === 0 ? label : `${label} ${slotLabel(use.index).toLowerCase()}`;
 }
 /** Roles that may be left unset; chat, media and drafting always have a primary. */

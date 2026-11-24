@@ -10,7 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from random import Random
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Collection
 from zoneinfo import ZoneInfo
 
 from aiogram import Router
@@ -117,13 +117,21 @@ class App:
     def owner_id(self) -> int | None:
         return self.store.owner_id
 
-    def model_routes(self, saved: Config) -> ModelRoutes:
+    def model_routes(self, saved: Config, studio_chains: Collection[str] = ()) -> ModelRoutes:
         """Build every client for `saved`'s routes (and triage's decisions client) without touching the running ones,
         so a route that can't be built raises before anything is published."""
         routed = (*MODEL_ROLES, "triage")
         models = {name: endpoint for name, endpoint in self.config.models.items() if name not in routed}
         models.update({name: saved.models[name] for name in routed if name in saved.models})
-        config = self.config.model_copy(update={"models": models, "provider_setups": saved.provider_setups})
+        # A provider save can move studio backups to a new key variable: only those chains are taken from `saved`, so
+        # other studio settings on disk wait for their own save. Backups are read from the config on each use.
+        studio = self.config.studio.model_copy(
+            update={f"{chain}_fallbacks": getattr(saved.studio, f"{chain}_fallbacks") for chain in studio_chains})
+        config = self.config.model_copy(update={"models": models, "provider_setups": saved.provider_setups,
+                                                "studio": studio})
+        # model_copy skips validation, and this mix of saved routes and running studio settings was never validated
+        # as a whole: re-check the key rules so a chat route and a live studio backup can't end up sharing a key.
+        config.check_key_rules()
         current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
         chat, media, draft, escalation = (routed_client(config, role, current.http, current.usage)
                                           for role in ("chat", "media", "drafting", "escalation"))

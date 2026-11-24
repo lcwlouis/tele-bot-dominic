@@ -98,7 +98,7 @@ base_url = "https://api.tavily.com"
 api_key_env = "TAVILY_API_KEY"
 
 [models.triage]
-base_url = "https://decisions.example.org/alpha"
+base_url = "https://openrouter.ai/api/alpha"
 model = "example/classifier"
 
 [[studio.voice_fallbacks]]
@@ -162,6 +162,15 @@ PREVIEW_MODELS = {"data": [
     {"id": "example/tiny", "name": "Example: Tiny", "supported_parameters": ["tools"]},
     {"id": "example/vision-model", "name": "Example: Vision", "supported_parameters": ["tools"]},
 ]}
+# OpenRouter's decision models (GET /api/v1/models?output_modalities=decisions), for the triage picker.
+PREVIEW_DECISIONS = {"data": [
+    {"id": "example/classifier", "name": "Example: Classifier", "architecture": {"input_modalities": ["text"]},
+     "pricing": {"prompt": "0.0000001"}, "context_length": 32000},
+    {"id": "example/decider-flash:free", "name": "Example: Decider Flash (free)",
+     "architecture": {"input_modalities": ["text"]}, "pricing": {"prompt": "0"}, "context_length": 128000},
+    {"id": "example/decider-pro", "name": "Example: Decider Pro", "architecture": {"input_modalities": ["text", "image"]},
+     "pricing": {"prompt": "0.000001"}, "context_length": 128000},
+]}
 # OpenRouter lists each media kind's models on its own (/images/models, /audio/speech/models, /videos/models).
 PREVIEW_MEDIA_MODELS = {"data": [
     {"id": "example/image-model", "name": "Example: Image"},
@@ -203,6 +212,8 @@ def preview_models(script: ModelScript):
             request.url.path.endswith("/videos/models") or request.url.params.get("output_modalities") == "video"
         ):
             return httpx.Response(200, json=PREVIEW_AVATAR_MODELS)
+        if request.method == "GET" and request.url.params.get("output_modalities") == "decisions":
+            return httpx.Response(200, json=PREVIEW_DECISIONS)
         if request.method == "GET" and request.url.path.endswith(("/images/models", "/speech/models")):
             return httpx.Response(200, json=PREVIEW_MEDIA_MODELS)
         if request.method == "GET" and request.url.path.endswith("/models"):

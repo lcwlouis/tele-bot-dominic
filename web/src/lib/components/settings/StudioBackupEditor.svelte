@@ -7,6 +7,7 @@
     type DataPolicy,
     type ModelList,
     type ModelSettings,
+    type ProviderSetup,
     type StudioBackup,
     type StudioChain,
     type StudioFallback,
@@ -18,16 +19,17 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import * as Select from "$lib/components/ui/select";
-  import { ACCOUNT_ZDR_NOTE, KEY_PATTERN, POLICIES, POLICY_INFO, ZDR_RECOMMENDATION } from "./roles";
+  import { ACCOUNT_ZDR_NOTE, KEY_PATTERN, POLICIES, POLICY_INFO, ZDR_RECOMMENDATION, KIND_INFO } from "./roles";
   import { CHAIN_INFO, STUDIO_PROVIDERS } from "./studio";
 
   // Adds a studio cloud backup to a chain (index null) or edits one. Saving tests it first without making any media
   // (dom/web/studio_settings.py): OpenRouter must accept the key and list the model for this kind of media; a direct
-  // Gemini model must answer a models GET.
+  // Gemini model must answer a models GET. The key variable comes from a media provider (E70), or is typed here.
   let {
     chain,
     index,
     original,
+    providers,
     revision,
     onsaved,
     oncancel,
@@ -35,6 +37,7 @@
     chain: StudioChain;
     index: number | null;
     original: StudioFallback | null;
+    providers: ProviderSetup[];
     revision: string;
     onsaved: (saved: ModelSettings) => void;
     oncancel: () => void;
@@ -44,7 +47,10 @@
   const start = untrack(() => original);
   let provider = $state<StudioProvider>(start?.provider ?? info.providers[0]);
   let model = $state(start?.model ?? "");
-  let keyEnv = $state(start?.api_key_env ?? STUDIO_PROVIDERS[info.providers[0]].key);
+  // A new backup starts with the first media provider of its service, else the usual media key name.
+  const firstKey = untrack(() => providers.find((item) => item.type === "media" && item.api_key_env
+    && item.kind === (info.providers[0] === "gemini_tts" ? "gemini" : "openrouter"))?.api_key_env);
+  let keyEnv = $state(start?.api_key_env ?? firstKey ?? STUDIO_PROVIDERS[info.providers[0]].key);
   let paid = $state(start?.paid ?? false);
   let supportsReference = $state(start?.supports_reference ?? true);
   let allowWithoutReference = $state(start?.allow_without_reference ?? false);
@@ -58,13 +64,29 @@
   const id = untrack(() => `studio-${chain}-editor`);
 
   const openrouter = $derived(provider !== "gemini_tts");
+  const CUSTOM = "__custom__"; // provider names start with a letter or digit, so this never names one
+  // Media providers of this backup's service, each with a key variable.
+  const sources = $derived(providers.filter((item) =>
+    item.type === "media" && item.api_key_env && item.kind === (openrouter ? "openrouter" : "gemini")));
+  const source = $derived(sources.find((item) => item.api_key_env === keyEnv.trim()));
+  let custom = $state(false);
+  const showKey = $derived(custom || !source);
+
+  function pickSource(value: string) {
+    const found = sources.find((item) => item.name === value);
+    custom = !found;
+    if (found) keyEnv = found.api_key_env ?? "";
+    error = "";
+  }
   const usesReference = $derived(provider === "openrouter_image");
   const policies = $derived(POLICIES.filter((value) => provider !== "openrouter_video" || value !== "zdr"));
 
   function pickProvider(value: StudioProvider) {
     const suggested = new Set(Object.values(STUDIO_PROVIDERS).map((item) => item.key));
-    if (!keyEnv || suggested.has(keyEnv)) keyEnv = STUDIO_PROVIDERS[value].key;
     provider = value;
+    const first = custom ? undefined : sources[0];
+    if (first) keyEnv = first.api_key_env ?? "";
+    else if (!keyEnv || suggested.has(keyEnv)) keyEnv = STUDIO_PROVIDERS[value].key;
     list = null;
     listState = "idle";
     error = "";
@@ -125,25 +147,46 @@
         </Select.Root>
       </div>
       <div class="grid gap-1.5">
-        <Label for={`${id}-key`}>Key variable</Label>
-        <Input
-          id={`${id}-key`}
-          bind:value={keyEnv}
-          oninput={() => (error = "")}
-          required
-          pattern={KEY_PATTERN}
-          class="font-mono"
-          autocomplete="off"
-          spellcheck={false}
-          aria-describedby={`${id}-key-hint`}
-        />
+        <Label id={`${id}-source-label`}>Media provider</Label>
+        <Select.Root type="single" value={showKey ? CUSTOM : source?.name} onValueChange={pickSource}>
+          <Select.Trigger class="h-9 w-full" aria-labelledby={`${id}-source-label`}>
+            {showKey ? "Custom key variable" : source?.name}
+          </Select.Trigger>
+          <Select.Content>
+            {#each sources as item (item.name)}
+              <Select.Item value={item.name} label={item.name} />
+            {/each}
+            <Select.Item value={CUSTOM} label="Custom key variable" />
+          </Select.Content>
+        </Select.Root>
       </div>
+      {#if showKey}
+        <div class="grid gap-1.5 sm:col-span-2">
+          <Label for={`${id}-key`}>Key variable</Label>
+          <Input
+            id={`${id}-key`}
+            bind:value={keyEnv}
+            oninput={() => (error = "")}
+            required
+            pattern={KEY_PATTERN}
+            class="font-mono"
+            autocomplete="off"
+            spellcheck={false}
+            aria-describedby={`${id}-key-hint`}
+          />
+        </div>
+      {/if}
       <p id={`${id}-key-hint`} class="text-xs text-muted-foreground sm:col-span-2">
-        The name of a variable in <code class="font-mono">.env</code>, never the key itself.
-        {#if openrouter}
-          Use a media-only key such as <code class="font-mono">OPENROUTER_MEDIA_API_KEY</code>: a key the model roles use
-          can't serve a backup, so chat always keeps zero data retention. Save first, then add its value to
-          <code class="font-mono">.env</code>.
+        {#if !showKey && source}
+          {KIND_INFO[source.kind].label} with <code class="font-mono">{source.api_key_env}</code>{source.key_set ? "." : ", which has no value in .env yet."}
+        {:else}
+          The name of a variable in <code class="font-mono">.env</code>, never the key itself.
+          {#if openrouter}
+            Use a media-only key such as <code class="font-mono">OPENROUTER_MEDIA_API_KEY</code>: a key the model roles use
+            can't serve a backup, so chat always keeps zero data retention. Save first, then add its value to
+            <code class="font-mono">.env</code>.
+          {/if}
+          {#if !sources.length}Add a media provider on the Providers tab to pick it here.{/if}
         {/if}
       </p>
       <div class="grid gap-1.5 sm:col-span-2">

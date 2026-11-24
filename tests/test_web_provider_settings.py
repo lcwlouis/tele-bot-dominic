@@ -32,6 +32,8 @@ async def _revision(client):
 
 
 async def _post(client, path, **body):
+    if path == "/save" and "kind" in body:  # the type a provider of this service usually has
+        body.setdefault("type", "search" if body["kind"] in ("searxng", "deepseek", "tavily") else "chat")
     return await client.post(PROVIDERS + path, headers=ORIGIN_HEADER, json={"revision": await _revision(client), **body})
 
 
@@ -58,7 +60,7 @@ async def test_provider_routes_need_owner_auth_same_origin_and_json(dashboard):
         bad = await _post(client, "/save", name="Lab", kind="chatgpt", base_url="https://lab.example.test/v1")
         assert bad.status_code == 422 and bad.json()["detail"] == "Choose one of the supported values."
         stale = await client.post(PROVIDERS + "/save", headers=ORIGIN_HEADER, json={
-            "revision": "0" * 64, "name": "Lab", "kind": "openai", "base_url": "https://lab.example.test/v1"})
+            "revision": "0" * 64, "name": "Lab", "kind": "openai", "type": "chat", "base_url": "https://lab.example.test/v1"})
         assert stale.status_code == 409
     assert path.read_text() == START
 
@@ -72,7 +74,9 @@ async def test_settings_list_role_addresses_as_providers_with_their_uses(dashboa
     assert local["kind"] == "openai" and local["is_local"] and not local["saved"] and local["listable"]
     assert {(use["role"], use["index"]) for use in local["uses"]} == {("chat", 0)}
     triage = by_url["https://classifier.example.test/decisions"]
-    assert triage["kind"] == "jev" and triage["name"] == "Jev decisions" and not triage["listable"]
+    # A triage address is a decisions provider; only OpenRouter's lists its decision models.
+    assert (triage["kind"], triage["type"]) == ("openrouter", "decisions") and not triage["listable"]
+    assert triage["name"] == "classifier.example.test decisions"
     assert triage["uses"] == [{"role": "triage", "index": 0}]
     drafting = by_url["https://openrouter.ai/api/v1"]  # the starter drafting and media defaults
     assert drafting["kind"] == "openrouter" and drafting["name"] == "OpenRouter"
@@ -166,7 +170,7 @@ async def test_model_list_is_cached_for_a_day_and_refreshed_on_request(dashboard
         assert (await _post(client, "/models", name=name)).status_code == 200
         assert len(seen) == 3
 
-        jev = await _post(client, "/models", name="Jev decisions")
+        jev = await _post(client, "/models", name="classifier.example.test decisions")
         assert jev.json() == {"listable": False, "models": [], "fetched_at": None}
         assert (await _post(client, "/models", name="Nobody")).status_code == 404
     assert path.read_text() == START
@@ -289,15 +293,16 @@ async def test_triage_test_reports_a_refused_decision(dashboard):
         revision = await _revision(client)
         tested = await client.post(API + "/test", headers=ORIGIN_HEADER, json={"revision": revision, "role": "triage", "index": 0})
     assert tested.json() == {"ok": False, "latency_ms": tested.json()["latency_ms"], "reply": None,
-                             "error": "Provider returned HTTP 401.", "provider": None}
+                             "error": "The provider refused the key. Check its value in .env.", "provider": None}
 
 
 async def test_remove_refuses_a_provider_in_use_and_removes_an_unused_one(dashboard):
     app, path, browser = dashboard
     async with _mock(app, lambda request: httpx.Response(200, json={"data": []})), browser() as client:
         assert (await _post(client, "/save", name="Lab", kind="openai", base_url="https://lab.example.test/v1")).status_code == 200
-        in_use = await _post(client, "/remove", name="Jev decisions")
-        assert in_use.status_code == 409 and in_use.json()["detail"] == "Jev decisions is still used by Triage. Change those roles first."
+        in_use = await _post(client, "/remove", name="classifier.example.test decisions")
+        assert in_use.status_code == 409 and in_use.json()["detail"] == (
+            "classifier.example.test decisions is still used by Triage. Change those roles first.")
         chat = next(item["name"] for item in (await client.get(API)).json()["providers"] if item["uses"] and item["uses"][0]["role"] == "chat")
         assert "Chat" in (await _post(client, "/remove", name=chat)).json()["detail"]
         before = path.read_text()
@@ -324,7 +329,7 @@ async def test_editing_a_provider_moves_every_slot_that_uses_it(dashboard):
         assert {use["role"] for use in local["uses"]} == {"chat", "media"}
         seen.clear()
         # Triage can't move onto a chat endpoint, and a chat endpoint can't become a decisions one.
-        wrong = await _post(client, "/save", original=local["name"], name="Home lab", kind="jev", base_url="http://localhost:9000/v1")
+        wrong = await _post(client, "/save", original=local["name"], name="Home lab", kind="openrouter", type="decisions", base_url="http://localhost:9000/v1")
         assert wrong.status_code == 409
         moved = await _post(client, "/save", original=local["name"], name="Home lab", kind="openai", base_url="http://localhost:9000/v1")
         assert moved.status_code == 200, moved.text
@@ -335,7 +340,7 @@ async def test_editing_a_provider_moves_every_slot_that_uses_it(dashboard):
 
         renamed = await _post(client, "/save", original="Home lab", name="Basement", kind="openai", base_url="http://localhost:9000/v1")
         assert renamed.status_code == 200 and len(seen) == 2  # a rename tests nothing
-        clash = await _post(client, "/save", original="Basement", name="Jev decisions", kind="openai", base_url="http://localhost:9000/v1")
+        clash = await _post(client, "/save", original="Basement", name="classifier.example.test decisions", kind="openai", base_url="http://localhost:9000/v1")
         assert clash.status_code == 409
         twin = await _post(client, "/save", name="Twin", kind="openai", base_url="http://localhost:9000/v1")
         assert twin.status_code == 409 and "Basement" in twin.json()["detail"]
@@ -565,7 +570,7 @@ async def test_a_triage_key_added_after_saving_turns_triage_on_without_a_restart
         assert tested.json()["ok"] is True
         assert app.jev.api_key == "example-decide-value-2" and app.dispatch.jev is app.jev
         env.write_text(f"BACKUP_KEY={SECRET}\nNEW_DECIDE_KEY=example-decide-value-3\n")
-        assert (await _post(client, "/test", name="Jev decisions")).json()["ok"] is True
+        assert (await _post(client, "/test", name="decide.example.test decisions")).json()["ok"] is True
         assert app.jev.api_key == "example-decide-value-3"
 
 
@@ -616,7 +621,9 @@ async def test_provider_presets_pass_address_and_key_pairing_as_offered(dashboar
     async with browser() as client:
         settings = (await client.get(API)).json()
     presets = settings["provider_presets"]
-    assert len(presets) == 13
+    assert len(presets) == 16
+    assert {(item["name"], item["type"]) for item in presets if item["type"] != "chat"} == {
+        ("OpenRouter media", "media"), ("OpenRouter decisions", "decisions"), ("Google Gemini media", "media")}
     config = load_config(path.parent)
     for item in presets:
         if item["api_key_env"] and item["name"] != "OpenRouter":
