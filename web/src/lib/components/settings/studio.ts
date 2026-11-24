@@ -23,5 +23,5 @@ export const STUDIO_PROVIDERS: Record<StudioProvider, { label: string; key: stri
   openrouter_tts: { label: "OpenRouter speech", key: "OPENROUTER_MEDIA_API_KEY", example: "google/gemini-3.8-flash-lite-tts" },
   gemini_tts: { label: "Gemini speech (direct)", key: "GEMINI_API_KEY", example: "gemini-2.5-flash-preview-tts" },
   openrouter_image: { label: "OpenRouter image", key: "OPENROUTER_MEDIA_API_KEY", example: "google/gemini-2.5-flash-image" },
-  openrouter_video: { label: "OpenRouter video", key: "OPENROUTER_MEDIA_API_KEY", example: "x-ai/grok-imagine-video-1.5-lite" },
+  openrouter_video: { label: "OpenRouter video", key: "OPENROUTER_MEDIA_API_KEY", example: "heygen/avatar-iv" },
 };

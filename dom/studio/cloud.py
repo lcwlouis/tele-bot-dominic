@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import math
@@ -11,6 +12,7 @@ import re
 import shutil
 import struct
 import tempfile
+import wave
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,19 +29,19 @@ log = logging.getLogger(__name__)
 PNG = b"\x89PNG\r\n\x1a\n"
 MAX_PORTRAIT_BYTES = 4 * 1024 * 1024
 MAX_AUDIO_BYTES = 3 * 1024 * 1024
-# OpenRouter video: a square (or near-square) low-resolution clip with the model's own audio, chosen from what the
-# model publishes, polled every few seconds within the kind's deadline.
+# Cloud avatars use an approved portrait and Dom's voice track.
 VIDEO_POLL_SECONDS = 5
 VIDEO_NOTE_SIDE = 640  # Telegram's round video notes are square, at most 640 px
 VIDEO_NOTE_SECONDS = 59  # Telegram's limit is 60 s
 MAX_VIDEO_SECONDS = 10  # a note stays short, so it stays cheap
-NEAR_SQUARE = math.log(4 / 3) + 1e-9  # 4:3 or 3:4 crops to a square without losing the face
+AVATAR_IV = "heygen/avatar-iv"
+AVATAR_6 = {"heygen/heygen-avatar-6", "heygen/heygen-avatar-6-turbo"}
+AVATAR_MODELS = {AVATAR_IV, *AVATAR_6}
+AVATAR_MOTION = "Look into the camera with relaxed, natural expressions and subtle head movement."
+VOICE_SAMPLE_RATE = 24000
 JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 VIDEO_MODELS_TTL = 24 * 60 * 60
 MAX_VIDEO_MODELS_BYTES = 1024 * 1024
-# Reported cost unknown from the model's price list (token-priced models): the estimate a note counts as until the
-# job's real cost arrives.
-VIDEO_ESTIMATE_CEILING_USD = 1.0
 # After Dom's deadline, a background check keeps asking for the job's final cost for at most this long.
 RECONCILE_SECONDS = 30 * 60
 RECONCILE_POLL_SECONDS = 30
@@ -58,41 +60,32 @@ def _resolution_lines(value: str) -> int | None:
     return number if match.group(2) == "p" else {2: 1440, 4: 2160}.get(number, number * 540)
 
 
-def _ratio(value: str) -> float | None:
-    match = re.fullmatch(r"(\d+):(\d+)", value.strip())
-    if not match or not int(match.group(1)) or not int(match.group(2)):
-        return None
-    return math.log(int(match.group(1)) / int(match.group(2)))
-
-
-def video_plan(entry: dict, text: str) -> dict:
-    """The request fields for a note from the model's published capabilities: the squarest aspect ratio (at most 4:3),
-    its smallest resolution from 480p up, and the shortest duration that fits the line, at most 10 s."""
-    ratios = [(abs(r), value) for value in entry.get("supported_aspect_ratios") or [] if (r := _ratio(value)) is not None]
-    if not ratios:
-        raise VideoUnsupported("The model doesn't publish its aspect ratios, so Dom can't ask it for a square video.")
-    distance, aspect = min(ratios)
-    if distance > NEAR_SQUARE:
-        raise VideoUnsupported("The model makes no square or near-square video, so it can't make a round video note.")
-    plan: dict = {"aspect_ratio": aspect}
+def video_plan(entry: dict) -> dict:
+    """Select a documented audio-driven avatar and its smallest advertised resolution."""
+    if entry.get("avatar") not in AVATAR_MODELS or not {"image", "audio"} <= set(entry.get("inputs", ())):
+        raise VideoUnsupported("Pick a lip-sync avatar that takes both a portrait and an audio track.")
     sizes = sorted((lines, value) for value in entry.get("supported_resolutions") or []
                    if (lines := _resolution_lines(value)) is not None)
-    if sizes:
-        plan["resolution"] = next((value for lines, value in sizes if lines >= 480), sizes[-1][1])
-    want = video_seconds(text)
-    durations = sorted(d for d in entry.get("supported_durations") or [] if isinstance(d, int) and 0 < d <= MAX_VIDEO_SECONDS)
-    if entry.get("supported_durations") and not durations:
-        raise VideoUnsupported(f"The model makes no video of {MAX_VIDEO_SECONDS} seconds or less.")
-    plan["duration"] = next((d for d in durations if d >= want), durations[-1]) if durations else want
-    if entry.get("generate_audio"):
-        plan["generate_audio"] = True
+    if not sizes:
+        raise VideoUnsupported("The model doesn't publish a video resolution.")
+    plan = {"resolution": sizes[0][1]}
+    if entry["avatar"] == AVATAR_IV:
+        if "1:1" not in (entry.get("supported_aspect_ratios") or []):
+            raise VideoUnsupported("Avatar IV doesn't list square output.")
+        plan["aspect_ratio"] = "1:1"
     return plan
 
 
-def video_estimate(entry: dict, plan: dict, *, reference: bool) -> float:
-    """The most a note may cost from the model's price list (USD), counted against the spend cap until the job reports
-    its real cost. Per-second prices for the chosen resolution, else the dearest per-second price; a ceiling when the
-    list prices tokens."""
+def video_rate(entry: dict, plan: dict) -> float:
+    """Return the advertised USD per second at this resolution."""
+    return _video_price(entry, plan, duration=1, include_image=False)
+
+
+def video_estimate(entry: dict, plan: dict, duration: float) -> float:
+    return round(_video_price(entry, plan, duration=duration, include_image=True), 6)
+
+
+def _video_price(entry: dict, plan: dict, *, duration: float, include_image: bool) -> float:
     skus = {key.lower(): value for key, value in (entry.get("pricing_skus") or {}).items()}
 
     def usd(key: str) -> float | None:
@@ -106,19 +99,19 @@ def video_estimate(entry: dict, plan: dict, *, reference: bool) -> float:
     tag = str(plan.get("resolution", "")).lower()
     chosen = [key for key in seconds if tag and tag in key] or [
         key for key in seconds if not re.search(r"\d+[pk]\b|_\d+[pk]", key)] or seconds
-    rates = [rate for key in chosen if (rate := usd(key)) is not None]
+    rates = [rate for key in chosen if (rate := usd(key)) is not None and math.isfinite(rate) and rate > 0]
     if not rates:
-        return VIDEO_ESTIMATE_CEILING_USD
-    cost = max(rates) * plan.get("duration", MAX_VIDEO_SECONDS)
-    if reference:
-        cost += max((rate for key in skus if "image" in key and (rate := usd(key)) is not None), default=0.0)
-    floor = usd("minimum_cents_per_generation") or 0.0
-    return round(max(cost, floor), 6)
+        raise VideoUnsupported("The avatar doesn't publish a per-second price.")
+    cost = max(rates) * duration
+    if include_image:
+        cost += max((rate for key in skus if "image" in key and (rate := usd(key)) is not None
+                     and math.isfinite(rate) and rate >= 0), default=0.0)
+        cost = max(cost, usd("minimum_cents_per_generation") or 0.0)
+    return cost
 
 
-async def video_models(http: httpx.AsyncClient, base: str) -> dict[str, dict]:
-    """OpenRouter's public video model list by ID: one GET, no redirects, a size cap."""
-    async with http.stream("GET", base + "/videos/models", follow_redirects=False, timeout=10) as response:
+async def _video_catalog(http: httpx.AsyncClient, url: str) -> list:
+    async with http.stream("GET", url, follow_redirects=False, timeout=10) as response:
         response.raise_for_status()
         body = bytearray()
         async for chunk in response.aiter_bytes():
@@ -128,19 +121,31 @@ async def video_models(http: httpx.AsyncClient, base: str) -> dict[str, dict]:
     data = json.loads(body).get("data")
     if not isinstance(data, list):
         raise ValueError("unexpected video model list")
-    return {entry["id"]: entry for entry in data if isinstance(entry, dict) and isinstance(entry.get("id"), str)}
+    return [entry for entry in data if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
 
 
-def video_seconds(text: str) -> int:
-    """A clip long enough to say the line at a natural pace: 4, 6 or 8 s, durations most video models accept."""
-    words = len(text.split())
-    return 4 if words <= 8 else 6 if words <= 14 else 8
-
-
-def video_prompt(text: str, reference: bool) -> str:
-    who = "The person in the first frame" if reference else "A friendly young man"
-    return (f"{who} looks into the camera in a casual selfie video and says, in a natural voice with matching lip "
-            f"movement: \"{text}\". No captions, no on-screen text, no music.")
+async def video_models(http: httpx.AsyncClient, base: str) -> dict[str, dict]:
+    """Join the video settings and price list to the catalog that publishes input modalities."""
+    details, catalog = await asyncio.gather(
+        _video_catalog(http, base + "/videos/models"),
+        _video_catalog(http, base + "/models?output_modalities=video"),
+    )
+    by_id = {entry["id"]: entry for entry in catalog}
+    result = {}
+    for entry in details:
+        avatar = entry["id"]
+        architecture = by_id.get(avatar, {}).get("architecture") or {}
+        if avatar not in AVATAR_MODELS or "video" not in (architecture.get("output_modalities") or []):
+            continue
+        item = {**entry, "avatar": avatar, "inputs": architecture.get("input_modalities") or []}
+        try:
+            video_rate(item, video_plan(item))
+        except VideoUnsupported:
+            continue
+        result[avatar] = item
+        if isinstance(alias := entry.get("canonical_slug"), str):
+            result[alias] = item
+    return result
 
 
 def _portrait(home: Path, outfit: str | None) -> bytes | None:
@@ -186,10 +191,9 @@ def _validate_pcm(data: bytes) -> bytes:
     return data
 
 
-async def _opus(data: bytes) -> bytes:
+async def _ffmpeg_audio(args: tuple[str, ...], data: bytes) -> bytes:
     process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", "24000", "-ac", "1",
-        "-i", "pipe:0", "-c:a", "libopus", "-f", "ogg", "pipe:1",
+        "ffmpeg", "-hide_banner", "-loglevel", "error", *args,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     try:
@@ -201,9 +205,33 @@ async def _opus(data: bytes) -> bytes:
             except ProcessLookupError:
                 pass
             await process.wait()
-    if process.returncode or not output.startswith(b"OggS") or len(output) > MAX_MEDIA_BYTES:
+    if process.returncode or not output:
+        raise ValueError("could not convert studio audio")
+    return output
+
+
+async def _opus(data: bytes) -> bytes:
+    output = await _ffmpeg_audio((
+        "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "pipe:0", "-c:a", "libopus", "-f", "ogg", "pipe:1",
+    ), data)
+    if not output.startswith(b"OggS") or len(output) > MAX_MEDIA_BYTES:
         raise ValueError("could not encode Opus")
     return output
+
+
+async def _avatar_audio(voice: bytes) -> tuple[bytes, float]:
+    pcm = await _ffmpeg_audio((
+        "-f", "ogg", "-i", "pipe:0", "-map", "0:a:0", "-t", str(MAX_VIDEO_SECONDS + 1),
+        "-ac", "1", "-ar", str(VOICE_SAMPLE_RATE), "-f", "s16le", "pipe:1",
+    ), voice)
+    duration = len(pcm) / (2 * VOICE_SAMPLE_RATE)
+    if duration > MAX_VIDEO_SECONDS:
+        raise VideoUnsupported(f"The voice line exceeds {MAX_VIDEO_SECONDS} seconds.")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setparams((1, 2, VOICE_SAMPLE_RATE, 0, "NONE", "not compressed"))
+        audio.writeframes(pcm)
+    return buffer.getvalue(), duration
 
 
 def _video_note_files(data: bytes) -> tuple[Path, Path, Path]:
@@ -224,23 +252,30 @@ def _read_note(target: Path) -> bytes:
         return file.read(MAX_MEDIA_BYTES + 1)
 
 
-async def video_note(data: bytes) -> bytes:
+async def video_note(data: bytes, audio: bytes, duration: float) -> bytes:
     """Re-encode a generated clip as a Telegram video note: square, at most 640 px, H.264 MP4 with AAC, under 60 s.
     The encoder stops at the size cap, and the temporary files are made and removed off the event loop."""
-    folder, source, target = await asyncio.to_thread(_video_note_files, data)
+    files = asyncio.create_task(asyncio.to_thread(_video_note_files, data))
+    try:
+        folder, source, target = await asyncio.shield(files)
+    except asyncio.CancelledError:
+        folder, _, _ = await files
+        await asyncio.to_thread(shutil.rmtree, folder, True)
+        raise
     try:
         process = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(source),
-            "-map", "0:v:0", "-map", "0:a:0?", "-t", str(VIDEO_NOTE_SECONDS),
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "mov", "-protocol_whitelist", "file", "-i", str(source),
+            "-f", "wav", "-i", "pipe:0", "-map", "0:v:0", "-map", "1:a:0",
+            "-t", str(min(VIDEO_NOTE_SECONDS, duration)),
             "-vf", f"crop='trunc(min(iw,ih)/2)*2':'trunc(min(iw,ih)/2)*2',"
                    f"scale='min({VIDEO_NOTE_SIDE},iw)':'min({VIDEO_NOTE_SIDE},ih)',setsar=1",
             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "64k", "-ac", "1", "-movflags", "+faststart",
             "-fs", str(MAX_MEDIA_BYTES), "-f", "mp4", str(target),
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
         try:
-            await process.wait()
+            await process.communicate(audio)
         finally:
             if process.returncode is None:
                 try:
@@ -256,6 +291,13 @@ async def video_note(data: bytes) -> bytes:
     if len(output) >= MAX_MEDIA_BYTES or output[4:8] != b"ftyp":  # -fs stops at the cap: a capped file is cut short
         raise ValueError("invalid video note")
     return output
+
+
+def _avatar_references(portrait: bytes, wav: bytes) -> list[dict]:
+    return [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(portrait).decode("ascii")}},
+        {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64," + base64.b64encode(wav).decode("ascii")}},
+    ]
 
 
 def _decode(encoded: str, maximum: int) -> bytes:
@@ -311,6 +353,8 @@ class CloudStudio:
         self, config: Config, kind: Kind, text: str, outfit: str | None, chat_id: int,
         allowed: Callable[[], Awaitable[bool]],
     ) -> bytes | None:
+        if kind in {"video_note", "special"}:
+            raise ValueError("Use generate_video with Dom's voice path.")
         for provider in providers(config.studio, kind):
             try:
                 media = await self._generate(config, provider, kind, text, outfit, chat_id, allowed)
@@ -335,8 +379,6 @@ class CloudStudio:
         payload: dict = {"model": provider.model}
         if preferences := routing_preferences(provider.data_policy):
             payload["provider"] = preferences
-        if provider.provider == "openrouter_video":
-            return await self._video(config, provider, kind, text, outfit, chat_id, allowed, key, payload)
         timeout = config.studio.timeouts.voice
         mime, maximum = "application/json", MAX_AUDIO_BYTES * 4 // 3 + 65536
         if kind == "photo":
@@ -409,7 +451,7 @@ class CloudStudio:
             self._video_models = (monotonic(), await video_models(self.http, base))
         entry = self._video_models[1].get(model)
         if entry is None:
-            raise VideoUnsupported("OpenRouter doesn't list that video model.")
+            raise VideoUnsupported("OpenRouter doesn't list that model as a supported lip-sync avatar.")
         return entry
 
     async def _job(self, base: str, headers: dict, job_id: str) -> dict:
@@ -419,74 +461,104 @@ class CloudStudio:
             raise ValueError("invalid video job")
         return job
 
-    async def _video(
-        self, config: Config, provider: StudioFallback, kind: Kind, text: str, outfit: str | None, chat_id: int,
-        allowed: Callable[[], Awaitable[bool]], key: str, payload: dict,
+    async def generate_video(
+        self, config: Config, kind: Kind, outfit: str | None, chat_id: int,
+        allowed: Callable[[], Awaitable[bool]], make_voice: Callable[[], Awaitable[bytes | None]],
     ) -> bytes | None:
-        """POST /videos, poll the job, then download it through the authenticated content URL, all within the kind's
-        deadline. The job's own URLs are never followed: every request goes to the fixed OpenRouter origin. Once a job
-        is accepted its estimated cost is recorded at once (so it counts toward the spend cap), and corrected to the
-        reported cost when the job ends, by a bounded background check if that is after the deadline."""
-        base, headers = provider.base_url, {"Authorization": f"Bearer {key}"}
         timeout = config.studio.timeouts.special if kind == "special" else config.studio.timeouts.video_notes
-        deadline = asyncio.get_running_loop().time() + timeout  # one deadline across submit, poll, download and encode
+        try:
+            async with asyncio.timeout(timeout):
+                with model_request("studio_video", chat_id, allowed):
+                    await check_model_allowed()
+                portrait = await asyncio.to_thread(_portrait, config.home, outfit)
+                if portrait is None:
+                    return None
+                references = None
+                for provider in providers(config.studio, kind):
+                    try:
+                        key = await asyncio.to_thread(config.secret, provider.api_key_env)
+                        if not key:
+                            continue
+                        entry = await self._video_entry(provider.base_url, provider.model)
+                        plan = video_plan(entry)
+                    except (httpx.HTTPError, TimeoutError, ValueError, OSError, TypeError, AttributeError):
+                        continue
+                    if references is None:
+                        with model_request("studio_voice", chat_id, allowed):
+                            await check_model_allowed()
+                            async with asyncio.timeout(config.studio.timeouts.voice):
+                                voice = await make_voice()
+                        if voice is None:
+                            return None
+                        wav, duration = await _avatar_audio(voice)
+                        references = await asyncio.to_thread(_avatar_references, portrait, wav)
+                    try:
+                        return await self._video(provider, chat_id, allowed, key, entry, plan, wav, duration, references)
+                    except (httpx.HTTPError, ValueError, OSError, TypeError, AttributeError) as error:
+                        log.warning("cloud avatar request failed (%s)", type(error).__name__)
+        except (ModelCallSkipped, TimeoutError, ValueError, OSError) as error:
+            log.warning("cloud video note failed (%s)", type(error).__name__)
+        return None
+
+    async def _video(
+        self, provider: StudioFallback, chat_id: int, allowed: Callable[[], Awaitable[bool]], key: str,
+        entry: dict, plan: dict, wav: bytes, duration: float, references: list[dict],
+    ) -> bytes:
+        """Submit, account for the accepted job, poll, download, and mux Dom's audio."""
+        base, headers = provider.base_url, {"Authorization": f"Bearer {key}"}
+        payload = {"model": provider.model, **plan, "input_references": references,
+                   "provider": routing_preferences(provider.data_policy)}
+        if entry["avatar"] == AVATAR_IV:
+            payload["provider"]["options"] = {"heygen": {
+                "motion_prompt": AVATAR_MOTION, "remove_background": False,
+            }}
+        else:
+            payload["prompt"] = AVATAR_MOTION
+        estimate = video_estimate(entry, plan, duration)
         with model_request("studio_video", chat_id, allowed):
             await check_model_allowed()
-            async with asyncio.timeout_at(deadline):
-                entry = await self._video_entry(base, provider.model)
-                plan = video_plan(entry, text)
-                frames = entry.get("supported_frame_images") or []
-                usable = provider.supports_reference and "first_frame" in frames
-                portrait = await asyncio.to_thread(_portrait, config.home, outfit) if usable else None
-                if not portrait and not provider.allow_without_reference:
-                    return None  # a stranger's face is worse than no video
-                payload.update(prompt=video_prompt(text, portrait is not None), **plan)
-                if portrait:
-                    reference = await asyncio.to_thread(lambda: base64.b64encode(portrait).decode("ascii"))
-                    payload["frame_images"] = [{
-                        "type": "image_url", "image_url": {"url": "data:image/png;base64," + reference},
-                        "frame_type": "first_frame",
-                    }]
-                estimate = video_estimate(entry, plan, reference=portrait is not None)
-                await check_model_allowed()  # the spend cap, with every unresolved estimate counted, before submitting
-                raw, _ = await self._read(base + "/videos", headers, "application/json", 64 * 1024, payload=payload)
-                job = json.loads(raw)
-                job_id = job.get("id") if isinstance(job, dict) else None
-                if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
-                    raise ValueError("invalid video job")
-            # Accepted: it may be billed whatever happens next, so its estimate counts now and survives a restart.
-            row = await asyncio.shield(self.usage.record(
-                "studio_video", provider.model, httpx.URL(base).host, {"cost": estimate}, chat_id, fallback=True,
-            ))
-            if row is not None:
-                await self.usage.store.kv_set(VIDEO_JOB + job_id, json.dumps({
-                    "row": row, "model": provider.model, "estimate": estimate,
-                    "at": datetime.now(timezone.utc).isoformat(),
-                }))
+            raw, _ = await self._read(base + "/videos", headers, "application/json", 64 * 1024, payload=payload)
+            job = json.loads(raw)
+            job_id = job.get("id") if isinstance(job, dict) else None
+            if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
+                raise ValueError("invalid video job")
+            accepted = asyncio.create_task(self._record_job(provider, chat_id, job_id, estimate))
             settled = False
             try:
-                async with asyncio.timeout_at(deadline):
-                    while True:
-                        status = job.get("status")
-                        if status == "completed":
-                            await self._settle(job_id, row, job)
-                            settled = True
-                            break
-                        if status not in ("pending", "in_progress"):
-                            await self._settle(job_id, row, job)
-                            settled = True
+                row = await asyncio.shield(accepted)
+                while True:
+                    status = job.get("status")
+                    if status not in ("pending", "in_progress"):
+                        await self._settle(job_id, row, job)
+                        settled = True
+                        if status != "completed":
                             raise ValueError("video job did not complete")
-                        await asyncio.sleep(VIDEO_POLL_SECONDS)
-                        job = await self._job(base, headers, job_id)
-                    clip, _ = await self._read(
-                        base + f"/videos/{job_id}/content", headers, "video/mp4", MAX_MEDIA_BYTES, params={"index": 0},
-                    )
-                    return await video_note(clip)
+                        break
+                    await asyncio.sleep(VIDEO_POLL_SECONDS)
+                    job = await self._job(base, headers, job_id)
+                clip, _ = await self._read(
+                    base + f"/videos/{job_id}/content", headers, "video/mp4", MAX_MEDIA_BYTES, params={"index": 0},
+                )
+                return await video_note(clip, wav, duration)
             finally:
                 if not settled:
-                    task = asyncio.create_task(self._reconcile(base, headers, job_id, row))
+                    async def reconcile() -> None:
+                        await self._reconcile(base, headers, job_id, await accepted)
+
+                    task = asyncio.create_task(reconcile())
                     self._reconciling.add(task)
                     task.add_done_callback(self._reconciling.discard)
+
+    async def _record_job(self, provider: StudioFallback, chat_id: int, job_id: str, estimate: float) -> int | None:
+        row = await self.usage.record(
+            "studio_video", provider.model, httpx.URL(provider.base_url).host, {"cost": estimate}, chat_id, fallback=True,
+        )
+        if row is not None:
+            await self.usage.store.kv_set(VIDEO_JOB + job_id, json.dumps({
+                "row": row, "model": provider.model, "estimate": estimate,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }))
+        return row
 
     async def _settle(self, job_id: str, row: int | None, job: dict) -> None:
         """Replace a job's estimate with its reported cost (none reported for a failed job means nothing was billed)."""

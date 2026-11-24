@@ -1,6 +1,9 @@
 """The OpenRouter video backup: job, poll, authenticated download and the Telegram video-note encode."""
 
 import asyncio
+import base64
+import io
+import wave
 import shutil
 import subprocess
 
@@ -12,23 +15,22 @@ import dom.studio.cloud as cloud
 from dom.config import StudioConfig, StudioFallback
 from dom.studio.client import MAX_MEDIA_BYTES
 from test_studio import connect, studio_server  # noqa: F401 (fixture)
-from test_studio_cloud import PORTRAIT, ROUTER_KEY, allowed, cloud_server, configure  # noqa: F401 (fixture)
+from test_studio_cloud import PCM, PORTRAIT, ROUTER_KEY, VOICE, allowed, check_voice, cloud_server, configure  # noqa: F401 (fixture)
 from test_traits import put
 from test_usage import deliver, online, usage_rows
 from tghelpers import GROUP, OWNER, tg
 
-VIDEO = StudioFallback(provider="openrouter_video", model="x-ai/grok-imagine-video-1.5-lite", api_key_env="ROUTER_TEST",
+VIDEO = StudioFallback(provider="openrouter_video", model=cloud.AVATAR_IV, api_key_env="ROUTER_TEST",
                        data_policy="no_training")
 # As OpenRouter's /videos/models publishes it (fictional prices in the shape of the real list).
 VIDEO_ENTRY = {
-    "id": VIDEO.model, "supported_durations": list(range(1, 16)), "supported_resolutions": ["480p", "720p", "1080p"],
-    "supported_aspect_ratios": ["16:9", "9:16", "1:1", "4:3"], "supported_frame_images": ["first_frame"],
-    "generate_audio": True, "pricing_skus": {
-        "cents_per_image_input": "1", "cents_per_video_output_second_480p": "2",
-        "cents_per_video_output_second_720p": "3", "cents_per_video_output_second_1080p": "14",
+    "id": VIDEO.model, "supported_resolutions": ["720p", "1080p"],
+    "supported_aspect_ratios": ["16:9", "9:16", "1:1", "4:3"],
+    "pricing_skus": {
+        "cents_per_image_input": "1", "cents_per_video_output_second_720p": "2", "cents_per_video_output_second_1080p": "14",
     },
 }
-ESTIMATE = 0.09  # 4 s at 2 cents plus 1 cent for the portrait
+ESTIMATE = 0.012  # 0.1 s at 2 cents plus 1 cent for the portrait
 needs_ffmpeg = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="requires ffmpeg")
 
 
@@ -58,6 +60,12 @@ def serve_video(cloud_server, clip, *, polls=1, status="completed", content=None
     async def models(request):
         return web.json_response({"data": [entry]})
 
+    async def catalog(request):
+        assert request.query["output_modalities"] == "video"
+        return web.json_response({"data": [{"id": VIDEO.model, "architecture": {
+            "input_modalities": ["text", "image", "audio"], "output_modalities": ["video"],
+        }}]})
+
     async def create(request):
         assert request.headers["authorization"] == f"Bearer {ROUTER_KEY}"
         return web.json_response({"id": "job-1", "polling_url": "https://elsewhere.example/steal", "status": "pending"},
@@ -77,7 +85,7 @@ def serve_video(cloud_server, clip, *, polls=1, status="completed", content=None
             return await content(request)
         return web.Response(body=clip, content_type="video/mp4")
 
-    cloud_server[2].update({"/api/v1/videos/models": models, "/api/v1/videos": create, "/api/v1/videos/job-1": poll,
+    cloud_server[2].update({"/api/v1/models": catalog, "/api/v1/videos/models": models, "/api/v1/videos": create, "/api/v1/videos/job-1": poll,
                             "/api/v1/videos/job-1/content": download})
     return state
 
@@ -91,6 +99,13 @@ def record_notes(app):
 
     app.bot.send_video_note = send
     return sent
+
+
+async def render(app, kind, text, outfit, chat_id=OWNER, permit=allowed):
+    async def voice():
+        return await app.cloud_studio.generate(app.config, "voice", text, None, chat_id, permit)
+
+    return await app.cloud_studio.generate_video(app.config, kind, outfit, chat_id, permit, voice)
 
 
 def created(cloud_server):
@@ -117,10 +132,10 @@ def test_video_backup_cannot_be_zero_data_retention():
 @needs_ffmpeg
 async def test_video_job_polls_downloads_and_makes_a_round_note(make_app, cloud_server, clip):
     app = make_app()
-    configure(app, cloud_server, video_fallbacks=(VIDEO,))
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,))
     portrait(app)
     serve_video(cloud_server, clip, polls=2)
-    note = await app.cloud_studio.generate(app.config, "video_note", "Hey, good morning to you", "casual", OWNER, allowed)
+    note = await render(app, "video_note", "Hey, good morning to you", "casual")
     assert note[4:8] == b"ftyp"
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "stream=codec_name,width,height", "-of", "csv=p=0", "-"],
@@ -129,44 +144,73 @@ async def test_video_job_polls_downloads_and_makes_a_round_note(make_app, cloud_
     assert probe == ["h264,480,480", "aac"]  # square, at most 640 px, H.264 with sound
     paths = [path for path, _ in cloud_server[1]]
     # The job's own URLs are never followed: every request goes to the fixed origin.
-    assert paths == ["/api/v1/videos/models", "/api/v1/videos", "/api/v1/videos/job-1", "/api/v1/videos/job-1", "/api/v1/videos/job-1",
+    assert sorted(paths[:2]) == ["/api/v1/models", "/api/v1/videos/models"]
+    assert paths[2:] == ["/api/v1/audio/speech", "/api/v1/generation", "/api/v1/videos", "/api/v1/videos/job-1", "/api/v1/videos/job-1", "/api/v1/videos/job-1",
                      "/api/v1/videos/job-1/content"]
     [payload] = created(cloud_server)
-    assert payload["provider"] == {"data_collection": "deny"}
-    assert payload["frame_images"][0]["frame_type"] == "first_frame"
-    assert payload["frame_images"][0]["image_url"]["url"].startswith("data:image/png;base64,")
-    assert (payload["aspect_ratio"], payload["resolution"], payload["duration"], payload["generate_audio"]) == (
-        "1:1", "480p", 4, True)
-    assert '"Hey, good morning to you"' in payload["prompt"]
-    # The estimate counted while the job ran; the reported cost replaced it.
-    assert usage_rows(app) == [("studio_video", VIDEO.model, "openrouter.ai", OWNER, 0, 0, 0.13, 1)]
+    assert payload["provider"]["data_collection"] == "deny"
+    assert payload["provider"]["options"]["heygen"]["remove_background"] is False
+    image, audio = payload["input_references"]
+    assert image["type"] == "image_url"
+    assert base64.b64decode(image["image_url"]["url"].removeprefix("data:image/png;base64,")) == PORTRAIT
+    assert audio["type"] == "audio_url"
+    wav = base64.b64decode(audio["audio_url"]["url"].removeprefix("data:audio/wav;base64,"))
+    with wave.open(io.BytesIO(wav)) as track:
+        assert track.readframes(track.getnframes()) == PCM
+    assert (payload["aspect_ratio"], payload["resolution"]) == ("1:1", "720p")
+    assert not {"frame_images", "prompt", "duration", "generate_audio"} & payload.keys()
+    # The fake avatar returns a tone. The final note must have only the original silent track.
+    decoded = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-f", "s16le", "pipe:1"],
+        input=note, capture_output=True, check=True,
+    ).stdout
+    assert decoded and not any(decoded)
+    assert usage_rows(app) == [
+        ("studio_voice", VOICE.model, "openrouter.ai", OWNER, 0, 0, 0.02, 1),
+        ("studio_video", VIDEO.model, "openrouter.ai", OWNER, 0, 0, 0.13, 1),
+    ]
     assert not await app.store.kv_get(cloud.VIDEO_JOB + "job-1")
 
 
-@pytest.mark.parametrize(("supports", "permit", "has_portrait", "called"), [
-    (True, False, True, True), (True, False, False, False), (False, False, True, False), (False, True, False, True),
-])
-async def test_video_reference_rule(make_app, cloud_server, clip, supports, permit, has_portrait, called):
+async def test_no_avatar_or_voice_generation_without_approved_portrait(make_app, cloud_server, clip):
     app = make_app()
-    video = VIDEO.model_copy(update={"supports_reference": supports, "allow_without_reference": permit})
-    configure(app, cloud_server, video_fallbacks=(video,))
-    if has_portrait:
-        portrait(app)
-    serve_video(cloud_server, clip, status="failed")  # stops after the job, so ffmpeg isn't needed here
-    assert await app.cloud_studio.generate(app.config, "special", "Happy birthday", "casual", OWNER, allowed) is None
-    if not called:
-        assert not created(cloud_server)  # a stranger's face is worse than no video
-        return
-    [payload] = created(cloud_server)
-    assert ("frame_images" in payload) is (supports and has_portrait)
-    assert payload["prompt"].startswith("The person in the first frame" if supports and has_portrait else "A friendly")
+    legacy = VIDEO.model_copy(update={"allow_without_reference": True})
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(legacy,))
+    serve_video(cloud_server, clip)
+    assert await render(app, "special", "Happy birthday", "casual") is None
+    assert not cloud_server[1]
 
 
+@pytest.mark.parametrize("voice_fails", [True, False])
+@needs_ffmpeg
+async def test_cloud_video_failure_reuses_voice_or_sends_text(make_app, cloud_server, clip, voice_fails):
+    app = make_app(contents=('{"video_note":{"text":"Morning!","special":true},"outfit":"casual"}',))
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,), enabled=False, default_outfit="casual")
+    portrait(app)
+    serve_video(cloud_server, clip, status="failed")
+    sent = record_notes(app)
+    check_voice(app)
+    if voice_fails:
+        async def failed(request):
+            return web.Response(status=503)
+
+        cloud_server[2]["/api/v1/audio/speech"] = failed
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert sum(path == "/api/v1/audio/speech" for path, _ in cloud_server[1]) == 1
+    assert bool(created(cloud_server)) is not voice_fails
+    assert not sent
+    _, usage = await app.store.studio_usage(OWNER, app.dispatch.now())
+    assert [kind for kind, _ in usage] == ([] if voice_fails else ["voice"])
+    assert app.bot.of("send")[-1][2] == ("Morning!" if voice_fails else "fixture voice")
+
+
+@needs_ffmpeg
 @pytest.mark.parametrize("failure", ["timeout", "oversize", "mime", "redirect", "failed", "bad_id"])
 async def test_video_limits(make_app, cloud_server, clip, failure):
     app = make_app()
     timeouts = app.config.studio.timeouts.model_copy(update={"video_notes": 0.3})
-    configure(app, cloud_server, video_fallbacks=(VIDEO,), timeouts=timeouts)
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,), timeouts=timeouts)
     portrait(app)
 
     async def content(request):
@@ -183,7 +227,7 @@ async def test_video_limits(make_app, cloud_server, clip, failure):
         async def create(request):
             return web.json_response({"id": "../../key", "status": "pending"})
         cloud_server[2]["/api/v1/videos"] = create
-    assert await app.cloud_studio.generate(app.config, "video_note", "Hi", "casual", OWNER, allowed) is None
+    assert await render(app, "video_note", "Hi", "casual") is None
     paths = [path for path, _ in cloud_server[1]]
     if failure == "timeout":
         assert state["polls"] > 1 and "/api/v1/videos/job-1/content" not in paths
@@ -206,7 +250,7 @@ async def test_video_limits(make_app, cloud_server, clip, failure):
 async def test_local_studio_first_then_video_backup(make_app, studio_server, cloud_server, clip):
     app = make_app(contents=('{"video_note":{"text":"Morning!"}}',))
     await connect(app, studio_server)
-    configure(app, cloud_server, video_fallbacks=(VIDEO,))
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,))
     serve_video(cloud_server, clip)
     await online(app, OWNER)
     await deliver(app, tg(chat_id=OWNER, sender=OWNER))
@@ -219,25 +263,27 @@ async def test_local_studio_first_then_video_backup(make_app, studio_server, clo
 async def test_away_studio_sends_a_cloud_video_note(make_app, cloud_server, clip):
     app = make_app(contents=('{"video_note":{"text":"Morning!"},"outfit":"casual"}',))
     # No local studio at all: the video backup alone serves the switch.
-    configure(app, cloud_server, video_fallbacks=(VIDEO,), enabled=False, default_outfit="casual")
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,), enabled=False, default_outfit="casual")
     portrait(app)
     serve_video(cloud_server, clip)
     sent = record_notes(app)
     await online(app, OWNER)
     await deliver(app, tg(chat_id=OWNER, sender=OWNER))
     assert len(sent) == 1 and sent[0][4:8] == b"ftyp"
-    assert created(cloud_server)[0]["frame_images"]  # the approved outfit's portrait went as the first frame
+    assert created(cloud_server)[0]["input_references"]
     _, usage = await app.store.studio_usage(OWNER, app.dispatch.now())
     assert [kind for kind, _ in usage] == ["video_note"]
 
 
+@needs_ffmpeg
 @pytest.mark.parametrize("blocked", ["none", "leak", "spend", "special_group", "quota"])
 async def test_video_backup_keeps_the_turn_gates(make_app, cloud_server, clip, blocked):
     text = "The fictional private passphrase is lemon waffles" if blocked == "leak" else "Happy birthday"
     special = "true" if blocked == "special_group" else "false"
     app = make_app(contents=(f'{{"video_note":{{"text":"{text}","special":{special}}}}}',))
-    video = VIDEO.model_copy(update={"allow_without_reference": True})
-    configure(app, cloud_server, video_fallbacks=(video,), enabled=False)
+    video = VIDEO
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(video,), enabled=False, default_outfit="casual")
+    portrait(app)
     serve_video(cloud_server, clip)
     record_notes(app)
     if blocked == "leak":
@@ -246,7 +292,7 @@ async def test_video_backup_keeps_the_turn_gates(make_app, cloud_server, clip, b
         app.config = app.config.model_copy(update={"daily_spend_cap_usd": 0.5})
         await app.dispatch.usage.record("chat", "fixture", "example.org", {"cost": 0.5})
     if blocked == "quota":
-        configure(app, cloud_server, video_fallbacks=(video,), enabled=False,
+        configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(video,), enabled=False,
                   limits=app.config.studio.limits.model_copy(update={"daily": 0}))
     chat = GROUP if blocked == "special_group" else OWNER
     await online(app, chat)
@@ -254,31 +300,26 @@ async def test_video_backup_keeps_the_turn_gates(make_app, cloud_server, clip, b
     assert bool(cloud_server[1]) is (blocked == "none")  # the leak screen, caps and spend cap come first
 
 
-def test_video_seconds_stay_short():
-    assert cloud.video_seconds("Hi there") == 4
-    assert cloud.video_seconds(" ".join(["word"] * 12)) == 6
-    assert cloud.video_seconds(" ".join(["word"] * 40)) == 8
-
-
 async def test_video_note_encode_refuses_garbage():
     if not shutil.which("ffmpeg"):
         pytest.skip("requires ffmpeg")
     with pytest.raises(ValueError):
-        await asyncio.wait_for(cloud.video_note(b"not a video"), 30)
+        await asyncio.wait_for(cloud.video_note(b"not a video", b"not audio", 0.1), 30)
 
 
+@needs_ffmpeg
 async def test_a_job_past_the_deadline_is_reconciled_in_the_background(make_app, cloud_server, clip, monkeypatch):
     monkeypatch.setattr(cloud, "RECONCILE_POLL_SECONDS", 0.01)
     app = make_app()
     timeouts = app.config.studio.timeouts.model_copy(update={"video_notes": 0.2})
-    configure(app, cloud_server, video_fallbacks=(VIDEO,), timeouts=timeouts)
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,), timeouts=timeouts)
     portrait(app)
-    state = serve_video(cloud_server, clip, polls=10**6)
-    assert await app.cloud_studio.generate(app.config, "video_note", "Hi", "casual", OWNER, allowed) is None
-    assert [row[6] for row in usage_rows(app)] == [ESTIMATE]
+    serve_video(cloud_server, clip, polls=10**6)
+    assert await render(app, "video_note", "Hi", "casual") is None
+    assert [row[6] for row in usage_rows(app) if row[0] == "studio_video"] == [ESTIMATE]
     cloud_server[2]["/api/v1/videos/job-1"] = _finished
     await asyncio.wait_for(asyncio.gather(*app.cloud_studio._reconciling), 5)
-    assert [row[6] for row in usage_rows(app)] == [0.21]
+    assert [row[6] for row in usage_rows(app) if row[0] == "studio_video"] == [0.21]
     assert not await app.store.kv_get(cloud.VIDEO_JOB + "job-1")
 
 
@@ -289,34 +330,74 @@ async def _finished(request):
 async def test_unresolved_estimates_count_toward_the_spend_cap(make_app, cloud_server, clip):
     app = make_app()
     app.config = app.config.model_copy(update={"daily_spend_cap_usd": 0.1})
-    configure(app, cloud_server, video_fallbacks=(VIDEO,))
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,))
+    portrait(app)
     await app.dispatch.usage.record("studio_video", VIDEO.model, "openrouter.ai", {"cost": 0.1}, OWNER, fallback=True)
 
     async def under_cap():
         return not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
 
-    assert await app.cloud_studio.generate(app.config, "video_note", "Hi", None, 2, under_cap) is None
+    assert await render(app, "video_note", "Hi", "casual", 2, under_cap) is None
     assert not created(cloud_server)
 
 
-@pytest.mark.parametrize(("entry", "fragment"), [
-    ({"supported_aspect_ratios": ["16:9", "9:16"], "supported_resolutions": ["720p"]}, "no square"),
-    ({"supported_aspect_ratios": ["1:1"], "supported_durations": [12, 15]}, "10 seconds or less"),
-    ({}, "doesn't publish its aspect ratios"),
-])
-def test_video_plan_refuses_models_that_cant_make_a_note(entry, fragment):
-    with pytest.raises(cloud.VideoUnsupported, match=fragment):
-        cloud.video_plan(entry, "Hello there")
+def test_video_plan_requires_portrait_and_audio_and_estimates_from_track_duration():
+    entry = {**VIDEO_ENTRY, "avatar": VIDEO.model, "inputs": ["image", "audio"]}
+    plan = cloud.video_plan(entry)
+    assert plan == {"resolution": "720p", "aspect_ratio": "1:1"}
+    assert cloud.video_rate(entry, plan) == 0.02
+    assert cloud.video_estimate(entry, plan, 2.5) == 0.06
+    with pytest.raises(cloud.VideoUnsupported, match="portrait and an audio"):
+        cloud.video_plan({**entry, "inputs": ["text", "image"]})
 
 
-def test_video_plan_picks_from_published_capabilities():
-    assert cloud.video_plan(VIDEO_ENTRY, "Hello there") == {
-        "aspect_ratio": "1:1", "resolution": "480p", "duration": 4, "generate_audio": True}
-    veo_like = {"supported_aspect_ratios": ["4:3", "16:9"], "supported_resolutions": ["1080p", "720p"],
-                "supported_durations": [5, 10]}
-    assert cloud.video_plan(veo_like, " ".join(["word"] * 12)) == {
-        "aspect_ratio": "4:3", "resolution": "720p", "duration": 10}
-    plan = cloud.video_plan(VIDEO_ENTRY, "Hi")
-    assert cloud.video_estimate(VIDEO_ENTRY, plan, reference=True) == ESTIMATE
-    assert cloud.video_estimate({"pricing_skus": {"video_tokens": "0.000007"}}, plan, reference=False) == (
-        cloud.VIDEO_ESTIMATE_CEILING_USD)  # token prices: the ceiling until the real cost arrives
+@needs_ffmpeg
+async def test_voice_and_avatar_share_the_video_deadline(make_app, cloud_server, clip, monkeypatch):
+    app = make_app()
+    timeouts = app.config.studio.timeouts.model_copy(update={"voice": 1, "video_notes": 0.85})
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,), timeouts=timeouts)
+    portrait(app)
+    serve_video(cloud_server, clip, polls=0)
+    create = cloud_server[2]["/api/v1/videos"]
+    monkeypatch.setattr(cloud, "VIDEO_POLL_SECONDS", 0.45)
+
+    async def delayed_voice(request):
+        await asyncio.sleep(0.3)
+        return web.Response(body=PCM, content_type="audio/pcm")
+
+    async def delayed_create(request):
+        await asyncio.sleep(0.22)
+        return await create(request)
+
+    cloud_server[2]["/api/v1/audio/speech"] = delayed_voice
+    cloud_server[2]["/api/v1/videos"] = delayed_create
+    assert await render(app, "video_note", "Hello", "casual") is None
+    assert created(cloud_server)
+    assert [row[6] for row in usage_rows(app) if row[0] == "studio_video"] == [ESTIMATE]
+
+
+@needs_ffmpeg
+async def test_avatar_uses_local_voice_after_local_video_fails(make_app, studio_server, cloud_server, clip, monkeypatch):
+    app = make_app(contents=('{"video_note":{"text":"Morning!"},"outfit":"casual"}',))
+    await connect(app, studio_server)
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,), default_outfit="casual")
+    portrait(app)
+    studio_server[3]["/v1/video_note"] = 500
+    voice = await cloud._opus(PCM)
+    requested = []
+
+    async def local_voice(text):
+        requested.append(text)
+        return voice
+
+    monkeypatch.setattr(app.studio, "voice", local_voice)
+    serve_video(cloud_server, clip)
+    sent = record_notes(app)
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert requested == ["Morning!"]
+    assert "/api/v1/audio/speech" not in [path for path, _ in cloud_server[1]]
+    assert len(sent) == 1
+    assert [row[:2] for row in usage_rows(app) if row[0].startswith("studio_")] == [
+        ("studio_voice", "local-studio"), ("studio_video", VIDEO.model),
+    ]

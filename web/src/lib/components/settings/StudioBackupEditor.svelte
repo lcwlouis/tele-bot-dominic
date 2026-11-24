@@ -58,7 +58,7 @@
   const id = untrack(() => `studio-${chain}-editor`);
 
   const openrouter = $derived(provider !== "gemini_tts");
-  const usesReference = $derived(provider === "openrouter_image" || provider === "openrouter_video");
+  const usesReference = $derived(provider === "openrouter_image");
   const policies = $derived(POLICIES.filter((value) => provider !== "openrouter_video" || value !== "zdr"));
 
   function pickProvider(value: StudioProvider) {
@@ -224,13 +224,18 @@
           </div>
         </div>
       {/if}
+      {#if provider === "openrouter_video"}
+        <p class="text-xs text-muted-foreground sm:col-span-2">
+          Dom uses the voice note path for the audio. The avatar needs an approved outfit portrait to lip-sync that audio.
+        </p>
+      {/if}
       {#if usesReference}
         <div class="flex items-start gap-2.5 sm:col-span-2">
           <Checkbox id={`${id}-reference`} bind:checked={supportsReference} aria-describedby={`${id}-reference-hint`} />
           <div class="grid gap-0.5">
             <Label for={`${id}-reference`}>The model takes a reference image</Label>
             <p id={`${id}-reference-hint`} class="text-xs text-muted-foreground">
-              Dom sends the outfit's approved portrait{provider === "openrouter_video" ? " as the first frame" : ""}, so the
+              Dom sends the outfit's approved portrait, so the
               {info.noun} shows him.
             </p>
           </div>

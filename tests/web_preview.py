@@ -116,7 +116,7 @@ api_key_env = "EXAMPLE_VOICE_KEY"
 
 [[studio.video_fallbacks]]
 provider = "openrouter_video"
-model = "example/video-model"
+model = "heygen/avatar-iv"
 api_key_env = "EXAMPLE_VOICE_KEY"
 data_policy = "no_training"
 
@@ -164,15 +164,26 @@ PREVIEW_MODELS = {"data": [
 PREVIEW_MEDIA_MODELS = {"data": [
     {"id": "example/image-model", "name": "Example: Image"},
     {"id": "example/voice-model", "name": "Example: Voice"},
-    {"id": "example/video-model", "name": "Example: Video"},
-    {"id": "example/video-fast", "name": "Example: Video Fast"},
+]}
+
+PREVIEW_AVATAR_MODELS = {"data": [
+    {"id": "heygen/avatar-iv", "name": "Avatar IV", "supported_resolutions": ["720p"],
+     "supported_aspect_ratios": ["1:1"], "pricing_skus": {"duration_seconds": "0.05"},
+     "architecture": {"input_modalities": ["image", "audio"], "output_modalities": ["video"]}},
+    {"id": "heygen/heygen-avatar-6-turbo", "name": "Avatar 6 Turbo", "supported_resolutions": ["1080p"],
+     "pricing_skus": {"duration_seconds_1080p": "0.05"},
+     "architecture": {"input_modalities": ["image", "audio"], "output_modalities": ["video"]}},
 ]}
 
 
 def preview_models(script: ModelScript):
     """The fake providers: a model list for GET /models, a yes for a decisions request, else the chat script."""
     def handle(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET" and request.url.path.endswith(("/images/models", "/speech/models", "/videos/models")):
+        if request.method == "GET" and (
+            request.url.path.endswith("/videos/models") or request.url.params.get("output_modalities") == "video"
+        ):
+            return httpx.Response(200, json=PREVIEW_AVATAR_MODELS)
+        if request.method == "GET" and request.url.path.endswith(("/images/models", "/speech/models")):
             return httpx.Response(200, json=PREVIEW_MEDIA_MODELS)
         if request.method == "GET" and request.url.path.endswith("/models"):
             return httpx.Response(200, json=PREVIEW_MODELS)

@@ -153,7 +153,7 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 
 ### Studio cloud fallbacks
 
-Add one `[[studio.voice_fallbacks]]` or `[[studio.image_fallbacks]]` table per provider, in the order they should be tried after the local studio.
+Add one `[[studio.voice_fallbacks]]`, `[[studio.image_fallbacks]]`, or `[[studio.video_fallbacks]]` table per provider, in the order they should be tried after the local studio.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -161,9 +161,11 @@ Add one `[[studio.voice_fallbacks]]` or `[[studio.image_fallbacks]]` table per p
 | `studio.<kind>_fallbacks[].model` | Required | Provider model ID. |
 | `studio.<kind>_fallbacks[].api_key_env` | Required | Secret variable paired with the provider's fixed HTTPS origin. |
 | `studio.<kind>_fallbacks[].paid` | `false` | Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. Gemini reports tokens, not a price, so its calls are recorded at no cost and do not count toward daily_spend_cap_usd; only OpenRouter-reported costs do. |
-| `studio.<kind>_fallbacks[].supports_reference` | `true` | For OpenRouter image and video models that accept an image reference (a first frame for video). |
-| `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos or videos when an approved reference cannot be sent. |
+| `studio.<kind>_fallbacks[].supports_reference` | `true` | For OpenRouter photo models that accept an image reference. |
+| `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos when an approved reference cannot be sent. |
 | `studio.<kind>_fallbacks[].data_policy` | `"zdr"` | OpenRouter data policy for this media backup: zdr (zero data retention, the default), no_training (providers that may keep but never train on the data) or any. Ignored by direct Gemini. OpenRouter video keeps its output for download, so a video backup needs no_training or any. |
+
+Video models must support lip-sync driven by an approved portrait and Dom’s voice audio. Replace older text-to-video backups with an avatar such as `heygen/avatar-iv`. The reference flags apply to photos.
 
 ### Studio limits
 

@@ -128,9 +128,10 @@ Cloudflare. Keep local bearer-token testing on loopback.
   Optional cloud fallbacks are off by default and receive the screened scene
   or transcript only after the local Studio cannot serve the request.
   OpenRouter speech, image and video requests carry the backup's data policy
-  (below); speech and images default to zero data retention. Photos and round
-  videos can also send the approved outfit portrait as an inline PNG (the first
-  frame of a video). OpenRouter video keeps each finished video for download, so
+  (below); speech and images default to zero data retention. Photos can
+  include the approved outfit portrait. For a cloud video note, OpenRouter and
+  the avatar provider receive Dom’s voice audio and the approved portrait under
+  the separate media key’s policy. OpenRouter video keeps each finished video for download, so
   no video endpoint offers zero data retention and a video backup must be set to
   `no_training` or `any`. Direct Gemini gets the
   transcript and the prebuilt voice name only when the owner marks its key
@@ -188,8 +189,9 @@ provider routing preferences ([provider selection](https://openrouter.ai/docs/gu
 | `no_training` | `provider.data_collection = "deny"` | Excludes endpoints that may train on or sell the data. Endpoints that keep prompts and responses are still allowed. |
 | `any` | nothing | Any endpoint, including ones that may train on what is sent. |
 
-A backup sends only the screened line or scene and, for photos and video, the outfit's approved portrait. OpenRouter
-video keeps each finished video for download, so a video backup takes `no_training` or `any`.
+A speech or photo backup sends the screened line or scene. Photos can include the outfit's approved portrait.
+The avatar provider receives the approved portrait and Dom's rendered speech under the media key's policy.
+OpenRouter video keeps each finished video for download, so a video backup takes `no_training` or `any`.
 
 A backup's key variable may not be one a chat route uses (a model role or a saved provider), in either direction:
 config validation and the dashboard refuse it, so a key set up for media can never carry chat content.
