@@ -25,13 +25,15 @@ from dom.web.model_settings import _input
 from dom.web.shared import (
     HABITS,
     IMPORT_SERVICES,
+    MAX_SOUL_CHAT,
+    MAX_SOUL_TURNS,
     OwnerError,
     _memory_file,
     _memory_sections,
     _proposals,
     decide_import_batch,
     owner_app,
-    propose_soul_edit,
+    soul_chat,
     run_memory_import,
 )
 
@@ -55,8 +57,13 @@ class Save(Strict):
     content: str
 
 
-class SoulRequest(Strict):
-    message: str
+class SoulTurn(Strict):
+    role: Literal["owner", "dom"]
+    text: str
+
+
+class SoulChat(Strict):
+    messages: list[SoulTurn] = Field(max_length=100)  # soul_chat holds the real caps, with a sentence for each
 
 
 class ImportDocument(Strict):
@@ -105,6 +112,8 @@ async def read_memory(request: Request) -> dict:
         "services": [{"id": key, "label": label} for key, label in IMPORT_SERVICES.items()],
         "export_prompt": memory_import.export_prompt().strip(),  # what the owner pastes into the other assistant
         "max_soul_request": MAX_SOUL_EDIT,
+        "max_soul_turns": MAX_SOUL_TURNS,
+        "max_soul_chat": MAX_SOUL_CHAT,
         **await _waiting(app),
     }
 
@@ -136,14 +145,17 @@ async def save_file(request: Request) -> dict:
 
 
 @router.post(PREFIX + "/soul")
-async def soul_request(request: Request) -> dict:
+async def soul_conversation(request: Request) -> dict:
+    """Dom's next reply in the owner's conversation about SOUL.md. The page keeps the conversation and sends it whole;
+    an edit Dom proposes waits as a soul_edit proposal, decided through /proposal."""
     app = owner_app(request)
-    update = await _input(request, SoulRequest, MAX_SOUL_EDIT * 12 + 1024)
+    update = await _input(request, SoulChat, MAX_SOUL_CHAT * 6 + 16_384)
     try:
-        edit, proposal_id = await propose_soul_edit(app, update.message)
+        reply, edit, proposal_id = await soul_chat(app, [(turn.role, turn.text) for turn in update.messages])
     except OwnerError as exc:
         raise HTTPException(422, str(exc)) from None
-    return {"id": proposal_id, "diff": [f"- {edit['old']}", f"+ {edit['new']}"]}
+    proposal = None if edit is None else {"id": proposal_id, "diff": [f"- {edit['old']}", f"+ {edit['new']}"]}
+    return {"reply": reply, "proposal": proposal, **await _waiting(app)}
 
 
 @router.post(PREFIX + "/import")

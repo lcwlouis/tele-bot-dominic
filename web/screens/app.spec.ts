@@ -3,10 +3,12 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean }[] = [
+const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
+  // The desktop sidebar folded to its rail of icons; the page takes back the room.
+  { name: "sidebar-folded", path: "/app/work/reminders", heading: "Reminders", folded: true, desktopOnly: true },
   { name: "gallery", path: "/app/gallery", heading: "Component library" },
   { name: "settings-models", path: "/app/system", heading: "Settings" },
   { name: "settings-providers", path: "/app/system", heading: "Settings", tab: "Providers" },
@@ -21,6 +23,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "memory", path: "/app/memory", heading: "Memory" },
   // On a phone the list is its own screen and a file opens full width; on a desktop the list stays beside it.
   { name: "memory-file", path: "/app/memory", heading: "Memory", click: "MEMORY.md" },
+  // A memory file rendered as markdown: headings, a list, a code span, a link and a quote.
+  { name: "memory-preview", path: "/app/memory?file=SOUL.md", heading: "Memory", tab: "Preview" },
   // Work: the desk with a handoff waiting for the owner, Dom's own tasks and skills, reminders and a brief.
   { name: "work-desk", path: "/app/work", heading: "Desk" },
   { name: "work-own", path: "/app/work/own-work", heading: "Own work" },
@@ -39,6 +43,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   // The search page: grouped hits, with another chat's message shown as a preview only.
   { name: "search", path: "/app/search?q=plan", heading: "Search" },
   { name: "memory-soul", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul" },
+  // The soul conversation with a reply and its proposed edit (the answer is canned here: the route itself runs below).
+  { name: "memory-soul-chat", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul", soul: "Would you mention board games?" },
 ];
 
 /** Collect every CSP violation and every request that leaves Dom's origin. */
@@ -59,15 +65,34 @@ async function watch(page: Page) {
   return problems;
 }
 
+/** Answer the soul conversation with a fixed reply and the seeded soul edit, so the screens change no state. */
+async function cannedSoulReply(page: Page) {
+  await page.route("**/api/memory/soul", async (route) => {
+    const memory = await (await page.request.get("/api/memory")).json();
+    const edit = memory.edits.find((item: { kind: string }) => item.kind === "soul_edit");
+    await route.fulfill({
+      json: {
+        reply: "I'd keep the quiet evenings, but I do light up over a **board game**. Want me to say so?",
+        proposal: { id: edit.id, diff: edit.diff },
+        imports: memory.imports,
+        edits: memory.edits,
+      },
+    });
+  });
+}
+
 for (const scheme of ["dark", "light"] as const) {
   for (const [device, viewport] of Object.entries(viewports)) {
     test.describe(`${device} ${scheme}`, () => {
       test.use({ viewport, colorScheme: scheme });
 
-      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly } of pages) {
+      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly, desktopOnly, folded, soul } of pages) {
         if (phoneOnly && device !== "phone") continue;
+        if (desktopOnly && device !== "desktop") continue;
         test(name, async ({ page }) => {
           const problems = await watch(page);
+          if (folded) await page.addInitScript(() => localStorage.setItem("dom-sidebar", "collapsed"));
+          if (soul) await cannedSoulReply(page);
           const response = await page.goto(path);
           expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
           await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
@@ -77,6 +102,11 @@ for (const scheme of ["dark", "light"] as const) {
           }
           if (tab) await page.getByRole("tab", { name: tab }).click();
           if (click) await page.getByRole("button", { name: click, exact: true }).first().click();
+          if (soul) {
+            await page.getByRole("textbox", { name: "Message to Dom" }).fill(soul);
+            await page.keyboard.press("Enter");
+            await expect(page.getByText("Proposed change to SOUL.md")).toBeVisible();
+          }
           if (fill) {
             await page.getByLabel(fill[0]).first().fill(fill[1]);
             await expect(page.getByRole("listbox").getByRole("option").first()).toBeVisible();
@@ -311,6 +341,83 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Leave Weekend crew" }).click();
     await dialog.getByRole("button", { name: "Stay" }).click();
     await expect(dialog).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("sidebar: folds to a rail and back by button and by [, remembers it, and ignores [ in a text field", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/work/reminders");
+    const fold = page.getByRole("button", { name: "Collapse sidebar" });
+    await expect(fold).toHaveAttribute("aria-expanded", "true");
+    const main = page.locator("#main");
+    const wide = (await main.boundingBox())!.x;
+    await fold.click();
+    const unfold = page.getByRole("button", { name: "Expand sidebar" });
+    await expect(unfold).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByRole("heading", { name: "Control surface" })).toHaveClass(/sr-only/); // hidden, still named for screen readers
+    const reminders = page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Reminders, in Work" });
+    await expect(reminders).toHaveAttribute("aria-current", "page");
+    await expect.poll(async () => (await main.boundingBox())!.x).toBeLessThan(wide); // the page takes the room back
+    await reminders.hover();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Reminders" })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Expand sidebar" })).toBeVisible();
+    // "[" folds and unfolds, except while a text field has the key.
+    await page.getByRole("heading", { level: 1 }).click();
+    await page.keyboard.press("[");
+    await expect(page.getByRole("button", { name: "Collapse sidebar" })).toBeVisible();
+    await page.getByRole("searchbox").first().fill("");
+    await page.getByRole("searchbox").first().press("[");
+    await expect(page.getByRole("button", { name: "Collapse sidebar" })).toBeVisible();
+    await expect(page.getByRole("searchbox").first()).toHaveValue("[");
+    expect(problems).toEqual([]);
+  });
+
+  test("memory: a file previews as markdown, unsaved edits survive switching tabs, raw HTML stays text", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory?file=SOUL.md");
+    const editor = page.getByRole("textbox", { name: "SOUL.md" });
+    const original = await editor.inputValue();
+    await editor.fill(original + "\n<img src=x onerror=alert(1)> [bad](javascript:alert(1)) [good](https://example.org/a)\n");
+    await page.getByRole("tab", { name: "Preview" }).click();
+    const preview = page.getByRole("tabpanel");
+    await expect(preview.getByRole("heading", { name: "How he talks" })).toBeVisible();
+    await expect(preview.getByText("<img src=x onerror=alert(1)>")).toBeVisible();
+    await expect(preview.locator("img")).toHaveCount(0);
+    await expect(preview.getByRole("link", { name: "bad" })).toHaveCount(0);
+    await expect(preview.getByRole("link", { name: "good" })).toHaveAttribute("rel", "noopener noreferrer");
+    await expect(page.getByText("Showing your unsaved edits.")).toBeVisible();
+    await page.getByRole("tab", { name: "Edit" }).click();
+    await expect(page.getByRole("textbox", { name: "SOUL.md" })).toHaveValue(/javascript:alert/);
+    await page.getByRole("button", { name: "Discard", exact: true }).click();
+    // Dom's own files open as a rendered page.
+    await page.getByRole("button", { name: "HABITS.md" }).click();
+    await expect(page.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: "Source" })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("memory: the soul conversation files Dom's edit, which is rejected in place", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory");
+    await page.getByRole("button", { name: "Talk to Dom about his soul" }).click();
+    await expect(page.getByRole("complementary", { name: "SOUL.md" }).getByRole("heading", { name: "How he talks" })).toBeVisible();
+    // A failure shows on the message itself, with Retry; the retry then goes through to Dom.
+    await page.route("**/api/memory/soul", (route) => route.fulfill({ status: 422, json: { detail: "Couldn't get a reply from Dom. Try again." } }));
+    await page.getByRole("textbox", { name: "Message to Dom" }).fill("Would you mention board games?");
+    await page.getByRole("button", { name: "Send to Dom" }).click();
+    const log = page.getByRole("list", { name: "Conversation" });
+    await expect(log.getByRole("alert").filter({ hasText: "Couldn't get a reply from Dom. Try again." })).toBeVisible();
+    await page.unroute("**/api/memory/soul");
+    await log.getByRole("button", { name: "Retry" }).click();
+    await expect(log.getByText("Would you mention board games?")).toBeVisible();
+    await expect(log.getByText("Proposed change to SOUL.md")).toBeVisible();
+    await expect(log.getByRole("group", { name: "Proposed changes" })).toContainText("Dom likes quiet evenings and the odd board game.");
+    await log.getByRole("button", { name: "Reject" }).click();
+    await expect(log.getByText("Rejected.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message to Dom" })).toBeEnabled();
+    await page.getByRole("button", { name: "New conversation" }).click();
+    await expect(log.getByText("Would you mention board games?")).toHaveCount(0);
     expect(problems).toEqual([]);
   });
 
@@ -549,7 +656,7 @@ test.describe("interactions under the CSP", () => {
     // The soul request replaces the file list on a phone and takes focus.
     await page.goto("/app/memory");
     await page.getByRole("button", { name: "Talk to Dom about his soul" }).click();
-    await expect(page.getByRole("textbox", { name: "What should Dom change?" })).toBeFocused();
+    await expect(page.getByRole("textbox", { name: "Message to Dom" })).toBeFocused();
     await expect(page.getByRole("navigation", { name: "Memory files" })).toBeHidden();
     expect(problems).toEqual([]);
   });

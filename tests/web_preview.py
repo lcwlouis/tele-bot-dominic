@@ -43,6 +43,7 @@ from dom.tools import TurnCtx  # noqa: E402
 from dom.web import api as web_api  # noqa: E402
 from dom.web.app import create_app  # noqa: E402
 from dom.web.auth import Auth  # noqa: E402
+from dom.web.shared import SOUL_INSTRUCTIONS  # noqa: E402
 from tghelpers import BOT_USER, OWNER, Clock, FakeBot, FixedRandom, ModelScript, no_sleep  # noqa: E402
 
 TOKEN = "preview-token-" + "p" * 32
@@ -177,6 +178,24 @@ PREVIEW_AVATAR_MODELS = {"data": [
 ]}
 
 
+SOUL = """# Dom
+
+Dom likes quiet evenings.
+
+## How he talks
+
+- Short replies, **warm** and a little dry.
+- One question at a time, never a list of them.
+- Plans in `plain words`, with a [map link](https://example.org/map) when it helps.
+
+> Friends first, plans second.
+"""
+SOUL_REPLY = json.dumps({
+    "reply": "I'd keep the quiet evenings, but I do light up over a **board game**. Want me to say so?",
+    "edit": {"old": "Dom likes quiet evenings.", "new": "Dom likes quiet evenings and the odd board game."},
+})
+
+
 def preview_models(script: ModelScript):
     """The fake providers: a model list for GET /models, a yes for a decisions request, else the chat script."""
     def handle(request: httpx.Request) -> httpx.Response:
@@ -192,6 +211,8 @@ def preview_models(script: ModelScript):
             return httpx.Response(200, json={"data": {"label": "preview"}})
         if request.url.path.endswith("/decisions"):
             return httpx.Response(200, json={"answers": {"check": {"type": "choice", "choice": "yes"}}})
+        if request.method == "POST" and SOUL_INSTRUCTIONS[:40] in request.content.decode(errors="replace"):
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": SOUL_REPLY}}]})
         return script(request)
     return handle
 
@@ -253,7 +274,7 @@ async def seed(app: handlers.App) -> None:
         await message(app, chat_id, "assistant", text, msg_id, now - timedelta(minutes=minutes))
         msg_id += 1
 
-    app.home._write_regular("SOUL.md", "Dom likes quiet evenings.")
+    app.home._write_regular("SOUL.md", SOUL)
     app.home._write_regular("memory/MEMORY.md", "# Travel notes\n\n- Check weekday times.\n- Use Central as the default station.\n")
     app.home._write_regular("memory/people/river.md", "River prefers the early train.")
     app.home._write_regular(f"memory/chats/{CREW}.md", "The crew plans a trip on Saturdays.")

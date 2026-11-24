@@ -6,6 +6,9 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Folding sidebar.** On a desktop the dashboard's sidebar folds to a rail of icons, with each page's name as a tooltip. Use the button at its top or press `[`. The dashboard remembers the choice in this browser.
+- **Markdown preview for memory files.** Each memory file has Preview and Edit tabs. HABITS.md and the journals open in Preview, and unsaved edits survive switching tabs. Raw HTML in a note shows as text, and only web and mail links work.
+- **Talk to Dom about his soul, as a chat.** The soul panel is now a conversation beside SOUL.md as it is now. Dom answers in his own voice. When he has a concrete change, it shows as a diff you can approve or reject right there. A failed reply shows on your message with Retry.
 - **Cloud video backups.** Avatar 6 Turbo and Avatar 6 are available in the picker. Replace existing Avatar IV backups after its inline audio refusal.
 - **Cloud voice costs.** The Usage log records speech calls immediately and fills in costs when OpenRouter reports them.
 - **Smaller cloud photos.** Seedream 5.5 requests 1K square output. Oversized photos are resized and encoded as JPEG for Telegram.

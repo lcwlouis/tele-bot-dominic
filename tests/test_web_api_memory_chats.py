@@ -31,7 +31,7 @@ def encoded(raw: bytes) -> str:
 
 WRITES = [
     ("/api/memory/save", {"file": "SOUL.md", "version": "", "content": "x"}),
-    ("/api/memory/soul", {"message": "Be kinder"}),
+    ("/api/memory/soul", {"messages": [{"role": "owner", "text": "Be kinder"}]}),
     ("/api/memory/import", {"service": "claude", "filename": "a.md", "data": ""}),
     ("/api/memory/import-review", {"id": 1, "decision": "all"}),
     ("/api/memory/proposal", {"id": 1, "decision": "approve"}),
@@ -112,28 +112,94 @@ async def test_save_checks_limits_versions_and_habits(make_app, browser):
         assert private.status_code == 200 and app.home.scoped(allow_private=True).read("private/USER.md") == "Owner note"
 
 
-@pytest.mark.parametrize("new,files", [("A new line", True), ("x" * 5000, False)])
-async def test_soul_request_files_a_proposal_and_never_writes_soul(make_app, browser, new, files):
-    app = make_app(contents=[json.dumps({"old": "An old line", "new": new})])
+def said(*texts):
+    """A soul conversation: the owner and Dom take turns, the owner first and last."""
+    return {"messages": [{"role": "owner" if at % 2 == 0 else "dom", "text": text} for at, text in enumerate(texts)]}
+
+
+def answer(reply, edit=None):
+    return json.dumps({"reply": reply, "edit": edit})
+
+
+async def test_soul_chat_files_an_edit_as_a_proposal_and_never_writes_soul(make_app, browser):
+    app = make_app(contents=[answer("Sure, softer it is.", {"old": "An old line", "new": "A new line"})])
     app.home._write_regular("SOUL.md", "An old line")
     app.home.scoped(allow_private=True)._write_regular("private/USER.md", "Owner only")
     async with browser(app) as client:
-        response = await client.post("/api/memory/soul", headers=JSON, json={"message": "Rewrite this line"})
-        assert len(app.script.requests) == 1
-        payload = json.dumps(app.script.requests[0])
-        assert "Rewrite this line" in payload and "Owner only" not in payload
+        response = await client.post("/api/memory/soul", headers=JSON, json=said("Be gentler", "How so?", "Rewrite this line"))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["reply"] == "Sure, softer it is."
+        assert data["proposal"]["diff"] == ["- An old line", "+ A new line"]
+        assert data["edits"][0]["id"] == data["proposal"]["id"]  # the Waiting cards come back with the reply
+        sent = app.script.requests[0]["messages"]
+        assert sent[0]["role"] == "system" and "An old line" in sent[0]["content"]
+        assert [(m["role"], m["content"]) for m in sent[1:]] == [
+            ("user", "Be gentler"), ("assistant", "How so?"), ("user", "Rewrite this line"),
+        ]
+        assert "Owner only" not in json.dumps(app.script.requests)
         assert app.home.read("SOUL.md") == "An old line"
-        pending = await app.proposals.pending()
-        if files:
-            assert response.status_code == 200 and response.json()["diff"] == ["- An old line", "+ A new line"]
-            assert [row["kind"] for row in pending] == ["soul_edit"]
-            waiting = (await client.get("/api/memory")).json()["edits"]
-            assert waiting[0]["diff"] == ["- An old line", "+ A new line"] and waiting[0]["id"] == response.json()["id"]
+        assert [row["kind"] for row in await app.proposals.pending()] == ["soul_edit"]
+        events = await app.store.get_recent_chat_window(OWNER)
+        assert [e.text for e in events if e.role == "event"] == [f"Dom proposed a soul edit (#{data['proposal']['id']}) from the dashboard"]
+
+
+@pytest.mark.parametrize("edit", [None, {"old": "Not in the file", "new": "x"}, {"old": "An old line", "new": "x" * 5000}, "junk"])
+async def test_soul_chat_replies_without_a_proposal(make_app, browser, edit):
+    app = make_app(contents=[answer("Tell me more.", edit)])
+    app.home._write_regular("SOUL.md", "An old line")
+    async with browser(app) as client:
+        response = await client.post("/api/memory/soul", headers=JSON, json=said("Thoughts on your soul?"))
+        assert response.status_code == 200 and response.json()["proposal"] is None
+        reply = response.json()["reply"]
+        if isinstance(edit, dict):  # a concrete edit that can't apply is dropped, and Dom says so
+            assert reply.startswith("Tell me more.") and "exact place in SOUL.md" in reply
         else:
-            assert response.status_code == 422 and pending == []
-        for bad in ("", "  ", "x" * 2001):
-            assert (await client.post("/api/memory/soul", headers=JSON, json={"message": bad})).status_code == 422
-        assert len(app.script.requests) == 1
+            assert reply == "Tell me more."
+    assert await app.proposals.pending() == [] and app.home.read("SOUL.md") == "An old line"
+
+
+@pytest.mark.parametrize("body,sentence", [
+    (said(), "Write a message"),
+    (said("Hi", "Hello"), "Write a message"),  # must end with the owner
+    (said("  "), "1 to 2,000"),
+    (said("x" * 2001), "1 to 2,000"),
+    (said(*["Hi"] * 21), "20 messages"),
+    (said(*["x" * 2000] * 9), "16,000 characters"),
+])
+async def test_soul_chat_caps_the_conversation_with_a_sentence(make_app, browser, body, sentence):
+    app = make_app()
+    app.home._write_regular("SOUL.md", "An old line")
+    async with browser(app) as client:
+        response = await client.post("/api/memory/soul", headers=JSON, json=body)
+        assert response.status_code == 422 and sentence in response.json()["detail"]
+        for bad in ({"messages": [{"role": "friend", "text": "Hi"}]}, {"message": "Hi"}, {"messages": "Hi"}):
+            assert (await client.post("/api/memory/soul", headers=JSON, json=bad)).status_code == 422
+    assert app.script.requests == []
+
+
+@pytest.mark.parametrize("content", ["not json", json.dumps({"reply": ""}), json.dumps(["Hi"])])
+async def test_soul_chat_turns_a_bad_answer_into_a_sentence(make_app, browser, content):
+    app = make_app(contents=[content])
+    app.home._write_regular("SOUL.md", "An old line")
+    async with browser(app) as client:
+        response = await client.post("/api/memory/soul", headers=JSON, json=said("Hi"))
+        assert response.status_code == 422 and response.json()["detail"].startswith("Dom didn")
+    assert await app.proposals.pending() == []
+
+
+async def test_soul_chat_model_failure_is_an_owner_sentence(make_app, browser):
+    app = make_app()
+    app.home._write_regular("SOUL.md", "An old line")
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("upstream 403")
+
+    app.client.complete = broken
+    async with browser(app) as client:
+        response = await client.post("/api/memory/soul", headers=JSON, json=said("Hi"))
+        assert response.status_code == 422 and response.json()["detail"] == "Couldn't get a reply from Dom. Try again."
+    assert app.home.read("SOUL.md") == "An old line"
 
 
 async def test_deciding_a_soul_edit_goes_through_the_proposals_store(make_app, browser):
