@@ -71,6 +71,11 @@ _FAKE_MEDIA = re.compile(
     re.IGNORECASE | re.MULTILINE)
 
 
+_MEDIA_LABEL = re.compile(
+    r"\s*\[(photo|image|picture|voice|voice note|video|video note|video_note)\](?!\()\s*", re.IGNORECASE)
+_MEDIA_TAG = re.compile(r"<media\b[^>]*>.*?</media>|<media\b[^>]*/?>", re.IGNORECASE | re.DOTALL)
+
+
 def fake_media(text: str) -> bool:
     """Whether a bubble's text imitates a media message instead of being something to say."""
     return bool(_FAKE_MEDIA.search(text))
@@ -110,6 +115,34 @@ class Actions(BaseModel):
         marked = any(isinstance(b, dict) and b.get("private") is True for b in bubbles)
         cleaned = [{k: v for k, v in b.items() if k != "private"} if isinstance(b, dict) else b for b in bubbles]
         return {**data, "bubbles": cleaned, **({"private": True} if marked else {})}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _media_written_as_text(cls, data: object) -> object:
+        """Models copy how media reads in the chat window ("[photo] a scene", <media kind="photo">) instead of setting
+        the action field. The intent is plain, so the first such bubble becomes the action when no media field is set;
+        whether it is offered and allowed is still decided at send time. _fold_extra_bubbles drops the rest."""
+        if not isinstance(data, dict) or not isinstance(data.get("bubbles"), list):
+            return data
+        if any(data.get(field) for field in ("voice", "video_note", "image")):
+            return data
+        for item in data["bubbles"]:
+            text = item if isinstance(item, str) else item.get("text") if isinstance(item, dict) else None
+            match = _MEDIA_LABEL.match(text) if isinstance(text, str) else None
+            if match is None:
+                continue
+            content = _MEDIA_TAG.sub("", text[match.end():]).strip()
+            kind = match.group(1).lower().replace("_", " ")
+            if not content:
+                return data
+            if kind in ("photo", "image", "picture"):
+                return {**data, "image": content[:300]}
+            if kind in ("voice", "voice note"):
+                return {**data, "voice": content[:600]}
+            if kind in ("video note", "video"):
+                return {**data, "video_note": {"text": content[:VIDEO_TEXT_MAX]}}
+            return data
+        return data
 
     @field_validator("bubbles", mode="before")
     @classmethod
