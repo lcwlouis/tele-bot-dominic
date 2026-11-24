@@ -58,7 +58,7 @@ sync_worker image
 checkout https://github.com/manmastersg/soulX-flashHead-local.git e7dc9cbe563684b97670f66d19dcf8d2aa2c9045 "$runtime/flash-src"
 checkout https://github.com/Soul-AILab/SoulX-FlashHead.git 9bc03de06bb0de82cd6bc477804512ae06144bf2 "$runtime/flash-upstream"
 # Fill in the VAE source omitted by the Apple Silicon port.
-cp -Rn "$runtime/flash-upstream/flash_head/ltx_video/." "$runtime/flash-src/flash_head/ltx_video/"
+/usr/bin/rsync -r --ignore-existing "$runtime/flash-upstream/flash_head/ltx_video/" "$runtime/flash-src/flash_head/ltx_video/"
 sync_worker flash
 "$runtime/flash/bin/python" - "$runtime/flash-src" <<'PY'
 from pathlib import Path
