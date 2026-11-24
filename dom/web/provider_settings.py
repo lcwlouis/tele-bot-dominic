@@ -283,7 +283,7 @@ async def save_provider(request: Request) -> ModelSettings:
             raise HTTPException(422, f"{edit.name}: {result.error or 'Provider test failed.'}")
     saved = await commit(app, lambda fresh: _apply(fresh, edit),
                          "Could not save the provider. Check config.toml and its permissions.")
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 def _remove(current: Snapshot, ref: ProviderRef) -> Snapshot:
@@ -307,7 +307,7 @@ async def remove_provider(request: Request) -> ModelSettings:
     ref = await _input(request, ProviderRef)
     saved = await commit(app, lambda current: _remove(current, ref),
                          "Could not remove the provider. Check config.toml and its permissions.")
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 @router.post(PREFIX + "/test")

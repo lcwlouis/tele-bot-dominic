@@ -108,11 +108,12 @@ def parse(payload: object, secrets: Collection[str] = ()) -> tuple[ListedModel, 
 
 
 async def fetch(
-    http: httpx.AsyncClient, base_url: str, key: str | None, *, secrets: Collection[str],
+    http: httpx.AsyncClient, base_url: str, key: str | None, *, secrets: Collection[str], path: str = "/models",
 ) -> tuple[ListedModel, ...]:
-    """GET {base_url}/models. The caller has already checked that `key` may go to this address and that the address is
-    allowed; entries holding any of `secrets` (or `key`) are dropped."""
-    url = base_url.rstrip("/") + "/models"
+    """GET {base_url}{path} (OpenRouter keeps its image, speech and video models in their own lists). The caller has
+    already checked that `key` may go to this address and that the address is allowed; entries holding any of
+    `secrets` (or `key`) are dropped."""
+    url = base_url.rstrip("/") + path
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     try:
         async with asyncio.timeout(LIST_TIMEOUT):

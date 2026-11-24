@@ -395,14 +395,14 @@ paid = true
 async def test_studio_chains_show_and_move_up_without_testing(dashboard):
     app, path, browser = dashboard
     path.write_text(START + STUDIO)
-    route = API + "/studio-move"
+    route = "/api/studio/move"
     async with _mock(app, lambda request: pytest.fail("a reorder reaches nothing")), browser() as client:
         settings = (await client.get(API)).json()
         assert [item["model"] for item in settings["studio"]["voice"]] == ["acme/voice-one", "voice-two"]
         assert settings["studio"]["image"] == [] and settings["studio"]["voice"][1]["paid"] is True
         assert (await client.post(route, json={"revision": settings["revision"], "chain": "voice", "index": 1})).status_code == 403
         bad = await client.post(route, headers=ORIGIN_HEADER, json={"revision": settings["revision"], "chain": "voice", "index": 0})
-        assert bad.status_code == 422
+        assert bad.status_code == 404
         missing = await client.post(route, headers=ORIGIN_HEADER, json={"revision": settings["revision"], "chain": "image", "index": 1})
         assert missing.status_code == 404
         moved = await client.post(route, headers=ORIGIN_HEADER, json={"revision": settings["revision"], "chain": "voice", "index": 1})
@@ -418,14 +418,15 @@ async def test_studio_chains_show_and_move_up_without_testing(dashboard):
     ]
 
 
-async def test_a_saved_provider_may_share_a_studio_key_on_its_origin(dashboard):
+async def test_a_saved_provider_may_not_share_a_studio_key(dashboard):
+    # A media key may skip zero data retention; a provider carries chat content, so it never takes that key.
     app, path, browser = dashboard
     path.write_text(START + STUDIO)
     async with _mock(app, lambda request: httpx.Response(200, json={"data": []})), browser() as client:
         response = await _post(client, "/save", name="Voices", kind="openrouter",
                                base_url="https://openrouter.ai/api/v1", api_key_env="VOICE_KEY")
-        assert response.status_code == 200, response.text
-    assert load_config(path.parent).provider_setups["Voices"].api_key_env == "VOICE_KEY"
+        assert response.status_code == 422 and "needs its own key variable" in response.json()["detail"]
+    assert path.read_text() == START + STUDIO
 
 
 async def test_a_moved_provider_never_takes_a_filled_default_key_to_its_new_host(dashboard):

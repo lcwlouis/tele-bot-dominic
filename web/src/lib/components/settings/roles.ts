@@ -6,7 +6,7 @@ import PenLine from "@lucide/svelte/icons/pen-line";
 import Rocket from "@lucide/svelte/icons/rocket";
 import Scale from "@lucide/svelte/icons/scale";
 import Search from "@lucide/svelte/icons/search";
-import type { ProviderKind, Role, SettingsRole } from "$lib/api";
+import type { DataPolicy, ProviderKind, Role, SettingsRole } from "$lib/api";
 
 /** What each model role does, in the owner's words, with the notes the old settings page gave. */
 export const ROLE_INFO: Record<SettingsRole, { label: string; summary: string; note?: string; icon: Component }> = {
@@ -79,3 +79,14 @@ export function host(url: string): string {
 }
 
 export const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+
+/** What each OpenRouter data policy lets a studio backup's endpoints do with what Dom sends (docs/privacy.md). */
+export const POLICY_INFO: Record<DataPolicy, { label: string; line: string }> = {
+  zdr: { label: "Zero data retention", line: "Only endpoints that keep nothing. The default." },
+  no_training: { label: "No training", line: "Endpoints may keep what's sent, but never train on it." },
+  any: { label: "Any endpoint", line: "Any endpoint, including ones that may train on what's sent." },
+};
+export const POLICIES: DataPolicy[] = ["zdr", "no_training", "any"];
+/** Shown wherever a route is set below zero data retention. */
+export const ACCOUNT_ZDR_NOTE =
+  "OpenRouter's own “ZDR endpoints only” privacy setting (or a guardrail on the key) still refuses non-ZDR endpoints until you turn it off there.";

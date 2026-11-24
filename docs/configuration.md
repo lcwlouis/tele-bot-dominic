@@ -145,9 +145,11 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | `studio.images` | `false` | Allow outbound photos. |
 | `studio.special` | `false` | Allow special video notes in the owner DM. |
 | `studio.profile_photo_follows_preset` | `false` | Use the Everywhere preset's portrait as the bot profile photo. |
+| `studio.profile_photo_every_days` | `14` | Days between profile photo changes at most: 1, 7, 14 or 30. The first change after the switch is turned on may happen at once, and the photo changes only when the outfit has. |
 | `studio.default_outfit` | `""` | Wardrobe ID to use when the active preset has no outfit list. |
 | `studio.voice_fallbacks` | `[]` | Ordered cloud backups for voice notes. |
 | `studio.image_fallbacks` | `[]` | Ordered cloud backups for photos. |
+| `studio.video_fallbacks` | `[]` | Ordered cloud backups for everyday and special round video notes (openrouter_video). |
 
 ### Studio cloud fallbacks
 
@@ -159,8 +161,9 @@ Add one `[[studio.voice_fallbacks]]` or `[[studio.image_fallbacks]]` table per p
 | `studio.<kind>_fallbacks[].model` | Required | Provider model ID. |
 | `studio.<kind>_fallbacks[].api_key_env` | Required | Secret variable paired with the provider's fixed HTTPS origin. |
 | `studio.<kind>_fallbacks[].paid` | `false` | Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. Gemini reports tokens, not a price, so its calls are recorded at no cost and do not count toward daily_spend_cap_usd; only OpenRouter-reported costs do. |
-| `studio.<kind>_fallbacks[].supports_reference` | `true` | For OpenRouter image models that accept an image reference. |
-| `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos when an approved reference cannot be sent. |
+| `studio.<kind>_fallbacks[].supports_reference` | `true` | For OpenRouter image and video models that accept an image reference (a first frame for video). |
+| `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos or videos when an approved reference cannot be sent. |
+| `studio.<kind>_fallbacks[].data_policy` | `"zdr"` | OpenRouter data policy for this media backup: zdr (zero data retention, the default), no_training (providers that may keep but never train on the data) or any. Ignored by direct Gemini. OpenRouter video keeps its output for download, so a video backup needs no_training or any. |
 
 ### Studio limits
 

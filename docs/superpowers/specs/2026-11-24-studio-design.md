@@ -150,16 +150,53 @@ of the replies.
   and legal requirements. The owner must confirm a paid project explicitly
   with `paid = true`. [Speech generation](https://ai.google.dev/gemini-api/docs/speech-generation) ·
   [Gemini API terms](https://ai.google.dev/gemini-api/terms).
-- **Everyday and special video notes** use the local renderer. OpenRouter
-  offers asynchronous video generation via `POST /api/v1/videos`, job polling
-  and authenticated download. It accepts frame images or reference images
-  on compatible models. The provider cites roughly 30 seconds to a few
-  minutes. Pricing varies by model, resolution, duration and audio, with Veo
-  3.1 Fast listed from $0.10 per second. Temporary output storage makes this
-  endpoint ineligible for ZDR. Failed video generation can become a voice
-  note using the voice chain within its own caps, then text. [Video request API](https://openrouter.ai/docs/api/api-reference/video-generation/create-videos) ·
-  [Video latency, cost and retention](https://openrouter.ai/blog/tutorials/video-generation-api/) ·
-  [Video prices](https://openrouter.ai/collections/video-models).
+- **Everyday and special video notes** use the local renderer first, then an
+  optional `[[studio.video_fallbacks]]` chain (`provider = "openrouter_video"`,
+  E66). OpenRouter's job API: `POST /api/v1/videos` returns 202 with a job `id`;
+  `GET /api/v1/videos/{id}` reports `pending`, `in_progress`, `completed` (with
+  `usage.cost`) or `failed`; `GET /api/v1/videos/{id}/content?index=0` with the
+  API key downloads the MP4. Dom builds both URLs from the fixed origin and the
+  validated job ID and never follows the job's own URLs. Image-to-video takes
+  `frame_images` with `frame_type: "first_frame"`; most current models list
+  `supported_frame_images` (Grok Imagine Video 1.5 Lite, Seedance, Wan, Kling,
+  Veo, Hailuo), so Dom sends the outfit's approved portrait as the first frame
+  under the photo reference rules. `generate_audio` (default on for models with
+  audio) makes the model's own voice from the quoted line. Dom picks resolution, aspect and
+  duration from the model's published capabilities (below). Cost: Grok Imagine Video 1.5 Lite lists 2¢ per
+  output second at 480p plus 1¢ per input image, about $0.09–$0.17 a note; Veo
+  3.1 Fast lists $0.10–$0.12 per second (and no 1:1). Latency is about 30 s to a
+  few minutes, inside the 185 s and 425 s video deadlines that also cover polling.
+  OpenRouter keeps outputs for download, so "No video endpoint currently offers
+  Zero Data Retention, so `zdr: true` fails routing"; `data_collection: "deny"`
+  works. Config validation refuses a video backup set to `zdr`. The clip is
+  re-encoded with ffmpeg as a Telegram video note (square, at most 640 px, H.264
+  and AAC, under 60 s). Without a backup, failed video still becomes a voice note
+  through the voice chain, then text.
+  [Video generation guide](https://openrouter.ai/docs/guides/overview/multimodal/video-generation) ·
+  [Video request API](https://openrouter.ai/docs/api/api-reference/video-generation/create-videos) ·
+  [Video models](https://openrouter.ai/api/v1/videos/models) ·
+  [Provider selection: `zdr` and `data_collection`](https://openrouter.ai/docs/guides/routing/provider-selection) ·
+  [ZDR and guardrails](https://openrouter.ai/docs/guides/features/zdr).
+- **Data policies (E66).** Only studio backups take
+  `data_policy = "zdr" | "no_training" | "any"` (default `zdr`), sent as
+  `provider.zdr = true`, `provider.data_collection = "deny"` or nothing. Every
+  chat-content route (model roles, Jev, search, doctor, price list) always sends
+  `zdr`, and a backup's key variable may not be one a chat route uses. The
+  account's "ZDR endpoints only" setting and ZDR guardrails apply on top and win.
+  See [privacy](../../privacy.md#separate-media-key) for the media key setup.
+- **Video request and cost.** Dom reads the model's published capabilities
+  (`/videos/models`) when it generates: the squarest aspect ratio (refused past
+  4:3), the smallest resolution from 480p up and the shortest duration that fits
+  the line, at most 10 s. The save-time test refuses a model that can't make that.
+  An accepted job is recorded at once at its estimated cost (per-second price for
+  that resolution × duration, plus the reference image; a $1 ceiling when the
+  list prices tokens), so it counts toward the spend cap before the next submit.
+  The reported cost replaces it when the job ends, by a background check for up to
+  30 minutes after the deadline; an unresolved estimate stays.
+- **Switches.** A studio switch can be turned on only when something can serve
+  it: the local studio (enabled with a base URL) or a backup for that kind. The
+  profile photo needs the local studio's portraits. It changes at most every
+  `profile_photo_every_days` (1, 7, 14 or 30; default 14).
 
 Store approved cloud reference PNGs as `studio-portraits/<outfit>.png` on
 the bot host, outside the memory directories. This keeps the reference available

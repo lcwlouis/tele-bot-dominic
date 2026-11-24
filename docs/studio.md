@@ -68,15 +68,37 @@ complete a request. Put the key value in the instance's `.env`. Keep
 [[studio.voice_fallbacks]]
 provider = "openrouter_tts"
 model = "google/gemini-3.8-flash-lite-tts"
-api_key_env = "OPENROUTER_API_KEY"
+api_key_env = "OPENROUTER_MEDIA_API_KEY"
 
 [[studio.image_fallbacks]]
 provider = "openrouter_image"
 model = "google/gemini-2.5-flash-image"
-api_key_env = "OPENROUTER_API_KEY"
+api_key_env = "OPENROUTER_MEDIA_API_KEY"
 ```
 
-Voice conversion requires `ffmpeg` with `libopus` on the **bot host**. Copy each
+An optional video backup makes round video notes through OpenRouter when the
+local studio can't. It must not be zero data retention (OpenRouter keeps each
+video for download), so it takes `no_training` or `any`:
+
+```toml
+[[studio.video_fallbacks]]
+provider = "openrouter_video"
+model = "x-ai/grok-imagine-video-1.5-lite"
+api_key_env = "OPENROUTER_MEDIA_API_KEY"
+data_policy = "no_training"
+```
+
+Dom sends the outfit's approved portrait as the first frame and asks for the
+squarest, smallest clip the model publishes (at most 4:3, from 480p up, at most
+10 seconds, by the length of the line) with the model's own voice. The backup
+needs its own key variable: one a model role uses is refused. Dom polls the job within the video deadline, downloads it through the
+authenticated content URL and re-encodes it as a Telegram video note (square,
+at most 640 px, H.264 with AAC, under 60 s). The cloud voice is the model's, not
+Dom's cloned one. See [provider data handling](privacy.md#separate-media-key)
+for a separate media key.
+
+Voice and video conversion require `ffmpeg` with `libopus`, `libx264` and `aac` on the **bot host**
+(Debian's and Raspberry Pi OS's `ffmpeg` package has them). Copy each
 approved reference to `DOM_HOME/studio-portraits/<outfit>.png` so the bot can
 use it when the local Studio is unreachable. References must be PNG files no
 larger than 4 MiB. Direct Gemini (`provider = "gemini_tts"`) requires a direct

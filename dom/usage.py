@@ -143,17 +143,19 @@ class UsageRecorder:
     async def record(
         self, kind: Kind, model: str, host: str, usage: dict | None,
         chat_id: int | None = None, fallback: bool = False,
-    ) -> None:
+    ) -> int | None:
+        """Record one call; returns its usage row ID, or None when recording failed."""
         try:
             data = usage if isinstance(usage, dict) else {}
             input_tokens, output_tokens, _ = token_counts(data)
-            await self.store.record_usage(
+            return await self.store.record_usage(
                 self.now().astimezone(timezone.utc).isoformat(), kind, model, host, chat_id,
                 input_tokens or 0, output_tokens or 0,
                 _cost(data.get("cost")), int(fallback),
             )
         except Exception:
             log.exception("could not record %s usage; the model call is unaffected", kind)
+            return None
 
     async def record_response(
         self, response: httpx.Response | None, kind: Kind, model: str, host: str, *, fallback: bool = False,

@@ -20,7 +20,7 @@ import asyncio
 import hashlib
 import re
 import tomllib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -35,13 +35,17 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from dom.config import (
     MAX_DESKTOP_STEPS,
+    MEDIA_KEY_RULE,
     MIN_DESKTOP_STEPS,
     MODEL_ROLES,
     SEARCH_PROVIDERS,
+    STUDIO_CHAINS,
     Config,
+    DataPolicy,
     ProviderEndpoint,
     ProviderKind,
     SearchProvider,
+    StudioChain,
     _replace_file,
     validate_config,
 )
@@ -52,6 +56,8 @@ from dom.llm import ChatClient, FallbackClient, MissingProviderKey, openrouter_h
 from dom.search import PROVIDER_INFO, SearchClient, search_provider_kind
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.usage import ModelCallSkipped, model_request, on_own_network, provider_address, unroutable_address
+from dom.studio.policy import switch_servable
+from dom.studio.profile import PROFILE_AT
 from dom.web.shared import _bounded_stream, owner_app
 
 if TYPE_CHECKING:
@@ -62,10 +68,11 @@ API_PATH = "/api/models"
 PERMISSIONS_PATH = "/api/permissions"
 DESKTOP_STEPS_PATH = PERMISSIONS_PATH + "/desktop-steps"
 DESKTOP_STEPS = ("desktop", "max_steps")
+PROFILE_INTERVAL_PATH = PERMISSIONS_PATH + "/profile-interval"
+PROFILE_INTERVAL = ("studio", "profile_photo_every_days")
 # Serialises the dashboard's config.toml writes, which run in a thread.
 _CONFIG_WRITE = asyncio.Lock()
-STUDIO_MOVE_PATH = API_PATH + "/studio-move"
-JSON_POSTS = {API_PATH, API_PATH + "/test", STUDIO_MOVE_PATH, PERMISSIONS_PATH, DESKTOP_STEPS_PATH}
+JSON_POSTS = {API_PATH, API_PATH + "/test", PERMISSIONS_PATH, DESKTOP_STEPS_PATH, PROFILE_INTERVAL_PATH}
 MAX_BODY = 32 * 1024
 MAX_FALLBACKS = 5
 URL_RULE = ("Use an HTTPS API base URL without credentials, a query or a fragment. "
@@ -190,7 +197,7 @@ def _address(url: str) -> str | None:
 def _keyed_routes(config: Config) -> list:
     """Everything in config.toml that sends a key variable to an address, after the starter defaults are applied."""
     return [*(endpoint for _, endpoint in config.model_endpoints()), *config.provider_setups.values(),
-            *config.studio.voice_fallbacks, *config.studio.image_fallbacks]
+            *config.studio.fallbacks]
 
 
 def _paired(config: Config) -> dict[str, set[str | None]]:
@@ -290,9 +297,6 @@ class ProviderSetupView(BaseModel):
     uses: list[ProviderUse]
 
 
-StudioChain = Literal["voice", "image"]
-
-
 class StudioFallbackView(BaseModel):
     """One cloud backup for the local studio ([[studio.<chain>_fallbacks]]); a Gemini voice needs paid=true to run."""
 
@@ -301,13 +305,9 @@ class StudioFallbackView(BaseModel):
     api_key_env: str
     key_set: bool
     paid: bool
-
-
-class StudioMove(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    revision: str = Field(pattern=REVISION)
-    chain: StudioChain
-    index: int = Field(ge=1, le=64)  # moves this backup one place up
+    supports_reference: bool
+    allow_without_reference: bool
+    data_policy: DataPolicy
 
 
 class ModelSettings(BaseModel):
@@ -399,7 +399,15 @@ def set_role(document: tomlkit.TOMLDocument, role: SettingsRole, slots: list[Pro
 
 def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     text = tomlkit.dumps(document)
-    saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
+    try:
+        saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
+    except ValidationError as exc:
+        # A key variable shared by a chat route and a studio backup is the owner's to fix: say which and why.
+        rule = MEDIA_KEY_RULE.partition("{name}")[2]
+        message = next((error["msg"] for error in exc.errors(include_input=False) if rule in error["msg"]), None)
+        if message is None:
+            raise
+        raise HTTPException(422, message.removeprefix("Value error, ")) from None
     if "chat" not in saved.config.models:
         raise HTTPException(422, "Configure a primary chat provider.")
     try:
@@ -419,6 +427,7 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     document = tomlkit.parse(current.text)
     set_role(document, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
     return validated(current, document)
+
 
 
 async def commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str) -> Snapshot:
@@ -570,8 +579,20 @@ def provider_catalog(config: Config) -> list[ProviderSetupView]:
     return list(found.values())
 
 
+def _studio_view(config: Config, item, secrets: frozenset[str]) -> StudioFallbackView:
+    """A backup as the page shows it. A hand-edited config.toml may hold a credential where a model ID or a variable
+    name belongs; such a field is shown blank."""
+    def shown(value: str) -> str:
+        return "" if _looks_like_secret(value) or any(secret in value for secret in secrets) else value
+
+    return StudioFallbackView(**item.model_dump() | {"model": shown(item.model), "api_key_env": shown(item.api_key_env)},
+                              key_set=_key_set(config, item.api_key_env))
+
+
 def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
+    """The settings view. It reads .env (key states, secret filtering), so routes build it off the event loop."""
     config = snapshot.config
+    secrets = model_lists.secret_values(config)
     roles = {}
     for role in SETTINGS_ROLES:
         primary, *fallbacks = chain(config, role) or (None,)
@@ -584,12 +605,8 @@ def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
         roles=roles,
         providers=provider_catalog(config),
         studio={
-            chain: [
-                StudioFallbackView(provider=item.provider, model=item.model, api_key_env=item.api_key_env,
-                                   key_set=_key_set(config, item.api_key_env), paid=item.paid)
-                for item in getattr(config.studio, f"{chain}_fallbacks")
-            ]
-            for chain in ("voice", "image")
+            chain: [_studio_view(config, item, secrets) for item in getattr(config.studio, f"{chain}_fallbacks")]
+            for chain in STUDIO_CHAINS
         },
         search_providers=_search_provider_infos(),
         restart_required=any(chain(config, role) != chain(app.config, role) for role in SETTINGS_ROLES),
@@ -626,7 +643,7 @@ async def _input(request: Request, model: type[Input], max_bytes: int = MAX_BODY
 @router.get(API_PATH)
 async def read_models(request: Request) -> ModelSettings:
     app = owner_app(request)
-    return _settings(app, _snapshot(app.config.home))
+    return await asyncio.to_thread(lambda: _settings(app, _snapshot(app.config.home)))
 
 
 def _probe_tuple(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None, str | None]:
@@ -698,38 +715,7 @@ async def update_models(request: Request):
 
     saved = await commit(app, lambda current: _save(current, update),
                          "Could not save valid model settings. Check config.toml and its permissions.")
-    return _settings(app, saved)
-
-
-def _move_studio(current: Snapshot, move: StudioMove) -> Snapshot:
-    _check_revision(current, move.revision)
-    key = f"{move.chain}_fallbacks"
-    chain = list(getattr(current.config.studio, key))
-    if move.index >= len(chain):
-        raise HTTPException(404, "There is no studio backup at that position.")
-    chain[move.index - 1], chain[move.index] = chain[move.index], chain[move.index - 1]
-    document = tomlkit.parse(current.text)
-    tables = tomlkit.aot()
-    for item in chain:
-        tables.append(tomlkit.item(item.model_dump(exclude_defaults=True)))
-    document["studio"][key] = tables
-    saved = validated(current, document)
-    _write(current, saved)
-    return saved
-
-
-@router.post(STUDIO_MOVE_PATH)
-async def move_studio_fallback(request: Request) -> ModelSettings:
-    """Reorder a studio cloud chain. Nothing new is reached, so nothing is tested; it applies at once."""
-    app = owner_app(request)
-    move = await _input(request, StudioMove)
-    async with _CONFIG_WRITE:
-        try:
-            saved = await asyncio.to_thread(lambda: _move_studio(_snapshot(app.config.home), move))
-        except (OSError, ValueError):
-            raise HTTPException(409, "Could not save the order. Check config.toml and its permissions.") from None
-        app.config = app.config.model_copy(update={"studio": saved.config.studio})
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 @router.post(API_PATH + "/test")
@@ -784,8 +770,17 @@ PERMISSIONS = (
     Permission("studio_special", ("studio", "special"), "Send special video notes",
                "Dom can send a special video for a milestone or when you ask in your DM."),
     Permission("studio_profile", ("studio", "profile_photo_follows_preset"), "Match the Everywhere preset’s profile photo",
-               "Dom updates his Telegram profile photo to match his Everywhere preset, at most once an hour."),
+               "Dom updates his Telegram profile photo when his Everywhere preset’s outfit changes, at most once per "
+               "the interval you choose."),
 )
+# What a studio switch needs before it can be turned on, and where the owner sets that up.
+STUDIO_NEEDS = {
+    "voice": "Set up the studio or a voice backup first.",
+    "video_notes": "Set up the studio or a video backup first.",
+    "images": "Set up the studio or a photo backup first.",
+    "special": "Set up the studio or a video backup first.",
+    "profile_photo_follows_preset": "Set up the local studio first: the profile photo uses its portraits.",
+}
 PermissionId = Literal[
     "memory_self_edit", "openers", "ephemeral_replies", "leak_check",
     "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
@@ -798,6 +793,10 @@ class PermissionView(BaseModel):
     label: str
     description: str
     enabled: bool
+    # False when nothing set up can serve this studio switch; `needs` says what to set up first. A switch that is on
+    # although nothing serves it stays on (Dom sends text instead) and can always be turned off.
+    available: bool = True
+    needs: str | None = None
 
 
 class DesktopStepsView(BaseModel):
@@ -810,6 +809,13 @@ class Permissions(BaseModel):
     revision: str
     items: list[PermissionView]
     desktop_steps: DesktopStepsView
+    profile_photo_every_days: Literal[1, 7, 14, 30]
+
+
+class ProfileIntervalUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: str = Field(pattern=REVISION)
+    days: Literal[1, 7, 14, 30]
 
 
 class DesktopStepsUpdate(BaseModel):
@@ -832,12 +838,25 @@ def _permission_value(config: Config, permission: Permission) -> bool:
     return bool(value)
 
 
+def _servable(config: Config, permission: Permission) -> bool:
+    """Whether anything set up can serve the switch (a backup counts once its key has a value); only studio switches
+    need something. Reads .env: call it off the event loop."""
+    return permission.path[0] != "studio" or switch_servable(
+        config.studio, permission.path[1], lambda name: _key_set(config, name))
+
+
 def _permissions(snapshot: Snapshot) -> Permissions:
-    return Permissions(revision=snapshot.revision, items=[
-        PermissionView(id=item.id, label=item.label, description=item.description,
-                       enabled=_permission_value(snapshot.config, item))
-        for item in PERMISSIONS
-    ], desktop_steps=DesktopStepsView(value=snapshot.config.desktop.max_steps))
+    config = snapshot.config
+    items = []
+    for item in PERMISSIONS:
+        available = _servable(config, item)
+        items.append(PermissionView(
+            id=item.id, label=item.label, description=item.description, enabled=_permission_value(config, item),
+            available=available, needs=None if available else STUDIO_NEEDS[item.path[1]],
+        ))
+    return Permissions(revision=snapshot.revision, items=items,
+                       desktop_steps=DesktopStepsView(value=config.desktop.max_steps),
+                       profile_photo_every_days=config.studio.profile_photo_every_days)
 
 
 def _with_permission(config: Config, path: tuple[str, ...], value: bool | int) -> Config:
@@ -851,7 +870,7 @@ def _with_permission(config: Config, path: tuple[str, ...], value: bool | int) -
 @router.get(PERMISSIONS_PATH)
 async def read_permissions(request: Request) -> Permissions:
     app = owner_app(request)
-    return _permissions(_snapshot(app.config.home))
+    return await asyncio.to_thread(lambda: _permissions(_snapshot(app.config.home)))
 
 
 @router.post(PERMISSIONS_PATH)
@@ -861,10 +880,45 @@ async def update_permission(request: Request) -> Permissions:
     permission = next(item for item in PERMISSIONS if item.id == update.id)
     # Reading, checking and replacing config.toml waits on the disk; it runs off the event loop, one save at a time,
     # so a slow disk never stalls Dom's other work.
-    async with _CONFIG_WRITE:
-        saved = await asyncio.to_thread(_save_setting, app.config.home, update.revision, permission.path, update.enabled)
-        app.config = _with_permission(app.config, permission.path, update.enabled)
-    return _permissions(saved)
+    def refuse_unserved(config: Config) -> None:  # turning a switch off is always allowed
+        if update.enabled and not _servable(config, permission):
+            raise HTTPException(409, STUDIO_NEEDS[permission.path[1]])
+
+    async def turned_on(was_on: bool) -> None:
+        if permission.id == "studio_profile" and update.enabled and not was_on:
+            await app.store.kv_set(PROFILE_AT, "")  # the first sync after turning it on may happen at once
+
+    saved = await _save_now(app, update.revision, permission.path, update.enabled, refuse_unserved, turned_on)
+    return await asyncio.to_thread(_permissions, saved)
+
+
+async def _save_now(
+    app: App, revision: str, path: tuple[str, ...], value: bool | int,
+    check: Callable[[Config], None] | None = None, after: Callable[[bool], Awaitable[None]] | None = None,
+) -> Snapshot:
+    """Save one setting to config.toml and the running config, or to neither: one config write at a time, the disk
+    work off the loop, and shielded, so a cancelled request still finishes the swap (and `after`, given whether the
+    setting was on before)."""
+
+    async def run() -> Snapshot:
+        async with _CONFIG_WRITE:
+            was_on = bool(_permission_value(app.config, Permission("", path, "", "")))
+            saved = await asyncio.to_thread(_save_setting, app.config.home, revision, path, value, check)
+            app.config = _with_permission(app.config, path, value)
+            if after is not None:
+                await after(was_on)
+            return saved
+
+    return await asyncio.shield(asyncio.ensure_future(run()))
+
+
+@router.post(PROFILE_INTERVAL_PATH)
+async def update_profile_interval(request: Request) -> Permissions:
+    """How often the profile photo may change at most. The next sync reads it, so a save applies at once."""
+    app = owner_app(request)
+    update = await _input(request, ProfileIntervalUpdate)
+    saved = await _save_now(app, update.revision, PROFILE_INTERVAL, update.days)
+    return await asyncio.to_thread(_permissions, saved)
 
 
 @router.post(DESKTOP_STEPS_PATH)
@@ -872,15 +926,18 @@ async def update_desktop_steps(request: Request) -> Permissions:
     """The step budget of the owner's desktop tasks. A task reads it when it starts, so a save applies to the next one."""
     app = owner_app(request)
     update = await _input(request, DesktopStepsUpdate)
-    async with _CONFIG_WRITE:
-        saved = await asyncio.to_thread(_save_setting, app.config.home, update.revision, DESKTOP_STEPS, update.max_steps)
-        app.config = _with_permission(app.config, DESKTOP_STEPS, update.max_steps)
-    return _permissions(saved)
+    saved = await _save_now(app, update.revision, DESKTOP_STEPS, update.max_steps)
+    return await asyncio.to_thread(_permissions, saved)
 
 
-def _save_setting(home: Path, revision: str, path: tuple[str, ...], setting: bool | int) -> Snapshot:
+def _save_setting(
+    home: Path, revision: str, path: tuple[str, ...], setting: bool | int,
+    check: Callable[[Config], None] | None = None,
+) -> Snapshot:
     current = _snapshot(home)
     _check_revision(current, revision)
+    if check is not None:
+        check(current.config)
     document = tomlkit.parse(current.text)
     table = document
     *parents, key = path

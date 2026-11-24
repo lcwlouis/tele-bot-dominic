@@ -874,6 +874,7 @@ async def test_a_permission_save_waits_on_the_disk_once_and_off_the_event_loop(d
 ])
 async def test_studio_permission_save_applies_now(dashboard, permission, field):
     app, path, browser = dashboard
+    path.write_text(START + '[studio]\nenabled = true\nbase_url = "https://studio.example.org"\n')
     async with browser() as client:
         revision = (await client.get(PERMISSIONS)).json()["revision"]
         result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
@@ -881,7 +882,9 @@ async def test_studio_permission_save_applies_now(dashboard, permission, field):
         })
     assert result.status_code == 200
     assert getattr(app.config.studio, field)
-    assert tomllib.loads(path.read_text())["studio"] == {field: True}
+    assert tomllib.loads(path.read_text())["studio"] == {
+        "enabled": True, "base_url": "https://studio.example.org", field: True,
+    }
 
 
 DESKTOP_STEPS = "/api/permissions/desktop-steps"

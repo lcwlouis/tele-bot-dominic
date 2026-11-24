@@ -1803,7 +1803,7 @@ class Dispatcher:
         if not (actions.voice or actions.video_note or actions.image):
             return actions
         update = {"voice": None, "video_note": None, "image": None}
-        if actions.private or actions.no_response or not self.app.config.studio.enabled:
+        if actions.private or actions.no_response:
             return actions.model_copy(update=update)
         config = self.app.config.studio
         if studio_enabled(config, scope, "voice"):
@@ -2172,9 +2172,13 @@ class Dispatcher:
         local_ready = app.studio is not None and app.studio.ready
         if not final_bot_turn and (local_ready or app.cloud_studio is not None):
             remaining = await app.studio_quota.remaining(app.config.studio, scope, chat_id, self.now())
-            if not local_ready:
-                remaining = {kind: count for kind, count in remaining.items()
-                             if studio_providers(app.config.studio, kind)}
+            if not local_ready:  # only backups whose key holds a value can serve; the key lookup reads .env
+                config = app.config
+                keyed = await asyncio.to_thread(lambda: {
+                    kind for kind in remaining
+                    if any(config.secret(backup.api_key_env) for backup in studio_providers(config.studio, kind))
+                })
+                remaining = {kind: count for kind, count in remaining.items() if kind in keyed}
             if media_note := studio_turn_note(remaining, outfits(app.config.studio, preset)):
                 note += f"\n{media_note}"
         if attempt is not None:

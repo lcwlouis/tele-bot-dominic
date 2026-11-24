@@ -14,6 +14,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   // Provider setup, and a role's editor with its model picker open on the provider's fetched list.
   { name: "settings-provider-editor", path: "/app/system", heading: "Settings", tab: "Providers", click: "Add provider" },
   { name: "settings-model-picker", path: "/app/system", heading: "Settings", click: "Edit Chat", fill: ["Model ID", "example/c"] },
+  // A studio cloud backup's editor: provider, model from OpenRouter's video list, key, reference rules and data policy.
+  { name: "settings-studio-backup", path: "/app/system", heading: "Settings", click: "Add backup for video notes" },
   { name: "chats", path: "/app/chats", heading: "Chats" },
   { name: "chats-personality", path: "/app/chats", heading: "Chats", click: "Personality" },
   { name: "memory", path: "/app/memory", heading: "Memory" },
@@ -166,6 +168,16 @@ test.describe("interactions under the CSP", () => {
     await leaks.click();  // the next save uses the revision that one returned
     await expect(page.getByRole("status").filter({ hasText: "Check replies for leaks: on." })).toBeVisible();
 
+    // A studio switch nothing can serve stays off and says what to set up; the profile photo needs the local studio.
+    await expect(page.getByRole("switch", { name: "Match the Everywhere preset’s profile photo" })).toBeDisabled();
+    await expect(page.getByText("Set up the local studio first", { exact: false })).toBeVisible();
+    // The preview's video backup has no key value yet, so it can't serve the switch either.
+    await expect(page.getByRole("switch", { name: "Send round video notes" })).toBeDisabled();
+    await expect(page.getByText("Set up the studio or a video backup first.").first()).toBeVisible();
+    await page.getByLabel("Change at most every").click();
+    await page.getByRole("option", { name: "Month" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "changes at most every month" })).toBeVisible();
+
     await page.getByRole("tab", { name: "Models" }).click();
     await page.getByRole("button", { name: "Test Chat", exact: true }).click();
     await expect(page.getByText(/OK · \d+\.\d s/).first()).toBeVisible();
@@ -239,9 +251,20 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Move up Chat fallback 1, making it the primary" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Chat: order saved." })).toBeVisible();
 
-    // The studio's cloud backups reorder in place too.
+    // The studio's cloud backups reorder in place too, and are added, edited and removed here.
     await page.getByRole("button", { name: "Move up Voice notes backup 2" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Voice notes: order saved." })).toBeVisible();
+    await page.getByRole("button", { name: "Add backup for video notes" }).click();
+    await page.getByLabel("Model", { exact: true }).fill("example/video-fast");
+    await page.getByLabel("Key variable").last().fill("EXAMPLE_VOICE_KEY");
+    await page.getByRole("button", { name: "Add backup", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Video notes: backup saved." })).toBeVisible();
+    await page.getByRole("button", { name: "Move down Video notes backup 1" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Video notes: order saved." })).toBeVisible();
+    await page.getByRole("button", { name: "Remove Video notes backup 2" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Remove" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Video notes: backup removed." })).toBeVisible();
+    await expect(page.getByText("example/video-fast")).toBeVisible();
 
     // Triage is edited and tested like any role; its test is a real decisions request.
     await page.getByRole("button", { name: "Edit Triage" }).click();

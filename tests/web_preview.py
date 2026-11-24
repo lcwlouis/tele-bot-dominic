@@ -114,6 +114,12 @@ provider = "openrouter_image"
 model = "example/image-model"
 api_key_env = "EXAMPLE_VOICE_KEY"
 
+[[studio.video_fallbacks]]
+provider = "openrouter_video"
+model = "example/video-model"
+api_key_env = "EXAMPLE_VOICE_KEY"
+data_policy = "no_training"
+
 [providers."Spare box"]
 kind = "openai"
 base_url = "http://sparebox:8000/v1"
@@ -154,13 +160,24 @@ PREVIEW_MODELS = {"data": [
     {"id": "example/tiny", "name": "Example: Tiny", "supported_parameters": ["tools"]},
     {"id": "example/vision-model", "name": "Example: Vision", "supported_parameters": ["tools"]},
 ]}
+# OpenRouter lists each media kind's models on its own (/images/models, /audio/speech/models, /videos/models).
+PREVIEW_MEDIA_MODELS = {"data": [
+    {"id": "example/image-model", "name": "Example: Image"},
+    {"id": "example/voice-model", "name": "Example: Voice"},
+    {"id": "example/video-model", "name": "Example: Video"},
+    {"id": "example/video-fast", "name": "Example: Video Fast"},
+]}
 
 
 def preview_models(script: ModelScript):
     """The fake providers: a model list for GET /models, a yes for a decisions request, else the chat script."""
     def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.endswith(("/images/models", "/speech/models", "/videos/models")):
+            return httpx.Response(200, json=PREVIEW_MEDIA_MODELS)
         if request.method == "GET" and request.url.path.endswith("/models"):
             return httpx.Response(200, json=PREVIEW_MODELS)
+        if request.method == "GET" and request.url.path.endswith("/key"):
+            return httpx.Response(200, json={"data": {"label": "preview"}})
         if request.url.path.endswith("/decisions"):
             return httpx.Response(200, json={"answers": {"check": {"type": "choice", "choice": "yes"}}})
         return script(request)
