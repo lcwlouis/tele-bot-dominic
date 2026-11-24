@@ -2210,6 +2210,7 @@ class Dispatcher:
             participants.append(sender_id)
         sliders, preset = await for_chat(app.home, app.store, chat_id, self.now())
         local_ready = app.studio is not None and app.studio.ready
+        media_offered: set[str] = set()  # media kinds this turn's note offers
         if not final_bot_turn and (app.studio is not None or app.cloud_studio is not None):
             config = app.config
             # Kinds switched on for this scope that something could serve: the local studio once set up, else a
@@ -2229,6 +2230,7 @@ class Dispatcher:
                             if any(config.secret(b.api_key_env) for b in studio_providers(config.studio, kind))
                         })
                         remaining = {kind: count for kind, count in remaining.items() if kind in keyed}
+                media_offered = set(remaining)
                 # Without a note, Dom sees his past media in the window and may imitate it in text: say it's not now.
                 note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset)) or STUDIO_UNAVAILABLE}"
         if attempt is not None:
@@ -2316,6 +2318,9 @@ class Dispatcher:
                 if attempt is None and ctx.t3_notes:
                     notice = self._spawn(self._send_coding_notice(chat_id, ctx.t3_notes), committed=True)
                     await asyncio.shield(notice)
+        inferred_kind = {"image": "photo", "voice": "voice", "video_note": "video_note"}.get(actions.inferred_media or "")
+        if inferred_kind is not None and inferred_kind not in media_offered:  # written as text when it wasn't on offer
+            actions = actions.without_inferred_media()
         if actions.image or actions.video_note:
             wardrobe = outfits(app.config.studio, preset)
             outfit = wardrobe[0] if wardrobe else None

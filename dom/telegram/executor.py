@@ -800,7 +800,8 @@ async def deliver_studio(
             return delivered is not None
 
     async def fallback(kind: Kind, text: str) -> None:
-        if not await allowed(kind):
+        # Media Dom wrote out as text and that couldn't be made is not re-sent as text: it was never meant as a message.
+        if actions.inferred_media in ("voice", "video_note") or not await allowed(kind):
             return
         with app.dispatch.protect_send() as commit:
             commit()
