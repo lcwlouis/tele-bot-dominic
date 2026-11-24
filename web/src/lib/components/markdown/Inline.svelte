@@ -11,7 +11,7 @@
   {#if token.type === "strong"}<strong><Inline tokens={token.tokens ?? []} /></strong>
   {:else if token.type === "em"}<em><Inline tokens={token.tokens ?? []} /></em>
   {:else if token.type === "del"}<del><Inline tokens={token.tokens ?? []} /></del>
-  {:else if token.type === "codespan"}<code>{decode(token.text)}</code>
+  {:else if token.type === "codespan"}<code>{token.text}</code>
   {:else if token.type === "br"}<br />
   {:else if token.type === "link"}
     {@const href = safeHref(token.href)}

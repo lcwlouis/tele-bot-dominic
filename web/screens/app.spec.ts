@@ -370,6 +370,13 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("searchbox").first().press("[");
     await expect(page.getByRole("button", { name: "Collapse sidebar" })).toBeVisible();
     await expect(page.getByRole("searchbox").first()).toHaveValue("[");
+    // "[" on a focused sidebar link keeps focus on that destination in the other layout.
+    const nav = page.getByRole("navigation", { name: "Main" });
+    await nav.getByRole("link", { name: "Reminders" }).focus();
+    await page.keyboard.press("[");
+    await expect(nav.getByRole("link", { name: "Reminders, in Work" })).toBeFocused();
+    await page.keyboard.press("[");
+    await expect(nav.getByRole("link", { name: /^Reminders/ })).toBeFocused();
     expect(problems).toEqual([]);
   });
 

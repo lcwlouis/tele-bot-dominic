@@ -1,7 +1,7 @@
 <script lang="ts">
   import PanelLeftClose from "@lucide/svelte/icons/panel-left-close";
   import PanelLeftOpen from "@lucide/svelte/icons/panel-left-open";
-  import type { Component } from "svelte";
+  import { tick, type Component } from "svelte";
   import Orbit from "$lib/components/Orbit.svelte";
   import * as Tooltip from "$lib/components/ui/tooltip";
   import { destinations, workspace, type Destination } from "$lib/nav";
@@ -21,7 +21,10 @@
     if (event.key !== "[" || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented || typing(event.target)) return;
     if (!matchMedia("(min-width: 1024px)").matches) return;
     event.preventDefault();
+    // Folding swaps each link for its icon-only twin; keep keyboard focus on the same destination.
+    const focused = document.activeElement?.closest("#sidebar-nav a[href]")?.getAttribute("href");
     sidebar.toggle();
+    if (focused) tick().then(() => document.querySelector<HTMLElement>(`#sidebar-nav a[href="${CSS.escape(focused)}"]`)?.focus());
   }
 </script>
 

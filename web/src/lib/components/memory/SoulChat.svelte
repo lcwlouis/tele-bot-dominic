@@ -6,6 +6,9 @@
     proposal?: { id: number; diff: string[] } | null;
     failed?: string;
   };
+
+  // Outlives the panel, like the transcript: closing and reopening while Dom is thinking must not allow a second send.
+  export const soulRequest = $state({ thinking: false });
 </script>
 
 <script lang="ts">
@@ -33,7 +36,7 @@
   }: { index: MemoryIndex; turns: SoulTurn[]; onwaiting: (result: MemoryWaiting) => void; onclose: () => void } = $props();
 
   let message = $state("");
-  let thinking = $state(false);
+  let tooLong = $state("");
   let deciding = $state(false);
   let decided = $state<Record<number, string>>({}); // proposal id -> "Approved" / "Rejected"
   let soul = $state<MemoryFile | null>(null);
@@ -66,8 +69,8 @@
   }
 
   async function ask() {
-    if (thinking) return;
-    thinking = true;
+    if (soulRequest.thinking) return;
+    soulRequest.thinking = true;
     for (const turn of turns) delete turn.failed; // a new message or a retry resends whatever failed before
     const asked = turns.at(-1);
     scrollDown();
@@ -82,14 +85,20 @@
     } catch (error) {
       if (asked) asked.failed = error instanceof ApiError ? error.message : "Couldn't reach Dom. Try again.";
     } finally {
-      thinking = false;
+      soulRequest.thinking = false;
       scrollDown();
     }
   }
 
   function submit() {
     const text = message.trim();
-    if (!text || thinking || full) return;
+    if (!text || soulRequest.thinking || full) return;
+    if (total + text.length > index.max_soul_chat) {
+      // The server would refuse the whole conversation; keep the text editable instead of appending it.
+      tooLong = `That's longer than this conversation has room for (${count(index.max_soul_chat - total)} characters left). Shorten it or start a new conversation.`;
+      return;
+    }
+    tooLong = "";
     turns.push({ role: "owner", text });
     message = "";
     ask();
@@ -120,6 +129,7 @@
   }
 
   function restart() {
+    tooLong = "";
     turns = [];
     message = "";
     document.getElementById("soul-message")?.focus();
@@ -137,7 +147,7 @@
         <p class="mt-0.5 text-sm text-muted-foreground">Talk it through. When Dom has a change in mind he proposes it here, and SOUL.md changes only when you approve.</p>
       </div>
       {#if turns.length}
-        <Button variant="outline" size="sm" disabled={thinking} onclick={restart}><RotateCcw aria-hidden="true" /> New conversation</Button>
+        <Button variant="outline" size="sm" disabled={soulRequest.thinking} onclick={restart}><RotateCcw aria-hidden="true" /> New conversation</Button>
       {/if}
     </header>
 
@@ -164,7 +174,7 @@
             {#if turn.failed}
               <div role="alert" class="flex max-w-[85%] flex-wrap items-center justify-end gap-2 text-sm text-coral">
                 <span>{turn.failed}</span>
-                {#if at === turns.length - 1}<Button variant="outline" size="sm" disabled={thinking} onclick={ask}>Retry</Button>{/if}
+                {#if at === turns.length - 1}<Button variant="outline" size="sm" disabled={soulRequest.thinking} onclick={ask}>Retry</Button>{/if}
               </div>
             {/if}
           </li>
@@ -191,7 +201,7 @@
           </li>
         {/if}
       {/each}
-      {#if thinking}
+      {#if soulRequest.thinking}
         <li class="flex items-center gap-3 text-sm text-muted-foreground">
           <Orbit size="sm" activity="replying" />
           <span role="status">Dom is thinking…</span>
@@ -216,10 +226,11 @@
           bind:value={message}
           onkeydown={keydown}
         ></textarea>
-        <Button type="submit" size="icon" class="size-11 shrink-0" aria-label="Send to Dom" disabled={thinking || full || !message.trim()}>
+        <Button type="submit" size="icon" class="size-11 shrink-0" aria-label="Send to Dom" disabled={soulRequest.thinking || full || !message.trim()}>
           <SendHorizontal aria-hidden="true" />
         </Button>
       </div>
+      {#if tooLong}<p role="alert" class="text-xs text-coral">{tooLong}</p>{/if}
       <p id="soul-hint" class="text-xs text-muted-foreground">Enter sends, Shift+Enter starts a new line · {count(message.length)} of {count(index.max_soul_request)} characters</p>
     </form>
   </div>
