@@ -380,11 +380,17 @@ OUTFIT_NAME = r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
 class StudioTier(BaseModel):
     voice_daily: int = Field(1, ge=0, description="Voice notes per rolling 24 hours.")
     video_weekly: int = Field(1, ge=0, description="Round video notes per rolling week when the daily limit is unset.")
-    video_daily: int | None = Field(None, ge=0, description="Round video notes per rolling 24 hours when set.")
-    image_daily: int | None = Field(None, ge=0, description="Images per rolling 24 hours when set.")
+    video_daily: int | None = Field(None, ge=0, description="Round video notes per rolling 24 hours when set. false uses the weekly limit.")
+    image_daily: int | None = Field(None, ge=0, description="Images per rolling 24 hours when set. false uses the weekly limit.")
     image_weekly: int = Field(1, ge=0, description="Images per rolling week when the daily limit is unset.")
     special_daily: int = Field(0, ge=0, description="Special video notes per rolling 24 hours. Only the owner DM can use them.")
     gap_minutes: int = Field(360, ge=0, le=10080, description="Minimum minutes between generation deliveries in a chat.")
+
+    @field_validator("video_daily", "image_daily", mode="before")
+    @classmethod
+    def _weekly(cls, value):
+        # TOML has no null, so false unsets a daily limit whose default is set, and the weekly limit applies.
+        return None if value is False else value
 
 
 class OwnerStudioTier(StudioTier):

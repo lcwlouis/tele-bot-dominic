@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string }[] = [
+const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string; region?: string }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
@@ -20,6 +20,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "settings-triage-picker", path: "/app/system", heading: "Settings", click: "Edit Triage", fill: ["Model ID", "decider"] },
   // A studio cloud backup's editor: provider, model from OpenRouter's video list, key, voice path and data policy.
   { name: "settings-studio-backup", path: "/app/system", heading: "Settings", click: "Add backup for video notes" },
+  // The media limits editor on its own: what is left in the owner's DM and each chat type's limits.
+  { name: "settings-media-limits", path: "/app/system", heading: "Settings", tab: "What Dom may do", region: "Media limits" },
   { name: "chats", path: "/app/chats", heading: "Chats" },
   { name: "chats-personality", path: "/app/chats", heading: "Chats", click: "Personality" },
   { name: "memory", path: "/app/memory", heading: "Memory" },
@@ -127,7 +129,7 @@ for (const scheme of ["dark", "light"] as const) {
         expect(problems).toEqual([]);
       });
 
-      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly, desktopOnly, folded, soul } of pages) {
+      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly, desktopOnly, folded, soul, region } of pages) {
         if (phoneOnly && device !== "phone") continue;
         if (desktopOnly && device !== "desktop") continue;
         test(name, async ({ page }) => {
@@ -164,6 +166,12 @@ for (const scheme of ["dark", "light"] as const) {
             // where a full-page capture would stitch it.
             const height = await page.evaluate(() => document.documentElement.scrollHeight);
             await page.setViewportSize({ width: viewport.width, height: Math.max(viewport.height, height) });
+          }
+          if (region) {
+            // One part of the page, captured on its own.
+            await expect(page.getByRole("region", { name: region })).toHaveScreenshot(`${name}-${device}-${scheme}.png`);
+            expect(problems).toEqual([]);
+            return;
           }
           // Dom's local clock ticks each second, so it is masked.
           await expect(page).toHaveScreenshot(`${name}-${device}-${scheme}.png`, { mask: [page.locator("[data-clock]")] });
@@ -306,6 +314,69 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByText("drafts.example.net · EXAMPLE_DRAFTS_KEY")).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByRole("button", { name: "Edit Drafting" })).toBeEnabled();
+    expect(problems).toEqual([]);
+  });
+
+  test("settings: media limits show what's left, save at once and refuse a bad number", async ({ page }) => {
+    const problems = await watch(page);
+    // Another client saves after the page loaded but before the limits load: the editor saves with the revision that
+    // came with its limits, not the page's older one.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/studio/limits", async (route) => {
+      if (route.request().method() === "GET") await held;
+      await route.continue();
+    });
+    await page.goto("/app/system");
+    await expect(page.getByRole("tab", { name: "Models" })).toBeVisible();
+    const { revision } = await (await page.request.get("/api/permissions")).json();
+    const interval = (await (await page.request.get("/api/permissions")).json()).profile_photo_every_days === 7 ? 14 : 7;
+    const elsewhere = await page.request.post("/api/permissions/profile-interval", {
+      headers: { Origin: `http://127.0.0.1:${PORT}` }, data: { revision, days: interval },
+    });
+    expect(elsewhere.status()).toBe(200);
+    release();
+    await page.getByRole("tab", { name: "What Dom may do" }).click();
+    const limits = page.getByRole("region", { name: "Media limits" });
+    // The preview sent a photo 14 minutes ago, inside the owner DM's 30-minute gap. Every studio switch is off there,
+    // so the strip says so instead of when the gap ends.
+    await expect(limits.getByText("Photos: 1 (off)")).toBeVisible();
+    await expect(limits.getByText("Media is off in your DM.")).toBeVisible();
+    // Special videos are for the owner's DM only.
+    await expect(limits.getByLabel("Special videos")).toHaveCount(1);
+    const save = limits.getByRole("button", { name: "Save media limits" });
+    await expect(save).toBeDisabled();
+
+    const gap = limits.getByLabel("Gap").first();
+    await gap.fill("10081");
+    await expect(limits.getByText("The gap is at most 10080 minutes", { exact: false })).toBeVisible();
+    await expect(save).toBeDisabled();
+    await gap.fill("0");
+    await limits.getByRole("combobox", { name: "Photos: per day or per week" }).first().click();
+    await page.getByRole("option", { name: "per week" }).click();
+    await save.click();
+    await expect(page.getByRole("status").filter({ hasText: "Media limits saved." })).toBeVisible();
+    await expect(limits.getByText("Media is off in your DM.")).toBeVisible();  // never "can go now" with nothing on
+    await page.reload();
+    await page.getByRole("tab", { name: "What Dom may do" }).click();
+    await expect(gap).toHaveValue("0");
+    await expect(limits.getByRole("combobox", { name: "Photos: per day or per week" }).first()).toHaveText("per week");
+
+    // Another save on the page moves the revision; the limits load again and still save after it. A half-typed
+    // (empty) field survives that reload.
+    await gap.fill("");
+    const groups = page.getByRole("switch", { name: "Private replies in groups" });
+    await groups.click();
+    await expect(page.getByRole("status").filter({ hasText: "Private replies in groups: on." })).toBeVisible();
+    await expect(gap).toHaveValue("");
+    // Back as it was.
+    await gap.fill("30");
+    await limits.getByRole("combobox", { name: "Photos: per day or per week" }).first().click();
+    await page.getByRole("option", { name: "per day" }).click();
+    await save.click();
+    await expect(page.getByRole("status").filter({ hasText: "Media limits saved." })).toBeVisible();
+    await groups.click();
+    await expect(page.getByRole("status").filter({ hasText: "Private replies in groups: off." })).toBeVisible();
     expect(problems).toEqual([]);
   });
 

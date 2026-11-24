@@ -175,22 +175,22 @@ Video fallbacks support `heygen/heygen-avatar-6-turbo` and `heygen/heygen-avatar
 | `studio.limits.daily` | `12` | Studio items across all chats in a rolling 24 hours. |
 | `studio.limits.owner_dm.voice_daily` | `3` | Voice notes per rolling 24 hours. |
 | `studio.limits.owner_dm.video_weekly` | `1` | Round video notes per rolling week when the daily limit is unset. |
-| `studio.limits.owner_dm.video_daily` | `1` | Round video notes per rolling 24 hours when set. |
-| `studio.limits.owner_dm.image_daily` | `2` | Images per rolling 24 hours when set. |
+| `studio.limits.owner_dm.video_daily` | `1` | Round video notes per rolling 24 hours when set. false uses the weekly limit. |
+| `studio.limits.owner_dm.image_daily` | `2` | Images per rolling 24 hours when set. false uses the weekly limit. |
 | `studio.limits.owner_dm.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
 | `studio.limits.owner_dm.special_daily` | `1` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
 | `studio.limits.owner_dm.gap_minutes` | `30` | Minimum minutes between generation deliveries in a chat. |
 | `studio.limits.friend_dm.voice_daily` | `1` | Voice notes per rolling 24 hours. |
 | `studio.limits.friend_dm.video_weekly` | `2` | Round video notes per rolling week when the daily limit is unset. |
-| `studio.limits.friend_dm.video_daily` | Unset | Round video notes per rolling 24 hours when set. |
-| `studio.limits.friend_dm.image_daily` | `1` | Images per rolling 24 hours when set. |
+| `studio.limits.friend_dm.video_daily` | Unset | Round video notes per rolling 24 hours when set. false uses the weekly limit. |
+| `studio.limits.friend_dm.image_daily` | `1` | Images per rolling 24 hours when set. false uses the weekly limit. |
 | `studio.limits.friend_dm.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
 | `studio.limits.friend_dm.special_daily` | `0` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
 | `studio.limits.friend_dm.gap_minutes` | `180` | Minimum minutes between generation deliveries in a chat. |
 | `studio.limits.group.voice_daily` | `1` | Voice notes per rolling 24 hours. |
 | `studio.limits.group.video_weekly` | `1` | Round video notes per rolling week when the daily limit is unset. |
-| `studio.limits.group.video_daily` | Unset | Round video notes per rolling 24 hours when set. |
-| `studio.limits.group.image_daily` | Unset | Images per rolling 24 hours when set. |
+| `studio.limits.group.video_daily` | Unset | Round video notes per rolling 24 hours when set. false uses the weekly limit. |
+| `studio.limits.group.image_daily` | Unset | Images per rolling 24 hours when set. false uses the weekly limit. |
 | `studio.limits.group.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
 | `studio.limits.group.special_daily` | `0` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
 | `studio.limits.group.gap_minutes` | `360` | Minimum minutes between generation deliveries in a chat. |

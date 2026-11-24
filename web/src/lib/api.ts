@@ -197,6 +197,34 @@ export type Permissions = {
   profile_photo_every_days: ProfileInterval;
 };
 
+/** GET/POST /api/studio/limits (dom/web/studio_settings.py): `[studio.limits]` and what is left in the owner's DM. */
+export type StudioScope = "owner_dm" | "friend_dm" | "group";
+export type StudioKind = "voice" | "video_note" | "photo" | "special";
+/** A daily video or image limit wins when set; null uses the weekly one. */
+export type StudioTier = {
+  voice_daily: number;
+  video_daily: number | null;
+  video_weekly: number;
+  image_daily: number | null;
+  image_weekly: number;
+  special_daily: number;
+  gap_minutes: number;
+};
+export type StudioLimits = Record<StudioScope, StudioTier> & { daily: number };
+export type StudioLimitsView = {
+  revision: string;
+  limits: StudioLimits;
+  owner: {
+    kinds: { kind: StudioKind; left: number; on: boolean }[];
+    daily_left: number;
+    /** A studio item for the owner's DM is being made or sent now. */
+    sending: boolean;
+    /** When the gap between media ends, if it hasn't; like `now`, in Dom's time zone with its offset. */
+    next_at: string | null;
+    now: string;
+  };
+};
+
 /** GET /api/memory, GET /api/memory/file and the memory writes (dom/web/api_memory.py). */
 export type MemoryImportCard = { id: number; service: string; facts: { id: number; text: string }[] };
 export type MemoryEdit = { id: number; kind: "soul_edit" | "memory_edit"; label: string; title: string; diff: string[] };

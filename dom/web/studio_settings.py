@@ -8,22 +8,44 @@ so neither tests. POST /api/studio/models returns OpenRouter's public list for a
 POST takes the settings revision and keeps dashboard/web/model_settings.py's rules: one config write at a time, atomic
 with config.toml.bak, and a key variable never reaches a host config.toml doesn't already pair it with. Each returns
 ModelSettings (the list route returns ModelListView), and the running config takes the new chains at once.
+
+GET /api/studio/limits returns LimitsView: `[studio.limits]` as it is saved, and what is left now in the owner's DM,
+read from StudioQuota without reserving anything. POST /api/studio/limits takes LimitsSave, validated with the
+config's own bounds, writes only the values that changed (comments and other tables stay), and returns LimitsView. A
+weekly video or image limit writes `<kind>_daily = false` when the tier's daily default is set.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import datetime
 from time import monotonic
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING
 
 import httpx
+import tomllib
 import tomlkit
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dom import model_lists
-from dom.config import CHAIN_PROVIDERS, MEDIA_BASE_URLS, MEDIA_KEY_RULE, ProviderEndpoint, StudioChain, StudioFallback, StudioProvider
+from dom.config import (
+    CHAIN_PROVIDERS,
+    MEDIA_BASE_URLS,
+    MEDIA_KEY_RULE,
+    FriendStudioTier,
+    OwnerStudioTier,
+    ProviderEndpoint,
+    StudioChain,
+    StudioConfig,
+    StudioFallback,
+    StudioLimits,
+    StudioProvider,
+    StudioTier,
+    validate_config,
+)
 from dom.web.model_settings import (
     _CONFIG_WRITE,
     ENV_NAME,
@@ -43,8 +65,10 @@ from dom.web.model_settings import (
     _snapshot,
     _write,
     set_backups,
+    set_value,
     validated,
 )
+from dom.studio.policy import SWITCH, Kind, enabled
 from dom.studio.cloud import VideoUnsupported, video_models, video_plan, video_rate
 from dom.web.provider_settings import ListedModelView, ModelListView, _http
 from dom.web.shared import owner_app
@@ -54,7 +78,9 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 PREFIX = "/api/studio"
-JSON_POSTS = {f"{PREFIX}/save", f"{PREFIX}/remove", f"{PREFIX}/move", f"{PREFIX}/test", f"{PREFIX}/models"}
+LIMITS_PATH = PREFIX + "/limits"
+JSON_POSTS = {f"{PREFIX}/save", f"{PREFIX}/remove", f"{PREFIX}/move", f"{PREFIX}/test", f"{PREFIX}/models", LIMITS_PATH}
+SCOPES = ("owner_dm", "friend_dm", "group")
 TEST_TIMEOUT = 8
 # OpenRouter lists each output kind's models separately; every list is public.
 MODEL_LISTS = {"openrouter_image": "/images/models", "openrouter_tts": "/audio/speech/models",
@@ -106,6 +132,105 @@ class BackupListRequest(BaseModel):
     revision: str = Field(pattern=REVISION)
     provider: StudioProvider
     refresh: bool = False
+
+
+# The limits as the dashboard sends them: every field, nothing else, with the config's own bounds.
+STRICT = ConfigDict(extra="forbid", strict=True)
+
+
+class TierInput(StudioTier):
+    model_config = STRICT
+
+    @model_validator(mode="before")
+    @classmethod
+    def _every_field(cls, data):
+        # An omitted limit would fall back to its default and overwrite the saved value, so every one is required.
+        if isinstance(data, dict) and set(cls.model_fields) - set(data):
+            raise ValueError("Send every limit for each chat type. Reload settings and try again.")
+        return data
+
+
+class OwnerTierInput(TierInput, OwnerStudioTier):
+    model_config = STRICT
+
+
+class FriendTierInput(TierInput, FriendStudioTier):
+    model_config = STRICT
+
+
+class LimitsInput(StudioLimits):
+    model_config = STRICT
+    owner_dm: OwnerTierInput
+    friend_dm: FriendTierInput
+    group: TierInput
+    daily: int = Field(ge=0)
+
+
+class LimitsSave(BaseModel):
+    model_config = STRICT
+    revision: str = Field(pattern=REVISION)
+    limits: LimitsInput
+
+
+class KindLeft(BaseModel):
+    kind: Kind
+    left: int  # counting the global daily total, not the gap
+    on: bool  # its switch is on and something can serve it
+
+
+class OwnerStanding(BaseModel):
+    kinds: list[KindLeft]
+    daily_left: int
+    sending: bool  # a studio item for the owner's DM is being made or sent now
+    next_at: datetime | None  # when the gap between media ends, if it hasn't; in Dom's time zone, as `now` is
+    now: datetime
+
+
+class LimitsView(BaseModel):
+    revision: str
+    limits: StudioLimits
+    owner: OwnerStanding
+
+
+def _limits_saved(current: Snapshot, edit: LimitsSave) -> Snapshot:
+    """The settings with the new limits, validated but not written. Only changed values are touched."""
+    _check_revision(current, edit.revision)
+    before = current.config.studio.limits
+    after = StudioLimits.model_validate(edit.limits.model_dump())
+    document = tomlkit.parse(current.text)
+    if after.daily != before.daily:
+        set_value(document, ("studio", "limits", "daily"), after.daily)
+    for scope in SCOPES:
+        old, new = getattr(before, scope), getattr(after, scope)
+        defaults = type(new)()
+        for name in type(new).model_fields:
+            value = getattr(new, name)
+            if value == getattr(old, name):
+                continue
+            path = ("studio", "limits", scope, name)
+            if value is None:  # weekly: false unsets the daily limit and keeps the comment beside a written key
+                value = None if getattr(defaults, name) is None and not _written(document, path) else False
+            set_value(document, path, value)
+    text = tomlkit.dumps(document)
+    return Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
+
+
+def _written(document: tomlkit.TOMLDocument, path: tuple[str, ...]) -> bool:
+    table = document
+    for name in path:
+        if not hasattr(table, "get") or name not in table:
+            return False
+        table = table[name]
+    return True
+
+
+async def _limits_view(app: App, snapshot: Snapshot) -> LimitsView:
+    studio, at = app.config.studio, app.dispatch.now()
+    now = await app.studio_quota.standing(studio, "owner_dm", app.owner_id or 0, at)
+    tz = ZoneInfo(app.config.timezone)
+    kinds = [KindLeft(kind=kind, left=now.left[kind], on=enabled(studio, "owner_dm", kind)) for kind in SWITCH]
+    return LimitsView(revision=snapshot.revision, limits=snapshot.config.studio.limits, owner=OwnerStanding(
+        kinds=kinds, daily_left=now.daily_left, sending=app.studio_quota.sending(app.owner_id or 0), next_at=now.next_at and now.next_at.astimezone(tz), now=at.astimezone(tz)))
 
 
 def _chain(snapshot: Snapshot, chain: StudioChain) -> list[StudioFallback]:
@@ -169,8 +294,10 @@ def _moved(current: Snapshot, ref: BackupRef) -> Snapshot:
     return _with_chain(current, ref.chain, backups)
 
 
-async def _commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str) -> Snapshot:
-    """Write one studio change and hand the running config the new chains. Backups are read on each use, so no route
+async def _commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str,
+                  part: Callable[[StudioConfig], dict] | None = None) -> Snapshot:
+    """Write one studio change and hand the running config the new chains, or only the `part` of [studio] the change
+    owns, so a disk-only edit elsewhere in the table is not applied with it. Backups are read on each use, so no route
     is rebuilt. One config write at a time, off the loop; a cancelled request still finishes the swap."""
 
     async def run() -> Snapshot:
@@ -179,7 +306,8 @@ async def _commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str
                 saved = await asyncio.to_thread(lambda: _apply(change, _snapshot(app.config.home)))
             except (OSError, ValueError):
                 raise HTTPException(409, failure) from None
-            app.config = app.config.model_copy(update={"studio": saved.config.studio})
+            studio = saved.config.studio if part is None else app.config.studio.model_copy(update=part(saved.config.studio))
+            app.config = app.config.model_copy(update={"studio": studio})
             return saved
 
     return await asyncio.shield(asyncio.ensure_future(run()))
@@ -367,3 +495,21 @@ async def backup_models(request: Request) -> ModelListView:
         listable=True, fetched_at=listed.fetched_at,
         models=[ListedModelView(id=item.id, name=item.name, reasoning=None, efforts=[]) for item in listed.models],
     )
+
+
+@router.get(LIMITS_PATH)
+async def read_limits(request: Request) -> LimitsView:
+    app = owner_app(request)
+    snapshot = await asyncio.to_thread(_snapshot, app.config.home)
+    return await _limits_view(app, snapshot)
+
+
+@router.post(LIMITS_PATH)
+async def save_limits(request: Request) -> LimitsView:
+    """Save the media limits. The quota reads them on every turn, so a save applies at once, without a restart."""
+    app = owner_app(request)
+    edit = await _input(request, LimitsSave)
+    saved = await _commit(app, lambda current: _limits_saved(current, edit),
+                          "Could not save the media limits. Check config.toml and its permissions.",
+                          part=lambda studio: {"limits": studio.limits})
+    return await _limits_view(app, saved)

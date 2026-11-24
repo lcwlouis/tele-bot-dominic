@@ -276,6 +276,13 @@ async def seed(app: handlers.App) -> None:
                 at = (now - timedelta(days=day)).replace(hour=hour, minute=10)
                 await message(app, CREW, "user", "Fictional chatter", msg_id, at, sender)
                 msg_id += 1
+    # Studio media in the owner's DM: a voice note this morning and a photo a few minutes ago, inside the gap.
+    for kind, minutes in (("voice", 600), ("photo", 14)):
+        await app.store.record_new_message(StoredMessage(
+            chat_id=str(OWNER), role="assistant", text="", msg_id=msg_id, is_bot=True, media_json=json.dumps({"kind": kind}),
+            created_at=(now - timedelta(minutes=minutes)).isoformat(), visibility_scope=app.store.visibility_for(OWNER),
+        ))
+        msg_id += 1
     replies = (
         (OWNER, "I've got it. I'll remind you tomorrow morning.", 9),
         (CREW, "That plan sounds suspiciously organised for us.", 32),

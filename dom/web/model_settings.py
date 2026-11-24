@@ -1057,17 +1057,7 @@ def _save_setting(
     if check is not None:
         check(current.config)
     document = tomlkit.parse(current.text)
-    table = document
-    *parents, key = path
-    for name in parents:
-        if name not in table:
-            table[name] = tomlkit.table()
-        table = table[name]
-    value = tomlkit.item(setting)
-    if key in table and hasattr(table[key], "trivia"):  # keep the comment beside the value
-        value.trivia.comment_ws = table[key].trivia.comment_ws
-        value.trivia.comment = table[key].trivia.comment
-    table[key] = value
+    set_value(document, path, setting)
     text = tomlkit.dumps(document)
     try:
         saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
@@ -1075,6 +1065,27 @@ def _save_setting(
     except (OSError, ValueError):
         raise HTTPException(409, "Could not save the setting. Check config.toml and its permissions.") from None
     return saved
+
+
+def set_value(document: tomlkit.TOMLDocument, path: tuple[str, ...], setting: bool | int | None) -> None:
+    """Set one value in config.toml's document, creating its tables and keeping the comment beside it; None drops the
+    key, so its default applies."""
+    table = document
+    *parents, key = path
+    for name in parents:
+        if name not in table:
+            if setting is None:
+                return
+            table[name] = tomlkit.table()
+        table = table[name]
+    if setting is None:
+        table.pop(key, None)
+        return
+    value = tomlkit.item(setting)
+    if key in table and hasattr(table[key], "trivia"):  # keep the comment beside the value
+        value.trivia.comment_ws = table[key].trivia.comment_ws
+        value.trivia.comment = table[key].trivia.comment
+    table[key] = value
 
 
 def _redact(text: str, key: str | None) -> str:
