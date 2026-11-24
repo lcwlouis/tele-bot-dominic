@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from dom.config import StudioConfig, StudioFallback
+from dom.config import StudioConfig, StudioFallback, StudioLimits, StudioTier
 from dom.store import Store
 from dom.traits import Preset
 
@@ -92,6 +93,42 @@ def turn_note(remaining: dict[Kind, int], wardrobe: tuple[str, ...]) -> str:
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class Standing:
+    """Where a chat stands against its studio limits: what is left of each kind (counting the global daily total, but
+    not the gap or the switches), how much of the global total is left, and when the gap ends if it hasn't."""
+
+    left: dict[Kind, int]
+    daily_left: int
+    next_at: datetime | None
+
+
+def windows(tier: StudioTier) -> dict[Kind, tuple[int, timedelta]]:
+    """Each kind's cap and rolling window; a daily video or image limit wins when set."""
+    day, week = timedelta(days=1), timedelta(days=7)
+    return {
+        "voice": (tier.voice_daily, day),
+        "video_note": (tier.video_weekly, week) if tier.video_daily is None else (tier.video_daily, day),
+        "photo": (tier.image_weekly, week) if tier.image_daily is None else (tier.image_daily, day),
+        "special": (tier.special_daily, day),
+    }
+
+
+def standing(limits: StudioLimits, scope: str, total: int, rows: list[tuple[str, datetime]], now: datetime) -> Standing:
+    """`total` is the studio items sent across all chats in the last 24 hours (plus any in flight); `rows` is this
+    chat's rolling week of deliveries."""
+    tier = getattr(limits, scope)
+    daily_left = max(limits.daily - total, 0)
+    left = {}
+    for kind, (cap, window) in windows(tier).items():
+        count = sum(item == kind and stamp > now - window for item, stamp in rows)
+        left[kind] = max(min(cap - count, daily_left), 0)
+    gap_end = max((stamp for _, stamp in rows), default=None)
+    if gap_end is not None:
+        gap_end += timedelta(minutes=tier.gap_minutes)
+    return Standing(left, daily_left, gap_end if gap_end is not None and gap_end > now else None)
+
+
 class StudioQuota:
     def __init__(self, store: Store):
         self.store = store
@@ -101,26 +138,17 @@ class StudioQuota:
     async def _remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:
         if not any(enabled(config, scope, kind) for kind in SWITCH) or chat_id in self._pending:
             return {}
-        tier = getattr(config.limits, scope)
-        day, week = timedelta(days=1), timedelta(days=7)
-        windows = {
-            "voice": (tier.voice_daily, day),
-            "video_note": (tier.video_weekly, week) if tier.video_daily is None else (tier.video_daily, day),
-            "photo": (tier.image_weekly, week) if tier.image_daily is None else (tier.image_daily, day),
-            "special": (tier.special_daily, day),
-        }
         total, rows = await self.store.studio_usage(chat_id, now)
-        global_left = config.limits.daily - total - len(self._pending)
-        gap = timedelta(minutes=tier.gap_minutes)
-        if global_left <= 0 or any(stamp > now - gap for _, stamp in rows):
+        now_standing = standing(config.limits, scope, total + len(self._pending), rows, now)
+        if now_standing.next_at is not None:
             return {}
-        remaining = {}
-        for kind, (cap, window) in windows.items():
-            count = sum(item == kind and stamp > now - window for item, stamp in rows)
-            left = min(cap - count, global_left)
-            if left > 0 and enabled(config, scope, kind):
-                remaining[kind] = left
-        return remaining
+        return {kind: left for kind, left in now_standing.left.items() if left > 0 and enabled(config, scope, kind)}
+
+    async def standing(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> Standing:
+        """Where a chat stands now, for the dashboard. It reserves nothing and takes no lock: a reply in flight still
+        counts toward the global total."""
+        total, rows = await self.store.studio_usage(chat_id, now)
+        return standing(config.limits, scope, total + len(self._pending), rows, now)
 
     async def remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:
         async with self._lock:
