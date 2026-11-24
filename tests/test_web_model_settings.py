@@ -922,3 +922,23 @@ async def test_desktop_steps_save_writes_config_and_applies_to_the_next_task(das
         assert stale.status_code == 409 and app.config.desktop.max_steps == 45
     assert tomllib.loads(path.read_text())["desktop"]["max_steps"] == 45
     assert load_config(path.parent).desktop.max_steps == 45
+
+
+async def test_save_says_when_the_provider_budget_is_spent(dashboard, monkeypatch):
+    app, path, browser = dashboard
+    monkeypatch.setenv("OPENROUTER_API_KEY", "example-openrouter-key")
+
+    def handler(request):
+        return httpx.Response(403, json={"error": {
+            "message": "Workspace daily budget exceeded",
+            "metadata": {"limit_source": "openrouter_workspace_budget", "scope": "workspace", "limit_usd": 0.5,
+                         "resets_at": "2026-11-25T00:00:00.000Z"}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        bad = await _save(client, "chat", PRIMARY, [{"base_url": "https://openrouter.ai/api/v1", "model": "m",
+                                                     "api_key_env": "OPENROUTER_API_KEY"}])
+        assert bad.status_code == 422
+        error = bad.json()["errors"][0]["error"]
+        assert error.startswith("OpenRouter's workspace budget ($0.50) is used up.") and "Resets 25 Nov" in error
+        assert path.read_text() == START

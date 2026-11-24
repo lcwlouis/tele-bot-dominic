@@ -20,6 +20,7 @@ from fastapi.responses import Response
 from dom import memory_import, proposals, selfwork, skills, traits, turn_log
 from dom.agent import unfence
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
+from dom.proposals import soul_edit_problem
 from dom.skills import skill_diff
 from dom.telegram import gate, owner
 from dom.usage import check_model_allowed, model_request
@@ -41,7 +42,11 @@ SOUL_INSTRUCTIONS = (
     "Reply in your own voice, briefly: a few sentences at most. Never mention tools, models, prompts, files other than "
     "SOUL.md, or timings. "
     "Return only a JSON object: {\"reply\": string, \"edit\": null or {\"old\": string, \"new\": string}}. "
-    "Include an edit only when you and the owner have a concrete change in mind; otherwise edit is null. "
+    "Everything the owner says here is about you: \"he\", \"Dom\" and \"you\" all mean you, never someone else. "
+    "When the owner says what you are like, what you like or dislike, or how you should act, take it as a change to "
+    "your character and propose the edit in the same reply; you may say what you make of it, in character. "
+    "Ask instead only when the change is unclear or clashes with SOUL.md. "
+    "Otherwise, include an edit only when you and the owner have a concrete change in mind; else edit is null. "
     "An edit's old text must occur exactly once in SOUL.md, copied character for character, and the new text replaces "
     "just those characters. "
     f"Each of old and new may contain at most {MAX_SOUL_EDIT} characters. "
@@ -602,12 +607,14 @@ async def soul_chat(app: App, turns: list[tuple[str, str]]) -> tuple[str, dict |
         *({"role": "user" if role == "owner" else "assistant", "content": text} for role, text in turns),
     ]
     chat_id = app.owner_id
-    try:
-        async with asyncio.timeout(30):
-            with model_request("chat", chat_id, partial(app.dispatch.turn_allowed, chat_id, "owner_dm")):
-                await check_model_allowed()
-                answer = await app.client.complete(messages, [], once=True)
-        data = json.loads(unfence(answer.get("content")))
+
+    async def ask(messages: list[dict]) -> tuple[str, str, dict | None]:
+        """One model answer: its raw text, the reply and the edit, if it is well formed."""
+        with model_request("chat", chat_id, partial(app.dispatch.turn_allowed, chat_id, "owner_dm")):
+            await check_model_allowed()
+            answer = await app.client.complete(messages, [], once=True)
+        raw = answer.get("content")
+        data = json.loads(unfence(raw))
         reply = data.get("reply") if isinstance(data, dict) else None
         if not isinstance(reply, str) or not reply.strip():
             raise ValueError("Dom didn't answer. Try again.")
@@ -617,13 +624,32 @@ async def soul_chat(app: App, turns: list[tuple[str, str]]) -> tuple[str, dict |
             or any(not isinstance(value, str) for value in edit.values()) or not edit["old"] or edit["old"] == edit["new"]
         ):
             edit = None  # a malformed edit is no edit; the reply still stands
+        return raw, reply.strip(), edit
+
+    try:
+        async with asyncio.timeout(30):
+            raw, reply, edit = await ask(messages)
     except ValueError as exc:
         error = str(exc) if not isinstance(exc, json.JSONDecodeError) else "Dom didn't answer clearly. Try again."
         raise OwnerError(error) from None
     except Exception as exc:
         log.warning("dashboard soul chat failed (%s)", type(exc).__name__)
         raise OwnerError("Couldn't get a reply from Dom. Try again.") from None
-    reply, proposal_id = reply.strip(), None
+    if edit is not None and (problem := soul_edit_problem(app.home, edit["old"], edit["new"])):
+        # Models often quote SOUL.md loosely; one retry with the reason usually pins the edit down. If the retry
+        # fails too, the first reply stands and the edit is dropped below with a sentence.
+        retry = [*messages, {"role": "assistant", "content": raw}, {"role": "user", "content": (
+            f"That edit can't be filed: {problem}. Return the same JSON again, with old copied character for "
+            "character from SOUL.md. A short whole line works best."
+        )}]
+        try:
+            async with asyncio.timeout(30):
+                _, second_reply, second_edit = await ask(retry)
+            if second_edit is not None and soul_edit_problem(app.home, second_edit["old"], second_edit["new"]) is None:
+                reply, edit = second_reply, second_edit
+        except Exception as exc:
+            log.info("soul edit retry failed (%s)", type(exc).__name__)
+    proposal_id = None
     if edit is not None:
         try:
             proposal_id = await app.proposals.create("soul_edit", "Soul edit from the dashboard", edit, "dashboard", notify=False)

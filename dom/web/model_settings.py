@@ -26,6 +26,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Literal, TypeVar, get_args
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 import tomlkit
@@ -53,7 +54,8 @@ from dom.config import (
 from dom import model_lists
 from dom.doctor import _probe_hint, is_zdr_refusal
 from dom.jev import JevClient, JevUnavailable
-from dom.llm import ChatClient, FallbackClient, MissingProviderKey, openrouter_host
+from dom.llm import ChatClient, FallbackClient, MissingProviderKey, ProviderBudgetError, openrouter_host
+from dom.provider_budget import budget_line
 from dom.search import PROVIDER_INFO, SearchClient, search_provider_kind
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.usage import ModelCallSkipped, model_request, on_own_network, provider_address, unroutable_address
@@ -1211,6 +1213,8 @@ async def _probe(
         error = MISSING_KEY
     except (TimeoutError, httpx.TimeoutException):
         error = "Provider test timed out."
+    except ProviderBudgetError as exc:
+        error = budget_line(exc.refusal, ZoneInfo(config.timezone))
     except httpx.HTTPStatusError as exc:
         error = (
             _probe_hint(exc.response)
