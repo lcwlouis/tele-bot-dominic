@@ -209,7 +209,11 @@ async def _opus(data: bytes) -> bytes:
 def _video_note_files(data: bytes) -> tuple[Path, Path, Path]:
     folder = Path(tempfile.mkdtemp(prefix="dom-video-"))
     source, target = folder / "source.mp4", folder / "note.mp4"
-    source.write_bytes(data)
+    try:
+        source.write_bytes(data)
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
     return folder, source, target
 
 
@@ -425,9 +429,10 @@ class CloudStudio:
         reported cost when the job ends, by a bounded background check if that is after the deadline."""
         base, headers = provider.base_url, {"Authorization": f"Bearer {key}"}
         timeout = config.studio.timeouts.special if kind == "special" else config.studio.timeouts.video_notes
+        deadline = asyncio.get_running_loop().time() + timeout  # one deadline across submit, poll, download and encode
         with model_request("studio_video", chat_id, allowed):
             await check_model_allowed()
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout_at(deadline):
                 entry = await self._video_entry(base, provider.model)
                 plan = video_plan(entry, text)
                 frames = entry.get("supported_frame_images") or []
@@ -460,7 +465,7 @@ class CloudStudio:
                 }))
             settled = False
             try:
-                async with asyncio.timeout(timeout):
+                async with asyncio.timeout_at(deadline):
                     while True:
                         status = job.get("status")
                         if status == "completed":

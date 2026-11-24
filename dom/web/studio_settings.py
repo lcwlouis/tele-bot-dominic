@@ -239,6 +239,10 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
                                       error="OpenRouter doesn't list that model for video. Pick one from the list.")
                 plan = video_plan(entry, "A short hello to check what this model can make.")
                 frames = "first_frame" in (entry.get("supported_frame_images") or [])
+                if not frames and not backup.allow_without_reference:
+                    return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000),
+                                      error="This model can't start from Dom's portrait, so it would never be used. "
+                                            "Pick one that takes a first frame, or allow notes without the portrait.")
                 reply = (f"The key works; notes will be {plan['aspect_ratio']}"
                          f"{', ' + plan['resolution'] if 'resolution' in plan else ''}, {plan['duration']} s"
                          f"{', with sound' if plan.get('generate_audio') else ', silent'}"

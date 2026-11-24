@@ -103,7 +103,7 @@ async def test_credential_like_backup_fields_are_never_shown(dashboard, monkeypa
     assert shown["model"] == "" and shown["key_set"] is True
 
 
-def _studio_mock(app, *, key_status=200, models=("acme/voice", "acme/video")):
+def _studio_mock(app, *, key_status=200, models=("acme/voice", "acme/video"), frames=("first_frame",)):
     seen = []
 
     def respond(request):
@@ -111,8 +111,8 @@ def _studio_mock(app, *, key_status=200, models=("acme/voice", "acme/video")):
         if request.url.path == "/api/v1/key":
             return httpx.Response(key_status, json={"data": {}})
         if request.url.path.endswith("/models"):
-            return httpx.Response(200, json={"data": [{"id": model, "supported_aspect_ratios": ["1:1"]}
-                                                      for model in models]})
+            return httpx.Response(200, json={"data": [{"id": model, "supported_aspect_ratios": ["1:1"],
+                                                       "supported_frame_images": list(frames)} for model in models]})
         if request.url.host == "generativelanguage.googleapis.com":
             return httpx.Response(200, json={"name": "models/voice"})
         return httpx.Response(500)
@@ -347,3 +347,16 @@ async def test_a_cancelled_switch_save_still_lands_on_disk_and_at_runtime(dashbo
             await asyncio.sleep(0.01)
     assert app.config.openers.enabled is True
     assert tomllib.loads(path.read_text())["openers"]["enabled"] is True
+
+
+async def test_video_backup_test_refuses_a_model_that_cannot_take_the_portrait(dashboard, monkeypatch):
+    app, _, browser = dashboard
+    _studio_mock(app, frames=())
+    async with browser() as client:
+        claimed = await _studio(client, "/save", chain="voice", backup=VOICE_BACKUP)  # name first, value after
+        assert claimed.status_code == 200, claimed.text
+        monkeypatch.setenv(MEDIA_KEY, "fixture-media-key")
+        refused = await _studio(client, "/save", chain="video", backup=VIDEO_BACKUP)
+        assert refused.status_code == 422 and "portrait" in refused.text
+        allowed = await _studio(client, "/save", chain="video", backup={**VIDEO_BACKUP, "allow_without_reference": True})
+        assert allowed.status_code == 200, allowed.text
