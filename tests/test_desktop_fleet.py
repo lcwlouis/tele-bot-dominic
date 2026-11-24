@@ -650,6 +650,10 @@ async def test_a_refused_screenshot_description_costs_one_look_not_the_task(make
     async def refuse(_):
         raise ChatBudgetExhausted((BudgetRefusal("openrouter_workspace_budget", "workspace", 0.5, 0.5, None),))
 
-    app.media_describer = SimpleNamespace(describe_desktop=refuse)
-    result = await lane.worker._tool(lane.sandbox, "look", {})
-    assert result.startswith("Screenshot description is unavailable")
+    async def malformed(_):
+        return [][0]  # a 200 with empty choices
+
+    for describe in (refuse, malformed):
+        app.media_describer = SimpleNamespace(describe_desktop=describe)
+        result = await lane.worker._tool(lane.sandbox, "look", {})
+        assert result.startswith("Screenshot description is unavailable")

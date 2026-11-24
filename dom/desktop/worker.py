@@ -738,8 +738,10 @@ class DesktopWorker:
             screenshot = await client.screenshot()
             try:
                 return await self.app.media_describer.describe_desktop(screenshot) or "No screenshot description."
-            except (ChatBudgetExhausted, MissingProviderKey, httpx.HTTPError) as exc:
-                # The vision model refusing (budget, key, outage) costs one look, not the task: read the page instead.
+            except (ChatBudgetExhausted, MissingProviderKey, httpx.HTTPError,
+                    KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+                # The vision model refusing (budget, key, outage) or answering malformed JSON costs one look, not the
+                # task: read the page instead.
                 log.info("desktop look failed (%s)", type(exc).__name__)
                 return "Screenshot description is unavailable right now. Use the page's text instead."
         if name == "save_screenshot":
