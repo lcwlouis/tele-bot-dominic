@@ -344,3 +344,19 @@ async def test_saving_an_unchanged_legacy_jev_provider_keeps_its_table(dashboard
                             base_url="https://openrouter.ai/api/alpha")
         assert saved.status_code == 200, saved.text
     assert path.read_text() == legacy
+
+
+async def test_a_provider_save_refuses_a_chat_route_that_would_share_a_live_backup_key(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START + STUDIO)
+    app.config = load_config(path.parent)
+    # A hand edit, not yet applied: the first voice backup goes and the chat fallback takes its key variable.
+    edited = path.read_text().replace('api_key_env = "BACKUP_KEY"', 'api_key_env = "VOICE_KEY"')
+    first_backup = '[[studio.voice_fallbacks]]\nprovider = "openrouter_tts"\nmodel = "acme/voice-one"\napi_key_env = "VOICE_KEY"\n'
+    assert first_backup in edited
+    path.write_text(edited.replace(first_backup, ""))
+    async with _mock(app, lambda request: httpx.Response(200, json={"data": []})), browser() as client:
+        added = await _post(client, "/save", name="Lab", kind="openai", base_url="https://lab.example.test/v1")
+        assert added.status_code == 409, added.text  # the running voice backup still uses VOICE_KEY
+    assert app.config.providers("fallback")[0].api_key_env == "BACKUP_KEY"
+    assert app.config.studio.voice_fallbacks[0].api_key_env == "VOICE_KEY"

@@ -609,6 +609,10 @@ class Config(BaseModel):
                 raise ValueError(MEDIA_PROVIDER_KEY_RULE.format(name=setup.api_key_env))
         return self
 
+    def check_key_rules(self) -> Config:
+        """Run the studio and media key rules again, for a config built with model_copy. Raises ValueError."""
+        return self._studio_key_pairing()._media_keys_apart()
+
     def chat_keys(self) -> set[str]:
         """Key variables that carry conversation content: the model roles' and the chat, decisions and search
         providers'. Studio backups and media providers never use one."""

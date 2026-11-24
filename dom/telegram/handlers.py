@@ -129,6 +129,9 @@ class App:
             update={f"{chain}_fallbacks": getattr(saved.studio, f"{chain}_fallbacks") for chain in studio_chains})
         config = self.config.model_copy(update={"models": models, "provider_setups": saved.provider_setups,
                                                 "studio": studio})
+        # model_copy skips validation, and this mix of saved routes and running studio settings was never validated
+        # as a whole: re-check the key rules so a chat route and a live studio backup can't end up sharing a key.
+        config.check_key_rules()
         current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
         chat, media, draft, escalation = (routed_client(config, role, current.http, current.usage)
                                           for role in ("chat", "media", "drafting", "escalation"))
