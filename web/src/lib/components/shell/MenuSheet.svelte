@@ -101,5 +101,8 @@
         {/each}
       </ul>
     </nav>
+    {#if shell.version}
+      <p class="mt-4 px-3 pb-4 font-mono text-[0.68rem] text-muted-foreground">Dom {shell.version}</p>
+    {/if}
   </Sheet.Content>
 </Sheet.Root>
