@@ -178,3 +178,47 @@ async def test_limits_need_the_owner_and_a_same_origin_post(dashboard):
         assert (await client.post(LIMITS, headers=ORIGIN_HEADER, json={})).status_code == 403
     async with browser() as client:
         assert (await client.post(LIMITS, json={})).status_code == 403  # no Origin
+
+
+async def test_a_partial_tier_is_refused_and_keeps_the_saved_limits(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START + STUDIO + "\n[studio.limits.group]\nvoice_daily = 0\n")
+    original = path.read_text()
+    async with browser() as client:
+        current = (await client.get(LIMITS)).json()
+        partial = {**current["limits"], "group": {"video_daily": None}}
+        response = await client.post(LIMITS, headers=ORIGIN_HEADER, json={"revision": current["revision"], "limits": partial})
+    assert response.status_code == 422 and "every limit" in response.json()["detail"]
+    assert path.read_text() == original
+
+
+async def test_saving_limits_applies_only_the_limits(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START + STUDIO)  # voice = true on disk; the running config still has it off
+    assert app.config.studio.voice is False
+    async with browser() as client:
+        response = await _save(client, lambda limits: limits.update(daily=5))
+    assert response.status_code == 200
+    assert app.config.studio.limits.daily == 5 and app.config.studio.voice is False
+
+
+async def test_switching_a_written_limit_to_weekly_keeps_its_comment(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START + STUDIO + "\n[studio.limits.group]\nvideo_daily = 2 # weekend allowance\n")
+    async with browser() as client:
+        response = await _save(client, lambda limits: limits["group"].update(video_daily=None))
+    assert response.status_code == 200
+    assert "video_daily = false # weekend allowance" in path.read_text()
+    assert app.config.studio.limits.group.video_daily is None
+
+
+async def test_the_view_says_when_media_for_the_owner_is_on_its_way(dashboard):
+    app, path, browser = dashboard
+    config = StudioConfig(enabled=True, base_url="https://studio.example.org", voice=True)
+    app.config = app.config.model_copy(update={"studio": config})
+    async with app.studio_quota.reserve(config, "owner_dm", OWNER, "voice", app.dispatch.now()) as accepted:
+        assert accepted
+        async with browser() as client:
+            assert (await client.get(LIMITS)).json()["owner"]["sending"] is True
+    async with browser() as client:
+        assert (await client.get(LIMITS)).json()["owner"]["sending"] is False

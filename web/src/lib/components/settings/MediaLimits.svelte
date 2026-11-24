@@ -1,6 +1,6 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { getJSON, send, type StudioKind, type StudioLimits, type StudioLimitsView, type StudioScope, type StudioTier } from "$lib/api";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -9,9 +9,10 @@
   import * as Select from "$lib/components/ui/select";
   import { toast } from "$lib/toast.svelte";
 
-  // How often Dom may send studio media ([studio.limits]), and what is left now in the owner's DM. Saved to
-  // config.toml with the page's revision, which a save moves, so `revision` is bound to the page's. The quota reads
-  // the limits on every turn, so a save applies at once.
+  // How often Dom may send studio media ([studio.limits]), and what is left now in the owner's DM. A save takes the
+  // revision that came with the limits shown, and hands the page the one it returns; when another save on the page
+  // moves `revision`, the limits load again unless they hold unsaved edits. The quota reads the limits on every turn,
+  // so a save applies at once.
   let { revision = $bindable() }: { revision: string } = $props();
 
   const SCOPES: { scope: StudioScope; label: string }[] = [
@@ -87,7 +88,7 @@
     if (!changed || saving) return;
     saving = true;
     try {
-      const result = await send<StudioLimitsView>("/api/studio/limits", { revision, limits });
+      const result = await send<StudioLimitsView>("/api/studio/limits", { revision: view!.revision, limits });
       revision = result.revision;
       show(result);
       toast.show("ok", "Media limits saved.");
@@ -98,11 +99,30 @@
     }
   }
 
+  $effect(() => {
+    const current = revision;
+    untrack(() => {
+      if (view && current && current !== view.revision && !saving && !changed) void load();
+    });
+  });
+
   // Dom's own clock: the API sends each time with Dom's UTC offset, so the label reads the same on any device.
   const clock = (iso: string) => iso.slice(11, 16);
   const weekday = (iso: string) => new Date(iso.slice(0, 10) + "T00:00:00Z").toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" });
+  // Across a clock change the offset differs from now's, so it is shown: 01:15 means two different times that night.
+  const offset = (iso: string) => /(Z|[+-]\d\d:\d\d)$/.exec(iso)?.[1] ?? "";
   const nextLabel = (next: string, now: string) =>
-    `Next media from ${next.slice(0, 10) === now.slice(0, 10) ? "" : weekday(next) + " "}${clock(next)}`;
+    `Next media from ${next.slice(0, 10) === now.slice(0, 10) ? "" : weekday(next) + " "}${clock(next)}` +
+    (offset(next) === offset(now) ? "" : ` (UTC${offset(next).replace("Z", "+00:00")})`);
+  // What the owner's DM may get now: the first reason nothing can go, or when the next can.
+  function nowNote(owner: StudioLimitsView["owner"]): string {
+    const on = owner.kinds.filter((item) => item.on);
+    if (owner.daily_left === 0) return "All chats have used the daily total.";
+    if (owner.sending) return "Media is on its way.";
+    if (!on.length) return "Media is off in your DM.";
+    if (!on.some((item) => item.left > 0)) return "Nothing left until a limit resets.";
+    return owner.next_at ? `${nextLabel(owner.next_at, owner.now)}.` : "Media can go now.";
+  }
 </script>
 
 {#snippet count(id: string, label: string, value: number | null, set: (n: number | null) => void, unit: string, max?: number)}
@@ -178,12 +198,8 @@
           {/each}
         </ul>
         <p class="mt-2 text-sm text-muted-foreground">
-          {#if owner.daily_left === 0}
-            All chats have used the daily total.
-          {:else}
-            {owner.next_at ? `${nextLabel(owner.next_at, owner.now)}.` : "Media can go now."}
-            <span class="font-mono">{owner.daily_left}</span> left across all chats.
-          {/if}
+          {nowNote(owner)}
+          {#if owner.daily_left > 0}<span class="font-mono">{owner.daily_left}</span> left across all chats.{/if}
         </p>
       </section>
 

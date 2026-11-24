@@ -28,7 +28,7 @@ import httpx
 import tomllib
 import tomlkit
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dom import model_lists
 from dom.config import (
@@ -39,6 +39,7 @@ from dom.config import (
     OwnerStudioTier,
     ProviderEndpoint,
     StudioChain,
+    StudioConfig,
     StudioFallback,
     StudioLimits,
     StudioProvider,
@@ -140,12 +141,20 @@ STRICT = ConfigDict(extra="forbid", strict=True)
 class TierInput(StudioTier):
     model_config = STRICT
 
+    @model_validator(mode="before")
+    @classmethod
+    def _every_field(cls, data):
+        # An omitted limit would fall back to its default and overwrite the saved value, so every one is required.
+        if isinstance(data, dict) and set(cls.model_fields) - set(data):
+            raise ValueError("Send every limit for each chat type. Reload settings and try again.")
+        return data
 
-class OwnerTierInput(OwnerStudioTier):
+
+class OwnerTierInput(TierInput, OwnerStudioTier):
     model_config = STRICT
 
 
-class FriendTierInput(FriendStudioTier):
+class FriendTierInput(TierInput, FriendStudioTier):
     model_config = STRICT
 
 
@@ -172,6 +181,7 @@ class KindLeft(BaseModel):
 class OwnerStanding(BaseModel):
     kinds: list[KindLeft]
     daily_left: int
+    sending: bool  # a studio item for the owner's DM is being made or sent now
     next_at: datetime | None  # when the gap between media ends, if it hasn't; in Dom's time zone, as `now` is
     now: datetime
 
@@ -197,11 +207,21 @@ def _limits_saved(current: Snapshot, edit: LimitsSave) -> Snapshot:
             value = getattr(new, name)
             if value == getattr(old, name):
                 continue
-            if value is None:  # weekly: drop the key when that is the default, or unset the daily default
-                value = None if getattr(defaults, name) is None else False
-            set_value(document, ("studio", "limits", scope, name), value)
+            path = ("studio", "limits", scope, name)
+            if value is None:  # weekly: false unsets the daily limit and keeps the comment beside a written key
+                value = None if getattr(defaults, name) is None and not _written(document, path) else False
+            set_value(document, path, value)
     text = tomlkit.dumps(document)
     return Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
+
+
+def _written(document: tomlkit.TOMLDocument, path: tuple[str, ...]) -> bool:
+    table = document
+    for name in path:
+        if not hasattr(table, "get") or name not in table:
+            return False
+        table = table[name]
+    return True
 
 
 async def _limits_view(app: App, snapshot: Snapshot) -> LimitsView:
@@ -210,7 +230,7 @@ async def _limits_view(app: App, snapshot: Snapshot) -> LimitsView:
     tz = ZoneInfo(app.config.timezone)
     kinds = [KindLeft(kind=kind, left=now.left[kind], on=enabled(studio, "owner_dm", kind)) for kind in SWITCH]
     return LimitsView(revision=snapshot.revision, limits=snapshot.config.studio.limits, owner=OwnerStanding(
-        kinds=kinds, daily_left=now.daily_left, next_at=now.next_at and now.next_at.astimezone(tz), now=at.astimezone(tz)))
+        kinds=kinds, daily_left=now.daily_left, sending=app.studio_quota.sending(app.owner_id or 0), next_at=now.next_at and now.next_at.astimezone(tz), now=at.astimezone(tz)))
 
 
 def _chain(snapshot: Snapshot, chain: StudioChain) -> list[StudioFallback]:
@@ -274,8 +294,10 @@ def _moved(current: Snapshot, ref: BackupRef) -> Snapshot:
     return _with_chain(current, ref.chain, backups)
 
 
-async def _commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str) -> Snapshot:
-    """Write one studio change and hand the running config the new chains. Backups are read on each use, so no route
+async def _commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str,
+                  part: Callable[[StudioConfig], dict] | None = None) -> Snapshot:
+    """Write one studio change and hand the running config the new chains, or only the `part` of [studio] the change
+    owns, so a disk-only edit elsewhere in the table is not applied with it. Backups are read on each use, so no route
     is rebuilt. One config write at a time, off the loop; a cancelled request still finishes the swap."""
 
     async def run() -> Snapshot:
@@ -284,7 +306,8 @@ async def _commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str
                 saved = await asyncio.to_thread(lambda: _apply(change, _snapshot(app.config.home)))
             except (OSError, ValueError):
                 raise HTTPException(409, failure) from None
-            app.config = app.config.model_copy(update={"studio": saved.config.studio})
+            studio = saved.config.studio if part is None else app.config.studio.model_copy(update=part(saved.config.studio))
+            app.config = app.config.model_copy(update={"studio": studio})
             return saved
 
     return await asyncio.shield(asyncio.ensure_future(run()))
@@ -487,5 +510,6 @@ async def save_limits(request: Request) -> LimitsView:
     app = owner_app(request)
     edit = await _input(request, LimitsSave)
     saved = await _commit(app, lambda current: _limits_saved(current, edit),
-                          "Could not save the media limits. Check config.toml and its permissions.")
+                          "Could not save the media limits. Check config.toml and its permissions.",
+                          part=lambda studio: {"limits": studio.limits})
     return await _limits_view(app, saved)

@@ -217,6 +217,8 @@ export type StudioLimitsView = {
   owner: {
     kinds: { kind: StudioKind; left: number; on: boolean }[];
     daily_left: number;
+    /** A studio item for the owner's DM is being made or sent now. */
+    sending: boolean;
     /** When the gap between media ends, if it hasn't; like `now`, in Dom's time zone with its offset. */
     next_at: string | null;
     now: string;

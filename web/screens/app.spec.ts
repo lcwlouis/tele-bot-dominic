@@ -319,12 +319,29 @@ test.describe("interactions under the CSP", () => {
 
   test("settings: media limits show what's left, save at once and refuse a bad number", async ({ page }) => {
     const problems = await watch(page);
+    // Another client saves after the page loaded but before the limits load: the editor saves with the revision that
+    // came with its limits, not the page's older one.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/studio/limits", async (route) => {
+      if (route.request().method() === "GET") await held;
+      await route.continue();
+    });
     await page.goto("/app/system");
+    await expect(page.getByRole("tab", { name: "Models" })).toBeVisible();
+    const { revision } = await (await page.request.get("/api/permissions")).json();
+    const interval = (await (await page.request.get("/api/permissions")).json()).profile_photo_every_days === 7 ? 14 : 7;
+    const elsewhere = await page.request.post("/api/permissions/profile-interval", {
+      headers: { Origin: `http://127.0.0.1:${PORT}` }, data: { revision, days: interval },
+    });
+    expect(elsewhere.status()).toBe(200);
+    release();
     await page.getByRole("tab", { name: "What Dom may do" }).click();
     const limits = page.getByRole("region", { name: "Media limits" });
-    // The preview sent a photo 14 minutes ago, inside the owner DM's 30-minute gap; times are Dom's.
-    await expect(limits.getByText("Photos: 1")).toBeVisible();
-    await expect(limits.getByText("Next media from 20:46")).toBeVisible();
+    // The preview sent a photo 14 minutes ago, inside the owner DM's 30-minute gap. Every studio switch is off there,
+    // so the strip says so instead of when the gap ends.
+    await expect(limits.getByText("Photos: 1 (off)")).toBeVisible();
+    await expect(limits.getByText("Media is off in your DM.")).toBeVisible();
     // Special videos are for the owner's DM only.
     await expect(limits.getByLabel("Special videos")).toHaveCount(1);
     const save = limits.getByRole("button", { name: "Save media limits" });
@@ -339,19 +356,24 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("option", { name: "per week" }).click();
     await save.click();
     await expect(page.getByRole("status").filter({ hasText: "Media limits saved." })).toBeVisible();
-    await expect(limits.getByText("Media can go now.")).toBeVisible();
+    await expect(limits.getByText("Media is off in your DM.")).toBeVisible();  // never "can go now" with nothing on
     await page.reload();
     await page.getByRole("tab", { name: "What Dom may do" }).click();
     await expect(gap).toHaveValue("0");
     await expect(limits.getByRole("combobox", { name: "Photos: per day or per week" }).first()).toHaveText("per week");
 
-    // Back as it was, using the revision the last save returned.
+    // Another save on the page moves the revision; the limits load again and still save after it.
+    const groups = page.getByRole("switch", { name: "Private replies in groups" });
+    await groups.click();
+    await expect(page.getByRole("status").filter({ hasText: "Private replies in groups: on." })).toBeVisible();
+    // Back as it was.
     await gap.fill("30");
     await limits.getByRole("combobox", { name: "Photos: per day or per week" }).first().click();
     await page.getByRole("option", { name: "per day" }).click();
     await save.click();
     await expect(page.getByRole("status").filter({ hasText: "Media limits saved." })).toBeVisible();
-    await expect(limits.getByText("Next media from 20:46")).toBeVisible();
+    await groups.click();
+    await expect(page.getByRole("status").filter({ hasText: "Private replies in groups: off." })).toBeVisible();
     expect(problems).toEqual([]);
   });
 

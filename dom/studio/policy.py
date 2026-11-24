@@ -148,6 +148,10 @@ class StudioQuota:
             return {}
         return {kind: left for kind, left in now_standing.left.items() if left > 0 and enabled(config, scope, kind)}
 
+    def sending(self, chat_id: int) -> bool:
+        """A studio item for this chat is reserved and on its way."""
+        return chat_id in self._pending
+
     async def standing(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> Standing:
         """Where a chat stands now, for the dashboard. It reserves nothing and takes no lock: a reply in flight still
         counts toward the global total."""
