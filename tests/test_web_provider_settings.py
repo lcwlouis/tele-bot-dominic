@@ -395,14 +395,14 @@ paid = true
 async def test_studio_chains_show_and_move_up_without_testing(dashboard):
     app, path, browser = dashboard
     path.write_text(START + STUDIO)
-    route = API + "/studio-move"
+    route = "/api/studio/move"
     async with _mock(app, lambda request: pytest.fail("a reorder reaches nothing")), browser() as client:
         settings = (await client.get(API)).json()
         assert [item["model"] for item in settings["studio"]["voice"]] == ["acme/voice-one", "voice-two"]
         assert settings["studio"]["image"] == [] and settings["studio"]["voice"][1]["paid"] is True
         assert (await client.post(route, json={"revision": settings["revision"], "chain": "voice", "index": 1})).status_code == 403
         bad = await client.post(route, headers=ORIGIN_HEADER, json={"revision": settings["revision"], "chain": "voice", "index": 0})
-        assert bad.status_code == 422
+        assert bad.status_code == 404
         missing = await client.post(route, headers=ORIGIN_HEADER, json={"revision": settings["revision"], "chain": "image", "index": 1})
         assert missing.status_code == 404
         moved = await client.post(route, headers=ORIGIN_HEADER, json={"revision": settings["revision"], "chain": "voice", "index": 1})

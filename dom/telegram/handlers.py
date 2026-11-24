@@ -162,7 +162,7 @@ class App:
         if self.jev is not None and triage == self.config.models.get("triage") and key == self.jev.api_key:
             return self.jev
         current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
-        return JevClient(current.http, key, triage.model, triage.base_url, usage=current.usage) if key else None
+        return JevClient(current.http, key, triage.model, triage.base_url, usage=current.usage, data_policy=triage.data_policy) if key else None
 
 
 @dataclass(frozen=True)

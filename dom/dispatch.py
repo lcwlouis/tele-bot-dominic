@@ -1803,7 +1803,7 @@ class Dispatcher:
         if not (actions.voice or actions.video_note or actions.image):
             return actions
         update = {"voice": None, "video_note": None, "image": None}
-        if actions.private or actions.no_response or not self.app.config.studio.enabled:
+        if actions.private or actions.no_response:
             return actions.model_copy(update=update)
         config = self.app.config.studio
         if studio_enabled(config, scope, "voice"):

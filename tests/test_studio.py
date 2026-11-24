@@ -180,7 +180,8 @@ async def test_health_cache_and_connection_backoff():
 async def test_global_reservation_is_shared_and_scope_limits_stay_distinct(make_app, studio_server):
     app = make_app()
     await connect(app, studio_server)
-    config = StudioConfig(enabled=True, voice=True, video_notes=True, images=True, special=True, limits={"daily": 1})
+    config = StudioConfig(enabled=True, base_url="https://studio.example.org", voice=True, video_notes=True, images=True,
+                          special=True, limits={"daily": 1})
     quota = app.studio_quota
     now = app.dispatch.now()
     assert "special" not in await quota.remaining(config, "friend_dm", FRIEND, now)
@@ -210,7 +211,11 @@ async def test_profile_follows_everywhere_and_throttles_updates(make_app, studio
     await sync_profile(app)
     assert photos == [b"fake media"]
     assert studio_server[2][-1] == ("/v1/portrait/casual", None)
-    await app.store.kv_set("studio:profile_at", (app.dispatch.now() - timedelta(hours=1)).isoformat())
+    # The default interval is two weeks: a day later nothing changes, two weeks later the new outfit shows.
+    await app.store.kv_set("studio:profile_at", (app.dispatch.now() - timedelta(days=1)).isoformat())
+    await sync_profile(app)
+    assert photos == [b"fake media"]
+    await app.store.kv_set("studio:profile_at", (app.dispatch.now() - timedelta(days=14)).isoformat())
     await sync_profile(app)
     assert photos == [b"fake media", b"fake media"]
     assert studio_server[2][-1] == ("/v1/portrait/formal", None)

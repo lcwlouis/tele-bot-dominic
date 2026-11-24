@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Literal
 
-from dom.config import StudioConfig
+from dom.config import StudioConfig, StudioFallback
 from dom.store import Store
 from dom.traits import Preset
 
@@ -26,8 +26,50 @@ ACTION_NOTES = {
 }
 
 
+# Each studio switch in config.toml, its plain name, and the kinds it turns on (the profile photo uses the local
+# studio's portrait endpoint, so only the studio serves it).
+SWITCH_LABELS = {
+    "voice": "voice notes", "video_notes": "round video notes", "images": "photos", "special": "special video notes",
+    "profile_photo_follows_preset": "the profile photo",
+}
+SWITCH_KINDS: dict[str, tuple[Kind, ...]] = {
+    "voice": ("voice",), "video_notes": ("video_note",), "images": ("photo",), "special": ("special",),
+    "profile_photo_follows_preset": (),
+}
+
+
+def backups(config: StudioConfig, kind: Kind) -> tuple[StudioFallback, ...]:
+    """The cloud backups that may serve a kind; a Gemini voice runs only on a key confirmed as paid."""
+    if kind == "photo":
+        return config.image_fallbacks
+    if kind == "voice":
+        return tuple(p for p in config.voice_fallbacks if p.provider != "gemini_tts" or p.paid)
+    return config.video_fallbacks  # everyday and special video notes
+
+
+def local(config: StudioConfig) -> bool:
+    """The local studio is set up: switched on with an address."""
+    return config.enabled and bool(config.base_url)
+
+
+def servable(config: StudioConfig, kind: Kind) -> bool:
+    return local(config) or bool(backups(config, kind))
+
+
+def switch_servable(config: StudioConfig, switch: str) -> bool:
+    """Whether anything set up can serve a studio switch: the local studio or a cloud backup for its kind."""
+    return local(config) or any(backups(config, kind) for kind in SWITCH_KINDS[switch])
+
+
+def unserved(config: StudioConfig) -> list[str]:
+    """The switches that are on although nothing set up can serve them; Dom sends text in their place."""
+    return [label for switch, label in SWITCH_LABELS.items()
+            if getattr(config, switch) and not switch_servable(config, switch)]
+
+
 def enabled(config: StudioConfig, scope: str, kind: Kind) -> bool:
-    return config.enabled and (kind != "special" or scope == "owner_dm") and getattr(config, SWITCH[kind])
+    return ((kind != "special" or scope == "owner_dm") and getattr(config, SWITCH[kind])
+            and servable(config, kind))
 
 
 def outfits(config: StudioConfig, preset: Preset | None) -> tuple[str, ...]:

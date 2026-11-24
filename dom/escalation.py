@@ -46,19 +46,22 @@ class Prices:
         self.rows: dict[str, dict] = {}
         self.refresh_after = 0.0
         self.pending: asyncio.Task | None = None
+        self.zdr = True  # the list holds ZDR endpoints only, as a zdr route is sent
 
     def warm(self, client: ChatClient) -> None:
-        if (
-            openrouter_host(client.host) and self.clock() >= self.refresh_after
-            and (self.pending is None or self.pending.done())
-        ):
-            self.pending = self.spawn(self._refresh(client.http))
+        if not openrouter_host(client.host) or (self.pending is not None and not self.pending.done()):
+            return
+        zdr = client.endpoint.data_policy == "zdr"
+        if zdr != self.zdr:  # the escalation route's data policy changed: its prices come from another list
+            self.zdr, self.rows, self.refresh_after = zdr, {}, 0.0
+        if self.clock() >= self.refresh_after:
+            self.pending = self.spawn(self._refresh(client.http, zdr))
 
-    async def _refresh(self, http: httpx.AsyncClient) -> None:
+    async def _refresh(self, http: httpx.AsyncClient, zdr: bool = True) -> None:
         try:
             async with asyncio.timeout(PRICE_TIMEOUT):
                 response = await http.get(
-                    PRICE_LIST, params={"zdr": "true"}, follow_redirects=False, timeout=PRICE_TIMEOUT,
+                    PRICE_LIST, params={"zdr": "true"} if zdr else None, follow_redirects=False, timeout=PRICE_TIMEOUT,
                 )
                 response.raise_for_status()
                 self.rows = {

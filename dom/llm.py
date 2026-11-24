@@ -11,7 +11,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from dom import turn_log
-from dom.config import Config, ModelRole, ProviderEndpoint
+from dom.config import Config, ModelRole, ProviderEndpoint, routing_preferences
 from dom.usage import Kind, UsageRecorder, check_model_allowed, provider_address, request_kind
 
 TIMEOUT_SECONDS = 90
@@ -76,8 +76,8 @@ class ChatClient:
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
         openrouter = openrouter_host(self.host)
-        if openrouter:
-            body["provider"] = {"zdr": True}
+        if openrouter and (preferences := routing_preferences(self.endpoint.data_policy)):
+            body["provider"] = preferences
         if self.endpoint.reasoning_effort is not None:
             if openrouter:
                 body["reasoning"] = {"effort": self.endpoint.reasoning_effort}

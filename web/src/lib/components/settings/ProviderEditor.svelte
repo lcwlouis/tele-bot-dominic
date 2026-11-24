@@ -1,12 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { send, type ModelSettings, type ProviderKind, type ProviderSetup } from "$lib/api";
+  import { send, type DataPolicy, type ModelSettings, type ProviderKind, type ProviderSetup } from "$lib/api";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import * as Select from "$lib/components/ui/select";
-  import { KEY_PATTERN, KIND_INFO, KINDS, useLabel } from "./roles";
+  import { ACCOUNT_ZDR_NOTE, KEY_PATTERN, KIND_INFO, KINDS, POLICIES, POLICY_INFO, useLabel } from "./roles";
 
   // Adds a provider (original null) or edits one. Saving tests it first (dom/web/provider_settings.py): through the
   // first role that uses it, or by fetching its model list. Editing the address or key moves every role that uses it.
@@ -30,6 +30,8 @@
   let baseUrl = $state(start?.base_url ?? "");
   // A new provider starts with an empty key variable: the owner names one (PR #11's rule).
   let keyEnv = $state(start?.api_key_env ?? "");
+  // What OpenRouter's endpoints may keep. It applies to every role on this provider.
+  let policy = $state<DataPolicy>(start?.data_policy ?? "zdr");
   let saving = $state(false);
   let error = $state("");
   const id = "provider-editor";
@@ -57,6 +59,7 @@
         kind,
         base_url: baseUrl.trim(),
         api_key_env: keyEnv.trim() || null,
+        data_policy: kind === "openrouter" ? policy : "zdr",
       }, { quiet: true }));
     } catch (failure) {
       error = failure instanceof Error ? failure.message : "Couldn't save the provider.";
@@ -127,6 +130,33 @@
           holds a key can't be pointed at a new host from here.
         </p>
       </div>
+      {#if kind === "openrouter"}
+        <div class="grid gap-1.5 sm:col-span-2">
+          <Label id={`${id}-policy-label`}>Data policy</Label>
+          <Select.Root type="single" value={policy} onValueChange={(value) => (policy = value as DataPolicy)}>
+            <Select.Trigger class="h-9 w-full" aria-labelledby={`${id}-policy-label`} aria-describedby={`${id}-policy-hint`}>
+              {POLICY_INFO[policy].label}
+            </Select.Trigger>
+            <Select.Content>
+              {#each POLICIES as value (value)}
+                <Select.Item {value} label={POLICY_INFO[value].label}>
+                  <span class="grid">
+                    <span>{POLICY_INFO[value].label}</span>
+                    <span class="text-xs text-muted-foreground">{POLICY_INFO[value].line}</span>
+                  </span>
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+          <p id={`${id}-policy-hint`} class="text-xs text-muted-foreground">{POLICY_INFO[policy].line} Every role on this provider follows it.</p>
+          {#if policy !== "zdr"}
+            <p role="note" class="text-sm text-coral">
+              Chat, fallback, photos and voice, drafting, search, escalation and triage all carry chat content: friends' and
+              group messages sent through this provider would go to endpoints that may keep them. {ACCOUNT_ZDR_NOTE}
+            </p>
+          {/if}
+        </div>
+      {/if}
       {#if error}
         <p role="alert" class="text-sm text-coral sm:col-span-2">{error}</p>
       {/if}

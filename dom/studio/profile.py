@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, InputProfilePhotoStatic
 
-from dom.studio.policy import outfits
+from dom.studio.policy import outfits, unserved
 from dom.traits import vibe
 
 if TYPE_CHECKING:
@@ -40,7 +40,9 @@ async def sync_profile(app: App) -> None:
         return
     now = app.dispatch.now()
     stamp = await app.store.kv_get(PROFILE_AT)
-    if stamp and now - datetime.fromisoformat(stamp) < timedelta(hours=1):
+    # The first sync after the switch is turned on may happen at once (the stamp is cleared then); after that the
+    # photo changes at most once per the chosen interval, and only when the outfit has changed.
+    if stamp and now - datetime.fromisoformat(stamp) < timedelta(days=config.profile_photo_every_days):
         return
     wardrobe = outfits(config, (await vibe(app.home, app.store, now)).preset)
     if not wardrobe or wardrobe[0] == await app.store.kv_get(PROFILE_OUTFIT):
@@ -64,10 +66,23 @@ async def sync_profile(app: App) -> None:
         await app.store.kv_set(PROFILE_OUTFIT, outfit)
 
 
+def unserved_note(app: App) -> str:
+    labels = unserved(app.config.studio)
+    if not labels:
+        return ""
+    return (f"On, but nothing can make them: {', '.join(labels)}. Set up the studio or a cloud backup; "
+            "Dom sends text instead meanwhile.")
+
+
 async def status_text(app: App) -> str:
+    note = unserved_note(app)
     if app.studio is None or not app.config.studio.enabled:
-        return "Media generation is off."
+        backups = app.config.studio.fallbacks
+        status = "Local media studio is off." + (f" Cloud backups: {len(backups)}." if backups else "")
+        return f"{status}\n{note}" if note else ("Media generation is off." if not backups else status)
     status = f"Media generation: {app.studio.status}"
+    if note:
+        status += f"\n{note}"
     health = app.studio.health or {}
     workers = health.get("workers_loaded", health.get("loaded_workers", health.get("workers")))
     if isinstance(workers, list) and all(isinstance(worker, str) for worker in workers):

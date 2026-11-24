@@ -109,7 +109,7 @@ Cloudflare. Keep local bearer-token testing on loopback.
 - **Web search** tries the providers configured under `[models.search]` and
   `[[models.search.fallbacks]]` in order. Self-hosted **SearXNG** keeps queries
   on your own network until SearXNG forwards them to its configured upstream
-  engines. **OpenRouter web** requests `provider.zdr` under your OpenRouter key.
+  engines. **OpenRouter web** sends its route's data policy (`provider.zdr` by default) under your OpenRouter key.
   **DeepSeek web search** (`api.deepseek.com/v1/tools/search`) and **Tavily**
   (`api.tavily.com/search`) send queries to their cloud search APIs under each
   provider's own data policy. A query drafted in the owner DM can contain
@@ -127,12 +127,17 @@ Cloudflare. Keep local bearer-token testing on loopback.
   anyone able to observe that connection. See [Studio](studio.md).
   Optional cloud fallbacks are off by default and receive the screened scene
   or transcript only after the local Studio cannot serve the request.
-  OpenRouter speech and image requests enforce ZDR routing. Photos can also
-  send the approved outfit portrait as inline PNG. Direct Gemini gets the
+  OpenRouter speech, image and video requests carry the backup's data policy
+  (below); speech and images default to zero data retention. Photos and round
+  videos can also send the approved outfit portrait as an inline PNG (the first
+  frame of a video). OpenRouter video keeps each finished video for download, so
+  no video endpoint offers zero data retention and a video backup must be set to
+  `no_training` or `any`. Direct Gemini gets the
   transcript and the prebuilt voice name only when the owner marks its key
   paid. Google's Paid Services terms exclude model improvement and allow
-  limited safety and legal logging. Video rendering stays local.
+  limited safety and legal logging.
   [OpenRouter ZDR](https://openrouter.ai/docs/guides/features/zdr) ·
+  [Video generation](https://openrouter.ai/docs/guides/overview/multimodal/video-generation) ·
   [Gemini API terms](https://ai.google.dev/gemini-api/terms).
 - **Jev** can receive recent chat context for triage. The outbound leak check sends proposed text and a
   bounded selection of headings, names, numbers and other terms from owner notes
@@ -164,9 +169,52 @@ Cloudflare. Keep local bearer-token testing on loopback.
   owner was answered privately, never the answer.
 - **Escalation model** (`[models.escalation]`, or the drafting providers when it
   is unset) receives the whole owner-DM task prompt, owner notes included, only
-  after the owner taps Switch or Retry on its card. It never runs in other chats. OpenRouter calls request
-  `provider.zdr`. To estimate the cost, Dom fetches OpenRouter's public model
+  after the owner taps Switch or Retry on its card. It never runs in other chats. OpenRouter calls carry the
+  route's data policy (zero data retention by default). To estimate the cost, Dom fetches OpenRouter's public model
   price list (`openrouter.ai/api/v1/models`), which carries no chat data.
+
+## OpenRouter data policies
+
+Every route that reaches OpenRouter carries a data policy: each model role slot (chat, fallback, media, drafting,
+search, escalation, triage), each saved `[providers.<name>]` table and each studio cloud backup. Dom turns it into
+OpenRouter's provider routing preferences on every request
+([provider selection](https://openrouter.ai/docs/guides/routing/provider-selection)):
+
+| `data_policy` | Sent as | What it guarantees |
+| --- | --- | --- |
+| `zdr` (default) | `provider.zdr = true` | Only zero-data-retention endpoints. Safety Retention endpoints (which may keep prompts and responses only to prevent abuse, never for training) are also eligible unless the account or a guardrail is set to **ZDR only**. |
+| `no_training` | `provider.data_collection = "deny"` | Excludes endpoints that may train on or sell the data. Endpoints that keep prompts and responses are still allowed. |
+| `any` | nothing | Any endpoint, including ones that may train on what is sent. |
+
+ZDR is the default everywhere, so a config.toml without `data_policy` behaves as before. The Providers tab sets the
+policy for a provider and every role slot that uses it; the studio backups editor sets it per backup. Every role
+carries chat content (friends' and group messages, owner notes for escalation), so the dashboard warns when one of
+them is set below ZDR.
+
+OpenRouter's own settings apply on top of the request and can only make it stricter
+([ZDR](https://openrouter.ai/docs/guides/features/zdr),
+[guardrails](https://openrouter.ai/docs/guides/features/guardrails)): the account's privacy settings can enforce
+ZDR per model group, a guardrail assigned to a key or a member can too, and if any of them enforces ZDR the request
+gets ZDR whatever its own flag says. A route set to `no_training` or `any` is therefore still refused while the
+account's "ZDR endpoints only" setting (or a ZDR guardrail on its key) is on.
+
+### Separate media key
+
+To let images, speech and video use non-ZDR endpoints while every chat route keeps hard ZDR, give the studio backups
+their own OpenRouter key:
+
+1. Keep the existing key (`OPENROUTER_API_KEY`) for the model roles, Jev and search. In OpenRouter, create a
+   guardrail that enforces ZDR for every model group, and assign it to that key under **API Keys**.
+2. Create a second key for media only, named for example `OPENROUTER_MEDIA_API_KEY`. Give it no ZDR guardrail. Set
+   its backups to `no_training` where the model allows, so endpoints that train on the data are still excluded by the
+   request itself.
+3. Turn off the account-wide "ZDR endpoints only" privacy setting, because any layer that enforces ZDR wins. Keep
+   member and workspace-default guardrails free of ZDR too: a member's guardrail applies to all of their keys.
+4. In Settings → Models → Studio cloud backups, add each backup with the media key variable, save, then add the key's
+   value to `.env` and press Test.
+
+The chat key's guardrail then keeps ZDR for chat even if a role were set below it by mistake. A guardrail has no
+training switch of its own: `no_training` comes from the request.
 
 ## Between chats
 

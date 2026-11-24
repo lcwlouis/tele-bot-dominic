@@ -1,5 +1,6 @@
 <script lang="ts">
   import Activity from "@lucide/svelte/icons/activity";
+  import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import Cloud from "@lucide/svelte/icons/cloud";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
@@ -15,10 +16,12 @@
     type ModelSettings,
     type Permission,
     type Permissions,
+    type ProfileInterval,
     type ProviderSetup,
     type ProviderView,
     type SettingsRole,
     type StudioChain,
+    type StudioFallback,
     type TestResult,
   } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
@@ -27,10 +30,15 @@
   import { forgetLists } from "$lib/components/settings/modelLists.svelte";
   import ProviderEditor from "$lib/components/settings/ProviderEditor.svelte";
   import RoleEditor from "$lib/components/settings/RoleEditor.svelte";
-  import { DECISION_ROLES, KIND_INFO, ROLE_INFO, ROLES, host, seconds, slotLabel, useLabel } from "$lib/components/settings/roles";
+  import {
+    ACCOUNT_ZDR_NOTE, DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, host, seconds, slotLabel, useLabel,
+  } from "$lib/components/settings/roles";
+  import StudioBackupEditor from "$lib/components/settings/StudioBackupEditor.svelte";
+  import { CHAIN_INFO, CHAINS, STUDIO_PROVIDERS } from "$lib/components/settings/studio";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
+  import * as Select from "$lib/components/ui/select";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
   import { Switch } from "$lib/components/ui/switch";
@@ -43,17 +51,19 @@
   let models = $state<ModelSettings | null>(null);
   let permissions = $state<Permission[]>([]);
   let desktopSteps = $state<Permissions["desktop_steps"] | null>(null);
+  let profileEvery = $state<ProfileInterval>(14);
   // One revision for the whole page: both GETs hash the same config.toml, and every save moves it.
   let revision = $state("");
   let failed = $state("");
   let section = $state("models");
   // One edit at a time across both tabs: each save takes the revision the last one returned.
-  type Editing = { role: SettingsRole } | { provider: ProviderSetup | null };
+  type Editing = { role: SettingsRole } | { provider: ProviderSetup | null } | { studio: StudioChain; index: number | null };
   let editing = $state<Editing | null>(null);
   let reordering = $state(""); // the role whose fallback is moving up, which shows its progress
   let tests = $state<Record<string, TestResult | "running">>({});
   let pending = $state<Permission | null>(null); // a switch waiting on its confirm dialog
   let removing = $state<ProviderSetup | null>(null); // a provider waiting on its remove dialog
+  let removingBackup = $state<{ chain: StudioChain; index: number; item: StudioFallback } | null>(null);
   // One permission save at a time: each takes the revision the last one returned.
   let savingPermission = $state(false);
   let savingId = $state(""); // the switch being saved, which shows its progress
@@ -67,6 +77,7 @@
       models = loadedModels;
       permissions = loadedPermissions.items;
       desktopSteps = loadedPermissions.desktop_steps;
+      profileEvery = loadedPermissions.profile_photo_every_days;
       revision = loadedModels.revision;
       failed = "";
     } catch (error) {
@@ -90,8 +101,12 @@
   }
 
   const editingLabel = $derived(
-    editing === null ? "" : "role" in editing ? ROLE_INFO[editing.role].label : (editing.provider?.name ?? "the new provider"),
+    editing === null ? "" : "role" in editing ? ROLE_INFO[editing.role].label
+      : "studio" in editing ? `the ${CHAIN_INFO[editing.studio].label.toLowerCase()} backup`
+      : (editing.provider?.name ?? "the new provider"),
   );
+  const isEditingStudio = (chain: StudioChain, index: number | null) =>
+    editing !== null && "studio" in editing && editing.studio === chain && editing.index === index;
   const isEditingRole = (role: SettingsRole) => editing !== null && "role" in editing && editing.role === role;
   const isEditingProvider = (name: string | null) =>
     editing !== null && "provider" in editing && (editing.provider?.name ?? null) === name;
@@ -143,24 +158,60 @@
     }
   }
 
-  const STUDIO: { chain: StudioChain; label: string; summary: string }[] = [
-    { chain: "voice", label: "Voice notes", summary: "Tried in order when the local studio can't voice a note." },
-    { chain: "image", label: "Photos", summary: "Tried in order when the local studio can't make a photo." },
-  ];
-  const STUDIO_PROVIDERS: Record<string, string> = {
-    openrouter_tts: "OpenRouter speech", openrouter_image: "OpenRouter image", gemini_tts: "Gemini speech",
-  };
-
   /** Move a studio backup one place up. It applies at once and tests nothing: no new provider is reached. */
   async function moveStudio(chain: StudioChain, index: number) {
     reordering = `studio-${chain}`;
     try {
-      const label = STUDIO.find((item) => item.chain === chain)!.label;
-      saved(await send<ModelSettings>("/api/models/studio-move", { revision, chain, index }), `${label}: order saved.`);
+      saved(await send<ModelSettings>("/api/studio/move", { revision, chain, index }), `${CHAIN_INFO[chain].label}: order saved.`);
     } catch {
       // the toast says why
     } finally {
       reordering = "";
+    }
+  }
+
+  async function removeStudio(chain: StudioChain, index: number) {
+    removingBackup = null;
+    reordering = `studio-${chain}`;
+    try {
+      saved(await send<ModelSettings>("/api/studio/remove", { revision, chain, index }), `${CHAIN_INFO[chain].label}: backup removed.`);
+    } catch {
+      // the toast says why
+    } finally {
+      reordering = "";
+    }
+  }
+
+  async function testStudio(chain: StudioChain, index: number) {
+    const key = `studio:${chain}:${index}`;
+    tests[key] = "running";
+    try {
+      tests[key] = await send<TestResult>("/api/studio/test", { revision, chain, index });
+    } catch {
+      delete tests[key];
+    }
+  }
+
+  const INTERVALS: { days: ProfileInterval; label: string }[] = [
+    { days: 1, label: "Day" }, { days: 7, label: "Week" }, { days: 14, label: "2 weeks" }, { days: 30, label: "Month" },
+  ];
+  let savingInterval = $state(false);
+
+  async function saveInterval(days: ProfileInterval) {
+    if (savingInterval || days === profileEvery) return;
+    const before = profileEvery;
+    profileEvery = days;
+    savingInterval = true;
+    try {
+      const result = await send<Permissions>("/api/permissions/profile-interval", { revision, days });
+      permissions = result.items;
+      revision = result.revision;
+      profileEvery = result.profile_photo_every_days;
+      toast.show("ok", `The profile photo now changes at most every ${INTERVALS.find((item) => item.days === days)!.label.toLowerCase()}.`);
+    } catch {
+      profileEvery = before;
+    } finally {
+      savingInterval = false;
     }
   }
 
@@ -374,6 +425,16 @@
           {provider.base_url}{provider.api_key_env ? ` · ${provider.api_key_env}` : ""}
         </p>
         {#if provider.api_key_env && !provider.key_set}<p class="text-sm text-coral">Add {provider.api_key_env} to .env</p>{/if}
+        {#if provider.kind === "openrouter"}
+          <p class="text-xs text-muted-foreground">
+            <span class="font-medium text-foreground">{POLICY_INFO[provider.data_policy].label}.</span> {POLICY_INFO[provider.data_policy].line}
+          </p>
+          {#if provider.data_policy !== "zdr" && provider.uses.length}
+            <p class="text-sm text-coral">
+              Friends' and group messages sent through this provider may be kept by its endpoints. {ACCOUNT_ZDR_NOTE}
+            </p>
+          {/if}
+        {/if}
         {#if search}
           <p class="text-xs text-muted-foreground">
             {search.data_retention}
@@ -456,58 +517,82 @@
       <section aria-labelledby="studio-title">
         <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
           <h2 id="studio-title" class="text-lg font-semibold">Studio cloud backups</h2>
-          <p class="kicker">After the local studio</p>
+          <p class="kicker">When the local studio can't</p>
         </div>
         <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {#each STUDIO as group (group.chain)}
-            {@const chain = settings.studio[group.chain]}
-            <Card.Root aria-labelledby={`studio-${group.chain}-title`}>
+          {#each CHAINS as chainName (chainName)}
+            {@const group = CHAIN_INFO[chainName]}
+            {@const chain = settings.studio[chainName]}
+            {@const busy = editing !== null || reordering !== ""}
+            {#if isEditingStudio(chainName, null)}
+              <StudioBackupEditor chain={chainName} index={null} original={null} {revision} onsaved={(result) => saved(result, `${group.label}: backup saved.`)} oncancel={() => (editing = null)} />
+            {/if}
+            {#each chain as item, index (index)}
+              {#if isEditingStudio(chainName, index)}
+                <StudioBackupEditor chain={chainName} {index} original={item} {revision} onsaved={(result) => saved(result, `${group.label}: backup saved.`)} oncancel={() => (editing = null)} />
+              {/if}
+            {/each}
+            <Card.Root aria-labelledby={`studio-${chainName}-title`}>
               <Card.Header>
-                <Card.Title id={`studio-${group.chain}-title`} class="text-lg">{group.label}</Card.Title>
+                <Card.Title id={`studio-${chainName}-title`} class="text-lg">{group.label}</Card.Title>
                 <Card.Description>{group.summary}</Card.Description>
               </Card.Header>
               <Card.Content class="flex flex-1 flex-col gap-3">
                 {#if chain.length}
-                  <ol class="grid gap-2">
+                  <ol class="grid gap-3">
                     {#each chain as item, index (index)}
+                      {@const name = `${group.label} backup ${index + 1}`}
                       <li class="text-sm">
                         <div class="flex items-start gap-2">
                           <span class="font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
                           <div class="min-w-0 flex-1">
                             <p class="font-mono break-all">{item.model}</p>
                             <p class="text-xs text-muted-foreground">
-                              {STUDIO_PROVIDERS[item.provider] ?? item.provider}{item.provider === "gemini_tts" && !item.paid ? " · skipped until marked paid" : ""}
+                              {STUDIO_PROVIDERS[item.provider]?.label ?? item.provider}{item.provider === "gemini_tts" ? (item.paid ? " · paid key" : " · skipped until marked paid") : ` · ${POLICY_INFO[item.data_policy].label}`}
                             </p>
                             {#if !item.key_set}<p class="text-coral">Add {item.api_key_env} to .env</p>{/if}
                           </div>
                         </div>
-                        {#if index > 0}
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            class="ml-6"
-                            onclick={() => moveStudio(group.chain, index)}
-                            disabled={editing !== null || reordering !== ""}
-                          >
-                            <ArrowUp data-icon="inline-start" aria-hidden="true" /> Move up
-                            <span class="sr-only">{group.label} backup {index + 1}</span>
+                        <div class="ml-6 flex flex-wrap items-center gap-1">
+                          <Button variant="ghost" size="xs" onclick={() => (editing = { studio: chainName, index })} disabled={busy}>
+                            <Pencil data-icon="inline-start" aria-hidden="true" /> Edit <span class="sr-only">{name}</span>
                           </Button>
-                        {/if}
+                          <Button variant="ghost" size="xs" onclick={() => testStudio(chainName, index)} disabled={tests[`studio:${chainName}:${index}`] === "running"}>
+                            <Activity data-icon="inline-start" aria-hidden="true" /> Test <span class="sr-only">{name}</span>
+                          </Button>
+                          {#if index > 0}
+                            <Button variant="ghost" size="xs" onclick={() => moveStudio(chainName, index)} disabled={busy}>
+                              <ArrowUp data-icon="inline-start" aria-hidden="true" /> Move up <span class="sr-only">{name}</span>
+                            </Button>
+                          {/if}
+                          {#if index < chain.length - 1}
+                            <Button variant="ghost" size="xs" onclick={() => moveStudio(chainName, index + 1)} disabled={busy}>
+                              <ArrowDown data-icon="inline-start" aria-hidden="true" /> Move down <span class="sr-only">{name}</span>
+                            </Button>
+                          {/if}
+                          <Button variant="ghost" size="xs" onclick={() => (removingBackup = { chain: chainName, index, item })} disabled={busy}>
+                            <Trash data-icon="inline-start" aria-hidden="true" /> Remove <span class="sr-only">{name}</span>
+                          </Button>
+                        </div>
+                        <div class="ml-6">{@render result(`studio:${chainName}:${index}`)}</div>
                       </li>
                     {/each}
                   </ol>
                 {:else}
                   <p class="rounded-xl border border-dashed p-3.5 text-sm text-muted-foreground">No cloud backup: only the local studio.</p>
                 {/if}
-                {#if reordering === `studio-${group.chain}`}
+                {#if reordering === `studio-${chainName}`}
                   <p role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
                   </p>
                 {/if}
-                <p class="mt-auto text-xs text-muted-foreground">
-                  Add or change backups in <code class="font-mono">config.toml</code> (<code class="font-mono">[[studio.{group.chain}_fallbacks]]</code>); a paid key is confirmed there.
-                </p>
               </Card.Content>
+              <Card.Footer class="flex-wrap gap-2">
+                <Button variant="secondary" onclick={() => (editing = { studio: chainName, index: null })} disabled={busy || chain.length >= 5} aria-describedby={editing !== null ? `studio-${chainName}-wait` : undefined}>
+                  <Plus data-icon="inline-start" aria-hidden="true" /> Add backup <span class="sr-only">for {group.label.toLowerCase()}</span>
+                </Button>
+                {@render waitNote(`studio-${chainName}-wait`)}
+              </Card.Footer>
             </Card.Root>
           {/each}
         </div>
@@ -548,10 +633,42 @@
       <Card.Root class="py-2">
         <ul class="divide-y">
           {#each permissions as item (item.id)}
-            <li class="flex items-center justify-between gap-4 px-5 py-4">
-              <div class="min-w-0">
+            <li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-4">
+              <div class="min-w-0 flex-1 basis-60">
                 <label for={`perm-${item.id}`} class="font-medium">{item.label}</label>
-                <p id={`perm-${item.id}-hint`} class="mt-0.5 text-sm text-muted-foreground">{item.description}</p>
+                <p id={`perm-${item.id}-hint`} class="mt-0.5 text-sm text-muted-foreground">
+                  {item.description}
+                  {#if !item.available}
+                    <span class="mt-1 block {item.enabled ? 'text-coral' : ''}">
+                      {item.enabled ? "On, but nothing can serve it: Dom sends text instead. " : ""}{item.needs}
+                      {#if item.id !== "studio_profile"}
+                        <button type="button" class="text-signal-strong underline underline-offset-2" onclick={() => (section = "models")}>
+                          Studio cloud backups
+                        </button>
+                      {/if}
+                    </span>
+                  {/if}
+                </p>
+                {#if item.id === "studio_profile"}
+                  <div class="mt-2 flex flex-wrap items-center gap-2">
+                    <span id="profile-interval-label" class="text-sm">Change at most every</span>
+                    <Select.Root type="single" value={String(profileEvery)} onValueChange={(value) => saveInterval(Number(value) as ProfileInterval)}>
+                      <Select.Trigger class="h-8 w-32" aria-labelledby="profile-interval-label" disabled={savingInterval}>
+                        {INTERVALS.find((option) => option.days === profileEvery)?.label}
+                      </Select.Trigger>
+                      <Select.Content>
+                        {#each INTERVALS as option (option.days)}
+                          <Select.Item value={String(option.days)} label={option.label} />
+                        {/each}
+                      </Select.Content>
+                    </Select.Root>
+                    {#if savingInterval}
+                      <span role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
+                      </span>
+                    {/if}
+                  </div>
+                {/if}
               </div>
               <div class="flex shrink-0 items-center gap-2">
                 {#if savingId === item.id}
@@ -564,7 +681,7 @@
                   aria-describedby={`perm-${item.id}-hint`}
                   aria-busy={savingId === item.id}
                   bind:checked={() => item.enabled, (value) => flip(item, value)}
-                  disabled={savingPermission}
+                  disabled={savingPermission || (!item.available && !item.enabled)}
                 />
               </div>
             </li>
@@ -593,6 +710,24 @@
       <AlertDialog.Cancel variant="outline">Keep it on</AlertDialog.Cancel>
       <AlertDialog.Action variant="destructive-solid" onclick={() => pending && setPermission(pending, false)}>Turn off</AlertDialog.Action>
     </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<AlertDialog.Root open={removingBackup !== null} onOpenChange={(open) => !open && (removingBackup = null)}>
+  <AlertDialog.Content>
+    {#if removingBackup}
+      <AlertDialog.Header>
+        <AlertDialog.Title>Remove {removingBackup.item.model}?</AlertDialog.Title>
+        <AlertDialog.Description>
+          It leaves the {CHAIN_INFO[removingBackup.chain].label.toLowerCase()} backups in config.toml. Its key stays in .env,
+          and you can add it again later.
+        </AlertDialog.Description>
+      </AlertDialog.Header>
+      <AlertDialog.Footer>
+        <AlertDialog.Cancel variant="outline">Keep it</AlertDialog.Cancel>
+        <AlertDialog.Action variant="destructive-solid" onclick={() => removingBackup && removeStudio(removingBackup.chain, removingBackup.index)}>Remove</AlertDialog.Action>
+      </AlertDialog.Footer>
+    {/if}
   </AlertDialog.Content>
 </AlertDialog.Root>
 

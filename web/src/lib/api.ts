@@ -97,12 +97,16 @@ export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily";
 export type Effort = string;
 export type ProviderKind = "openai" | "openrouter" | "jev" | "searxng" | "deepseek" | "tavily";
 
+/** What OpenRouter endpoints may do with a route's content: zdr is the default (dom/config.py). */
+export type DataPolicy = "zdr" | "no_training" | "any";
+
 export type Endpoint = {
   base_url: string;
   model: string;
   api_key_env: string | null;
   reasoning_effort: Effort | null;
   provider: SearchProviderId | null;
+  data_policy: DataPolicy;
 };
 
 export type ProviderView = Endpoint & {
@@ -136,20 +140,32 @@ export type ProviderSetup = {
   saved: boolean;
   listable: boolean;
   uses: { role: SettingsRole; index: number }[];
+  data_policy: DataPolicy;
 };
 
 export type ModelSettings = {
   revision: string;
   roles: Record<SettingsRole, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
   providers: ProviderSetup[];
-  /** The studio's cloud backups ([[studio.voice_fallbacks]], [[studio.image_fallbacks]]), in the order they're tried. */
+  /** The studio's cloud backups ([[studio.<chain>_fallbacks]]), in the order they're tried. */
   studio: Record<StudioChain, StudioFallback[]>;
   search_providers: SearchProviderInfo[];
   restart_required: boolean;
 };
 
-export type StudioChain = "voice" | "image";
-export type StudioFallback = { provider: string; model: string; api_key_env: string; key_set: boolean; paid: boolean };
+export type StudioChain = "voice" | "image" | "video";
+export type StudioProvider = "openrouter_tts" | "gemini_tts" | "openrouter_image" | "openrouter_video";
+/** One backup as POST /api/studio/save takes it (dom/web/studio_settings.py). */
+export type StudioBackup = {
+  provider: StudioProvider;
+  model: string;
+  api_key_env: string;
+  paid: boolean;
+  supports_reference: boolean;
+  allow_without_reference: boolean;
+  data_policy: DataPolicy;
+};
+export type StudioFallback = StudioBackup & { key_set: boolean };
 
 /** POST /api/providers/models (dom/web/provider_settings.py): reasoning null means the provider doesn't say. */
 export type ListedModel = { id: string; name: string; reasoning: boolean | null; efforts: string[] };
@@ -158,8 +174,22 @@ export type ModelList = { listable: boolean; models: ListedModel[]; fetched_at: 
 export type TestResult = { ok: boolean; latency_ms: number; reply: string | null; error: string | null; provider: string | null };
 
 /** GET/POST /api/permissions (dom/web/model_settings.py). */
-export type Permission = { id: string; label: string; description: string; enabled: boolean };
-export type Permissions = { revision: string; items: Permission[]; desktop_steps: { value: number; min: number; max: number } };
+/** available is false when nothing set up can serve a studio switch; needs says what to set up first. */
+export type Permission = {
+  id: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+  available: boolean;
+  needs: string | null;
+};
+export type ProfileInterval = 1 | 7 | 14 | 30;
+export type Permissions = {
+  revision: string;
+  items: Permission[];
+  desktop_steps: { value: number; min: number; max: number };
+  profile_photo_every_days: ProfileInterval;
+};
 
 /** GET /api/memory, GET /api/memory/file and the memory writes (dom/web/api_memory.py). */
 export type MemoryImportCard = { id: number; service: string; facts: { id: number; text: string }[] };

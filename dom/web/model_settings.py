@@ -38,10 +38,13 @@ from dom.config import (
     MIN_DESKTOP_STEPS,
     MODEL_ROLES,
     SEARCH_PROVIDERS,
+    STUDIO_CHAINS,
     Config,
+    DataPolicy,
     ProviderEndpoint,
     ProviderKind,
     SearchProvider,
+    StudioChain,
     _replace_file,
     validate_config,
 )
@@ -52,6 +55,8 @@ from dom.llm import ChatClient, FallbackClient, MissingProviderKey, openrouter_h
 from dom.search import PROVIDER_INFO, SearchClient, search_provider_kind
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 from dom.usage import ModelCallSkipped, model_request, on_own_network, provider_address, unroutable_address
+from dom.studio.policy import switch_servable
+from dom.studio.profile import PROFILE_AT
 from dom.web.shared import _bounded_stream, owner_app
 
 if TYPE_CHECKING:
@@ -62,10 +67,11 @@ API_PATH = "/api/models"
 PERMISSIONS_PATH = "/api/permissions"
 DESKTOP_STEPS_PATH = PERMISSIONS_PATH + "/desktop-steps"
 DESKTOP_STEPS = ("desktop", "max_steps")
+PROFILE_INTERVAL_PATH = PERMISSIONS_PATH + "/profile-interval"
+PROFILE_INTERVAL = ("studio", "profile_photo_every_days")
 # Serialises the dashboard's config.toml writes, which run in a thread.
 _CONFIG_WRITE = asyncio.Lock()
-STUDIO_MOVE_PATH = API_PATH + "/studio-move"
-JSON_POSTS = {API_PATH, API_PATH + "/test", STUDIO_MOVE_PATH, PERMISSIONS_PATH, DESKTOP_STEPS_PATH}
+JSON_POSTS = {API_PATH, API_PATH + "/test", PERMISSIONS_PATH, DESKTOP_STEPS_PATH, PROFILE_INTERVAL_PATH}
 MAX_BODY = 32 * 1024
 MAX_FALLBACKS = 5
 URL_RULE = ("Use an HTTPS API base URL without credentials, a query or a fragment. "
@@ -190,7 +196,7 @@ def _address(url: str) -> str | None:
 def _keyed_routes(config: Config) -> list:
     """Everything in config.toml that sends a key variable to an address, after the starter defaults are applied."""
     return [*(endpoint for _, endpoint in config.model_endpoints()), *config.provider_setups.values(),
-            *config.studio.voice_fallbacks, *config.studio.image_fallbacks]
+            *config.studio.fallbacks]
 
 
 def _paired(config: Config) -> dict[str, set[str | None]]:
@@ -288,9 +294,7 @@ class ProviderSetupView(BaseModel):
     saved: bool
     listable: bool
     uses: list[ProviderUse]
-
-
-StudioChain = Literal["voice", "image"]
+    data_policy: DataPolicy = "zdr"  # OpenRouter only: what its endpoints may keep
 
 
 class StudioFallbackView(BaseModel):
@@ -301,13 +305,9 @@ class StudioFallbackView(BaseModel):
     api_key_env: str
     key_set: bool
     paid: bool
-
-
-class StudioMove(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    revision: str = Field(pattern=REVISION)
-    chain: StudioChain
-    index: int = Field(ge=1, le=64)  # moves this backup one place up
+    supports_reference: bool
+    allow_without_reference: bool
+    data_policy: DataPolicy
 
 
 class ModelSettings(BaseModel):
@@ -371,6 +371,8 @@ def chain(config: Config, role: SettingsRole) -> tuple[ProviderEndpoint, ...]:
 
 def _dump_slot(role: SettingsRole, provider: ProviderEndpoint) -> dict:
     data = provider.model_dump(exclude_none=True, exclude={"fallbacks"})
+    if data.get("data_policy") == "zdr":  # the default stays implicit
+        data.pop("data_policy")
     if role == "search" and search_provider_kind(provider) != "openrouter":
         data.pop("model", None)
     return data
@@ -417,8 +419,20 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     except KeyPairing as exc:
         raise HTTPException(422, str(exc)) from None
     document = tomlkit.parse(current.text)
-    set_role(document, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
+    slots = [*([update.primary] if update.primary else []), *update.fallbacks]
+    set_role(document, update.role, with_provider_policies(current.config, update.role, slots))
     return validated(current, document)
+
+
+def with_provider_policies(config: Config, role: SettingsRole, slots: list[ProviderEndpoint]) -> list[ProviderEndpoint]:
+    """Each slot takes the data policy of the provider it routes to (a saved `[providers.<name>]` table, or the policy
+    its address already has), so the Providers tab sets it once for every role on that provider."""
+    policies = {(view.base_url, view.api_key_env, family(view.kind)): view.data_policy for view in provider_catalog(config)}
+    return [
+        slot.model_copy(update={"data_policy": policy})
+        if (policy := policies.get((slot.base_url, slot.api_key_env or None, family(slot_kind(role, slot))))) else slot
+        for slot in slots
+    ]
 
 
 async def commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str) -> Snapshot:
@@ -478,6 +492,7 @@ def _provider_view(config: Config, endpoint: ProviderEndpoint, *, role: str = ""
         kind="local" if host and on_own_network(host) else "cloud",
         reasoning_effort=endpoint.reasoning_effort,
         provider=search_kind,
+        data_policy=endpoint.data_policy,
         data_retention=info.data_retention if info else None,
         policy_url=info.policy_url if info else None,
         policy_label=info.policy_label if info else None,
@@ -546,7 +561,7 @@ def provider_catalog(config: Config) -> list[ProviderSetupView]:
         found.setdefault((setup.base_url, setup.api_key_env, family(setup.kind)), ProviderSetupView(
             name=name, kind=setup.kind, base_url=setup.base_url, api_key_env=setup.api_key_env,
             key_set=_key_set(config, setup.api_key_env), is_local=_is_local(setup.base_url), saved=True,
-            listable=model_lists.listable(setup.kind), uses=[],
+            listable=model_lists.listable(setup.kind), uses=[], data_policy=setup.data_policy,
         ))
     names = {view.name.lower() for view in found.values()}
     for role in SETTINGS_ROLES:
@@ -565,6 +580,7 @@ def provider_catalog(config: Config) -> list[ProviderSetupView]:
                 found[key] = ProviderSetupView(
                     name=name, kind=kind, base_url=view.base_url, api_key_env=view.api_key_env, key_set=view.key_set,
                     is_local=view.kind == "local", saved=False, listable=model_lists.listable(kind), uses=[],
+                    data_policy=endpoint.data_policy,
                 )
             found[key].uses.append(ProviderUse(role=role, index=index))
     return list(found.values())
@@ -585,11 +601,10 @@ def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
         providers=provider_catalog(config),
         studio={
             chain: [
-                StudioFallbackView(provider=item.provider, model=item.model, api_key_env=item.api_key_env,
-                                   key_set=_key_set(config, item.api_key_env), paid=item.paid)
+                StudioFallbackView(**item.model_dump(), key_set=_key_set(config, item.api_key_env))
                 for item in getattr(config.studio, f"{chain}_fallbacks")
             ]
-            for chain in ("voice", "image")
+            for chain in STUDIO_CHAINS
         },
         search_providers=_search_provider_infos(),
         restart_required=any(chain(config, role) != chain(app.config, role) for role in SETTINGS_ROLES),
@@ -629,10 +644,12 @@ async def read_models(request: Request) -> ModelSettings:
     return _settings(app, _snapshot(app.config.home))
 
 
-def _probe_tuple(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None, str | None]:
-    """What a probe sends: a slot whose tuple is already in the chain was tested when it was added."""
+def _probe_tuple(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None, str | None, str]:
+    """What a probe sends: a slot whose tuple is already in the chain was tested when it was added. A new data policy
+    routes to other endpoints (or is refused by the account's settings), so it is tested too."""
     kind = search_provider_kind(endpoint) if role == "search" else None
-    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind, endpoint.reasoning_effort)
+    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind, endpoint.reasoning_effort,
+            endpoint.data_policy)
 
 
 # A probe is sent as the role will send it, reasoning effort included; reasoning needs room before the reply.
@@ -701,37 +718,6 @@ async def update_models(request: Request):
     return _settings(app, saved)
 
 
-def _move_studio(current: Snapshot, move: StudioMove) -> Snapshot:
-    _check_revision(current, move.revision)
-    key = f"{move.chain}_fallbacks"
-    chain = list(getattr(current.config.studio, key))
-    if move.index >= len(chain):
-        raise HTTPException(404, "There is no studio backup at that position.")
-    chain[move.index - 1], chain[move.index] = chain[move.index], chain[move.index - 1]
-    document = tomlkit.parse(current.text)
-    tables = tomlkit.aot()
-    for item in chain:
-        tables.append(tomlkit.item(item.model_dump(exclude_defaults=True)))
-    document["studio"][key] = tables
-    saved = validated(current, document)
-    _write(current, saved)
-    return saved
-
-
-@router.post(STUDIO_MOVE_PATH)
-async def move_studio_fallback(request: Request) -> ModelSettings:
-    """Reorder a studio cloud chain. Nothing new is reached, so nothing is tested; it applies at once."""
-    app = owner_app(request)
-    move = await _input(request, StudioMove)
-    async with _CONFIG_WRITE:
-        try:
-            saved = await asyncio.to_thread(lambda: _move_studio(_snapshot(app.config.home), move))
-        except (OSError, ValueError):
-            raise HTTPException(409, "Could not save the order. Check config.toml and its permissions.") from None
-        app.config = app.config.model_copy(update={"studio": saved.config.studio})
-    return _settings(app, saved)
-
-
 @router.post(API_PATH + "/test")
 async def test_provider(request: Request) -> TestResult:
     app = owner_app(request)
@@ -784,8 +770,17 @@ PERMISSIONS = (
     Permission("studio_special", ("studio", "special"), "Send special video notes",
                "Dom can send a special video for a milestone or when you ask in your DM."),
     Permission("studio_profile", ("studio", "profile_photo_follows_preset"), "Match the Everywhere preset’s profile photo",
-               "Dom updates his Telegram profile photo to match his Everywhere preset, at most once an hour."),
+               "Dom updates his Telegram profile photo when his Everywhere preset’s outfit changes, at most once per "
+               "the interval you choose."),
 )
+# What a studio switch needs before it can be turned on, and where the owner sets that up.
+STUDIO_NEEDS = {
+    "voice": "Set up the studio or a voice backup first.",
+    "video_notes": "Set up the studio or a video backup first.",
+    "images": "Set up the studio or a photo backup first.",
+    "special": "Set up the studio or a video backup first.",
+    "profile_photo_follows_preset": "Set up the local studio first: the profile photo uses its portraits.",
+}
 PermissionId = Literal[
     "memory_self_edit", "openers", "ephemeral_replies", "leak_check",
     "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
@@ -798,6 +793,10 @@ class PermissionView(BaseModel):
     label: str
     description: str
     enabled: bool
+    # False when nothing set up can serve this studio switch; `needs` says what to set up first. A switch that is on
+    # although nothing serves it stays on (Dom sends text instead) and can always be turned off.
+    available: bool = True
+    needs: str | None = None
 
 
 class DesktopStepsView(BaseModel):
@@ -810,6 +809,13 @@ class Permissions(BaseModel):
     revision: str
     items: list[PermissionView]
     desktop_steps: DesktopStepsView
+    profile_photo_every_days: Literal[1, 7, 14, 30]
+
+
+class ProfileIntervalUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: str = Field(pattern=REVISION)
+    days: Literal[1, 7, 14, 30]
 
 
 class DesktopStepsUpdate(BaseModel):
@@ -832,12 +838,23 @@ def _permission_value(config: Config, permission: Permission) -> bool:
     return bool(value)
 
 
+def _servable(config: Config, permission: Permission) -> bool:
+    """Whether anything set up can serve the switch; only studio switches need something."""
+    return permission.path[0] != "studio" or switch_servable(config.studio, permission.path[1])
+
+
 def _permissions(snapshot: Snapshot) -> Permissions:
-    return Permissions(revision=snapshot.revision, items=[
-        PermissionView(id=item.id, label=item.label, description=item.description,
-                       enabled=_permission_value(snapshot.config, item))
-        for item in PERMISSIONS
-    ], desktop_steps=DesktopStepsView(value=snapshot.config.desktop.max_steps))
+    config = snapshot.config
+    items = []
+    for item in PERMISSIONS:
+        available = _servable(config, item)
+        items.append(PermissionView(
+            id=item.id, label=item.label, description=item.description, enabled=_permission_value(config, item),
+            available=available, needs=None if available else STUDIO_NEEDS[item.path[1]],
+        ))
+    return Permissions(revision=snapshot.revision, items=items,
+                       desktop_steps=DesktopStepsView(value=config.desktop.max_steps),
+                       profile_photo_every_days=config.studio.profile_photo_every_days)
 
 
 def _with_permission(config: Config, path: tuple[str, ...], value: bool | int) -> Config:
@@ -861,9 +878,29 @@ async def update_permission(request: Request) -> Permissions:
     permission = next(item for item in PERMISSIONS if item.id == update.id)
     # Reading, checking and replacing config.toml waits on the disk; it runs off the event loop, one save at a time,
     # so a slow disk never stalls Dom's other work.
+    def refuse_unserved(config: Config) -> None:  # turning a switch off is always allowed
+        if update.enabled and not _servable(config, permission):
+            raise HTTPException(409, STUDIO_NEEDS[permission.path[1]])
+
     async with _CONFIG_WRITE:
-        saved = await asyncio.to_thread(_save_setting, app.config.home, update.revision, permission.path, update.enabled)
+        was_on = _permission_value(app.config, permission)
+        saved = await asyncio.to_thread(
+            _save_setting, app.config.home, update.revision, permission.path, update.enabled, refuse_unserved,
+        )
         app.config = _with_permission(app.config, permission.path, update.enabled)
+        if permission.id == "studio_profile" and update.enabled and not was_on:
+            await app.store.kv_set(PROFILE_AT, "")  # the first sync after turning it on may happen at once
+    return _permissions(saved)
+
+
+@router.post(PROFILE_INTERVAL_PATH)
+async def update_profile_interval(request: Request) -> Permissions:
+    """How often the profile photo may change at most. The next sync reads it, so a save applies at once."""
+    app = owner_app(request)
+    update = await _input(request, ProfileIntervalUpdate)
+    async with _CONFIG_WRITE:
+        saved = await asyncio.to_thread(_save_setting, app.config.home, update.revision, PROFILE_INTERVAL, update.days)
+        app.config = _with_permission(app.config, PROFILE_INTERVAL, update.days)
     return _permissions(saved)
 
 
@@ -878,9 +915,14 @@ async def update_desktop_steps(request: Request) -> Permissions:
     return _permissions(saved)
 
 
-def _save_setting(home: Path, revision: str, path: tuple[str, ...], setting: bool | int) -> Snapshot:
+def _save_setting(
+    home: Path, revision: str, path: tuple[str, ...], setting: bool | int,
+    check: Callable[[Config], None] | None = None,
+) -> Snapshot:
     current = _snapshot(home)
     _check_revision(current, revision)
+    if check is not None:
+        check(current.config)
     document = tomlkit.parse(current.text)
     table = document
     *parents, key = path
@@ -937,6 +979,7 @@ async def _probe_search(
                 api_key_env=provider.api_key_env or None,
                 reasoning_effort=provider.reasoning_effort,
                 provider=provider.provider,
+                data_policy=provider.data_policy,
             ),
         )
         _check_keys(config, [validated])
@@ -1031,7 +1074,8 @@ async def _probe_decisions(app: App, http: httpx.AsyncClient, config: Config, pr
         key = config.secret(provider.api_key_env) if provider.api_key_env else None
         if provider.api_key_env and not key:
             raise MissingProviderKey
-        client = JevClient(http, key or "", provider.model, provider.base_url, usage=app.dispatch.usage)
+        client = JevClient(http, key or "", provider.model, provider.base_url, usage=app.dispatch.usage,
+                           data_policy=provider.data_policy)
         async with asyncio.timeout(TEST_TIMEOUT):
             with model_request("triage", None, allowed):
                 answers = await client.decide("A settings test from the owner's dashboard.", {"check": {

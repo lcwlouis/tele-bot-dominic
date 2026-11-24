@@ -8,28 +8,39 @@ import json
 import logging
 import re
 import struct
+import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import httpx
 
-from dom.config import Config, StudioConfig, StudioFallback
+from dom.config import Config, StudioFallback, routing_preferences
 from dom.studio.client import MAX_MEDIA_BYTES
-from dom.studio.policy import Kind
+from dom.studio.policy import Kind, backups as providers
 from dom.usage import ModelCallSkipped, UsageRecorder, check_model_allowed, model_request, response_usage
 
 log = logging.getLogger(__name__)
 PNG = b"\x89PNG\r\n\x1a\n"
 MAX_PORTRAIT_BYTES = 4 * 1024 * 1024
 MAX_AUDIO_BYTES = 3 * 1024 * 1024
+# OpenRouter video: a square 480p clip with the model's own audio, polled every few seconds within the kind's deadline.
+VIDEO_POLL_SECONDS = 5
+VIDEO_RESOLUTION = "480p"
+VIDEO_NOTE_SIDE = 640  # Telegram's round video notes are square, at most 640 px
+VIDEO_NOTE_SECONDS = 59  # Telegram's limit is 60 s
+JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
-def providers(config: StudioConfig, kind: Kind) -> tuple[StudioFallback, ...]:
-    if kind == "photo":
-        return config.image_fallbacks
-    if kind == "voice":
-        return tuple(p for p in config.voice_fallbacks if p.provider != "gemini_tts" or p.paid)
-    return ()
+def video_seconds(text: str) -> int:
+    """A clip long enough to say the line at a natural pace: 4, 6 or 8 s, durations most video models accept."""
+    words = len(text.split())
+    return 4 if words <= 8 else 6 if words <= 14 else 8
+
+
+def video_prompt(text: str, reference: bool) -> str:
+    who = "The person in the first frame" if reference else "A friendly young man"
+    return (f"{who} looks into the camera in a casual selfie video and says, in a natural voice with matching lip "
+            f"movement: \"{text}\". No captions, no on-screen text, no music.")
 
 
 def _portrait(home: Path, outfit: str | None) -> bytes | None:
@@ -92,6 +103,42 @@ async def _opus(data: bytes) -> bytes:
             await process.wait()
     if process.returncode or not output.startswith(b"OggS") or len(output) > MAX_MEDIA_BYTES:
         raise ValueError("could not encode Opus")
+    return output
+
+
+def _video_note_file(data: bytes, folder: str) -> tuple[Path, Path]:
+    source, target = Path(folder) / "source.mp4", Path(folder) / "note.mp4"
+    source.write_bytes(data)
+    return source, target
+
+
+async def video_note(data: bytes) -> bytes:
+    """Re-encode a generated clip as a Telegram video note: square, at most 640 px, H.264 MP4 with AAC, under 60 s."""
+    with tempfile.TemporaryDirectory(prefix="dom-video-") as folder:
+        source, target = await asyncio.to_thread(_video_note_file, data, folder)
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(source),
+            "-map", "0:v:0", "-map", "0:a:0?", "-t", str(VIDEO_NOTE_SECONDS),
+            "-vf", f"crop='trunc(min(iw,ih)/2)*2':'trunc(min(iw,ih)/2)*2',"
+                   f"scale='min({VIDEO_NOTE_SIDE},iw)':'min({VIDEO_NOTE_SIDE},ih)',setsar=1",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k", "-ac", "1", "-movflags", "+faststart", "-f", "mp4", str(target),
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await process.wait()
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+        if process.returncode:
+            raise ValueError("could not encode the video note")
+        output = await asyncio.to_thread(target.read_bytes)
+    if len(output) > MAX_MEDIA_BYTES or output[4:8] != b"ftyp":
+        raise ValueError("invalid video note")
     return output
 
 
@@ -167,7 +214,11 @@ class CloudStudio:
             return None
         base = provider.base_url
         headers = {"Authorization": f"Bearer {key}"}
-        payload: dict = {"model": provider.model, "provider": {"zdr": True}}
+        payload: dict = {"model": provider.model}
+        if preferences := routing_preferences(provider.data_policy):
+            payload["provider"] = preferences
+        if provider.provider == "openrouter_video":
+            return await self._video(config, provider, kind, text, outfit, chat_id, allowed, key, payload)
         timeout = config.studio.timeouts.voice
         mime, maximum = "application/json", MAX_AUDIO_BYTES * 4 // 3 + 65536
         if kind == "photo":
@@ -233,4 +284,56 @@ class CloudStudio:
             finally:
                 await asyncio.shield(self.usage.record(
                     usage_kind, provider.model, httpx.URL(base).host, usage, chat_id, fallback=True,
+                ))
+
+    async def _video(
+        self, config: Config, provider: StudioFallback, kind: Kind, text: str, outfit: str | None, chat_id: int,
+        allowed: Callable[[], Awaitable[bool]], key: str, payload: dict,
+    ) -> bytes | None:
+        """POST /videos, poll the job, then download it through the authenticated content URL, all within the kind's
+        deadline. The job's own URLs are never followed: every request goes to the fixed OpenRouter origin."""
+        portrait = await asyncio.to_thread(_portrait, config.home, outfit) if provider.supports_reference else None
+        if not portrait and not provider.allow_without_reference:
+            return None  # a stranger's face is worse than no video
+        payload.update(
+            prompt=video_prompt(text, portrait is not None), duration=video_seconds(text),
+            resolution=VIDEO_RESOLUTION, aspect_ratio="1:1", generate_audio=True,
+        )
+        if portrait:
+            reference = await asyncio.to_thread(lambda: base64.b64encode(portrait).decode("ascii"))
+            payload["frame_images"] = [{
+                "type": "image_url", "image_url": {"url": "data:image/png;base64," + reference},
+                "frame_type": "first_frame",
+            }]
+        base, headers = provider.base_url, {"Authorization": f"Bearer {key}"}
+        timeout = config.studio.timeouts.special if kind == "special" else config.studio.timeouts.video_notes
+        usage: dict = {}
+        with model_request("studio_video", chat_id, allowed):
+            await check_model_allowed()
+            try:
+                async with asyncio.timeout(timeout):
+                    raw, _ = await self._read(base + "/videos", headers, "application/json", 64 * 1024, payload=payload)
+                    job = json.loads(raw)
+                    job_id = job.get("id") if isinstance(job, dict) else None
+                    if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
+                        raise ValueError("invalid video job")
+                    while True:
+                        status = job.get("status")
+                        if status == "completed":
+                            usage = response_usage(job)
+                            break
+                        if status not in ("pending", "in_progress"):
+                            raise ValueError("video job did not complete")
+                        await asyncio.sleep(VIDEO_POLL_SECONDS)
+                        raw, _ = await self._read(base + f"/videos/{job_id}", headers, "application/json", 64 * 1024)
+                        job = json.loads(raw)
+                        if not isinstance(job, dict):
+                            raise ValueError("invalid video job")
+                    clip, _ = await self._read(
+                        base + f"/videos/{job_id}/content", headers, "video/mp4", MAX_MEDIA_BYTES, params={"index": 0},
+                    )
+                    return await video_note(clip)
+            finally:
+                await asyncio.shield(self.usage.record(
+                    "studio_video", provider.model, httpx.URL(base).host, usage, chat_id, fallback=True,
                 ))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 
 from dom import turn_log
+from dom.config import DataPolicy, routing_preferences
 from dom.llm import openrouter_host
 from dom.usage import UsageRecorder, check_model_allowed, request_kind
 
@@ -18,9 +19,10 @@ class JevUnavailable(Exception):
 class JevClient:
     def __init__(
         self, http: httpx.AsyncClient, api_key: str, model: str, base_url: str = DEFAULT_BASE_URL,
-        *, usage: UsageRecorder | None = None,
+        *, usage: UsageRecorder | None = None, data_policy: DataPolicy = "zdr",
     ):
         self.http, self.api_key, self.model = http, api_key, model
+        self.data_policy = data_policy
         self.usage = usage
         self.host = httpx.URL(base_url).host
         self.url = f"{base_url.rstrip('/')}/decisions"
@@ -30,8 +32,8 @@ class JevClient:
         kind = request_kind("triage")
         messages = [{"role": "user", "content": {"state": state, "questions": questions}}]
         body: dict = {"model": self.model, "state": state, "questions": questions}
-        if openrouter_host(self.host):
-            body["provider"] = {"zdr": True}  # the account's zero-data-retention rule holds for the classifier too
+        if openrouter_host(self.host) and (preferences := routing_preferences(self.data_policy)):
+            body["provider"] = preferences  # the route's data policy holds for the classifier too
         try:
             with turn_log.model_call(self.model, kind, messages, []) as call:
                 response = await self.http.post(

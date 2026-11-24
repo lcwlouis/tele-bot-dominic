@@ -27,6 +27,7 @@ from aiogram.types import (
 )
 
 from dom import memory_export, memory_import, proposals, release, skills, traits
+from dom.studio.profile import unserved_note
 from dom._version import VERSION
 from dom.deletion import (
     STALE_MESSAGE,
@@ -648,6 +649,8 @@ async def render_status(app: App) -> View:
     if fallback_at is not None and fallback_at.astimezone(tz).date() == app.dispatch.now().astimezone(tz).date():
         fallback = f" (fallback at {fallback_at.astimezone(tz):%H:%M})"
     footer += f"\nToday: {count} calls · ${spent:.2f}\nLast reply: {model or '—'}{fallback}"
+    if note := unserved_note(app):
+        footer += f"\nStudio: {note}"
     current = await app.store.desktop_tasks(app.owner_id, active=True) if app.owner_id is not None else []
     for task in current:
         footer += f"\nDesktop task #{task['id']}{_container_tag(task)} · {task['status'].replace('_', ' ')} · {task['steps']} steps"

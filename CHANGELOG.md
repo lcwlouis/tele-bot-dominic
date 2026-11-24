@@ -6,6 +6,12 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- Studio cloud backups are edited on Settings → Models: add, edit, test, remove and reorder voice, photo and video backups, with OpenRouter's model list for each kind. Saving checks the key and the model without making any media.
+- Round video notes can fall back to OpenRouter video when the local studio can't make them. Dom sends the outfit's portrait as the first frame and turns the clip into a Telegram video note.
+- Data policy per OpenRouter route: zero data retention (the default), no training, or any endpoint, for each provider and studio backup, with a warning on chat routes below ZDR. See docs/privacy.md for a separate media key.
+- Studio switches turn on only when the studio or a backup can serve them, and `/status` says when one is on with nothing behind it. A backup alone now serves its switch without the local studio.
+- The profile photo changes at most every 1, 7, 14 or 30 days (default 14) instead of every hour.
+
 - Rollback note: a reasoning effort other than `low` or `medium` (such as `high`) saved from Settings makes v0.8.2 and older refuse to start. Before starting the older release, set each `reasoning_effort` in `config.toml` back to `low` or `medium` (or delete it), and check again after restoring any backup copy (see docs/deploy-pi.md, "Roll back by hand").
 
 ## [0.8.2] - 2026-11-23
