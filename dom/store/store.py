@@ -714,7 +714,7 @@ class Store:
     def _opener_candidates(self, owner: str, after: str, limit: int, groups: bool, friends: bool) -> list[dict[str, Any]]:
         return [dict(row) for row in self._conn.execute(
             "SELECT chat_id, chat_type FROM chats WHERE chat_id > ? AND chat_id != ? "
-            "AND authorization_status = 'approved' AND online_until IS NOT NULL "
+            "AND authorization_status = 'approved' "
             "AND ((? AND chat_type IN ('group', 'supergroup')) OR (? AND chat_type = 'private')) "
             "ORDER BY chat_id LIMIT ?",
             (after, owner, groups, friends, limit),

@@ -252,8 +252,10 @@ async def test_non_owner_opener_eligibility(make_app, monkeypatch, chat_id, sett
     await ready_chat(app, chat_id, minutes_ago=minutes - (reason == "recent"))
     other = GROUP if chat_id == FRIEND else FRIEND
     await ready_chat(app, other)
-    if reason == "offline":
-        await app.dispatch.presence.go_offline(chat_id, parse_habits(""))
+    if reason == "offline":  # the session ended long ago: no deadlines left, as a chat looks hours later
+        await app.store.set_presence(
+            chat_id, is_sleeping=False, sleep_until=None, is_offline=True, offline_until=None, online_until=None,
+        )
     elif reason == "sleep":
         await app.dispatch.presence.sleep(chat_id, parse_habits(""))
     elif reason in ("left", "pending"):
@@ -263,9 +265,14 @@ async def test_non_owner_opener_eligibility(make_app, monkeypatch, chat_id, sett
 
     await openers.maybe(now())
 
-    expected = int(reason == "eligible")
+    # An online session lasts minutes, far shorter than the quiet stretch, so offline is the usual case: the opener
+    # brings Dom online. Asleep never opens.
+    expected = int(reason in ("eligible", "offline"))
     assert len(app.script.requests) == len(app.bot.of("send", chat_id)) == expected
     assert app.bot.of("send", other) == app.bot.of("send", OWNER) == []
+    if reason == "offline":
+        state, _ = app.dispatch.presence.peek(await app.store.get_presence(chat_id), parse_habits(""))
+        assert state == "online"
 
 
 @pytest.mark.parametrize("status", ["member", "restricted", "left"])

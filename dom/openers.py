@@ -119,7 +119,8 @@ class Openers:
         state, until = self.app.dispatch.presence.peek(await self.app.store.get_presence(chat_id), habits)
         if state == "online":
             return True, until
-        return scope == "owner_dm" and state == "offline", None
+        # Offline is where an opener starts: Dom comes online by texting first, in any chat. Asleep never opens.
+        return state == "offline", None
 
     async def _group_can_send(self, chat_id: int) -> bool:
         app = self.app
@@ -212,7 +213,9 @@ class Openers:
             expected_id = latest[0] if latest else None
 
             async def authorize_message() -> None:
-                if scope == "group" and not await self._group_can_send(chat_id):
+                # Membership was checked before composing; check it once more before the first message only, so a
+                # slow Telegram can't hold this chat's dispatch slot for every bubble.
+                if scope == "group" and first and not await self._group_can_send(chat_id):
                     raise ModelCallSkipped
                 present, _ = await self._presence(chat_id, scope, read_habits(app.home))
                 current = await store.latest_chat_message(chat_id)
