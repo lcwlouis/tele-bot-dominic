@@ -17,9 +17,12 @@ from functools import partial
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+import httpx
+
 from dom.actions import SendFile
 from dom.agent import _well_formed
 from dom.desktop import tools
+from dom.llm import ChatBudgetExhausted, MissingProviderKey
 from dom.desktop.client import DEFAULT_RESOLUTION, PHONE_RESOLUTION, SandboxClient, SandboxError, url_host
 from dom.desktop.sandbox import DEFAULT
 from dom.desktop.files import (
@@ -733,7 +736,14 @@ class DesktopWorker:
             if self.app.media_describer is None:
                 return "Screenshot description is unavailable."
             screenshot = await client.screenshot()
-            return await self.app.media_describer.describe_desktop(screenshot) or "No screenshot description."
+            try:
+                return await self.app.media_describer.describe_desktop(screenshot) or "No screenshot description."
+            except (ChatBudgetExhausted, MissingProviderKey, httpx.HTTPError,
+                    KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+                # The vision model refusing (budget, key, outage) or answering malformed JSON costs one look, not the
+                # task: read the page instead.
+                log.info("desktop look failed (%s)", type(exc).__name__)
+                return "Screenshot description is unavailable right now. Use the page's text instead."
         if name == "save_screenshot":
             stem = PurePosixPath(safe_filename(args.get("name"))).stem or "screenshot"
             path = f"{OUTBOX_DIR}/{'' if self.container == DEFAULT else self.container + '-'}{stem}.png"
