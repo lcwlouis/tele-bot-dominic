@@ -636,3 +636,20 @@ async def test_a_refused_start_tells_the_model_nothing_was_queued(make_app):
     assert result.startswith("Not started and not queued:")
     assert "already runs its limit" in result
     await settle(app, fleet)
+
+
+async def test_a_refused_screenshot_description_costs_one_look_not_the_task(make_app):
+    from types import SimpleNamespace
+
+    from dom.llm import BudgetRefusal, ChatBudgetExhausted
+
+    app = make_app()
+    lane = fleet_for(app).lane("default")
+    lane.sandbox.screenshot = lambda: asyncio.sleep(0, b"png")
+
+    async def refuse(_):
+        raise ChatBudgetExhausted((BudgetRefusal("openrouter_workspace_budget", "workspace", 0.5, 0.5, None),))
+
+    app.media_describer = SimpleNamespace(describe_desktop=refuse)
+    result = await lane.worker._tool(lane.sandbox, "look", {})
+    assert result.startswith("Screenshot description is unavailable")
