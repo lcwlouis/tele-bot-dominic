@@ -394,6 +394,8 @@ async def perform(
             log.warning("ignored a private action without an eligible receiver in chat %s: %s", chat_id, why)
             await _tell_owner_held_back(store, chat_id, why)
             return PerformResult()
+        if not bubbles:  # nothing left to deliver privately (fake media bubbles are dropped): no header-only DM
+            return PerformResult()
         if not ephemeral_in_chat:  # Dom is not an admin there, so Telegram would refuse: straight to the DM
             if bubbles and before_send is not None:
                 before_send()
