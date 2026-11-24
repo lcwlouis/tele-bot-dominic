@@ -6,10 +6,15 @@
   import FileText from "@lucide/svelte/icons/file-text";
   import Lock from "@lucide/svelte/icons/lock";
   import Sparkles from "@lucide/svelte/icons/sparkles";
+  import Eye from "@lucide/svelte/icons/eye";
+  import PenLine from "@lucide/svelte/icons/pen-line";
   import Upload from "@lucide/svelte/icons/upload";
-  import { onMount, tick } from "svelte";
+  import { onMount } from "svelte";
   import { getJSON, send, ApiError, type MemoryFile, type MemoryIndex, type MemoryWaiting } from "$lib/api";
   import DiffLines from "$lib/components/memory/DiffLines.svelte";
+  import SoulChat, { type SoulTurn } from "$lib/components/memory/SoulChat.svelte";
+  import Markdown from "$lib/components/markdown/Markdown.svelte";
+  import * as Tabs from "$lib/components/ui/tabs";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
@@ -34,12 +39,13 @@
 
   let index = $state<MemoryIndex | null>(null);
   let failed = $state("");
-  // `open` is the file in the editor; null shows the file list alone on a phone. `talking` is the soul request panel.
+  // `open` is the file in the editor; null shows the file list alone on a phone. `talking` is the soul conversation.
   let open = $state<string | null>(null);
   let talking = $state(false);
   let file = $state<MemoryFile | null>(null);
   let fileError = $state("");
   let draft = $state("");
+  let view = $state<"preview" | "edit">("preview"); // the open file's tab; the draft survives switching
   let saving = $state(false);
   let saveError = $state("");
   let leaving = $state<(() => void) | null>(null); // a switch waiting on the discard-changes dialog
@@ -75,10 +81,14 @@
     try {
       file = await getJSON<MemoryFile>(`/api/memory/file?file=${encodeURIComponent(path)}`);
       draft = file.content;
+      view = readOnly(file) ? "preview" : "edit";
     } catch (error) {
       fileError = error instanceof Error ? error.message : "Unknown error";
     }
   }
+
+  // Dom writes HABITS.md and the journals himself: they open as a rendered page; the rest open in the editor.
+  const readOnly = (item: MemoryFile) => item.readonly || item.file.endsWith("JOURNAL.md");
 
   /** Go somewhere else; a draft with changes asks first. */
   function guard(action: () => void) {
@@ -106,34 +116,8 @@
     }
   }
 
-  // The soul request: Dom proposes one change, which then waits in "Waiting for you" with its diff.
-  let request = $state("");
-  let asking = $state(false);
-  let proposed = $state<string[] | null>(null);
-
-  // On a phone the panel replaces the file list; on both, the request box takes focus (and so comes into view).
-  async function startTalking() {
-    proposed = null;
-    await tick();
-    document.getElementById("soul-request")?.focus();
-  }
-
-  async function ask() {
-    if (asking || !request.trim()) return;
-    asking = true;
-    proposed = null;
-    try {
-      const result = await send<{ id: number; diff: string[] }>("/api/memory/soul", { message: request });
-      proposed = result.diff;
-      request = "";
-      toast.show("ok", "Dom proposed a change. Review it under Waiting for you.");
-      waiting(await getJSON<MemoryWaiting>("/api/memory"));
-    } catch {
-      // the toast says why; the request stays in the box
-    } finally {
-      asking = false;
-    }
-  }
+  // The soul conversation lives here, so closing the panel and coming back keeps it.
+  let soulTurns = $state<SoulTurn[]>([]);
 
   // Waiting for you: imports and edits to review.
   let deciding = $state(false);
@@ -216,7 +200,7 @@
     <Button
       variant={talking ? "default" : "secondary"}
       aria-pressed={talking}
-      onclick={() => guard(() => ((talking = !talking), talking && startTalking()))}
+      onclick={() => guard(() => (talking = !talking))}
     >
       <Sparkles aria-hidden="true" /> Talk to Dom about his soul
     </Button>
@@ -296,14 +280,17 @@
     </section>
   {/if}
 
+  {#if talking}
+    <SoulChat index={memory} bind:turns={soulTurns} onwaiting={waiting} onclose={() => ((talking = false), open === null && matchMedia("(min-width: 1024px)").matches && openFile(FIRST))} />
+  {:else}
   <div class="grid items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
     <!-- On a phone the file list is a screen of its own, and a file opens full width with a way back. -->
-    <nav aria-label="Memory files" class={cn("rounded-xl border bg-surface p-3", (open !== null || talking) && "max-lg:hidden")}>
+    <nav aria-label="Memory files" class={cn("rounded-xl border bg-surface p-3", open !== null && "max-lg:hidden")}>
       {#each memory.sections as section (section.heading)}
         <h2 class="kicker px-2 pt-3 pb-1.5 first:pt-1">{section.heading}</h2>
         <ul class="grid gap-0.5">
           {#each section.files as item (item.path)}
-            {@const here = open === item.path && !talking}
+            {@const here = open === item.path}
             <li>
               <button
                 type="button"
@@ -323,34 +310,8 @@
       {/each}
     </nav>
 
-    <div class={cn("min-w-0", open === null && !talking && "max-lg:hidden")}>
-      {#if talking}
-        <Card.Root>
-          <Card.Header>
-            <Button variant="ghost" size="sm" class="mb-1 w-fit lg:hidden" onclick={() => ((talking = false), (open = null))}>
-              <ArrowLeft aria-hidden="true" /> Files
-            </Button>
-            <Card.Title class="text-lg">Talk to Dom about his soul</Card.Title>
-            <Card.Description>Ask for one change to SOUL.md. Dom proposes it; nothing changes until you approve it.</Card.Description>
-          </Card.Header>
-          <Card.Content class="grid gap-4">
-            {#if proposed}
-              <div class="grid gap-2" role="status">
-                <p class="text-sm font-medium">Dom proposed this change</p>
-                <DiffLines lines={proposed} language="markdown" />
-              </div>
-            {/if}
-            <form class="grid gap-2" onsubmit={(event) => (event.preventDefault(), ask())}>
-              <Label for="soul-request">What should Dom change?</Label>
-              <textarea id="soul-request" class={cn(field, "min-h-28")} maxlength={memory.max_soul_request} bind:value={request}></textarea>
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <p class="text-xs text-muted-foreground">{count(request.length)} of {count(memory.max_soul_request)} characters</p>
-                <Button type="submit" disabled={asking || !request.trim()}>{asking ? "Asking Dom…" : "Send to Dom"}</Button>
-              </div>
-            </form>
-          </Card.Content>
-        </Card.Root>
-      {:else if fileError}
+    <div class={cn("min-w-0", open === null && "max-lg:hidden")}>
+      {#if fileError}
         <StatusNote tone="error" title="Couldn't open that file" detail={fileError}>
           <Button variant="secondary" onclick={() => open && openFile(open)}>Retry</Button>
         </StatusNote>
@@ -368,21 +329,39 @@
             {/if}
           </Card.Header>
           <Card.Content class="grid gap-3">
-            <Label for="memory-text" class="sr-only">{file.label}</Label>
-            <CodeEditor
-              id="memory-text"
-              class={cn(field, "min-h-[22rem] resize-y leading-relaxed lg:min-h-[28rem]")}
-              language={file.file}
-              spellcheck="false"
-              readonly={file.readonly}
-              aria-describedby="memory-count"
-              aria-invalid={over || undefined}
-              bind:value={draft}
-            />
-            <p id="memory-count" class={cn("text-sm text-muted-foreground", over && "text-coral")}>
-              {count(used)}
-              {#if file.limit != null}of {count(file.limit)} characters{:else}characters · No character limit{/if}{over ? ". Over the limit: shorten it to save." : ""}
-            </p>
+            <Tabs.Root bind:value={view}>
+              <Tabs.List class="mb-1 w-fit">
+                <Tabs.Trigger value="preview" class="px-3"><Eye aria-hidden="true" /> Preview</Tabs.Trigger>
+                <Tabs.Trigger value="edit" class="px-3"><PenLine aria-hidden="true" /> {file.readonly ? "Source" : "Edit"}</Tabs.Trigger>
+              </Tabs.List>
+              <Tabs.Content value="preview">
+                {#if draft.trim()}
+                  <div class="min-h-[22rem] rounded-[0.65rem] border bg-canvas/50 px-4 py-3.5 sm:px-5 lg:min-h-[28rem]">
+                    <Markdown text={draft} />
+                  </div>
+                {:else}
+                  <StatusNote title="Nothing here yet" detail={file.readonly ? "Dom fills this in as he goes." : "Open Edit to write the first lines."} />
+                {/if}
+                {#if dirty}<p class="mt-2 text-sm text-muted-foreground">Showing your unsaved edits.</p>{/if}
+              </Tabs.Content>
+              <Tabs.Content value="edit" class="grid gap-3">
+                <Label for="memory-text" class="sr-only">{file.label}</Label>
+                <CodeEditor
+                  id="memory-text"
+                  class={cn(field, "min-h-[22rem] resize-y leading-relaxed lg:min-h-[28rem]")}
+                  language={file.file}
+                  spellcheck="false"
+                  readonly={file.readonly}
+                  aria-describedby="memory-count"
+                  aria-invalid={over || undefined}
+                  bind:value={draft}
+                />
+                <p id="memory-count" class={cn("text-sm text-muted-foreground", over && "text-coral")}>
+                  {count(used)}
+                  {#if file.limit != null}of {count(file.limit)} characters{:else}characters · No character limit{/if}{over ? ". Over the limit: shorten it to save." : ""}
+                </p>
+              </Tabs.Content>
+            </Tabs.Root>
             {#if saveError}
               <div role="alert" class="rounded-lg border border-coral/45 bg-coral-tint px-3.5 py-3 text-sm text-coral">
                 <p>{saveError}</p>
@@ -406,6 +385,8 @@
       {/if}
     </div>
   </div>
+
+  {/if}
 
   <Card.Root class="mt-6">
     <Card.Header>

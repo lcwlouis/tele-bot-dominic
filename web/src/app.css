@@ -209,3 +209,96 @@
     font-weight: 600;
   }
 }
+
+/* Markdown previews (memory files, SOUL.md, Dom's chat replies): prose in Quiet Orbit tokens, AA in both themes.
+   Headings step down from the card title; code reuses .code from Code.svelte. */
+@layer components {
+  .markdown {
+    @apply text-[0.94rem] leading-relaxed break-words text-foreground;
+  }
+  .markdown > :first-child {
+    margin-top: 0;
+  }
+  .markdown > :last-child {
+    margin-bottom: 0;
+  }
+  .markdown :where(p, ul, ol, blockquote, pre, .md-table, hr) {
+    margin-block: 0.7em;
+  }
+  .markdown :where(h2, h3, h4, h5, h6) {
+    @apply font-semibold tracking-tight text-foreground;
+    margin-block: 1.4em 0.5em;
+    line-height: 1.3;
+  }
+  .markdown h2 {
+    @apply text-[1.3rem];
+  }
+  .markdown h3 {
+    @apply text-[1.1rem];
+  }
+  .markdown :where(h4, h5, h6) {
+    @apply text-[0.98rem];
+  }
+  .markdown h2::before {
+    content: "";
+    @apply mb-2 block h-px w-8 bg-signal;
+  }
+  .markdown :where(ul, ol) {
+    padding-inline-start: 1.35em;
+  }
+  .markdown ul {
+    list-style: disc;
+  }
+  .markdown ol {
+    list-style: decimal;
+  }
+  .markdown li {
+    margin-block: 0.25em;
+  }
+  .markdown li::marker {
+    color: var(--signal);
+  }
+  .markdown li.task {
+    list-style: none;
+    margin-inline-start: -1.35em;
+  }
+  .markdown li.task > input {
+    @apply mr-1.5 size-3.5 align-[-0.15em] accent-signal;
+  }
+  .markdown a {
+    @apply rounded-sm text-signal-strong underline decoration-signal/50 underline-offset-[0.2em] hover:decoration-signal;
+  }
+  .markdown strong {
+    @apply font-semibold;
+  }
+  .markdown del {
+    @apply text-muted-foreground;
+  }
+  .markdown blockquote {
+    @apply border-l-2 border-signal/60 pl-3.5 text-muted-foreground;
+  }
+  .markdown hr {
+    @apply border-line;
+  }
+  .markdown :not(pre) > code {
+    @apply rounded-[0.35rem] border bg-raised px-1 py-px font-mono text-[0.86em];
+  }
+  .markdown pre {
+    @apply overflow-x-auto rounded-lg border bg-canvas/50 p-3 text-[0.82rem] leading-relaxed;
+  }
+  .markdown .md-table {
+    @apply overflow-x-auto rounded-lg border;
+  }
+  .markdown table {
+    @apply w-full border-collapse text-sm;
+  }
+  .markdown :where(th, td) {
+    @apply border-b px-3 py-1.5 text-left align-top;
+  }
+  .markdown th {
+    @apply bg-raised font-medium;
+  }
+  .markdown tr:last-child > td {
+    @apply border-b-0;
+  }
+}

@@ -6,6 +6,8 @@
   import { gallery, locate, search, waiting } from "$lib/nav";
   import { interceptLinks, route } from "$lib/router.svelte";
   import { shell } from "$lib/shell.svelte";
+  import { sidebar } from "$lib/sidebar.svelte";
+  import { cn } from "$lib/utils";
   import Gallery from "./routes/Gallery.svelte";
   import Briefs from "./routes/Briefs.svelte";
   import Chats from "./routes/Chats.svelte";
@@ -54,7 +56,13 @@
   >
     Skip to content
   </a>
-  <div class="min-h-dvh lg:grid lg:grid-cols-[15.5rem_minmax(0,1fr)]">
+  <!-- The sidebar folds to a rail; the columns ease between widths, unless the owner asks for less motion. -->
+  <div
+    class={cn(
+      "min-h-dvh lg:grid lg:transition-[grid-template-columns] lg:duration-200 lg:ease-out motion-reduce:transition-none",
+      sidebar.collapsed ? "lg:grid-cols-[4.25rem_minmax(0,1fr)]" : "lg:grid-cols-[15.5rem_minmax(0,1fr)]",
+    )}
+  >
     <Sidebar path={route.path} current={isGallery ? { ...where.destination, id: "" } : where.destination} />
     <div class="min-w-0">
       <TopBar

@@ -201,6 +201,8 @@ export type MemoryIndex = MemoryWaiting & {
   services: { id: string; label: string }[];
   export_prompt: string;
   max_soul_request: number;
+  max_soul_turns: number;
+  max_soul_chat: number;
 };
 /** GET /api/search (dom/web/api_search.py): hits by kind; `full` is false for another chat's one-line preview. */
 export type SearchData = {
