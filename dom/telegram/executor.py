@@ -543,6 +543,7 @@ async def perform(
                     lambda p=picked: bot.send_sticker(chat_id, p, message_thread_id=thread_id),
                     store, chat_id, "sticker", {"kind": "sticker", "emoji": emoji}, now, on_sent,
                     thread_id=thread_id, sleep=sleep, record=record, budget=flood, trigger_msg_id=trigger_msg_id,
+                    authorize_message=authorize_message,
                 )
             except TelegramMigrateToChat:
                 if on_migrate is not None:
@@ -577,6 +578,7 @@ async def perform(
                     lambda u=url: bot.send_animation(chat_id, u, message_thread_id=thread_id),
                     store, chat_id, "gif", {"kind": "gif", "query": actions.gif}, now, on_sent,
                     thread_id=thread_id, sleep=sleep, record=record, budget=flood, trigger_msg_id=trigger_msg_id,
+                    authorize_message=authorize_message,
                 )
             except TelegramMigrateToChat:
                 if on_migrate is not None:
@@ -610,10 +612,10 @@ async def perform(
                 if fallback_text == f"*{actions.gif}*":  # the GIF's query in italics, set directly, not via Markdown
                     italic = MessageEntity(type="italic", offset=0, length=utf16_len(actions.gif))
                     sent = await send_chunk(bot, chat_id, (actions.gif, [italic]), sleep=sleep, budget=flood,
-                                            message_thread_id=thread_id, **options)
+                                            message_thread_id=thread_id, authorize_message=authorize_message, **options)
                 else:
                     sent = await send_text(bot, chat_id, fallback_text, sleep=sleep, budget=flood,
-                                           message_thread_id=thread_id, **options)
+                                           message_thread_id=thread_id, authorize_message=authorize_message, **options)
         except TelegramMigrateToChat:
             if on_migrate is not None:
                 on_migrate(Actions(bubbles=[Bubble(text=fallback_text)]))
@@ -659,12 +661,17 @@ async def _send_media(
     now: Callable[[], datetime] | None, on_sent: Callable[[int], Awaitable[None]] | None,
     *, thread_id: int | None = None, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, record: bool = True,
     budget: FloodBudget | None = None, trigger_msg_id: int | None = None,
-    history_text: str | None = None,
+    history_text: str | None = None, authorize_message: Callable[[], Awaitable[None]] | None = None,
 ) -> int | None:
     """Await one media send and record it; a Telegram refusal is logged and means nothing was sent."""
+    async def attempt():
+        if authorize_message is not None:
+            await authorize_message()
+        return await sending()
+
     try:
         with turn_log.timed("send"):
-            sent = await retry_telegram(sending, sleep=sleep, budget=budget)
+            sent = await retry_telegram(attempt, sleep=sleep, budget=budget)
     except TelegramMigrateToChat:
         raise
     except TelegramAPIError:

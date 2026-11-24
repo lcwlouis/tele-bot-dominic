@@ -804,7 +804,8 @@ async def test_permission_save_writes_config_and_applies_without_restart(dashboa
     async with browser() as client:
         initial = (await client.get(PERMISSIONS)).json()
         assert {item["id"]: item["enabled"] for item in initial["items"]} == {
-            "memory_self_edit": False, "openers": False, "ephemeral_replies": False, "leak_check": True,
+            "memory_self_edit": False, "openers": False, "openers_groups": False, "openers_friends": False,
+            "ephemeral_replies": False, "leak_check": True,
             "studio_voice": False, "studio_video": False, "studio_images": False, "studio_special": False,
             "studio_profile": False,
         }
@@ -814,6 +815,15 @@ async def test_permission_save_writes_config_and_applies_without_restart(dashboa
         after = result.json()
         assert next(item for item in after["items"] if item["id"] == "openers")["enabled"] is True
         assert app.config.openers.enabled is True and app.config.openers.max_per_day == 3
+        for switch in ("openers_groups", "openers_friends"):
+            before = path.read_text()
+            result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
+                "revision": after["revision"], "id": switch, "enabled": True,
+            })
+            assert result.status_code == 200, result.text
+            after = result.json()
+            assert path.with_name("config.toml.bak").read_text() == before
+        assert app.config.openers.groups and app.config.openers.friends
         result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={"revision": after["revision"], "id": "leak_check", "enabled": False})
         assert result.status_code == 200, result.text
         assert app.config.leak_check is False
@@ -825,7 +835,8 @@ async def test_permission_save_writes_config_and_applies_without_restart(dashboa
 
     text = path.read_text()
     saved = tomllib.loads(text)
-    assert saved["openers"] == {"enabled": True, "max_per_day": 3} and saved["leak_check"] is False
+    assert saved["openers"] == {"enabled": True, "max_per_day": 3, "groups": True, "friends": True}
+    assert saved["leak_check"] is False
     assert "enabled = true  # keep me" in text and "# Keep this comment." in text
     assert path.with_name("config.toml.orig").read_text().startswith(START.splitlines()[0])
 

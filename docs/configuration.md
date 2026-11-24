@@ -213,7 +213,9 @@ See [Studio](studio.md) for outfit setup and model licences.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `openers.enabled` | `false` | Allow Dom to start conversations in the owner's DM. |
-| `openers.max_per_day` | `2` | Maximum number of openers per day in the configured timezone. |
+| `openers.groups` | `false` | Allow Dom to start conversations in approved groups. |
+| `openers.friends` | `false` | Allow Dom to start conversations in approved friends' DMs. |
+| `openers.max_per_day` | `2` | Maximum number of openers per chat per day in the configured timezone. |
 
 ## Presence
 

@@ -864,8 +864,12 @@ class Permission:
 PERMISSIONS = (
     Permission("memory_self_edit", ("memory_self_edit",), "Let Dom edit his own memory",
                "Dom proposes each change to his notes in your DM; nothing changes until you approve it."),
-    Permission("openers", ("openers", "enabled"), "Start conversations",
-               "Dom may start a conversation in your DM, a few times a day at most."),
+    Permission("openers", ("openers", "enabled"), "Start conversations in your DM",
+               "Dom may message you first a few times a day."),
+    Permission("openers_groups", ("openers", "groups"), "Start conversations in groups",
+               "Dom may message first in approved groups after three quiet hours."),
+    Permission("openers_friends", ("openers", "friends"), "Start conversations in friends’ DMs",
+               "Dom may message first in approved friends’ DMs after 45 quiet minutes."),
     Permission("ephemeral_replies", ("ephemeral_replies",), "Private replies in groups",
                "Dom may answer you privately inside a group where he is an admin, or in your DM where he is not."),
     Permission("leak_check", ("leak_check",), "Check replies for leaks",
@@ -891,7 +895,7 @@ STUDIO_NEEDS = {
     "profile_photo_follows_preset": "Set up the local studio first: the profile photo uses its portraits.",
 }
 PermissionId = Literal[
-    "memory_self_edit", "openers", "ephemeral_replies", "leak_check",
+    "memory_self_edit", "openers", "openers_groups", "openers_friends", "ephemeral_replies", "leak_check",
     "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
 ]
 assert set(get_args(PermissionId)) == {item.id for item in PERMISSIONS}

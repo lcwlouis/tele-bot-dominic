@@ -171,7 +171,9 @@ class OpenersConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     enabled: bool = Field(False, description="Allow Dom to start conversations in the owner's DM.")
-    max_per_day: int = Field(2, ge=0, description="Maximum number of openers per day in the configured timezone.")
+    groups: bool = Field(False, description="Allow Dom to start conversations in approved groups.")
+    friends: bool = Field(False, description="Allow Dom to start conversations in approved friends' DMs.")
+    max_per_day: int = Field(2, ge=0, description="Maximum number of openers per chat per day in the configured timezone.")
 
 
 class SelfWorkConfig(BaseModel):
