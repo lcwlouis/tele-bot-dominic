@@ -24,6 +24,7 @@ from dom.memory_edit import apply_proposal as apply_memory_edit, format_summary 
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, Plugin, validate_name, validate_plugin
 from dom.plugins.trial import STORAGE_NOTICE, test_run_summary
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
+from dom.llm import ChatBudgetExhausted
 from dom.skills import BODY_LIMIT, Skill, skill_diff, skill_text, write_skill
 
 if TYPE_CHECKING:
@@ -237,6 +238,9 @@ class Proposals:
             if not isinstance(content, str):
                 raise ValueError("The drafting model returned no text.")
             draft = json.loads(unfence(content))
+        except ChatBudgetExhausted:
+            # Not an httpx error (dispatch must see it to notify the owner), so it needs its own sentence here.
+            raise ValueError(f"The drafting model's provider is out of budget or credits, so no {kind} draft was written.") from None
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, RecursionError):
             raise ValueError(f"The drafting model could not return a {kind} draft.") from None
         if not isinstance(draft, dict) or draft.get("name") != seed["name"]:

@@ -35,9 +35,11 @@ from dom.gifs import GIF_NOTE
 from dom.capabilities import describe
 from dom.jev import JevClient, JevUnavailable
 from dom.jobs import DailyJobs
+from dom.llm import ChatBudgetExhausted
 from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
+from dom.provider_budget import ProviderBudgetNotices
 from dom.studio.cloud import providers as studio_providers
 from dom.studio.policy import enabled as studio_enabled, outfits, turn_note as studio_turn_note
 from dom.studio.profile import maintain as maintain_studio
@@ -202,6 +204,7 @@ class Dispatcher:
         self.cross_chat = CrossChat(self)
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
+        self.provider_budget = ProviderBudgetNotices(app.store)
         self.jobs = DailyJobs(app, now)
         self.jobs.register("proposal-expiry", lambda local, habits: True, app.proposals.expire)
         self.jobs.register("turn-log-retention", lambda local, habits: True, self._prune_turn_log)
@@ -1628,6 +1631,32 @@ class Dispatcher:
         elif reacted is False:  # Telegram refused it for this chat; a network error (None) may pass
             self._reactions_off.add(chat_id)
 
+    def _chat_route_id(self) -> str:
+        config = self.app.config
+        endpoints = config.providers("chat") + config.providers("fallback")
+        return turn_log.prompt_hash([endpoint.model_dump(mode="json") for endpoint in endpoints])
+
+    async def provider_budget_status(self) -> str | None:
+        return await self.provider_budget.status(
+            self._chat_route_id(), self.now(), ZoneInfo(self.app.config.timezone),
+        )
+
+    async def _provider_budget_notice(
+        self, route: str, error: ChatBudgetExhausted,
+    ) -> None:
+        app = self.app
+        if route != self._chat_route_id():
+            return
+        owner_id = app.owner_id
+        line = await self.provider_budget.record(
+            route, error.refusals, self.now(), ZoneInfo(app.config.timezone), notify=owner_id is not None,
+        )
+        if line and owner_id is not None:
+            try:
+                await executor.send_text(app.bot, owner_id, line, sleep=app.sleep, literal=True)
+            except Exception as exc:
+                log.warning("could not send the provider budget notice (%s)", type(exc).__name__)
+
     async def _run_turn(
         self, chat_id: int, scope: Scope, newest: StoredMessage, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
@@ -1664,6 +1693,7 @@ class Dispatcher:
                 attempt.read = True
 
         actions = None
+        route = ""
         try:
             queued_at = monotonic()
             started = None
@@ -1686,6 +1716,7 @@ class Dispatcher:
                         title = live.chat_title if live else ""
                         fact = ""
                         try:
+                            route = self._chat_route_id()
                             actions = await self._compose_turn(
                                 chat_id, scope, newest, live, window, until, away_count, final_bot_turn, habits,
                                 extra_note=note, attempt=attempt, skill=skill,
@@ -1786,6 +1817,15 @@ class Dispatcher:
             elif actions.react and not actions.no_response:
                 turn_log.outcome("Reaction failed")
             return bool(sent) or sent.reacted or (queue_studio is not None and attempt.committed), False
+        except ChatBudgetExhausted as exc:
+            turn_log.outcome("Provider budget exhausted")
+            if typing is not None:
+                attempt.shown = typing.stop()
+                typing = None
+            attempt.commit()
+            notice = self._spawn(self._provider_budget_notice(route, exc), committed=True)
+            await asyncio.shield(notice)
+            return False, False
         finally:
             if typing is not None:
                 attempt.shown = typing.stop()
@@ -2212,6 +2252,8 @@ class Dispatcher:
             desktop=app.desktop_worker, app=app, participant_ids=tuple(dict.fromkeys(participants)),
         )
         usage_mark = await app.store.last_usage_id()
+        route = self._chat_route_id()
+        escalation = None
         rescue = None if self.jev is None else partial(self._rescue, chat_id, scope, window, {t.name for t in tools})
         try:
             if attempt is None:
@@ -2238,7 +2280,7 @@ class Dispatcher:
                         attempt.retry_offer = escalation
                         turn_log.outcome("Offered a model retry")
                         actions = Actions(no_response=True)
-        except ModelCallSkipped:
+        except (ModelCallSkipped, ChatBudgetExhausted):
             raise
         except NoFinalAnswer:  # run_turn has logged why; record an owner event and answer waiting friends in character
             turn_log.step("no answer")
@@ -2248,6 +2290,11 @@ class Dispatcher:
                 raise
             log.exception("model could not compose the bot exit in chat %s", chat_id)
             actions = Actions(no_response=True)
+        else:
+            if attempt is not None and attempt.escalation_retry is None and attempt.retry_offer is None and (
+                escalation is None or escalation.choice != "switch"
+            ):
+                await self.provider_budget.clear(route)
         finally:
             if attempt is not None:
                 attempt.notices.extend(ctx.t3_notes)

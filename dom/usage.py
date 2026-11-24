@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from functools import lru_cache
 from math import isclose
 from sys import float_info
 from typing import TYPE_CHECKING, Literal
@@ -125,7 +126,7 @@ def token_counts(data: dict) -> tuple[int | None, int | None, int | None]:
     return (
         _tokens(data.get("prompt_tokens", data.get("input_tokens"))),
         _tokens(data.get("completion_tokens", data.get("output_tokens"))),
-        _tokens(data.get("cached_tokens") if cached is None else cached),
+        _tokens(data.get("cached_tokens", data.get("prompt_cache_hit_tokens")) if cached is None else cached),
     )
 
 
@@ -133,6 +134,49 @@ def _cost(value: object) -> float:
     if type(value) not in (int, float) or not 0 <= value <= float_info.max:
         return 0.0
     return float(value)
+
+
+# Off-peak USD per million tokens (cache hits, cache misses, outputs).
+# DeepSeek Models & Pricing, verified 2026-11-24: https://api-docs.deepseek.com/quick_start/pricing/
+_DEEPSEEK_FLASH_PRICES = (0.003, 0.15, 0.60)
+_DEEPSEEK_PRICES = {
+    "deepseek-flash": _DEEPSEEK_FLASH_PRICES,
+    "deepseek-v4-flash": _DEEPSEEK_FLASH_PRICES,
+    "deepseek-v4-flash-vision-exp": _DEEPSEEK_FLASH_PRICES,
+    "deepseek-v4-pro": (0.022, 0.66, 1.98),
+}
+
+# Inclusive month and day ranges from the State Council's published schedules.
+# 2026: https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm
+# 2027: https://www.gov.cn/zhengce/content/202611/content_7085101.htm
+_CHINESE_PUBLIC_HOLIDAYS = {
+    2026: ((1, 1, 3), (2, 15, 23), (4, 4, 6), (5, 1, 5), (6, 19, 21), (9, 25, 27), (10, 1, 7)),
+    2027: ((1, 1, 3), (2, 5, 13), (4, 3, 5), (5, 1, 5), (6, 9, 9), (9, 15, 15), (10, 1, 7)),
+}
+
+
+@lru_cache(maxsize=128)
+def _deepseek_prices(model: str) -> tuple[float, float, float] | None:
+    prices = _DEEPSEEK_PRICES.get(model)
+    if prices is None:
+        log.warning("No USD price is configured for a direct DeepSeek chat model.")
+    return prices
+
+
+def _deepseek_cost(model: str, usage: dict, started_at: datetime) -> float:
+    prices = _deepseek_prices(model)
+    if prices is None:
+        return 0.0
+    hit = _tokens(usage.get("prompt_cache_hit_tokens"))
+    miss = _tokens(usage.get("prompt_cache_miss_tokens"))
+    output = _tokens(usage.get("completion_tokens"))
+    utc = started_at.astimezone(timezone.utc)
+    holiday = any(
+        utc.month == month and first <= utc.day <= last
+        for month, first, last in _CHINESE_PUBLIC_HOLIDAYS.get(utc.year, ())
+    )
+    peak = utc.weekday() < 5 and not holiday and (1 <= utc.hour < 4 or 6 <= utc.hour < 10)
+    return ((hit or 0) * prices[0] + (miss or 0) * prices[1] + (output or 0) * prices[2]) * (2 if peak else 1) / 1e6
 
 
 class UsageRecorder:
@@ -159,7 +203,7 @@ class UsageRecorder:
 
     async def record_response(
         self, response: httpx.Response | None, kind: Kind, model: str, host: str, *, fallback: bool = False,
-        default_cost: float = 0.0,
+        default_cost: float = 0.0, deepseek_started_at: datetime | None = None,
     ) -> None:
         try:
             payload = response.json() if response is not None else None
@@ -167,7 +211,9 @@ class UsageRecorder:
             payload = None
         request = _request.get()
         usage = response_usage(payload)
-        if default_cost and "cost" not in usage:
+        if deepseek_started_at is not None:
+            usage = {**usage, "cost": _deepseek_cost(model, usage, deepseek_started_at) if usage else 0.0}
+        elif default_cost and "cost" not in usage:
             usage = {**usage, "cost": default_cost}
         if kind == "chat" and usage:
             input_tokens, output_tokens, cached_tokens = token_counts(usage)

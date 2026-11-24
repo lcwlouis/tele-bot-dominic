@@ -604,3 +604,57 @@ async def test_a_role_save_error_never_quotes_a_cached_effort_label_holding_a_se
         bad = await _save(client, "fallback", dict(backup, model="acme/leaky", reasoning_effort="turbo"))
     assert bad.status_code == 422
     assert SECRET not in bad.text
+
+
+async def test_provider_presets_pass_address_and_key_pairing_as_offered(dashboard, monkeypatch):
+    from dom.web.model_settings import _check_keys
+    from dom.web.provider_settings import ProviderSave
+    from dom.config import ProviderEndpoint
+
+    _, path, browser = dashboard
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fictional-router-key")
+    async with browser() as client:
+        settings = (await client.get(API)).json()
+    presets = settings["provider_presets"]
+    assert len(presets) == 13
+    config = load_config(path.parent)
+    for item in presets:
+        if item["api_key_env"] and item["name"] != "OpenRouter":
+            monkeypatch.delenv(item["api_key_env"], raising=False)
+        preset = ProviderSave(revision=settings["revision"], **{key: value for key, value in item.items() if key != "model"})
+        _check_keys(config, [ProviderEndpoint(base_url=preset.base_url, api_key_env=preset.api_key_env)])
+        assert (preset.api_key_env is None) == preset.base_url.startswith("http://")
+
+
+async def test_deepseek_chat_preset_can_share_its_already_paired_search_key(dashboard, monkeypatch):
+    app, path, browser = dashboard
+    path.write_text(path.read_text() + """
+[models.search]
+provider = "deepseek"
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+""")
+    key = "fictional-deepseek-key"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", key)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"data": [{"id": "deepseek-flash"}]})
+
+    async with _mock(app, handler), browser() as client:
+        settings = (await client.get(API)).json()
+        deepseek = next(item for item in settings["provider_presets"] if item["name"] == "DeepSeek")
+        assert deepseek["model"] == "deepseek-flash"
+        response = await _post(client, "/save", **{key: value for key, value in deepseek.items() if key != "model"})
+        assert response.status_code == 200, response.text
+        assert _provider(response.json(), "DeepSeek")["kind"] == "openai"
+        assert requests[0].url == "https://api.deepseek.com/models"
+        assert requests[0].headers["Authorization"] == f"Bearer {key}"
+        invalid = await client.post(API, headers=ORIGIN_HEADER, json={
+            "revision": response.json()["revision"], "role": "chat", "fallbacks": [],
+            "primary": {"base_url": deepseek["base_url"], "model": deepseek["model"],
+                        "api_key_env": deepseek["api_key_env"], "reasoning_effort": "medium"},
+        })
+        assert invalid.status_code == 422 and "low, high or max" in invalid.json()["detail"]
+        assert len(requests) == 1
