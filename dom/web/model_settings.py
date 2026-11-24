@@ -484,9 +484,25 @@ def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     return saved
 
 
+TYPE_NAMES = {"chat": "a chat", "media": "a media", "decisions": "a decisions", "search": "a web search"}
+
+
+def _check_role_types(config: Config, role: SettingsRole, slots: list[ProviderEndpoint]) -> None:
+    """A slot on a saved provider's address and key variable must use a provider of the role's type (E70); a custom
+    address that matches no saved provider is still allowed."""
+    for index, slot in enumerate(slots):
+        matches = [(name, setup) for name, setup in config.provider_setups.items()
+                   if same_url(setup.base_url, slot.base_url) and setup.api_key_env == (slot.api_key_env or None)]
+        if matches and not any(kind_fits(setup.kind, setup.type, role, slot) for _, setup in matches):
+            name, setup = matches[0]
+            raise HTTPException(422, f"{_slot_label(index)}: {name} is {TYPE_NAMES[setup.type]} provider, which "
+                                     f"{role} can't use. Pick a provider of the right type.")
+
+
 def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     """The settings with `update` applied, validated but not written."""
     _check_revision(current, update.revision)
+    _check_role_types(current.config, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
     try:
         _check_keys(current.config, [*([update.primary] if update.primary else []), *update.fallbacks])
     except KeyPairing as exc:
@@ -507,7 +523,9 @@ async def commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str)
             try:
                 current = await asyncio.to_thread(_snapshot, app.config.home)
                 saved = await asyncio.to_thread(change, current)
-                routes = app.model_routes(saved.config)
+                chains = [name for name in STUDIO_CHAINS if getattr(current.config.studio, f"{name}_fallbacks")
+                          != getattr(saved.config.studio, f"{name}_fallbacks")]
+                routes = app.model_routes(saved.config, studio_chains=chains)
                 await asyncio.to_thread(_write, current, saved)
             except (OSError, ValueError, httpx.InvalidURL):
                 raise HTTPException(409, failure) from None
@@ -582,8 +600,9 @@ def slot_kind(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[ProviderK
     decisions provider, search a search service (or OpenRouter chat, for OpenRouter's web search), the rest chat."""
     if role in DECISION_ROLES:
         return "openrouter", "decisions"
-    if role == "search" and (kind := search_provider_kind(endpoint)) != "openrouter":
-        return kind, "search"
+    if role == "search":  # its provider is explicit: an OpenRouter search route on any host stays OpenRouter
+        kind = search_provider_kind(endpoint)
+        return kind, "chat" if kind == "openrouter" else "search"
     try:
         return ("openrouter" if openrouter_host(httpx.URL(endpoint.base_url).host) else "openai"), "chat"
     except httpx.InvalidURL:
@@ -615,6 +634,11 @@ def _key_set(config: Config, variable: str | None) -> bool:
         return False
 
 
+def same_url(a: str, b: str) -> bool:
+    """Whether two base URLs name the same address: a trailing slash doesn't make a different provider."""
+    return a.rstrip("/") == b.rstrip("/")
+
+
 def _uses(config: Config) -> Iterator[tuple[SettingsRole | StudioChain, int, ProviderEndpoint | StudioFallback]]:
     """Every slot a provider can serve: each role's chain, then each studio backup chain."""
     for role in SETTINGS_ROLES:
@@ -630,7 +654,7 @@ def provider_catalog(config: Config) -> list[ProviderSetupView]:
     slot that uses it. One address and key is one provider per type (E70)."""
     found: dict[tuple[str, str | None, str], ProviderSetupView] = {}
     for name, setup in config.provider_setups.items():
-        found.setdefault((setup.base_url, setup.api_key_env, setup.type), ProviderSetupView(
+        found.setdefault((setup.base_url.rstrip("/"), setup.api_key_env, setup.type), ProviderSetupView(
             name=name, kind=setup.kind, type=setup.type, base_url=setup.base_url, api_key_env=setup.api_key_env,
             key_set=_key_set(config, setup.api_key_env), is_local=_is_local(setup.base_url), saved=True,
             listable=model_lists.listable(setup.kind, setup.type, setup.base_url), uses=[],
@@ -647,7 +671,7 @@ def provider_catalog(config: Config) -> list[ProviderSetupView]:
             if not view.base_url:  # a hand-written address the settings API can't show
                 continue
             (kind, type_), base_url, variable, key_set = slot_kind(role, slot), view.base_url, view.api_key_env, view.key_set
-        key = (base_url, variable, type_)
+        key = (base_url.rstrip("/"), variable, type_)  # a trailing slash names the same address
         if key not in found:
             service = KIND_LABELS.get(kind) if kind != "openrouter" or openrouter_host(httpx.URL(base_url).host) else None
             label = " ".join(filter(None, (service or httpx.URL(base_url).host, TYPE_LABELS[type_])))
@@ -926,8 +950,13 @@ def _permission_value(config: Config, permission: Permission) -> bool:
 def _servable(config: Config, permission: Permission) -> bool:
     """Whether anything set up can serve the switch (a backup counts once its key has a value); only studio switches
     need something. Reads .env: call it off the event loop."""
-    return permission.path[0] != "studio" or switch_servable(
-        config.studio, permission.path[1], lambda name: _key_set(config, name))
+    def media_key(name: str) -> bool:  # a backup whose key is also chat's never serves
+        try:
+            return bool(config.media_secret(name))
+        except (OSError, ValueError):
+            return False
+
+    return permission.path[0] != "studio" or switch_servable(config.studio, permission.path[1], media_key)
 
 
 def _permissions(snapshot: Snapshot) -> Permissions:

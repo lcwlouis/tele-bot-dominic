@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from dom import model_lists
 from dom.config import ProviderSetup, load_config
-from test_web_model_settings import API, ORIGIN_HEADER, SECRET, START, dashboard  # noqa: F401, F811  (the fixture)
+from test_web_model_settings import API, ORIGIN_HEADER, SECRET, START, _save, dashboard  # noqa: F401, F811  (the fixture)
 from test_web_provider_settings import STUDIO, _mock, _post, _provider, _revision
 
 DECISIONS = {"data": [
@@ -214,3 +214,133 @@ async def test_a_media_provider_without_backups_is_tested_by_its_key(dashboard, 
         tested = await _post(client, "/test", name="Router media")
     assert tested.json()["ok"] is True and tested.json()["reply"] == "The key works."
     assert seen == [("https://openrouter.ai/api/v1/key", f"Bearer {MEDIA_VALUE}")]
+
+
+# Review fixes on PR #68.
+
+async def test_a_gemini_backup_moved_to_a_new_key_must_be_confirmed_as_paid_again(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START + STUDIO)
+    async with _mock(app, lambda request: pytest.fail("a key with no value is never sent")), browser() as client:
+        gemini = _provider((await client.get(API)).json(), "Google Gemini media")
+        moved = await _post(client, "/save", original=gemini["name"], name="Speech", kind="gemini", type="media",
+                            base_url=gemini["base_url"], api_key_env="NEW_GEMINI_KEY")
+        assert moved.status_code == 200, moved.text
+    backup = tomllib.loads(path.read_text())["studio"]["voice_fallbacks"][1]
+    assert backup["api_key_env"] == "NEW_GEMINI_KEY" and "paid" not in backup  # skipped until confirmed again
+    assert app.config.studio.voice_fallbacks[1].paid is False
+
+
+async def test_a_role_save_refuses_a_saved_provider_of_another_type(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START + """
+[providers.Decide]
+kind = "openrouter"
+type = "decisions"
+base_url = "https://openrouter.ai/api/alpha/"
+api_key_env = "DECIDE_KEY"
+""")
+    reply = {"choices": [{"message": {"content": "OK"}}]}
+    async with _mock(app, lambda request: httpx.Response(200, json=reply)), browser() as client:
+        refused = await _save(client, "chat", {"base_url": "https://openrouter.ai/api/alpha", "model": "acme/chat",
+                                               "api_key_env": "DECIDE_KEY"})
+        assert refused.status_code == 422 and "Decide is a decisions provider" in refused.json()["detail"]
+        custom = await _save(client, "chat", {"base_url": "https://lab.example.test/v1", "model": "acme/chat"})
+        assert custom.status_code == 200, custom.text
+        triage = await _save(client, "triage", {"base_url": "https://openrouter.ai/api/alpha", "model": "acme/decide",
+                                                "api_key_env": "DECIDE_KEY"})
+        assert triage.status_code == 200, triage.text
+
+
+async def test_a_media_provider_with_a_trailing_slash_moves_its_backups(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START + STUDIO + """
+[providers.Voices]
+kind = "openrouter"
+type = "media"
+base_url = "https://openrouter.ai/api/v1/"
+api_key_env = "VOICE_KEY"
+""")
+    async with _mock(app, lambda request: pytest.fail("a key with no value is never sent")), browser() as client:
+        settings = (await client.get(API)).json()
+        assert _provider(settings, "Voices")["uses"] == [{"role": "voice", "index": 0}]
+        assert not any(item["name"] == "OpenRouter media" for item in settings["providers"])
+        moved = await _post(client, "/save", original="Voices", name="Voices", kind="openrouter", type="media",
+                            base_url="https://openrouter.ai/api/v1", api_key_env="NEW_VOICE_KEY")
+        assert moved.status_code == 200, moved.text
+    assert tomllib.loads(path.read_text())["studio"]["voice_fallbacks"][0]["api_key_env"] == "NEW_VOICE_KEY"
+
+
+async def test_a_provider_save_applies_only_the_backup_chains_it_changed(dashboard):
+    app, path, browser = dashboard
+    path.write_text(START + STUDIO)
+    app.config = load_config(path.parent)
+    path.write_text(path.read_text().replace("voice = true", "voice = false"))  # a hand edit, not yet applied
+    async with _mock(app, lambda request: httpx.Response(200, json={"data": []})), browser() as client:
+        added = await _post(client, "/save", name="Lab", kind="openai", base_url="https://lab.example.test/v1")
+        assert added.status_code == 200, added.text
+        assert app.config.studio.voice is True
+        media = _provider(added.json(), "OpenRouter media")
+        moved = await _post(client, "/save", original=media["name"], name="Voices", kind="openrouter", type="media",
+                            base_url=media["base_url"], api_key_env="NEW_VOICE_KEY")
+        assert moved.status_code == 200, moved.text
+    assert app.config.studio.voice is True
+    assert app.config.studio.voice_fallbacks[0].api_key_env == "NEW_VOICE_KEY"
+
+
+async def test_a_backup_key_holding_a_chat_key_value_is_refused_without_breaking_startup(dashboard):
+    from dom.studio.cloud import _backup_key
+
+    app, path, browser = dashboard
+    path.write_text(START + STUDIO)
+    (path.parent / ".env").write_text(f"BACKUP_KEY={SECRET}\nVOICE_KEY={SECRET}\n")  # one key under two names
+    config = load_config(path.parent)  # still loads
+    assert config.media_key_shared("VOICE_KEY") and config.media_secret("VOICE_KEY") is None
+    assert _backup_key(config, config.studio.voice_fallbacks[0]) is None
+    async with _mock(app, lambda request: pytest.fail("a shared key is never sent")), browser() as client:
+        tested = await client.post("/api/studio/test", headers=ORIGIN_HEADER,
+                                   json={"revision": await _revision(client), "chain": "voice", "index": 0})
+    assert tested.json()["ok"] is False and "same key as a chat route" in tested.json()["error"]
+    (path.parent / ".env").write_text(f"BACKUP_KEY={SECRET}\nVOICE_KEY=example-other-value\n")
+    assert not config.media_key_shared("VOICE_KEY") and config.media_secret("VOICE_KEY") == "example-other-value"
+
+
+async def test_an_openrouter_search_route_on_its_own_host_stays_openrouter(dashboard):
+    _, path, browser = dashboard
+    path.write_text(START + """
+[models.search]
+provider = "openrouter"
+base_url = "https://router-proxy.example.test/v1"
+model = "acme/searcher"
+api_key_env = "PROXY_KEY"
+""")
+    async with browser() as client:
+        settings = (await client.get(API)).json()
+    proxy = next(item for item in settings["providers"] if item["base_url"] == "https://router-proxy.example.test/v1")
+    assert (proxy["kind"], proxy["type"]) == ("openrouter", "chat")
+    assert proxy["uses"] == [{"role": "search", "index": 0}]
+
+
+async def test_an_unused_media_provider_saves_before_its_key_is_named(dashboard):
+    app, path, browser = dashboard
+    async with _mock(app, lambda request: pytest.fail("nothing to send yet")), browser() as client:
+        saved = await _post(client, "/save", name="Router media", kind="openrouter", type="media",
+                            base_url="https://openrouter.ai/api/v1")
+        assert saved.status_code == 200, saved.text
+        tested = await _post(client, "/test", name="Router media")
+    assert tested.json()["ok"] is False and "name a key variable" in tested.json()["error"]
+    assert tomllib.loads(path.read_text())["providers"]["Router media"] == {
+        "kind": "openrouter", "type": "media", "base_url": "https://openrouter.ai/api/v1"}
+
+
+async def test_saving_an_unchanged_legacy_jev_provider_keeps_its_table(dashboard):
+    app, path, browser = dashboard
+    legacy = START + '\n[providers.Jev]  # from v0.8.2\nkind = "jev"\nbase_url = "https://openrouter.ai/api/alpha"\n'
+    path.write_text(legacy)
+    async with _mock(app, lambda request: httpx.Response(200, json=DECISIONS)), browser() as client:
+        jev = _provider((await client.get(API)).json(), "Jev")
+        assert (jev["kind"], jev["type"]) == ("openrouter", "decisions")
+        saved = await _post(client, "/save", original="Jev", name="Jev", kind="openrouter", type="decisions",
+                            base_url="https://openrouter.ai/api/alpha")
+        assert saved.status_code == 200, saved.text
+    assert path.read_text() == legacy

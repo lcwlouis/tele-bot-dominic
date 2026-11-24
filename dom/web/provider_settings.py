@@ -64,6 +64,7 @@ from dom.web.model_settings import (
     commit,
     kind_fits,
     provider_catalog,
+    same_url,
     set_backups,
     set_role,
     validated,
@@ -177,8 +178,8 @@ def _check_edit(snapshot: Snapshot, edit: ProviderSave) -> ProviderSetupView | N
     original = _find(catalog, edit.original) if edit.original is not None else None
     if any(item is not original and item.name.lower() == edit.name.lower() for item in catalog):
         raise HTTPException(409, "Another provider already has that name.")
-    twin = next((item for item in catalog if item is not original and (item.base_url, item.api_key_env, item.type)
-                 == (edit.base_url, edit.api_key_env, edit.type)), None)
+    twin = next((item for item in catalog if item is not original and same_url(item.base_url, edit.base_url)
+                 and (item.api_key_env, item.type) == (edit.api_key_env, edit.type)), None)
     if twin is not None:
         raise HTTPException(409, f"That address and key variable are already saved as {twin.name}.")
     if original is not None:
@@ -195,10 +196,22 @@ def _check_edit(snapshot: Snapshot, edit: ProviderSave) -> ProviderSetupView | N
     return original
 
 
+def _moved_backup(backup, api_key_env: str | None):
+    """A backup on a new key variable. A direct Gemini backup's paid confirmation was for the old key's Google
+    project, so it is cleared: the backup is skipped until the owner confirms Paid Services for the new key."""
+    cleared = backup.provider == "gemini_tts" and api_key_env != backup.api_key_env
+    update = {"api_key_env": api_key_env} | ({"paid": False} if cleared else {})
+    return backup.model_copy(update=update)
+
+
 def _apply(current: Snapshot, edit: ProviderSave) -> Snapshot:
     """The settings with the provider saved, validated (with the key pairing checked on the effective routes) but not
     written."""
     original = _check_edit(current, edit)
+    if original is not None and original.saved and (
+            original.name, original.kind, original.type, original.base_url, original.api_key_env) == (
+            edit.name, edit.kind, edit.type, edit.base_url, edit.api_key_env):
+        return current  # nothing changed: keep the table as written (a legacy one stays readable by older releases)
     document = tomlkit.parse(current.text)
     if "providers" not in document:
         document["providers"] = tomlkit.table(is_super_table=True)
@@ -219,15 +232,16 @@ def _apply(current: Snapshot, edit: ProviderSave) -> Snapshot:
         for role in dict.fromkeys(use.role for use in original.uses):
             if role in STUDIO_CHAINS:  # a backup's address is fixed by its service, so only its key variable moves
                 backups = [
-                    backup.model_copy(update={"api_key_env": edit.api_key_env})
-                    if (backup.base_url, backup.api_key_env) == (original.base_url, original.api_key_env) else backup
+                    _moved_backup(backup, edit.api_key_env)
+                    if (same_url(backup.base_url, original.base_url) and backup.api_key_env == original.api_key_env)
+                    else backup
                     for backup in getattr(config.studio, f"{role}_fallbacks")
                 ]
                 set_backups(document, role, backups)
                 continue
             slots = [
                 endpoint.model_copy(update={"base_url": edit.base_url, "api_key_env": edit.api_key_env})
-                if (endpoint.base_url, endpoint.api_key_env or None) == (original.base_url, original.api_key_env)
+                if same_url(endpoint.base_url, original.base_url) and (endpoint.api_key_env or None) == original.api_key_env
                 else endpoint
                 for endpoint in chain(config, role)
             ]
@@ -359,7 +373,8 @@ async def save_provider(request: Request) -> ModelSettings:
         result = await _probe_setup(app, current.config, setup)
         # A new key variable is filled in after saving, and a decisions endpoint without a list is tested once triage
         # uses it.
-        if not result.ok and result.error not in (MISSING_KEY, NOT_TESTED):
+        # An unused media provider may be saved before its key variable is named; a backup still needs one.
+        if not result.ok and result.error not in (MISSING_KEY, NOT_TESTED, studio_settings.MEDIA_NEEDS_KEY):
             raise HTTPException(422, f"{edit.name}: {result.error or 'Provider test failed.'}")
     saved = await commit(app, lambda fresh: _apply(fresh, edit),
                          "Could not save the provider. Check config.toml and its permissions.")

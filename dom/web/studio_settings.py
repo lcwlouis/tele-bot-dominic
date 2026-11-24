@@ -59,7 +59,9 @@ TEST_TIMEOUT = 8
 # OpenRouter lists each output kind's models separately; every list is public.
 MODEL_LISTS = {"openrouter_image": "/images/models", "openrouter_tts": "/audio/speech/models",
                "openrouter_video": "/videos/models"}
-MEDIA_NEEDS_KEY = "A media provider needs a key variable."
+MEDIA_NEEDS_KEY = "Not tested: name a key variable for this media provider first."
+SHARED_KEY = ("{name} holds the same key as a chat route, so studio backups won't use it. Give media its own key, "
+              "such as a separate OpenRouter key in OPENROUTER_MEDIA_API_KEY.")
 UNPAID_GEMINI = ("Tick the Paid Services box to use a direct Gemini key. Google may use audio made on an unpaid key to "
                  "improve its products, with human review, so Dom never runs Gemini without it.")
 
@@ -221,6 +223,8 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
     key = None
     try:
         _check_keys(config, [ProviderEndpoint(base_url=backup.base_url, api_key_env=backup.api_key_env)])
+        if await asyncio.to_thread(config.media_key_shared, backup.api_key_env):
+            return TestResult(ok=False, latency_ms=0, error=SHARED_KEY.format(name=backup.api_key_env))
         key = await asyncio.to_thread(config.secret, backup.api_key_env)
         if backup.provider == "openrouter_video":
             async with asyncio.timeout(TEST_TIMEOUT):
@@ -275,6 +279,8 @@ async def probe_key(app: App, config, kind: str, api_key_env: str | None) -> Tes
     key = None
     try:
         _check_keys(config, [ProviderEndpoint(base_url=base, api_key_env=api_key_env)])
+        if api_key_env and await asyncio.to_thread(config.media_key_shared, api_key_env):
+            return TestResult(ok=False, latency_ms=0, error=SHARED_KEY.format(name=api_key_env))
         key = await asyncio.to_thread(config.secret, api_key_env) if api_key_env else None
         if not key:
             return TestResult(ok=False, latency_ms=0, error=MISSING_KEY if api_key_env else MEDIA_NEEDS_KEY)

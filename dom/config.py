@@ -616,6 +616,20 @@ class Config(BaseModel):
                   *(setup for setup in self.provider_setups.values() if setup.type != "media")]
         return {route.api_key_env for route in routes if route.api_key_env}
 
+    def media_key_shared(self, name: str) -> bool:
+        """Whether a studio backup's key variable holds the same value as a key a chat, decisions or search route uses
+        under another name. Config validation compares names only; this compares the values, read from .env on each
+        call, so a value changed there counts at once."""
+        env = _read_dotenv(self.home / ".env")
+        value = env.get(name) or os.environ.get(name)
+        return bool(value) and any(
+            (env.get(other) or os.environ.get(other)) == value for other in self.chat_keys() if other != name)
+
+    def media_secret(self, name: str) -> str | None:
+        """A studio backup's key value, or None when it is unset or also a chat route's key (E66): a media key may
+        take a looser data policy, so it never carries a credential that chat content uses."""
+        return None if self.media_key_shared(name) else self.secret(name)
+
     @field_validator("provider_setups")
     @classmethod
     def _provider_names(cls, value: dict[str, ProviderSetup]) -> dict[str, ProviderSetup]:

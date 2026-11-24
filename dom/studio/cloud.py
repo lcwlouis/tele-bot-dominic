@@ -27,6 +27,15 @@ from dom.studio.policy import Kind, backups as providers
 from dom.usage import ModelCallSkipped, UsageRecorder, check_model_allowed, model_request, response_usage, token_counts
 
 log = logging.getLogger(__name__)
+
+
+def _backup_key(config: Config, provider: StudioFallback) -> str | None:
+    """The backup's key value, or None when it is unset or also a chat route's key (refused, with the reason logged)."""
+    if config.media_key_shared(provider.api_key_env):
+        log.warning("studio backup %s skipped: %s holds the same key as a chat route; give studio backups their own key",
+                    provider.model, provider.api_key_env)
+        return None
+    return config.secret(provider.api_key_env)
 PNG = b"\x89PNG\r\n\x1a\n"
 MAX_PORTRAIT_BYTES = 4 * 1024 * 1024
 MAX_AUDIO_BYTES = 3 * 1024 * 1024
@@ -418,7 +427,7 @@ class CloudStudio:
         self, config: Config, provider: StudioFallback, kind: Kind, text: str, outfit: str | None, chat_id: int,
         allowed: Callable[[], Awaitable[bool]],
     ) -> bytes | None:
-        key = await asyncio.to_thread(config.secret, provider.api_key_env)
+        key = await asyncio.to_thread(_backup_key, config, provider)
         if not key:
             return None
         base = provider.base_url
@@ -526,7 +535,7 @@ class CloudStudio:
                 references = None
                 for provider in providers(config.studio, kind):
                     try:
-                        key = await asyncio.to_thread(config.secret, provider.api_key_env)
+                        key = await asyncio.to_thread(_backup_key, config, provider)
                         if not key:
                             continue
                         entry = await self._video_entry(provider.base_url, provider.model)
