@@ -33,11 +33,20 @@ PROVIDER_KINDS = get_args(ProviderKind)
 EFFORT_PATTERN = r"^[a-z][a-z0-9_-]{0,23}$"
 PROVIDER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$"
 
+
+def deepseek_chat_host(host: str | None) -> bool:
+    return bool(host and host.rstrip(".").lower() == "api.deepseek.com")
+
+
+# DeepSeek's own API: thinking stays off unless a route asks for one of these levels (api-docs.deepseek.com/guides/thinking_mode).
+DEEPSEEK_EFFORTS = ("low", "high", "max")
+DEEPSEEK_EFFORT_ERROR = "Direct DeepSeek takes a low, high or max reasoning effort, or none to keep thinking off."
+
 # What OpenRouter may do with a studio backup's request (its provider routing preferences). zdr routes only to
 # zero-data-retention endpoints; no_training excludes endpoints that may train on or sell the data
 # (data_collection "deny") but allows ones that keep it; any adds no preference. The account's own privacy settings
 # apply on top: "ZDR endpoints only" there still refuses every non-ZDR endpoint. Only media backups take a policy:
-# every route that carries chat content (the model roles, Jev, search) always sends zdr.
+# routes that carry chat content through OpenRouter always send zdr.
 DataPolicy = Literal["zdr", "no_training", "any"]
 DATA_POLICIES = get_args(DataPolicy)
 DATA_POLICY_FIELD = (
@@ -46,7 +55,7 @@ DATA_POLICY_FIELD = (
 )
 MEDIA_KEY_RULE = (
     "A studio backup needs its own key variable, such as OPENROUTER_MEDIA_API_KEY: {name} is also used by a model "
-    "role or a saved provider, which carry chat content and must stay zero data retention."
+    "role or a saved provider. Use a separate variable for studio backups."
 )
 
 
@@ -76,6 +85,17 @@ class ProviderEndpoint(BaseModel):
     provider: SearchProvider | None = Field(
         None, description="Search provider for models.search: searxng, openrouter, deepseek or tavily.",
     )
+
+    @model_validator(mode="after")
+    def _direct_deepseek_effort(self) -> ProviderEndpoint:
+        if self.reasoning_effort is not None and self.reasoning_effort not in DEEPSEEK_EFFORTS:
+            try:
+                host = httpx.URL(self.base_url).host
+            except httpx.InvalidURL:
+                return self
+            if deepseek_chat_host(host):
+                raise ValueError(DEEPSEEK_EFFORT_ERROR)
+        return self
 
 
 class ModelEndpoint(ProviderEndpoint):

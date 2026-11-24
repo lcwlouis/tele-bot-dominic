@@ -174,9 +174,19 @@ Cloudflare. Keep local bearer-token testing on loopback.
   `provider.zdr`. To estimate the cost, Dom fetches OpenRouter's public model
   price list (`openrouter.ai/api/v1/models`), which carries no chat data.
 
+## Direct DeepSeek and other cloud providers
+
+Dom recommends local providers or a zero-data-retention route for chat content. The owner can choose a
+different provider. The dashboard highlights cloud routes whose retention terms need review.
+
+DeepSeek's direct API uses the privacy terms for the DeepSeek account. DeepSeek says it stores personal data in
+the People's Republic of China, keeps inputs used to provide the service while the account exists, and may
+use inputs to improve or train its models. The policy describes how to opt out of training. DeepSeek does
+not offer zero data retention on this route. [DeepSeek Privacy Policy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html).
+
 ## OpenRouter data policies
 
-Every route that carries chat content always asks OpenRouter for zero data retention (`provider.zdr = true`): the
+Routes that carry chat content through OpenRouter always ask for zero data retention (`provider.zdr = true`): the
 model roles (chat, fallback, media, drafting, search, escalation), triage and the leak check (Jev), the doctor's
 probes and the escalation price list. None of them can be configured otherwise.
 

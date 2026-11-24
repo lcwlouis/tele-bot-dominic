@@ -189,3 +189,135 @@ async def test_role_chain_checks_spend_before_advancing(role, make_app):
         with model_request("chat", None, allowed), pytest.raises(ModelCallSkipped):
             await client.complete([], [], once=True)
     assert attempts == ["primary.example.test"]
+
+
+@pytest.mark.parametrize(("status", "body", "source"), [
+    (403, {"error": {"message": "Workspace daily budget of $0.50 exceeded.",
+                     "metadata": {"limit_source": "openrouter_workspace_budget", "scope": "workspace",
+                                  "limit_usd": 0.5, "spend_usd": 0.505,
+                                  "resets_at": "2026-11-25T00:00:00.000Z"}}}, "openrouter_workspace_budget"),
+    (403, {"error": {"message": "API key limit exceeded."}}, "openrouter_key_limit"),
+    (402, {"error": {"message": "Insufficient credits."}}, "openrouter_credits"),
+])
+async def test_openrouter_budget_facts_survive_fallback_without_echoing_credentials(status, body, source, caplog):
+    from dom.llm import ChatBudgetExhausted, ProviderBudgetError
+
+    key = "fictional-provider-credential"
+    body["error"]["message"] += f" {key}"
+    body["error"].setdefault("metadata", {})["remedy_hint"] = key
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(status, json=body))) as http:
+        endpoint = ModelEndpoint(base_url="https://openrouter.ai/api/v1", model="example/model", api_key_env="MODEL_KEY")
+        primary = ChatClient(endpoint, key, http, sleep=_nosleep)
+        fallback = ChatClient(endpoint.model_copy(update={"model": "example/backup"}), key, http, sleep=_nosleep)
+        with pytest.raises(ProviderBudgetError) as refused:
+            await primary.complete([], [])
+        facts = refused.value.refusal
+        assert facts.source == source
+        assert "authorization" not in refused.value.request.headers
+        assert refused.value.response.text == ""
+        if source == "openrouter_workspace_budget":
+            assert (facts.scope, facts.limit_usd, facts.spend_usd, facts.resets_at) == (
+                "workspace", 0.5, 0.505, "2026-11-25T00:00:00+00:00",
+            )
+        with pytest.raises(ChatBudgetExhausted) as exhausted:
+            await FallbackClient(primary, fallback).complete([], [])
+        assert exhausted.value.refusals == (facts, facts)
+        assert key not in caplog.text + str(exhausted.value) + repr(facts)
+
+
+@pytest.mark.parametrize("other", [200, 403, 429])
+async def test_openrouter_budget_notice_requires_exhausting_the_full_route(other):
+    def handler(request):
+        if request.url.host == "openrouter.ai":
+            return httpx.Response(402)
+        return httpx.Response(other, json=OK if other == 200 else {"error": {"message": "Forbidden"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        endpoint = ModelEndpoint(base_url="https://openrouter.ai/api/v1", model="example/model", api_key_env=None)
+        primary = ChatClient(endpoint, None, http, sleep=_nosleep)
+        routed = FallbackClient(primary, _client(handler, http, "home"))
+        if other == 200:
+            assert (await routed.complete([], []))["content"] == "hi"
+        else:
+            with pytest.raises(httpx.HTTPStatusError) as failed:
+                await routed.complete([], [])
+            assert failed.value.response.status_code == other
+
+
+@pytest.mark.parametrize("status", [403, 429])
+async def test_openrouter_permission_and_rate_limits_keep_normal_http_errors(status):
+    endpoint = ModelEndpoint(base_url="https://openrouter.ai/api/v1", model="example/model", api_key_env=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(status))) as http:
+        client = FallbackClient(ChatClient(endpoint, None, http, sleep=_nosleep), None)
+        with pytest.raises(httpx.HTTPStatusError) as failed:
+            await client.complete([], [])
+        assert type(failed.value) is httpx.HTTPStatusError
+
+
+async def test_direct_deepseek_exhausted_balance_is_a_budget_refusal():
+    from dom.llm import ChatBudgetExhausted
+
+    endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", api_key_env=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(402))) as http:
+        client = FallbackClient(ChatClient(endpoint, None, http), None)
+        with pytest.raises(ChatBudgetExhausted) as failed:
+            await client.complete([], [])
+        assert failed.value.refusals[0].source == "deepseek_credits"
+
+
+async def test_direct_deepseek_turns_thinking_off_and_sends_no_openrouter_fields():
+    bodies = []
+
+    def handler(request):
+        bodies.append(__import__("json").loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                                         "usage": {"prompt_tokens": 3, "completion_tokens": 1}})
+
+    endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", api_key_env=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await ChatClient(endpoint, None, http).complete([{"role": "user", "content": "hi"}], [])
+    assert bodies[0]["thinking"] == {"type": "disabled"}
+    assert not {"provider", "reasoning", "reasoning_effort"} & bodies[0].keys()
+
+
+async def test_direct_deepseek_thinking_fills_reasoning_for_another_models_tool_calls():
+    """DeepSeek's thinking mode refuses (400, verified live) an assistant tool call with no reasoning_content,
+    as when a fallback made the turn's first step; its own steps keep their reasoning untouched."""
+    bodies = []
+
+    def handler(request):
+        bodies.append(__import__("json").loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+
+    call = [{"id": "c1", "type": "function", "function": {"name": "get_time", "arguments": "{}"}}]
+    history = [
+        {"role": "user", "content": "time?"},
+        {"role": "assistant", "content": "", "tool_calls": call},
+        {"role": "tool", "tool_call_id": "c1", "content": "10:00"},
+        {"role": "assistant", "content": "", "tool_calls": call, "reasoning_content": "mine"},
+        {"role": "assistant", "content": "plain"},
+    ]
+    endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", api_key_env=None, reasoning_effort="high")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await ChatClient(endpoint, None, http).complete(history, [])
+    body = bodies[0]
+    assert body["thinking"] == {"type": "enabled"} and body["reasoning_effort"] == "high" and "provider" not in body
+    assert [message.get("reasoning_content") for message in body["messages"]] == [None, "", None, "mine", None]
+    assert "reasoning_content" not in history[1]  # the agent's own transcript is untouched
+    with pytest.raises(ValueError, match="low, high or max"):
+        ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", reasoning_effort="medium")
+
+
+async def test_a_budget_exhausted_drafting_route_still_gives_a_draft_sentence():
+    from dom.llm import BudgetRefusal, ChatBudgetExhausted
+    from dom.proposals import Proposals
+
+    class Refusing:
+        async def complete(self, *args, **kwargs):
+            raise ChatBudgetExhausted((BudgetRefusal("openrouter_workspace_budget", "workspace", 0.5, 0.51, None),))
+
+    manager = Proposals.__new__(Proposals)
+    manager.app = __import__("types").SimpleNamespace(draft_client=Refusing(), client=None)
+    with pytest.raises(ValueError, match="out of budget"):
+        await manager._write_draft("skill", {"name": "example", "brief": "x"})

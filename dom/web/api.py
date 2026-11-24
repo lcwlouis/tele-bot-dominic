@@ -79,6 +79,7 @@ async def home(app: App) -> dict:
     return {
         "now": {"greeting": _greeting(now), "date": f"{now:%A} {now.day} {now:%b}", "clock": f"{now:%H:%M}", "iso": now.isoformat(timespec="seconds")},
         "presence": {"state": state, "title": title, "detail": detail},
+        "provider_budget": await app.dispatch.provider_budget_status(),
         "activity": activity(replying=app.dispatch.turn_running(), desktop_task=bool(desktop_tasks), presence=state),
         "vibe": {
             "mode": vibe.mode,

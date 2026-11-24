@@ -156,7 +156,7 @@ def screenshot() -> bytes:
 PREVIEW_MODELS = {"data": [
     {"id": "example/chat-model", "name": "Example: Chat", "supported_parameters": ["tools", "reasoning"]},
     {"id": "example/chat-large", "name": "Example: Chat Large", "supported_parameters": ["tools", "reasoning"],
-     "supported_reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+     "reasoning": {"supported_efforts": ["xhigh", "high", "medium", "low"], "default_effort": "medium"}},
     {"id": "example/coder-pro", "name": "Example: Coder Pro", "supported_parameters": ["tools", "reasoning"]},
     {"id": "example/draft-model", "name": "Example: Draft", "supported_parameters": ["tools", "reasoning"]},
     {"id": "example/tiny", "name": "Example: Tiny", "supported_parameters": ["tools"]},

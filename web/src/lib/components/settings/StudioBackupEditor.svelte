@@ -18,7 +18,7 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import * as Select from "$lib/components/ui/select";
-  import { ACCOUNT_ZDR_NOTE, KEY_PATTERN, POLICIES, POLICY_INFO } from "./roles";
+  import { ACCOUNT_ZDR_NOTE, KEY_PATTERN, POLICIES, POLICY_INFO, ZDR_RECOMMENDATION } from "./roles";
   import { CHAIN_INFO, STUDIO_PROVIDERS } from "./studio";
 
   // Adds a studio cloud backup to a chain (index null) or edits one. Saving tests it first without making any media
@@ -208,7 +208,7 @@
           <p id={`${id}-policy-hint`} class="text-xs text-muted-foreground">
             {POLICY_INFO[policy].line}
             {#if provider === "openrouter_video"}OpenRouter keeps each video for download, so no video endpoint keeps nothing.{/if}
-            {#if policy !== "zdr"}{ACCOUNT_ZDR_NOTE}{/if}
+            {#if policy !== "zdr"}{ZDR_RECOMMENDATION} {ACCOUNT_ZDR_NOTE}{/if}
           </p>
         </div>
       {/if}

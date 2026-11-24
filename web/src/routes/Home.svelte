@@ -76,6 +76,10 @@
     </StatusNote>
   {/if}
 
+  {#if home.provider_budget}
+    <StatusNote tone="error" title="Provider budget reached" detail={home.provider_budget} class="mb-4" />
+  {/if}
+
   <div class="grid gap-4 lg:grid-cols-[1.45fr_1fr]">
     <Card.Root class="orbit-grid" aria-labelledby="presence-title">
       <Card.Content class="flex items-center gap-4 sm:gap-8">

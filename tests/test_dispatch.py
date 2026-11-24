@@ -1418,3 +1418,63 @@ async def test_a_proactive_turn_that_cannot_answer_stays_quiet(setup_dispatch):
     until = dispatch.now() + timedelta(minutes=5)
     actions = await dispatch._compose_turn(OWNER, "owner_dm", None, None, [], until, 0, False, read_habits(app.home))
     assert actions == Actions(no_response=True)
+
+
+async def test_provider_budget_notice_is_owner_only_deduplicated_and_visible_in_status(setup_dispatch, browser, caplog):
+    from dom.config import ModelEndpoint
+    from dom.llm import ChatClient, FallbackClient
+    from dom.provider_budget import ProviderBudgetNotices
+    from zoneinfo import ZoneInfo
+
+    app, dispatch, clock = await setup_dispatch(FakeJev(), chat_id=FRIEND)
+    app.config = app.config.model_copy(update={"timezone": "Asia/Singapore"})
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    for chat in (FRIEND, GROUP, OWNER):
+        await dispatch.presence.go_online(chat, parse_habits(""))
+    endpoint = ModelEndpoint(base_url="https://openrouter.ai/api/v1", model="example/model", api_key_env="MODEL_KEY")
+    app.config.models["chat"] = endpoint
+    key = "fictional-provider-credential"
+    tz = ZoneInfo(app.config.timezone)
+    reset = clock().replace(hour=0) + timedelta(days=1)
+    recovered = False
+
+    def handler(request):
+        assert request.headers["Authorization"] == f"Bearer {key}"
+        if recovered:
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"bubbles":[{"text":"back"}]}'}}]})
+        return httpx.Response(403, json={"error": {
+            "message": f"Workspace daily budget of $0.50 exceeded. {key}",
+            "metadata": {"limit_source": "openrouter_workspace_budget", "scope": "workspace",
+                         "limit_usd": 0.50, "spend_usd": 0.505, "resets_at": reset.isoformat()},
+        }})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser(app) as dashboard:
+        app.client = FallbackClient(ChatClient(endpoint, key, http, sleep=no_sleep), None)
+        await deliver(app, chat_id=FRIEND)
+        await deliver(app, chat_id=GROUP)
+        assert not app.bot.of("send", FRIEND) and not app.bot.of("send", GROUP)
+        assert len(app.bot.of("send", OWNER)) == 1
+        for msg_id in (1, 2):
+            await deliver(app, msg_id, chat_id=OWNER, sender=OWNER)
+        # Dedup survives a process restart.
+        dispatch.provider_budget = ProviderBudgetNotices(app.store)
+        await deliver(app, 3, chat_id=OWNER, sender=OWNER)
+        (notice,) = app.bot.of("send", OWNER)
+        line = notice[2]
+        assert "OpenRouter's workspace budget ($0.50)" in line
+        assert f"Resets {reset.astimezone(tz):%d %b at %H:%M}" in line
+        home = await dashboard.get("/api/home")
+        assert home.json()["provider_budget"] == line
+        await deliver(app, 4, chat_id=OWNER, sender=OWNER, text="/status")
+        assert "workspace budget" in app.bot.of("send", OWNER)[-1][2]
+        clock.at = reset + timedelta(minutes=1)
+        assert (await dashboard.get("/api/home")).json()["provider_budget"] is None
+        reset += timedelta(days=1)
+        await dispatch.presence.wake(OWNER, parse_habits(""))
+        await deliver(app, 5, chat_id=OWNER, sender=OWNER)
+        assert len([call for call in app.bot.of("send", OWNER) if call[2].startswith("OpenRouter")]) == 2
+        recovered = True
+        await deliver(app, 6, chat_id=OWNER, sender=OWNER)
+        assert app.bot.of("send", OWNER)[-1][2] == "back"
+        assert (await dashboard.get("/api/home")).json()["provider_budget"] is None
+        assert key not in caplog.text + home.text + (await app.store.kv_get("chat_provider_budget"))

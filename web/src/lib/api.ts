@@ -9,6 +9,7 @@ export type HomeData =
       now: { greeting: string; date: string; clock: string; iso: string };
       presence: { state: "online" | "asleep" | "offline"; title: string; detail: string };
       activity: Activity;
+      provider_budget: string | null;
       vibe: { mode: "auto" | "locked" | "none"; title: string; description: string; reason: string; since: string };
       waiting: { count: number; items: { label: string; detail: string }[]; href: string };
       today: {
@@ -146,6 +147,7 @@ export type ModelSettings = {
   revision: string;
   roles: Record<SettingsRole, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
   providers: ProviderSetup[];
+  provider_presets: { name: string; kind: "openai" | "openrouter"; base_url: string; api_key_env: string | null; model: string | null }[];
   /** The studio's cloud backups ([[studio.<chain>_fallbacks]]), in the order they're tried. */
   studio: Record<StudioChain, StudioFallback[]>;
   search_providers: SearchProviderInfo[];
@@ -167,7 +169,7 @@ export type StudioBackup = {
 export type StudioFallback = StudioBackup & { key_set: boolean };
 
 /** POST /api/providers/models (dom/web/provider_settings.py): reasoning null means the provider doesn't say. */
-export type ListedModel = { id: string; name: string; reasoning: boolean | null; efforts: string[] };
+export type ListedModel = { id: string; name: string; reasoning: boolean | null; efforts: string[]; default_effort?: string | null };
 export type ModelList = { listable: boolean; models: ListedModel[]; fetched_at: number | null };
 
 export type TestResult = { ok: boolean; latency_ms: number; reply: string | null; error: string | null; provider: string | null };

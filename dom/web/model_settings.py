@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dom.config import (
+    DEEPSEEK_EFFORT_ERROR,
     MAX_DESKTOP_STEPS,
     MEDIA_KEY_RULE,
     MIN_DESKTOP_STEPS,
@@ -310,11 +311,41 @@ class StudioFallbackView(BaseModel):
     data_policy: DataPolicy
 
 
+class ProviderPreset(BaseModel):
+    name: str
+    base_url: str
+    api_key_env: str | None = None
+    kind: Literal["openai", "openrouter"] = "openai"
+    model: str | None = None
+
+
+# Chat presets use the OpenAI-compatible endpoint, including DeepSeek (the separate
+# "deepseek" kind in this editor is for search).
+PROVIDER_PRESETS = (
+    ProviderPreset(name="OpenRouter", base_url="https://openrouter.ai/api/v1",
+                   api_key_env="OPENROUTER_API_KEY", kind="openrouter"),
+    ProviderPreset(name="OpenAI", base_url="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"),
+    ProviderPreset(name="Anthropic", base_url="https://api.anthropic.com/v1", api_key_env="ANTHROPIC_API_KEY"),
+    ProviderPreset(name="Google Gemini", base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                   api_key_env="GEMINI_API_KEY"),
+    ProviderPreset(name="Groq", base_url="https://api.groq.com/openai/v1", api_key_env="GROQ_API_KEY"),
+    ProviderPreset(name="DeepSeek", base_url="https://api.deepseek.com", api_key_env="DEEPSEEK_API_KEY", model="deepseek-flash"),
+    ProviderPreset(name="Mistral", base_url="https://api.mistral.ai/v1", api_key_env="MISTRAL_API_KEY"),
+    ProviderPreset(name="Together", base_url="https://api.together.ai/v1", api_key_env="TOGETHER_API_KEY"),
+    ProviderPreset(name="Fireworks", base_url="https://api.fireworks.ai/inference/v1", api_key_env="FIREWORKS_API_KEY"),
+    ProviderPreset(name="Ollama", base_url="http://localhost:11434/v1"),
+    ProviderPreset(name="LM Studio", base_url="http://localhost:1234/v1"),
+    ProviderPreset(name="llama.cpp", base_url="http://llama-server:8080/v1"),
+    ProviderPreset(name="vLLM", base_url="http://vllm:8000/v1"),
+)
+
+
 class ModelSettings(BaseModel):
     revision: str
     # Routing roles, then the decision roles (triage): triage has a primary and never fallbacks.
     roles: dict[SettingsRole, RoleView]
     providers: list[ProviderSetupView]
+    provider_presets: tuple[ProviderPreset, ...] = PROVIDER_PRESETS
     studio: dict[StudioChain, list[StudioFallbackView]]
     search_providers: list[SearchProviderInfo]
     restart_required: bool
@@ -402,9 +433,12 @@ def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     try:
         saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
     except ValidationError as exc:
-        # A key variable shared by a chat route and a studio backup is the owner's to fix: say which and why.
-        rule = MEDIA_KEY_RULE.partition("{name}")[2]
-        message = next((error["msg"] for error in exc.errors(include_input=False) if rule in error["msg"]), None)
+        # These validation messages use trusted templates and tell the owner how to fix the setting.
+        rules = (MEDIA_KEY_RULE.partition("{name}")[2], DEEPSEEK_EFFORT_ERROR)
+        message = next(
+            (error["msg"] for error in exc.errors(include_input=False) if any(rule in error["msg"] for rule in rules)),
+            None,
+        )
         if message is None:
             raise
         raise HTTPException(422, message.removeprefix("Value error, ")) from None
