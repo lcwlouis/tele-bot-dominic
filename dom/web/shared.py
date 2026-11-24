@@ -20,6 +20,7 @@ from fastapi.responses import Response
 from dom import memory_import, proposals, selfwork, skills, traits, turn_log
 from dom.agent import unfence
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
+from dom.proposals import soul_edit_problem
 from dom.skills import skill_diff
 from dom.telegram import gate, owner
 from dom.usage import check_model_allowed, model_request
@@ -41,7 +42,14 @@ SOUL_INSTRUCTIONS = (
     "Reply in your own voice, briefly: a few sentences at most. Never mention tools, models, prompts, files other than "
     "SOUL.md, or timings. "
     "Return only a JSON object: {\"reply\": string, \"edit\": null or {\"old\": string, \"new\": string}}. "
-    "Include an edit only when you and the owner have a concrete change in mind; otherwise edit is null. "
+    "This conversation is about you. The owner speaks of themselves as \"I\"; \"he\", \"Dom\" and \"you\" mean "
+    "you, never the owner. Only when the owner's own message names another person (\"my brother\", a friend) is a "
+    "\"he\" about them. For example, \"He hates chicken rice\" means you hate chicken rice, so propose that edit; "
+    "\"My brother is in rehab, he avoids parties\" is about the brother, so no edit. When the owner says what you are like, what you like or dislike, or how you should act, take it as "
+    "a change to your character and propose the edit in the same reply; you may say what you make of it, in character. "
+    "Never turn what the owner says about another person into a trait of yours. "
+    "Ask instead only when the change is unclear or clashes with SOUL.md. "
+    "Otherwise, include an edit only when you and the owner have a concrete change in mind; else edit is null. "
     "An edit's old text must occur exactly once in SOUL.md, copied character for character, and the new text replaces "
     "just those characters. "
     f"Each of old and new may contain at most {MAX_SOUL_EDIT} characters. "
@@ -576,6 +584,17 @@ MAX_SOUL_CHAT = 16_000  # characters in the whole conversation sent with one req
 SOUL_EDIT_DROPPED = "I had a change in mind, but I couldn't pin it to one exact place in SOUL.md. Ask me again and I'll quote it exactly."
 
 
+SOUL_UNAVAILABLE = "SOUL.md is unavailable"
+
+
+def _edit_problem(app: App, edit: dict) -> str | None:
+    """Why Dom's proposed soul edit can't be filed, or None. SOUL.md going unreadable mid-chat is a problem, not a crash."""
+    try:
+        return soul_edit_problem(app.home, edit["old"], edit["new"])
+    except (OSError, ValueError):
+        return SOUL_UNAVAILABLE
+
+
 async def soul_chat(app: App, turns: list[tuple[str, str]]) -> tuple[str, dict | None, int | None]:
     """Dom's next reply in the owner's conversation about SOUL.md, and the edit he proposes with it, if any.
 
@@ -602,12 +621,14 @@ async def soul_chat(app: App, turns: list[tuple[str, str]]) -> tuple[str, dict |
         *({"role": "user" if role == "owner" else "assistant", "content": text} for role, text in turns),
     ]
     chat_id = app.owner_id
-    try:
-        async with asyncio.timeout(30):
-            with model_request("chat", chat_id, partial(app.dispatch.turn_allowed, chat_id, "owner_dm")):
-                await check_model_allowed()
-                answer = await app.client.complete(messages, [], once=True)
-        data = json.loads(unfence(answer.get("content")))
+
+    async def ask(messages: list[dict]) -> tuple[str, str, dict | None]:
+        """One model answer: its raw text, the reply and the edit, if it is well formed."""
+        with model_request("chat", chat_id, partial(app.dispatch.turn_allowed, chat_id, "owner_dm")):
+            await check_model_allowed()
+            answer = await app.client.complete(messages, [], once=True)
+        raw = answer.get("content")
+        data = json.loads(unfence(raw))
         reply = data.get("reply") if isinstance(data, dict) else None
         if not isinstance(reply, str) or not reply.strip():
             raise ValueError("Dom didn't answer. Try again.")
@@ -617,13 +638,35 @@ async def soul_chat(app: App, turns: list[tuple[str, str]]) -> tuple[str, dict |
             or any(not isinstance(value, str) for value in edit.values()) or not edit["old"] or edit["old"] == edit["new"]
         ):
             edit = None  # a malformed edit is no edit; the reply still stands
+        return raw, reply.strip(), edit
+
+    try:
+        async with asyncio.timeout(30):
+            raw, reply, edit = await ask(messages)
     except ValueError as exc:
         error = str(exc) if not isinstance(exc, json.JSONDecodeError) else "Dom didn't answer clearly. Try again."
         raise OwnerError(error) from None
     except Exception as exc:
         log.warning("dashboard soul chat failed (%s)", type(exc).__name__)
         raise OwnerError("Couldn't get a reply from Dom. Try again.") from None
-    reply, proposal_id = reply.strip(), None
+    if edit is not None and (problem := _edit_problem(app, edit)):
+        # Models often quote SOUL.md loosely; one retry with the reason usually pins the edit down. If the retry
+        # fails too, or SOUL.md can't be read, the first reply stands and the edit is dropped with a sentence.
+        retry = [*messages, {"role": "assistant", "content": raw}, {"role": "user", "content": (
+            f"That edit can't be filed: {problem}. Return the same JSON again, with old copied character for "
+            "character from SOUL.md. A short whole line works best."
+        )}]
+        fixed = None
+        if problem != SOUL_UNAVAILABLE:
+            try:
+                async with asyncio.timeout(30):
+                    _, second_reply, second_edit = await ask(retry)
+                if second_edit is not None and _edit_problem(app, second_edit) is None:
+                    fixed = second_reply, second_edit
+            except Exception as exc:
+                log.info("soul edit retry failed (%s)", type(exc).__name__)
+        reply, edit = fixed or (f"{reply}\n\n{SOUL_EDIT_DROPPED}", None)
+    proposal_id = None
     if edit is not None:
         try:
             proposal_id = await app.proposals.create("soul_edit", "Soul edit from the dashboard", edit, "dashboard", notify=False)

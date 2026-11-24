@@ -14,7 +14,7 @@ from dom.store import Store
 _STATE_KEY = "chat_provider_budget"
 
 
-def _line(refusal: BudgetRefusal, tz: ZoneInfo) -> str:
+def budget_line(refusal: BudgetRefusal, tz: ZoneInfo) -> str:
     amount = f" (${refusal.limit_usd:.2f})" if refusal.limit_usd is not None else ""
     if refusal.source == "deepseek_credits":
         line = "DeepSeek has insufficient credits. Check your balance in DeepSeek → Top up."
@@ -73,7 +73,7 @@ class ProviderBudgetNotices:
                 active[window] = {"refusal": asdict(refusal), "until": expiry}
                 if notify and window not in notified:
                     notified[window] = expiry
-                    lines.append(_line(refusal, tz))
+                    lines.append(budget_line(refusal, tz))
             updated = {"route": route, "active": list(active.values()), "notified": notified}
             if updated != state:
                 await self._save(updated)
@@ -92,7 +92,7 @@ class ProviderBudgetNotices:
             if state["route"] != route:
                 return None
             lines = (
-                _line(BudgetRefusal(**item["refusal"]), tz)
+                budget_line(BudgetRefusal(**item["refusal"]), tz)
                 for item in state["active"] if item["until"] is None or now < datetime.fromisoformat(item["until"])
             )
             return " ".join(dict.fromkeys(lines)) or None

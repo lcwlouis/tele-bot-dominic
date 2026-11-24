@@ -11,5 +11,5 @@
     <h1 tabindex="-1" class="mt-2 text-[2rem] leading-tight font-semibold tracking-tight outline-none sm:text-[2.5rem]">{title}</h1>
     {#if subtitle}<p class="mt-2 max-w-2xl text-[0.95rem] text-muted-foreground">{subtitle}</p>{/if}
   </div>
-  {@render aside?.()}
+  {#if aside}<div class="flex w-full flex-wrap items-center gap-2 empty:hidden sm:w-auto">{@render aside()}</div>{/if}
 </div>
