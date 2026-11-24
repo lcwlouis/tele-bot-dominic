@@ -150,33 +150,53 @@ of the replies.
   and legal requirements. The owner must confirm a paid project explicitly
   with `paid = true`. [Speech generation](https://ai.google.dev/gemini-api/docs/speech-generation) ·
   [Gemini API terms](https://ai.google.dev/gemini-api/terms).
-- **Everyday and special video notes** use the local renderer first, then an
-  optional `[[studio.video_fallbacks]]` chain (`provider = "openrouter_video"`,
-  E66). OpenRouter's job API: `POST /api/v1/videos` returns 202 with a job `id`;
-  `GET /api/v1/videos/{id}` reports `pending`, `in_progress`, `completed` (with
-  `usage.cost`) or `failed`; `GET /api/v1/videos/{id}/content?index=0` with the
-  API key downloads the MP4. Dom builds both URLs from the fixed origin and the
-  validated job ID and never follows the job's own URLs. Image-to-video takes
-  `frame_images` with `frame_type: "first_frame"`; most current models list
-  `supported_frame_images` (Grok Imagine Video 1.5 Lite, Seedance, Wan, Kling,
-  Veo, Hailuo), so Dom sends the outfit's approved portrait as the first frame
-  under the photo reference rules. `generate_audio` (default on for models with
-  audio) makes the model's own voice from the quoted line. Dom picks resolution, aspect and
-  duration from the model's published capabilities (below). Cost: Grok Imagine Video 1.5 Lite lists 2¢ per
-  output second at 480p plus 1¢ per input image, about $0.09–$0.17 a note; Veo
-  3.1 Fast lists $0.10–$0.12 per second (and no 1:1). Latency is about 30 s to a
-  few minutes, inside the 185 s and 425 s video deadlines that also cover polling.
-  OpenRouter keeps outputs for download, so "No video endpoint currently offers
-  Zero Data Retention, so `zdr: true` fails routing"; `data_collection: "deny"`
-  works. Config validation refuses a video backup set to `zdr`. The clip is
-  re-encoded with ffmpeg as a Telegram video note (square, at most 640 px, H.264
-  and AAC, under 60 s). Without a backup, failed video still becomes a voice note
-  through the voice chain, then text.
-  [Video generation guide](https://openrouter.ai/docs/guides/overview/multimodal/video-generation) ·
-  [Video request API](https://openrouter.ai/docs/api/api-reference/video-generation/create-videos) ·
-  [Video models](https://openrouter.ai/api/v1/videos/models) ·
-  [Provider selection: `zdr` and `data_collection`](https://openrouter.ai/docs/guides/routing/provider-selection) ·
-  [ZDR and guardrails](https://openrouter.ai/docs/guides/features/zdr).
+- **Everyday and special video notes (E67).** After screening and quota
+  reservation, the local video renderer gets the first attempt. The optional
+  `[[studio.video_fallbacks]]` chain uses the local voice path if ready or its
+  configured cloud voice backups (Achird). Speech generation uses its own voice
+  timeout inside the shared cloud video deadline, records `studio_voice` usage,
+  and uses no voice-note quota when a video is delivered. If the avatar or
+  Telegram video send fails, the existing voice fallback can reuse the Ogg
+  audio it already made. If voice delivery is unavailable, Dom sends text.
+- **Avatar request.** The
+  [OpenRouter submission schema](https://openrouter.ai/docs/api/api-reference/video-generation/submit-a-video-generation-request)
+  defines `input_references` entries
+  `{type: "image_url", image_url: {url}}` and
+  `{type: "audio_url", audio_url: {url}}`.
+  [Avatar IV](https://openrouter.ai/heygen/avatar-iv) documents lip-sync to a
+  supplied audio track and advertises 1:1 at 720p and $0.05/s.
+  [Avatar 6](https://openrouter.ai/heygen/heygen-avatar-6) and
+  [Avatar 6 Turbo](https://openrouter.ai/heygen/heygen-avatar-6-turbo) explicitly
+  derive the video duration from one audio track. Dom lets the audio determine
+  the duration for all three. Avatar 6 models publish 1080p as their smallest
+  resolution and do not advertise an aspect-ratio parameter. Dom square-crops
+  their output for Telegram. The picker and save probe join
+  [video settings and prices](https://openrouter.ai/api/v1/videos/models) to
+  [input and output modalities](https://openrouter.ai/api/v1/models?output_modalities=video)
+  and require a documented lip-sync avatar with both image and audio inputs.
+- **Media and motion.** The request uses inline data URLs for the approved PNG
+  (up to 4 MiB) and mono 24 kHz PCM WAV (up to 10 seconds and about 480 KB).
+  OpenRouter's [official video skill](https://github.com/OpenRouterTeam/skills/tree/main/skills/openrouter-video)
+  documents image data URLs. Its schema illustrates the audio field with an
+  HTTPS MP3 URL. [HeyGen's own audio API guide](https://developers.heygen.com/audio-to-video)
+  documents WAV and MP3 asset uploads up to 32 MB and audio-driven rendering
+  up to 30 minutes. Those limits apply to direct HeyGen calls. OpenRouter does
+  not publish the HeyGen route's attachment limits or guarantee inline WAV
+  or Ogg support.
+  Confirm inline WAV acceptance live before enabling the backup. Dom keeps
+  the assets inline to avoid uploading private media to a public host.
+  Avatar IV gets a natural `motion_prompt` under `provider.options.heygen`,
+  with background removal off and no caption, title or voice ID. Avatar 6
+  receives only a motion prompt in `prompt`. Dom uses neither an inferred
+  duration nor a transcript for avatar submission.
+- **Job and privacy.** `POST /api/v1/videos` accepts the job. Dom polls the
+  fixed-origin job URL, downloads authenticated content, and uses ffmpeg to
+  encode square H.264/AAC MP4 at up to 640px. It always maps the original voice
+  track into the output. OpenRouter retains video output for download, so the
+  separate media key allows `no_training` or `any`. The former sets
+  `data_collection: "deny"`, which excludes training endpoints and can still
+  permit retention.
+  [Video generation guide and billing response](https://openrouter.ai/docs/guides/overview/multimodal/video-generation).
 - **Data policies (E66).** Only studio backups take
   `data_policy = "zdr" | "no_training" | "any"` (default `zdr`), sent as
   `provider.zdr = true`, `provider.data_collection = "deny"` or nothing. Every
@@ -184,15 +204,13 @@ of the replies.
   `zdr`, and a backup's key variable may not be one a chat route uses. The
   account's "ZDR endpoints only" setting and ZDR guardrails apply on top and win.
   See [privacy](../../privacy.md#separate-media-key) for the media key setup.
-- **Video request and cost.** Dom reads the model's published capabilities
-  (`/videos/models`) when it generates: the squarest aspect ratio (refused past
-  4:3), the smallest resolution from 480p up and the shortest duration that fits
-  the line, at most 10 s. The save-time test refuses a model that can't make that.
-  An accepted job is recorded at once at its estimated cost (per-second price for
-  that resolution × duration, plus the reference image; a $1 ceiling when the
-  list prices tokens), so it counts toward the spend cap before the next submit.
-  The reported cost replaces it when the job ends, by a background check for up to
-  30 minutes after the deadline; an unresolved estimate stays.
+- **Video deadline and cost.** The cloud attempt shares one 185-second everyday
+  or 425-second special deadline across the voice, avatar chain, submit, poll,
+  download and encode. Record accepted jobs at the advertised rate for the
+  selected resolution times actual audio duration plus the per-image price,
+  subject to any listed billing minimum. The estimate counts toward the spend
+  cap immediately and is replaced by `usage.cost`, with background polling for
+  up to 30 minutes after a deadline.
 - **Switches.** A studio switch can be turned on only when something can serve
   it: the local studio (enabled with a base URL) or a backup for that kind. The
   profile photo needs the local studio's portraits. It changes at most every
@@ -201,8 +219,9 @@ of the replies.
 Store approved cloud reference PNGs as `studio-portraits/<outfit>.png` on
 the bot host, outside the memory directories. This keeps the reference available
 during a complete Studio outage. Set `supports_reference = false` for a model
-that lacks image input. A missing or unsupported reference skips that provider
-unless `allow_without_reference = true`.
+that lacks image input for photos. A missing or unsupported photo reference
+skips that provider unless `allow_without_reference = true`. Avatar video always
+requires the approved portrait.
 
 Credentials stay in `.env` and each variable is paired with its provider's
 fixed HTTPS origin. Cloud requests use per-kind deadlines, exact MIME checks,

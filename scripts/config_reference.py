@@ -104,9 +104,11 @@ def render() -> str:
         "## Studio",
         table(fields(StudioConfig, "studio.", exclude={"limits", "timeouts"})),
         "### Studio cloud fallbacks",
-        "Add one `[[studio.voice_fallbacks]]` or `[[studio.image_fallbacks]]` table per provider, "
+        "Add one `[[studio.voice_fallbacks]]`, `[[studio.image_fallbacks]]`, or `[[studio.video_fallbacks]]` table per provider, "
         "in the order they should be tried after the local studio.",
         table(fields(StudioFallback, "studio.<kind>_fallbacks[].")),
+        "Video models must support lip-sync driven by an approved portrait and Dom’s voice audio. "
+        "Replace older text-to-video backups with an avatar such as `heygen/avatar-iv`. The reference flags apply to photos.",
         "### Studio limits",
         table([
             *fields(StudioLimits, "studio.limits.", exclude={"owner_dm", "friend_dm", "group"}),

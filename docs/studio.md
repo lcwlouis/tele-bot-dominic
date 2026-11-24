@@ -83,19 +83,18 @@ video for download), so it takes `no_training` or `any`:
 ```toml
 [[studio.video_fallbacks]]
 provider = "openrouter_video"
-model = "x-ai/grok-imagine-video-1.5-lite"
+model = "heygen/avatar-iv"
 api_key_env = "OPENROUTER_MEDIA_API_KEY"
 data_policy = "no_training"
 ```
 
-Dom sends the outfit's approved portrait as the first frame and asks for the
-squarest, smallest clip the model publishes (at most 4:3, from 480p up, at most
-10 seconds, by the length of the line) with the model's own voice. The backup
-needs its own key variable: one a model role uses is refused. Dom polls the job within the video deadline, downloads it through the
-authenticated content URL and re-encodes it as a Telegram video note (square,
-at most 640 px, H.264 with AAC, under 60 s). The cloud voice is the model's, not
-Dom's cloned one. See [provider data handling](privacy.md#separate-media-key)
-for a separate media key.
+Dom makes the audio through the voice note path, then sends the voice track and
+the outfit's approved portrait to the avatar for lip-sync. Avatar IV renders
+at 1:1 and 720p. The cloud job shares one deadline from speech through encoding.
+Dom downloads the clip through OpenRouter's authenticated content URL and
+maps his own audio into the Telegram video note. If the avatar fails, eligible
+voice-note fallback can reuse that audio. See [provider data handling](privacy.md#separate-media-key)
+for the required separate media key.
 
 Voice and video conversion require `ffmpeg` with `libopus`, `libx264` and `aac` on the **bot host**
 (Debian's and Raspberry Pi OS's `ffmpeg` package has them). Copy each

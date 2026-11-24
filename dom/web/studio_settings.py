@@ -44,7 +44,7 @@ from dom.web.model_settings import (
     _write,
     validated,
 )
-from dom.studio.cloud import VideoUnsupported, video_models, video_plan
+from dom.studio.cloud import VideoUnsupported, video_models, video_plan, video_rate
 from dom.web.provider_settings import ListedModelView, ModelListView, _http
 from dom.web.shared import owner_app
 
@@ -202,10 +202,19 @@ def _apply(change: Callable[[Snapshot], Snapshot], current: Snapshot) -> Snapsho
 async def _list(app: App, provider: str, *, refresh: bool) -> model_lists.ModelList:
     base = StudioFallback.model_construct(provider=provider).base_url
     address = base + MODEL_LISTS[provider]
+    if provider == "openrouter_video":
+        address += "?input=portrait-and-audio"
     if not refresh and (listed := await model_lists.cached(app.store, address, None)):
         return listed
     secrets = await asyncio.to_thread(model_lists.secret_values, app.config)
-    models = await model_lists.fetch(_http(app), base, None, secrets=secrets, path=MODEL_LISTS[provider])
+    if provider == "openrouter_video":
+        try:
+            entries = await video_models(_http(app), base)
+            models = model_lists.parse([entry for model, entry in entries.items() if model == entry["id"]], secrets)
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+            raise model_lists.ListUnavailable("Could not load OpenRouter's avatar models.") from exc
+    else:
+        models = await model_lists.fetch(_http(app), base, None, secrets=secrets, path=MODEL_LISTS[provider])
     return await model_lists.remember(app.store, address, None, models)
 
 
@@ -223,6 +232,15 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
     try:
         _check_keys(config, [ProviderEndpoint(base_url=backup.base_url, api_key_env=backup.api_key_env)])
         key = await asyncio.to_thread(config.secret, backup.api_key_env)
+        if backup.provider == "openrouter_video":
+            async with asyncio.timeout(TEST_TIMEOUT):
+                entry = (await video_models(_http(app), backup.base_url)).get(backup.model)
+            if entry is None:
+                raise VideoUnsupported("Pick a lip-sync avatar that takes both a portrait and an audio track.")
+            plan = video_plan(entry)
+            shape = plan.get("aspect_ratio", "square Telegram crop")
+            price = video_rate(entry, plan)
+            reply = f"The key works. Notes use {plan['resolution']} video ({shape}) at ${price:g} per second."
         if not key:
             return TestResult(ok=False, latency_ms=0, error=MISSING_KEY)
         if backup.provider == "gemini_tts":
@@ -231,28 +249,12 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
         else:
             await _get(app, backup.base_url + "/key", {"Authorization": f"Bearer {key}"})
             if backup.provider == "openrouter_video":
-                # Checked as a note will ask for it: a square or near-square clip of at most 10 s.
-                async with asyncio.timeout(TEST_TIMEOUT):
-                    entry = (await video_models(_http(app), backup.base_url)).get(backup.model)
-                if entry is None:
-                    return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000),
-                                      error="OpenRouter doesn't list that model for video. Pick one from the list.")
-                plan = video_plan(entry, "A short hello to check what this model can make.")
-                frames = "first_frame" in (entry.get("supported_frame_images") or [])
-                if not frames and not backup.allow_without_reference:
-                    return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000),
-                                      error="This model can't start from Dom's portrait, so it would never be used. "
-                                            "Pick one that takes a first frame, or allow notes without the portrait.")
-                reply = (f"The key works; notes will be {plan['aspect_ratio']}"
-                         f"{', ' + plan['resolution'] if 'resolution' in plan else ''}, {plan['duration']} s"
-                         f"{', with sound' if plan.get('generate_audio') else ', silent'}"
-                         f"{'' if frames else ', and it takes no first frame, so no portrait'}.")
                 return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=reply)
             listed = await _list(app, backup.provider, refresh=False)
             if not any(item.id == backup.model for item in listed.models):
                 listed = await _list(app, backup.provider, refresh=True)
             if not any(item.id == backup.model for item in listed.models):
-                kind = {"openrouter_image": "image", "openrouter_tts": "speech", "openrouter_video": "video"}[backup.provider]
+                kind = {"openrouter_image": "image", "openrouter_tts": "speech"}[backup.provider]
                 return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000),
                                   error=f"OpenRouter doesn't list that model for {kind}. Pick one from the list.")
             reply = "The key works and OpenRouter lists the model."

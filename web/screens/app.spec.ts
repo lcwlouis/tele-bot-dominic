@@ -14,7 +14,7 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   // Provider setup, and a role's editor with its model picker open on the provider's fetched list.
   { name: "settings-provider-editor", path: "/app/system", heading: "Settings", tab: "Providers", click: "Add provider" },
   { name: "settings-model-picker", path: "/app/system", heading: "Settings", click: "Edit Chat", fill: ["Model ID", "example/c"] },
-  // A studio cloud backup's editor: provider, model from OpenRouter's video list, key, reference rules and data policy.
+  // A studio cloud backup's editor: provider, model from OpenRouter's video list, key, voice path and data policy.
   { name: "settings-studio-backup", path: "/app/system", heading: "Settings", click: "Add backup for video notes" },
   { name: "chats", path: "/app/chats", heading: "Chats" },
   { name: "chats-personality", path: "/app/chats", heading: "Chats", click: "Personality" },
@@ -255,7 +255,7 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Move up Voice notes backup 2" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Voice notes: order saved." })).toBeVisible();
     await page.getByRole("button", { name: "Add backup for video notes" }).click();
-    await page.getByLabel("Model", { exact: true }).fill("example/video-fast");
+    await page.getByLabel("Model", { exact: true }).fill("heygen/heygen-avatar-6-turbo");
     await page.getByLabel("Key variable").last().fill("EXAMPLE_VOICE_KEY");
     await page.getByRole("button", { name: "Add backup", exact: true }).click();
     await expect(page.getByRole("status").filter({ hasText: "Video notes: backup saved." })).toBeVisible();
@@ -264,7 +264,7 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Remove Video notes backup 2" }).click();
     await page.getByRole("alertdialog").getByRole("button", { name: "Remove" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Video notes: backup removed." })).toBeVisible();
-    await expect(page.getByText("example/video-fast")).toBeVisible();
+    await expect(page.getByText("heygen/heygen-avatar-6-turbo")).toBeVisible();
 
     // Triage is edited and tested like any role; its test is a real decisions request.
     await page.getByRole("button", { name: "Edit Triage" }).click();

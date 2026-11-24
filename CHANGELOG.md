@@ -7,7 +7,7 @@ named `vX.Y.Z`.
 ## [Unreleased]
 
 - Studio cloud backups are edited on Settings → Models: add, edit, test, remove and reorder voice, photo and video backups, with OpenRouter's model list for each kind. Saving checks the key and the model without making any media.
-- Round video notes can fall back to OpenRouter video when the local studio can't make them. Dom sends the outfit's portrait as the first frame and turns the clip into a Telegram video note.
+- Round video notes can fall back to OpenRouter video when the local studio can't make them. Dom makes the voice line first and lip-syncs the approved outfit portrait to it. If the avatar fails, voice fallback reuses the generated audio. Replace legacy text-to-video backups with a supported lip-sync avatar.
 - Data policy for studio cloud backups only: zero data retention (the default), no training, or any endpoint. Every chat route stays on zero data retention, and a backup's key variable may not be one a chat route uses. See docs/privacy.md for a separate media key.
 - Upgrade note: a studio backup that shares a key variable with a model role (such as `OPENROUTER_API_KEY`) now stops config.toml from loading. Give the backups their own key variable (for example `OPENROUTER_MEDIA_API_KEY`) before upgrading.
 - A cloud video job's estimated cost counts toward the daily spend cap as soon as it is accepted, and is corrected to the reported cost when the job ends.

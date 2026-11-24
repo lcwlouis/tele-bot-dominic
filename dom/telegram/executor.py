@@ -703,6 +703,8 @@ async def deliver_studio(
     client = app.studio
     now = app.dispatch.now
     budget = FloodBudget()
+    video_voice: bytes | None = None
+    video_voice_attempted = False
 
     async def allowed(kind: Kind) -> bool:
         return (
@@ -711,7 +713,7 @@ async def deliver_studio(
             and await app.dispatch._approved(chat_id)
         )
 
-    async def generate(kind: Kind, text: str) -> bool | None:
+    async def generate(kind: Kind, text: str, *, reuse_video_voice: bool = False) -> bool | None:
         # None is a refused job. A failed video job may still fall back to an allowed voice note.
         if not await allowed(kind):
             return None
@@ -719,14 +721,16 @@ async def deliver_studio(
         cloud = app.cloud_studio
         cloud_ready = cloud is not None and studio_providers(app.config.studio, kind)
         voice_backup = cloud is not None and studio_providers(app.config.studio, "voice")
-        if not local_ready and not cloud_ready and not (kind in {"video_note", "special"} and voice_backup):
+        if not reuse_video_voice and not local_ready and not cloud_ready and not (
+            kind in {"video_note", "special"} and voice_backup
+        ):
             return None
         async with app.studio_quota.reserve(app.config.studio, scope, chat_id, kind, now()) as reserved:
             if not reserved or not await allowed(kind):
                 return None
             if kind == "voice":
                 action, filename, send = "record_voice", "voice.ogg", app.bot.send_voice
-                request = client.voice(text) if local_ready else None
+                request = client.voice(text) if local_ready and not reuse_video_voice else None
             elif kind == "photo":
                 action, filename, send = "upload_photo", "photo.png", app.bot.send_photo
                 request = client.image(text, actions.outfit) if local_ready else None
@@ -738,13 +742,31 @@ async def deliver_studio(
                     return False
                 return not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
 
-            if request is None and not cloud_ready:
+            async def make_video_voice() -> bytes | None:
+                nonlocal video_voice, video_voice_attempted
+                video_voice_attempted = True
+                if client is not None and client.ready:
+                    video_voice = await client.voice(text)
+                    if video_voice is not None:
+                        await asyncio.shield(app.dispatch.usage.record(
+                            "studio_voice", "local-studio", "local", {}, chat_id,
+                        ))
+                if video_voice is None and cloud is not None:
+                    video_voice = await cloud.generate(app.config, "voice", text, None, chat_id, cloud_allowed)
+                return video_voice
+
+            if request is None and not cloud_ready and not reuse_video_voice:
                 return False
             indicator = asyncio.create_task(_studio_indicator(app.bot, chat_id, thread_id, action))
             try:
-                data = await request if request is not None else None
-                if data is None and cloud_ready:
-                    data = await cloud.generate(app.config, kind, text, actions.outfit, chat_id, cloud_allowed)
+                data = video_voice if reuse_video_voice else (await request if request is not None else None)
+                if data is None and cloud_ready and not reuse_video_voice:
+                    if kind in {"video_note", "special"}:
+                        data = await cloud.generate_video(
+                            app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice,
+                        )
+                    else:
+                        data = await cloud.generate(app.config, kind, text, actions.outfit, chat_id, cloud_allowed)
             finally:
                 indicator.cancel()
                 await asyncio.gather(indicator, return_exceptions=True)
@@ -786,8 +808,8 @@ async def deliver_studio(
             video = actions.video_note
             kind = "special" if video.special else "video_note"
             result = await generate(kind, video.text)
-            if result is False and await allowed(kind) and await generate("voice", video.text):
-                result = True
+            if result is False and await allowed(kind) and (not video_voice_attempted or video_voice is not None):
+                result = await generate("voice", video.text, reuse_video_voice=video_voice_attempted)
             if not result:
                 await fallback(kind, video.text)
         if actions.image:
