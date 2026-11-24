@@ -171,7 +171,9 @@ test.describe("interactions under the CSP", () => {
     // A studio switch nothing can serve stays off and says what to set up; the profile photo needs the local studio.
     await expect(page.getByRole("switch", { name: "Match the Everywhere preset’s profile photo" })).toBeDisabled();
     await expect(page.getByText("Set up the local studio first", { exact: false })).toBeVisible();
-    await expect(page.getByRole("switch", { name: "Send round video notes" })).toBeEnabled();  // a video backup serves it
+    // The preview's video backup has no key value yet, so it can't serve the switch either.
+    await expect(page.getByRole("switch", { name: "Send round video notes" })).toBeDisabled();
+    await expect(page.getByText("Set up the studio or a video backup first.").first()).toBeVisible();
     await page.getByLabel("Change at most every").click();
     await page.getByRole("option", { name: "Month" }).click();
     await expect(page.getByRole("status").filter({ hasText: "changes at most every month" })).toBeVisible();

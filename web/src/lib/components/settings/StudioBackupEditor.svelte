@@ -141,8 +141,9 @@
       <p id={`${id}-key-hint`} class="text-xs text-muted-foreground sm:col-span-2">
         The name of a variable in <code class="font-mono">.env</code>, never the key itself.
         {#if openrouter}
-          A separate media key such as <code class="font-mono">OPENROUTER_MEDIA_API_KEY</code> keeps its own OpenRouter
-          guardrail, so chat keeps zero data retention. Save first, then add its value to <code class="font-mono">.env</code>.
+          Use a media-only key such as <code class="font-mono">OPENROUTER_MEDIA_API_KEY</code>: a key the model roles use
+          can't serve a backup, so chat always keeps zero data retention. Save first, then add its value to
+          <code class="font-mono">.env</code>.
         {/if}
       </p>
       <div class="grid gap-1.5 sm:col-span-2">

@@ -31,7 +31,7 @@
   import ProviderEditor from "$lib/components/settings/ProviderEditor.svelte";
   import RoleEditor from "$lib/components/settings/RoleEditor.svelte";
   import {
-    ACCOUNT_ZDR_NOTE, DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, host, seconds, slotLabel, useLabel,
+    DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, host, seconds, slotLabel, useLabel,
   } from "$lib/components/settings/roles";
   import StudioBackupEditor from "$lib/components/settings/StudioBackupEditor.svelte";
   import { CHAIN_INFO, CHAINS, STUDIO_PROVIDERS } from "$lib/components/settings/studio";
@@ -425,16 +425,6 @@
           {provider.base_url}{provider.api_key_env ? ` · ${provider.api_key_env}` : ""}
         </p>
         {#if provider.api_key_env && !provider.key_set}<p class="text-sm text-coral">Add {provider.api_key_env} to .env</p>{/if}
-        {#if provider.kind === "openrouter"}
-          <p class="text-xs text-muted-foreground">
-            <span class="font-medium text-foreground">{POLICY_INFO[provider.data_policy].label}.</span> {POLICY_INFO[provider.data_policy].line}
-          </p>
-          {#if provider.data_policy !== "zdr" && provider.uses.length}
-            <p class="text-sm text-coral">
-              Friends' and group messages sent through this provider may be kept by its endpoints. {ACCOUNT_ZDR_NOTE}
-            </p>
-          {/if}
-        {/if}
         {#if search}
           <p class="text-xs text-muted-foreground">
             {search.data_retention}

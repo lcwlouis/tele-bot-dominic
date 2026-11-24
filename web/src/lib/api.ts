@@ -97,7 +97,8 @@ export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily";
 export type Effort = string;
 export type ProviderKind = "openai" | "openrouter" | "jev" | "searxng" | "deepseek" | "tavily";
 
-/** What OpenRouter endpoints may do with a route's content: zdr is the default (dom/config.py). */
+/** What OpenRouter endpoints may do with a studio backup's request: zdr is the default (dom/config.py). Chat routes
+ * always use zdr. */
 export type DataPolicy = "zdr" | "no_training" | "any";
 
 export type Endpoint = {
@@ -106,7 +107,6 @@ export type Endpoint = {
   api_key_env: string | null;
   reasoning_effort: Effort | null;
   provider: SearchProviderId | null;
-  data_policy: DataPolicy;
 };
 
 export type ProviderView = Endpoint & {
@@ -140,7 +140,6 @@ export type ProviderSetup = {
   saved: boolean;
   listable: boolean;
   uses: { role: SettingsRole; index: number }[];
-  data_policy: DataPolicy;
 };
 
 export type ModelSettings = {

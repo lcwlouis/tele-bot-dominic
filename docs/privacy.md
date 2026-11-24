@@ -109,7 +109,7 @@ Cloudflare. Keep local bearer-token testing on loopback.
 - **Web search** tries the providers configured under `[models.search]` and
   `[[models.search.fallbacks]]` in order. Self-hosted **SearXNG** keeps queries
   on your own network until SearXNG forwards them to its configured upstream
-  engines. **OpenRouter web** sends its route's data policy (`provider.zdr` by default) under your OpenRouter key.
+  engines. **OpenRouter web** requests `provider.zdr` under your OpenRouter key.
   **DeepSeek web search** (`api.deepseek.com/v1/tools/search`) and **Tavily**
   (`api.tavily.com/search`) send queries to their cloud search APIs under each
   provider's own data policy. A query drafted in the owner DM can contain
@@ -169,16 +169,18 @@ Cloudflare. Keep local bearer-token testing on loopback.
   owner was answered privately, never the answer.
 - **Escalation model** (`[models.escalation]`, or the drafting providers when it
   is unset) receives the whole owner-DM task prompt, owner notes included, only
-  after the owner taps Switch or Retry on its card. It never runs in other chats. OpenRouter calls carry the
-  route's data policy (zero data retention by default). To estimate the cost, Dom fetches OpenRouter's public model
+  after the owner taps Switch or Retry on its card. It never runs in other chats. OpenRouter calls request
+  `provider.zdr`. To estimate the cost, Dom fetches OpenRouter's public model
   price list (`openrouter.ai/api/v1/models`), which carries no chat data.
 
 ## OpenRouter data policies
 
-Every route that reaches OpenRouter carries a data policy: each model role slot (chat, fallback, media, drafting,
-search, escalation, triage), each saved `[providers.<name>]` table and each studio cloud backup. Dom turns it into
-OpenRouter's provider routing preferences on every request
-([provider selection](https://openrouter.ai/docs/guides/routing/provider-selection)):
+Every route that carries chat content always asks OpenRouter for zero data retention (`provider.zdr = true`): the
+model roles (chat, fallback, media, drafting, search, escalation), triage and the leak check (Jev), the doctor's
+probes and the escalation price list. None of them can be configured otherwise.
+
+Only the studio's cloud backups (images, speech and video) take a `data_policy`, which Dom turns into OpenRouter's
+provider routing preferences ([provider selection](https://openrouter.ai/docs/guides/routing/provider-selection)):
 
 | `data_policy` | Sent as | What it guarantees |
 | --- | --- | --- |
@@ -186,22 +188,22 @@ OpenRouter's provider routing preferences on every request
 | `no_training` | `provider.data_collection = "deny"` | Excludes endpoints that may train on or sell the data. Endpoints that keep prompts and responses are still allowed. |
 | `any` | nothing | Any endpoint, including ones that may train on what is sent. |
 
-ZDR is the default everywhere, so a config.toml without `data_policy` behaves as before. The Providers tab sets the
-policy for a provider and every role slot that uses it; the studio backups editor sets it per backup. Every role
-carries chat content (friends' and group messages, owner notes for escalation), so the dashboard warns when one of
-them is set below ZDR.
+A backup sends only the screened line or scene and, for photos and video, the outfit's approved portrait. OpenRouter
+video keeps each finished video for download, so a video backup takes `no_training` or `any`.
+
+A backup's key variable may not be one a chat route uses (a model role or a saved provider), in either direction:
+config validation and the dashboard refuse it, so a key set up for media can never carry chat content.
 
 OpenRouter's own settings apply on top of the request and can only make it stricter
 ([ZDR](https://openrouter.ai/docs/guides/features/zdr),
 [guardrails](https://openrouter.ai/docs/guides/features/guardrails)): the account's privacy settings can enforce
 ZDR per model group, a guardrail assigned to a key or a member can too, and if any of them enforces ZDR the request
-gets ZDR whatever its own flag says. A route set to `no_training` or `any` is therefore still refused while the
+gets ZDR whatever its own flag says. A backup set to `no_training` or `any` is therefore still refused while the
 account's "ZDR endpoints only" setting (or a ZDR guardrail on its key) is on.
 
 ### Separate media key
 
-To let images, speech and video use non-ZDR endpoints while every chat route keeps hard ZDR, give the studio backups
-their own OpenRouter key:
+To let images, speech and video use non-ZDR endpoints while chat keeps hard ZDR at every layer:
 
 1. Keep the existing key (`OPENROUTER_API_KEY`) for the model roles, Jev and search. In OpenRouter, create a
    guardrail that enforces ZDR for every model group, and assign it to that key under **API Keys**.
@@ -213,8 +215,8 @@ their own OpenRouter key:
 4. In Settings → Models → Studio cloud backups, add each backup with the media key variable, save, then add the key's
    value to `.env` and press Test.
 
-The chat key's guardrail then keeps ZDR for chat even if a role were set below it by mistake. A guardrail has no
-training switch of its own: `no_training` comes from the request.
+Chat then keeps ZDR three ways: Dom's requests, the chat key's guardrail, and the rule that the media key never serves
+a chat route. A guardrail has no training switch of its own: `no_training` comes from the request.
 
 ## Between chats
 

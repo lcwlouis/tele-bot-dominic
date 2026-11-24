@@ -19,6 +19,16 @@ from tghelpers import GROUP, OWNER, tg
 
 VIDEO = StudioFallback(provider="openrouter_video", model="x-ai/grok-imagine-video-1.5-lite", api_key_env="ROUTER_TEST",
                        data_policy="no_training")
+# As OpenRouter's /videos/models publishes it (fictional prices in the shape of the real list).
+VIDEO_ENTRY = {
+    "id": VIDEO.model, "supported_durations": list(range(1, 16)), "supported_resolutions": ["480p", "720p", "1080p"],
+    "supported_aspect_ratios": ["16:9", "9:16", "1:1", "4:3"], "supported_frame_images": ["first_frame"],
+    "generate_audio": True, "pricing_skus": {
+        "cents_per_image_input": "1", "cents_per_video_output_second_480p": "2",
+        "cents_per_video_output_second_720p": "3", "cents_per_video_output_second_1080p": "14",
+    },
+}
+ESTIMATE = 0.09  # 4 s at 2 cents plus 1 cent for the portrait
 needs_ffmpeg = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="requires ffmpeg")
 
 
@@ -41,9 +51,12 @@ def fast_polling(monkeypatch):
     monkeypatch.setattr(cloud, "VIDEO_POLL_SECONDS", 0)
 
 
-def serve_video(cloud_server, clip, *, polls=1, status="completed", content=None):
+def serve_video(cloud_server, clip, *, polls=1, status="completed", content=None, entry=VIDEO_ENTRY):
     """A job that is pending for `polls` polls, then ends in `status` and serves `content` (the clip by default)."""
     state = {"polls": 0}
+
+    async def models(request):
+        return web.json_response({"data": [entry]})
 
     async def create(request):
         assert request.headers["authorization"] == f"Bearer {ROUTER_KEY}"
@@ -64,7 +77,7 @@ def serve_video(cloud_server, clip, *, polls=1, status="completed", content=None
             return await content(request)
         return web.Response(body=clip, content_type="video/mp4")
 
-    cloud_server[2].update({"/api/v1/videos": create, "/api/v1/videos/job-1": poll,
+    cloud_server[2].update({"/api/v1/videos/models": models, "/api/v1/videos": create, "/api/v1/videos/job-1": poll,
                             "/api/v1/videos/job-1/content": download})
     return state
 
@@ -78,6 +91,11 @@ def record_notes(app):
 
     app.bot.send_video_note = send
     return sent
+
+
+def created(cloud_server):
+    """The job requests Dom submitted (the payloads of POST /videos)."""
+    return [payload for path, payload in cloud_server[1] if path == "/api/v1/videos"]
 
 
 def portrait(app, outfit="casual"):
@@ -111,16 +129,18 @@ async def test_video_job_polls_downloads_and_makes_a_round_note(make_app, cloud_
     assert probe == ["h264,480,480", "aac"]  # square, at most 640 px, H.264 with sound
     paths = [path for path, _ in cloud_server[1]]
     # The job's own URLs are never followed: every request goes to the fixed origin.
-    assert paths == ["/api/v1/videos", "/api/v1/videos/job-1", "/api/v1/videos/job-1", "/api/v1/videos/job-1",
+    assert paths == ["/api/v1/videos/models", "/api/v1/videos", "/api/v1/videos/job-1", "/api/v1/videos/job-1", "/api/v1/videos/job-1",
                      "/api/v1/videos/job-1/content"]
-    payload = cloud_server[1][0][1]
+    [payload] = created(cloud_server)
     assert payload["provider"] == {"data_collection": "deny"}
     assert payload["frame_images"][0]["frame_type"] == "first_frame"
     assert payload["frame_images"][0]["image_url"]["url"].startswith("data:image/png;base64,")
     assert (payload["aspect_ratio"], payload["resolution"], payload["duration"], payload["generate_audio"]) == (
         "1:1", "480p", 4, True)
     assert '"Hey, good morning to you"' in payload["prompt"]
-    assert usage_rows(app)[-1] == ("studio_video", VIDEO.model, "openrouter.ai", OWNER, 0, 0, 0.13, 1)
+    # The estimate counted while the job ran; the reported cost replaced it.
+    assert usage_rows(app) == [("studio_video", VIDEO.model, "openrouter.ai", OWNER, 0, 0, 0.13, 1)]
+    assert not await app.store.kv_get(cloud.VIDEO_JOB + "job-1")
 
 
 @pytest.mark.parametrize(("supports", "permit", "has_portrait", "called"), [
@@ -135,9 +155,9 @@ async def test_video_reference_rule(make_app, cloud_server, clip, supports, perm
     serve_video(cloud_server, clip, status="failed")  # stops after the job, so ffmpeg isn't needed here
     assert await app.cloud_studio.generate(app.config, "special", "Happy birthday", "casual", OWNER, allowed) is None
     if not called:
-        assert not cloud_server[1]  # a stranger's face is worse than no video
+        assert not created(cloud_server)  # a stranger's face is worse than no video
         return
-    payload = cloud_server[1][0][1]
+    [payload] = created(cloud_server)
     assert ("frame_images" in payload) is (supports and has_portrait)
     assert payload["prompt"].startswith("The person in the first frame" if supports and has_portrait else "A friendly")
 
@@ -172,7 +192,15 @@ async def test_video_limits(make_app, cloud_server, clip, failure):
     else:
         assert paths[-1] == "/api/v1/videos/job-1/content"
         assert "/elsewhere.mp4" not in paths
-    assert usage_rows(app)[-1][0] == "studio_video"  # a failed job is still recorded
+    rows = [row for row in usage_rows(app) if row[0] == "studio_video"]
+    if failure == "bad_id":
+        assert rows == []  # no job was accepted, so nothing can be billed
+    elif failure == "timeout":
+        # Accepted and unresolved: the estimate counts toward the spend cap, and the job is kept for reconciling.
+        assert [row[6] for row in rows] == [ESTIMATE]
+        assert await app.store.kv_get(cloud.VIDEO_JOB + "job-1")
+    else:
+        assert [row[6] for row in rows] == [0.13]  # the reported cost replaced the estimate
 
 
 async def test_local_studio_first_then_video_backup(make_app, studio_server, cloud_server, clip):
@@ -198,7 +226,7 @@ async def test_away_studio_sends_a_cloud_video_note(make_app, cloud_server, clip
     await online(app, OWNER)
     await deliver(app, tg(chat_id=OWNER, sender=OWNER))
     assert len(sent) == 1 and sent[0][4:8] == b"ftyp"
-    assert cloud_server[1][0][1]["frame_images"]  # the approved outfit's portrait went as the first frame
+    assert created(cloud_server)[0]["frame_images"]  # the approved outfit's portrait went as the first frame
     _, usage = await app.store.studio_usage(OWNER, app.dispatch.now())
     assert [kind for kind, _ in usage] == ["video_note"]
 
@@ -237,3 +265,58 @@ async def test_video_note_encode_refuses_garbage():
         pytest.skip("requires ffmpeg")
     with pytest.raises(ValueError):
         await asyncio.wait_for(cloud.video_note(b"not a video"), 30)
+
+
+async def test_a_job_past_the_deadline_is_reconciled_in_the_background(make_app, cloud_server, clip, monkeypatch):
+    monkeypatch.setattr(cloud, "RECONCILE_POLL_SECONDS", 0.01)
+    app = make_app()
+    timeouts = app.config.studio.timeouts.model_copy(update={"video_notes": 0.2})
+    configure(app, cloud_server, video_fallbacks=(VIDEO,), timeouts=timeouts)
+    portrait(app)
+    state = serve_video(cloud_server, clip, polls=10**6)
+    assert await app.cloud_studio.generate(app.config, "video_note", "Hi", "casual", OWNER, allowed) is None
+    assert [row[6] for row in usage_rows(app)] == [ESTIMATE]
+    cloud_server[2]["/api/v1/videos/job-1"] = _finished
+    await asyncio.wait_for(asyncio.gather(*app.cloud_studio._reconciling), 5)
+    assert [row[6] for row in usage_rows(app)] == [0.21]
+    assert not await app.store.kv_get(cloud.VIDEO_JOB + "job-1")
+
+
+async def _finished(request):
+    return web.json_response({"id": "job-1", "status": "completed", "usage": {"cost": 0.21}})
+
+
+async def test_unresolved_estimates_count_toward_the_spend_cap(make_app, cloud_server, clip):
+    app = make_app()
+    app.config = app.config.model_copy(update={"daily_spend_cap_usd": 0.1})
+    configure(app, cloud_server, video_fallbacks=(VIDEO,))
+    await app.dispatch.usage.record("studio_video", VIDEO.model, "openrouter.ai", {"cost": 0.1}, OWNER, fallback=True)
+
+    async def under_cap():
+        return not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
+
+    assert await app.cloud_studio.generate(app.config, "video_note", "Hi", None, 2, under_cap) is None
+    assert not created(cloud_server)
+
+
+@pytest.mark.parametrize(("entry", "fragment"), [
+    ({"supported_aspect_ratios": ["16:9", "9:16"], "supported_resolutions": ["720p"]}, "no square"),
+    ({"supported_aspect_ratios": ["1:1"], "supported_durations": [12, 15]}, "10 seconds or less"),
+    ({}, "doesn't publish its aspect ratios"),
+])
+def test_video_plan_refuses_models_that_cant_make_a_note(entry, fragment):
+    with pytest.raises(cloud.VideoUnsupported, match=fragment):
+        cloud.video_plan(entry, "Hello there")
+
+
+def test_video_plan_picks_from_published_capabilities():
+    assert cloud.video_plan(VIDEO_ENTRY, "Hello there") == {
+        "aspect_ratio": "1:1", "resolution": "480p", "duration": 4, "generate_audio": True}
+    veo_like = {"supported_aspect_ratios": ["4:3", "16:9"], "supported_resolutions": ["1080p", "720p"],
+                "supported_durations": [5, 10]}
+    assert cloud.video_plan(veo_like, " ".join(["word"] * 12)) == {
+        "aspect_ratio": "4:3", "resolution": "720p", "duration": 10}
+    plan = cloud.video_plan(VIDEO_ENTRY, "Hi")
+    assert cloud.video_estimate(VIDEO_ENTRY, plan, reference=True) == ESTIMATE
+    assert cloud.video_estimate({"pricing_skus": {"video_tokens": "0.000007"}}, plan, reference=False) == (
+        cloud.VIDEO_ESTIMATE_CEILING_USD)  # token prices: the ceiling until the real cost arrives

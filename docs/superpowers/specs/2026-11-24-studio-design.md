@@ -161,8 +161,8 @@ of the replies.
   `supported_frame_images` (Grok Imagine Video 1.5 Lite, Seedance, Wan, Kling,
   Veo, Hailuo), so Dom sends the outfit's approved portrait as the first frame
   under the photo reference rules. `generate_audio` (default on for models with
-  audio) makes the model's own voice from the quoted line. Dom asks for 480p,
-  1:1, 4/6/8 s by line length. Cost: Grok Imagine Video 1.5 Lite lists 2¢ per
+  audio) makes the model's own voice from the quoted line. Dom picks resolution, aspect and
+  duration from the model's published capabilities (below). Cost: Grok Imagine Video 1.5 Lite lists 2¢ per
   output second at 480p plus 1¢ per input image, about $0.09–$0.17 a note; Veo
   3.1 Fast lists $0.10–$0.12 per second (and no 1:1). Latency is about 30 s to a
   few minutes, inside the 185 s and 425 s video deadlines that also cover polling.
@@ -177,12 +177,22 @@ of the replies.
   [Video models](https://openrouter.ai/api/v1/videos/models) ·
   [Provider selection: `zdr` and `data_collection`](https://openrouter.ai/docs/guides/routing/provider-selection) ·
   [ZDR and guardrails](https://openrouter.ai/docs/guides/features/zdr).
-- **Data policies (E66).** Every OpenRouter route and backup has
+- **Data policies (E66).** Only studio backups take
   `data_policy = "zdr" | "no_training" | "any"` (default `zdr`), sent as
-  `provider.zdr = true`, `provider.data_collection = "deny"` or nothing. The
+  `provider.zdr = true`, `provider.data_collection = "deny"` or nothing. Every
+  chat-content route (model roles, Jev, search, doctor, price list) always sends
+  `zdr`, and a backup's key variable may not be one a chat route uses. The
   account's "ZDR endpoints only" setting and ZDR guardrails apply on top and win.
-  See [privacy](../../privacy.md#openrouter-data-policies) for the separate media
-  key setup.
+  See [privacy](../../privacy.md#separate-media-key) for the media key setup.
+- **Video request and cost.** Dom reads the model's published capabilities
+  (`/videos/models`) when it generates: the squarest aspect ratio (refused past
+  4:3), the smallest resolution from 480p up and the shortest duration that fits
+  the line, at most 10 s. The save-time test refuses a model that can't make that.
+  An accepted job is recorded at once at its estimated cost (per-second price for
+  that resolution × duration, plus the reference image; a $1 ceiling when the
+  list prices tokens), so it counts toward the spend cap before the next submit.
+  The reported cost replaces it when the job ends, by a background check for up to
+  30 minutes after the deadline; an unresolved estimate stays.
 - **Switches.** A studio switch can be turned on only when something can serve
   it: the local studio (enabled with a base URL) or a backup for that kind. The
   profile photo needs the local studio's portraits. It changes at most every

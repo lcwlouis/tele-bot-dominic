@@ -33,15 +33,20 @@ PROVIDER_KINDS = get_args(ProviderKind)
 EFFORT_PATTERN = r"^[a-z][a-z0-9_-]{0,23}$"
 PROVIDER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$"
 
-# What OpenRouter may do with a request's content (its provider routing preferences). zdr routes only to
+# What OpenRouter may do with a studio backup's request (its provider routing preferences). zdr routes only to
 # zero-data-retention endpoints; no_training excludes endpoints that may train on or sell the data
 # (data_collection "deny") but allows ones that keep it; any adds no preference. The account's own privacy settings
-# apply on top: "ZDR endpoints only" there still refuses every non-ZDR endpoint.
+# apply on top: "ZDR endpoints only" there still refuses every non-ZDR endpoint. Only media backups take a policy:
+# every route that carries chat content (the model roles, Jev, search) always sends zdr.
 DataPolicy = Literal["zdr", "no_training", "any"]
 DATA_POLICIES = get_args(DataPolicy)
 DATA_POLICY_FIELD = (
-    "OpenRouter data policy: zdr (zero data retention, the default), no_training (providers that may keep but never "
-    "train on the data) or any. Ignored by other providers."
+    "OpenRouter data policy for this media backup: zdr (zero data retention, the default), no_training (providers that "
+    "may keep but never train on the data) or any. Ignored by direct Gemini."
+)
+MEDIA_KEY_RULE = (
+    "A studio backup needs its own key variable, such as OPENROUTER_MEDIA_API_KEY: {name} is also used by a model "
+    "role or a saved provider, which carry chat content and must stay zero data retention."
 )
 
 
@@ -71,7 +76,6 @@ class ProviderEndpoint(BaseModel):
     provider: SearchProvider | None = Field(
         None, description="Search provider for models.search: searxng, openrouter, deepseek or tavily.",
     )
-    data_policy: DataPolicy = Field("zdr", description=DATA_POLICY_FIELD)
 
 
 class ModelEndpoint(ProviderEndpoint):
@@ -89,9 +93,6 @@ class ProviderSetup(BaseModel):
     )
     base_url: str = Field(description="Provider API base URL, including its API version path.")
     api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for an endpoint without authentication.")
-    data_policy: DataPolicy = Field(
-        "zdr", description=DATA_POLICY_FIELD + " Saving it from the dashboard also sets it on every role slot using this provider.",
-    )
 
 
 class OpenersConfig(BaseModel):
@@ -511,7 +512,10 @@ class Config(BaseModel):
         studio = self.studio.model_copy(update={f"{chain}_fallbacks": () for chain in STUDIO_CHAINS})
         reserved = self.model_copy(update={"models": {}, "provider_setups": {}, "studio": studio}).secret_names()
         model_routes = [*(endpoint for _, endpoint in self.model_endpoints()), *self.provider_setups.values()]
+        chat_keys = {route.api_key_env for route in model_routes if route.api_key_env}
         for provider in fallbacks:
+            if provider.api_key_env in chat_keys:  # a media key's looser data policy never reaches chat content
+                raise ValueError(MEDIA_KEY_RULE.format(name=provider.api_key_env))
             origin = httpx.URL(provider.base_url).copy_with(path="/")
             if provider.api_key_env in reserved or any(
                 endpoint.api_key_env == provider.api_key_env

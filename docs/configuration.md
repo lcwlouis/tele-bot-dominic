@@ -47,7 +47,6 @@ Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud p
 | `models.<name>.api_key_env` | Unset | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.<name>.reasoning_effort` | Unset | Thinking effort sent to the provider, such as low, medium or high (any level the provider lists). Omit it to use the provider default. Higher effort takes longer and costs more. |
 | `models.<name>.provider` | Unset | Search provider for models.search: searxng, openrouter, deepseek or tavily. |
-| `models.<name>.data_policy` | `"zdr"` | OpenRouter data policy: zdr (zero data retention, the default), no_training (providers that may keep but never train on the data) or any. Ignored by other providers. |
 
 Chat, fallback, media, drafting, search and escalation can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.
 
@@ -68,7 +67,6 @@ The dashboard's Providers tab saves each provider as a `[providers.<name>]` tabl
 | `providers.<name>.kind` | `"openai"` | openai (any OpenAI-compatible endpoint), openrouter, jev (decisions), searxng, deepseek or tavily. |
 | `providers.<name>.base_url` | Required | Provider API base URL, including its API version path. |
 | `providers.<name>.api_key_env` | Unset | Secret variable name. Leave unset for an endpoint without authentication. |
-| `providers.<name>.data_policy` | `"zdr"` | OpenRouter data policy: zdr (zero data retention, the default), no_training (providers that may keep but never train on the data) or any. Ignored by other providers. Saving it from the dashboard also sets it on every role slot using this provider. |
 
 ### Starter model settings
 
@@ -165,7 +163,7 @@ Add one `[[studio.voice_fallbacks]]` or `[[studio.image_fallbacks]]` table per p
 | `studio.<kind>_fallbacks[].paid` | `false` | Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. Gemini reports tokens, not a price, so its calls are recorded at no cost and do not count toward daily_spend_cap_usd; only OpenRouter-reported costs do. |
 | `studio.<kind>_fallbacks[].supports_reference` | `true` | For OpenRouter image and video models that accept an image reference (a first frame for video). |
 | `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos or videos when an approved reference cannot be sent. |
-| `studio.<kind>_fallbacks[].data_policy` | `"zdr"` | OpenRouter data policy: zdr (zero data retention, the default), no_training (providers that may keep but never train on the data) or any. Ignored by other providers. OpenRouter video keeps its output for download, so a video backup needs no_training or any. |
+| `studio.<kind>_fallbacks[].data_policy` | `"zdr"` | OpenRouter data policy for this media backup: zdr (zero data retention, the default), no_training (providers that may keep but never train on the data) or any. Ignored by direct Gemini. OpenRouter video keeps its output for download, so a video backup needs no_training or any. |
 
 ### Studio limits
 

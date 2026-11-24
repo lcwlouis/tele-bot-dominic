@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dom import model_lists
-from dom.config import CHAIN_PROVIDERS, ProviderEndpoint, StudioChain, StudioFallback, StudioProvider
+from dom.config import CHAIN_PROVIDERS, MEDIA_KEY_RULE, ProviderEndpoint, StudioChain, StudioFallback, StudioProvider
 from dom.web.model_settings import (
     _CONFIG_WRITE,
     ENV_NAME,
@@ -44,6 +44,7 @@ from dom.web.model_settings import (
     _write,
     validated,
 )
+from dom.studio.cloud import VideoUnsupported, video_models, video_plan
 from dom.web.provider_settings import ListedModelView, ModelListView, _http
 from dom.web.shared import owner_app
 
@@ -131,6 +132,11 @@ def _check_backup(current: Snapshot, edit: BackupSave) -> StudioFallback:
         raise HTTPException(422, "That provider can't make this kind of media.")
     if backup.provider == "gemini_tts" and not backup.paid:
         raise HTTPException(422, UNPAID_GEMINI)
+    config = current.config
+    chat_keys = {route.api_key_env for _, route in config.model_endpoints()} | {
+        setup.api_key_env for setup in config.provider_setups.values()}
+    if backup.api_key_env in chat_keys:
+        raise HTTPException(422, MEDIA_KEY_RULE.format(name=backup.api_key_env))
     backups = _chain(current, edit.chain)
     if edit.index is None and len(backups) >= MAX_FALLBACKS:
         raise HTTPException(422, f"A chain takes at most {MAX_FALLBACKS} backups.")
@@ -224,6 +230,20 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
             reply = "The key works and the model exists."
         else:
             await _get(app, backup.base_url + "/key", {"Authorization": f"Bearer {key}"})
+            if backup.provider == "openrouter_video":
+                # Checked as a note will ask for it: a square or near-square clip of at most 10 s.
+                async with asyncio.timeout(TEST_TIMEOUT):
+                    entry = (await video_models(_http(app), backup.base_url)).get(backup.model)
+                if entry is None:
+                    return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000),
+                                      error="OpenRouter doesn't list that model for video. Pick one from the list.")
+                plan = video_plan(entry, "A short hello to check what this model can make.")
+                frames = "first_frame" in (entry.get("supported_frame_images") or [])
+                reply = (f"The key works; notes will be {plan['aspect_ratio']}"
+                         f"{', ' + plan['resolution'] if 'resolution' in plan else ''}, {plan['duration']} s"
+                         f"{', with sound' if plan.get('generate_audio') else ', silent'}"
+                         f"{'' if frames else ', and it takes no first frame, so no portrait'}.")
+                return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=reply)
             listed = await _list(app, backup.provider, refresh=False)
             if not any(item.id == backup.model for item in listed.models):
                 listed = await _list(app, backup.provider, refresh=True)
@@ -232,7 +252,7 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
                 return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000),
                                   error=f"OpenRouter doesn't list that model for {kind}. Pick one from the list.")
             reply = "The key works and OpenRouter lists the model."
-    except KeyPairing as exc:
+    except (KeyPairing, VideoUnsupported) as exc:
         error = str(exc)
     except model_lists.ListUnavailable as exc:
         error = str(exc)
@@ -245,6 +265,8 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
                  else f"Provider returned HTTP {status}.")
     except (httpx.HTTPError, httpx.InvalidURL, OSError):
         error = "Could not reach the provider."
+    except (ValueError, KeyError, TypeError, AttributeError):
+        error = "The provider's model list was not in the expected format."
     else:
         return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=reply)
     return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=_redact(error, key))
@@ -265,7 +287,7 @@ async def save_backup(request: Request) -> ModelSettings:
         raise HTTPException(422, result.error or "Backup test failed.")
     saved = await _commit(app, lambda fresh: _saved(fresh, edit),
                           "Could not save the backup. Check config.toml and its permissions.")
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 @router.post(PREFIX + "/remove")
@@ -274,7 +296,7 @@ async def remove_backup(request: Request) -> ModelSettings:
     ref = await _input(request, BackupRef)
     saved = await _commit(app, lambda current: _removed(current, ref),
                           "Could not remove the backup. Check config.toml and its permissions.")
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 @router.post(PREFIX + "/move")
@@ -284,7 +306,7 @@ async def move_backup(request: Request) -> ModelSettings:
     ref = await _input(request, BackupRef)
     saved = await _commit(app, lambda current: _moved(current, ref),
                           "Could not save the order. Check config.toml and its permissions.")
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 @router.post(PREFIX + "/test")

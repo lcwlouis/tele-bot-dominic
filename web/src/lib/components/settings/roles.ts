@@ -80,7 +80,7 @@ export function host(url: string): string {
 
 export const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 
-/** What each OpenRouter data policy lets its endpoints do with what Dom sends (dom/config.py, docs/privacy.md). */
+/** What each OpenRouter data policy lets a studio backup's endpoints do with what Dom sends (docs/privacy.md). */
 export const POLICY_INFO: Record<DataPolicy, { label: string; line: string }> = {
   zdr: { label: "Zero data retention", line: "Only endpoints that keep nothing. The default." },
   no_training: { label: "No training", line: "Endpoints may keep what's sent, but never train on it." },

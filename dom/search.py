@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape
 import httpx
 
 from dom import turn_log
-from dom.config import Config, ProviderEndpoint, SearchProvider, routing_preferences
+from dom.config import Config, ProviderEndpoint, SearchProvider
 from dom.llm import MissingProviderKey, openrouter_host
 from dom.usage import UsageRecorder, check_model_allowed, provider_address
 
@@ -65,7 +65,7 @@ PROVIDER_INFO: dict[SearchProvider, ProviderInfo] = {
         default_api_key_env="OPENROUTER_API_KEY",
         needs_model=True,
         needs_key=True,
-        data_retention="The route's data policy (zero data retention by default) is sent as provider routing preferences under your OpenRouter key.",
+        data_retention="Zero data retention enforced via provider.zdr under your OpenRouter key.",
     ),
     "deepseek": ProviderInfo(
         id="deepseek",
@@ -263,8 +263,8 @@ class SearchClient:
         }]
         plugins = [{"id": "web", "max_results": 3}]
         body: dict = {"model": self.endpoint.model, "messages": messages, "plugins": plugins}
-        if openrouter_host(self.host) and (preferences := routing_preferences(self.endpoint.data_policy)):
-            body["provider"] = preferences
+        if openrouter_host(self.host):
+            body["provider"] = {"zdr": True}
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         total, request_timeout = self._timeout(timeout)
         with turn_log.model_call(self.usage_model, "search", messages, plugins, fallback=fallback, host=self.address) as call:

@@ -1585,6 +1585,9 @@ class Store:
     async def kv_set(self, key: str, value: str) -> None:
         await self.kv_set_many({key: value})
 
+    async def kv_delete(self, key: str) -> None:
+        await self._run(self._conn.execute, "DELETE FROM kv WHERE key = ?", (key,))
+
     async def kv_set_many(self, values: dict[str, str]) -> None:
         await self._run(self._kv_set_many, values)
 
@@ -2537,13 +2540,18 @@ class Store:
     async def record_usage(
         self, at: str, kind: str, model: str, host: str, chat_id: int | None,
         input_tokens: int, output_tokens: int, cost_usd: float, fallback: int,
-    ) -> None:
-        await self._run(
+    ) -> int:
+        cursor = await self._run(
             self._conn.execute,
             "INSERT INTO usage (at, kind, model, endpoint_host, chat_id, input_tokens, output_tokens, cost_usd, fallback) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (at, kind, model, host, chat_id, input_tokens, output_tokens, cost_usd, fallback),
         )
+        return cursor.lastrowid
+
+    async def set_usage_cost(self, usage_id: int, cost_usd: float) -> None:
+        """Correct a recorded estimate (an accepted cloud video job) to the cost the provider reported."""
+        await self._run(self._conn.execute, "UPDATE usage SET cost_usd = ? WHERE id = ?", (cost_usd, usage_id))
 
     async def last_usage_id(self) -> int:
         return await self._run(lambda: self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM usage").fetchone()[0])

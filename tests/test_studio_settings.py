@@ -8,7 +8,7 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from dom.config import ModelEndpoint, ProviderEndpoint, StudioConfig, StudioFallback, load_config, routing_preferences
+from dom.config import ModelEndpoint, ProviderSetup, StudioConfig, StudioFallback, routing_preferences
 from dom.doctor import _model as doctor_model
 from dom.escalation import Prices
 from dom.jev import JevClient
@@ -17,7 +17,7 @@ from dom.search import SearchClient
 from dom.studio.policy import enabled, switch_servable, unserved
 from test_studio_cloud import IMAGE, allowed, cloud_server, configure  # noqa: F401 (fixture)
 from test_web_model_settings import API, ORIGIN_HEADER, START, dashboard  # noqa: F401 (fixture)
-from test_web_provider_settings import _mock, _post, _provider
+from test_web_provider_settings import _mock
 
 OPENROUTER = "https://openrouter.ai/api/v1"
 POLICIES = [("zdr", {"zdr": True}), ("no_training", {"data_collection": "deny"}), ("any", None)]
@@ -31,10 +31,9 @@ def test_routing_preferences_and_defaults():
     assert routing_preferences("zdr") == {"zdr": True}
     assert routing_preferences("no_training") == {"data_collection": "deny"}
     assert routing_preferences("any") == {}
-    # Every route keeps today's zero data retention unless the owner chooses otherwise.
-    assert ProviderEndpoint(base_url=OPENROUTER).data_policy == "zdr"
     assert StudioFallback(provider="openrouter_image", model="a/b", api_key_env="K").data_policy == "zdr"
-    assert JevClient(None, "k", "m").data_policy == "zdr"
+    # Chat routes take no policy at all: they always send zero data retention.
+    assert "data_policy" not in ModelEndpoint.model_fields and "data_policy" not in ProviderSetup.model_fields
 
 
 def _capture():
@@ -51,24 +50,25 @@ def _capture():
     return seen, httpx.AsyncClient(transport=httpx.MockTransport(respond))
 
 
-@pytest.mark.parametrize(("policy", "expected"), POLICIES)
-async def test_every_openrouter_call_site_sends_the_routes_policy(policy, expected, make_app, cloud_server):
-    endpoint = ModelEndpoint(base_url=OPENROUTER, model="acme/model", data_policy=policy)
+async def test_chat_routes_always_send_zdr():
+    endpoint = ModelEndpoint(base_url=OPENROUTER, model="acme/model")
     seen, http = _capture()
     async with http:
         await ChatClient(endpoint, "k", http).complete([{"role": "user", "content": "hi"}], [], once=True)
         await SearchClient(endpoint, "k", http).search("hello")
-        await JevClient(http, "k", "acme/jev", OPENROUTER + "/alpha", data_policy=policy).decide(
+        await JevClient(http, "k", "acme/jev", OPENROUTER + "/alpha").decide(
             "state", {"check": {"type": "choice", "instructions": "x", "criteria": {"yes": "y", "no": "n"}}})
         await doctor_model(http, "chat", endpoint, "k")
         prices = Prices(asyncio.ensure_future, lambda: 0.0)
         prices.warm(ChatClient(endpoint, "k", http))
         await prices.pending
     bodies = [body for _, body in seen if body is not None]
-    assert len(bodies) == 4 and all(body.get("provider") == expected for body in bodies)
-    price_url = next(url for url, body in seen if body is None)
-    assert (price_url.params.get("zdr") == "true") is (policy == "zdr")  # its prices come from the matching list
+    assert len(bodies) == 4 and all(body["provider"] == {"zdr": True} for body in bodies)
+    assert next(url for url, body in seen if body is None).params["zdr"] == "true"
 
+
+@pytest.mark.parametrize(("policy", "expected"), POLICIES)
+async def test_a_media_backup_sends_its_own_policy(policy, expected, make_app, cloud_server):
     app = make_app()
     configure(app, cloud_server, images=(IMAGE.model_copy(update={"data_policy": policy, "supports_reference": False,
                                                                    "allow_without_reference": True}),))
@@ -76,31 +76,31 @@ async def test_every_openrouter_call_site_sends_the_routes_policy(policy, expect
     assert cloud_server[1][0][1].get("provider") == expected
 
 
-async def test_a_providers_policy_reaches_every_role_slot_using_it(dashboard):
+async def test_a_chat_key_never_serves_a_backup_and_back(dashboard):
     app, path, browser = dashboard
-    path.write_text(START.replace("[custom]", '[models.media]\nbase_url = "https://openrouter.ai/api/v1"\n'
-                                  'model = "acme/see"\napi_key_env = "ROUTER_KEY"\n\n[custom]'))
-    async with _mock(app, lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})), \
-            browser() as client:
-        settings = (await client.get(API)).json()
-        router = next(item for item in settings["providers"] if item["base_url"] == OPENROUTER)
-        assert router["data_policy"] == "zdr"
-        saved = await _post(client, "/save", original=router["name"], name="Router", kind="openrouter",
-                            base_url=OPENROUTER, api_key_env="ROUTER_KEY", data_policy="no_training")
-        assert saved.status_code == 200, saved.text
-        assert _provider(saved.json(), "Router")["data_policy"] == "no_training"
-        assert saved.json()["roles"]["media"]["primary"]["data_policy"] == "no_training"
-        # A role save keeps the provider's policy for the slot, though the editor doesn't send one.
-        resaved = await client.post(API, headers=ORIGIN_HEADER, json={
-            "revision": saved.json()["revision"], "role": "media", "fallbacks": [],
-            "primary": {"base_url": OPENROUTER, "model": "acme/see", "api_key_env": "ROUTER_KEY"},
+    path.write_text(START + '[studio]\n[[studio.image_fallbacks]]\nprovider = "openrouter_image"\n'
+                    f'model = "acme/image"\napi_key_env = "{MEDIA_KEY}"\n')
+    before = path.read_text()
+    seen, http = _studio_mock(app)
+    async with http, browser() as client:
+        backup = await _studio(client, "/save", chain="voice", backup={**VOICE_BACKUP, "api_key_env": "BACKUP_KEY"})
+        assert backup.status_code == 422 and "needs its own key variable" in backup.json()["detail"]
+        role = await client.post(API, headers=ORIGIN_HEADER, json={
+            "revision": (await client.get(API)).json()["revision"], "role": "media", "fallbacks": [],
+            "primary": {"base_url": OPENROUTER, "model": "acme/see", "api_key_env": MEDIA_KEY},
         })
-        assert resaved.status_code == 200, resaved.text
-    config = tomllib.loads(path.read_text())
-    assert config["providers"]["Router"]["data_policy"] == "no_training"
-    assert config["models"]["media"]["data_policy"] == "no_training"
-    assert "data_policy" not in config["models"]["chat"]  # zdr stays implicit
-    assert load_config(path.parent).models["media"].data_policy == "no_training"
+        assert role.status_code == 422 and "needs its own key variable" in role.json()["detail"]
+    assert not seen and path.read_text() == before
+
+
+async def test_credential_like_backup_fields_are_never_shown(dashboard, monkeypatch):
+    app, path, browser = dashboard
+    monkeypatch.setenv("LEAKY", "fixture-leaky-secret-value")
+    path.write_text(START + '[studio]\n[[studio.image_fallbacks]]\nprovider = "openrouter_image"\n'
+                    'model = "acme/fixture-leaky-secret-value"\napi_key_env = "LEAKY"\n')
+    async with browser() as client:
+        shown = (await client.get(API)).json()["studio"]["image"][0]
+    assert shown["model"] == "" and shown["key_set"] is True
 
 
 def _studio_mock(app, *, key_status=200, models=("acme/voice", "acme/video")):
@@ -111,7 +111,8 @@ def _studio_mock(app, *, key_status=200, models=("acme/voice", "acme/video")):
         if request.url.path == "/api/v1/key":
             return httpx.Response(key_status, json={"data": {}})
         if request.url.path.endswith("/models"):
-            return httpx.Response(200, json={"data": [{"id": model} for model in models]})
+            return httpx.Response(200, json={"data": [{"id": model, "supported_aspect_ratios": ["1:1"]}
+                                                      for model in models]})
         if request.url.host == "generativelanguage.googleapis.com":
             return httpx.Response(200, json={"name": "models/voice"})
         return httpx.Response(500)
@@ -184,7 +185,7 @@ async def test_studio_backups_add_edit_move_remove_with_a_media_key(dashboard, m
     ("voice", {"provider": "gemini_tts", "model": "voice", "api_key_env": "GEMINI_KEY"}, "Paid Services"),
     ("image", VOICE_BACKUP, "can't make this kind"),
     ("voice", {**VOICE_BACKUP, "api_key_env": "TELEGRAM_BOT_TOKEN"}, "another credential"),
-    ("voice", {**VOICE_BACKUP, "api_key_env": "BACKUP_KEY"}, "different host"),
+    ("voice", {**VOICE_BACKUP, "api_key_env": "BACKUP_KEY"}, "needs its own key variable"),
     ("voice", {**VOICE_BACKUP, "model": "bad model"}, ""),
     ("voice", {**VOICE_BACKUP, "extra": 1}, "Unexpected fields"),
 ])
@@ -228,15 +229,17 @@ async def test_studio_backup_list_is_the_output_kinds_list(dashboard):
 def test_switches_need_something_that_can_serve_them():
     nothing = StudioConfig(voice=True, video_notes=True, images=True, special=True, profile_photo_follows_preset=True)
     assert not any(enabled(nothing, "owner_dm", kind) for kind in ("voice", "video_note", "photo", "special"))
-    assert unserved(nothing) == ["voice notes", "round video notes", "photos", "special video notes", "the profile photo"]
+    keyed = lambda name: True  # noqa: E731
+    assert unserved(nothing, keyed) == ["voice notes", "round video notes", "photos", "special video notes", "the profile photo"]
     voice_only = nothing.model_copy(update={"voice_fallbacks": (StudioFallback(
         provider="openrouter_tts", model="a/b", api_key_env="K"),)})
     assert enabled(voice_only, "friend_dm", "voice") and not enabled(voice_only, "owner_dm", "photo")
     unpaid = nothing.model_copy(update={"voice_fallbacks": (StudioFallback(
         provider="gemini_tts", model="voice", api_key_env="K"),)})
-    assert not switch_servable(unpaid, "voice")  # an unpaid Gemini key never runs
+    assert not switch_servable(unpaid, "voice", keyed)  # an unpaid Gemini key never runs
+    assert switch_servable(voice_only, "voice", keyed) and not switch_servable(voice_only, "voice", lambda name: False)
     local = nothing.model_copy(update={"enabled": True, "base_url": "https://studio.example.org"})
-    assert unserved(local) == [] and switch_servable(local, "profile_photo_follows_preset")
+    assert unserved(local, keyed) == [] and switch_servable(local, "profile_photo_follows_preset", keyed)
 
 
 async def test_the_server_refuses_a_switch_nothing_can_serve(dashboard, monkeypatch):
@@ -250,10 +253,15 @@ async def test_the_server_refuses_a_switch_nothing_can_serve(dashboard, monkeypa
             "revision": listed["revision"], "id": "studio_voice", "enabled": True})
         assert refused.status_code == 409 and "voice backup" in refused.json()["detail"]
         assert not app.config.studio.voice
-        # Once a backup can serve it, it turns on; turning it off is always allowed, even after the setup goes.
+        # A backup whose key has no value can't serve it yet; once the key is set, the switch turns on. Turning it off
+        # is always allowed, even after the setup goes.
         path.write_text(START + '[studio]\n[[studio.voice_fallbacks]]\nprovider = "openrouter_tts"\n'
                         'model = "a/b"\napi_key_env = "VOICE_KEY"\n')
         revision = (await client.get(PERMISSIONS)).json()["revision"]
+        keyless = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
+            "revision": revision, "id": "studio_voice", "enabled": True})
+        assert keyless.status_code == 409
+        monkeypatch.setenv("VOICE_KEY", "fixture-voice-key")
         on = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
             "revision": revision, "id": "studio_voice", "enabled": True})
         assert on.status_code == 200 and app.config.studio.voice
@@ -272,7 +280,7 @@ async def test_status_says_when_a_switch_is_on_but_nothing_serves_it(make_app):
 
     app = make_app()
     app.config = app.config.model_copy(update={"studio": StudioConfig(voice=True)})
-    assert "On, but nothing can make them: voice notes" in await status_text(app)
+    assert "Voice notes: on, but nothing can make them yet" in await status_text(app)
     view = await render_status(app)
     assert "nothing can make them: voice notes" in str(view)
 
@@ -307,3 +315,35 @@ async def test_turning_the_profile_switch_on_allows_a_sync_at_once(dashboard):
             "revision": revision, "id": "studio_profile", "enabled": True})
         assert on.status_code == 200
     assert not await app.store.kv_get("studio:profile_at")
+
+
+async def test_a_cancelled_switch_save_still_lands_on_disk_and_at_runtime(dashboard, monkeypatch):
+    import threading
+
+    import dom.web.model_settings as settings
+
+    app, path, browser = dashboard
+    gate, entered = threading.Event(), threading.Event()
+    real = settings._save_setting
+
+    def slow(*args):
+        entered.set()
+        gate.wait(5)
+        return real(*args)
+
+    monkeypatch.setattr(settings, "_save_setting", slow)
+    async with browser() as client:
+        revision = (await client.get(PERMISSIONS)).json()["revision"]
+        request = asyncio.create_task(client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
+            "revision": revision, "id": "openers", "enabled": True}))
+        await asyncio.to_thread(entered.wait, 5)
+        request.cancel()
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        for _ in range(100):  # the shielded save finishes after the request is gone
+            if app.config.openers.enabled:
+                break
+            await asyncio.sleep(0.01)
+    assert app.config.openers.enabled is True
+    assert tomllib.loads(path.read_text())["openers"]["enabled"] is True

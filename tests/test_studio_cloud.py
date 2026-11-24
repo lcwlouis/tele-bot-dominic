@@ -232,10 +232,14 @@ async def test_cloud_http_limits(make_app, cloud_server, failure):
 
 def test_studio_keys_are_paired_with_one_https_origin(tmp_path):
     studio = StudioConfig(voice_fallbacks=(VOICE,), image_fallbacks=(IMAGE,))
-    valid = {"base_url": "https://openrouter.ai/api/v1", "model": "test", "api_key_env": VOICE.api_key_env}
+    valid = {"base_url": "https://openrouter.ai/api/v1", "model": "test", "api_key_env": "CHAT_TEST"}
     Config(home=tmp_path, studio=studio, models={"chat": valid})
-    with pytest.raises(ValidationError, match="HTTPS origin"):
-        Config(home=tmp_path, studio=studio, models={"chat": {**valid, "base_url": "https://elsewhere.example/v1"}})
+    # A key a chat route uses can't serve a media backup, in either direction: chat stays zero data retention.
+    with pytest.raises(ValidationError, match="needs its own key variable"):
+        Config(home=tmp_path, studio=studio, models={"chat": {**valid, "api_key_env": VOICE.api_key_env}})
+    with pytest.raises(ValidationError, match="needs its own key variable"):
+        Config(home=tmp_path, studio=studio, models={"chat": valid},
+               providers={"Router": {"kind": "openrouter", "base_url": valid["base_url"], "api_key_env": VOICE.api_key_env}})
     with pytest.raises(ValidationError, match="HTTPS origin"):
         Config(home=tmp_path, studio=studio.model_copy(update={"voice_fallbacks": (
             GEMINI.model_copy(update={"api_key_env": VOICE.api_key_env}),

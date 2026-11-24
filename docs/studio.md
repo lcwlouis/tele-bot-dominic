@@ -68,12 +68,12 @@ complete a request. Put the key value in the instance's `.env`. Keep
 [[studio.voice_fallbacks]]
 provider = "openrouter_tts"
 model = "google/gemini-3.8-flash-lite-tts"
-api_key_env = "OPENROUTER_API_KEY"
+api_key_env = "OPENROUTER_MEDIA_API_KEY"
 
 [[studio.image_fallbacks]]
 provider = "openrouter_image"
 model = "google/gemini-2.5-flash-image"
-api_key_env = "OPENROUTER_API_KEY"
+api_key_env = "OPENROUTER_MEDIA_API_KEY"
 ```
 
 An optional video backup makes round video notes through OpenRouter when the
@@ -88,9 +88,10 @@ api_key_env = "OPENROUTER_MEDIA_API_KEY"
 data_policy = "no_training"
 ```
 
-Dom sends the outfit's approved portrait as the first frame, asks for a square
-480p clip of 4, 6 or 8 seconds (by the length of the line) with the model's own
-voice, polls the job within the video deadline, downloads it through the
+Dom sends the outfit's approved portrait as the first frame and asks for the
+squarest, smallest clip the model publishes (at most 4:3, from 480p up, at most
+10 seconds, by the length of the line) with the model's own voice. The backup
+needs its own key variable: one a model role uses is refused. Dom polls the job within the video deadline, downloads it through the
 authenticated content URL and re-encodes it as a Telegram video note (square,
 at most 640 px, H.264 with AAC, under 60 s). The cloud voice is the model's, not
 Dom's cloned one. See [provider data handling](privacy.md#separate-media-key)

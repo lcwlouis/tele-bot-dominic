@@ -127,7 +127,7 @@ async def run(home: Path) -> None:
             client = chat_client(config, http, usage)
             triage = config.models["triage"]
             triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
-            jev = JevClient(http, triage_key, triage.model, triage.base_url, usage=usage, data_policy=triage.data_policy) if triage_key else None
+            jev = JevClient(http, triage_key, triage.model, triage.base_url, usage=usage) if triage_key else None
             media = routed_client(config, "media", http, usage)
             studio = config.studio
             studio_token = config.secret(studio.token_env) if studio.enabled and studio.base_url else None

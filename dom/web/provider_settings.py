@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dom import model_lists
-from dom.config import PROVIDER_NAME_PATTERN, DataPolicy, ProviderEndpoint, ProviderKind
+from dom.config import PROVIDER_NAME_PATTERN, ProviderEndpoint, ProviderKind
 from dom.llm import FallbackClient, MissingProviderKey
 from dom.web.model_settings import (
     DECISION_ROLES,
@@ -74,7 +74,6 @@ class ProviderSave(BaseModel):
     kind: ProviderKind
     base_url: str
     api_key_env: str | None = None
-    data_policy: DataPolicy = "zdr"
 
     @field_validator("name")
     @classmethod
@@ -173,24 +172,18 @@ def _apply(current: Snapshot, edit: ProviderSave) -> Snapshot:
     entry["base_url"] = edit.base_url
     if edit.api_key_env:
         entry["api_key_env"] = edit.api_key_env
-    if edit.kind == "openrouter" and edit.data_policy != "zdr":  # the default stays implicit
-        entry["data_policy"] = edit.data_policy
     document["providers"][edit.name] = entry
-    # Every slot on the old address moves with the provider and takes its data policy; each changed role is written
-    # out whole.
-    config = current.config
-    before = (original.base_url, original.api_key_env) if original is not None else (edit.base_url, edit.api_key_env)
-    policy = edit.data_policy if edit.kind == "openrouter" else "zdr"
-    for role in SETTINGS_ROLES:
-        slots = list(chain(config, role))
-        moved = [
-            endpoint.model_copy(update={"base_url": edit.base_url, "api_key_env": edit.api_key_env, "data_policy": policy})
-            if (endpoint.base_url, endpoint.api_key_env or None) == before and kind_fits(edit.kind, role, endpoint)
-            else endpoint
-            for endpoint in slots
-        ]
-        if moved != slots:
-            set_role(document, role, moved)
+    if original is not None and (original.base_url, original.api_key_env) != (edit.base_url, edit.api_key_env):
+        # Every slot on the old address moves with the provider; each changed role is written out whole.
+        config = current.config
+        for role in dict.fromkeys(use.role for use in original.uses):
+            slots = [
+                endpoint.model_copy(update={"base_url": edit.base_url, "api_key_env": edit.api_key_env})
+                if (endpoint.base_url, endpoint.api_key_env or None) == (original.base_url, original.api_key_env)
+                else endpoint
+                for endpoint in chain(config, role)
+            ]
+            set_role(document, role, slots)
     return validated(current, document)
 
 
@@ -290,7 +283,7 @@ async def save_provider(request: Request) -> ModelSettings:
             raise HTTPException(422, f"{edit.name}: {result.error or 'Provider test failed.'}")
     saved = await commit(app, lambda fresh: _apply(fresh, edit),
                          "Could not save the provider. Check config.toml and its permissions.")
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 def _remove(current: Snapshot, ref: ProviderRef) -> Snapshot:
@@ -314,7 +307,7 @@ async def remove_provider(request: Request) -> ModelSettings:
     ref = await _input(request, ProviderRef)
     saved = await commit(app, lambda current: _remove(current, ref),
                          "Could not remove the provider. Check config.toml and its permissions.")
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 @router.post(PREFIX + "/test")

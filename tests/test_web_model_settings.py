@@ -676,7 +676,7 @@ async def test_search_settings_round_trip_test_and_data_retention_display(dashbo
         app.client = ChatClient(app.config.models["chat"], None, http)
         providers = {item["id"]: item for item in (await client.get(API)).json()["search_providers"]}
         assert providers["tavily"]["policy_url"] == "https://www.tavily.com/privacy" and providers["tavily"]["policy_label"] == "Tavily data policy"
-        assert providers["openrouter"]["data_retention"].startswith("The route's data policy") and providers["searxng"]["data_retention"].startswith("Self-hosted")
+        assert providers["openrouter"]["data_retention"].startswith("Zero data retention") and providers["searxng"]["data_retention"].startswith("Self-hosted")
 
         # Save full chain: SearXNG + OpenRouter web (probed) + DeepSeek + Tavily (unset keys save untested).
         saved = await _save(client, "search", searx, [openrouter, deepseek, tavily])

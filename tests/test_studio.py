@@ -229,7 +229,10 @@ async def test_studio_command_is_owner_only(make_app, studio_server):
     await handle_message(app, tg(chat_id=FRIEND, sender=FRIEND, text="/studio"))
     await drain_dispatch(app.dispatch)
     assert not app.bot.of("send", FRIEND)
-    assert "Available memory: 24.0 GiB" in app.bot.of("send", OWNER)[0][2]
+    reply = app.bot.of("send", OWNER)[0][2]
+    assert "Voice notes: available" in reply and "Profile photo: off" in reply
+    # E46: availability only; workers, memory and outage times stay on the dashboard.
+    assert "memory" not in reply.lower() and "worker" not in reply.lower() and "since" not in reply
 
 
 @pytest.mark.parametrize("bad", [

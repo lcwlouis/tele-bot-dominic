@@ -20,7 +20,7 @@ import asyncio
 import hashlib
 import re
 import tomllib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -35,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from dom.config import (
     MAX_DESKTOP_STEPS,
+    MEDIA_KEY_RULE,
     MIN_DESKTOP_STEPS,
     MODEL_ROLES,
     SEARCH_PROVIDERS,
@@ -294,7 +295,6 @@ class ProviderSetupView(BaseModel):
     saved: bool
     listable: bool
     uses: list[ProviderUse]
-    data_policy: DataPolicy = "zdr"  # OpenRouter only: what its endpoints may keep
 
 
 class StudioFallbackView(BaseModel):
@@ -371,8 +371,6 @@ def chain(config: Config, role: SettingsRole) -> tuple[ProviderEndpoint, ...]:
 
 def _dump_slot(role: SettingsRole, provider: ProviderEndpoint) -> dict:
     data = provider.model_dump(exclude_none=True, exclude={"fallbacks"})
-    if data.get("data_policy") == "zdr":  # the default stays implicit
-        data.pop("data_policy")
     if role == "search" and search_provider_kind(provider) != "openrouter":
         data.pop("model", None)
     return data
@@ -401,7 +399,15 @@ def set_role(document: tomlkit.TOMLDocument, role: SettingsRole, slots: list[Pro
 
 def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     text = tomlkit.dumps(document)
-    saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
+    try:
+        saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
+    except ValidationError as exc:
+        # A key variable shared by a chat route and a studio backup is the owner's to fix: say which and why.
+        rule = MEDIA_KEY_RULE.partition("{name}")[2]
+        message = next((error["msg"] for error in exc.errors(include_input=False) if rule in error["msg"]), None)
+        if message is None:
+            raise
+        raise HTTPException(422, message.removeprefix("Value error, ")) from None
     if "chat" not in saved.config.models:
         raise HTTPException(422, "Configure a primary chat provider.")
     try:
@@ -419,20 +425,9 @@ def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     except KeyPairing as exc:
         raise HTTPException(422, str(exc)) from None
     document = tomlkit.parse(current.text)
-    slots = [*([update.primary] if update.primary else []), *update.fallbacks]
-    set_role(document, update.role, with_provider_policies(current.config, update.role, slots))
+    set_role(document, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
     return validated(current, document)
 
-
-def with_provider_policies(config: Config, role: SettingsRole, slots: list[ProviderEndpoint]) -> list[ProviderEndpoint]:
-    """Each slot takes the data policy of the provider it routes to (a saved `[providers.<name>]` table, or the policy
-    its address already has), so the Providers tab sets it once for every role on that provider."""
-    policies = {(view.base_url, view.api_key_env, family(view.kind)): view.data_policy for view in provider_catalog(config)}
-    return [
-        slot.model_copy(update={"data_policy": policy})
-        if (policy := policies.get((slot.base_url, slot.api_key_env or None, family(slot_kind(role, slot))))) else slot
-        for slot in slots
-    ]
 
 
 async def commit(app: App, change: Callable[[Snapshot], Snapshot], failure: str) -> Snapshot:
@@ -492,7 +487,6 @@ def _provider_view(config: Config, endpoint: ProviderEndpoint, *, role: str = ""
         kind="local" if host and on_own_network(host) else "cloud",
         reasoning_effort=endpoint.reasoning_effort,
         provider=search_kind,
-        data_policy=endpoint.data_policy,
         data_retention=info.data_retention if info else None,
         policy_url=info.policy_url if info else None,
         policy_label=info.policy_label if info else None,
@@ -561,7 +555,7 @@ def provider_catalog(config: Config) -> list[ProviderSetupView]:
         found.setdefault((setup.base_url, setup.api_key_env, family(setup.kind)), ProviderSetupView(
             name=name, kind=setup.kind, base_url=setup.base_url, api_key_env=setup.api_key_env,
             key_set=_key_set(config, setup.api_key_env), is_local=_is_local(setup.base_url), saved=True,
-            listable=model_lists.listable(setup.kind), uses=[], data_policy=setup.data_policy,
+            listable=model_lists.listable(setup.kind), uses=[],
         ))
     names = {view.name.lower() for view in found.values()}
     for role in SETTINGS_ROLES:
@@ -580,14 +574,25 @@ def provider_catalog(config: Config) -> list[ProviderSetupView]:
                 found[key] = ProviderSetupView(
                     name=name, kind=kind, base_url=view.base_url, api_key_env=view.api_key_env, key_set=view.key_set,
                     is_local=view.kind == "local", saved=False, listable=model_lists.listable(kind), uses=[],
-                    data_policy=endpoint.data_policy,
                 )
             found[key].uses.append(ProviderUse(role=role, index=index))
     return list(found.values())
 
 
+def _studio_view(config: Config, item, secrets: frozenset[str]) -> StudioFallbackView:
+    """A backup as the page shows it. A hand-edited config.toml may hold a credential where a model ID or a variable
+    name belongs; such a field is shown blank."""
+    def shown(value: str) -> str:
+        return "" if _looks_like_secret(value) or any(secret in value for secret in secrets) else value
+
+    return StudioFallbackView(**item.model_dump() | {"model": shown(item.model), "api_key_env": shown(item.api_key_env)},
+                              key_set=_key_set(config, item.api_key_env))
+
+
 def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
+    """The settings view. It reads .env (key states, secret filtering), so routes build it off the event loop."""
     config = snapshot.config
+    secrets = model_lists.secret_values(config)
     roles = {}
     for role in SETTINGS_ROLES:
         primary, *fallbacks = chain(config, role) or (None,)
@@ -600,10 +605,7 @@ def _settings(app: App, snapshot: Snapshot) -> ModelSettings:
         roles=roles,
         providers=provider_catalog(config),
         studio={
-            chain: [
-                StudioFallbackView(**item.model_dump(), key_set=_key_set(config, item.api_key_env))
-                for item in getattr(config.studio, f"{chain}_fallbacks")
-            ]
+            chain: [_studio_view(config, item, secrets) for item in getattr(config.studio, f"{chain}_fallbacks")]
             for chain in STUDIO_CHAINS
         },
         search_providers=_search_provider_infos(),
@@ -641,15 +643,13 @@ async def _input(request: Request, model: type[Input], max_bytes: int = MAX_BODY
 @router.get(API_PATH)
 async def read_models(request: Request) -> ModelSettings:
     app = owner_app(request)
-    return _settings(app, _snapshot(app.config.home))
+    return await asyncio.to_thread(lambda: _settings(app, _snapshot(app.config.home)))
 
 
-def _probe_tuple(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None, str | None, str]:
-    """What a probe sends: a slot whose tuple is already in the chain was tested when it was added. A new data policy
-    routes to other endpoints (or is refused by the account's settings), so it is tested too."""
+def _probe_tuple(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[str, str, str | None, str | None, str | None]:
+    """What a probe sends: a slot whose tuple is already in the chain was tested when it was added."""
     kind = search_provider_kind(endpoint) if role == "search" else None
-    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind, endpoint.reasoning_effort,
-            endpoint.data_policy)
+    return (endpoint.base_url, endpoint.model, endpoint.api_key_env or None, kind, endpoint.reasoning_effort)
 
 
 # A probe is sent as the role will send it, reasoning effort included; reasoning needs room before the reply.
@@ -715,7 +715,7 @@ async def update_models(request: Request):
 
     saved = await commit(app, lambda current: _save(current, update),
                          "Could not save valid model settings. Check config.toml and its permissions.")
-    return _settings(app, saved)
+    return await asyncio.to_thread(_settings, app, saved)
 
 
 @router.post(API_PATH + "/test")
@@ -839,8 +839,10 @@ def _permission_value(config: Config, permission: Permission) -> bool:
 
 
 def _servable(config: Config, permission: Permission) -> bool:
-    """Whether anything set up can serve the switch; only studio switches need something."""
-    return permission.path[0] != "studio" or switch_servable(config.studio, permission.path[1])
+    """Whether anything set up can serve the switch (a backup counts once its key has a value); only studio switches
+    need something. Reads .env: call it off the event loop."""
+    return permission.path[0] != "studio" or switch_servable(
+        config.studio, permission.path[1], lambda name: _key_set(config, name))
 
 
 def _permissions(snapshot: Snapshot) -> Permissions:
@@ -868,7 +870,7 @@ def _with_permission(config: Config, path: tuple[str, ...], value: bool | int) -
 @router.get(PERMISSIONS_PATH)
 async def read_permissions(request: Request) -> Permissions:
     app = owner_app(request)
-    return _permissions(_snapshot(app.config.home))
+    return await asyncio.to_thread(lambda: _permissions(_snapshot(app.config.home)))
 
 
 @router.post(PERMISSIONS_PATH)
@@ -882,15 +884,32 @@ async def update_permission(request: Request) -> Permissions:
         if update.enabled and not _servable(config, permission):
             raise HTTPException(409, STUDIO_NEEDS[permission.path[1]])
 
-    async with _CONFIG_WRITE:
-        was_on = _permission_value(app.config, permission)
-        saved = await asyncio.to_thread(
-            _save_setting, app.config.home, update.revision, permission.path, update.enabled, refuse_unserved,
-        )
-        app.config = _with_permission(app.config, permission.path, update.enabled)
+    async def turned_on(was_on: bool) -> None:
         if permission.id == "studio_profile" and update.enabled and not was_on:
             await app.store.kv_set(PROFILE_AT, "")  # the first sync after turning it on may happen at once
-    return _permissions(saved)
+
+    saved = await _save_now(app, update.revision, permission.path, update.enabled, refuse_unserved, turned_on)
+    return await asyncio.to_thread(_permissions, saved)
+
+
+async def _save_now(
+    app: App, revision: str, path: tuple[str, ...], value: bool | int,
+    check: Callable[[Config], None] | None = None, after: Callable[[bool], Awaitable[None]] | None = None,
+) -> Snapshot:
+    """Save one setting to config.toml and the running config, or to neither: one config write at a time, the disk
+    work off the loop, and shielded, so a cancelled request still finishes the swap (and `after`, given whether the
+    setting was on before)."""
+
+    async def run() -> Snapshot:
+        async with _CONFIG_WRITE:
+            was_on = bool(_permission_value(app.config, Permission("", path, "", "")))
+            saved = await asyncio.to_thread(_save_setting, app.config.home, revision, path, value, check)
+            app.config = _with_permission(app.config, path, value)
+            if after is not None:
+                await after(was_on)
+            return saved
+
+    return await asyncio.shield(asyncio.ensure_future(run()))
 
 
 @router.post(PROFILE_INTERVAL_PATH)
@@ -898,10 +917,8 @@ async def update_profile_interval(request: Request) -> Permissions:
     """How often the profile photo may change at most. The next sync reads it, so a save applies at once."""
     app = owner_app(request)
     update = await _input(request, ProfileIntervalUpdate)
-    async with _CONFIG_WRITE:
-        saved = await asyncio.to_thread(_save_setting, app.config.home, update.revision, PROFILE_INTERVAL, update.days)
-        app.config = _with_permission(app.config, PROFILE_INTERVAL, update.days)
-    return _permissions(saved)
+    saved = await _save_now(app, update.revision, PROFILE_INTERVAL, update.days)
+    return await asyncio.to_thread(_permissions, saved)
 
 
 @router.post(DESKTOP_STEPS_PATH)
@@ -909,10 +926,8 @@ async def update_desktop_steps(request: Request) -> Permissions:
     """The step budget of the owner's desktop tasks. A task reads it when it starts, so a save applies to the next one."""
     app = owner_app(request)
     update = await _input(request, DesktopStepsUpdate)
-    async with _CONFIG_WRITE:
-        saved = await asyncio.to_thread(_save_setting, app.config.home, update.revision, DESKTOP_STEPS, update.max_steps)
-        app.config = _with_permission(app.config, DESKTOP_STEPS, update.max_steps)
-    return _permissions(saved)
+    saved = await _save_now(app, update.revision, DESKTOP_STEPS, update.max_steps)
+    return await asyncio.to_thread(_permissions, saved)
 
 
 def _save_setting(
@@ -979,7 +994,6 @@ async def _probe_search(
                 api_key_env=provider.api_key_env or None,
                 reasoning_effort=provider.reasoning_effort,
                 provider=provider.provider,
-                data_policy=provider.data_policy,
             ),
         )
         _check_keys(config, [validated])
@@ -1074,8 +1088,7 @@ async def _probe_decisions(app: App, http: httpx.AsyncClient, config: Config, pr
         key = config.secret(provider.api_key_env) if provider.api_key_env else None
         if provider.api_key_env and not key:
             raise MissingProviderKey
-        client = JevClient(http, key or "", provider.model, provider.base_url, usage=app.dispatch.usage,
-                           data_policy=provider.data_policy)
+        client = JevClient(http, key or "", provider.model, provider.base_url, usage=app.dispatch.usage)
         async with asyncio.timeout(TEST_TIMEOUT):
             with model_request("triage", None, allowed):
                 answers = await client.decide("A settings test from the owner's dashboard.", {"check": {

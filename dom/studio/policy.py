@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Literal
@@ -56,15 +57,17 @@ def servable(config: StudioConfig, kind: Kind) -> bool:
     return local(config) or bool(backups(config, kind))
 
 
-def switch_servable(config: StudioConfig, switch: str) -> bool:
-    """Whether anything set up can serve a studio switch: the local studio or a cloud backup for its kind."""
-    return local(config) or any(backups(config, kind) for kind in SWITCH_KINDS[switch])
+def switch_servable(config: StudioConfig, switch: str, has_key: Callable[[str], bool]) -> bool:
+    """Whether anything set up can serve a studio switch: the local studio, or a cloud backup for its kind whose key
+    variable holds a value. `has_key` reads .env, so callers run this off the event loop."""
+    return local(config) or any(
+        has_key(backup.api_key_env) for kind in SWITCH_KINDS[switch] for backup in backups(config, kind))
 
 
-def unserved(config: StudioConfig) -> list[str]:
+def unserved(config: StudioConfig, has_key: Callable[[str], bool]) -> list[str]:
     """The switches that are on although nothing set up can serve them; Dom sends text in their place."""
     return [label for switch, label in SWITCH_LABELS.items()
-            if getattr(config, switch) and not switch_servable(config, switch)]
+            if getattr(config, switch) and not switch_servable(config, switch, has_key)]
 
 
 def enabled(config: StudioConfig, scope: str, kind: Kind) -> bool:

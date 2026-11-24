@@ -24,7 +24,7 @@ import httpx
 from pydantic import BaseModel
 
 from dom.backup import ARCHIVE_NAME
-from dom.config import Config, DesktopConfig, ProviderEndpoint, routing_preferences, validate_config
+from dom.config import Config, DesktopConfig, ProviderEndpoint, validate_config
 from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
 from dom.home import LIMITS, MAX_SOUL, Home
 from dom.jev import JevClient, JevUnavailable
@@ -357,7 +357,7 @@ async def _model(http: httpx.AsyncClient, name: str, endpoint: ProviderEndpoint,
         if name == "triage":
             if not key:
                 return Check("warn", label, "Set api_key_env and its secret to enable the Jev client.")
-            answers = await JevClient(http, key, endpoint.model, endpoint.base_url, data_policy=endpoint.data_policy).decide(
+            answers = await JevClient(http, key, endpoint.model, endpoint.base_url).decide(
                 "Health check.", {"check": {
                     "type": "choice", "instructions": "Answer yes.",
                     "criteria": {"yes": "The check reached Jev.", "no": "The check did not reach Jev."},
@@ -370,8 +370,8 @@ async def _model(http: httpx.AsyncClient, name: str, endpoint: ProviderEndpoint,
         else:
             url = httpx.URL(endpoint.base_url)
             body = {"model": endpoint.model, "messages": [{"role": "user", "content": "Say OK"}], "max_tokens": 1}
-            if openrouter_host(url.host) and (preferences := routing_preferences(endpoint.data_policy)):
-                body["provider"] = preferences
+            if openrouter_host(url.host):
+                body["provider"] = {"zdr": True}
             response = await http.post(
                 endpoint.base_url.rstrip("/") + "/chat/completions",
                 headers={"Authorization": f"Bearer {key}"} if key else {},
