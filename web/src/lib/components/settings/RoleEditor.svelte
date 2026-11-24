@@ -82,9 +82,12 @@
   const chosen = (slot: Slot) => choices.find((item) => item.name === slot.source);
 
   function effortOptions(slot: Slot) {
-    const listed = effortsFor(findModel(slot.source === CUSTOM ? null : slot.source, slot.model.trim()));
+    const model = findModel(slot.source === CUSTOM ? null : slot.source, slot.model.trim());
+    const listed = effortsFor(model);
     const values = slot.effort !== "default" && !listed.includes(slot.effort) ? [...listed, slot.effort] : listed;
-    return [{ value: "default", label: "Provider default" }, ...values.map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))];
+    const label = (value: string) => (value === "none" ? "None (no thinking)" : value[0].toUpperCase() + value.slice(1));
+    const fallback = model?.default_effort ? `Provider default (${label(model.default_effort)})` : "Provider default";
+    return [{ value: "default", label: fallback }, ...values.map((value) => ({ value, label: label(value) }))];
   }
 
   function edited() {

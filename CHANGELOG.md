@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Real reasoning levels.** The model picker now offers the levels each OpenRouter model lists (for example none, low, high and max for DeepSeek V4.1 Flash) and shows the provider default, instead of a generic low, medium and high.
 - **Cloud video backups.** Avatar 6 Turbo and Avatar 6 are available in the picker. Replace existing Avatar IV backups after its inline audio refusal.
 - **Cloud voice costs.** The Usage log records speech calls immediately and fills in costs when OpenRouter reports them.
 - **Smaller cloud photos.** Seedream 5.5 requests 1K square output. Oversized photos are resized and encoded as JPEG for Telegram.
