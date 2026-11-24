@@ -66,9 +66,9 @@ MAX_BUBBLES = 6
 # How Dom's own media and Telegram media read in the chat window: a "[kind]" label on his sent media and a
 # <media kind=...> tag on any message with media.
 _FAKE_MEDIA = re.compile(
-    r"<media\b|^\s*\[(?:photo|image|picture|voice|voice note|video|video note|video_note|special|sticker|gif|"
-    r"animation|audio|document)\]",
-    re.IGNORECASE)
+    r"<media\s+kind=|</media>|^\s*\[(?:photo|image|picture|voice|voice note|video|video note|video_note|special|"
+    r"sticker|gif|animation|audio|document)\](?!\()",
+    re.IGNORECASE | re.MULTILINE)
 
 
 def fake_media(text: str) -> bool:

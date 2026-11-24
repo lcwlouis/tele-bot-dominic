@@ -10,7 +10,7 @@ from xml.sax.saxutils import escape
 
 from pydantic import ValidationError
 
-from dom.actions import MAX_BUBBLE_CHARS, MAX_BUBBLES, Actions, Bubble, utf16_len
+from dom.actions import MAX_BUBBLE_CHARS, MAX_BUBBLES, Actions, Bubble, fake_media, utf16_len
 from dom.jev import JevClient, JevUnavailable
 from dom.models import Scope
 from dom.telegram.format import format_text
@@ -169,6 +169,9 @@ async def rescue(jev: JevClient, state: str, text: object, scope: Scope, names: 
         parts = _bubbles(text, breaks)
         if any(utf16_len(part) > MAX_BUBBLE_CHARS for part in parts):
             return None
+    parts = [part for part in parts if not fake_media(part)]  # rescued prose may still imitate a media message
+    if not parts:
+        return None
     try:
         actions = Actions(bubbles=[Bubble(text=part) for part in parts])
     except ValidationError:

@@ -197,3 +197,12 @@ async def test_a_long_private_reply_moved_to_the_dm_is_split_to_fit_telegram(mak
     assert ids == [1, 2]  # the emoji count double toward the limit, and "short" still fits after them
     assert sent[0].startswith("My private reply in") and sent[0].endswith("a" * 3000)
     assert sent[1] == "😀" * 1500 + "\n\nshort"
+
+
+async def test_a_private_group_reply_of_only_fake_media_sends_no_header_only_dm(make_app):
+    app = make_app()
+    sent = await executor.perform(
+        app.bot, app.store, GROUP, 1, Actions(private=True, bubbles=[{"text": "[photo] the view"}]),
+        ephemeral_recipient=OWNER, ephemeral_in_chat=False, sleep=app.sleep,
+    )
+    assert not sent and app.bot.of("send") == []

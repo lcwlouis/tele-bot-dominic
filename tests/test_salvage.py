@@ -304,3 +304,18 @@ async def test_the_rescue_never_fails_the_turn(make_app):
     await deliver(app, tg())
     assert len(app.script.requests) == 2  # the old retry ran
     assert [c[2] for c in app.bot.of("send", GROUP)] == ["the code is", "7319"]
+
+
+async def test_rescued_prose_drops_a_paragraph_that_imitates_media():
+    saved = await rescue(FakeJev(count=2), "Here you go!\n\n[photo] office view at dusk")
+    assert texts(saved) == ["Here you go!"]
+
+
+@pytest.mark.parametrize("text,fake", [
+    ("[photo] office view", True), ("hi\n[video note] hawker", True), ('<media kind="photo"></media>', True),
+    ("[photo](https://example.org/a.png) look", False), ("use a <media-query> in css", False),
+    ('he said "[photo]" lol', False), ("[sic] that's what he wrote", False),
+])
+def test_only_media_imitations_count_as_fake(text, fake):
+    from dom.actions import fake_media
+    assert fake_media(text) is fake

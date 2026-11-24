@@ -293,3 +293,14 @@ def test_video_note_text_caps():
     for bad in ({"text": "x" * (VIDEO_TEXT_MAX + 1)}, {"text": "x" * (SPECIAL_TEXT_MAX + 1), "special": True}):
         with pytest.raises(pydantic.ValidationError):
             VideoNote(**bad)
+
+
+async def test_no_media_note_at_all_when_no_kind_is_switched_on(make_app, studio_server):
+    app = make_app(contents=('{"bubbles":["hey"]}',))
+    await connect(app, studio_server)
+    off = app.config.studio.model_copy(update={"voice": False, "video_notes": False, "images": False, "special": False})
+    app.config = app.config.model_copy(update={"studio": off})
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    content = turn_requests(app)[0]["messages"][1]["content"]
+    assert UNAVAILABLE_NOTE not in content and "Optional action" not in content

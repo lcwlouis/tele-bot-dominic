@@ -15,7 +15,7 @@ from time import monotonic
 from urllib.parse import urlencode, urlsplit
 from collections.abc import AsyncIterator, Coroutine, Iterator
 from xml.sax.saxutils import escape, quoteattr
-from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable, get_args
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -41,7 +41,7 @@ from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
 from dom.provider_budget import ProviderBudgetNotices
 from dom.studio.cloud import providers as studio_providers
-from dom.studio.policy import UNAVAILABLE_NOTE as STUDIO_UNAVAILABLE, enabled as studio_enabled, outfits, turn_note as studio_turn_note
+from dom.studio.policy import Kind as StudioKind, UNAVAILABLE_NOTE as STUDIO_UNAVAILABLE, enabled as studio_enabled, outfits, turn_note as studio_turn_note
 from dom.studio.profile import maintain as maintain_studio
 from dom.presence import Habits, Presence, State, read_habits
 from dom.prompt import PromptCache, build_messages, online_window_note, report_messages
@@ -2210,19 +2210,27 @@ class Dispatcher:
             participants.append(sender_id)
         sliders, preset = await for_chat(app.home, app.store, chat_id, self.now())
         local_ready = app.studio is not None and app.studio.ready
-        if not final_bot_turn and (local_ready or app.cloud_studio is not None):
-            remaining = await app.studio_quota.remaining(app.config.studio, scope, chat_id, self.now())
-            if not local_ready:  # only backups whose key holds a value can serve; the key lookup reads .env
-                config = app.config
-                keyed = await asyncio.to_thread(lambda: {
-                    kind for kind in remaining
-                    if any(config.secret(backup.api_key_env) for backup in studio_providers(config.studio, kind))
-                })
-                remaining = {kind: count for kind, count in remaining.items() if kind in keyed}
-            # Without a note, Dom sees his past media in the window and may imitate it in text: say it's not now.
-            note += f"\n{studio_turn_note(remaining, outfits(app.config.studio, preset)) or STUDIO_UNAVAILABLE}"
-        elif not final_bot_turn and app.studio is not None:  # set up but away right now
-            note += f"\n{STUDIO_UNAVAILABLE}"
+        if not final_bot_turn and (app.studio is not None or app.cloud_studio is not None):
+            config = app.config
+            # Kinds switched on for this scope that something could serve: the local studio once set up, else a
+            # backup whose key holds a value (the key lookup reads .env). With none, media never comes up.
+            usable = await asyncio.to_thread(lambda: {
+                kind for kind in get_args(StudioKind) if studio_enabled(config.studio, scope, kind) and (
+                    app.studio is not None
+                    or any(config.secret(backup.api_key_env) for backup in studio_providers(config.studio, kind)))
+            })
+            if usable:
+                remaining = {}
+                if local_ready or app.cloud_studio is not None:
+                    remaining = await app.studio_quota.remaining(config.studio, scope, chat_id, self.now())
+                    if not local_ready:
+                        keyed = await asyncio.to_thread(lambda: {
+                            kind for kind in remaining
+                            if any(config.secret(b.api_key_env) for b in studio_providers(config.studio, kind))
+                        })
+                        remaining = {kind: count for kind, count in remaining.items() if kind in keyed}
+                # Without a note, Dom sees his past media in the window and may imitate it in text: say it's not now.
+                note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset)) or STUDIO_UNAVAILABLE}"
         if attempt is not None:
             attempt.assistant = preset is not None and preset.name == ASSISTANT
         if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:
