@@ -12,8 +12,9 @@
   import { Label } from "$lib/components/ui/label";
   import * as Select from "$lib/components/ui/select";
   import ModelPicker from "./ModelPicker.svelte";
+  import RoutePrivacy from "./RoutePrivacy.svelte";
   import { effortsFor, findModel } from "./modelLists.svelte";
-  import { CLEARABLE, KEY_PATTERN, KIND_INFO, MAX_SLOTS, ROLE_INFO, family, host, kindsFor, slotLabel } from "./roles";
+  import { CLEARABLE, KEY_PATTERN, KIND_INFO, MAX_SLOTS, ROLE_INFO, family, host, isDeepSeekChat, kindsFor, slotLabel } from "./roles";
 
   // Edits one role's chain: its primary, then its own fallbacks in order. Each slot picks a provider (from the
   // Providers tab) and a model from that provider's list, or a custom address. Nothing is written until Save, which
@@ -81,6 +82,10 @@
   const providerInfo = (id: SearchProviderId) => settings.search_providers.find((item) => item.id === id)!;
   const chosen = (slot: Slot) => choices.find((item) => item.name === slot.source);
 
+  function suggestedModel(baseUrl: string): string {
+    return settings.provider_presets.find((item) => item.base_url === baseUrl.replace(/\/+$/, ""))?.model ?? "";
+  }
+
   function effortOptions(slot: Slot) {
     const listed = effortsFor(findModel(slot.source === CUSTOM ? null : slot.source, slot.model.trim()));
     const values = slot.effort !== "default" && !listed.includes(slot.effort) ? [...listed, slot.effort] : listed;
@@ -98,7 +103,7 @@
       key: nextKey++,
       source: first?.name ?? CUSTOM,
       base_url: first?.base_url ?? (search ? fresh.default_base_url : ""),
-      model: "",
+      model: first && !search && !triage ? suggestedModel(first.base_url) : "",
       api_key_env: first ? (first.api_key_env ?? "") : search ? fresh.default_api_key_env : "",
       effort: "default",
       provider: first ? searchKind(first.kind) : "searxng",
@@ -115,6 +120,11 @@
       slot.base_url = found.base_url;
       slot.api_key_env = found.api_key_env ?? "";
       slot.key_set = found.api_key_env ? found.key_set : null;
+      if (!search && !triage) {
+        const model = suggestedModel(found.base_url);
+        if (model) slot.model = model;
+        if (isDeepSeekChat(found.base_url)) slot.effort = "default";
+      }
       if (search) slot.provider = searchKind(found.kind);
       if (search && !providerInfo(slot.provider).needs_model) slot.model = "";
     }
@@ -158,7 +168,7 @@
       base_url: slot.base_url.trim(),
       model: slot.model.trim(),
       api_key_env,
-      reasoning_effort: slot.effort === "default" ? null : slot.effort,
+      reasoning_effort: slot.effort === "default" || isDeepSeekChat(slot.base_url) ? null : slot.effort,
     };
   }
 
@@ -310,7 +320,10 @@
                     </p>
                   </div>
                 {/if}
-                {#if !search && !triage}
+
+                {#if !search && !triage && isDeepSeekChat(slot.base_url)}
+                  <p class="text-xs text-muted-foreground">Thinking is off for direct DeepSeek routes.</p>
+                {:else if !search && !triage}
                   <div class="grid gap-1.5">
                     <Label id={`${id}-effort-label`}>Reasoning effort</Label>
                     <Select.Root type="single" bind:value={slot.effort} onValueChange={edited}>
@@ -333,6 +346,7 @@
                   </p>
                 {/if}
               </div>
+              <RoutePrivacy url={slot.base_url} local={source?.is_local} class="mt-3" />
               {#if errors[index]}
                 <p id={`${id}-error`} role="alert" class="mt-3 text-sm text-coral">{errors[index]}</p>
               {/if}

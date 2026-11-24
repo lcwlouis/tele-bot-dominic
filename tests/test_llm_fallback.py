@@ -253,3 +253,14 @@ async def test_openrouter_permission_and_rate_limits_keep_normal_http_errors(sta
         with pytest.raises(httpx.HTTPStatusError) as failed:
             await client.complete([], [])
         assert type(failed.value) is httpx.HTTPStatusError
+
+
+async def test_direct_deepseek_exhausted_balance_is_a_budget_refusal():
+    from dom.llm import ChatBudgetExhausted
+
+    endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model="deepseek-flash", api_key_env=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(402))) as http:
+        client = FallbackClient(ChatClient(endpoint, None, http), None)
+        with pytest.raises(ChatBudgetExhausted) as failed:
+            await client.complete([], [])
+        assert failed.value.refusals[0].source == "deepseek_credits"

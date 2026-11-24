@@ -147,7 +147,7 @@ export type ModelSettings = {
   revision: string;
   roles: Record<SettingsRole, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
   providers: ProviderSetup[];
-  provider_presets: { name: string; kind: "openai" | "openrouter"; base_url: string; api_key_env: string | null }[];
+  provider_presets: { name: string; kind: "openai" | "openrouter"; base_url: string; api_key_env: string | null; model: string | null }[];
   /** The studio's cloud backups ([[studio.<chain>_fallbacks]]), in the order they're tried. */
   studio: Record<StudioChain, StudioFallback[]>;
   search_providers: SearchProviderInfo[];

@@ -292,3 +292,64 @@ async def test_usage_recording_failure_never_breaks_a_model_call(make_app):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         assert await chat(http, app).complete([], []) == {"content": "hi"}
         assert await jev(http, app).decide("state", {"q": {}}) == {"q": {"type": "choice", "value": "yes"}}
+
+
+@pytest.mark.parametrize(("model", "hour", "expected"), [
+    ("deepseek-flash", 3, 1.506),
+    ("deepseek-flash", 4, 0.753),
+    ("deepseek-v4-pro", 6, 5.324),
+    ("deepseek-v4-pro", 10, 2.662),
+])
+async def test_direct_deepseek_uses_its_usd_tariff_and_counts_toward_the_cap(make_app, model, hour, expected):
+    from datetime import timedelta
+
+    app = make_app()
+    app.config = app.config.model_copy(update={"daily_spend_cap_usd": expected * 0.9})
+    now = datetime(2026, 11, 24, hour, 59, tzinfo=timezone.utc)
+    app.dispatch.usage.now = lambda: now
+
+    def handler(request):
+        nonlocal now
+        assert request.url == "https://api.deepseek.com/chat/completions"
+        body = json.loads(request.content)
+        assert body["thinking"] == {"type": "disabled"}
+        assert "provider" not in body and "reasoning_effort" not in body
+        now += timedelta(minutes=1)  # Two calls straddle a tariff boundary during the response.
+        return completion(FINAL, {
+            "prompt_tokens": 2_000_000, "completion_tokens": 1_000_000,
+            "prompt_cache_hit_tokens": 1_000_000, "prompt_cache_miss_tokens": 1_000_000,
+            "cost": 111,  # Usage uses the documented tariff.
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model=model)
+        client = ChatClient(endpoint, "fictional-deepseek-key", http, usage=app.dispatch.usage)
+        await client.complete([], [{"type": "function", "function": {"name": "example"}}])
+    [(kind, stored_model, host, _, input_tokens, output_tokens, cost, _)] = usage_rows(app)
+    assert (kind, stored_model, host, input_tokens, output_tokens) == ("chat", model, "api.deepseek.com", 2_000_000, 1_000_000)
+    assert cost == pytest.approx(expected)
+    assert await app.dispatch.usage.over_cap(app.config, app.bot, sleep=no_sleep)
+
+
+async def test_unknown_deepseek_model_records_no_cost_and_warns_once(make_app, caplog):
+    app = make_app()
+    endpoint = ModelEndpoint(base_url="https://api.deepseek.com", model="future-chat-model")
+    payload = {"prompt_tokens": 500, "completion_tokens": 10, "prompt_cache_miss_tokens": 500, "cost": 1}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: completion(FINAL, payload))) as http:
+        client = ChatClient(endpoint, None, http, usage=app.dispatch.usage)
+        for _ in range(2):
+            await client.complete([], [])
+    assert [row[6] for row in usage_rows(app)] == [0, 0]
+    assert caplog.text.count("No USD price is configured for a direct DeepSeek chat model.") == 1
+
+
+@pytest.mark.parametrize(("month", "day", "expected"), [
+    (10, 1, 0.60),  # Thursday public holiday.
+    (11, 28, 0.60),  # Saturday.
+    (11, 30, 1.20),  # Monday.
+])
+def test_deepseek_holidays_and_weekends_use_off_peak_rates(month, day, expected):
+    from dom.usage import _deepseek_cost
+
+    at = datetime(2026, month, day, 8, tzinfo=timezone.utc)
+    assert _deepseek_cost("deepseek-flash", {"completion_tokens": 1_000_000}, at) == pytest.approx(expected)

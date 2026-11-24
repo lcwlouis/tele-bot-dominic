@@ -6,6 +6,7 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import * as Select from "$lib/components/ui/select";
+  import RoutePrivacy from "./RoutePrivacy.svelte";
   import { KEY_PATTERN, KIND_INFO, KINDS, useLabel } from "./roles";
 
   // Adds a provider (original null) or edits one. Saving tests it first (dom/web/provider_settings.py): through the
@@ -31,6 +32,8 @@
   // A new provider starts with an empty key variable: the owner names one (PR #11's rule).
   let keyEnv = $state(start?.api_key_env ?? "");
   let presetName = $state("");
+  const suggestedModel = $derived(settings.provider_presets.find((item) =>
+    item.base_url === baseUrl.trim().replace(/\/+$/, "") && item.kind === kind)?.model);
   let saving = $state(false);
   let error = $state("");
   const id = "provider-editor";
@@ -152,9 +155,15 @@
           holds a key can't be pointed at a new host from here.
         </p>
       </div>
+      {#if suggestedModel}
+        <p class="text-xs text-muted-foreground sm:col-span-2">
+          Selecting this provider for a model role starts with <code class="font-mono">{suggestedModel}</code>.
+        </p>
+      {/if}
       {#if kind === "openrouter"}
         <p class="text-xs text-muted-foreground sm:col-span-2">OpenRouter chat uses zero data retention.</p>
       {/if}
+      <RoutePrivacy url={baseUrl} class="sm:col-span-2" />
       {#if error}
         <p role="alert" class="text-sm text-coral sm:col-span-2">{error}</p>
       {/if}

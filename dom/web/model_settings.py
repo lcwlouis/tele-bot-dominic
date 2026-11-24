@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dom.config import (
+    DEEPSEEK_EFFORT_ERROR,
     MAX_DESKTOP_STEPS,
     MEDIA_KEY_RULE,
     MIN_DESKTOP_STEPS,
@@ -315,6 +316,7 @@ class ProviderPreset(BaseModel):
     base_url: str
     api_key_env: str | None = None
     kind: Literal["openai", "openrouter"] = "openai"
+    model: str | None = None
 
 
 # Chat presets use the OpenAI-compatible endpoint, including DeepSeek (the separate
@@ -327,7 +329,7 @@ PROVIDER_PRESETS = (
     ProviderPreset(name="Google Gemini", base_url="https://generativelanguage.googleapis.com/v1beta/openai",
                    api_key_env="GEMINI_API_KEY"),
     ProviderPreset(name="Groq", base_url="https://api.groq.com/openai/v1", api_key_env="GROQ_API_KEY"),
-    ProviderPreset(name="DeepSeek", base_url="https://api.deepseek.com", api_key_env="DEEPSEEK_API_KEY"),
+    ProviderPreset(name="DeepSeek", base_url="https://api.deepseek.com", api_key_env="DEEPSEEK_API_KEY", model="deepseek-flash"),
     ProviderPreset(name="Mistral", base_url="https://api.mistral.ai/v1", api_key_env="MISTRAL_API_KEY"),
     ProviderPreset(name="Together", base_url="https://api.together.ai/v1", api_key_env="TOGETHER_API_KEY"),
     ProviderPreset(name="Fireworks", base_url="https://api.fireworks.ai/inference/v1", api_key_env="FIREWORKS_API_KEY"),
@@ -431,9 +433,12 @@ def validated(current: Snapshot, document: tomlkit.TOMLDocument) -> Snapshot:
     try:
         saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
     except ValidationError as exc:
-        # A key variable shared by a chat route and a studio backup is the owner's to fix: say which and why.
-        rule = MEDIA_KEY_RULE.partition("{name}")[2]
-        message = next((error["msg"] for error in exc.errors(include_input=False) if rule in error["msg"]), None)
+        # These validation messages use trusted templates and tell the owner how to fix the setting.
+        rules = (MEDIA_KEY_RULE.partition("{name}")[2], DEEPSEEK_EFFORT_ERROR)
+        message = next(
+            (error["msg"] for error in exc.errors(include_input=False) if any(rule in error["msg"] for rule in rules)),
+            None,
+        )
         if message is None:
             raise
         raise HTTPException(422, message.removeprefix("Value error, ")) from None

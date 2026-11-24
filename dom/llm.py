@@ -14,7 +14,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from dom import turn_log
-from dom.config import Config, ModelRole, ProviderEndpoint
+from dom.config import DEEPSEEK_EFFORT_ERROR, Config, ModelRole, ProviderEndpoint, deepseek_chat_host
 from dom.usage import Kind, UsageRecorder, check_model_allowed, provider_address, request_kind
 
 TIMEOUT_SECONDS = 90
@@ -58,8 +58,9 @@ class ProviderBudgetError(httpx.HTTPStatusError):
     def __init__(self, response: httpx.Response, refusal: BudgetRefusal):
         # Some callers include HTTP response text in diagnostics. Keep only the
         # status and validated facts, with no response body or auth headers.
-        request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
-        super().__init__("OpenRouter refused a chat completion on budget grounds.",
+        url = response.request.url.copy_with(path="/", query=None, fragment=None, username=None, password=None)
+        request = httpx.Request("POST", url)
+        super().__init__("The provider refused a chat completion on budget grounds.",
                          request=request, response=httpx.Response(response.status_code, request=request))
         self.refusal = refusal
 
@@ -169,6 +170,11 @@ class ChatClient:
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
         openrouter = openrouter_host(self.host)
+        deepseek = deepseek_chat_host(self.host)
+        if deepseek:
+            if self.endpoint.reasoning_effort is not None:
+                raise ValueError(DEEPSEEK_EFFORT_ERROR)
+            body["thinking"] = {"type": "disabled"}
         if openrouter:
             body["provider"] = {"zdr": True}
         if self.endpoint.reasoning_effort is not None:
@@ -188,6 +194,7 @@ class ChatClient:
                 with turn_log.model_call(
                     self.endpoint.model, kind, messages, tools, fallback=fallback, host=self.address,
                 ) as call:
+                    started_at = self.usage.now() if deepseek and self.usage is not None else None
                     response = await self.http.post(
                         url, json=body, headers=headers, follow_redirects=False,
                         timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS)),
@@ -199,13 +206,17 @@ class ChatClient:
                     await self.usage.record_response(None, self.kind, self.endpoint.model, self.address, fallback=fallback)
                 raise
             if self.usage is not None:
-                await self.usage.record_response(response, self.kind, self.endpoint.model, self.address, fallback=fallback)
+                await self.usage.record_response(
+                    response, self.kind, self.endpoint.model, self.address, fallback=fallback, deepseek_started_at=started_at,
+                )
             if delay is None or not _retryable(response.status_code):
                 break
             with turn_log.timed("retry_backoff") if kind == "chat" else nullcontext():
                 await self._sleep(delay)
         if openrouter and (refusal := _budget_refusal(response)) is not None:
             raise ProviderBudgetError(response, refusal)
+        if deepseek and response.status_code == 402:
+            raise ProviderBudgetError(response, BudgetRefusal("deepseek_credits", None, None, None, None))
         response.raise_for_status()
         return response.json()["choices"][0]["message"]
 

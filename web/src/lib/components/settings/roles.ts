@@ -78,6 +78,17 @@ export function host(url: string): string {
   }
 }
 
+export function endpointHostname(url: string): string {
+  try {
+    return new URL(url.trim()).hostname.replace(/\.$/, "");
+  } catch {
+    return "";
+  }
+}
+
+export const isDeepSeekChat = (url: string) => endpointHostname(url) === "api.deepseek.com";
+export const ZDR_RECOMMENDATION = "Zero data retention is recommended.";
+
 export const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 
 /** What each OpenRouter data policy lets a studio backup's endpoints do with what Dom sends (docs/privacy.md). */

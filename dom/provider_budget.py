@@ -16,7 +16,9 @@ _STATE_KEY = "chat_provider_budget"
 
 def _line(refusal: BudgetRefusal, tz: ZoneInfo) -> str:
     amount = f" (${refusal.limit_usd:.2f})" if refusal.limit_usd is not None else ""
-    if refusal.scope == "workspace":
+    if refusal.source == "deepseek_credits":
+        line = "DeepSeek has insufficient credits. Check your balance in DeepSeek → Top up."
+    elif refusal.scope == "workspace":
         line = f"OpenRouter's workspace budget{amount} is used up. Raise it in OpenRouter → Workspace settings."
     elif refusal.scope in ("key_limit", "api_key", "workspace_default_key"):
         line = f"OpenRouter's API key limit{amount} is used up. Check the key limit in OpenRouter."

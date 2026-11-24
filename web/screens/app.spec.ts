@@ -145,6 +145,36 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByText(line, { exact: true })).toBeVisible();
   });
 
+  test("DeepSeek preset recommends ZDR and suggests a model for a chat role", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "Providers" }).click();
+    await page.getByRole("button", { name: "Add provider", exact: true }).first().click();
+    await page.getByRole("combobox", { name: "Start from a preset" }).click();
+    await page.getByRole("option", { name: "DeepSeek", exact: true }).click();
+    await expect(page.getByLabel("Base URL")).toHaveValue("https://api.deepseek.com");
+    await expect(page.getByLabel("Key variable")).toHaveValue("DEEPSEEK_API_KEY");
+    await expect(page.getByText(/Selecting this provider for a model role starts with deepseek-flash/)).toBeVisible();
+    await expect(page.getByText(/DeepSeek keeps inputs in China.*Zero data retention is recommended/)).toBeVisible();
+    await page.getByRole("button", { name: "Add provider", exact: true }).last().click();
+    await expect(page.getByRole("status").filter({ hasText: "Provider saved." })).toBeVisible();
+    await page.getByRole("tab", { name: "Models" }).click();
+    await page.getByRole("button", { name: "Edit Fallback" }).click();
+    await page.getByRole("combobox", { name: "Provider", exact: true }).first().click();
+    await page.getByRole("option", { name: "DeepSeek · OpenAI-compatible", exact: true }).click();
+    await expect(page.getByLabel("Model ID").first()).toHaveValue("deepseek-flash");
+    await expect(page.getByText("Thinking is off for direct DeepSeek routes.")).toBeVisible();
+    await expect(page.getByRole("tabpanel", { name: "Models" }).getByText(
+      /DeepSeek keeps inputs in China.*Zero data retention is recommended/,
+    )).toBeVisible();
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByRole("tab", { name: "Providers" }).click();
+    await page.getByRole("button", { name: "Remove DeepSeek", exact: true }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Remove" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "DeepSeek removed." })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
   test("select, dialog and tooltip open without CSP violations", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/gallery");

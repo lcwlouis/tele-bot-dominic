@@ -29,9 +29,10 @@
   import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
   import { forgetLists } from "$lib/components/settings/modelLists.svelte";
   import ProviderEditor from "$lib/components/settings/ProviderEditor.svelte";
+  import RoutePrivacy from "$lib/components/settings/RoutePrivacy.svelte";
   import RoleEditor from "$lib/components/settings/RoleEditor.svelte";
   import {
-    DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, host, seconds, slotLabel, useLabel,
+    DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, ZDR_RECOMMENDATION, host, isDeepSeekChat, seconds, slotLabel, useLabel,
   } from "$lib/components/settings/roles";
   import StudioBackupEditor from "$lib/components/settings/StudioBackupEditor.svelte";
   import { CHAIN_INFO, CHAINS, STUDIO_PROVIDERS } from "$lib/components/settings/studio";
@@ -321,6 +322,7 @@
             <p class="mt-1 text-sm break-all text-muted-foreground">
               {host(primary.base_url)}{primary.reasoning_effort ? ` · ${primary.reasoning_effort} effort` : ""}
             </p>
+            <RoutePrivacy url={primary.base_url} local={primary.kind === "local"} class="mt-2" />
             {#if primary.api_key_env && !primary.key_set}
               <p class="mt-2 text-sm text-coral">
                 Add {primary.api_key_env} to .env{role === "triage" ? ", then press Test. Until then triage and the leak check are off." : ""}
@@ -356,6 +358,7 @@
                           <span class="sr-only">{info.label} fallback {index + 1}{index === 0 ? ", making it the primary" : ""}</span>
                         </Button>
                       </div>
+                      <RoutePrivacy url={fallback.base_url} local={fallback.kind === "local"} class="ml-6" />
                       {#if fallback.api_key_env && !fallback.key_set}<p class="ml-6 text-coral">Add {fallback.api_key_env} to .env</p>{/if}
                       <div class="ml-6">{@render result(`${role}:${index + 1}`)}</div>
                     </li>
@@ -425,6 +428,9 @@
           {provider.base_url}{provider.api_key_env ? ` · ${provider.api_key_env}` : ""}
         </p>
         {#if provider.api_key_env && !provider.key_set}<p class="text-sm text-coral">Add {provider.api_key_env} to .env</p>{/if}
+        {#if provider.kind === "openai" && isDeepSeekChat(provider.base_url)}
+          <RoutePrivacy url={provider.base_url} />
+        {/if}
         {#if search}
           <p class="text-xs text-muted-foreground">
             {search.data_retention}
@@ -540,6 +546,9 @@
                             <p class="text-xs text-muted-foreground">
                               {STUDIO_PROVIDERS[item.provider]?.label ?? item.provider}{item.provider === "gemini_tts" ? (item.paid ? " · paid key" : " · skipped until marked paid") : ` · ${POLICY_INFO[item.data_policy].label}`}
                             </p>
+                            {#if item.data_policy !== "zdr"}
+                              <p class="text-xs text-coral">{ZDR_RECOMMENDATION}</p>
+                            {/if}
                             {#if !item.key_set}<p class="text-coral">Add {item.api_key_env} to .env</p>{/if}
                           </div>
                         </div>
