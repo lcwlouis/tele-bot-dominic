@@ -56,7 +56,9 @@ remote_isolation_confirmed = false  # remote mode only: set true once you have c
 
 [openers]
 enabled = false  # set true to let Dom start conversations in the owner's DM
-max_per_day = 2
+groups = false  # allow openers in approved groups
+friends = false  # allow openers in approved friends' DMs
+max_per_day = 2  # per chat
 
 [self_work]
 enabled = true  # Dom plans up to three small tasks of his own at night; they run only in a local desktop behind a verified LAN guard
