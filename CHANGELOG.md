@@ -6,6 +6,9 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Provider presets.** Start with editable connection details for 13 cloud and local chat providers in Settings → Providers.
+- **Provider budget notices.** When every chat provider is blocked by an OpenRouter budget or credit limit, the owner gets one private notice per reset window. Home and `/status` show the active restriction and its local reset time when available.
+
 - **Cloud video backups.** Avatar 6 Turbo and Avatar 6 are available in the picker. Replace existing Avatar IV backups after its inline audio refusal.
 - **Cloud voice costs.** The Usage log records speech calls immediately and fills in costs when OpenRouter reports them.
 - **Smaller cloud photos.** Seedream 5.5 requests 1K square output. Oversized photos are resized and encoded as JPEG for Telegram.

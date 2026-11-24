@@ -9,6 +9,7 @@ export type HomeData =
       now: { greeting: string; date: string; clock: string; iso: string };
       presence: { state: "online" | "asleep" | "offline"; title: string; detail: string };
       activity: Activity;
+      provider_budget: string | null;
       vibe: { mode: "auto" | "locked" | "none"; title: string; description: string; reason: string; since: string };
       waiting: { count: number; items: { label: string; detail: string }[]; href: string };
       today: {
@@ -146,6 +147,7 @@ export type ModelSettings = {
   revision: string;
   roles: Record<SettingsRole, { primary: ProviderView | null; fallbacks: ProviderView[] }>;
   providers: ProviderSetup[];
+  provider_presets: { name: string; kind: "openai" | "openrouter"; base_url: string; api_key_env: string | null }[];
   /** The studio's cloud backups ([[studio.<chain>_fallbacks]]), in the order they're tried. */
   studio: Record<StudioChain, StudioFallback[]>;
   search_providers: SearchProviderInfo[];

@@ -189,3 +189,67 @@ async def test_role_chain_checks_spend_before_advancing(role, make_app):
         with model_request("chat", None, allowed), pytest.raises(ModelCallSkipped):
             await client.complete([], [], once=True)
     assert attempts == ["primary.example.test"]
+
+
+@pytest.mark.parametrize(("status", "body", "source"), [
+    (403, {"error": {"message": "Workspace daily budget of $0.50 exceeded.",
+                     "metadata": {"limit_source": "openrouter_workspace_budget", "scope": "workspace",
+                                  "limit_usd": 0.5, "spend_usd": 0.505,
+                                  "resets_at": "2026-11-25T00:00:00.000Z"}}}, "openrouter_workspace_budget"),
+    (403, {"error": {"message": "API key limit exceeded."}}, "openrouter_key_limit"),
+    (402, {"error": {"message": "Insufficient credits."}}, "openrouter_credits"),
+])
+async def test_openrouter_budget_facts_survive_fallback_without_echoing_credentials(status, body, source, caplog):
+    from dom.llm import ChatBudgetExhausted, ProviderBudgetError
+
+    key = "fictional-provider-credential"
+    body["error"]["message"] += f" {key}"
+    body["error"].setdefault("metadata", {})["remedy_hint"] = key
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(status, json=body))) as http:
+        endpoint = ModelEndpoint(base_url="https://openrouter.ai/api/v1", model="example/model", api_key_env="MODEL_KEY")
+        primary = ChatClient(endpoint, key, http, sleep=_nosleep)
+        fallback = ChatClient(endpoint.model_copy(update={"model": "example/backup"}), key, http, sleep=_nosleep)
+        with pytest.raises(ProviderBudgetError) as refused:
+            await primary.complete([], [])
+        facts = refused.value.refusal
+        assert facts.source == source
+        assert "authorization" not in refused.value.request.headers
+        assert refused.value.response.text == ""
+        if source == "openrouter_workspace_budget":
+            assert (facts.scope, facts.limit_usd, facts.spend_usd, facts.resets_at) == (
+                "workspace", 0.5, 0.505, "2026-11-25T00:00:00+00:00",
+            )
+        with pytest.raises(ChatBudgetExhausted) as exhausted:
+            await FallbackClient(primary, fallback).complete([], [])
+        assert exhausted.value.refusals == (facts, facts)
+        assert key not in caplog.text + str(exhausted.value) + repr(facts)
+
+
+@pytest.mark.parametrize("other", [200, 403, 429])
+async def test_openrouter_budget_notice_requires_exhausting_the_full_route(other):
+    def handler(request):
+        if request.url.host == "openrouter.ai":
+            return httpx.Response(402)
+        return httpx.Response(other, json=OK if other == 200 else {"error": {"message": "Forbidden"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        endpoint = ModelEndpoint(base_url="https://openrouter.ai/api/v1", model="example/model", api_key_env=None)
+        primary = ChatClient(endpoint, None, http, sleep=_nosleep)
+        routed = FallbackClient(primary, _client(handler, http, "home"))
+        if other == 200:
+            assert (await routed.complete([], []))["content"] == "hi"
+        else:
+            with pytest.raises(httpx.HTTPStatusError) as failed:
+                await routed.complete([], [])
+            assert failed.value.response.status_code == other
+
+
+@pytest.mark.parametrize("status", [403, 429])
+async def test_openrouter_permission_and_rate_limits_keep_normal_http_errors(status):
+    endpoint = ModelEndpoint(base_url="https://openrouter.ai/api/v1", model="example/model", api_key_env=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(status))) as http:
+        client = FallbackClient(ChatClient(endpoint, None, http, sleep=_nosleep), None)
+        with pytest.raises(httpx.HTTPStatusError) as failed:
+            await client.complete([], [])
+        assert type(failed.value) is httpx.HTTPStatusError

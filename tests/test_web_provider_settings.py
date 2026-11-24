@@ -585,3 +585,23 @@ async def test_a_role_save_error_never_quotes_a_cached_effort_label_holding_a_se
         bad = await _save(client, "fallback", dict(backup, model="acme/leaky", reasoning_effort="turbo"))
     assert bad.status_code == 422
     assert SECRET not in bad.text
+
+
+async def test_provider_presets_pass_address_and_key_pairing_as_offered(dashboard, monkeypatch):
+    from dom.web.model_settings import _check_keys
+    from dom.web.provider_settings import ProviderSave
+    from dom.config import ProviderEndpoint
+
+    _, path, browser = dashboard
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fictional-router-key")
+    async with browser() as client:
+        settings = (await client.get(API)).json()
+    presets = settings["provider_presets"]
+    assert len(presets) == 13
+    config = load_config(path.parent)
+    for item in presets:
+        if item["api_key_env"] and item["name"] != "OpenRouter":
+            monkeypatch.delenv(item["api_key_env"], raising=False)
+        preset = ProviderSave(revision=settings["revision"], **item)
+        _check_keys(config, [ProviderEndpoint(base_url=preset.base_url, api_key_env=preset.api_key_env)])
+        assert (preset.api_key_env is None) == preset.base_url.startswith("http://")

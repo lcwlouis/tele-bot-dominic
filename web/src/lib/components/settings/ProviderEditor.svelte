@@ -30,6 +30,7 @@
   let baseUrl = $state(start?.base_url ?? "");
   // A new provider starts with an empty key variable: the owner names one (PR #11's rule).
   let keyEnv = $state(start?.api_key_env ?? "");
+  let presetName = $state("");
   let saving = $state(false);
   let error = $state("");
   const id = "provider-editor";
@@ -42,6 +43,17 @@
     const suggested = new Set(KINDS.map(suggestion));
     if (!baseUrl || suggested.has(baseUrl)) baseUrl = suggestion(value);
     kind = value;
+    error = "";
+  }
+
+  function pickPreset(value: string) {
+    const preset = settings.provider_presets.find((item) => item.name === value);
+    if (!preset) return;
+    presetName = value;
+    if (!start) name = preset.name;
+    kind = preset.kind;
+    baseUrl = preset.base_url;
+    keyEnv = preset.api_key_env ?? "";
     error = "";
   }
 
@@ -80,6 +92,19 @@
       </Card.Description>
     </Card.Header>
     <Card.Content class="grid gap-3 sm:grid-cols-2">
+      <div class="grid gap-1.5 sm:col-span-2">
+        <Label id={`${id}-preset-label`}>Start from a preset</Label>
+        <Select.Root type="single" value={presetName} onValueChange={pickPreset}>
+          <Select.Trigger class="h-9 w-full" aria-labelledby={`${id}-preset-label`}>
+            {presetName || "Choose a provider"}
+          </Select.Trigger>
+          <Select.Content>
+            {#each settings.provider_presets as preset (preset.name)}
+              <Select.Item value={preset.name} label={preset.name} />
+            {/each}
+          </Select.Content>
+        </Select.Root>
+      </div>
       <div class="grid gap-1.5">
         <Label for={`${id}-name`}>Name</Label>
         <Input id={`${id}-name`} bind:value={name} oninput={() => (error = "")} required maxlength={40} pattern={"[A-Za-z0-9][A-Za-z0-9 ._\\-]*"} autocomplete="off" />
@@ -127,6 +152,9 @@
           holds a key can't be pointed at a new host from here.
         </p>
       </div>
+      {#if kind === "openrouter"}
+        <p class="text-xs text-muted-foreground sm:col-span-2">OpenRouter chat uses zero data retention.</p>
+      {/if}
       {#if error}
         <p role="alert" class="text-sm text-coral sm:col-span-2">{error}</p>
       {/if}

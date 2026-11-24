@@ -64,6 +64,32 @@ for (const scheme of ["dark", "light"] as const) {
     test.describe(`${device} ${scheme}`, () => {
       test.use({ viewport, colorScheme: scheme });
 
+      test("provider preset picker fills editable cloud and local fields", async ({ page }) => {
+        const problems = await watch(page);
+        await page.goto("/app/system");
+        await page.getByRole("tab", { name: "Providers" }).click();
+        await page.getByRole("button", { name: "Add provider", exact: true }).first().click();
+
+        const picker = page.getByRole("combobox", { name: "Start from a preset" });
+        await picker.focus();
+        await picker.press("Enter");
+        await page.getByRole("option", { name: "OpenRouter", exact: true }).click();
+        await expect(page.getByLabel("Name", { exact: true })).toHaveValue("OpenRouter");
+        await expect(page.getByLabel("Base URL")).toHaveValue("https://openrouter.ai/api/v1");
+        await expect(page.getByLabel("Key variable")).toHaveValue("OPENROUTER_API_KEY");
+        await expect(page.getByText("OpenRouter chat uses zero data retention.")).toBeVisible();
+
+        await picker.click();
+        await page.getByRole("option", { name: "Ollama", exact: true }).click();
+        await expect(page.getByLabel("Base URL")).toHaveValue("http://localhost:11434/v1");
+        await expect(page.getByLabel("Key variable")).toHaveValue("");
+        await expect(page.getByText("OpenRouter chat uses zero data retention.")).toHaveCount(0);
+        await page.getByLabel("Base URL").fill("http://ollama:11434/v1");
+        await expect(page.getByLabel("Base URL")).toHaveValue("http://ollama:11434/v1");
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+        expect(problems).toEqual([]);
+      });
+
       for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly } of pages) {
         if (phoneOnly && device !== "phone") continue;
         test(name, async ({ page }) => {
@@ -107,6 +133,17 @@ for (const scheme of ["dark", "light"] as const) {
 
 test.describe("interactions under the CSP", () => {
   test.use({ viewport: viewports.desktop, colorScheme: "dark" });
+
+  test("Home shows the active provider budget notice", async ({ page }) => {
+    const line = "OpenRouter's workspace budget ($0.50) is used up. Resets 25 Nov at 08:00 (Asia/Singapore).";
+    await page.route("**/api/home", async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...await response.json(), provider_budget: line } });
+    });
+    await page.goto("/app");
+    await expect(page.getByText("Provider budget reached", { exact: true })).toBeVisible();
+    await expect(page.getByText(line, { exact: true })).toBeVisible();
+  });
 
   test("select, dialog and tooltip open without CSP violations", async ({ page }) => {
     const problems = await watch(page);
