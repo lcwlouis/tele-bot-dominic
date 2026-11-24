@@ -434,3 +434,18 @@ async def test_soul_chat_retries_once_when_the_edit_quote_is_loose(make_app, bro
         retry = app.script.requests[1]["messages"]
         assert retry[-2]["role"] == "assistant" and "exactly once" in retry[-1]["content"]
     assert app.home.read("SOUL.md") == "An old line"
+
+
+async def test_soul_chat_keeps_the_reply_when_soul_goes_unreadable_mid_chat(make_app, browser, monkeypatch):
+    app = make_app(contents=[answer("Noted.", {"old": "An old line", "new": "A new line"})])
+    app.home._write_regular("SOUL.md", "An old line")
+
+    def unreadable(*_):
+        raise OSError("gone")
+
+    monkeypatch.setattr("dom.web.shared.soul_edit_problem", unreadable)
+    async with browser(app) as client:
+        response = await client.post("/api/memory/soul", headers=JSON, json=said("He likes jazz"))
+        assert response.status_code == 200 and response.json()["proposal"] is None
+        assert response.json()["reply"].startswith("Noted.") and "exact place in SOUL.md" in response.json()["reply"]
+    assert len(app.script.requests) == 1 and await app.proposals.pending() == []

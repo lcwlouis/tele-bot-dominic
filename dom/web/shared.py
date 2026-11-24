@@ -42,9 +42,12 @@ SOUL_INSTRUCTIONS = (
     "Reply in your own voice, briefly: a few sentences at most. Never mention tools, models, prompts, files other than "
     "SOUL.md, or timings. "
     "Return only a JSON object: {\"reply\": string, \"edit\": null or {\"old\": string, \"new\": string}}. "
-    "Everything the owner says here is about you: \"he\", \"Dom\" and \"you\" all mean you, never someone else. "
-    "When the owner says what you are like, what you like or dislike, or how you should act, take it as a change to "
-    "your character and propose the edit in the same reply; you may say what you make of it, in character. "
+    "This conversation is about you. The owner speaks of themselves as \"I\"; \"he\", \"Dom\" and \"you\" mean "
+    "you, never the owner. Only when the owner's own message names another person (\"my brother\", a friend) is a "
+    "\"he\" about them. For example, \"He hates chicken rice\" means you hate chicken rice, so propose that edit; "
+    "\"My brother is in rehab, he avoids parties\" is about the brother, so no edit. When the owner says what you are like, what you like or dislike, or how you should act, take it as "
+    "a change to your character and propose the edit in the same reply; you may say what you make of it, in character. "
+    "Never turn what the owner says about another person into a trait of yours. "
     "Ask instead only when the change is unclear or clashes with SOUL.md. "
     "Otherwise, include an edit only when you and the owner have a concrete change in mind; else edit is null. "
     "An edit's old text must occur exactly once in SOUL.md, copied character for character, and the new text replaces "
@@ -581,6 +584,17 @@ MAX_SOUL_CHAT = 16_000  # characters in the whole conversation sent with one req
 SOUL_EDIT_DROPPED = "I had a change in mind, but I couldn't pin it to one exact place in SOUL.md. Ask me again and I'll quote it exactly."
 
 
+SOUL_UNAVAILABLE = "SOUL.md is unavailable"
+
+
+def _edit_problem(app: App, edit: dict) -> str | None:
+    """Why Dom's proposed soul edit can't be filed, or None. SOUL.md going unreadable mid-chat is a problem, not a crash."""
+    try:
+        return soul_edit_problem(app.home, edit["old"], edit["new"])
+    except (OSError, ValueError):
+        return SOUL_UNAVAILABLE
+
+
 async def soul_chat(app: App, turns: list[tuple[str, str]]) -> tuple[str, dict | None, int | None]:
     """Dom's next reply in the owner's conversation about SOUL.md, and the edit he proposes with it, if any.
 
@@ -635,20 +649,23 @@ async def soul_chat(app: App, turns: list[tuple[str, str]]) -> tuple[str, dict |
     except Exception as exc:
         log.warning("dashboard soul chat failed (%s)", type(exc).__name__)
         raise OwnerError("Couldn't get a reply from Dom. Try again.") from None
-    if edit is not None and (problem := soul_edit_problem(app.home, edit["old"], edit["new"])):
+    if edit is not None and (problem := _edit_problem(app, edit)):
         # Models often quote SOUL.md loosely; one retry with the reason usually pins the edit down. If the retry
-        # fails too, the first reply stands and the edit is dropped below with a sentence.
+        # fails too, or SOUL.md can't be read, the first reply stands and the edit is dropped with a sentence.
         retry = [*messages, {"role": "assistant", "content": raw}, {"role": "user", "content": (
             f"That edit can't be filed: {problem}. Return the same JSON again, with old copied character for "
             "character from SOUL.md. A short whole line works best."
         )}]
-        try:
-            async with asyncio.timeout(30):
-                _, second_reply, second_edit = await ask(retry)
-            if second_edit is not None and soul_edit_problem(app.home, second_edit["old"], second_edit["new"]) is None:
-                reply, edit = second_reply, second_edit
-        except Exception as exc:
-            log.info("soul edit retry failed (%s)", type(exc).__name__)
+        fixed = None
+        if problem != SOUL_UNAVAILABLE:
+            try:
+                async with asyncio.timeout(30):
+                    _, second_reply, second_edit = await ask(retry)
+                if second_edit is not None and _edit_problem(app, second_edit) is None:
+                    fixed = second_reply, second_edit
+            except Exception as exc:
+                log.info("soul edit retry failed (%s)", type(exc).__name__)
+        reply, edit = fixed or (f"{reply}\n\n{SOUL_EDIT_DROPPED}", None)
     proposal_id = None
     if edit is not None:
         try:
