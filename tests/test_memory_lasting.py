@@ -527,8 +527,6 @@ async def test_journal_summaries_stop_at_the_spend_cap_counted_from_real_usage(m
     assert not app.script.requests and read(tmp_path, "memory/journal/2025-12.md") == raw
 
 
-def test_hand_edit_pins_use_the_owners_local_date(make_app_sync=None):
-    pass
 
 
 async def test_a_hand_edit_is_pinned_with_the_owners_local_date_not_the_servers(make_app, browser, tmp_path):
@@ -676,3 +674,29 @@ def test_older_months_stay_in_the_block_until_their_year_has_a_summary(tmp_path)
     block = journal_archive._recent_block(Home(tmp_path), False, date(2026, 11, 25))
     assert "2026-01: M1" in block and "2026-10: M10" in block  # 2026 has no summary yet, so January is not lost
     assert "2025: Y25" in block and "DEC25" not in block  # the year summary has taken December over
+
+
+async def test_latest_days_from_both_journals_are_all_kept(make_app, tmp_path):
+    # Re-check of #79: merging the public and private latest days and then keeping 9 reopened a gap.
+    app = make_app(contents=tuple(f"S{i}" for i in range(24)))
+    on(app, date(2026, 2, 23))  # a Monday: week 8 (Feb 16-22) waits for its grace day, so Feb 16-23 are unsummarised
+    journal(tmp_path, 54)  # 2026-01-01 .. 2026-02-23
+    journal(tmp_path, 54, private=True)
+    await journal_archive.run(app)
+    text = build_messages(app.home, "owner_dm", OWNER, [OWNER], "<chat_window/>", "note")[1]["content"]
+    for day in range(16, 24):
+        assert text.count(f"- 2026-02-{day}:") == 2, day
+
+
+def test_a_multi_line_add_cannot_leave_a_bare_tag_line(tmp_path):
+    home = Home(tmp_path)
+    result = home.memory_write("memory/people/7.md", "add", "Real fact\n{core owner 2026-03-01}", source="-1001")
+    assert not result.ok and not (tmp_path / "memory/people/7.md").exists()
+
+
+def test_pin_marks_are_not_private_terms(tmp_path):
+    from dom import guard
+
+    write(tmp_path, "private/NOTES.md", "- Likes quiet mornings {core dom 2026-01-03: Personal Reason}\n")
+    terms = guard.private_terms(Home(tmp_path))
+    assert "2026" not in terms and "Personal Reason" not in terms

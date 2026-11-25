@@ -313,7 +313,7 @@ def recent_life(home: Home, scope: str) -> str:
         latest += _latest(owner_home, private, through.group(1) if through else "")
         if body := _THROUGH.sub("", text, count=1).strip():
             texts.append(body)
-    lines = "\n".join(f"- {day}: {text}" for day, text in sorted(latest, key=lambda item: item[0])[-LATEST_ENTRIES:])
+    lines = "\n".join(f"- {day}: {text}" for day, text in sorted(latest, key=lambda item: item[0]))  # each journal is capped in _latest
     body = "\n\n".join(filter(None, [f"Latest days, not summarised yet:\n{lines}" if lines else "", *texts]))
     if not body:
         return ""

@@ -135,7 +135,7 @@ class Home:
 
         if op == "add":
             line = self._shaped(rel, f"- {text}", source)
-            if not text.strip() or notes.blank_body(line):
+            if not text.strip() or any(notes.blank_body(part) for part in line.splitlines()):
                 return WriteResult(False, current, "add needs `text`")
             new = f"{current.rstrip(chr(10))}\n{line}" if current.strip() else line
         elif op in ("replace", "remove"):
@@ -351,6 +351,8 @@ class Home:
     def private_text_files(self) -> list[str]:
         """Every file holding the owner's private text: the private notes, the live journal and its archive
         (month and year files, summaries included). Guards compare public text against all of them."""
+        if not self.allow_private:
+            raise PrivateAccessError("private files need a private-scoped home")
         base = self.root / ARCHIVE_DIRS[True]
         archive = sorted(
             f"{ARCHIVE_DIRS[True]}/{p.name}" for p in base.glob("*.md")

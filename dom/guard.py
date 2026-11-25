@@ -82,7 +82,7 @@ def private_terms(home: Home, people_in_chat: Iterable[Iterable[str]] = ()) -> s
             files.append(private.read(f"private/{name}.md"))
         except (OSError, PrivateAccessError, ValueError):
             log.warning("could not read a private file for leak-check terms")
-    text = "\n".join(files)
+    text = notes.strip_tags("\n".join(files))  # pin marks and source tags are not private terms
     labels = [*_HEADINGS.findall(text), *(a or b for a, b in _BOLD.findall(text))]
     candidates = [
         *(term for label in labels for term in _heading_terms(label)),
