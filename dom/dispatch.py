@@ -2236,6 +2236,9 @@ class Dispatcher:
             casual, casual_ids = await self.reminders.casual_note()
             if casual:
                 note += f"\n{casual}"
+        if scope == "owner_dm" and chat_id == app.owner_id:
+            if goals_block := await app.goals.turn_note(scope, chat_id):
+                note += f"\n{goals_block}"
         if self._ephemeral_recipient(scope, newest) is not None:
             note += (
                 '\nThe latest message is from the owner. For an assistant-like answer to that message, '

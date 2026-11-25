@@ -38,6 +38,8 @@ from dom.plugins.registry import PluginRegistry
 from dom.plugins import surfaces
 from dom.plugins.runner import PluginRunner
 from dom.gifs import GifSearch
+from dom.goals import Goals
+from dom.noticings import Noticings
 from dom.studio.client import StudioClient
 from dom.studio.cloud import CloudStudio
 from dom.studio.policy import StudioQuota
@@ -85,6 +87,8 @@ class App:
     plugins: PluginRegistry = field(init=False)
     plugin_runner: PluginRunner = field(init=False)
     self_work: SelfWork = field(init=False)
+    goals: Goals = field(init=False)
+    noticings: Noticings = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
     menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
 
@@ -110,6 +114,8 @@ class App:
             self.t3 = Bridge(self)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
         self.self_work = SelfWork(self)
+        self.goals = Goals(self)
+        self.noticings = Noticings(self)
         if self.config.desktop_hosts:
             self.desktop_worker = DesktopFleet(self)
 
@@ -917,6 +923,23 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             elif decision == "delno":
                 await _toast(app, query, "Cancelled")
                 await _settle_confirm(app, query, "Cancelled")
+        return
+    if action == "notice":
+        if (
+            query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
+        ):
+            return
+        decision, _, raw_id = raw_chat_id.partition(":")
+        item_id = _item_id(raw_id)
+        if item_id is not None and decision in ("do", "no"):
+            accept = decision == "do"
+            ok, message, _ = await app.noticings.decide(item_id, accept=accept, settle_telegram=False)
+            await _toast(app, query, message if ok else "already handled")
+            if ok:
+                await _settle_confirm(app, query, "✅ Let's do it" if accept else "Not now")
+            else:
+                await _settle_confirm(app, query, "Already handled")
         return
     if action == "own":
         if (

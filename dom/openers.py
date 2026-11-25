@@ -12,7 +12,9 @@ from zoneinfo import ZoneInfo
 from aiogram.exceptions import TelegramAPIError
 
 from dom import turn_log
-from dom.models import Scope
+from dom.goals import checkin_opener_note
+from dom.models import Scope, StoredMessage
+from dom.noticings import card_markup, format_card
 from dom.presence import Habits, read_habits
 from dom.stickers import resolve_sticker
 from dom.telegram import executor
@@ -174,6 +176,46 @@ class Openers:
             if until is None:
                 minutes = dispatch.presence.session_minutes(habits)
                 until = dispatch.now() + timedelta(minutes=minutes)
+            noticing = await app.noticings.opener_due(now) if owner_dm else None
+            goal_checkin = await app.goals.due_checkin(now) if (owner_dm and noticing is None) else None
+
+        if owner_dm and noticing is not None:
+            async with dispatch._dispatch_slot(chat_id, wait_media=False):
+                present, _ = await self._presence(chat_id, scope, read_habits(app.home))
+                if not present or await store.latest_chat_message(chat_id) != latest:
+                    return
+                day = self._day(dispatch.now())
+                sent = await self._sent_today(day, count_key)
+                if not self._enabled(chat_id, scope) or sent >= app.config.openers.max_per_day:
+                    return
+                live_noticing = await app.noticings.opener_due(dispatch.now())
+                if live_noticing is None or live_noticing["id"] != noticing["id"]:
+                    return
+                if minutes is not None:
+                    await dispatch.presence.go_online(chat_id, habits, minutes)
+                commit()
+                card_text = format_card(live_noticing)
+                delivered = await executor.send_text(
+                    app.bot, chat_id, card_text,
+                    reply_markup=card_markup(live_noticing["id"]),
+                    sleep=app.sleep, literal=True,
+                )
+                if delivered is not None:
+                    delivered_now = dispatch.now()
+                    delivered_day = self._day(delivered_now)
+                    delivered_count = sent if delivered_day == day else await self._sent_today(delivered_day, count_key)
+                    await store.record_new_message(StoredMessage(
+                        chat_id=str(chat_id), msg_id=delivered.message_id, role="assistant", is_bot=True,
+                        visibility_scope=store.visibility_for(chat_id), text=card_text,
+                        created_at=delivered_now.isoformat(),
+                    ))
+                    await store.kv_set_many({
+                        message_key: str(delivered.message_id),
+                        count_key: f"{delivered_day}/{delivered_count + 1}",
+                    })
+                    await app.noticings.mark_opener_sent(live_noticing["id"], delivered_now, delivered.message_id)
+                    turn_log.outcome("Sent a noticing")
+            return
 
         async def allowed() -> bool:
             if not owner_dm:
@@ -182,6 +224,7 @@ class Openers:
                     return False
             return await dispatch.turn_allowed(chat_id, scope)
 
+        opener_note = checkin_opener_note(goal_checkin) if (owner_dm and goal_checkin is not None) else NOTE
         with model_request("chat", chat_id, allowed):
             await check_model_allowed()
             if scope == "group" and not await self._group_can_send(chat_id):
@@ -189,7 +232,7 @@ class Openers:
             if not owner_dm and await store.latest_chat_message(chat_id) != latest:
                 return
             actions = await dispatch._compose_turn(
-                chat_id, scope, None, None, window, until, 0, False, habits, extra_note=NOTE,
+                chat_id, scope, None, None, window, until, 0, False, habits, extra_note=opener_note,
             )
         if actions.no_response or not (actions.bubbles or resolve_sticker(app.stickers.sendable(), actions.sticker) or (actions.gif and app.gifs)):
             return
@@ -241,4 +284,8 @@ class Openers:
                 authorize_message=None if owner_dm else authorize_message,
             )
             if sent_ids:
-                turn_log.outcome("Texted first")
+                if owner_dm and goal_checkin is not None:
+                    await app.goals.record_checkin(goal_checkin["id"], dispatch.now())
+                    turn_log.outcome("Checked in on a goal")
+                else:
+                    turn_log.outcome("Texted first")
