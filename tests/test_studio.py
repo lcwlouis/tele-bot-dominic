@@ -497,3 +497,10 @@ def test_media_written_as_text_edge_cases(bubbles, image, texts):
     from dom.actions import Actions
     actions = Actions.model_validate({"bubbles": bubbles})
     assert actions.image == image and [b.text for b in actions.bubbles] == texts
+
+
+def test_dom_is_told_the_media_tag_on_his_own_message_is_what_he_sent():
+    # Live test of #77: the description reached the window, but Dom still said he couldn't see his own photo.
+    from dom.prompt import FRAME
+
+    assert "On your own messages it is what you really sent" in FRAME
