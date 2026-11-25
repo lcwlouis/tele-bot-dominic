@@ -287,6 +287,7 @@ async def test_a_cancelled_reminder_shows_it_on_its_own_button_only(make_app):
     assert [[(b.text, b.callback_data) for b in row] for row in edited.inline_keyboard] == [
         [(f"Cancelled #{first}", "noop")],
         [(f"Cancel #{second}", f"rem:cancel:{second}"), (f"Delete #{second}", f"rem:del:{second}:{stamp_token(second_row['created_at'])}")],
+        [("✕ Close", "card:close")],
     ]
     await press(app, "noop")  # the settled button does nothing
     assert [r["id"] for r in await app.dispatch.reminders.active()] == [second]
@@ -360,6 +361,8 @@ async def test_delivery_is_cancelled_with_an_error_after_ten_failed_attempts(mak
     status = app.store._conn.execute("SELECT status FROM reminders").fetchone()["status"]
     assert status == "cancelled"
     assert any(record.levelname == "ERROR" and "reminder" in record.getMessage() for record in caplog.records)
+    notes = [row["text"] for row in await events(app)]
+    assert len([note for note in notes if "given up" in note]) == 1
 
 
 async def test_backoff_doubles_and_caps_at_an_hour(make_app):

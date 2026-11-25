@@ -338,7 +338,8 @@ async def test_command_errors(make_app, browser, monkeypatch, error, owner_sees)
 async def test_a_failed_command_tells_dom_through_an_event_without_the_plugin_output(make_app, browser, monkeypatch):
     # /km on the Pi tried to save its history and failed; Dom never learnt that his plugin was broken.
     app = make_app()
-    await approve(app, browser, monkeypatch=monkeypatch)
+    manifest = SURFACES.replace('description = "Weather right now"', 'description = "W"\nscopes = ["owner_dm", "group"]')
+    await approve(app, browser, manifest=manifest, monkeypatch=monkeypatch)
     fake_runner(app, monkeypatch, PluginError("[Errno 30] Read-only file system: '~' secret-output"))
     await command(app, "/weather", msg_id=65)
     assert "plugins cannot save files between runs" in app.bot.of("send", OWNER)[-1][2]
@@ -346,6 +347,12 @@ async def test_a_failed_command_tells_dom_through_an_event_without_the_plugin_ou
     note = rows[-1]["text"]
     assert note.startswith("/weather from plugin") and note.endswith("failed when it ran, because it tried to save a file")
     assert "secret-output" not in note
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Club")
+    await command(app, "/weather", chat=GROUP, sender=FRIEND, msg_id=66)
+    group_notes = app.store._conn.execute(
+        "SELECT text FROM messages WHERE chat_id = ? AND role = 'event'", (str(GROUP),),
+    ).fetchall()
+    assert len(group_notes) == 1 and "secret-output" not in group_notes[0]["text"]
 
 
 async def test_unapproved_or_unavailable_plugins_do_not_capture_commands(make_app, browser, monkeypatch):

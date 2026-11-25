@@ -100,7 +100,8 @@ async def test_save_checks_limits_versions_and_habits(make_app, browser):
         assert too_long.status_code == 422 and app.home.read(memory) == ""
         ok = await save(file=memory, version=version(""), content="- Likes tea\r\n")
         assert ok.status_code == 200 and ok.json()["message"] == "Saved MEMORY.md."
-        assert app.home.read(memory) == "- Likes tea\n" and ok.json()["version"] == version("- Likes tea\n")
+        saved = app.home.read(memory)  # a line the owner typed is pinned as their core memory
+        assert saved == f"- Likes tea {{core owner {app.dispatch.now().date().isoformat()}}}\n" and ok.json()["version"] == version(saved)
         stale = await save(file=memory, version=version(""), content="late edit")
         assert stale.status_code == 409 and "changed since" in stale.json()["detail"]
         assert (await save(file="memory/HABITS.md", version="", content="x")).status_code == 403
@@ -314,13 +315,14 @@ async def test_a_chats_recent_messages_are_full_only_in_the_owners_dm(make_app, 
     async with browser(app) as client:
         mine = (await client.get(f"/api/chats/{OWNER}/messages")).json()
         assert mine["full"] is True
-        assert [(m["who"], m["text"]) for m in mine["messages"]] == [("You", long), ("Dom", "Noted.")]  # no owner events
+        assert [(m["who"], m["text"]) for m in mine["messages"]] == [("Dom", "Noted."), ("You", long)]  # newest first, no owner events
+        assert mine["has_more"] is False and mine["next_before"] is None
         theirs = (await client.get(f"/api/chats/{GROUP}/messages")).json()
         assert theirs["full"] is False
-        first, reply = theirs["messages"]
+        reply, first = theirs["messages"]
         # Another chat: one line per message, no longer than Home's preview, and never the full text over the API.
         assert first["who"] == "River" and "\n" not in first["text"] and len(first["text"]) <= 120 and first["text"].endswith("…")
-        assert "goes on " * 20 not in json.dumps(theirs) and reply == {"who": "Dom", "mine": True, "text": "Sounds good.", "at": reply["at"]}
+        assert "goes on " * 20 not in json.dumps(theirs) and reply == {"id": reply["id"], "who": "Dom", "mine": True, "text": "Sounds good.", "at": reply["at"]}
         assert (await client.get(f"/api/chats/{FRIEND}/messages")).status_code == 404  # not approved
         assert (await client.get("/api/chats/12345/messages")).status_code == 404
         assert (await client.get(f"/api/chats/{GROUP}/messages", headers={"Authorization": ""})).status_code == 403

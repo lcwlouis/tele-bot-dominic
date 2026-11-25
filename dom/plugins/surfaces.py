@@ -59,12 +59,22 @@ def _hint(error: Exception) -> str:
     return ""
 
 
-async def _note_failure(app: App, what: str, error: Exception) -> None:
-    """Tell Dom, through an event in the owner's DM, that a plugin he drafted failed, so he can offer a fix. Only
-    the name and the kind of failure: plugin output stays out of the chat history."""
-    why = ", because it tried to save a file" if _hint(error) else ""
+async def _note_failure(app: App, chat_id: int, what: str, error: Exception) -> None:
+    """Tell Dom in the affected chat that a plugin run failed, without copying plugin output into history."""
+    if _hint(error):
+        why = ", because it tried to save a file"
+    elif str(error) == "sandbox unavailable":
+        why = ", because the plugin sandbox was unavailable"
+    elif isinstance(error, ValueError):
+        why = ", because the plugin returned invalid data"
+    elif type(error).__name__.startswith("Telegram"):
+        why = ", because Telegram could not deliver its result"
+    else:
+        why = ", because the plugin hit an internal error"
     try:
-        await app.store.record_owner_event(f"{what} failed when it ran{why}")
+        await app.store.record_chat_event_limited(
+            chat_id, f"plugin:{what[:80]}", f"{what} failed when it ran{why}",
+        )
     except Exception:
         log.exception("could not record a plugin failure")
 
@@ -103,16 +113,20 @@ async def handle_command(app: App, message: Message, msg: IncomingMessage, comma
             return True  # silently dropped: a busy group must not turn Dom into a spam relay
         app.plugin_command_times[msg.chat_id] = monotonic()
     args = _arguments(msg.text)
-    text = await _run_command(app, plugin, declared.name, args, scope)
+    text = await _run_command(app, plugin, declared.name, args, scope, msg.chat_id)
     if text:
-        await _reply(app, msg.chat_id, text)
+        try:
+            await _reply(app, msg.chat_id, text)
+        except Exception as error:
+            await _note_failure(app, msg.chat_id, f"/{name} result from plugin {plugin.manifest.name}", error)
+            raise
     if asleep:  # the owner woke him for this
         await app.dispatch.grumble_after_command(msg.chat_id, declared.name, args)
     log.info("plugin command /%s (%s) ran in a %s chat", name, plugin.manifest.name, scope)
     return True
 
 
-async def _run_command(app: App, plugin: Plugin, name: str, text: str, scope: str) -> str:
+async def _run_command(app: App, plugin: Plugin, name: str, text: str, scope: str, chat_id: int) -> str:
     owner = scope == "owner_dm"
     if len(text) > MAX_COMMAND_ARGS:
         return f"That's too long for /{name}: at most {MAX_COMMAND_ARGS} characters."
@@ -132,11 +146,13 @@ async def _run_command(app: App, plugin: Plugin, name: str, text: str, scope: st
     except PluginBusy:
         return "Plugins are busy. Try again in a moment."
     except PluginsUnavailable:
+        await _note_failure(app, chat_id, f"/{name} from plugin {plugin.manifest.name}", RuntimeError("sandbox unavailable"))
         return "Plugins are unavailable right now." if not owner else "Plugins are unavailable: the sandbox check failed."
     except PluginError as error:
-        await _note_failure(app, f"/{name} from plugin {plugin.manifest.name}", error)
+        await _note_failure(app, chat_id, f"/{name} from plugin {plugin.manifest.name}", error)
         return _plain(f"/{name} failed: {error}{_hint(error)}") if owner else f"/{name} didn't work this time."
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError) as error:
+        await _note_failure(app, chat_id, f"/{name} from plugin {plugin.manifest.name}", error)
         return f"/{name} could not run."
     return _plain(result) if isinstance(result, str) else ""
 
@@ -216,6 +232,8 @@ async def run_panel(app: App, plugin: Plugin, panel: PanelManifest) -> tuple[Pan
     """The panel's data, or a message for the owner saying why there is none."""
     try:
         if not await asyncio.to_thread(app.plugin_runner.self_test):
+            if app.owner_id is not None:
+                await _note_failure(app, app.owner_id, f"the {panel.id} panel of plugin {plugin.manifest.name}", RuntimeError("sandbox unavailable"))
             return None, "Plugins are unavailable: the sandbox check failed."
         with app.plugin_runner.active(plugin.manifest.name):
             folder = await app.plugins.approved_folder(plugin)
@@ -227,11 +245,16 @@ async def run_panel(app: App, plugin: Plugin, panel: PanelManifest) -> tuple[Pan
     except PluginBusy:
         return None, "Plugins are busy. Refresh in a moment."
     except PluginError as error:
-        await _note_failure(app, f"the {panel.id} panel of plugin {plugin.manifest.name}", error)
+        if app.owner_id is not None:
+            await _note_failure(app, app.owner_id, f"the {panel.id} panel of plugin {plugin.manifest.name}", error)
         return None, _plain(f"The panel failed: {error}{_hint(error)}")
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError) as error:
+        if app.owner_id is not None:
+            await _note_failure(app, app.owner_id, f"the {panel.id} panel of plugin {plugin.manifest.name}", error)
         return None, "The panel could not run."
     try:
         return validate_panel(result), None
     except ValueError as error:
+        if app.owner_id is not None:
+            await _note_failure(app, app.owner_id, f"the {panel.id} panel of plugin {plugin.manifest.name}", error)
         return None, _plain(f"The plugin returned data Dom cannot show. {error}")

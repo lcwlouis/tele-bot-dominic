@@ -42,6 +42,7 @@ HEALTH_SECONDS = 120
 STABLE_SECONDS = 10  # the new process must keep the same PID this long after it is ready
 POLL_SECONDS = 2
 NOTES_LIMIT = 3000
+HISTORY_NOTES_LIMIT = 12_000
 GIT_TIMEOUT = 300
 SYNC_TIMEOUT = 1800
 RESULT_TIMEOUT = 2400  # how long a starting bot waits for a deploy it finds in progress
@@ -152,6 +153,21 @@ def notes(layout: Layout, tag: str) -> str:
             section = section.strip()
             return section if len(section) <= NOTES_LIMIT else section[:NOTES_LIMIT].rstrip() + "\n[…]"
     return f"{tag} has no changelog section."
+
+
+def installed_notes(tag: str, base: Path | None = None) -> str:
+    """The full matching section from the installed release, bounded for chat history rather than Telegram."""
+    version = ".".join(map(str, release_tag(tag)))
+    path = (base or own_code.installed_base()) / "CHANGELOG.md"
+    try:
+        text = path.read_text() if path.is_file() and not path.is_symlink() else ""
+    except OSError:
+        text = ""
+    for title, section in own_code.changelog_sections(text):
+        if title.startswith(f"[{version}]"):
+            section = section.strip()
+            return section if len(section) <= HISTORY_NOTES_LIMIT else section[:HISTORY_NOTES_LIMIT].rstrip() + "\n[…]"
+    return f"## [{version}]\n\nNo changelog section was installed."
 
 
 def check(layout: Layout, repo_url: str, running: str) -> Release | None:

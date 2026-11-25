@@ -395,6 +395,8 @@ async def show_own_work(app: App) -> None:
                     text=f"Delete #{row['id']}",
                     callback_data=f"own:del:{row['id']}:{stamp_token(row['announced_at'])}",
                 )])
+        if buttons:
+            buttons.append([CLOSE_BUTTON])
         await _send(
             app, "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
@@ -630,6 +632,9 @@ async def send_delete_confirm(app: App, prompt: str, yes_data: str, no_data: str
     await _send(app, prompt, reply_markup=markup)
 
 
+CLOSE_BUTTON = InlineKeyboardButton(text="✕ Close", callback_data="card:close")
+
+
 async def render_status(app: App) -> View:
     """One table row and one Wake/Sleep(/Leave, for groups) button row per approved chat, the owner's DM first,
     then by recent activity."""
@@ -659,6 +664,7 @@ async def render_status(app: App) -> View:
 
 
     table, plain, buttons, used, button_count = [], [], [], len(footer) * 2 + 160, 0  # room for the footer, heading, table head and "more" line
+    max_action_buttons = MAX_BUTTONS - 1  # reserve one slot for Close
     for chat, (state, until) in zip(chats, states):
         unread, _ = await app.store.get_unread(chat["chat_id"])
         title = display_title(chat, app.owner_id)
@@ -672,13 +678,14 @@ async def render_status(app: App) -> View:
         if _is_group(chat):
             row.append(InlineKeyboardButton(text="🚪 Leave", callback_data=f"leave:{chat['chat_id']}"))
         cost = max(len(line), len(_row(cells))) + 1
-        if used + cost > MAX_MESSAGE or button_count + len(row) > MAX_BUTTONS:
+        if used + cost > MAX_MESSAGE or button_count + len(row) > max_action_buttons:
             break
         used += cost
         button_count += len(row)
         table.append(cells)
         plain.append(line)
         buttons.append(row)
+    buttons.append([CLOSE_BUTTON])
     more = [f"…and {len(chats) - len(table)} more"] if len(chats) > len(table) else []
     markdown = "\n".join(["**Dom's chats**", "", *_table(["Chat", "State", "Until", "Unread"], table), "", *more, *([""] if more else []), _cell(footer)])
     return View(markdown, "\n".join(["Dom's chats", "", *plain, *more, "", footer]), InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -687,11 +694,16 @@ async def render_status(app: App) -> View:
 async def render_chats(app: App) -> View:
     """Every chat Dom knows, one table per status. Groups show their member count (the first MAX_MEMBER_LOOKUPS
     of them, "?" when Telegram refuses); approved and pending groups get a Leave button."""
-    known = await app.store.list_chats()
-    by_status = [(label, [c for c in known if c["authorization_status"] == status]) for status, label in _STATUS_ORDER]
+    known = [c for c in await app.store.list_chats() if not c.get("hidden", False)]
+    reachable = [c for c in known if c.get("reachable", True)]
+    unreachable = [c for c in known if not c.get("reachable", True)]
+    by_status = [(label, [c for c in reachable if c["authorization_status"] == status]) for status, label in _STATUS_ORDER]
+    if unreachable:
+        by_status.append(("Not reachable", unreachable))
     total = sum(len(chats) for _, chats in by_status)
 
     md, plain, buttons, used, lookups, shown = [], [], [], 160, 0, 0  # room for the heading and the "more" line
+    max_action_buttons = MAX_BUTTONS - 1  # reserve one slot for Close
     full = False
     for label, chats in by_status:
         cells_list, lines = [], []
@@ -700,7 +712,7 @@ async def render_chats(app: App) -> View:
                 break
             title = display_title(chat, app.owner_id)
             members = None
-            if _is_group(chat) and label != "Left" and lookups < MAX_MEMBER_LOOKUPS:
+            if _is_group(chat) and label not in ("Left", "Not reachable") and lookups < MAX_MEMBER_LOOKUPS:
                 if lookups:
                     await app.sleep(0.2)
                 lookups += 1
@@ -714,7 +726,7 @@ async def render_chats(app: App) -> View:
             line = f"• {title}{count}"
             cost = max(len(line), len(_row(cells))) + 1 + (0 if cells_list else len(label) + len(_CHATS_HEAD) + 8)
             leave = label in ("Approved", "Pending") and _is_group(chat)
-            if used + cost > MAX_MESSAGE or len(buttons) + leave > MAX_BUTTONS:
+            if used + cost > MAX_MESSAGE or len(buttons) + leave > max_action_buttons:
                 full = True
                 break
             used += cost
@@ -729,6 +741,8 @@ async def render_chats(app: App) -> View:
     if total > shown:
         md += ["", f"…and {total - shown} more"]
         plain += ["", f"…and {total - shown} more"]
+    if shown:
+        buttons.append([CLOSE_BUTTON])
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
     if not shown:
         return View("Dom doesn't know any chats yet.", "Dom doesn't know any chats yet.", markup)
@@ -736,11 +750,14 @@ async def render_chats(app: App) -> View:
 
 
 async def _preset_buttons(app: App, text: str, choices: list[tuple[str, str]]) -> None:
-    for start in range(0, len(choices), MAX_BUTTONS):
-        markup = InlineKeyboardMarkup(inline_keyboard=[
+    page_size = MAX_BUTTONS - 1
+    for start in range(0, len(choices), page_size):
+        rows = [
             [InlineKeyboardButton(text=label, callback_data=data)]
-            for label, data in choices[start:start + MAX_BUTTONS]
-        ])
+            for label, data in choices[start:start + page_size]
+        ]
+        rows.append([CLOSE_BUTTON])
+        markup = InlineKeyboardMarkup(inline_keyboard=rows)
         await _send(app, text, reply_markup=markup)
 
 
@@ -789,6 +806,8 @@ async def show_plugins(app: App) -> None:
                 text=f"Delete {name}", callback_data=f"plugin:del:{name}:{row['hash'][:16]}",
             ))
             buttons.append(row_buttons)
+        if buttons:
+            buttons.append([CLOSE_BUTTON])
         await _send(
             app, "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
@@ -847,6 +866,7 @@ async def show_proposals(app: App, page: int = 1) -> None:
         navigation.append(InlineKeyboardButton(text="Next", callback_data=f"prop:page:{page + 1}"))
     if navigation:
         keyboard.append(navigation)
+    keyboard.append([CLOSE_BUTTON])
     await _send(
         app, "\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         disable_notification=True,
@@ -893,6 +913,7 @@ async def show_settled_proposals(app: App) -> None:
                 text=f"Delete #{row['id']}",
                 callback_data=f"prop:del:{row['id']}:{stamp_token(row['created_at'])}",
             )])
+        buttons.append([CLOSE_BUTTON])
         await _send(
             app, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
             disable_notification=True,
@@ -926,6 +947,7 @@ async def show_reminders(app: App, *, include_settled: bool = False) -> None:
                 ])
             else:
                 buttons.append([InlineKeyboardButton(text=f"Delete #{row['id']}", callback_data=del_data)])
+        buttons.append([CLOSE_BUTTON])
         await _send(
             app, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
@@ -1098,8 +1120,14 @@ def watch_update(app: App) -> None:
         return
 
     async def send(text: str) -> None:
+        state = release.read_state(app.home.root)
+        if state and state.get("ok") is True and isinstance(state.get("tag"), str):
+            tag = state["tag"]
+            section = release.installed_notes(tag)
+            await app.store.record_owner_event_once(f"release-notes:{tag}", section)
+        else:
+            await record_event(app, text[:250])
         await _send(app, text)
-        await record_event(app, text[:250])
 
     task = asyncio.create_task(release.deliver_result(app.home.root, send, sleep=asyncio.sleep))
     _update_reports.add(task)

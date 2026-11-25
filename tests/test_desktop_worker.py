@@ -377,6 +377,11 @@ async def test_daily_spend_cap_pauses_a_desktop_task_before_any_worker_call(make
     assert app.client.requests == []  # no worker call and no report call
     assert app.bot.of("send", OWNER)[-1][2] == f"Desktop task #{task_id} failed. Stopped after 0 steps: paused by today's spend cap"
     assert app.bot.of("send", OWNER)[-1][3]["link_preview_options"].is_disabled is True
+    window = await app.store.get_recent_chat_window(OWNER)
+    assert any(
+        row.role == "event" and f"Desktop task #{task_id} failed" in row.text and "spend cap" in row.text
+        for row in window
+    )
 
 
 async def test_task_cost_ceiling_stops_the_task_and_ignores_earlier_tasks(make_app):

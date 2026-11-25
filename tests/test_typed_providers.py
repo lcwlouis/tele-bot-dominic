@@ -288,19 +288,23 @@ async def test_a_provider_save_applies_only_the_backup_chains_it_changed(dashboa
     assert app.config.studio.voice_fallbacks[0].api_key_env == "NEW_VOICE_KEY"
 
 
-async def test_a_backup_key_holding_a_chat_key_value_is_refused_without_breaking_startup(dashboard):
+async def test_a_backup_key_holding_a_chat_key_value_is_refused_at_validation_and_runtime(dashboard):
+    from pydantic import ValidationError
     from dom.studio.cloud import _backup_key
 
     app, path, browser = dashboard
     path.write_text(START + STUDIO)
-    (path.parent / ".env").write_text(f"BACKUP_KEY={SECRET}\nVOICE_KEY={SECRET}\n")  # one key under two names
-    config = load_config(path.parent)  # still loads
+    # Refused at config validation when .env already shares the value under two names
+    (path.parent / ".env").write_text(f"BACKUP_KEY={SECRET}\nVOICE_KEY={SECRET}\n")
+    with pytest.raises(ValidationError):
+        load_config(path.parent)
+    # Loads with distinct keys, then refused at runtime if .env is edited later to share a value
+    (path.parent / ".env").write_text(f"BACKUP_KEY={SECRET}\nVOICE_KEY=example-other-value\n")
+    config = load_config(path.parent)
+    assert not config.media_key_shared("VOICE_KEY") and config.media_secret("VOICE_KEY") == "example-other-value"
+    (path.parent / ".env").write_text(f"BACKUP_KEY={SECRET}\nVOICE_KEY={SECRET}\n")
     assert config.media_key_shared("VOICE_KEY") and config.media_secret("VOICE_KEY") is None
     assert _backup_key(config, config.studio.voice_fallbacks[0]) is None
-    async with _mock(app, lambda request: pytest.fail("a shared key is never sent")), browser() as client:
-        tested = await client.post("/api/studio/test", headers=ORIGIN_HEADER,
-                                   json={"revision": await _revision(client), "chain": "voice", "index": 0})
-    assert tested.json()["ok"] is False and "same key as a chat route" in tested.json()["error"]
     (path.parent / ".env").write_text(f"BACKUP_KEY={SECRET}\nVOICE_KEY=example-other-value\n")
     assert not config.media_key_shared("VOICE_KEY") and config.media_secret("VOICE_KEY") == "example-other-value"
 
