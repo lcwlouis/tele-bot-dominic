@@ -6,6 +6,10 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-25
+
+Dom gets his own studio: voice notes, round video notes and photos made on your own Mac, with cloud backups when it is away. Providers and models are set up from the dashboard, everything he remembers can be exported and searched, and he can message first in more chats.
+
 - **Dom's own studio.** Dom can send voice notes, round video notes, photos and occasional "special" video notes made on your own Apple Silicon Mac, each behind its own switch in Settings → What Dom may do. His Telegram profile photo can follow the Everywhere preset. The studio runs as its own service (see studio/README.md), refuses anything but the listed bot hosts before the token check, and keeps memory free for the Mac's other users. When it is away, cloud backups take over or Dom says not right now.
 - **Memory export.** Download every memory file as one zip from the dashboard or with `/export` in your DM. Secrets, the database and backups are never included.
 - **Search everything.** One search box in the dashboard (and the phone menu) finds chats, memory files, briefs, reminders, desktop tasks, skills and plugins. Other chats show a one-line preview only. In your DM Dom's `search` tool finds the same things; in a group or a friend's DM it still searches only that chat.
