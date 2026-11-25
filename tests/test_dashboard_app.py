@@ -16,6 +16,13 @@ TEXT_PAIRS = [
     ("signal-strong", "tint"), ("signal-strong", "surface"), ("signal-strong", "rail"),
     ("on-primary", "primary-fill"), ("on-coral", "coral-fill"),
     ("coral", "coral-tint"), ("coral", "surface"), ("coral", "canvas"),
+    ("text", "overlay"), ("text-muted", "overlay"),
+    # Status glyphs and their words sit on every surface level, the side panel's overlay included.
+    *(
+        (f"status-{status}", surface)
+        for status in ("done", "running", "waiting", "failed", "held", "paused")
+        for surface in ("canvas", "rail", "surface", "raised", "overlay")
+    ),
 ]
 # Non-text marks that carry meaning (switch track outline, slider, focus ring) need 3:1 against their surface.
 UI_PAIRS = [("focus", "canvas"), ("focus", "surface"), ("signal", "raised"), ("text-muted", "surface")]

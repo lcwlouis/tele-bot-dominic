@@ -1,5 +1,9 @@
 import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { extendTailwindMerge } from "tailwind-merge";
+
+// The type scale's named steps (app.css) are font sizes, not colours: without this, cn("text-body text-signal")
+// would drop text-body as a clashing colour.
+const twMerge = extendTailwindMerge({ extend: { theme: { text: ["caption", "meta", "body", "title", "heading", "display"] } } });
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));

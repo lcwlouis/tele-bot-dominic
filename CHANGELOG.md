@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Dashboard design baseline.** The component library now shows the pieces list pages will be rebuilt from: a strip list whose details open beside it on a laptop or in a bottom sheet on a phone, icon buttons that show their label on hover and focus, info glyphs for descriptive text, status glyphs, a filterable picker, and tidied tokens for surfaces, status, type and motion. The folded sidebar opens for a look while the mouse rests on it, and its logo is the fold button.
+
 ## [0.8.3] - 2026-11-25
 
 Dom gets his own studio: voice notes, round video notes and photos made on your own Mac, with cloud backups when it is away. Providers and models are set up from the dashboard, everything he remembers can be exported and searched, and he can message first in more chats.

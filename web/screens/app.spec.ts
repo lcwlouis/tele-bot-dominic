@@ -3,13 +3,17 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string; region?: string }[] = [
+const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string; region?: string; strip?: string; peek?: boolean }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
   // The desktop sidebar folded to its rail of icons; the page takes back the room.
   { name: "sidebar-folded", path: "/app/work/reminders", heading: "Reminders", folded: true, desktopOnly: true },
   { name: "gallery", path: "/app/gallery", heading: "Component library" },
+  // The strip list with one strip's details open: beside the list on a desktop, in a bottom sheet on a phone.
+  { name: "gallery-strip-detail", path: "/app/gallery", heading: "Component library", strip: "Sign in to the library site" },
+  // The folded rail opened for a look by a resting mouse: over the page, which keeps its width.
+  { name: "sidebar-peek", path: "/app/work/reminders", heading: "Reminders", folded: true, peek: true, desktopOnly: true },
   { name: "settings-models", path: "/app/system", heading: "Settings" },
   { name: "settings-providers", path: "/app/system", heading: "Settings", tab: "Providers" },
   { name: "settings-permissions", path: "/app/system", heading: "Settings", tab: "What Dom may do" },
@@ -129,7 +133,7 @@ for (const scheme of ["dark", "light"] as const) {
         expect(problems).toEqual([]);
       });
 
-      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly, desktopOnly, folded, soul, region } of pages) {
+      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly, desktopOnly, folded, soul, region, strip, peek } of pages) {
         if (phoneOnly && device !== "phone") continue;
         if (desktopOnly && device !== "desktop") continue;
         test(name, async ({ page }) => {
@@ -145,6 +149,7 @@ for (const scheme of ["dark", "light"] as const) {
           }
           if (tab) await page.getByRole("tab", { name: tab }).click();
           if (click) await page.getByRole("button", { name: click, exact: true }).first().click();
+          if (strip) await page.getByRole("button", { name: new RegExp(`^${strip}`) }).click();
           if (soul) {
             await page.getByRole("textbox", { name: "Message to Dom" }).fill(soul);
             await page.keyboard.press("Enter");
@@ -167,6 +172,11 @@ for (const scheme of ["dark", "light"] as const) {
             const height = await page.evaluate(() => document.documentElement.scrollHeight);
             await page.setViewportSize({ width: viewport.width, height: Math.max(viewport.height, height) });
           }
+          if (strip && device === "phone") await expect(page.getByRole("dialog")).toBeVisible();
+          if (peek) {
+            await page.locator("#sidebar-nav").hover({ position: { x: 20, y: 200 } });
+            await expect(page.locator("aside[data-peek]")).toBeVisible();
+          }
           if (region) {
             // One part of the page, captured on its own.
             await expect(page.getByRole("region", { name: region })).toHaveScreenshot(`${name}-${device}-${scheme}.png`);
@@ -186,6 +196,83 @@ for (const scheme of ["dark", "light"] as const) {
 
 test.describe("interactions under the CSP", () => {
   test.use({ viewport: viewports.desktop, colorScheme: "dark" });
+
+  test("strip list: a strip opens its details beside the list, Esc closes back to the strip, trash and load more work", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const list = page.getByRole("list", { name: "Tasks, newest first" });
+    const strip = list.getByRole("button", { name: /^Sign in to the library site/ });
+    await expect(strip).toHaveAccessibleName(/^Sign in to the library site so I can renew the books ?, Waiting for you/);
+    await strip.focus();
+    await page.keyboard.press("Enter");
+    await expect(strip).toHaveAttribute("aria-expanded", "true");
+    const panel = page.getByRole("region", { name: "Sign in to the library site so I can renew the books" });
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole("heading", { level: 2 })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(strip).toBeFocused();
+    // Space opens it too; the close glyph has a tooltip and puts focus back.
+    await page.keyboard.press(" ");
+    await panel.getByRole("button", { name: "Close details" }).hover();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Close details" })).toBeVisible();
+    await panel.getByRole("button", { name: "Close details" }).click();
+    await expect(strip).toBeFocused();
+    // A trailing trash glyph removes the strip.
+    await list.getByRole("button", { name: 'Move "Tidy the photo folder by year" to the trash' }).click();
+    await expect(list.getByRole("button", { name: /^Tidy the photo folder/ })).toHaveCount(0);
+    // The end of the list loads the next page as it scrolls into view.
+    await expect.poll(() => list.getByRole("listitem").count()).toBe(9);
+    await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list on a phone: details open in a bottom sheet that closes on Esc, back to the strip", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const strip = page.getByRole("list", { name: "Turns, newest first" }).getByRole("button", { name: /^Held back: the reply mentioned/ });
+    await strip.click();
+    const sheet = page.getByRole("dialog", { name: "Held back: the reply mentioned your DM" });
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByText("example/chat-large")).toBeVisible();
+    // It slides up to sit on the bottom edge.
+    await expect.poll(async () => Math.round(await sheet.evaluate((node) => node.getBoundingClientRect().bottom))).toBe(viewports.phone.height);
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+    await expect(strip).toBeFocused();
+    expect(problems).toEqual([]);
+  });
+
+  test("icon buttons show their label on focus, the info glyph pins open on click, the picker filters", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    await page.getByRole("button", { name: "Edit reminder" }).focus();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Edit reminder" })).toBeVisible();
+    const info = page.getByRole("button", { name: "About the leak check" });
+    await info.click();
+    await expect(info).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByText("Before a reply goes out, a second model reads it").first()).toBeVisible();
+    await page.mouse.move(5, 890);
+    await expect(page.getByText("Before a reply goes out, a second model reads it").first()).toBeVisible();
+    await info.click();
+    await expect(info).toHaveAttribute("aria-expanded", "false");
+
+    const picker = page.getByRole("combobox", { name: "Chat" });
+    await expect(picker).toHaveValue("All chats");
+    await picker.click();
+    await picker.fill("book");
+    await expect(page.getByRole("option")).toHaveCount(1);
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(picker).toHaveValue("Book club");
+    const turns = page.getByRole("list", { name: "Turns, newest first" });
+    await expect(turns.getByRole("listitem")).toHaveCount(2);
+    await picker.click();
+    await page.getByRole("option", { name: /All chats/ }).click();
+    await expect(turns.getByRole("listitem")).toHaveCount(6);
+    expect(problems).toEqual([]);
+  });
 
   test("Home shows the active provider budget notice", async ({ page }) => {
     const line = "OpenRouter's workspace budget ($0.50) is used up. Resets 25 Nov at 08:00 (Asia/Singapore).";
@@ -234,9 +321,10 @@ test.describe("interactions under the CSP", () => {
   test("select, dialog and tooltip open without CSP violations", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/gallery");
-    await page.getByRole("combobox").click();
+    const provider = page.getByRole("combobox", { name: "Provider" });
+    await provider.click();
     await page.getByRole("option", { name: "OpenRouter" }).click();
-    await expect(page.getByRole("combobox")).toHaveText(/OpenRouter/);
+    await expect(provider).toHaveText(/OpenRouter/);
     await page.getByRole("button", { name: "Delete reminders…" }).click();
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toBeVisible();
@@ -521,9 +609,34 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("heading", { name: "Control surface" })).toHaveClass(/sr-only/); // hidden, still named for screen readers
     const reminders = page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Reminders, in Work" });
     await expect(reminders).toHaveAttribute("aria-current", "page");
-    await expect.poll(async () => (await main.boundingBox())!.x).toBeLessThan(wide); // the page takes the room back
-    await reminders.hover();
+    // The page takes the room back: wait for the columns to settle.
+    let folded = -1;
+    await expect
+      .poll(async () => {
+        const x = (await main.boundingBox())!.x;
+        const settled = x === folded && x < wide;
+        folded = x;
+        return settled;
+      })
+      .toBe(true);
+    // Keyboard focus on a rail icon shows its label as a tooltip.
+    await page.mouse.move(900, 600);
+    await reminders.focus();
     await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Reminders" })).toBeVisible();
+    // A resting mouse opens the rail for a look, over the page: the page keeps its width and the labels show.
+    await reminders.hover();
+    await expect(page.locator("aside[data-peek]")).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Main" }).getByText("Control surface")).toBeVisible();
+    expect(Math.round((await main.boundingBox())!.x)).toBe(Math.round(folded));
+    // The logo spot is the fold button: on a peek it pins the sidebar open.
+    await page.getByRole("button", { name: "Expand sidebar" }).click();
+    await expect(page.getByRole("button", { name: "Collapse sidebar" })).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("aside[data-peek]")).toHaveCount(0);
+    await expect.poll(async () => Math.round((await main.boundingBox())!.x)).toBe(Math.round(wide));
+    await page.mouse.move(900, 600);
+    await page.getByRole("button", { name: "Collapse sidebar" }).click();
+    await page.mouse.move(900, 600);
+    await expect(page.locator("aside[data-peek]")).toHaveCount(0);
     await page.reload();
     await expect(page.getByRole("button", { name: "Expand sidebar" })).toBeVisible();
     // "[" folds and unfolds, except while a text field has the key.
