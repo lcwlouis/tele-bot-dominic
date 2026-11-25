@@ -531,6 +531,16 @@ class Dispatcher:
         except Exception:
             log.exception("could not record media description in chat %s", chat_id)
 
+    async def _note_failure(
+        self, chat_id: int, category: str, text: str, *, thread_id: int | None = None,
+    ) -> None:
+        try:
+            await self.app.store.record_chat_event_limited(
+                chat_id, category, text, thread_id=thread_id,
+            )
+        except Exception:
+            log.exception("could not record %s failure in chat %s", category, chat_id)
+
     def _media_budget(self, chat_id: int) -> bool:
         """Take one of the chat's MEDIA_CAP descriptions per MEDIA_CAP_WINDOW, if any is left."""
         now = self.now()
@@ -1797,6 +1807,11 @@ class Dispatcher:
                         await app.store.record_owner_event(f"Reply in {where} stopped early ({detail})")
                     except Exception:
                         log.exception("could not record flood-limit owner event in chat %s", chat_id)
+                await self._note_failure(
+                    chat_id, "telegram-flood",
+                    "A reply stopped before it was fully sent because Telegram's flood limit was reached.",
+                    thread_id=thread_id,
+                )
                 return bool(sent), True
             if actions.private and scope == "group" and not actions.no_response:
                 turn_log.outcome("Replied privately" if sent else "Held back: private reply")
@@ -1847,7 +1862,20 @@ class Dispatcher:
         if not (actions.voice or actions.video_note or actions.image):
             return actions
         update = {"voice": None, "video_note": None, "image": None}
-        if actions.private or actions.no_response:
+        if actions.private:
+            # Only the owner DM hears about it: a note in a group would reveal that a private reply existed.
+            if scope == "owner_dm":
+                await self._note_failure(chat_id, "studio-private-policy", "Requested media was not sent: private replies can't carry media.")
+            else:
+                try:
+                    await self.app.store.record_owner_event(f"Media Dom asked for in a private reply from {title} was not sent: private replies can't carry media.")
+                except Exception:
+                    log.exception("could not record the dropped private media for the owner")
+            return actions.model_copy(update=update)
+        if actions.no_response:
+            await self._note_failure(
+                chat_id, "studio-no-response", "Requested media was not sent because this turn was marked as no response.",
+            )
             return actions.model_copy(update=update)
         config = self.app.config.studio
         if studio_enabled(config, scope, "voice"):
@@ -1858,6 +1886,14 @@ class Dispatcher:
                 update["video_note"] = actions.video_note
         if studio_enabled(config, scope, "photo"):
             update["image"] = actions.image
+        if (
+            (actions.voice and update["voice"] is None)
+            or (actions.video_note is not None and update["video_note"] is None)
+            or (actions.image and update["image"] is None)
+        ):
+            await self._note_failure(
+                chat_id, "studio-policy", "Requested media was not sent because that kind is disabled in this chat.",
+            )
         speech = update["video_note"].text if update["video_note"] else None
         texts = [item for item in (update["voice"], speech, update["image"]) if item]
         if texts:
@@ -1867,6 +1903,10 @@ class Dispatcher:
                 await asyncio.to_thread(guard.check_local_private_text, self.app.config, self.app.home, texts)
             except (ValueError, OSError):
                 turn_log.step("Held back media: possible leak")
+                await self._note_failure(
+                    chat_id, "media-leak-guard",
+                    "Requested media was not sent because its prompt matched private information.",
+                )
                 return actions.model_copy(update=dict.fromkeys(update))
             # Like text, media for the owner's own DM skips the model check: the owner may see anything Dom knows.
             if scope != "owner_dm" and await self._hold_text_for_leak_check(
@@ -1919,6 +1959,9 @@ class Dispatcher:
                 guard.notify_held(app, f"Held back a message in {chat} that looked like it leaked private info\n\n{text}"),
                 committed=True,
             )
+        await self._note_failure(
+            chat_id, "leak-guard", "A reply was held back because it looked like it exposed private information.",
+        )
         return True
 
     async def desktop_handoff(
@@ -2034,7 +2077,10 @@ class Dispatcher:
         result = row["result"] or row["error"] or "No result."
         container = row.get("container", DEFAULT)
         where = "" if container == DEFAULT else f" on the {container} desktop"
-        await app.store.record_owner_event(f"Desktop task #{task_id}{where} {status}")
+        event = f"Desktop task #{task_id}{where} {status}"
+        if row["status"] != "done":
+            event += f"; it did not finish: {untrusted(row['error'] or 'no reason was reported', limit=250)}"
+        await app.store.record_owner_event(event)
         async with self._dispatch_slot(chat_id, wait_media=False):
             note = (
                 f"Your desktop task #{task_id}{where} {status}. Result: {untrusted(result)} "

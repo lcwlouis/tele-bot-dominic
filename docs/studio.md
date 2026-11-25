@@ -14,6 +14,9 @@ note first if enabled and within quota. Generated photos are skipped when they
 cannot be sent. See [Privacy](privacy.md#what-leaves-the-host) for what Dom shares
 with the generation service and Jev.
 
+A failed, refused or limited generation leaves one short, rate-limited event in
+that chat's history; it never crosses into another chat.
+
 ## Limits
 
 These are rolling windows per chat. The whole studio allows 12 delivered items

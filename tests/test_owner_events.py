@@ -1,6 +1,7 @@
 """Owner commands and button presses are recorded as event rows in the owner's DM."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -82,6 +83,27 @@ async def test_events_never_count_as_unread_or_start_a_turn(app):
     assert await app.store.get_unread(OWNER) == (0, None)
     assert not await app.store.has_unread_human(OWNER)
     assert app.dispatch._tasks == set() and app.script.requests == []
+
+
+async def test_chat_failure_events_are_chat_local_and_rate_limited_across_restarts(app):
+    first = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert await app.store.record_chat_event_limited(BOOK_CLUB, "studio", "Photo generation failed", now=first)
+    assert not await app.store.record_chat_event_limited(
+        BOOK_CLUB, "studio", "Photo generation failed again", now=first + timedelta(minutes=5),
+    )
+    assert await app.store.record_chat_event_limited(
+        BOOK_CLUB, "studio", "Photo generation failed later", now=first + timedelta(minutes=31),
+    )
+    assert [row["text"] for row in await events(app, BOOK_CLUB)] == [
+        "Photo generation failed", "Photo generation failed later",
+    ]
+    assert await events(app, OWNER) == []
+
+
+async def test_owner_event_once_is_atomic_and_idempotent(app):
+    assert await app.store.record_owner_event_once("release:v1.2.3", "## [1.2.3]\n\nEverything changed")
+    assert not await app.store.record_owner_event_once("release:v1.2.3", "different")
+    assert [row["text"] for row in await events(app)] == ["## [1.2.3]\n\nEverything changed"]
 
 
 async def test_events_are_not_search_results_for_other_chats(app):

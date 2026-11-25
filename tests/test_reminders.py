@@ -361,6 +361,8 @@ async def test_delivery_is_cancelled_with_an_error_after_ten_failed_attempts(mak
     status = app.store._conn.execute("SELECT status FROM reminders").fetchone()["status"]
     assert status == "cancelled"
     assert any(record.levelname == "ERROR" and "reminder" in record.getMessage() for record in caplog.records)
+    notes = [row["text"] for row in await events(app)]
+    assert len([note for note in notes if "given up" in note]) == 1
 
 
 async def test_backoff_doubles_and_caps_at_an_hour(make_app):

@@ -1,5 +1,6 @@
 """Release checks, deploys and rollbacks, against a real local git repository and a fake systemd."""
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -77,6 +78,17 @@ def test_offer_is_the_newest_release_tag_with_only_its_changelog_section(repo, l
     assert release.check(lay, repo.as_uri(), "v0.10.0") is None
     assert release.check(lay, repo.as_uri(), "v0.10.0-4-gabc1234-dirty") is None
     assert release.check(lay, repo.as_uri(), "unknown").tag == "v0.10.0"  # an unversioned build may update
+
+
+def test_installed_notes_reads_the_full_release_section_and_bounds_it(tmp_path):
+    (tmp_path / "CHANGELOG.md").write_text(CHANGELOG)
+    section = release.installed_notes("v0.10.0", tmp_path)
+    assert section.startswith("## [0.10.0]") and "One fix" in section
+    assert "Old notes" not in section and "Future work" not in section
+    huge = "## [0.10.0] - 2026-11-20\n\n" + "x" * (release.HISTORY_NOTES_LIMIT + 100)
+    (tmp_path / "CHANGELOG.md").write_text(huge)
+    bounded = release.installed_notes("v0.10.0", tmp_path)
+    assert len(bounded) <= release.HISTORY_NOTES_LIMIT + 4 and bounded.endswith("[…]")
 
 
 def test_repo_url_must_be_https_or_file():
@@ -273,6 +285,50 @@ async def test_result_is_sent_once_and_kept_until_sent(layout):
     assert await release.deliver_result(home, send, sleep=no_wait, timeout=10)
     assert not await release.deliver_result(home, send, sleep=no_wait, timeout=10)
     assert sent == ["Updated to v0.10.0."] and release.read_state(home) is None
+
+
+async def test_successful_update_records_installed_release_notes_once(make_app, monkeypatch):
+    from dom.telegram import owner
+    from test_owner_events import events
+
+    app = make_app()
+    state = {"status": "done", "ok": True, "tag": "v0.10.0", "message": "Updated."}
+    monkeypatch.setattr(release, "read_state", lambda home: state)
+    monkeypatch.setattr(release, "installed_notes", lambda tag: "## [0.10.0]\n\n- Full release section")
+
+    async def deliver(home, send, **kwargs):
+        await send("Updated to v0.10.0.")
+        return True
+
+    monkeypatch.setattr(release, "deliver_result", deliver)
+    for _ in range(2):
+        owner.watch_update(app)
+        await asyncio.gather(*tuple(owner._update_reports))
+        await asyncio.sleep(0)
+    notes = [row["text"] for row in await events(app)]
+    assert notes == ["## [0.10.0]\n\n- Full release section"]
+
+
+async def test_failed_update_records_no_release_notes(make_app, monkeypatch):
+    from dom.telegram import owner
+    from test_owner_events import events
+
+    app = make_app()
+    state = {"status": "done", "ok": False, "tag": "v0.10.0", "message": "Rolled back."}
+    monkeypatch.setattr(release, "read_state", lambda home: state)
+    monkeypatch.setattr(
+        release, "installed_notes", lambda tag: pytest.fail("failed update must not read or record release notes"),
+    )
+
+    async def deliver(home, send, **kwargs):
+        await send("Rolled back to v0.9.0.")
+        return True
+
+    monkeypatch.setattr(release, "deliver_result", deliver)
+    owner.watch_update(app)
+    await asyncio.gather(*tuple(owner._update_reports))
+    await asyncio.sleep(0)
+    assert [row["text"] for row in await events(app)] == ["Rolled back to v0.9.0."]
 
 
 def test_ready_marker_records_this_process(layout):
