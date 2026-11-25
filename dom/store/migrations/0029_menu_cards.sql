@@ -9,4 +9,4 @@ CREATE TABLE menu_cards (
 );
 CREATE INDEX idx_menu_cards_expires ON menu_cards(expires_at);
 
-PRAGMA user_version = 29;
+PRAGMA user_version = 30;

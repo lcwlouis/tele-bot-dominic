@@ -16,6 +16,7 @@
   --rail: #0d1725;
   --surface: #101e2e;
   --raised: #142537;
+  --overlay: #172a3e;
   --line: #2b4054;
   --text: #e2edf2;
   --text-muted: #9bb0c0;
@@ -32,6 +33,14 @@
   --focus: #b9eded;
   --grid: #86d6d80a;
   --shadow: #030a1250;
+  /* Status: what a task, turn or reminder is doing. Each one also has its own glyph (StatusGlyph.svelte), so colour
+     is never the only cue. */
+  --status-done: #9fd6b2;
+  --status-running: #86d6d8;
+  --status-waiting: #d1bb8c;
+  --status-failed: #e3a595;
+  --status-held: #bcb4ea;
+  --status-paused: #9bb0c0;
 }
 
 [data-theme="light"] {
@@ -40,6 +49,7 @@
   --rail: #eeece6;
   --surface: #fdfcf8;
   --raised: #f0f3ef;
+  --overlay: #ffffff;
   --line: #cdd6d0;
   --text: #19343a;
   --text-muted: #4d6468;
@@ -56,6 +66,27 @@
   --focus: #13555c;
   --grid: #216d730b;
   --shadow: #263b3914;
+  --status-done: #2e6a4a;
+  --status-running: #1f6970;
+  --status-waiting: #7a6130;
+  --status-failed: #a24f3f;
+  --status-held: #5b4f98;
+  --status-paused: #4d6468;
+}
+
+/* Motion: calm, short and answering the owner. Reduced motion drops every duration to nothing; the
+   motion-reduce: variants stay for the places that animate without these tokens. */
+:root {
+  --motion-quick: 120ms;
+  --motion-calm: 220ms;
+  --motion-slow: 360ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-quick: 0ms;
+    --motion-calm: 0ms;
+    --motion-slow: 0ms;
+  }
 }
 
 /* shadcn-svelte's names, mapped onto Quiet Orbit. */
@@ -122,6 +153,30 @@
   --color-coral-fill: var(--coral-fill);
   --color-on-coral: var(--on-coral);
   --color-amber: var(--amber);
+  --color-overlay: var(--overlay);
+  --color-status-done: var(--status-done);
+  --color-status-running: var(--status-running);
+  --color-status-waiting: var(--status-waiting);
+  --color-status-failed: var(--status-failed);
+  --color-status-held: var(--status-held);
+  --color-status-paused: var(--status-paused);
+
+  /* Type scale: six named steps for new components (text-caption … text-display). Older pages still use
+     Tailwind's sizes; W5 moves them over as it ports each page. */
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.4;
+  --text-meta: 0.8125rem;
+  --text-meta--line-height: 1.45;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.55;
+  --text-title: 1.125rem;
+  --text-title--line-height: 1.35;
+  --text-heading: 1.5rem;
+  --text-heading--line-height: 1.2;
+  --text-display: 2.125rem;
+  --text-display--line-height: 1.1;
+
+  --ease-calm: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @layer base {
@@ -154,8 +209,23 @@
       linear-gradient(90deg, var(--grid) 1px, transparent 1px);
     background-size: 22px 22px;
   }
+  /* A running status turns slowly, once every few seconds; under reduced motion it holds still. */
+  .status-spin {
+    animation: status-spin 4s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .status-spin {
+      animation: none;
+    }
+  }
   .kicker {
     @apply font-mono text-[0.7rem] tracking-[0.16em] uppercase text-muted-foreground;
+  }
+}
+
+@keyframes status-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
