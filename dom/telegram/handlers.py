@@ -121,7 +121,7 @@ class App:
         keys: set[str] = set()
         for holder in (
             self.client,
-            self.media_describer.client if self.media_describer is not None else None,
+            getattr(self.media_describer, "client", None),
             self.draft_client,
             self.escalation_client,
             self.jev,
