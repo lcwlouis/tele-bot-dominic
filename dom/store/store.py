@@ -1062,9 +1062,10 @@ class Store:
 
         await self._run(commit)
 
-    async def record_chat_event(self, chat_id: int | str, text: str, *, thread_id: int | None = None) -> None:
-        """A one-line note for Dom in one chat's history (no msg_id, never unread). Only the main model sees it."""
-        await self.record_new_message(StoredMessage(
+    async def record_chat_event(self, chat_id: int | str, text: str, *, thread_id: int | None = None) -> int:
+        """A one-line note for Dom in one chat's history (no msg_id, never unread). Only the main model sees it.
+        Returns its row id."""
+        return await self.record_new_message(StoredMessage(
             chat_id=str(chat_id), role="event", visibility_scope=self.visibility_for(chat_id), text=text,
             thread_id=thread_id, created_at=_now(),
         ))
@@ -1152,6 +1153,86 @@ class Store:
             chat_id, "media_described", msg_id=msg_id,
             description=description, visibility_scope=row["visibility_scope"],
         )
+
+    async def update_media(
+        self, chat_id: int | str, msg_id: int, updates: dict[str, Any], *, remove: tuple[str, ...] = (),
+    ) -> bool:
+        """Merge `updates` into a message's media_json and drop the keys in `remove`. False when it has no media."""
+        return await self._run(self._update_media, str(chat_id), msg_id, updates, remove)
+
+    def _update_media(self, chat_id: str, msg_id: int, updates: dict[str, Any], remove: tuple[str, ...]) -> bool:
+        with self._tx() as conn:
+            row = self._get_message(chat_id, msg_id)
+            media = _read_media_json(row["media_json"]) if row is not None else {}
+            if not media:
+                return False
+            for key in remove:
+                media.pop(key, None)
+            media.update(updates)
+            conn.execute(
+                "UPDATE messages SET media_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(media, ensure_ascii=False), _now(), row["id"]),
+            )
+        return True
+
+    async def media_library(
+        self, *, chat_id: int | str | None = None, limit: int = 50, before: tuple[str, int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Dom's own sent photos, voice notes and video notes that Dom has a file or a Telegram file_id for, newest
+        first, as {id, chat_id, msg_id, created_at, media}."""
+        return await self._run(self._media_library, None if chat_id is None else str(chat_id), limit, before)
+
+    def _media_library(self, chat_id: str | None, limit: int, before: tuple[str, int] | None) -> list[dict[str, Any]]:
+        where = [
+            "role = 'assistant'", "is_deleted = 0", "json_valid(media_json)",
+            "(json_extract(media_json, '$.file') IS NOT NULL OR json_extract(media_json, '$.file_id') IS NOT NULL)",
+        ]
+        args: list[Any] = []
+        if chat_id is not None:
+            where.append("chat_id = ?")
+            args.append(chat_id)
+        if before is not None:
+            where.append("(created_at, id) < (?, ?)")
+            args += list(before)
+        rows = self._conn.execute(
+            f"SELECT id, chat_id, msg_id, created_at, media_json FROM messages WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?", (*args, limit),
+        ).fetchall()
+        return [
+            {"id": row["id"], "chat_id": row["chat_id"], "msg_id": row["msg_id"], "created_at": row["created_at"],
+             "media": _read_media_json(row["media_json"])}
+            for row in rows
+        ]
+
+    async def kept_media(
+        self, *, chat_id: int | str | None = None, oldest_first: bool = False, limit: int | None = None,
+        before: tuple[str, int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Messages whose generated file is still on disk, as {chat_id, msg_id, created_at, media}. `before` is the
+        (created_at, row id) a previous page ended at."""
+        return await self._run(self._kept_media, None if chat_id is None else str(chat_id), oldest_first, limit, before)
+
+    def _kept_media(
+        self, chat_id: str | None, oldest_first: bool, limit: int | None, before: tuple[str, int] | None,
+    ) -> list[dict[str, Any]]:
+        where, args = ["json_valid(media_json)", "json_extract(media_json, '$.file') IS NOT NULL"], []
+        if chat_id is not None:
+            where.append("chat_id = ?")
+            args.append(chat_id)
+        if before is not None:
+            where.append("(created_at, id) < (?, ?)")
+            args += list(before)
+        order = "ASC" if oldest_first else "DESC"
+        rows = self._conn.execute(
+            f"SELECT id, chat_id, msg_id, created_at, media_json FROM messages WHERE {' AND '.join(where)} "
+            f"ORDER BY created_at {order}, id {order}" + (" LIMIT ?" if limit is not None else ""),
+            (*args, *([limit] if limit is not None else [])),
+        ).fetchall()
+        return [
+            {"id": row["id"], "chat_id": row["chat_id"], "msg_id": row["msg_id"], "created_at": row["created_at"],
+             "media": _read_media_json(row["media_json"])}
+            for row in rows
+        ]
 
     async def record_message_edit(
         self,

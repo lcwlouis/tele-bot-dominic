@@ -65,6 +65,54 @@ v0.8.4 code backs them up with source tags (see `docs/memory-format.md`):
   owner-DM only, because the diary mentions people from every chat. The private archive never leaves
   the owner's scope.
 
+## Media Dom sees and sends
+
+**What Dom sees.** Whenever the chat model accepts the type, Dom is sent the real
+photo, voice note or video instead of a description of it: the newest turn's
+incoming media and his own most recent generated media, at most
+`media_input_images` images, `media_input_audio` recordings and
+`media_input_video` clips per prompt, each up to `media_input_max_mb`. They come
+only from the chat's own window, and ride after the prompt text, so the cached
+prefix is unchanged. Older media stays as its `<media>` tag, with a description
+only if one was already made.
+
+What a model accepts comes from `input = ["text", "image"]` on its route in
+`config.toml`, else from the provider's model list (OpenRouter lists each model's
+input types), else from a one-off test of an OpenAI-compatible server with a
+tiny generated image, cached per address and model. Unknown means text-only. The
+test and the list fetch run in the background (never while a reply waits), and
+the owner can run the test again with `POST /api/media/inputs/probe`.
+
+A model that can't take a type, or a server that refuses the request, falls back
+to a description from the media model; the Turn log says `media described` or
+`media refused`. With triage turned on, a photo is still described once for the
+triage model, which can't see.
+
+What changes for descriptions: a photo Dom saw himself is no longer described
+when it arrives, so the memory pass and the model window see its `<media>` tag
+without text (his own reply is what records what he made of it), and the media
+model's usage is much smaller. Global search and the dashboard never showed
+descriptions, so nothing changes there.
+
+**What he keeps.** Each photo, voice note and video note Dom sends is saved
+under `media/<chat id>/<YYYY-MM>/<message id>.<ext>` in the home, with the scene
+or speech text, kind, time and Telegram's `file_id` on the message. The folder
+is owner-only (0700); files are written to a temporary name and moved into
+place; a chat's files are read only through that chat's own id, so they never
+reach another chat's prompt. The dashboard's owner-only API lists and serves
+them (`/api/media/files`, `/api/media/usage`). Total size is capped by
+`studio.keep_cap_mb` (default 2048): past it the oldest files are removed, and
+their messages keep the `file_id`, so Telegram can still provide them. The
+folder is left out of `dom backup`. Dom's other chats and friends can't see this
+folder or its listing.
+
+**Looking before sending.** In the owner DM (and, if you turn on
+`studio.look_friend_dm` or `look_group`, there too), when the chat model takes
+images, Dom checks a generated photo, or a local video note's first frame
+(needs `ffmpeg`), against its scene in one short call, and regenerates once with
+the adjusted scene if it doesn't match. The better of the two is sent; it never
+loops. The calls are counted under media usage and respect the spend cap.
+
 ## Search and export
 
 The dashboard's search box covers chats (FTS5), memory files, briefs, reminders, desktop tasks, skills and plugins. It is
@@ -113,8 +161,12 @@ Cloudflare. Keep local bearer-token testing on loopback.
   skill. Dom screens it for instance credentials and verbatim private notes
   before sending it to the drafting endpoint, or to the chat route if no
   drafting provider can answer.
+- **Chat model providers** also receive the real photos, voice notes and clips
+  of the newest turn (and Dom's own latest generated media) when the chat model
+  takes that type of input. See [Media Dom sees and sends](#media-dom-sees-and-sends).
 - **Media provider** receives supported attachments for transcription or
-  description, screenshots when the desktop worker requests a description, and
+  description (only when the chat model can't take that type, or for the
+  triage model, which reads text only), screenshots when the desktop worker requests a description, and
   the sticker images from the sticker sets you list, to write the short previews
   Dom reads when choosing a sticker.
 - **Web search** tries the providers configured under `[models.search]` and

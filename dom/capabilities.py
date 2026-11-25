@@ -47,7 +47,8 @@ def describe(app: App, scope: Scope, offered: list[Tool] | None = None) -> str:
         if app.desktop_worker is not None and app.desktop_worker.available():
             offered.append(START_DESKTOP_TASK)
     names = [tool.name for tool in offered if scope in tool.scopes]
-    media = ", photos, GIFs, video, voice" if app.media_describer is not None else ""
+    seen = getattr(getattr(getattr(app, "dispatch", None), "native", None), "last", None)  # what his chat model takes as it is: those he sees himself, even with no media model
+    media = ", photos, GIFs, video, voice" if app.media_describer is not None or seen else ""
     t3_status = ""
     if scope == "owner_dm":
         bridge = app.t3

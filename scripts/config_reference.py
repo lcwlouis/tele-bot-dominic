@@ -14,7 +14,7 @@ MODEL_ROLES = {
     "fallback": ("Optional", "Backup chat role, tried after the chat role's own providers."),
     "chat_fallback": ("Optional", "Legacy name for the backup chat role."),
     "triage": ("Built in", "Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe."),
-    "media": ("Built in", "Attachment descriptions, transcriptions, desktop screenshot descriptions and previews of the sticker images in your listed sticker sets."),
+    "media": ("Built in", "Attachment descriptions and transcriptions for media the chat model can't take as it is (and for the triage model, which reads text only), desktop screenshot descriptions and previews of the sticker images in your listed sticker sets."),
     "drafting": ("Built in", "Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort."),
     "search": ("Optional", "Web search role with ordered provider fallback: `searxng` (self-hosted JSON API), `openrouter` (OpenRouter web plugin with ZDR), `deepseek` (DeepSeek Search API) and `tavily` (Tavily Search API). If `[models.search]` omits `base_url` with no other provider set, it uses the starter OpenRouter search settings."),
     "escalation": ("Optional", "The bigger model offered on an owner-DM task card after two model rounds and more than 60 seconds (Switch / Keep local, or Retry after a failed task). Only the owner DM uses it, and only after the owner taps. Without `[models.escalation]` it uses the drafting role's providers."),

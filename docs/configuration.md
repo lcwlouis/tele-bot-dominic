@@ -23,6 +23,10 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why. |
 | `memory_self_edit` | `false` | Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves. |
 | `core_memory_cap` | `30` | Most core memories (pinned note lines) across all of Dom's notes, the owner's pins included. Core memories never fade and the memory pass never rewrites them. At the cap Dom must unpin one of his own to pin another. |
+| `media_input_images` | `2` | Most images (photos, stickers) Dom is shown as the real picture in one prompt, newest first, when his chat model accepts images. Older media stays as its tag in the window. Zero turns image input off. |
+| `media_input_audio` | `1` | Most voice notes or audio files Dom hears as the real recording in one prompt. Zero turns audio input off. |
+| `media_input_video` | `1` | Most videos Dom is shown as the real clip in one prompt, for chat models that accept video. Zero turns video input off. |
+| `media_input_max_mb` | `6` | Largest attachment, in MB, that is sent to the chat model itself; a bigger one is described by the media model instead. |
 | `leak_check` | `true` | Use Jev to screen eligible outbound text and network plugin calls for private information. |
 | `leak_threshold` | `1.2` | Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call. |
 
@@ -34,7 +38,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `models.fallback` | Optional | Backup chat role, tried after the chat role's own providers. |
 | `models.chat_fallback` | Optional | Legacy name for the backup chat role. |
 | `models.triage` | Built in | Jev Decisions endpoint for triage (whether, when and how urgently to reply), the outbound leak check on replies and online plugin calls, the rescue of a chat reply written as plain prose, and the `dom doctor --online` probe. |
-| `models.media` | Built in | Attachment descriptions, transcriptions, desktop screenshot descriptions and previews of the sticker images in your listed sticker sets. |
+| `models.media` | Built in | Attachment descriptions and transcriptions for media the chat model can't take as it is (and for the triage model, which reads text only), desktop screenshot descriptions and previews of the sticker images in your listed sticker sets. |
 | `models.drafting` | Built in | Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort. |
 | `models.search` | Optional | Web search role with ordered provider fallback: `searxng` (self-hosted JSON API), `openrouter` (OpenRouter web plugin with ZDR), `deepseek` (DeepSeek Search API) and `tavily` (Tavily Search API). If `[models.search]` omits `base_url` with no other provider set, it uses the starter OpenRouter search settings. |
 | `models.escalation` | Optional | The bigger model offered on an owner-DM task card after two model rounds and more than 60 seconds (Switch / Keep local, or Retry after a failed task). Only the owner DM uses it, and only after the owner taps. Without `[models.escalation]` it uses the drafting role's providers. |
@@ -48,6 +52,7 @@ Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud p
 | `models.<name>.api_key_env` | Unset | Secret variable name. Leave unset for a compatible endpoint without authentication. |
 | `models.<name>.reasoning_effort` | Unset | Thinking effort sent to the provider, such as low, medium or high (any level the provider lists). Omit it to use the provider default. Higher effort takes longer and costs more. |
 | `models.<name>.provider` | Unset | Search provider for models.search: searxng, openrouter, deepseek or tavily. |
+| `models.<name>.input` | Unset | What this model accepts as input, for example ["text", "image"]. Omit it to use the provider's model list (OpenRouter lists each model's input types) or, for other OpenAI-compatible servers, a one-off test with a tiny generated image. Dom sends a photo, voice note or video to the model itself only when this says the model takes it; with nothing known the model is treated as text-only. Set it to override what the list or the test found. |
 
 Chat, fallback, media, drafting, search and escalation can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.
 
@@ -149,6 +154,10 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | `studio.profile_photo_follows_preset` | `false` | Use the Everywhere preset's portrait as the bot profile photo. |
 | `studio.profile_photo_every_days` | `14` | Days between profile photo changes at most: 1, 7, 14 or 30. The first change after the switch is turned on may happen at once, and the photo changes only when the outfit has. |
 | `studio.default_outfit` | `""` | Wardrobe ID to use when the active preset has no outfit list. |
+| `studio.keep_cap_mb` | `2048` | Disk space, in MB, for the photos, voice notes and video notes Dom has sent, kept under the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). Past it the oldest files are removed; Telegram's file_id stays on the message so Telegram can still provide them. Zero keeps nothing. |
+| `studio.look_owner_dm` | `true` | In the owner's DM, Dom looks at a generated photo (or a video note's first frame, when ffmpeg is installed) before sending it, and regenerates it once if it does not match the scene. Needs a chat model that accepts images. |
+| `studio.look_friend_dm` | `false` | The same look before sending, in friends' DMs. |
+| `studio.look_group` | `false` | The same look before sending, in groups. |
 | `studio.voice_fallbacks` | `[]` | Ordered cloud backups for voice notes. |
 | `studio.image_fallbacks` | `[]` | Ordered cloud backups for photos. |
 | `studio.video_fallbacks` | `[]` | Ordered cloud backups for everyday and special round video notes (openrouter_video). |

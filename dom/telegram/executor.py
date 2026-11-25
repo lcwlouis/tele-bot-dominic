@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from errno import ECONNREFUSED
 from random import choice
 from time import monotonic
-from typing import TYPE_CHECKING, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from aiohttp import ClientConnectorError
 from aiogram.exceptions import (
@@ -27,8 +27,10 @@ from pydantic import ValidationError
 from dom import turn_log
 from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, SendFile, utf16_len
 from dom.gifs import GifSearch
+from dom.media_files import file_id_of
 from dom.models import StoredMessage
 from dom.store import Store
+from dom.studio import look
 from dom.studio.cloud import providers as studio_providers
 from dom.studio.policy import Kind, enabled
 from dom.stickers import resolve_sticker, sticker_fallback
@@ -696,8 +698,11 @@ async def _send_media(
     *, thread_id: int | None = None, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, record: bool = True,
     budget: FloodBudget | None = None, trigger_msg_id: int | None = None,
     history_text: str | None = None, authorize_message: Callable[[], Awaitable[None]] | None = None,
+    keep: Callable[[Any], Awaitable[dict]] | None = None,
 ) -> int | None:
-    """Await one media send and record it; a Telegram refusal is logged and means nothing was sent."""
+    """Await one media send and record it; a Telegram refusal is logged and means nothing was sent. `keep` gets the
+    sent message and returns more media_json fields (its Telegram file_id, where the file was saved); it never fails
+    the send."""
     async def attempt():
         if authorize_message is not None:
             await authorize_message()
@@ -717,6 +722,11 @@ async def _send_media(
         )
         return None
     turn_log.bubble_sent()
+    if media is not None and keep is not None:
+        try:
+            media = {**media, **await keep(sent)}
+        except Exception:
+            log.warning("could not keep the %s sent in chat %s", kind, chat_id, exc_info=True)
     if record:
         await store.record_new_message(StoredMessage(
             chat_id=str(chat_id), msg_id=sent.message_id, reply_to_msg_id=trigger_msg_id, thread_id=thread_id,
@@ -737,6 +747,38 @@ async def _studio_indicator(bot, chat_id: int, thread_id: int | None, action: st
         except TelegramAPIError:
             return
         await asyncio.sleep(TYPING_REFRESH_SECONDS)
+
+
+async def _look_before_send(
+    app: App, scope: str, chat_id: int, kind: str, scene: str, data: bytes,
+    produce: Callable[[str], Awaitable[bytes | None]], local_ready: bool,
+) -> bytes:
+    """Check a generated photo (or a local video note's first frame) against its scene and, if it doesn't match,
+    regenerate once with the adjusted scene and keep the better of the two. The regeneration shares the item's media
+    reservation, so it cannot pass the limits, and any cloud call it makes is recorded and capped like the first.
+    Anything that goes wrong sends the original."""
+    if kind == "voice" or not await look.can_look(app, scope):
+        return data
+    if kind != "photo" and not local_ready:  # a cloud video can't take a new scene, and costs real money to repeat
+        return data
+    try:
+        shown = data if kind == "photo" else await look.first_frame(data)
+        if shown is None:
+            return data
+        fix = await look.fix_for(app, chat_id, scene, shown)
+        if fix is None:
+            return data
+        turn_log.step("looked: regenerating")
+        again = await produce(fix)
+        if again is None:
+            return data
+        second = again if kind == "photo" else await look.first_frame(again)
+        if second is not None and await look.second_is_better(app, chat_id, scene, shown, second):
+            return again
+        return data
+    except Exception as exc:
+        log.warning("look before send failed in chat %s (%s)", chat_id, type(exc).__name__)
+        return data
 
 
 async def deliver_studio(
@@ -791,13 +833,20 @@ async def deliver_studio(
                 return None
             if kind == "voice":
                 action, filename, send = "record_voice", "voice.ogg", app.bot.send_voice
-                request = client.voice(text) if local_ready and not reuse_video_voice else None
             elif kind == "photo":
                 action, filename, send = "upload_photo", "photo.png", app.bot.send_photo
-                request = client.image(text, actions.outfit) if local_ready else None
             else:
                 action, filename, send = "record_video_note", "video.mp4", app.bot.send_video_note
-                request = client.video(text, kind == "special", actions.outfit) if local_ready else None
+
+            def start(prompt: str):
+                """The local studio's request for `prompt`, or None when it can't make this kind."""
+                if kind == "voice":
+                    return client.voice(prompt) if local_ready and not reuse_video_voice else None
+                if kind == "photo":
+                    return client.image(prompt, actions.outfit) if local_ready else None
+                return client.video(prompt, kind == "special", actions.outfit) if local_ready else None
+
+            request = start(text)
             cloud_refused = False
 
             async def cloud_allowed() -> bool:
@@ -834,6 +883,15 @@ async def deliver_studio(
                         )
                     else:
                         data = await cloud.generate(app.config, kind, text, actions.outfit, chat_id, cloud_allowed)
+                if data is not None and not reuse_video_voice and kind != "voice":
+                    async def produce(prompt: str) -> bytes | None:
+                        again = start(prompt)
+                        made = await again if again is not None else None
+                        if made is None and cloud_ready and kind == "photo":
+                            made = await cloud.generate(app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed)
+                        return made
+
+                    data = await _look_before_send(app, scope, chat_id, kind, text, data, produce, local_ready)
             finally:
                 indicator.cancel()
                 await asyncio.gather(indicator, return_exceptions=True)
@@ -858,13 +916,26 @@ async def deliver_studio(
             media = {"kind": message_kind, key: text}
             if kind == "special":
                 media["special"] = True
+            async def keep(sent) -> dict:
+                at = now()
+                fields: dict = {"sent_at": at.isoformat()}
+                if file_id := file_id_of(sent, message_kind):
+                    fields["file_id"] = file_id
+                return {**fields, **await app.media_files.keep(chat_id, sent.message_id, message_kind, data, at)}
+
             with app.dispatch.protect_send() as commit:
                 commit()
                 delivered = await _send_media(
                     lambda: send(chat_id, BufferedInputFile(data, filename=filename), message_thread_id=thread_id),
                     app.store, chat_id, message_kind, media, now, on_sent, thread_id=thread_id,
                     sleep=app.sleep, budget=budget, trigger_msg_id=trigger_msg_id, history_text=f"[{message_kind}] {text}",
+                    keep=keep,
                 )
+            if delivered is not None:
+                try:
+                    await app.media_files.evict()
+                except Exception:
+                    log.warning("could not trim the kept media", exc_info=True)
             return delivered is not None
 
     async def fallback(kind: Kind, text: str) -> None:

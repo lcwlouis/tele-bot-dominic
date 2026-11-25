@@ -27,6 +27,7 @@ from aiogram.types import (
 )
 
 from dom import memory_export, memory_import, proposals, release, skills, traits
+from dom import window as chat_window
 from dom.studio.profile import unserved_note
 from dom._version import VERSION
 from dom.deletion import (
@@ -57,6 +58,7 @@ OWNER_COMMANDS = [
     BotCommand(command="chats", description="Every group and DM Dom knows about"),
     BotCommand(command="studio", description="Check media generation status"),
     BotCommand(command="preset", description="Change Dom's persona in a chat"),
+    BotCommand(command="fresh", description="Start this chat's window from now (/fresh undo to put it back)"),
     BotCommand(command="proposals", description="Review pending or delete settled proposals"),
     BotCommand(command="plugins", description="List, disable and delete plugins"),
     BotCommand(command="skills", description="List, retire, restore and delete skills"),
@@ -251,6 +253,36 @@ async def leave_chat(app: App, chat_id: int, who: str) -> tuple[str, bool]:
 async def approved_chat(app: App, chat_id: int | str) -> dict | None:
     resolved = await app.store.resolve_chat_id(chat_id)
     return next((c for c in await app.store.list_chats("approved") if c["chat_id"] == resolved), None)
+
+
+FRESH_EVENT = (
+    "This chat was started fresh: the messages before this note are no longer in your window, so don't assume you "
+    "remember them. Nothing was deleted, and you can still find them by searching."
+)
+FRESH_UNDONE_EVENT = "The fresh start was undone: the earlier messages are back in your window."
+
+
+async def fresh_start(app: App, chat_id: int, who: str, *, undo: bool = False) -> str | None:
+    """Start an approved chat's window from now, or undo the last fresh start. Messages are never deleted. Dom is told
+    in that chat; the owner's own record notes who did it. None when the chat is unknown."""
+    chat = await approved_chat(app, chat_id)
+    if chat is None:
+        return None
+    resolved = int(chat["chat_id"])
+    title = display_title(chat, app.owner_id)
+    store = app.store
+    if undo:
+        if not await chat_window.undo_fresh(store, resolved):
+            return f"Nothing to undo in {title}."
+        await store.record_chat_event(resolved, FRESH_UNDONE_EVENT)
+        await record_event(app, f"{who} undid the fresh start in {title}")
+        return f"Put the earlier messages back in {title}."
+    created_at = datetime.now(timezone.utc).isoformat()
+    await record_event(app, f"{who} started {title} fresh")  # before the floor, so only Dom's own note is left in view
+    first_id = await store.record_chat_event(resolved, FRESH_EVENT)
+    await chat_window.start_fresh(store, resolved, first_id, created_at)
+    app.dispatch.request_memory_pass(resolved)  # what was never read into notes is read before it leaves the prompt
+    return f"Started {title} fresh. Nothing was deleted; /fresh undo puts it back."
 
 
 async def set_preset(app: App, chat: dict, name: str) -> str | None:

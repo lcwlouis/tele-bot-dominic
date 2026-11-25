@@ -49,6 +49,7 @@ class ListedModel:
     reasoning: bool | None  # None: the provider doesn't say
     efforts: tuple[str, ...]
     default_effort: str | None = None  # what the provider uses when Dom sends no effort; "none" when it doesn't reason by default
+    input: tuple[str, ...] | None = None  # input types the provider lists (text, image, audio, video); None: it doesn't say
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ class ModelList:
 def cache_key(base_url: str, api_key_env: str | None, type_: str = "chat") -> str:
     identity = f"{base_url}\n{api_key_env or ''}" + ("" if type_ == "chat" else f"\n{type_}")
     digest = hashlib.sha256(identity.encode()).hexdigest()
-    return f"model-list:v2:{digest}"  # v2: levels read from OpenRouter's `reasoning` object
+    return f"model-list:v3:{digest}"  # v3: input types from OpenRouter's `architecture` object
 
 
 def secret_values(config: Config) -> frozenset[str]:
@@ -99,6 +100,18 @@ def _efforts(entry: dict, reasoning: bool | None) -> tuple[tuple[str, ...], str 
     return (DEFAULT_EFFORTS if reasoning is not False else ()), default
 
 
+_INPUT_NAMES = ("text", "image", "audio", "video")
+
+
+def _input_types(entry: dict) -> tuple[str, ...] | None:
+    """The input types OpenRouter lists as `architecture.input_modalities`; None when the list says nothing."""
+    architecture = entry.get("architecture")
+    listed = architecture.get("input_modalities") if isinstance(architecture, dict) else None
+    if not isinstance(listed, list):
+        return None
+    return tuple(name for name in _INPUT_NAMES if name in listed)
+
+
 def parse(payload: object, secrets: Collection[str] = ()) -> tuple[ListedModel, ...]:
     """The `data` array of an OpenAI-style list; entries without a usable ID, or holding a secret value, are skipped."""
     data = payload.get("data") if isinstance(payload, dict) else payload
@@ -113,7 +126,7 @@ def parse(payload: object, secrets: Collection[str] = ()) -> tuple[ListedModel, 
         name = entry.get("name")
         name = " ".join(name.split())[:MAX_NAME] if isinstance(name, str) and name.strip() else entry["id"]
         efforts, default_effort = _efforts(entry, reasoning)
-        model = ListedModel(entry["id"], name, reasoning, efforts, default_effort)
+        model = ListedModel(entry["id"], name, reasoning, efforts, default_effort, _input_types(entry))
         if secrets and _holds_secret((json.dumps(entry, ensure_ascii=False), model.id, model.name, *model.efforts), secrets):
             continue
         models.setdefault(entry["id"], model)
@@ -190,7 +203,10 @@ async def cached(
         data = json.loads(raw)
         listed = ModelList(
             tuple(
-                ListedModel(item["id"], item["name"], item["reasoning"], tuple(item["efforts"]), item.get("default_effort"))
+                ListedModel(
+                    item["id"], item["name"], item["reasoning"], tuple(item["efforts"]), item.get("default_effort"),
+                    tuple(item["input"]) if isinstance(item.get("input"), list) else None,
+                )
                 for item in data["models"]
             ),
             float(data["fetched_at"]),

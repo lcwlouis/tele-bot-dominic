@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from dom.web.api import router as api_router
 from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
+from dom.web.api_media import GUARDED_PREFIX as MEDIA_GET_PREFIX, JSON_POSTS as MEDIA_POSTS, router as media_router
 from dom.web.api_memory import GUARDED_GETS as MEMORY_GETS, JSON_POSTS as MEMORY_POSTS, router as memory_router
 from dom.web.api_search import GUARDED_GETS as SEARCH_GETS, router as search_router
 from dom.web.api_system import JSON_POSTS as SYSTEM_POSTS, router as system_router
@@ -63,11 +64,11 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
         identity = await auth.authenticate(request)
         if identity is None:
             response = PlainTextResponse("Forbidden", status_code=403)
-        elif request.url.path in MEMORY_GETS | SEARCH_GETS and not fetch_site_ok(request, identity):
+        elif (request.url.path in MEMORY_GETS | SEARCH_GETS or request.url.path.startswith(MEDIA_GET_PREFIX)) and not fetch_site_ok(request, identity):
             response = PlainTextResponse("Forbidden", status_code=403)
         elif request.method not in ("GET", "HEAD") and not (
             request.method == "POST"
-            and request.url.path in (JSON_POSTS | PROVIDER_POSTS | STUDIO_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS | MEMORY_POSTS | WORK_POSTS | WAITING_POSTS | SYSTEM_POSTS)
+            and request.url.path in (JSON_POSTS | PROVIDER_POSTS | STUDIO_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS | MEMORY_POSTS | WORK_POSTS | WAITING_POSTS | SYSTEM_POSTS | MEDIA_POSTS)
             and is_json(request) and "Origin" in request.headers
             and same_origin(request, identity)
         ):
@@ -99,6 +100,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.include_router(api_router)
     web.include_router(chats_router)
     web.include_router(memory_router)
+    web.include_router(media_router)
     web.include_router(search_router)
     web.include_router(work_router)
     web.include_router(waiting_router)

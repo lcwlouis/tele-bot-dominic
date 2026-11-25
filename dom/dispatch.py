@@ -38,6 +38,7 @@ from dom.jobs import DailyJobs
 from dom.llm import ChatBudgetExhausted
 from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
+from dom.native_media import NativeMedia
 from dom.openers import Openers
 from dom.provider_budget import ProviderBudgetNotices
 from dom.studio.cloud import providers as studio_providers
@@ -206,6 +207,7 @@ class Dispatcher:
         self.cross_chat = CrossChat(self)
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
+        self.native = NativeMedia(self)
         self.provider_budget = ProviderBudgetNotices(app.store)
         self.jobs = DailyJobs(app, now)
         self.jobs.register("proposal-expiry", lambda local, habits: True, app.proposals.expire)
@@ -317,6 +319,7 @@ class Dispatcher:
                     return  # the bot-only depth, deduplication and cooldown checks run first
             if msg.media:
                 await self._wait_media(chat_id)  # judge the description, not "[photo]"; text pays nothing
+                await self._describe_for_triage(arrival, msg)  # triage can't see, whatever the chat model takes
             rows = await store.get_window_from(
                 chat_id, None, TRIAGE_WINDOW * 2, through_id=newest.id, thread_id=msg.thread_id, filter_thread=True,
             )
@@ -486,7 +489,10 @@ class Dispatcher:
             if not await self.presence.is_online(msg.chat_id, self._habits()):
                 return
             with turn_log.track(trace):
-                await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
+                if await self.native.takes(msg.media):  # the reply model gets the real thing: no description, no model call
+                    await self.native.prefetch(msg.chat_id, msg.msg_id, msg.media)
+                else:
+                    await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
         except Exception:
             log.exception("could not check presence before describing media in chat %s", msg.chat_id)
         finally:
@@ -552,6 +558,18 @@ class Dispatcher:
         times.append(now)
         return True
 
+    async def _describe_for_triage(self, arrival: Arrival, msg: IncomingMessage) -> None:
+        """The triage model reads text only, so media the chat model takes as it is still needs a description when
+        triage is about to judge it."""
+        try:
+            row = await self.app.store.get_message(msg.chat_id, msg.msg_id)
+            if row is None or json.loads(row.media_json or "{}").get("description") is not None:
+                return
+            with turn_log.track(arrival.trace):
+                await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
+        except Exception:
+            log.exception("could not describe media for triage in chat %s", msg.chat_id)
+
     async def _describe_unread_media(self, chat_id: int) -> None:
         """Describe what arrived while Dom was away, within the same media wait budget."""
         active = self._active.get(chat_id)
@@ -562,6 +580,7 @@ class Dispatcher:
                 thread_id=active.thread_id if active is not None else None,
                 filter_thread=active is not None,
             )
+            pending = [(msg_id, media) for msg_id, media in pending if not await self.native.takes(media)]
             if pending:
                 with turn_log.timed("media_wait"):
                     for msg_id, media in pending:
@@ -2206,6 +2225,7 @@ class Dispatcher:
         title = live.chat_title if live else ""
         where = f'chat "{title}"' if title else ("a group" if scope == "group" else "a direct message")
         tools = await enabled_tools(app, scope)
+        await self.native.accepted()  # so the capability note below knows what his chat model takes as it is
         note = (
             f"It is {now:%A %Y-%m-%d %H:%M} ({app.config.timezone}). You are in {where} ({scope}).\n"
             f"state: online\n"
@@ -2311,6 +2331,10 @@ class Dispatcher:
             app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
             sliders=sliders, preset=preset, memory_text=snap.memory_text, notes_blocks=snap.notes_blocks,
         )
+        try:
+            await self.native.attach(messages, chat_id, window)
+        except Exception:
+            log.exception("could not attach media to the prompt in chat %s", chat_id)
         ctx = TurnCtx(
             scope, chat_id, sender_id, app.home, app.store, app.owner_id, self.presence, habits,
             model_allowed=partial(self.turn_allowed, chat_id, scope), reminders=self.reminders,

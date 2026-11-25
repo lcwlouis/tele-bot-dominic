@@ -425,6 +425,18 @@ def _dump_slot(role: SettingsRole, provider: ProviderEndpoint) -> dict:
     return data
 
 
+def _kept_inputs(table) -> dict[tuple[str, str], tuple[str, ...]]:
+    """The `input` overrides in a role's saved table (and its fallbacks), by provider address and model: the
+    dashboard's forms don't carry them, so a save puts them back on the providers that stay."""
+    if table is None:
+        return {}
+    found = {}
+    for entry in (table, *table.get("fallbacks", ())):
+        if entry.get("input") is not None and "base_url" in entry:
+            found[(str(entry["base_url"]), str(entry.get("model", "")))] = tuple(entry["input"])
+    return found
+
+
 def set_role(document: tomlkit.TOMLDocument, role: SettingsRole, slots: list[ProviderEndpoint]) -> None:
     """Write one role's whole chain into config.toml's document, or drop the role when `slots` is empty."""
 
@@ -437,6 +449,12 @@ def set_role(document: tomlkit.TOMLDocument, role: SettingsRole, slots: list[Pro
         legacy = models().pop("chat_fallback")
         if role != "fallback" and "fallback" not in models():
             models()["fallback"] = legacy
+    kept = _kept_inputs(models().get(role))
+    slots = [
+        slot.model_copy(update={"input": kept[(slot.base_url, slot.model)]})
+        if slot.input is None and (slot.base_url, slot.model) in kept else slot
+        for slot in slots
+    ]
     if not slots:
         models().pop(role, None)
     else:

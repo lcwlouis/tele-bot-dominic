@@ -17,6 +17,11 @@ with the generation service and Jev.
 A failed, refused or limited generation leaves one short, rate-limited event in
 that chat's history; it never crosses into another chat.
 
+Dom keeps what he sends: each photo, voice note and video note is saved under
+the home's `media/` folder (size-capped by `studio.keep_cap_mb`), and he looks at
+a generated photo before sending it when his chat model takes images. See
+[Media Dom sees and sends](privacy.md#media-dom-sees-and-sends).
+
 ## Limits
 
 These are rolling windows per chat. The whole studio allows 12 delivered items
