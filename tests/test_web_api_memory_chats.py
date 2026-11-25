@@ -100,7 +100,8 @@ async def test_save_checks_limits_versions_and_habits(make_app, browser):
         assert too_long.status_code == 422 and app.home.read(memory) == ""
         ok = await save(file=memory, version=version(""), content="- Likes tea\r\n")
         assert ok.status_code == 200 and ok.json()["message"] == "Saved MEMORY.md."
-        assert app.home.read(memory) == "- Likes tea\n" and ok.json()["version"] == version("- Likes tea\n")
+        saved = app.home.read(memory)  # a line the owner typed is pinned as their core memory
+        assert saved == f"- Likes tea {{core owner {app.dispatch.now().date().isoformat()}}}\n" and ok.json()["version"] == version(saved)
         stale = await save(file=memory, version=version(""), content="late edit")
         assert stale.status_code == 409 and "changed since" in stale.json()["detail"]
         assert (await save(file="memory/HABITS.md", version="", content="x")).status_code == 403

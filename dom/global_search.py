@@ -12,9 +12,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from dom import briefs, skills
-from dom.home import Home
+from datetime import date, datetime, timezone
+
+from dom import briefs, notes, skills
+from dom.home import Home, _split_journal
 from dom.store import Store
+from dom.store.store import recency_weight
 
 KINDS = ("chat", "memory", "brief", "reminder", "task", "skill", "plugin")
 PER_KIND = 8
@@ -72,12 +75,39 @@ def _search_memory(home: Home, tokens: list[str]) -> list[Hit]:
     hits = []
     for rel in _memory_paths(private.root):
         try:
-            text = private.read_memory_file(rel)[:MAX_FILE]
+            text = notes.strip_tags(private.read_memory_file(rel)[:MAX_FILE])  # source and core marks are not memory
         except (OSError, ValueError):
             continue
         if _matches(tokens, rel, text):
             hits.append(Hit("memory", rel, snippet(text, tokens), rel))
     return hits
+
+
+def _search_archive(home: Home, tokens: list[str], keep_days: frozenset[str]) -> list[Hit]:
+    """Journal archive hits, one per matching entry (and per summary block), newest first. Both archives are
+    owner-only: this module is, and the private one needs the private scope. Entries from a day a core memory was
+    pinned do not fade in the order."""
+    today = datetime.now(timezone.utc).date()
+    scored: list[tuple[float, str, Hit]] = []
+    for private in (False, True):
+        for rel in home.journal_archive_files(private):
+            try:
+                preamble, entries = _split_journal(home.read(rel)[:MAX_FILE])
+            except (OSError, ValueError):
+                continue
+            if _matches(tokens, preamble):
+                scored.append((2.0, rel, Hit("memory", rel, snippet(preamble, tokens), rel)))  # summaries first
+            for entry in entries:
+                if not _matches(tokens, entry):
+                    continue
+                day = entry.splitlines()[0][3:13]
+                try:
+                    weight = 1.0 if day in keep_days else recency_weight((today - date.fromisoformat(day)).days)
+                except ValueError:
+                    weight = 0.5
+                scored.append((weight, day, Hit("memory", f"{rel} · {day}", snippet(entry, tokens), rel, day)))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [hit for _, _, hit in scored]
 
 
 def _search_files(home: Home, tokens: list[str]) -> tuple[list[Hit], list[Hit], list[Hit]]:
@@ -89,7 +119,8 @@ def _search_files(home: Home, tokens: list[str]) -> tuple[list[Hit], list[Hit], 
         Hit("skill", str(item["name"]), snippet(f"{item['description']} {item['body']}", tokens), str(item["name"]))
         for item in skills.skills_inventory(home) if _matches(tokens, str(item["name"]), str(item["description"]), str(item["body"]))
     ]
-    return _search_memory(home, tokens), found_briefs, found_skills
+    keep_days = home.scoped(allow_private=True).core_days()
+    return [*_search_memory(home, tokens), *_search_archive(home.scoped(allow_private=True), tokens, keep_days)], found_briefs, found_skills
 
 
 async def search_all(store: Store, home: Home, query: str, chat_titles: dict[str, str] | None = None) -> dict[str, list[Hit]]:
@@ -102,7 +133,8 @@ async def search_all(store: Store, home: Home, query: str, chat_titles: dict[str
         return result
     titles = chat_titles or {}
 
-    for row in await store.search_chat_history(query, str(owner), PER_KIND):
+    keep_days = await asyncio.to_thread(home.scoped(allow_private=True).core_days)
+    for row in await store.search_chat_history(query, str(owner), PER_KIND, keep_days):
         chat_id = str(row["chat_id"])
         mine = chat_id == str(owner)
         text = row["text"] or ""
