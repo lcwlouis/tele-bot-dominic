@@ -18,6 +18,9 @@ npm run test:screens          # Playwright against tests/web_preview.py (fiction
 npm run test:screens:update   # re-render the PNG baselines in screens/baseline after a visual change
 ```
 
+The screens start the preview on port 8765, or reuse a server already there. With another worktree's preview
+running, set `DOM_PREVIEW_PORT` to a free port so the screens test this checkout.
+
 `npm run dev` serves the app with hot reload and proxies `/api` to a fictional Dom: start
 `uv run python tests/web_preview.py` from the repo root first. The dev server does not send Dom's CSP, so check
 CSP-sensitive changes with `npm run build` and `npm run test:screens`.
@@ -27,10 +30,73 @@ CSP-sensitive changes with `npm run build` and `npm run test:screens`.
 - `src/app.css`: Quiet Orbit tokens for both themes, mapped onto shadcn-svelte's names. Text pairs are checked for
   WCAG AA by `tests/test_dashboard_app.py`.
 - `src/shadcn-svelte.css`: shadcn-svelte's Tailwind variants for Bits UI state attributes.
+- `src/lib/components/kit/`: Dom's own building blocks, the baseline list pages are rebuilt from (below).
 - `src/lib/components/ui/`: shadcn-svelte components, restyled. Add more with `npx shadcn-svelte@1.8.1 add <name>`.
 - `src/lib/nav.ts`: the navigation: five destinations, their tabs, and the desktop's Workspace shortcuts.
-- `src/routes/`: pages. `Gallery.svelte` is the component library (`/app/gallery`).
+- `src/routes/`: pages. `Gallery.svelte` is the component library (`/app/gallery`, reachable only by its address),
+  with a mock Work list and Turn log on fixture data from `gallery-fixtures.ts`.
 - `screens/`: Playwright checks and screenshot baselines (phone 390 px, desktop 1280 px, dark and light).
+
+## Tokens
+
+All in `src/app.css`, for both themes; every text pair is checked for WCAG AA by `tests/test_dashboard_app.py`.
+
+- **Surfaces**, from back to front: `canvas` (the page), `rail` (the sidebar), `surface` (cards, lists), `raised`
+  (fields, hover, inset blocks), `overlay` (the details panel and sheets).
+- **Status**: `status-done`, `status-running`, `status-waiting`, `status-failed`, `status-held`, `status-paused`, as
+  `text-status-*` and friends. Always with the status's glyph (`kit/status.ts`), so colour is never the only cue.
+- **Type scale**: `text-caption`, `text-meta`, `text-body`, `text-title`, `text-heading`, `text-display`, each with
+  its line height. New components use these; older pages move over as they are ported.
+- **Spacing**: Tailwind's steps 1, 2, 3, 4, 6, 8 and 12 (4 to 48 px). Avoid one-off values in new components.
+- **Motion**: `--motion-quick` (120 ms), `--motion-calm` (220 ms), `--motion-slow` (360 ms) on `ease-calm`, as
+  `duration-(--motion-calm)`. Under `prefers-reduced-motion` they are all 0 ms. Motion answers the owner (opening,
+  closing); nothing moves on its own except a running status's slow turn, which stops under reduced motion.
+
+## Building blocks (`kit/`)
+
+- **`IconButton`**: every icon-only button. `label` is required; it is the accessible name and the tooltip shown on
+  hover and keyboard focus. `shortcut` adds a key hint.
+- **`InfoGlyph`**: the glyph rule, below.
+- **`StatusGlyph`**: a status as its glyph, with its word for screen readers (or on screen with `word`).
+- **`StripList`**: a newest-first list of one-line strips (status glyph, title, optional meta, relative time,
+  trailing action glyphs). Clicking a strip, or Enter or Space on it, opens its details beside the list on a wide
+  screen (1024 px and up) or in a bottom sheet on a phone. Focus moves to the details' title and back to the strip on
+  Esc or close. Generic over the item, for Work tasks, turns, messages and reminders. Long lists come with it:
+  - **Date groups**: Today, Yesterday, This week (from Monday), This month, then month names, each a heading over a
+    list it names. They stick to the top while their strips scroll.
+  - **Filter bar**: `search` (a text filter's label) and `statuses` (status chips) as the page chooses, plus a
+    `toolbar` snippet for its own controls. Without `onfilter` it filters what is loaded; with it, the page gets
+    the filter (debounced) and searches on the server. Esc in the field empties it before it closes the details.
+  - **Loading and count**: `hasMore` and `onmore` load the next page as the end scrolls into view, with "Load more"
+    as the fallback; a failed or empty page stops the loading and offers to try again. The count reads "Showing 50
+    of 312" with `total`, or "50 loaded".
+  - **Back to top** appears two screens down and returns focus to the first strip.
+  - **Bounded rendering**: strips use `content-visibility: auto`, so the browser skips laying out and painting
+    those off screen while they stay in the page (focus, find-in-page and the open strip survive). Measured on a
+    phone-sized screen at 6x CPU slowdown, scrolling holds 60 fps at 400 strips; at 2,000 the p95 frame is 26 ms
+    (51 ms without it). Past a few thousand, a real window would be the next step.
+  - **Wide screens** (`contained`, on by default): the list is a pane from its top to the bottom of the screen
+    that scrolls inside, so the page doesn't grow; the details beside it fill the same height. Turn it off for a
+    short list.
+  - **Phones** (`preview`, 10 by default): the page shows the newest few and "See all (312)", so what is below stays
+    in reach. See all opens the whole list as its own screen with its own history entry: Back, Esc or the back
+    gesture return to the page where it was. `preview={false}` shows the whole list on a page that is only it.
+- **`AppPicker`**: the app's own combobox for a choice from a list, with a visible label and type-to-filter, in
+  place of a native `<select>`.
+
+### The glyph rule (E80)
+
+Descriptive text that is always on screen, such as what a section is for or how a setting works, becomes an
+`InfoGlyph` beside its heading: hover or focus shows it, a click or tap pins it open. Critical text stays as words
+on screen: warnings (a provider that keeps data, a spend cap reached), errors and anything the owner must act on. A
+warning that only matters once, like the ZDR recommendation, shows once at setup rather than forever.
+
+## Sidebar
+
+On a desktop the sidebar folds to a rail (the logo spot's button, or `[`). A resting mouse opens the folded rail for a
+look, over the page, which keeps its width; moving away folds it again. The logo spot is the fold button: the orbit
+at rest, the panel glyph on hover or keyboard focus. On a peek, clicking it pins the sidebar open. Touch has no hover,
+so it keeps tap behaviour; keyboards get each rail icon's tooltip on focus.
 
 ## Dom's CSP
 

@@ -2,7 +2,7 @@
   import Moon from "@lucide/svelte/icons/moon";
   import Sun from "@lucide/svelte/icons/sun";
   import Orbit from "$lib/components/Orbit.svelte";
-  import { Button } from "$lib/components/ui/button";
+  import IconButton from "$lib/components/kit/IconButton.svelte";
   import SearchBox from "$lib/components/shell/SearchBox.svelte";
   import MenuSheet from "$lib/components/shell/MenuSheet.svelte";
   import type { Destination, Tab } from "$lib/nav";
@@ -36,15 +36,14 @@
     <div class="ml-auto flex items-center gap-2">
       <SearchBox />
       <MenuSheet {path} {current} />
-      <Button
+      <IconButton
         variant="outline"
         size="icon"
+        side="bottom"
+        icon={theme.value === "dark" ? Sun : Moon}
+        label={theme.value === "dark" ? "Switch to the light theme" : "Switch to the dark theme"}
         onclick={() => theme.toggle()}
-        aria-label={theme.value === "dark" ? "Switch to the light theme" : "Switch to the dark theme"}
-        title={theme.value === "dark" ? "Light theme" : "Dark theme"}
-      >
-        {#if theme.value === "dark"}<Sun />{:else}<Moon />{/if}
-      </Button>
+      />
     </div>
   </div>
 </header>
