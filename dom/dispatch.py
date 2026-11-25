@@ -519,17 +519,6 @@ class Dispatcher:
             await check_model_allowed()
             yield
 
-    @asynccontextmanager
-    async def _sent_media_request(self, chat_id: int) -> AsyncIterator[None]:
-        async def allowed() -> bool:
-            return await self._approved(chat_id) and not await self.usage.over_cap(
-                self.app.config, self.app.bot, sleep=self.app.sleep,
-            )
-
-        with model_request("media", chat_id, allowed):
-            await check_model_allowed()
-            yield
-
     async def _describe(
         self, chat_id: int, msg_id: int, media: dict, request: AsyncContextManager[None],
     ) -> None:
@@ -541,20 +530,6 @@ class Dispatcher:
             await self.app.store.set_media_description(chat_id, msg_id, description)
         except Exception:
             log.exception("could not record media description in chat %s", chat_id)
-
-    async def describe_sent_media(self, chat_id: int, msg_id: int, kind: str, data: bytes, mime: str) -> None:
-        """Describe media Dom already sent. Failure or the spend cap leaves the recorded prompt untouched."""
-        describer = self.app.media_describer
-        if describer is None:
-            return
-        try:
-            description = await describer.describe_sent(
-                kind, data, mime, request=self._sent_media_request(chat_id),
-            )
-            if description:
-                await self.app.store.set_media_description(chat_id, msg_id, description)
-        except Exception:
-            log.exception("could not describe sent media in chat %s", chat_id)
 
     async def _note_failure(
         self, chat_id: int, category: str, text: str, *, thread_id: int | None = None,

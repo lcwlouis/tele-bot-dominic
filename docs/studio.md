@@ -14,13 +14,8 @@ note first if enabled and within quota. Generated photos are skipped when they
 cannot be sent. See [Privacy](privacy.md#what-leaves-the-host) for what Dom shares
 with the generation service and Jev.
 
-After Telegram accepts a generated photo or round video, the configured media
-model describes the delivered bytes in the background. The scene or spoken
-prompt remains in that chat's history and the description is stored beside it,
-so later replies know what the media actually showed. This extra call is
-attributed as media usage and is skipped when the spend cap is reached. A
-failed, refused or limited generation instead leaves one short, rate-limited
-event in that chat's history; it never crosses into another chat.
+A failed, refused or limited generation leaves one short, rate-limited event in
+that chat's history; it never crosses into another chat.
 
 ## Limits
 

@@ -6,7 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
-- **Dom knows what happened.** Successful updates put the installed release's full changelog section into the owner DM history once; background failures leave short, rate-limited notes only in the affected chat; and sent photos and round videos are described after delivery so later turns know what they showed.
+- **Dom knows what happened.** Successful updates put the installed release's full changelog section into the owner DM history once; and background failures leave short, rate-limited notes only in the affected chat.
 
 ## [0.8.3] - 2026-11-25
 

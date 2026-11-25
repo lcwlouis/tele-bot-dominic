@@ -865,9 +865,6 @@ async def deliver_studio(
                     app.store, chat_id, message_kind, media, now, on_sent, thread_id=thread_id,
                     sleep=app.sleep, budget=budget, trigger_msg_id=trigger_msg_id, history_text=f"[{message_kind}] {text}",
                 )
-            if delivered is not None and message_kind in {"photo", "video_note"}:
-                mime = "image/jpeg" if filename.endswith(".jpg") else "image/png" if message_kind == "photo" else "video/mp4"
-                app.dispatch._spawn(app.dispatch.describe_sent_media(chat_id, delivered, message_kind, data, mime))
             return delivered is not None
 
     async def fallback(kind: Kind, text: str) -> None:
