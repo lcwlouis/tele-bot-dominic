@@ -783,7 +783,7 @@ async def test_critical_reminder_persists_state_and_does_not_repeat_notice_after
 
     async def controlled_send(chat_id, text, **kw):
         nonlocal delivery_attempts, alert_attempts
-        if text.startswith("Critical reminder #"):
+        if text.startswith("Reminder #") and "not delivered" in text:
             alert_attempts += 1
         else:
             delivery_attempts += 1
@@ -939,7 +939,7 @@ async def test_remaining_telegram_send_paths_retry_on_flood_control(make_app):
     assert await app.self_work._announce("Trying something", rows, now) is True
     fail_next = True
     await app.self_work._report({**rows[0], "status": "failed", "error": "stopped"})
-    assert any("Stopped my own task" in c[2] for c in app.bot.of("send", OWNER))
+    assert any(c[2].startswith("Stopped: ") for c in app.bot.of("send", OWNER))
 
     # 3. memory_pass._tell_owner
     fail_next = True

@@ -83,7 +83,7 @@ access_team = ""
 access_aud = ""
 access_emails = []  # optional: only these Access identities (the JWT email claim); empty admits anyone the Access policy admits
 dev_token_env = ""  # env var name, for local testing
-public_url = ""  # dashboard base URL for desktop handoff links
+public_url = ""  # dashboard base URL for links in notices and desktop handoffs
 
 [t3]
 enabled = false

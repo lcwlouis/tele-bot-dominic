@@ -9,7 +9,6 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
 
 import httpx
 from aiogram.exceptions import TelegramAPIError
@@ -25,6 +24,7 @@ from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, Plugin, v
 from dom.plugins.trial import STORAGE_NOTICE, test_run_summary
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
 from dom.llm import ChatBudgetExhausted
+from dom.notice import REVIEW_LABEL, link_button, send_notice
 from dom.skills import BODY_LIMIT, Skill, skill_diff, skill_text, write_skill
 
 if TYPE_CHECKING:
@@ -67,6 +67,13 @@ def soul_edit_problem(home: Home, old: str, new: str) -> str | None:
     return None
 
 
+PROPOSAL_KINDS = {
+    "soul_edit": "A change to my soul", "skill": "A skill I drafted", "plugin": "A plugin I drafted",
+    "memory_fact": "Something to remember", "memory_edit": "An edit to my notes", "lan_address": "A change of LAN address",
+    "cross_chat": "A message for another chat · expires in 2 h",
+}
+
+
 def buttons(proposal_id: int, *, numbered: bool = False) -> list[InlineKeyboardButton]:
     suffix = f" #{proposal_id}" if numbered else ""
     return [
@@ -80,11 +87,7 @@ def plugin_review_path(body: dict) -> str:
 
 
 def review_button(app: App, body: dict) -> InlineKeyboardButton | None:
-    base = app.config.web.public_url.rstrip("/")
-    url = urlsplit(base)
-    if url.scheme == "https" and url.netloc and url.username is None and not (url.query or url.fragment):
-        return InlineKeyboardButton(text="Review on dashboard", url=base + plugin_review_path(body))
-    return None
+    return link_button(app, plugin_review_path(body), REVIEW_LABEL)
 
 
 def summary(row: dict) -> str:
@@ -274,8 +277,20 @@ class Proposals:
         except Exception:
             log.exception("could not notify the owner about proposal %s", proposal_id)
 
-    async def send(self, row: dict) -> None:
+    async def send(self, row: dict, *, full: bool = False) -> None:
+        """Tell the owner about a pending proposal. With a dashboard address it is a short notice with a link: the
+        dashboard's Waiting page shows the whole proposal and decides it. `full` (the owner asked for the details
+        in Telegram), or no dashboard address, sends the whole card with its Approve and Reject buttons."""
         app = self.app
+        path = plugin_review_path(json.loads(row["body_json"])) if row["kind"] == "plugin" else f"/app/waiting?proposal={row['id']}"
+        if not full and link_button(app, path):
+            sent = await send_notice(
+                app, app.owner_id, f"Proposal #{row['id']}: {row['title']}", [PROPOSAL_KINDS.get(row["kind"], row["kind"])],
+                path=path, label=REVIEW_LABEL, disable_notification=True,
+            )
+            if isinstance(message_id := getattr(sent, "message_id", None), int):
+                await app.store.update_proposal_cards(CARDS_KEY, {str(row["id"]): [message_id]})
+            return
         text = summary(row)
         review = None
         options = {}

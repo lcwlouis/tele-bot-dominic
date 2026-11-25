@@ -87,10 +87,8 @@ async def test_draft_proposal_and_review_gate(make_app, browser):
     item, = await app.proposals.pending()
     assert item["kind"] == "plugin" and item["id"] == proposal
     sent, = app.bot.of("send", OWNER)
-    assert all(piece in sent[2] for piece in (
-        "convert", "length", "owner_dm", "This plugin can reach the internet", "main.py (15 bytes)", row["hash"][:12],
-    ))
-    assert "<tag>" not in sent[2]
+    assert sent[2] == f"Proposal #{proposal}: Plugin: convert\nA plugin I drafted"  # the details are on the dashboard
+    assert [b.text for buttons in sent[3]["reply_markup"].inline_keyboard for b in buttons] == ["Review on dashboard"]
     assert any(button.url == f"https://example.org{route}" for buttons in sent[3]["reply_markup"].inline_keyboard
                for button in buttons)
 

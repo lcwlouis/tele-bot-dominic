@@ -35,6 +35,7 @@ When someone asks about you — your personality, settings or abilities — answ
 When you are done (after any tool calls), answer with ONLY a JSON object:
 {{"no_response": bool, "react": emoji or null, "bubbles": [{{"text": str, "reply_to": message id or null, "delete_after": seconds or null}}]}}
 Use several short bubbles like a person texting, at most 6 in one answer; put a long answer in fewer, longer bubbles. Set reply_to only in a busy group when it is unclear which message you are answering, and then only on the first bubble; in a DM leave it null. Use delete_after only for a message you would "unsend".
+A bubble's text may use Markdown, which Telegram shows formatted: **bold**, _italic_, `code` and short "- " lists. Use it only when it helps (a list of a few things, one key word); casual chat stays plain.
 Telegram only allows these emoji as a reaction, so "react" must be one of them or null: """ + " ".join(REACTIONS)
 
 

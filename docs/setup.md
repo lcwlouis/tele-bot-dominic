@@ -185,6 +185,16 @@ refuses while the plugin is mid-call, removes its database record and stored
 state, and refreshes the Telegram command menu.
 See [Writing plugins](plugins.md) for the format and limits.
 
+## System notices
+
+Messages that Dom's code writes (not his chat replies) share one short style: a bold lead
+line, at most two short detail lines or three bullets, and, when `[web].public_url` is set,
+a **Details on the dashboard** (or **Review on dashboard**) button that opens the item.
+Approvals live on the dashboard: with `public_url` set, a new proposal arrives as a short
+notice with a Review on dashboard button, and `/proposals` → Details still shows the whole
+card with Approve and Reject. Without `public_url` the same short text is sent with no link,
+and proposals keep their full cards and buttons.
+
 ## Skills, reminders and history cleanup
 
 Approved skills live under `<home>/skills/<name>/SKILL.md`. On the dashboard's

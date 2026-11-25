@@ -27,6 +27,7 @@ from pydantic import TypeAdapter, ValidationError
 from dom.agent import parse_actions
 from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.models import StoredMessage
+from dom.notice import send_notice
 from dom.prompt import build_messages
 from dom.telegram.executor import FloodBudget, send_chunk, send_text
 from dom.telegram.format import TextChunk, format_delivery
@@ -528,7 +529,11 @@ class Reminders:
                 except Exception:
                     log.exception("could not record owner event for critical reminder %s", reminder_id)
                 try:
-                    await send_text(self.app.bot, owner, notice, sleep=self.app.sleep, budget=FloodBudget(), literal=True)
+                    await send_notice(
+                        self.app, owner, f"Reminder #{reminder_id} not delivered",
+                        [f"Failed {MAX_ATTEMPTS} times; still retrying.", row["text"]], path=f"/app/work/reminders?id={reminder_id}",
+                        budget=FloodBudget(),
+                    )
                 except Exception:
                     log.exception("could not DM owner about critical reminder %s", reminder_id)
             return

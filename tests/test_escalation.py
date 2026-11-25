@@ -429,4 +429,4 @@ async def test_a_retry_the_cap_blocks_says_so(make_app, monkeypatch):
         await app.dispatch.retry_escalation(turn.retry_task)  # what a Retry tap spawns
         monkeypatch.setattr(app.dispatch, "turn_allowed", allowed)
         await drain_dispatch(app.dispatch)
-    assert app.bot.of("send", OWNER)[-1][2] == "The retry did not run: model calls are paused right now."
+    assert app.bot.of("send", OWNER)[-1][2] == "The retry did not run\nModel calls are paused right now."

@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from functools import partial
 from datetime import datetime, timedelta
 from time import monotonic
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 from collections.abc import AsyncIterator, Coroutine, Iterator
 from xml.sax.saxutils import escape, quoteattr
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable, get_args
@@ -20,9 +20,9 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from dom import guard, salvage, turn_log
+from dom import guard, notice, salvage, turn_log
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
 from dom.attention import FACT_INSTRUCTION, Attention, Tier, filter_fact
@@ -37,6 +37,7 @@ from dom.jev import JevClient, JevUnavailable
 from dom.jobs import DailyJobs
 from dom.llm import ChatBudgetExhausted
 from dom.memory_pass import MemoryPass
+from dom.notice import dashboard_url, first_sentence, shorten
 from dom.models import IncomingMessage, Scope, StoredMessage
 from dom.openers import Openers
 from dom.provider_budget import ProviderBudgetNotices
@@ -984,9 +985,8 @@ class Dispatcher:
     async def _retry_not_run(self, chat_id: int) -> None:
         """The card already said "Retry requested": say it did not run, rather than nothing."""
         try:
-            await executor.send_text(
-                self.app.bot, chat_id, "The retry did not run: model calls are paused right now.",
-                disable_notification=True, sleep=self.app.sleep,
+            await notice.send_notice(
+                self.app, chat_id, "The retry did not run", ["Model calls are paused right now."], disable_notification=True,
             )
         except Exception as exc:
             log.warning("could not tell the owner the retry did not run (%s)", type(exc).__name__)
@@ -1127,10 +1127,7 @@ class Dispatcher:
             why = f"my turns kept failing ({type(exc).__name__})"
         try:
             if chat_id == app.owner_id:
-                await executor.send_text(
-                    app.bot, chat_id, f"I couldn't answer your last messages: {why}. Try again in a bit?",
-                    sleep=app.sleep, literal=True,
-                )
+                await notice.send_notice(app, chat_id, "Couldn't answer your last messages", [f"{why}.", "Try again in a bit?"])
             elif app.owner_id is not None:
                 title = (await app.store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
                 await app.store.record_owner_event(f"Gave up on the unread messages in {title}: {why}")
@@ -1973,20 +1970,16 @@ class Dispatcher:
             return
         # The host is only where the browser was when Dom last looked; the time lets the owner judge how stale that is.
         observed = (observed or self.now()).astimezone(self.presence.tz)
-        base = app.config.web.public_url.rstrip("/")
-        url = urlsplit(base)
         buttons = []
-        if url.scheme == "https" and url.netloc and url.username is None and not (url.query or url.fragment):
-            link = f"{base}/desktop/vnc/index.html" + ("" if container == DEFAULT else "?" + urlencode({"container": container}))
+        link = dashboard_url(app.config.web.public_url, "/desktop/vnc/index.html" + ("" if container == DEFAULT else "?" + urlencode({"container": container})))
+        if link:
             buttons.append(InlineKeyboardButton(text="Open Desktop", url=link))
         buttons.append(InlineKeyboardButton(text="Done", callback_data=f"desktop:done:{task_id}:{steps}"))
-        sent = await executor.send_text(
-            app.bot, chat_id,
-            f"Dom needs you to log in{'' if container == DEFAULT else f' on the {container} desktop'} "
-            f"(browser was on {host or 'an unknown site'} at {observed:%H:%M}): {reason}\nLogins you make here are kept for later tasks."
-            + ("" if len(buttons) > 1 else "\nOpen Desktop in the dashboard."),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
-            link_preview_options=LinkPreviewOptions(is_disabled=True), literal=True, sleep=app.sleep,
+        sent = await notice.send_notice(
+            app, chat_id, f"Log-in needed{'' if container == DEFAULT else f' on the {container} desktop'}",
+            [reason, f"Browser was on {host or 'an unknown site'} at {observed:%H:%M}."] if link else
+            [reason, f"Browser was on {host or 'an unknown site'} at {observed:%H:%M}. Open Desktop in the dashboard."],
+            buttons=buttons,
         )
         if isinstance(message_id := getattr(sent, "message_id", None), int):
             await app.store.kv_set(f"{HANDOFF_CARD}{task_id}", str(message_id))
@@ -2004,11 +1997,10 @@ class Dispatcher:
             InlineKeyboardButton(text=f"Keep going (+{extra} steps)", callback_data=f"desktop:more:{task_id}:{token}"),
             InlineKeyboardButton(text="Wrap up now", callback_data=f"desktop:wrap:{task_id}:{token}"),
         ]
-        sent = await executor.send_text(
-            app.bot, chat_id,
-            f"Desktop task #{task_id}{where} has used its {steps} steps and isn't done yet. "
-            "Keep going, or wrap up with what it has so far? With no answer it wraps up.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]), literal=True, sleep=app.sleep,
+        sent = await notice.send_notice(
+            app, chat_id, f"Desktop task #{task_id} is out of steps",
+            [f"It used {steps} steps{where} and isn't done.", "Keep going, or wrap up? No answer wraps up."],
+            path=f"/app/work?task={task_id}", buttons=buttons,
         )
         if not isinstance(message_id := getattr(sent, "message_id", None), int):
             return False
@@ -2116,9 +2108,16 @@ class Dispatcher:
                 actions = None
             if actions is None or actions.no_response or not actions.bubbles:
                 # Raw task text goes to the owner only; it is not kept in the chat history the model reads.
-                await executor.send_text(
-                    app.bot, chat_id, f"Desktop task #{task_id}{where} {status}. {result}"[:3000],
-                    link_preview_options=LinkPreviewOptions(is_disabled=True), sleep=app.sleep, literal=True,
+                word = {"done": "Done", "cancelled": "Cancelled"}.get(row["status"], "Stopped")
+                if row["status"] == "done":
+                    details = [first_sentence(result)]
+                else:  # the reason first, then whatever the task had found
+                    details = [first_sentence(row["error"] or "no reason was reported")]
+                    details += [first_sentence(row["result"])] if row["result"] else []
+                if where:
+                    details.append(f"On the {container} desktop.")
+                await notice.send_notice(
+                    app, chat_id, f"{word}: {shorten(row['brief'], 40)}", details, path=f"/app/work?task={task_id}",
                 )
                 await app.store.record_owner_event(f"Desktop task #{task_id}{where} result sent as plain text")
             else:

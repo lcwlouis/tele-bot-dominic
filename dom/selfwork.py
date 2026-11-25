@@ -2,8 +2,8 @@
 
 What runs when:
 - `plan` is a daily job in the hour before sleep, right after the nightly reflection (the daydream). Dom may plan
-  up to three tasks. The plan goes to the owner's DM as one message with a Cancel button per task, and to the
-  dashboard's Own work page.
+  up to three tasks. The plan goes to the owner's DM as a short notice with a link to the dashboard's Own work page, where
+  each task can be cancelled (or with /ownwork in Telegram).
 - `tick` runs on every scheduler tick. The oldest planned task starts once the configured delay since the
   announcement has passed, and only while Dom is awake and idle: the owner's DM is not asleep, no chat is
   online or mid-turn, and no desktop task is running. A task not started within a day expires.
@@ -30,8 +30,6 @@ from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
-
 from dom.agent import unfence
 from dom.deletion import STALE_MESSAGE, prune_deletions, stage_deletion, stamp_matches
 from dom.desktop import network
@@ -41,7 +39,7 @@ from dom.desktop.files import safe_filename
 from dom.desktop.sandbox import SELF_WORK, Refused
 from dom.desktop.worker import GuardRefused, PlanBreach, Progress
 from dom.home import PrivateAccessError
-from dom.telegram.executor import send_text
+from dom.notice import REVIEW_LABEL, first_sentence, send_notice
 from dom.traits import decode
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
@@ -60,8 +58,6 @@ PARTIAL = "Partial: it ran out of steps before it finished."
 GUARD_KEY = "self_work:guard"  # JSON {ok, at, detail}: the last guard verification, read by `dom doctor`
 FILES_DIR = "self-work"  # under DOM_HOME: self-work/<task id>/<screenshot>.png
 FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.png")
-SUMMARY_LIMIT = 300
-MESSAGE_LIMIT = 4096  # Telegram's limit for one message
 UNANNOUNCED = datetime(9000, 1, 1, tzinfo=timezone.utc)  # the start time of a task whose plan was not announced yet
 # Links in a summary of web content: any scheme:// address, www. names, bare domain names in any script (with an
 # optional port or path, punycode included) and user mentions.
@@ -71,8 +67,6 @@ LINK = re.compile(
     r"|@\w+",
     re.IGNORECASE,
 )
-# Shorter goal/why/announcement texts to try, in order, until the plan fits one message. Sites are never cut.
-ANNOUNCE_LIMITS = ((None, 500), (120, 300), (60, 120), (30, 60), (20, 0))
 PLAN_FRAME = (
     "You are Dom, daydreaming before sleep. You may plan up to three small things to do on your own little computer "
     "tomorrow: research a topic you are curious about by reading a few named public sites in the browser, and keep "
@@ -149,17 +143,6 @@ def brief(row: dict) -> str:
 
 def _clip(text: str, limit: int | None) -> str:
     return text if limit is None or len(text) <= limit else text[:max(limit - 1, 0)] + "…"
-
-
-def describe(row: dict, limit: int | None = None) -> str:
-    """One task for the announcement, every site in full; `limit` shortens only the goal and why."""
-    sites = ", ".join(json.loads(row["sites_json"]))
-    why = f"\n   Why: {_clip(row['why'], limit)}" if limit != 0 else ""
-    return (
-        f"#{row['id']} {_clip(row['goal'], limit or None)}{why}\n   Uses: {', '.join(json.loads(row['tools_json']))}; "
-        f"sites: {sites}\n"
-        f"   Budget: up to {row['minutes']} min and {row['steps_budget']} steps"
-    )
 
 
 def task_files(home: Path, task_id: int) -> Path:
@@ -247,28 +230,16 @@ class SelfWork:
             await app.store.update_self_task(row["id"], ("planned",), "refused", error="the plan could not be announced in the owner's DM")
 
     async def _announce(self, announcement: str, rows: list[dict], start: datetime) -> bool:
-        """Send the plan to the owner's DM; False if it was not delivered."""
+        """Send the plan to the owner's DM as a short notice; False if it was not delivered. The reasons, tools,
+        sites and budgets are on the dashboard, where the tasks are also cancelled (or with /ownwork in Telegram)."""
         app, owner = self.app, self.app.owner_id
         local = start.astimezone(ZoneInfo(app.config.timezone))
-        announcement = announcement or "I have a few things I want to try on my own computer."
-        for task_limit, announcement_limit in ANNOUNCE_LIMITS:
-            text = (
-                f"{_clip(announcement, announcement_limit)}\n\n"
-                + "\n".join(describe(row, task_limit) for row in rows)
-                + f"\n\nNot before {local:%a %H:%M}, and only while I'm awake and free. "
-                "Cancel any of them here or on the dashboard."
-            )
-            if len(text) <= MESSAGE_LIMIT:
-                break
-        else:  # cannot happen with MAX_SITES hostnames per task; never send a plan with sites cut off
-            log.warning("self-directed plan too long to announce; it will not run")
-            return False
-        buttons = [[InlineKeyboardButton(text=f"Cancel #{row['id']}", callback_data=f"own:cancel:{row['id']}")] for row in rows]
-        markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+        count = f"{len(rows)} thing" + ("" if len(rows) == 1 else "s")
         try:
-            await send_text(
-                app.bot, owner, text, reply_markup=markup, sleep=app.sleep,
-                link_preview_options=LinkPreviewOptions(is_disabled=True), literal=True,
+            await send_notice(
+                app, owner, f"Tomorrow's own work: {count}", [f"#{row['id']} {row['goal']}" for row in rows],
+                path="/app/work/own-work", label=REVIEW_LABEL, bullets=True,
+                tag=f"Not before {local:%a %H:%M} · cancel with /ownwork",
             )
         except Exception as exc:
             log.warning("could not announce self-directed tasks; they will not run (%s)", type(exc).__name__)
@@ -464,26 +435,25 @@ class SelfWork:
 
     async def _report(self, row: dict) -> None:
         """The one message a self-directed task sends: a short summary to the owner."""
-        task = f"my own task #{row['id']} ({row['goal']})"
+        title = row["goal"]
+        path = f"/app/work/own-work?own={row['id']}"
+        tag = None
         if row["status"] == "done":
             # The result is the worker's account of web pages: say so, and keep its links off Telegram.
-            summary = _text(LINK.sub("[link removed]", row["result"] or ""), SUMMARY_LIMIT)
-            done = f"Finished part of {task}: it ran out of steps" if row["error"] == PARTIAL else f"Finished {task}"
-            text = (
-                f"{done}. Summary of web content (not checked by me, links removed): {summary}\n"
-                "The full result" + (" and screenshots are" if json.loads(row["files_json"]) else " is") + " on the dashboard."
-            )
+            takeaway = first_sentence(LINK.sub("[link removed]", row["result"] or ""))
+            partial = row["error"] == PARTIAL
+            lead = f"{'Partly done' if partial else 'Done'}: {title}"
+            details = [takeaway or "The result is on the dashboard."]
+            if partial:
+                details.append("It ran out of steps.")
+            tag = "web summary, unchecked"
         elif row["status"] == "refused":
-            text = f"I didn't start {task}: {row['error']}. Nothing ran."
+            lead, details = f"Didn't start: {title}", [row["error"] or "no reason given", "Nothing ran."]
         else:
-            text = f"Stopped {task}: {row['error']}."
+            lead, details = f"Stopped: {title}", [row["error"] or "no reason given"]
         app = self.app
-        body = text[:1000]
         try:
-            await send_text(
-                app.bot, app.owner_id, body, link_preview_options=LinkPreviewOptions(is_disabled=True),
-                sleep=app.sleep, literal=True,
-            )
+            await send_notice(app, app.owner_id, lead, details, path=path, tag=tag)
         except Exception as exc:
             log.warning("could not report self-directed task %s (%s)", row["id"], type(exc).__name__)
         # What Dom remembers of the outcome. The worker's summary is untrusted web content, so it stays out of his history.

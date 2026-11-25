@@ -270,11 +270,16 @@ class Usage(UsageRecorder):
             )
             async def notify() -> None:
                 try:
-                    from dom.telegram.executor import FloodBudget, send_text
+                    from dom.notice import compose
+                    from dom.telegram.executor import FloodBudget, send_chunk
 
                     await self.store.record_owner_event(text)
                     kw = {"sleep": sleep} if sleep is not None else {}
-                    await send_text(bot, owner_id, text, budget=FloodBudget(), **kw)
+                    short = compose(
+                        f"Daily spend cap reached: ${spent:.2f} of ${cap:.2f}",
+                        ["Friends' chats are paused until midnight.", "Change daily_spend_cap_usd in config.toml."],
+                    )
+                    await send_chunk(bot, owner_id, short, budget=FloodBudget(), **kw)
                 except Exception:
                     log.exception("could not send or record the owner's daily spend cap notice")
 

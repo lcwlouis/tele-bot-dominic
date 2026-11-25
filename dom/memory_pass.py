@@ -23,7 +23,7 @@ from dom import notes
 from dom.agent import unfence
 from dom.home import PrivateAccessError, limit_for
 from dom.models import Scope
-from dom.telegram.executor import send_text
+from dom.notice import send_notice
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
 if TYPE_CHECKING:
@@ -293,9 +293,8 @@ class MemoryPass:
     async def _tell_owner(self, summary: str) -> None:
         """A silent note in the owner's DM; it joins the DM's history as an event, not a message."""
         app = self.app
-        text = f"📝 Noted: {summary}"
         try:
-            await send_text(app.bot, app.owner_id, text, disable_notification=True, sleep=app.sleep)
+            await send_notice(app, app.owner_id, f"📝 Noted: {summary}", path="/app/memory", disable_notification=True)
             await app.store.record_owner_event(f"Dom noted: {summary}")
         except Exception:
             log.exception("could not tell the owner what was noted")
