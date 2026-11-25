@@ -348,6 +348,16 @@ class Home:
             if updated != current:
                 self._write_regular(rel, updated)
 
+    def private_text_files(self) -> list[str]:
+        """Every file holding the owner's private text: the private notes, the live journal and its archive
+        (month and year files, summaries included). Guards compare public text against all of them."""
+        base = self.root / ARCHIVE_DIRS[True]
+        archive = sorted(
+            f"{ARCHIVE_DIRS[True]}/{p.name}" for p in base.glob("*.md")
+            if p.is_file() and not p.is_symlink() and not p.name.endswith(".former.md")
+        ) if base.is_dir() and not base.is_symlink() else []
+        return ["private/USER.md", "private/NOTES.md", "private/JOURNAL.md", *archive]
+
     def list_memory_notes(self) -> tuple[list[str], list[str]]:
         """List regular per-person and per-chat Markdown notes in the public Home scope."""
         home = self.scoped(allow_private=False)

@@ -475,6 +475,19 @@ async def test_a_pinned_private_line_is_still_blocked_from_public_text_and_notes
     guard.check_local_private_text(app.config, app.home, ["nothing private here"])
 
 
+async def test_the_private_journal_archive_is_guarded_like_the_live_journal(make_app, tmp_path):
+    from dom import guard, memory_edit
+
+    app = make_app()
+    write(tmp_path, "private/journal/2026-01.md", "## 2026-01-04\nOwner confided about the hospital visit next week.\n")
+    with pytest.raises(ValueError, match="private notes"):
+        guard.check_local_private_text(app.config, app.home, ["Owner confided about the hospital visit next week."])
+    with pytest.raises(ValueError, match="private notes"):
+        memory_edit.check_no_private_to_public(
+            app.config, app.home, "memory/MEMORY.md", "", "- Owner confided about the hospital visit next week.\n",
+        )
+
+
 def test_a_replacement_takes_its_tag_from_its_own_text_not_the_old_line(tmp_path):
     write(tmp_path, "memory/people/7.md", "- Works at the bakery {any}\n- Plays chess {chat -1009}\n")
     home = Home(tmp_path)

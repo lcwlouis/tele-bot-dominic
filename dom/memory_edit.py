@@ -38,7 +38,6 @@ _CHAT_NOTE = re.compile(r"\A(?:memory/)?chats/(-?[1-9][0-9]*)\.md\Z", re.ASCII)
 _DATE_HEADING = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 _CLAUSE_SPLIT = re.compile(r"(?:[.;!?]+|:)\s+")
 _SENTENCE_SPLIT = re.compile(r"[.;!?]+\s+")
-_PRIVATE_FILES = ("private/USER.md", "private/NOTES.md", "private/JOURNAL.md", "private/journal/RECENT.md")
 
 
 def resolve_note_path(file: object) -> str:
@@ -177,12 +176,12 @@ def check_no_private_to_public(config: Config, home: Home, rel: str, old: str, n
     private = home.scoped(allow_private=True)
     phrases: set[str] = set()
     bullet_lines: set[str] = set()
-    for private_rel in _PRIVATE_FILES:
+    for private_rel in private.private_text_files():
         try:
             content = read_regular_note(private, private_rel)
         except (OSError, ValueError):
             raise ValueError(f"Cannot check {private_rel}, so no public note can be edited.") from None
-        is_journal = private_rel.endswith(("JOURNAL.md", "RECENT.md"))
+        is_journal = private_rel.endswith("JOURNAL.md") or private_rel.startswith("private/journal/")
         for raw_line in content.splitlines():
             clean = notes.strip_tags(raw_line).strip(" \t#-*")
             if len(clean) < 8 or _DATE_HEADING.fullmatch(clean):

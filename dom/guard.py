@@ -144,7 +144,7 @@ def check_local_private_text(config: Config, home: Home, texts: list[str]) -> No
         raise ValueError("This content includes an instance credential.")
     private = home.scoped(allow_private=True)
     candidates = set()
-    for rel in ("private/USER.md", "private/NOTES.md", "private/JOURNAL.md", "private/journal/RECENT.md"):
+    for rel in private.private_text_files():
         for line in private.read(rel).splitlines():
             line = notes.strip_tags(line).strip(" \t#-*")  # a pinned line is still the private line without its mark
             if len(line) >= 8:
