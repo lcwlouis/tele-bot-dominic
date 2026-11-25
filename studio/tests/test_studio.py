@@ -90,8 +90,9 @@ def test_reserve_and_token(config):
     assert read_token(config.token_file) == TOKEN
 
 
+@pytest.mark.parametrize("suffix", ["local", "tailnet-example." + "ts.net"])
 @pytest.mark.parametrize("lookup_error", [socket.gaierror, TimeoutError])
-async def test_source_policy_and_dns_replacement(config, monkeypatch, lookup_error):
+async def test_source_policy_and_dns_replacement(config, monkeypatch, lookup_error, suffix):
     allowed = ["0.0.0.0/0", "::/0"]
     deny = ["198.51.100.0/24"]
     source = Sources(config.model_copy(update={"allowed_sources": allowed, "denied_sources": deny}),
@@ -103,7 +104,7 @@ async def test_source_policy_and_dns_replacement(config, monkeypatch, lookup_err
         assert not source.permits((host, 1))
     assert source.permits(PEER)
 
-    name = "bot." + "local"
+    name = "bot." + suffix
     source = Sources(config.model_copy(update={"allowed_sources": [name]}))
 
     async def lookup(host, *args, **kwargs):

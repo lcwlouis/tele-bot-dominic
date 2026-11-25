@@ -5,6 +5,8 @@ from ipaddress import ip_address, ip_network, IPv6Address
 import socket
 
 # Fixed proxy/bridge defaults plus independently configured site-specific ranges.
+# Names resolved on refresh: Bonjour on the home network, and Tailscale MagicDNS on a tailnet.
+NAME_SUFFIXES = (".local", ".ts.net")
 ALWAYS_DENY = tuple(map(ip_network, ("172.16.0.0/12", "192.168.65.0/24")))
 
 
@@ -20,7 +22,7 @@ class Sources:
         self.static = []
         self.names = []
         for source in config.allowed_sources:
-            if source.lower().rstrip(".").endswith(".local"):
+            if source.lower().rstrip(".").endswith(NAME_SUFFIXES):
                 self.names.append(source.rstrip("."))
             else:
                 self.static.append(ip_network(source, strict=False))
