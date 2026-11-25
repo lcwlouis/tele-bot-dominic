@@ -206,3 +206,28 @@ async def test_a_private_group_reply_of_only_fake_media_sends_no_header_only_dm(
         ephemeral_recipient=OWNER, ephemeral_in_chat=False, sleep=app.sleep,
     )
     assert not sent and app.bot.of("send") == []
+
+
+async def test_a_private_reply_refused_everywhere_leaves_no_trace_in_the_group(make_app):
+    # Review of #77: a note in the group's own history would reveal that a private reply for the owner existed.
+    app = make_app()
+
+    async def refuse(chat_id, text, **kw):
+        raise TelegramBadRequest(method=None, message="Bad Request: chat not found")
+
+    app.bot.send_message = refuse
+    await executor.perform(
+        app.bot, app.store, GROUP, 1, Actions(private=True, bubbles=[{"text": "Owner-only"}]),
+        ephemeral_recipient=OWNER, sleep=app.sleep,
+    )
+    assert await events(app, GROUP) == []
+    assert any("Held back a private reply" in event["text"] for event in await events(app))
+
+
+async def test_media_in_a_private_group_reply_is_noted_for_the_owner_only(make_app):
+    app = make_app()
+    actions = Actions(private=True, bubbles=[{"text": "Owner-only"}], image="a desk at night")
+    screened = await app.dispatch._screen_studio(GROUP, "group", actions, "The Group")
+    assert screened.image is None
+    assert await events(app, GROUP) == []
+    assert any("private reply from The Group" in event["text"] for event in await events(app))

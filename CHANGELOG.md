@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Dom knows what happened.** Successful updates put the installed release's full changelog section into the owner DM history once; and background failures leave short, rate-limited notes only in the affected chat.
 - **The journal is archived, not dropped.** Entries past the last 30 move, one at a time, into `memory/journal/YYYY-MM.md` (and `private/journal/` for the private one) instead of being deleted. An interrupted move loses nothing. Global search covers the archive; the private archive stays in the owner's scope.
 - **Dated facts, kept when replaced.** Note lines may end with `(as of YYYY-MM)` or `(until YYYY-MM-DD)`, and the memory pass is asked to write them. A line the pass replaces or removes goes to a sibling `.former.md` file with the date and reason, and a daily job moves lines past their `until` date there too.
 - **Source-tagged memory.** Each line in people and chat notes records the chat it came from, or `any` for general facts. A tag counts wherever it stands in the line and is always stripped before a model reads it; former files are read-only to every edit; a pinned private line stays blocked from public text; and the memory pass can no longer forge a pin, carry a tag across a replace, or delete the line after the one it named. The prompt builder drops other chats' lines and strips the tags in code, and MEMORY.md refuses chat-tagged lines. Older untagged lines count as `any`, and tags don't count toward a note's size limit.

@@ -131,8 +131,11 @@ The steps, in order:
    also fails, Dom messages you through the Bot API directly.
 
 The outcome is saved in the instance home (`update-state.json`) and the Dom
-process that comes up sends it to you in Telegram. `uv` is looked up on `PATH`
-and then in `~/.local/bin`. Only one deploy runs at a time.
+process that comes up sends it to you in Telegram. After a successful update,
+that installed release's complete changelog section is also recorded once as
+an event in the owner DM history, where Dom reads it on the next turn. Failed
+updates do not record release notes. `uv` is looked up on `PATH` and then in
+`~/.local/bin`. Only one deploy runs at a time.
 
 `/update` runs the deploy in a transient user unit named `dom-update`, so it
 keeps running while `dom.service` restarts. Read its log with

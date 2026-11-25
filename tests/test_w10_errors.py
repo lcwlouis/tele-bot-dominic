@@ -677,6 +677,8 @@ async def test_failed_sticker_only_sends_emoji_fallback(make_app):
     )
     assert len(sent2) == 1 and sent2.media_fallback is True
     assert [c[2] for c in app.bot.of("send", GROUP)] == ["📚"]
+    notes = [row["text"] for row in await events(app, GROUP)]
+    assert len(notes) == 1 and "sticker was not sent" in notes[0]
 
 
 async def test_failed_gif_only_sends_text_standin(make_app):
@@ -696,6 +698,25 @@ async def test_failed_gif_only_sends_text_standin(make_app):
     assert len(sent2) == 1 and sent2.media_fallback is True
     call, = app.bot.of("send", GROUP)
     assert call[2] == "shrug" and call[3]["entities"][0].type == "italic"
+    notes = [row["text"] for row in await events(app, GROUP)]
+    assert len(notes) == 1 and "gif was not sent" in notes[0].lower()
+
+
+async def test_telegram_reply_failure_is_noted_in_that_chat_and_rate_limited(make_app):
+    app = make_app()
+
+    async def fail(chat_id, text, **kwargs):
+        raise TelegramNetworkError(method=SendMessage(chat_id=chat_id, text=text), message="network down")
+
+    app.bot.send_message = fail
+    for msg_id in (1, 2):
+        with pytest.raises(TelegramNetworkError):
+            await executor.perform(
+                app.bot, app.store, GROUP, msg_id, Actions(bubbles=[Bubble(text="hello")]), sleep=no_sleep,
+            )
+    notes = [row["text"] for row in await events(app, GROUP)]
+    assert len(notes) == 1 and "reply was not sent" in notes[0]
+    assert await events(app, OWNER) == []
 
 
 async def test_failed_sticker_or_gif_with_bubble_sends_bubble_without_extra_standin(make_app):

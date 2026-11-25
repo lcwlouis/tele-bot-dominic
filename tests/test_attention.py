@@ -10,6 +10,7 @@ from dom.presence import parse_habits
 from dom.telegram.handlers import handle_message
 from dom.web.shared import _turns
 from test_dispatch import FakeJev, setup_dispatch  # shared dispatcher fixture
+from test_owner_events import events
 from tghelpers import FRIEND, GROUP, OWNER, Clock, drain_dispatch, tg
 
 
@@ -277,6 +278,8 @@ async def test_a_held_reply_releases_attention_before_its_owner_notice_completes
         await asyncio.wait_for(drain_dispatch(app.dispatch), 2)
     assert not app.bot.of("send", GROUP)
     assert len(app.bot.of("send", OWNER)) == 2
+    notes = [row["text"] for row in await events(app, GROUP)]
+    assert notes == ["A reply was held back because it looked like it exposed private information."]
 
 
 @pytest.mark.parametrize("queued, cancels", [(False, False), (True, True)])

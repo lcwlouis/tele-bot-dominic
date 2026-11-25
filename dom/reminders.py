@@ -539,6 +539,12 @@ class Reminders:
             delivery.retry_at = self._now() + timedelta(minutes=wait)
             return
         log.error("giving up on reminder %s after %s failed deliveries", reminder_id, delivery.failures)
+        try:
+            await self.app.store.record_owner_event(
+                f"Reminder #{reminder_id} was given up after {MAX_ATTEMPTS} failed deliveries: {row['text'][:200]}"
+            )
+        except Exception:
+            log.exception("could not record the failed reminder %s", reminder_id)
         async with self._delivery_lock:
             self._deliveries.pop(reminder_id, None)
             try:
