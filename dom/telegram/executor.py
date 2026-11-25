@@ -244,13 +244,7 @@ async def _tell_owner_held_back(store: Store, chat_id: int, why: str) -> None:
         await store.record_owner_event(f"Held back a private reply in {title}: {why}")
     except Exception:
         log.exception("could not record the held-back private reply for the owner")
-    try:
-        await store.record_chat_event_limited(
-            chat_id, "private-reply-send",
-            "A private reply for the owner was not delivered because Telegram refused both destinations.",
-        )
-    except Exception:
-        log.exception("could not record the held-back private reply in chat %s", chat_id)
+    # No note in the source chat: in a group it would reveal that a private reply existed.
 
 
 async def send_chunk(

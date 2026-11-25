@@ -1885,10 +1885,19 @@ class Dispatcher:
         if not (actions.voice or actions.video_note or actions.image):
             return actions
         update = {"voice": None, "video_note": None, "image": None}
-        if actions.private or actions.no_response:
+        if actions.private:
+            # Only the owner DM hears about it: a note in a group would reveal that a private reply existed.
+            if scope == "owner_dm":
+                await self._note_failure(chat_id, "studio-private-policy", "Requested media was not sent: private replies can't carry media.")
+            else:
+                try:
+                    await self.app.store.record_owner_event(f"Media Dom asked for in a private reply from {title} was not sent: private replies can't carry media.")
+                except Exception:
+                    log.exception("could not record the dropped private media for the owner")
+            return actions.model_copy(update=update)
+        if actions.no_response:
             await self._note_failure(
-                chat_id, "studio-private-policy",
-                "Requested media was not sent because this turn was private or marked as no response.",
+                chat_id, "studio-no-response", "Requested media was not sent because this turn was marked as no response.",
             )
             return actions.model_copy(update=update)
         config = self.app.config.studio
@@ -2093,7 +2102,7 @@ class Dispatcher:
         where = "" if container == DEFAULT else f" on the {container} desktop"
         event = f"Desktop task #{task_id}{where} {status}"
         if row["status"] != "done":
-            event += f"; it did not finish: {(row['error'] or 'no reason was reported')[:200]}"
+            event += f"; it did not finish: {untrusted(row['error'] or 'no reason was reported', limit=250)}"
         await app.store.record_owner_event(event)
         async with self._dispatch_slot(chat_id, wait_media=False):
             note = (
