@@ -6,6 +6,18 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-25
+
+Dom gets his own studio: voice notes, round video notes and photos made on your own Mac, with cloud backups when it is away. Providers and models are set up from the dashboard, everything he remembers can be exported and searched, and he can message first in more chats.
+
+- **Dom's own studio.** Dom can send voice notes, round video notes, photos and occasional "special" video notes made on your own Apple Silicon Mac, each behind its own switch in Settings → What Dom may do. His Telegram profile photo can follow the Everywhere preset. The studio runs as its own service (see studio/README.md), refuses anything but the listed bot hosts before the token check, and keeps memory free for the Mac's other users. When it is away, cloud backups take over or Dom says not right now.
+- **Memory export.** Download every memory file as one zip from the dashboard or with `/export` in your DM. Secrets, the database and backups are never included.
+- **Search everything.** One search box in the dashboard (and the phone menu) finds chats, memory files, briefs, reminders, desktop tasks, skills and plugins. Other chats show a one-line preview only. In your DM Dom's `search` tool finds the same things; in a group or a friend's DM it still searches only that chat.
+- **Group memory stays in its group.** A group's memory pass follows stricter rules, so what a friend says in one group is filed for that group.
+- **Highlighted code.** Plugin reviews and their diffs, skills, briefs, memory files and desktop task results colour their code, in dark and light.
+- **Longer desktop tasks.** Set the step budget for your desktop tasks in Settings (10 to 100, default 30). A task about to run out asks in your DM: Keep going or Wrap up now. Extensions show on the Desk page.
+- **Providers tab.** Add, edit, test and remove providers in Settings → Providers. Each model slot picks a provider and a model from its fetched list, with the reasoning levels that model offers.
+- **Reminders bulk select.** Select several reminders and act on them at once.
 - **Edit media limits from the dashboard.** Settings → What Dom may do → Media limits sets how many voice notes, video notes, photos and special videos Dom may send in your DM, friends’ DMs and groups, per day or per week, plus the gap between media and the total across all chats. It also shows what's left in your DM now and when the next media can go, such as "Next media from 22:37". A save applies at once. In config.toml, `video_daily = false` or `image_daily = false` now uses the weekly limit when that tier's daily default is set.
 - **Studio over Tailscale.** The studio can allow bot hosts by their Tailscale name, and its setup guide covers running it on a tailnet.
 - **Version label.** A development copy shows the release being built, such as "v0.8.3 pre-release", instead of the last release.
@@ -25,16 +37,15 @@ named `vX.Y.Z`.
 - **Cloud voice costs.** The Usage log records speech calls immediately and fills in costs when OpenRouter reports them.
 - **Smaller cloud photos.** Seedream 5.5 requests 1K square output. Oversized photos are resized and encoded as JPEG for Telegram.
 
-- Studio cloud backups are edited on Settings → Models: add, edit, test, remove and reorder voice, photo and video backups, with OpenRouter's model list for each kind. Saving checks the key and the model without making any media.
-- Round video notes can fall back to OpenRouter video when the local studio can't make them. Dom makes the voice line first and lip-syncs the approved outfit portrait to it. If the avatar fails, voice fallback reuses the generated audio. Replace legacy text-to-video backups with a supported lip-sync avatar.
-- Data policy for studio cloud backups only: zero data retention (the default), no training, or any endpoint. Every chat route stays on zero data retention, and a backup's key variable may not be one a chat route uses. See docs/privacy.md for a separate media key.
-- Upgrade note: a studio backup that shares a key variable with a model role (such as `OPENROUTER_API_KEY`) now stops config.toml from loading. Give the backups their own key variable (for example `OPENROUTER_MEDIA_API_KEY`) before upgrading.
-- A cloud video job's estimated cost counts toward the daily spend cap as soon as it is accepted, and is corrected to the reported cost when the job ends.
-- Studio switches turn on only when the studio or a backup with its key set can serve them, and `/status` says when one is on with nothing behind it. A backup alone now serves its switch without the local studio. `/studio` shows availability per kind; worker and memory details stay on the dashboard.
-- The profile photo changes at most every 1, 7, 14 or 30 days (default 14) instead of every hour.
+- **Edit studio backups.** Studio cloud backups are edited on Settings → Models: add, edit, test, remove and reorder voice, photo and video backups, with OpenRouter's model list for each kind. Saving checks the key and the model without making any media.
+- **Video note backup.** Round video notes can fall back to OpenRouter video when the local studio can't make them. Dom makes the voice line first and lip-syncs the approved outfit portrait to it. If the avatar fails, voice fallback reuses the generated audio. Replace legacy text-to-video backups with a supported lip-sync avatar.
+- **Backup data policy.** Data policy for studio cloud backups only: zero data retention (the default), no training, or any endpoint. Every chat route through OpenRouter stays on zero data retention, and a backup's key variable may not be one a chat route uses. See docs/privacy.md for a separate media key.
+- **Upgrade note.** A studio backup that shares a key variable with a model role (such as `OPENROUTER_API_KEY`) now stops config.toml from loading. Give the backups their own key variable (for example `OPENROUTER_MEDIA_API_KEY`) before upgrading.
+- **Video costs count at once.** A cloud video job's estimated cost counts toward the daily spend cap as soon as it is accepted, and is corrected to the reported cost when the job ends.
+- **Switches need a server.** Studio switches turn on only when the studio or a backup with its key set can serve them, and `/status` says when one is on with nothing behind it. A backup alone now serves its switch without the local studio. `/studio` shows availability per kind; worker and memory details stay on the dashboard.
+- **Profile photo interval.** The profile photo changes at most every 1, 7, 14 or 30 days (default 14) instead of every hour. A refused change is tried again after an hour.
 
-- Rollback note: v0.8.2 and older refuse a `[providers.<name>]` table with a `type` line or `kind = "gemini"`. Delete those tables before starting an older release (see docs/deploy-pi.md, "Roll back by hand").
-- Rollback note: a reasoning effort other than `low` or `medium` (such as `high`) saved from Settings makes v0.8.2 and older refuse to start. Before starting the older release, set each `reasoning_effort` in `config.toml` back to `low` or `medium` (or delete it), and check again after restoring any backup copy (see docs/deploy-pi.md, "Roll back by hand").
+- **Rollback note: effort.** A reasoning effort other than `low` or `medium` (such as `high`) saved from Settings makes v0.8.2 and older refuse to start. Before starting the older release, set each `reasoning_effort` in `config.toml` back to `low` or `medium` (or delete it), and check again after restoring any backup copy (see docs/deploy-pi.md, "Roll back by hand").
 
 ## [0.8.2] - 2026-11-23
 

@@ -4,7 +4,7 @@ Base v0.8.2. Release v0.8.3. The E59 gate is two fresh reviews, Gemini 4 Neon at
 
 ## 1. Goal
 
-Dom can send voice notes, round video notes and images from a local Apple Silicon studio. Dom is a personal bot. The studio is optional and falls back to the v0.8.2 experience when it is down. Incoming voice transcription continues to use the configured media model. Semantic memory, live voice calls, cloud media generation, automated image scoring and generated media reuse are outside this release.
+Dom can send voice notes, round video notes and images from a local Apple Silicon studio. Dom is a personal bot. The studio is optional and falls back to the v0.8.2 experience when it is down. Incoming voice transcription continues to use the configured media model. Semantic memory, live voice calls, automated image scoring and generated media reuse are outside this release.
 
 ## 2. Runtime choices
 
@@ -34,7 +34,7 @@ The bot validates actions and screens outbound content before asking the studio 
 
 One Python service under `studio/` has its own environment. The bot environment has no studio runtime dependencies. A GUI-session LaunchAgent keeps the service running. The studio may be unavailable while the host is asleep or the user is logged out.
 
-The service binds one configured LAN interface over plain HTTP. Connections from other peers are closed at the transport before token authentication. Static source addresses, CIDRs and names ending in `.local` are configurable, with DNS refreshed every 60 seconds. Each name keeps its last successful address set during lookup errors or timeouts. Loopback, local interface addresses, built-in container and VM ranges, and locally configured VM or bridge ranges are always denied. Forwarded peer headers do not participate. Allowed peers send one `Authorization` header using the `Bearer` scheme and the token from a mode-0600 file. The service uses constant-time token comparison. Plain HTTP exposes request bodies and tokens to network listeners with access to the traffic, so deploy on the intended private LAN.
+The service binds one configured LAN or Tailscale interface over plain HTTP. Connections from other peers are closed at the transport before token authentication. Static source addresses, CIDRs and names ending in `.local` or `.ts.net` (Tailscale MagicDNS) are configurable, with DNS refreshed every 60 seconds. Each name keeps its last successful address set during lookup errors or timeouts. Loopback, local interface addresses, built-in container and VM ranges, and locally configured VM or bridge ranges are always denied. Forwarded peer headers do not participate. Allowed peers send one `Authorization` header using the `Bearer` scheme and the token from a mode-0600 file. The service uses constant-time token comparison. Plain HTTP exposes request bodies and tokens to network listeners with access to the traffic, so deploy on the intended private LAN.
 
 | Endpoint | Request | Success |
 |---|---|---|
@@ -94,7 +94,7 @@ The global cap is 12 studio items per rolling day. Counts use existing `messages
 
 Presets list approved outfit names in `outfits` front matter. The first valid outfit is the preset default. The bot uses its configured default when the preset lacks outfits. The studio uses a turnaround sheet and face portrait for Klein and a front portrait for video. The wardrobe can include casual and mildly flirty clothing suitable for public settings. Scenes may use real-world or fictional settings and a fixed instruction preserves the outfit. Current references remain in use.
 
-When enabled, the global profile photo follows the Everywhere preset's default outfit through the portrait endpoint and Telegram's profile-photo API. Rate-limit changes to once per hour. Retry a change when health recovers. An owner-only status command can show readiness, memory, loaded workers and counts.
+When enabled, the global profile photo follows the Everywhere preset's default outfit through the portrait endpoint and Telegram's profile-photo API. Rate-limit changes to once per `profile_photo_every_days` (default 14). Retry a refused change after an hour, and any change when health recovers. An owner-only status command can show readiness, memory, loaded workers and counts.
 
 ## 5. Delivery and live acceptance
 
@@ -196,8 +196,9 @@ of the replies.
 - **Data policies (E66).** Only studio backups take
   `data_policy = "zdr" | "no_training" | "any"` (default `zdr`), sent as
   `provider.zdr = true`, `provider.data_collection = "deny"` or nothing. Every
-  chat-content route (model roles, Jev, search, doctor, price list) always sends
-  `zdr`, and a backup's key variable may not be one a chat route uses. The
+  chat-content route through OpenRouter (model roles, Jev, search, doctor, price
+  list) always sends `zdr`; a direct provider such as DeepSeek follows that
+  provider's own terms (E68), and a backup's key variable may not be one a chat route uses. The
   account's "ZDR endpoints only" setting and ZDR guardrails apply on top and win.
   See [privacy](../../privacy.md#separate-media-key) for the media key setup.
 - **Video deadline and cost.** The cloud attempt shares one 185-second everyday

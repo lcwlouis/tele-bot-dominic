@@ -95,6 +95,8 @@ FRIEND_NO_ANSWER_LINE = "sorry, brain blanked for a sec — say that again?"
 GROUP_NO_ANSWER_COOLDOWN = timedelta(minutes=30)
 SPEND_CAP_LINE = "gotta head off for the rest of the day, catch you later!"
 SPEND_CAP_LINE_KEY = "spend_cap_line:"
+# What the turn note calls each studio kind; both video kinds are round videos to Dom.
+MEDIA_LABELS = {"voice": "voice notes", "video_note": "round videos", "special": "round videos", "photo": "photos"}
 
 
 @dataclass
@@ -2221,7 +2223,7 @@ class Dispatcher:
             usable = await asyncio.to_thread(lambda: {
                 kind for kind in get_args(StudioKind) if studio_enabled(config.studio, scope, kind) and (
                     app.studio is not None
-                    or any(config.secret(backup.api_key_env) for backup in studio_providers(config.studio, kind)))
+                    or any(config.media_secret(backup.api_key_env) for backup in studio_providers(config.studio, kind)))
             })
             if usable:
                 remaining = {}
@@ -2230,10 +2232,12 @@ class Dispatcher:
                     if not local_ready:
                         keyed = await asyncio.to_thread(lambda: {
                             kind for kind in remaining
-                            if any(config.secret(b.api_key_env) for b in studio_providers(config.studio, kind))
+                            if any(config.media_secret(b.api_key_env) for b in studio_providers(config.studio, kind))
                         })
                         remaining = {kind: count for kind, count in remaining.items() if kind in keyed}
                 media_offered = set(remaining)
+                if sendable := [label for kind, label in MEDIA_LABELS.items() if kind in media_offered]:
+                    note += f"\ncan send: {', '.join(dict.fromkeys(sendable))}"
                 # Without a note, Dom sees his past media in the window and may imitate it in text: say it's not now.
                 note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset)) or STUDIO_UNAVAILABLE}"
         if attempt is not None:

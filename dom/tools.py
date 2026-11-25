@@ -533,6 +533,7 @@ def _turn_timing_summary(row: dict) -> dict:
 
 async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
     from dom.capabilities import desktop_hosts, desktop_status
+    from dom.studio.profile import switch_states
     from dom.plugins.manifest import SCOPES
     from dom.traits import task_mode, vibe
 
@@ -554,10 +555,10 @@ async def _self_inspect(args: dict, ctx: TurnCtx) -> str:
         "desktop": desktop_status(app, "owner_dm"),
         "gifs": "on" if app.gifs is not None else "off (set KLIPY_API_KEY in .env to turn them on)",
         "studio": app.studio.status if app.studio and app.config.studio.enabled else "off (configure [studio])",
-        "studio_features": {
-            name: bool(app.config.studio.enabled and getattr(app.config.studio, name))
-            for name in ("voice", "video_notes", "images", "special", "profile_photo_follows_preset")
-        },
+        # Each switch as it really stands, cloud backups included.
+        "studio_features": await asyncio.to_thread(
+            switch_states, app.config, bool(app.studio is not None and app.studio.ready),
+        ),
         "desktop_hosts": desktop_hosts(app),
         "models": {kind: endpoint.model or endpoint.provider or "" for kind, endpoint in app.config.models.items()},
         "last_errors": await app.store.recent_turn_errors(),

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 PROFILE_AT = "studio:profile_at"
 PROFILE_OUTFIT = "studio:profile_outfit"
+PROFILE_RETRY = timedelta(hours=1)
 
 
 async def maintain(app: App) -> None:
@@ -64,6 +65,9 @@ async def sync_profile(app: App) -> None:
         ))
     except TelegramAPIError:
         log.warning("studio profile photo update failed")
+        # A refused change is tried again after an hour instead of a whole interval.
+        retry = app.dispatch.now() - timedelta(days=config.profile_photo_every_days) + PROFILE_RETRY
+        await app.store.kv_set(PROFILE_AT, retry.isoformat())
     else:
         await app.store.kv_set(PROFILE_OUTFIT, outfit)
 
@@ -83,12 +87,12 @@ def _has_key(config: Config) -> Callable[[str], bool]:
     return has_key
 
 
-def availability(config: Config, ready: bool) -> list[str]:
-    """One line per studio switch: off, available, unavailable for now, or on with nothing set up to serve it. A
-    backup counts once its key has a value. Reads .env, so run it off the event loop."""
+def switch_states(config: Config, ready: bool) -> dict[str, str]:
+    """Each studio switch: off, available, unavailable for now, or on with nothing set up to serve it. A backup counts
+    once its key has a value. Reads .env, so run it off the event loop."""
     studio, has_key = config.studio, _has_key(config)
-    lines = []
-    for switch, name in SWITCH_NAMES.items():
+    states = {}
+    for switch in SWITCH_NAMES:
         if not getattr(studio, switch):
             state = "off"
         elif (ready and local(studio)) or any(
@@ -98,8 +102,13 @@ def availability(config: Config, ready: bool) -> list[str]:
             state = "unavailable for now"
         else:
             state = "on, but nothing can make them yet"
-        lines.append(f"{name}: {state}")
-    return lines
+        states[switch] = state
+    return states
+
+
+def availability(config: Config, ready: bool) -> list[str]:
+    """One line per studio switch for the owner's status. Reads .env, so run it off the event loop."""
+    return [f"{SWITCH_NAMES[switch]}: {state}" for switch, state in switch_states(config, ready).items()]
 
 
 async def unserved_note(app: App) -> str:

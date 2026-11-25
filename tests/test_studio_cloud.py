@@ -347,3 +347,25 @@ async def test_failed_special_video_uses_cloud_voice(make_app, cloud_server, stu
     assert cloud_server[1][0][0] == "/api/v1/audio/speech"
     _, usage = await app.store.studio_usage(OWNER, app.dispatch.now())
     assert [kind for kind, _ in usage] == ["voice"]
+
+
+@pytest.mark.parametrize("shared", [False, True])
+async def test_the_turn_offers_media_a_backup_can_make_while_the_studio_is_away(
+    make_app, studio_server, cloud_server, monkeypatch, shared,
+):
+    from tghelpers import turn_requests
+    app = make_app(contents=('{"bubbles":["hey"]}',))
+    studio_server[3]["/v1/health"] = 503
+    await connect(app, studio_server)
+    configure(app, cloud_server, images=(IMAGE,))
+    if shared:  # the backup's key value is also the chat route's key under another name: it never serves (E66)
+        monkeypatch.setenv("CHAT_TEST", ROUTER_KEY)
+        chat = app.config.models["chat"].model_copy(update={"api_key_env": "CHAT_TEST"})
+        app.config = app.config.model_copy(update={"models": {**app.config.models, "chat": chat}})
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    content = turn_requests(app)[0]["messages"][1]["content"]
+    if shared:
+        assert "can send:" not in content and 'Optional action "image"' not in content
+    else:
+        assert "can send: photos" in content and "voice notes" not in content.split("can send:")[1].splitlines()[0]
