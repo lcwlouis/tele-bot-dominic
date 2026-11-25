@@ -342,6 +342,8 @@ async def handle_message(app: App, message: Message) -> None:
     msg = to_incoming(message)
     if _is_own_message(app, msg):
         return
+    # Any message from a chat proves it is reachable again, including commands handled before the gate.
+    await app.store.set_chat_reachable(msg.chat_id, True)
     if app.owner_id is None and not msg.is_bot:  # until an owner exists, the only thing Dom answers is /claim
         code = _claim_code(msg.text, app.bot_username)
         if code is not None:
@@ -487,7 +489,6 @@ async def handle_message(app: App, message: Message) -> None:
     if command is not None and await surfaces.handle_command(app, message, msg, command):
         return
     async with app.ingest_locks[msg.chat_id]:
-        await app.store.set_chat_reachable(msg.chat_id, True)
         decision = await gate.decide(app.store, msg, app.owner_id)
         if decision == "drop":
             return

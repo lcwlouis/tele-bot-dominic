@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+import os
 import re
 import time
 from collections.abc import Collection
@@ -69,8 +71,9 @@ def secret_values(config: Config) -> frozenset[str]:
     for name in config.secret_names():
         try:
             value = config.secret(name)
-        except (OSError, ValueError):
-            continue
+        except UnicodeDecodeError:  # malformed .env: still redact the process environment's value
+            logging.getLogger("dom.model_lists").warning(".env is not valid UTF-8; redacting environment keys only")
+            value = os.environ.get(name)
         if value and len(value) >= MIN_SECRET:
             found.add(value)
     return frozenset(found)

@@ -748,8 +748,10 @@ class Store:
         if self._is_owner_chat(chat_id):
             return False
         with self._tx() as conn:
+            # Only chats the bot can no longer reach (or has left) may be hidden; restoring is always allowed.
             cur = conn.execute(
-                "UPDATE chats SET hidden = ?, updated_at = ? WHERE chat_id = ?",
+                "UPDATE chats SET hidden = ?, updated_at = ? WHERE chat_id = ?"
+                + (" AND (reachable = 0 OR authorization_status = 'left')" if hidden else ""),
                 (int(hidden), _now(), chat_id),
             )
             return cur.rowcount == 1
@@ -764,7 +766,9 @@ class Store:
             return False
         with self._tx() as conn:
             aliases = sorted(self._chat_id_aliases(chat_id))
-            cur = conn.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
+            cur = conn.execute(
+                "DELETE FROM chats WHERE chat_id = ? AND (reachable = 0 OR authorization_status = 'left')", (chat_id,),
+            )
             if cur.rowcount == 0:
                 return False
             conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))

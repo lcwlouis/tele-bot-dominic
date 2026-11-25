@@ -23,19 +23,10 @@ _UNREACHABLE_PHRASES = (
     "bot is not a member",
     "member not found",
     "group chat was deactivated",
-    "chat_write_forbidden",
     "channel_private",
     "upgraded to a supergroup",
 )
-_LOCKS: dict[int, asyncio.Lock] = {}
-
-
-def _lock_for(app: App) -> asyncio.Lock:
-    lock = _LOCKS.get(id(app))
-    if lock is None:
-        lock = asyncio.Lock()
-        _LOCKS[id(app)] = lock
-    return lock
+_SCANS: dict[int, asyncio.Task] = {}
 
 
 def _is_group(chat: dict) -> bool:
@@ -60,7 +51,7 @@ def _unreachable_reason(exc: Exception) -> str | None:
             return "kicked from chat"
         if "deactivated" in detail:
             return "chat deactivated"
-        return "forbidden"
+        return None  # a 403 without a definite cause is not proof the chat is gone
     if isinstance(exc, TelegramBadRequest):
         detail = str(exc).lower()
         for phrase in _UNREACHABLE_PHRASES:
@@ -104,23 +95,32 @@ async def _probe_once(app: App, chat: dict) -> tuple[bool | None, str]:
 
 async def check_reachability(app: App, *, gap: float = CHECK_GAP_SECONDS) -> dict[str, int]:
     """Check every non-hidden current chat (approved, pending_approval, ignored), spread out under Telegram rate limits.
-    Unreachable chats keep their prior authorization_status and history."""
-    async with _lock_for(app):
-        targets = await app.store.list_reachability_targets()
-        checked = unreachable = restored = errors = 0
-        for index, chat in enumerate(targets):
-            if index and gap > 0:
-                await app.sleep(gap)
-            ok, reason = await _probe_once(app, chat)
-            if ok is None:
-                errors += 1
-                continue
-            checked += 1
-            if ok:
-                if not chat["reachable"]:
-                    await app.store.set_chat_reachable(chat["chat_id"], True)
-                    restored += 1
-            else:
-                await app.store.set_chat_reachable(chat["chat_id"], False, reason)
-                unreachable += 1
-        return {"checked": checked, "unreachable": unreachable, "restored": restored, "errors": errors}
+    Unreachable chats keep their prior authorization_status and history. One scan runs at a time: a second caller
+    waits for the running scan's result instead of holding a lock across Telegram calls."""
+    scan = _SCANS.get(id(app))
+    if scan is None or scan.done():
+        scan = asyncio.create_task(_scan(app, gap))
+        _SCANS[id(app)] = scan
+        scan.add_done_callback(lambda done, key=id(app): _SCANS.pop(key, None) if _SCANS.get(key) is done else None)
+    return await asyncio.shield(scan)
+
+
+async def _scan(app: App, gap: float) -> dict[str, int]:
+    targets = await app.store.list_reachability_targets()
+    checked = unreachable = restored = errors = 0
+    for index, chat in enumerate(targets):
+        if index and gap > 0:
+            await app.sleep(gap)
+        ok, reason = await _probe_once(app, chat)
+        if ok is None:
+            errors += 1
+            continue
+        checked += 1
+        if ok:
+            if not chat["reachable"]:
+                await app.store.set_chat_reachable(chat["chat_id"], True)
+                restored += 1
+        else:
+            await app.store.set_chat_reachable(chat["chat_id"], False, reason)
+            unreachable += 1
+    return {"checked": checked, "unreachable": unreachable, "restored": restored, "errors": errors}

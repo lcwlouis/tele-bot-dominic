@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import ipaddress
+import logging
 import os
 import re
 import stat
@@ -635,7 +636,8 @@ class Config(BaseModel):
         under another name, or as any running chat client's key value (e.g. after rotating .env without a restart)."""
         try:
             env = _read_dotenv(self.home / ".env")
-        except (OSError, ValueError):
+        except UnicodeDecodeError:  # a malformed .env must not break settings; other I/O errors still surface
+            logging.getLogger("dom.config").warning(".env is not valid UTF-8; comparing keys from the environment only")
             env = {}
         value = env.get(name) or os.environ.get(name)
         if not value:

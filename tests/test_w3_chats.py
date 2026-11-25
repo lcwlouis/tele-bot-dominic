@@ -211,6 +211,55 @@ async def test_reachability_api_hide_and_forget_with_confirm(make_app, browser):
         assert await app.store.search_chat_history("Hello from ghost", str(OWNER)) == []
 
 
+async def test_review_fixes_ambiguous_403_commands_restore_and_active_chats_protected(make_app, browser):
+    # Review of #78: a bare 403 is not proof a chat is gone; any message (even a command) restores it;
+    # hide and forget refuse a chat Dom can still reach.
+    app = make_app()
+    app.bot_id = 777
+    await app.store.set_chat_auth_status(OWNER, "approved", title="Owner")
+    await app.store.set_chat_auth_status(FRIEND_DM, "approved", title="Alex")
+
+    async def forbidden(chat_id: int):
+        raise TelegramForbiddenError(GetChat(chat_id=chat_id), "Forbidden")
+
+    app.bot.get_chat = forbidden
+    summary = await check_reachability(app, gap=0)
+    assert summary["unreachable"] == 0 and summary["errors"] >= 1
+    assert await app.store.list_unreachable_chats() == []
+
+    async with browser(app) as client:
+        assert (await client.post("/api/chats/hide", headers=JSON, json={"chat_id": FRIEND_DM, "hidden": True})).status_code == 404
+        assert (await client.post("/api/chats/forget", headers=JSON, json={"chat_id": FRIEND_DM})).status_code == 404
+    assert FRIEND_DM in {int(c["chat_id"]) for c in await app.store.list_approved_chats()}
+
+    await app.store.set_chat_reachable(FRIEND_DM, False, "chat not found")
+    await handle_message(app, tg(chat_id=FRIEND_DM, sender=FRIEND_DM, text="/studio", msg_id=12, chat_type="private"))
+    assert await app.store.list_unreachable_chats() == []
+
+
+async def test_concurrent_reachability_scans_share_one_run(make_app):
+    import asyncio
+
+    app = make_app()
+    app.bot_id = 777
+    await app.store.set_chat_auth_status(FRIEND_DM, "approved", title="Alex")
+    calls = []
+    gate = asyncio.Event()
+
+    async def slow_get_chat(chat_id: int):
+        calls.append(chat_id)
+        await gate.wait()
+        return SimpleNamespace(id=chat_id)
+
+    app.bot.get_chat = slow_get_chat
+    first = asyncio.create_task(check_reachability(app, gap=0))
+    second = asyncio.create_task(check_reachability(app, gap=0))
+    await asyncio.sleep(0)
+    gate.set()
+    assert await first == await second
+    assert calls.count(FRIEND_DM) == 1
+
+
 # ---- 2. Recent messages API (newest first + cursor pagination) ----------------------
 
 async def test_recent_messages_newest_first_with_cursor_pagination(make_app, browser):

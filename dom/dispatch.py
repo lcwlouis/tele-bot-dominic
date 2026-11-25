@@ -2225,7 +2225,8 @@ class Dispatcher:
             def _has_media_secret(name: str) -> bool:
                 try:
                     return bool(config.media_secret(name, extra_chat_values=running_keys))
-                except (OSError, ValueError):
+                except (OSError, ValueError):  # fail closed: no media offered on an unreadable key
+                    log.warning("could not read media key %s; not offering that backup", name)
                     return False
 
             # Kinds switched on for this scope that something could serve: the local studio once set up, else a

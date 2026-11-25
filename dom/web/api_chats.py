@@ -151,7 +151,7 @@ async def hide_chat(request: Request) -> dict:
     if update.chat_id == app.owner_id:
         raise HTTPException(409, "Cannot hide your own DM.")
     if not await app.store.hide_chat(update.chat_id, update.hidden):
-        raise HTTPException(404, "Unknown chat.")
+        raise HTTPException(404, "Unknown chat, or one Dom can still reach.")
     label = "Hid" if update.hidden else "Restored"
     await owner.record_event(app, f"{WHO} {label.lower()} chat {update.chat_id}")
     return await _done(app, f"{label} chat.")
@@ -166,7 +166,7 @@ async def forget_chat(request: Request) -> dict:
     if update.delete_history and not update.confirm:
         raise HTTPException(422, "Confirm history deletion before forgetting this chat's messages.")
     if not await app.store.forget_chat(update.chat_id, delete_history=update.delete_history):
-        raise HTTPException(404, "Unknown chat.")
+        raise HTTPException(404, "Unknown chat, or one Dom can still reach.")
     detail = " and deleted its history" if update.delete_history else " (history kept)"
     await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}")
     return await _done(app, f"Forgot chat{detail}.")
