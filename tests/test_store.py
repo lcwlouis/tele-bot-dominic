@@ -295,7 +295,7 @@ class MigrationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     store._conn.execute("SELECT text FROM messages").fetchall()[0][0], "kept row")
-                self.assertEqual(len(store._search_chat_history("kept", "-100", 10)), 1)
+                self.assertEqual(len(store._search_chat_history("kept", "-100", 10, frozenset(), None)), 1)
             finally:
                 store.close()
             self.assertTrue((Path(d) / "state.db.v4.bak").exists())

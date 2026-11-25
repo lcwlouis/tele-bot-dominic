@@ -311,6 +311,15 @@ def _row_to_message(row: sqlite3.Row) -> StoredMessage:
     )
 
 
+RECENCY_HALF_LIFE_DAYS = 60
+RERANK_POOL = 30  # BM25 hits that get the recency re-rank before the best `limit` are returned
+
+
+def recency_weight(age_days: float) -> float:
+    """1 for something from today, falling toward 0.5 with a 60-day half-life: old hits sink a little, never vanish."""
+    return 0.5 + 0.5 * 0.5 ** (max(0.0, age_days) / RECENCY_HALF_LIFE_DAYS)
+
+
 def _fts_phrase_query(query: str) -> str:
     """Quote each token so user text can never be parsed as FTS5 operators or column filters."""
     return " ".join('"' + tok.replace('"', '""') + '"' for tok in query.split())
@@ -2828,11 +2837,16 @@ class Store:
         return [_row_to_message(r) for r in rows]
 
     async def search_chat_history(
-        self, query: str, requester_chat_id: str, limit: int = 10
+        self, query: str, requester_chat_id: str, limit: int = 10,
+        keep_days: frozenset[str] = frozenset(), now: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        return await self._run(self._search_chat_history, query, str(requester_chat_id), limit)
+        """BM25 hits, re-ranked with a soft recency weight. Messages from a day in `keep_days` (when a core memory
+        was pinned) do not fade."""
+        return await self._run(self._search_chat_history, query, str(requester_chat_id), limit, keep_days, now)
 
-    def _search_chat_history(self, query: str, requester_chat_id: str, limit: int) -> list[dict[str, Any]]:
+    def _search_chat_history(
+        self, query: str, requester_chat_id: str, limit: int, keep_days: frozenset[str], now: datetime | None,
+    ) -> list[dict[str, Any]]:
         match = _fts_phrase_query(query)
         if not match:
             return []
@@ -2848,9 +2862,25 @@ class Store:
             marks = ",".join("?" * len(aliases))
             sql += f" AND m.chat_id IN ({marks}) AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
             params.extend(aliases)
+        limit = max(1, min(limit, 100))
         sql += " ORDER BY messages_fts.rank LIMIT ?"
-        params.append(max(1, min(limit, 100)))
-        return [dict(r) for r in self._conn.execute(sql, params)]
+        params.append(max(limit, RERANK_POOL))
+        hits = [dict(r) for r in self._conn.execute(sql, params)]
+        current = now or datetime.now(timezone.utc)
+
+        def score(item: tuple[int, dict[str, Any]]) -> float:
+            position, hit = item
+            if hit["created_at"][:10] in keep_days:
+                return 1 / (10 + position)
+            try:
+                made = datetime.fromisoformat(hit["created_at"])
+            except ValueError:
+                return 1 / (10 + position)
+            age = (current - (made if made.tzinfo else made.replace(tzinfo=timezone.utc))).total_seconds() / 86400
+            return recency_weight(age) / (10 + position)
+
+        ranked = sorted(enumerate(hits), key=score, reverse=True)  # stable: equal scores keep BM25 order
+        return [hit for _, hit in ranked[:limit]]
 
     # ---- identity ---------------------------------------------------------
 

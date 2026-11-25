@@ -11,6 +11,7 @@ import json
 import re
 from difflib import SequenceMatcher, unified_diff
 
+from dom import notes
 from dom.config import Config
 from dom.home import UNBOUNDED, Home, PrivateAccessError, content_version, limit_for
 from dom.tools import Tool, TurnCtx
@@ -37,7 +38,6 @@ _CHAT_NOTE = re.compile(r"\A(?:memory/)?chats/(-?[1-9][0-9]*)\.md\Z", re.ASCII)
 _DATE_HEADING = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 _CLAUSE_SPLIT = re.compile(r"(?:[.;!?]+|:)\s+")
 _SENTENCE_SPLIT = re.compile(r"[.;!?]+\s+")
-_PRIVATE_FILES = ("private/USER.md", "private/NOTES.md", "private/JOURNAL.md")
 
 
 def resolve_note_path(file: object) -> str:
@@ -143,8 +143,9 @@ def check_size_bounds(rel: str, current: str, new: str) -> None:
     """Respect each note's character bound (shrinking an already over-limit note stays allowed)."""
     limit = limit_for(rel)
     if limit is not None:
-        if len(new) > limit and len(new) >= len(current):
-            raise ValueError(f"over limit: {len(new)} > {limit} characters; merge or remove entries first")
+        size = notes.visible_len(new)  # tags are free (D18)
+        if size > limit and size >= notes.visible_len(current):
+            raise ValueError(f"over limit: {size} > {limit} characters; merge or remove entries first")
         return
     if len(new) > MAX_JOURNAL_CHARS and len(new) >= len(current):
         raise ValueError(f"over limit: {len(new)} > {MAX_JOURNAL_CHARS} characters")
@@ -166,6 +167,7 @@ def check_no_private_to_public(config: Config, home: Home, rel: str, old: str, n
     added = _added_lines(old, new)
     if not added:
         return
+    added = [notes.strip_tags(line) for line in added]  # a source or core mark must not hide a copied line
     added_text = "\n".join(added)
     secrets = [config.secret(name) for name in config.secret_names()]
     if any(secret and len(secret) >= 8 and (secret in added_text or secret in new) for secret in secrets):
@@ -174,14 +176,14 @@ def check_no_private_to_public(config: Config, home: Home, rel: str, old: str, n
     private = home.scoped(allow_private=True)
     phrases: set[str] = set()
     bullet_lines: set[str] = set()
-    for private_rel in _PRIVATE_FILES:
+    for private_rel in private.private_text_files():
         try:
             content = read_regular_note(private, private_rel)
         except (OSError, ValueError):
             raise ValueError(f"Cannot check {private_rel}, so no public note can be edited.") from None
-        is_journal = private_rel == "private/JOURNAL.md"
+        is_journal = private_rel.endswith("JOURNAL.md") or private_rel.startswith("private/journal/")
         for raw_line in content.splitlines():
-            clean = raw_line.strip(" \t#-*")
+            clean = notes.strip_tags(raw_line).strip(" \t#-*")
             if len(clean) < 8 or _DATE_HEADING.fullmatch(clean):
                 continue
             folded = clean.casefold()
@@ -232,6 +234,8 @@ def prepare_proposal(config: Config, home: Home, body: dict) -> tuple[str, dict]
     else:
         raise ValueError("A memory edit needs `op` (add, replace, remove, set) or `new` text.")
     check_size_bounds(rel, current, new)
+    if rel == "memory/MEMORY.md" and notes.chat_tagged(new):  # read in every chat: no approval card for a line it would refuse
+        raise ValueError("MEMORY.md is read in every chat, so its lines can't be tagged to one chat.")
     check_no_private_to_public(config, home, rel, current, new)
     diff = "\n".join(memory_diff(rel, current, new))
     if not diff:
@@ -267,7 +271,7 @@ def apply_proposal(config: Config, home: Home, body: dict) -> None:
     check_no_private_to_public(config, home, rel, current, new)
     scoped = home.scoped(allow_private=rel.startswith("private/"))
     try:
-        result = scoped.save_memory(rel, new, version)
+        result = scoped.save_memory(rel, new, version, pin=False)  # an approved proposal is not a hand edit
     except PrivateAccessError:
         raise ValueError(f"{rel} is a link; notes must be regular files") from None
     if not result.ok:

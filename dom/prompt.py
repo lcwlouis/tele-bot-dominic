@@ -8,7 +8,9 @@ import re
 from xml.sax.saxutils import escape, quoteattr
 
 from dom.actions import REACTIONS
+from dom import notes as note_lines
 from dom.home import Home, PrivateAccessError
+from dom.journal_archive import recent_life
 from dom.models import Scope
 from dom.skills import prompt_block
 from dom.traits import Preset, normalise
@@ -76,9 +78,11 @@ def report_messages(home: Home, sliders: dict[str, float], note: str) -> list[di
     ]
 
 
-def _read_note(home: Home, rel: str) -> str:
+def _read_note(home: Home, rel: str, chat_id: int | None = None, *, everything: bool = False) -> str:
+    """A note as a prompt shows it: source tags and core marks stripped, and lines tagged to a chat other than
+    `chat_id` left out in code. `chat_id=None` is the shared context, which holds no chat-tagged line."""
     try:
-        return home.read(rel)
+        return note_lines.for_chat(home.read(rel), chat_id, everything=everything)
     except (PrivateAccessError, ValueError):  # e.g. a link into private/: leave the file out, never fail the turn
         return ""
 
@@ -96,15 +100,16 @@ def _read_chat_notes(
 ) -> dict[str, str]:
     public = home.scoped(allow_private=False)
     notes: dict[str, str] = {}
+    everything = scope == "owner_dm"  # the owner's DM may read every public line, whatever chat it was tagged to
     if scope == "owner_dm" and allow_private:
         private = home.scoped(allow_private=True)
         for rel in ("private/USER.md", "private/NOTES.md"):
-            notes[rel] = _read_note(private, rel)
+            notes[rel] = _read_note(private, rel, chat_id, everything=True)
     chat_rel = f"memory/chats/{chat_id}.md"
-    notes[chat_rel] = _read_note(public, chat_rel)
+    notes[chat_rel] = _read_note(public, chat_rel, chat_id, everything=everything)
     for uid in sorted(set(participant_ids)):
         rel = f"memory/people/{uid}.md"
-        if content := _read_note(public, rel):
+        if content := _read_note(public, rel, chat_id, everything=everything):
             notes[rel] = content
     return notes
 
@@ -194,7 +199,7 @@ class PromptCache:
             private = home.scoped(allow_private=True) if allow_private else public
             changed = any(
                 (live_notes[rel] if rel in live_notes else _read_note(
-                    private if rel.startswith("private/") else public, rel,
+                    private if rel.startswith("private/") else public, rel, chat_id, everything=scope == "owner_dm",
                 )) != text
                 for rel, text in snap.files.items()
             )
@@ -220,8 +225,9 @@ def build_messages(
     """OpenAI chat messages for one turn.
 
     Message 0 holds shared context. Message 1 starts with this chat's and its participants' notes,
-    then the chat window. Live persona and turn context follow the window so they cannot invalidate
-    its cached prefix.
+    then the chat window. The owner's DM gets the "recent life" block (journal summaries, refreshed about
+    weekly) after the window, and live persona and turn context follow, so none of them can invalidate
+    the cached prefix.
     The private/ boundary is enforced by Home: it refuses private reads unless opened for owner_dm.
     """
     home = home.scoped(allow_private=False)
@@ -253,5 +259,5 @@ def build_messages(
         {"role": "system", "content": "\n\n".join(prefix)},
         # One system message only: Qwen-family chat templates reject a second one. The notes vary per
         # chat, so they belong after the stable prefix anyway.
-        {"role": "user", "content": "\n\n".join([*notes, window_xml, *persona, turn_note])},
+        {"role": "user", "content": "\n\n".join(filter(None, [*notes, window_xml, recent_life(home, scope), *persona, turn_note]))},
     ]
