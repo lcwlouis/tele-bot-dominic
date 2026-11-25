@@ -625,6 +625,19 @@ async def _clear_buttons(app: App, query: CallbackQuery) -> None:
         log.info("could not clear card buttons in chat %s", query.message.chat.id)
 
 
+async def _close_card(app: App, query: CallbackQuery) -> None:
+    """Close removes the whole card. Telegram refuses to delete messages older than 48 hours, so then only its buttons go."""
+    if query.message is None:
+        return
+    try:
+        await retry_telegram(
+            lambda: app.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id),
+            sleep=app.sleep,
+        )
+    except (TelegramBadRequest, TelegramRetryAfter):
+        await _clear_buttons(app, query)
+
+
 async def _replace_with_prompt(app: App, query: CallbackQuery, text: str, markup: InlineKeyboardMarkup) -> None:
     """Rich messages cannot be edited, so the owner's old /status message is deleted and the new one sent after it."""
     if query.message is None:
@@ -924,7 +937,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             await _toast(app, query, "not allowed")
             return
         await _toast(app, query)
-        await _clear_buttons(app, query)
+        await _close_card(app, query)
         return
     if action in ("preset", "presetset"):
         await _handle_preset(app, query, action, raw_chat_id)

@@ -301,9 +301,19 @@ async def test_telegram_cards_have_close_button_and_clear_on_close_or_use(make_a
     await handle_callback(app, stranger_close)
     assert app.bot.of("markup") == []
 
-    # Owner tapping Close clears buttons
+    # Owner tapping Close removes the whole card (owner, 2026-11-26: clearing only the options wasn't the point)
     owner_close = _callback(OWNER, OWNER, "card:close", message_id=50)
     await handle_callback(app, owner_close)
+    assert ("delete", OWNER, 50) in app.bot.calls and app.bot.of("markup") == []
+
+    # A card too old to delete (Telegram's 48-hour limit) loses its buttons instead
+    app.bot.calls.clear()
+
+    async def refuse_delete(chat_id, message_id, **kw):
+        raise TelegramBadRequest(method=None, message="Bad Request: message can't be deleted")
+
+    app.bot.delete_message = refuse_delete
+    await handle_callback(app, _callback(OWNER, OWNER, "card:close", message_id=49))
     edits = app.bot.of("markup")
     assert edits and edits[-1][3] is None
 
