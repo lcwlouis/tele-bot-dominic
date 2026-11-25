@@ -23,8 +23,13 @@ People notes (`memory/people/<id>.md`), chat notes (`memory/chats/<id>.md`), `me
 | `{core owner DATE}` | A core memory the owner pinned. Dom can't unpin it. |
 | `{core dom DATE: why}` | A core memory Dom chose, with the day and his reason. |
 
-Tags never count toward a file's size limit and the model never sees them in a chat prompt. `MEMORY.md` is read in every
-chat, so it refuses `{chat ...}` tags. The owner can change any tag by editing the file.
+A group counts wherever it stands in the line (`- Secret {chat -100123} (confirmed)` is tagged to that chat), and every
+prompt, search result and summary shows the line without it. Tags never count toward a file's size limit. `MEMORY.md` is
+read in every chat, so it refuses `{chat ...}` tags. The owner can change any tag by editing the file.
+
+Only people and chat notes carry source tags. When the memory pass writes anywhere else (`MEMORY.md`, the owner's
+`private/` notes) the tags in its text are dropped, and it can never write a `{core ...}` group in any file: a replace
+takes the new line's tag from the new text alone (the old line's `{any}` or `{chat ...}` does not carry over).
 
 `(as of YYYY-MM)` and `(until YYYY-MM-DD)` are plain text in the line. The daily upkeep job moves a line whose `until`
 date has passed to the former file. Core lines never expire.
@@ -47,7 +52,8 @@ day and the reason:
 - Works at the bakery (as of 2025-06) {any} [former 2026-03-01: replaced]
 ```
 
-Former files are not in any prompt, have no size limit, and are searchable by the owner.
+Former files are not in any prompt, have no size limit, and are searchable by the owner. They are read-only to the
+memory pass, the owner-DM edit tool and the pin tools; they are the record of what changed.
 
 ## Journal archive
 
@@ -66,6 +72,32 @@ Month 2025-12: <a short paragraph, rolled up from its weeks>
 ```
 
 A week lives in the file of the month its Monday falls in. `YYYY.md` holds a year's summary (`Year 2025: ...`).
-A period is summarised once it ended and every entry in it has been archived. Older periods get longer spans in shorter
-text; the entries below the summaries are never changed. `RECENT.md` holds the "recent life" block built from the last
-4 weeks, 6 months and 3 years. It reaches the owner's DM only, after the chat window.
+A period is summarised the day after it ended (so a late entry still lands), whether its entries are in the archive or
+still in the live `JOURNAL.md`; the job only reads the live file. A week or month needs all its weeks or months
+summarised first, and a month with no entries in a week (the private journal only has days with private messages)
+simply has no summary for that week. Older periods get longer spans in shorter text; the entries below the summaries are
+never changed.
+
+## The recent-life block
+
+`RECENT.md` next to the month files holds what a reader needs, finest first, with no period left out:
+
+```
+Through 2026-02-15
+Weeks:
+- 2026-W06: ...
+Months:
+- 2026-01: ...
+Years:
+- 2025: ...
+```
+
+- Weeks: the last 4 weeks, plus any older week whose month or months have no summary yet.
+- Months: the last 6 months, plus any older month of a year with no summary yet.
+- Years: the last 3 summarised years.
+- `Through` is the last day a week summary covers. It is for the code and is never shown to the model.
+
+A coarser summary takes a period over only once it exists, so nothing falls into a gap while the next summary waits to be
+written. The text changes about weekly: when a week completes, or one ages out of the window. The block reaches the
+owner's DM only, after the chat window, and starts with `Latest days, not summarised yet`: each live journal entry
+dated after `Through` (at most 9, each cut to 200 characters), read straight from `JOURNAL.md` with no model call.

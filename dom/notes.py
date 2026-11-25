@@ -1,6 +1,7 @@
 """The line format of Dom's notes: source tags, core (pinned) marks and dated facts.
 
-A note is a Markdown bullet list. A line may end with metadata groups in braces, which people can read and edit:
+A note is a Markdown bullet list. A line carries metadata groups in braces, normally at its end, which people can
+read and edit. A group anywhere in a line counts as that line's tag, and is always stripped before a model sees it:
 
     - Works as a nurse (as of 2026-11) {chat -100123}
     - Hates surprises {any}
@@ -26,10 +27,11 @@ from dataclasses import dataclass
 from datetime import date
 
 _META = r"\{(?:any|chat -?\d+|core (?:owner|dom) \d{4}-\d{2}-\d{2}(?::[^{}\n]*)?)\}"
-_TRAILING_META = re.compile(rf"(?:[ \t]+{_META})+[ \t]*$")
+_ANY_META = re.compile(rf"[ \t]*{_META}")
 _ONE_META = re.compile(r"\{(any|chat -?\d+|core (owner|dom) (\d{4}-\d{2}-\d{2})(?::([^{}\n]*))?)\}")
 _UNTIL = re.compile(r"\(until (\d{4})-(\d{2})-(\d{2})\)")
 _BULLET = re.compile(r"^[ \t]*[-*][ \t]+")
+_BULLET_MARK = re.compile(r"^[ \t]*[-*](?:[ \t]+|$)")
 
 ANY = "any"
 
@@ -49,17 +51,26 @@ class Line:
 
 
 def parse_line(line: str) -> Line:
-    match = _TRAILING_META.search(line)
-    if match is None:
-        return Line(line.rstrip())
+    """A line split into its text and its metadata. A group counts wherever it stands, so a tag typed mid-line
+    (`- Secret {chat -1001} (confirmed)`) still keeps the line in its chat and never reaches a model."""
     source, core = None, None
-    for part in _ONE_META.finditer(match.group(0)):
+    for part in _ONE_META.finditer(line):
         text = part.group(1)
         if text.startswith("core"):
             core = Core(part.group(2), part.group(3), (part.group(4) or "").strip())
         else:
             source = ANY if text == ANY else text.split(" ", 1)[1]
-    return Line(line[: match.start()].rstrip(), source, core)
+    return Line(_ANY_META.sub("", line).rstrip(), source, core)
+
+
+def strip_meta(text: str) -> str:
+    """`text` without any metadata group (the rest of the line is kept as it is)."""
+    return _ANY_META.sub("", text)
+
+
+def blank_body(line: str) -> bool:
+    """A bullet with nothing after its mark and its tags: not a fact."""
+    return not _BULLET_MARK.sub("", parse_line(line).body).strip()
 
 
 def format_line(line: Line) -> str:

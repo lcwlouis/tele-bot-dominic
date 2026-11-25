@@ -1,7 +1,6 @@
 """The Memory and Chats JSON APIs: auth, same-origin, validation and writes through to the store and the home."""
 
 import base64
-from datetime import date
 import hashlib
 import json
 
@@ -102,7 +101,7 @@ async def test_save_checks_limits_versions_and_habits(make_app, browser):
         ok = await save(file=memory, version=version(""), content="- Likes tea\r\n")
         assert ok.status_code == 200 and ok.json()["message"] == "Saved MEMORY.md."
         saved = app.home.read(memory)  # a line the owner typed is pinned as their core memory
-        assert saved == f"- Likes tea {{core owner {date.today().isoformat()}}}\n" and ok.json()["version"] == version(saved)
+        assert saved == f"- Likes tea {{core owner {app.dispatch.now().date().isoformat()}}}\n" and ok.json()["version"] == version(saved)
         stale = await save(file=memory, version=version(""), content="late edit")
         assert stale.status_code == 409 and "changed since" in stale.json()["detail"]
         assert (await save(file="memory/HABITS.md", version="", content="x")).status_code == 403

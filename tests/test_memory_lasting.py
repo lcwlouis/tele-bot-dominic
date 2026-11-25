@@ -14,11 +14,12 @@ from dom.prompt import PromptCache, build_messages, read_fresh_notes
 from dom.store.store import recency_weight
 from test_memory_pass import add, approve, files, ops, put as say, request_text
 from test_traits import put
+from test_web_auth import ORIGIN
 from tghelpers import FRIEND, GROUP, OWNER
 
 TODAY = date(2026, 3, 1)
 OTHER = -3003
-JSON = {"Origin": "http://dom.test"}
+JSON = {"Origin": ORIGIN, "Content-Type": "application/json"}
 
 
 def write(root, rel, text):
@@ -203,6 +204,7 @@ def seed_people(root):
         "- Is a nurse {any}\n"
         "- Told group A about the surprise party GROUP-A-SECRET {chat -1001}\n"
         "- Told group B about the new job GROUP-B-ONLY {chat -1002}\n"
+        "- Mid-line secret MIDLINE-SECRET {chat -1001} (confirmed)\n"
     ))
     write(root, "memory/chats/-1001.md", "- A's running joke {chat -1001}\n- A secret {chat -1001} A-NOTE\n")
     write(root, "memory/MEMORY.md", "- Dom likes rain\n- legacy leak LEAKED-INTO-MEMORY {chat -1001}\n")
@@ -221,12 +223,14 @@ def test_leak_eval_a_fact_tagged_to_group_a_never_reaches_group_bs_prompt(tmp_pa
     for scope, chat_id in (("group", -1002), ("group", -1003), ("friend_dm", 222)):
         text = every_prompt_text(home, scope, chat_id, [222])
         assert "GROUP-A-SECRET" not in text and "LEAKED-INTO-MEMORY" not in text and "A-NOTE" not in text
+        assert "MIDLINE-SECRET" not in text
         assert "Name is Fran" in text and "Is a nurse" in text and "Dom likes rain" in text
         assert not any(mark in text for mark in ("{chat", "{core", "{any}"))  # no tag is ever shown to the model
     b = every_prompt_text(home, "group", -1002, [222])
     assert "GROUP-B-ONLY" in b and "GROUP-B-ONLY" not in every_prompt_text(home, "group", -1001, [222])
     a = every_prompt_text(home, "group", -1001, [222])
     assert "GROUP-A-SECRET" in a and "A's running joke" in a
+    assert "MIDLINE-SECRET (confirmed)" in a and not any(mark in a for mark in ("{chat", "{core", "{any}"))
 
 
 def test_the_owners_dm_may_read_every_public_line_with_the_tags_stripped(tmp_path):
@@ -357,6 +361,13 @@ async def test_search_ranks_recent_hits_up_unless_a_core_memory_was_pinned_that_
 
 # --- rolling summaries ---------------------------------------------------------------------------------------------
 
+def on(app, day, hour=12):
+    """The clock the upkeep job reads."""
+    now = datetime(day.year, day.month, day.day, hour, tzinfo=timezone.utc)
+    app.dispatch.now = lambda: now
+    app.dispatch.usage.now = lambda: now
+
+
 def archive_december(root, *, private=False):
     base = "private/journal" if private else "memory/journal"
     entries = [f"## 2025-12-{d:02d}\nmood: calm\nentry: DAY-{d}\nnudges: {{}}" for d in (2, 3, 9, 10, 28)]
@@ -365,6 +376,7 @@ def archive_december(root, *, private=False):
 
 async def test_weeks_months_and_years_roll_up_once_and_the_raw_entries_never_change(make_app, tmp_path):
     app = make_app(contents=("WEEK-ONE", "WEEK-TWO", "WEEK-LAST", "MONTH-DEC", "YEAR-2025"))
+    on(app, date(2026, 1, 2))  # a period is summarised the day after it ended, so a late entry still lands
     archive_december(tmp_path)
     raw = read(tmp_path, "memory/journal/2025-12.md")
     write(tmp_path, "memory/people/7.md", "- Mother is Ada {core dom 2025-12-03: she matters}\n")
@@ -390,6 +402,7 @@ async def test_weeks_months_and_years_roll_up_once_and_the_raw_entries_never_cha
 
 async def test_the_private_archive_is_summarised_apart_and_never_links_a_private_note_publicly(make_app, tmp_path):
     app = make_app(contents=("W1", "W2", "W3", "M", "Y", "PW1", "PW2", "PW3", "PM", "PY"))
+    on(app, date(2026, 1, 2))
     archive_december(tmp_path)
     archive_december(tmp_path, private=True)
     write(tmp_path, "private/NOTES.md", "- Owner fears heights {core owner 2025-12-03}\n")
@@ -413,17 +426,22 @@ async def test_summaries_pause_at_the_spend_cap_and_keep_nothing_half_written(ma
     assert read(tmp_path, "memory/journal/2025-12.md") == raw and not app.script.requests
 
 
-async def test_a_week_still_overlapping_the_live_journal_is_not_summarised_yet(make_app, tmp_path):
+async def test_a_week_is_summarised_from_the_live_journal_without_touching_it(make_app, tmp_path):
     app = make_app(contents=("W1",))
+    on(app, date(2025, 12, 16))
     archive_december(tmp_path)
-    write(tmp_path, "memory/JOURNAL.md", "## 2025-12-12\nentry: live\n")  # the live window starts mid December
+    live = "## 2025-12-11\nentry: LIVE-ONE\n\n## 2025-12-12\nentry: LIVE-TWO\n"
+    write(tmp_path, "memory/JOURNAL.md", live)
     await journal_archive.run(app)
     month = read(tmp_path, "memory/journal/2025-12.md")
-    assert "Week 2025-W49: W1" in month and "Week 2025-W50" not in month and "Month 2025-12" not in month
+    assert "Week 2025-W49: W1" in month and "Week 2025-W50" in month  # W50 ended Dec 14; its entries sit in the archive and live
+    assert read(tmp_path, "memory/JOURNAL.md") == live  # the live journal is only read
+    assert "LIVE-ONE" in json.dumps(app.script.requests[1]["messages"])
 
 
 async def test_recent_life_reaches_only_the_owners_dm_after_the_window(make_app, tmp_path):
     app = make_app(contents=("WEEK-ONE", "WEEK-TWO", "WEEK-LAST", "MONTH-DEC", "YEAR-2025"))
+    on(app, date(2026, 1, 2))
     archive_december(tmp_path)
     await journal_archive.run(app)
     block = read(tmp_path, "memory/journal/RECENT.md")
@@ -434,3 +452,214 @@ async def test_recent_life_reaches_only_the_owners_dm_after_the_window(make_app,
     for scope, chat_id in (("group", GROUP), ("friend_dm", FRIEND)):
         other = build_messages(app.home, scope, chat_id, [FRIEND], "<chat_window/>", "note")
         assert "MONTH-DEC" not in json.dumps(other)
+
+
+# --- review fixes (PR #79) -----------------------------------------------------------------------------------------
+
+PINNED = "- Owner is scared of the old lighthouse {core owner 2026-01-02}\n"
+
+
+async def test_a_pinned_private_line_is_still_blocked_from_public_text_and_notes(make_app, tmp_path):
+    from dom import guard, memory_edit
+
+    app = make_app()
+    write(tmp_path, "private/NOTES.md", PINNED)
+    write(tmp_path, "private/journal/RECENT.md", "Weeks:\n- 2026-W01: Owner quietly planned the lighthouse trip\n")
+    for text in ("a brief: Owner is scared of the old lighthouse", "notes: 2026-W01: Owner quietly planned the lighthouse trip"):
+        with pytest.raises(ValueError, match="private notes"):
+            guard.check_local_private_text(app.config, app.home, [text])
+    with pytest.raises(ValueError, match="private notes"):
+        memory_edit.check_no_private_to_public(
+            app.config, app.home, "memory/MEMORY.md", "", "- Owner is scared of the old lighthouse {chat -5}\n",
+        )
+    guard.check_local_private_text(app.config, app.home, ["nothing private here"])
+
+
+def test_a_replacement_takes_its_tag_from_its_own_text_not_the_old_line(tmp_path):
+    write(tmp_path, "memory/people/7.md", "- Works at the bakery {any}\n- Plays chess {chat -1009}\n")
+    home = Home(tmp_path)
+    assert home.memory_write("memory/people/7.md", "replace", "Works at the library", "Works at the bakery", source="-1001").ok
+    assert home.memory_write("memory/people/7.md", "replace", "Plays chess online {any}", "Plays chess", source="-1009").ok
+    assert read(tmp_path, "memory/people/7.md").splitlines() == ["- Works at the library {chat -1001}", "- Plays chess online {any}"]
+
+
+def test_a_remove_or_replace_naming_a_whole_line_with_its_newline_touches_only_that_line(tmp_path):
+    write(tmp_path, "memory/people/7.md", "- First fact {any}\n- Second fact {any}\n- Third fact {any}\n")
+    home = Home(tmp_path)
+    assert home.memory_write("memory/people/7.md", "remove", "", "- First fact {any}\n", source="-1001").ok
+    assert home.memory_write("memory/people/7.md", "replace", "- Second, reworded", "- Second fact {any}\n", source="-1001").ok
+    assert read(tmp_path, "memory/people/7.md").splitlines() == ["- Second, reworded {chat -1001}", "- Third fact {any}"]
+    assert read(tmp_path, "memory/people/7.former.md").count("\n") == 2  # only the two lines named
+    assert not home.memory_write("memory/people/7.md", "remove", "", " \n").ok  # a blank `old` names nothing
+
+
+def test_the_memory_pass_cannot_forge_a_core_pin_by_writing_only_a_mark(tmp_path):
+    home = Home(tmp_path)
+    for text in ("{core owner 2026-03-01}", "{core owner 2026-03-01: sneaky}  ", "{any}"):
+        assert not home.memory_write("memory/people/7.md", "add", text, source="-1001").ok
+    assert read(tmp_path, "memory/people/7.md") == "" and home.core_memories() == []
+    assert home.memory_write("memory/people/7.md", "add", "Likes tea", source="-1001").ok
+    assert not home.memory_write("memory/people/7.md", "replace", "{core owner 2026-03-01}", "Likes tea", source="-1001").ok
+    assert read(tmp_path, "memory/people/7.md") == "- Likes tea {chat -1001}" and home.core_memories() == []
+
+
+async def test_journal_summaries_stop_at_the_spend_cap_counted_from_real_usage(make_app, tmp_path):
+    app = make_app(contents=("W1", "W2", "W3", "M", "Y"))
+    on(app, date(2026, 1, 2))
+    app.config = app.config.model_copy(update={"daily_spend_cap_usd": 1.0})
+    await app.store.record_usage(app.dispatch.now().isoformat(), "chat", "m", "llm.test", None, 10, 10, 2.5, 0)
+    archive_december(tmp_path)
+    raw = read(tmp_path, "memory/journal/2025-12.md")
+    await journal_archive.run(app)
+    assert not app.script.requests and read(tmp_path, "memory/journal/2025-12.md") == raw
+
+
+def test_hand_edit_pins_use_the_owners_local_date(make_app_sync=None):
+    pass
+
+
+async def test_a_hand_edit_is_pinned_with_the_owners_local_date_not_the_servers(make_app, browser, tmp_path):
+    from dom.home import content_version
+
+    app = make_app()
+    app.config = app.config.model_copy(update={"timezone": "Pacific/Auckland"})
+    on(app, date(2026, 3, 1), hour=23)  # already 2026-03-02 in Auckland
+    async with browser(app) as client:
+        response = await client.post("/api/memory/save", headers=JSON, json={
+            "file": "memory/MEMORY.md", "version": content_version(""), "content": "- Dom likes rain\n",
+        })
+    assert response.status_code == 200
+    assert read(tmp_path, "memory/MEMORY.md") == "- Dom likes rain {core owner 2026-03-02}\n"
+
+
+def test_a_tag_in_the_middle_of_a_line_still_keeps_the_line_in_its_chat_and_is_stripped(tmp_path):
+    line = notes.parse_line("- Secret {chat -1001} (confirmed)")
+    assert line.body == "- Secret (confirmed)" and line.source == "-1001"
+    assert notes.strip_tags("- Plain {any} fact {core dom 2026-01-01: why} here") == "- Plain fact here"
+    home = Home(tmp_path)
+    assert not home.memory_write("memory/MEMORY.md", "add", "Secret {chat -5} (confirmed)").ok
+    assert not home.save_memory("memory/MEMORY.md", "- Secret {chat -5} (confirmed)", notes_version("")).ok
+
+
+def test_the_owner_dm_pass_cannot_hide_a_private_line_behind_a_chat_tag(tmp_path):
+    home = Home(tmp_path, allow_private=True)
+    assert home.memory_write("private/USER.md", "add", "Likes quiet {chat -5}", source=str(OWNER)).ok
+    assert home.memory_write("memory/MEMORY.md", "add", "Dom likes rain {chat -5}", source=str(OWNER)).ok
+    assert read(tmp_path, "private/USER.md") == "- Likes quiet" and read(tmp_path, "memory/MEMORY.md") == "- Dom likes rain"
+
+
+def test_former_files_are_read_only_to_every_write_path(tmp_path):
+    from dom.home import limit_for
+
+    write(tmp_path, "memory/people/7.former.md", "- Old fact [former 2026-01-01: replaced]\n")
+    home = Home(tmp_path)
+    assert limit_for("memory/people/7.former.md") is None and limit_for("private/USER.former.md") is None
+    assert not home.memory_write("memory/people/7.former.md", "add", "Forged", source="-1").ok
+    assert not home.memory_write("memory/people/7.former.md", "remove", "", "Old fact").ok
+    assert not home.save_memory("memory/people/7.former.md", "- wiped", notes_version(read(tmp_path, "memory/people/7.former.md"))).ok
+    assert not home.pin_line("memory/people/7.former.md", "Old fact", "why", 9, TODAY).ok
+    assert read(tmp_path, "memory/people/7.former.md") == "- Old fact [former 2026-01-01: replaced]\n"
+
+
+async def test_proposal_size_ignores_tags_and_chat_tagged_memory_lines_get_no_card(make_app, tmp_path):
+    from dom import memory_edit
+
+    app = make_app()
+    near_full = "- " + "a" * 990
+    memory_edit.check_size_bounds("memory/people/7.md", "", f"{near_full} {{core owner 2026-01-01}}")  # 992 visible
+    with pytest.raises(ValueError, match="over limit"):
+        memory_edit.check_size_bounds("memory/people/7.md", "", "- " + "a" * 1000)
+    with pytest.raises(ValueError, match="tagged"):
+        memory_edit.prepare_proposal(app.config, app.home, {"file": "MEMORY.md", "op": "add", "text": "Secret {chat -5}", "reason": "r"})
+    title, body = memory_edit.prepare_proposal(app.config, app.home, {"file": "MEMORY.md", "op": "add", "text": "Fine", "reason": "r"})
+    assert body["new"] == "- Fine"
+
+
+def test_migrating_a_group_retags_other_notes_even_when_it_had_no_chat_notes(tmp_path):
+    seed_people(tmp_path)
+    (tmp_path / "memory/chats/-1001.md").unlink()
+    Home(tmp_path).move_chat_notes(-1001, -1009)
+    assert "{chat -1001}" not in read(tmp_path, "memory/people/222.md") and "GROUP-A-SECRET {chat -1009}" in read(tmp_path, "memory/people/222.md")
+
+
+async def test_bad_dates_in_the_notes_do_not_stop_the_upkeep_job(make_app, tmp_path):
+    app = make_app(contents=("W1", "W2", "W3", "M", "Y"))
+    on(app, date(2026, 1, 2))
+    archive_december(tmp_path)
+    write(tmp_path, "memory/people/7.md", "- Odd pin {core owner 2025-13-45}\n- Real pin {core owner 2025-12-03}\n")
+    write(tmp_path, "memory/JOURNAL.md", "## 2025-13-45\nentry: nonsense\n")
+    month = read(tmp_path, "memory/journal/2025-12.md")
+    write(tmp_path, "memory/journal/2025-12.md", month.replace("Journal 2025-12\n", "Journal 2025-12\nWeek nonsense: x\nMonth 2025-99: y\n", 1))
+    await journal_archive.run(app)
+    month = read(tmp_path, "memory/journal/2025-12.md")
+    assert "Week 2025-W49: W1" in month and "Core 2025-W49: Real pin" in month and "Odd pin" not in month
+
+
+def test_a_journal_with_windows_line_endings_is_still_split_into_entries(tmp_path):
+    from dom.home import _split_journal
+
+    preamble, entries = _split_journal("# Journal\r\n\r\n## 2026-01-01\r\nentry: one\r\n\r\n## 2026-01-02\r\nentry: two\r\n")
+    assert preamble == "# Journal" and [e.splitlines()[0] for e in entries] == ["## 2026-01-01", "## 2026-01-02"]
+
+
+async def test_the_search_tool_never_shows_tags_to_the_owner_and_nothing_private_to_anyone_else(make_app, tmp_path):
+    from dom.tools import TurnCtx, _search
+
+    app = make_app()
+    seed_people(tmp_path)
+    write(tmp_path, "private/NOTES.md", "- Owner secret LIGHTHOUSE-FEAR {core owner 2026-01-02}\n")
+
+    def ctx(scope, chat_id, sender):
+        return TurnCtx(scope=scope, chat_id=chat_id, sender_id=sender, home=app.home, store=app.store, owner_id=OWNER, app=app)
+
+    owner = await _search({"query": "SECRET"}, ctx("owner_dm", OWNER, OWNER))
+    assert "GROUP-A-SECRET" in owner and not any(mark in owner for mark in ("{chat", "{core", "{any}"))
+    owner = await _search({"query": "LIGHTHOUSE-FEAR"}, ctx("owner_dm", OWNER, OWNER))
+    assert "LIGHTHOUSE-FEAR" in owner and "{core" not in owner
+    for query in ("SECRET", "LIGHTHOUSE-FEAR", "GROUP-B-ONLY"):
+        for scope, chat_id, sender in (("group", GROUP, FRIEND), ("friend_dm", FRIEND, FRIEND)):
+            assert query not in await _search({"query": query}, ctx(scope, chat_id, sender))
+
+
+# --- continuous recent life ----------------------------------------------------------------------------------------
+
+async def test_recent_life_has_no_gap_between_the_chat_window_and_the_summaries(make_app, tmp_path):
+    app = make_app(contents=tuple(f"SUMMARY-{i}" for i in range(12)))
+    on(app, date(2026, 2, 20))
+    journal(tmp_path, 50)  # 2026-01-01 .. 2026-02-19: the first 20 days are archived, the last 30 are live
+    live = read(tmp_path, "memory/JOURNAL.md")
+    await journal_archive.run(app)
+    assert read(tmp_path, "memory/JOURNAL.md") == live  # the live journal is only read
+    assert "entry: day 33" in json.dumps(app.script.requests[5]["messages"])  # week 6 (Feb 2-8) was never archived
+    assert read(tmp_path, "memory/journal/RECENT.md").startswith("Through 2026-02-15\n")
+    text = build_messages(app.home, "owner_dm", OWNER, [OWNER], "<chat_window/>", "note")[1]["content"]
+    assert "Through" not in text
+    # Feb 16-19 have no summary yet: they come straight from the live journal.
+    assert "- 2026-02-19: entry: day 49" in text
+    assert "- 2026-02-15:" not in text and "- 2026-02-16: entry: day 46" in text
+    # Everything before that is a summary: the recent weeks, and January as a month (it ended).
+    assert "2026-W07: SUMMARY-6" in text and "2026-W05: SUMMARY-4" in text and "2026-01: SUMMARY-7" in text
+    assert "2026-W01" not in text  # a week the month summary has taken over is not repeated
+    assert text.index("<recent_life>") > text.index("<chat_window/>") and text.index("note") > text.index("</recent_life>")
+
+
+async def test_the_private_journal_gaps_never_pass_old_weeks_off_as_recent_or_hide_new_days(make_app, tmp_path):
+    app = make_app(contents=("PW", "PM"))
+    on(app, date(2026, 2, 20))
+    home = Home(tmp_path, allow_private=True)
+    home.append_journal(date(2026, 1, 5), "entry: PRIVATE-JAN", private=True)
+    home.append_journal(date(2026, 2, 18), "entry: PRIVATE-FEB", private=True)  # nothing in between
+    await journal_archive.run(app)
+    text = build_messages(app.home, "owner_dm", OWNER, [OWNER], "<chat_window/>", "note")[1]["content"]
+    assert "2026-01: PM" in text and "2026-W02" not in text and "- 2026-02-18: entry: PRIVATE-FEB" in text
+    assert "PRIVATE" not in json.dumps(build_messages(app.home, "friend_dm", FRIEND, [FRIEND], "<chat_window/>", "note"))
+
+
+def test_older_months_stay_in_the_block_until_their_year_has_a_summary(tmp_path):
+    write(tmp_path, "memory/journal/2025.md", "# Journal 2025\nYear 2025: Y25\n")
+    write(tmp_path, "memory/journal/2025-12.md", "# Journal 2025-12\nMonth 2025-12: DEC25\n")
+    for month in range(1, 11):
+        write(tmp_path, f"memory/journal/2026-{month:02d}.md", f"# Journal 2026-{month:02d}\nMonth 2026-{month:02d}: M{month}\n")
+    block = journal_archive._recent_block(Home(tmp_path), False, date(2026, 11, 25))
+    assert "2026-01: M1" in block and "2026-10: M10" in block  # 2026 has no summary yet, so January is not lost
+    assert "2025: Y25" in block and "DEC25" not in block  # the year summary has taken December over

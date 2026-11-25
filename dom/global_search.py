@@ -14,7 +14,7 @@ from pathlib import Path
 
 from datetime import date, datetime, timezone
 
-from dom import briefs, skills
+from dom import briefs, notes, skills
 from dom.home import Home, _split_journal
 from dom.store import Store
 from dom.store.store import recency_weight
@@ -75,7 +75,7 @@ def _search_memory(home: Home, tokens: list[str]) -> list[Hit]:
     hits = []
     for rel in _memory_paths(private.root):
         try:
-            text = private.read_memory_file(rel)[:MAX_FILE]
+            text = notes.strip_tags(private.read_memory_file(rel)[:MAX_FILE])  # source and core marks are not memory
         except (OSError, ValueError):
             continue
         if _matches(tokens, rel, text):

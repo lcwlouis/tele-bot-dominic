@@ -12,7 +12,9 @@ import asyncio
 import base64
 import binascii
 import logging
+from datetime import date
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
@@ -38,6 +40,11 @@ from dom.web.shared import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _today(app) -> date:
+    """The owner's local date: a hand edit's pin carries the day on the owner's clock, not the server's."""
+    return app.dispatch.now().astimezone(ZoneInfo(app.config.timezone)).date()
 router = APIRouter()
 PREFIX = "/api/memory"
 GUARDED_GETS = {f"{PREFIX}/export"}  # reads that build a download and leave a record: same-site browsers only
@@ -143,7 +150,7 @@ async def save_file(request: Request) -> dict:
     content = update.content.replace("\r\n", "\n").replace("\r", "\n")
     home = app.home.scoped(allow_private=update.file.startswith("private/"))
     try:
-        result = home.save_memory(update.file, content, update.version)
+        result = home.save_memory(update.file, content, update.version, today=_today(app))
     except (OSError, ValueError):
         log.exception("could not save a dashboard memory file")
         raise HTTPException(500, "Couldn't save this file. Check that Dom can write to it.") from None

@@ -10,6 +10,7 @@ from xml.sax.saxutils import escape
 
 from aiogram.types import LinkPreviewOptions
 
+from dom import notes
 from dom.config import Config
 from dom.home import Home, PrivateAccessError
 from dom.jev import JevClient, JevUnavailable
@@ -143,9 +144,9 @@ def check_local_private_text(config: Config, home: Home, texts: list[str]) -> No
         raise ValueError("This content includes an instance credential.")
     private = home.scoped(allow_private=True)
     candidates = set()
-    for rel in ("private/USER.md", "private/NOTES.md", "private/JOURNAL.md"):
+    for rel in ("private/USER.md", "private/NOTES.md", "private/JOURNAL.md", "private/journal/RECENT.md"):
         for line in private.read(rel).splitlines():
-            line = line.strip(" \t#-*")
+            line = notes.strip_tags(line).strip(" \t#-*")  # a pinned line is still the private line without its mark
             if len(line) >= 8:
                 candidates.add(line.casefold())
     if candidates and any(candidate in text.casefold() for text in texts for candidate in candidates):

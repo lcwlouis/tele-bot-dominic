@@ -39,7 +39,7 @@ _TAGGED = ("memory/people/*.md", "memory/chats/*.md")
 # Note files the owner's hand edits pin.
 _NOTE_FILES = ("memory/MEMORY.md", "memory/people/*.md", "memory/chats/*.md", "private/USER.md", "private/NOTES.md")
 _MEMORY_WRITE_LOCK = Lock()
-_JOURNAL_HEADING = re.compile(r"^## \d{4}-\d{2}-\d{2}[ \t]*$", re.MULTILINE)
+_JOURNAL_HEADING = re.compile(r"^## \d{4}-\d{2}-\d{2}[ \t\r]*$", re.MULTILINE)
 
 
 
@@ -56,6 +56,8 @@ class WriteResult:
 
 
 def limit_for(rel: str) -> int | None:
+    if notes.is_former(rel):
+        return None  # a former file is the record of what changed: written by code, never by a model's edit
     for pattern, limit in LIMITS.items():
         if fnmatchcase(rel, pattern):
             return limit
@@ -132,28 +134,34 @@ class Home:
         former: list[tuple[str, str]] = []
 
         if op == "add":
-            line = self._shaped(rel, text, source)
-            new = f"{current.rstrip(chr(10))}\n- {line}" if current.strip() else f"- {line}"
+            line = self._shaped(rel, f"- {text}", source)
+            if not text.strip() or notes.blank_body(line):
+                return WriteResult(False, current, "add needs `text`")
+            new = f"{current.rstrip(chr(10))}\n{line}" if current.strip() else line
         elif op in ("replace", "remove"):
-            if not old:
+            if not old or not old.strip():
                 return WriteResult(False, current, f"{op} needs `old`")
             count = current.count(old)
             if count != 1:
                 return WriteResult(False, current, f"`old` must match exactly once, found {count}")
             start = current.index(old)
+            end = start + len(old.rstrip("\n"))  # a trailing line break in `old` belongs to no line's text
             lines = current.split("\n")
-            first, last = current.count("\n", 0, start), current.count("\n", 0, start + len(old))
+            first, last = current.count("\n", 0, start), current.count("\n", 0, end)
             touched = lines[first:last + 1]
             if any(notes.parse_line(line).core is not None for line in touched):
                 return WriteResult(False, current, "that line is a core memory (pinned); leave it as it is")
             if source is not None and any(_foreign(line, source) for line in touched):
                 return WriteResult(False, current, "that line belongs to another chat's notes")
             if op == "replace":
-                end = start + len(old)
                 line_start = current.rfind("\n", 0, start) + 1
                 line_end = current.find("\n", end)
-                segment = current[line_start:start] + text + current[end:len(current) if line_end == -1 else line_end]
-                replaced = [self._shaped(rel, line, source) for line in segment.split("\n")]
+                before, after = current[line_start:start], current[end:len(current) if line_end == -1 else line_end]
+                if source is not None:  # the new line's tag comes from `text` alone, never from what the old line carried
+                    before, after = notes.strip_meta(before), notes.strip_meta(after)
+                replaced = [self._shaped(rel, line, source) for line in (before + text + after).split("\n")]
+                if any(line.strip() and notes.blank_body(line) for line in replaced):
+                    return WriteResult(False, current, "replace needs `text`")
                 lines[first:last + 1] = replaced
                 if replaced != touched:
                     former = [(line, "replaced") for line in touched if line.strip()]
@@ -168,19 +176,18 @@ class Home:
 
     @staticmethod
     def _shaped(rel: str, text: str, source: str | None) -> str:
-        """Text the memory pass wrote, as the file keeps it: no core marks, a source tag where the file has them."""
+        """Text the memory pass wrote, as the file keeps it: no core marks, and no source tag except in the people and
+        chat notes, where each line is tagged with the chat it came from (or `{any}` when the pass says it is general)."""
         if source is None:
             return text
+        tagged = any(fnmatchcase(rel, pattern) for pattern in _TAGGED)
         out = []
         for raw in text.split("\n"):
             if not raw.strip():
                 out.append(raw)
                 continue
             line = notes.parse_line(raw)
-            tag = line.source
-            if fnmatchcase(rel, _TAGGED[0]) or fnmatchcase(rel, _TAGGED[1]):
-                if tag != notes.ANY:
-                    tag = source  # the chat it came from, whatever the model wrote
+            tag = (notes.ANY if line.source == notes.ANY else source) if tagged else None
             out.append(notes.format_line(notes.Line(line.body, tag)))
         return "\n".join(out)
 
@@ -288,11 +295,11 @@ class Home:
             path = self._regular_path(rel)
         except ValueError as exc:
             return WriteResult(False, "", str(exc))
-        if not any(fnmatchcase(rel, pattern) for pattern in _NOTE_FILES):
+        if notes.is_former(rel) or not any(fnmatchcase(rel, pattern) for pattern in _NOTE_FILES):
             return WriteResult(False, "", f"{rel} cannot hold core memories")
         current = path.read_text() if path.is_file() else ""
-        if not old or current.count(old) != 1:
-            return WriteResult(False, current, f"`old` must match exactly once, found {current.count(old) if old else 0}")
+        if not old or not old.strip() or current.count(old) != 1:
+            return WriteResult(False, current, f"`old` must match exactly once, found {current.count(old) if old and old.strip() else 0}")
         lines = current.split("\n")
         return current, lines, current.count("\n", 0, current.index(old))
 
@@ -364,22 +371,21 @@ class Home:
         old_id, new_id = str(old_chat_id), str(new_chat_id)
         if old_id == new_id:
             return False
+        moved = False
         with _MEMORY_WRITE_LOCK:
             home = self.scoped(allow_private=False)
             old_path = home._regular_path(f"memory/chats/{old_id}.md")
-            if not old_path.is_file():
-                return False
             new_path = home._regular_path(f"memory/chats/{new_id}.md")
-            if new_path.exists() and new_path.read_text(encoding="utf-8").strip():
-                return False
-            old_text = old_path.read_text(encoding="utf-8")
-            home._write_regular(f"memory/chats/{new_id}.md", notes.retag(old_text, old_id, new_id))
-            # Lines other notes tagged to the old chat id now belong to the new one.
+            if old_path.is_file() and not (new_path.exists() and new_path.read_text(encoding="utf-8").strip()):
+                home._write_regular(f"memory/chats/{new_id}.md", notes.retag(old_path.read_text(encoding="utf-8"), old_id, new_id))
+                moved = True
+            # Lines other notes tagged to the old chat id now belong to the new one, whether or not it had chat notes.
             for rel in home.list_memory_notes()[0]:
                 text = home.read_memory_file(rel)
-                if (moved := notes.retag(text, old_id, new_id)) != text:
-                    home._write_regular(rel, moved)
-            return True
+                if (retagged := notes.retag(text, old_id, new_id)) != text:
+                    home._write_regular(rel, retagged)
+                    moved = True
+        return moved
 
     def _regular_path(self, rel: str) -> Path:
         path = self._resolve(rel)
