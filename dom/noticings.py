@@ -410,7 +410,9 @@ class Noticings:
         day_start, day_end = self._day_bounds_utc(now)
         if await self.app.store.noticing_opener_sent_on(day_start, day_end):
             return None
-        return await self.app.store.next_unsent_noticing()
+        # Only the last two nights' noticings: an old "deadline" one is stale news.
+        since = (now.astimezone(self._tz).date() - timedelta(days=2)).isoformat()
+        return await self.app.store.next_unsent_noticing(since)
 
     async def mark_opener_sent(self, noticing_id: int, now: datetime, msg_id: int) -> bool:
         return await self.app.store.mark_noticing_opener_sent(
@@ -646,7 +648,12 @@ class Noticings:
             return False, "Already handled.", None
         if settle_telegram:
             await self._settle_card(row.get("opener_msg_id"), "✅ Let's do it")
-        outcome = await self._execute(row)
+        try:
+            outcome = await self._execute(row)
+        except Exception as exc:  # never leave an accepted noticing silent and stuck
+            log.exception("noticing #%s could not be carried out", noticing_id)
+            outcome = f"Couldn't do that: {type(exc).__name__}"
+            await self._notify_owner_dm(f"Couldn't follow up on “{row['title']}”. Ask me in here and I'll try again.")
         await app.store.update_noticing_outcome(noticing_id, outcome[:MAX_OUTCOME])
         updated = await app.store.get_noticing(noticing_id) or {**row, "outcome": outcome[:MAX_OUTCOME]}
         return True, outcome, updated
@@ -703,11 +710,15 @@ class Noticings:
             reason = payload.get("reason")
             if isinstance(chat, str) and isinstance(text, str) and isinstance(reason, str) and chat and text and reason:
                 # Always goes through the approval card — never sends to another chat directly.
-                result = await app.dispatch.cross_chat.message_chat(owner, chat, text, reason)
-                await app.store.record_owner_event(
-                    f"Owner said 'Let's do it' to noticing #{row['id']} ({row['title']}): {result}"
-                )
-                return result
+                try:
+                    result = await app.dispatch.cross_chat.message_chat(owner, chat, text, reason)
+                except ValueError as exc:  # e.g. no single approved chat matches: Dom asks in the DM instead
+                    log.info("noticing #%s cross-chat target refused (%s); falling back to chat", row["id"], exc)
+                else:
+                    await app.store.record_owner_event(
+                        f"Owner said 'Let's do it' to noticing #{row['id']} ({row['title']}): {result}"
+                    )
+                    return result
 
         # Default / fallback: follow up in the owner DM using Dom's existing tools (in a background task).
         await app.store.record_owner_event(

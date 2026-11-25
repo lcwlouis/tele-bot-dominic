@@ -473,3 +473,17 @@ async def test_reflection_handles_malformed_json_gracefully(make_app, caplog):
         created = await app.noticings.reflect()
     assert created == []
     assert "malformed" in caplog.text
+
+
+async def test_lets_do_it_with_an_unknown_chat_falls_back_instead_of_sticking(make_app):
+    # Review of #82: an unmatched cross-chat target raised inside decide, leaving the noticing "accepted" and silent.
+    app = make_app()
+    now = app.dispatch.now()
+    [item] = await app.store.create_noticings(now.date().isoformat(), [{
+        "kind": "followup", "title": "Tell the book club", "body": "Want me to pass it on?",
+        "action_kind": "cross_chat",
+        "action_payload_json": json.dumps({"chat": "the book club", "text": "Hello", "reason": "a follow-up"}),
+        "source_kind": "owner_dm", "source_chat_id": str(OWNER), "source_msg_id": 1, "source_label": "Your DM",
+    }], now.isoformat())
+    ok, outcome, row = await app.noticings.decide(item["id"], True, settle_telegram=False)
+    assert ok and outcome == "Following up in your DM." and row["status"] == "accepted"

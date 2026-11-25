@@ -79,6 +79,8 @@ async def read_noticings(request: Request, status: str = "", kind: str = "") -> 
 async def decide_noticing(request: Request) -> dict:
     app = owner_app(request)
     body = await _input(request, DecideNoticing)
+    if (body.status and body.status not in STATUSES) or (body.kind and body.kind not in KINDS):
+        raise HTTPException(400, "Unknown status or kind filter.")  # checked before anything is carried out
     ok, message, row = await app.noticings.decide(body.id, accept=body.decision == "accept")
     return {
         "ok": ok,

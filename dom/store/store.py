@@ -3389,11 +3389,11 @@ class Store:
             )
         ])
 
-    async def next_unsent_noticing(self) -> dict[str, Any] | None:
+    async def next_unsent_noticing(self, since_day: str) -> dict[str, Any] | None:
         def select() -> dict[str, Any] | None:
             row = self._conn.execute(
                 "SELECT * FROM noticings WHERE status = 'pending' AND sent_as_opener_at IS NULL "
-                "ORDER BY id DESC LIMIT 1",
+                "AND day >= ? ORDER BY id DESC LIMIT 1", (since_day,),
             ).fetchone()
             return dict(row) if row is not None else None
 
