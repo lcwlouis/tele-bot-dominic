@@ -47,19 +47,34 @@ class GifSearch:
     def __init__(self, api_key: str, http: httpx.AsyncClient, rng: Random | None = None):
         self._key, self._http, self._rng = api_key, http, rng or Random()
 
+    async def _search(self, query: str) -> object:
+        async with asyncio.timeout(TIMEOUT_SECONDS):
+            response = await self._http.get(
+                SEARCH_URL.format(key=self._key),
+                params={
+                    "q": query, "per_page": RESULTS, "content_filter": "high", "format_filter": "mp4",
+                    "customer_id": "dom",  # one fixed id: nothing about the chat or its people goes to KLIPY
+                },
+                timeout=TIMEOUT_SECONDS,
+            )
+        response.raise_for_status()
+        return response.json()
+
+    async def probe(self) -> str | None:
+        """None when KLIPY accepts the key, else a short reason that never holds the key (the request URL does)."""
+        try:
+            await self._search("hello")
+        except httpx.HTTPStatusError as error:
+            return "KLIPY refused the key." if error.response.status_code in (401, 403) else f"KLIPY answered HTTP {error.response.status_code}."
+        except (httpx.HTTPError, TimeoutError):
+            return "Could not reach KLIPY."
+        except ValueError:
+            return "KLIPY's answer was not in the expected format."
+        return None
+
     async def find(self, query: str) -> str | None:
         try:
-            async with asyncio.timeout(TIMEOUT_SECONDS):
-                response = await self._http.get(
-                    SEARCH_URL.format(key=self._key),
-                    params={
-                        "q": query, "per_page": RESULTS, "content_filter": "high", "format_filter": "mp4",
-                        "customer_id": "dom",  # one fixed id: nothing about the chat or its people goes to KLIPY
-                    },
-                    timeout=TIMEOUT_SECONDS,
-                )
-            response.raise_for_status()
-            data = response.json()
+            data = await self._search(query)
         except (httpx.HTTPError, ValueError, TimeoutError) as error:  # the request URL holds the key: log the type only
             log.warning("gif search failed (%s)", type(error).__name__)
             return None

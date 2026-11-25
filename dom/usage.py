@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Literal
 import httpx
 from zoneinfo import ZoneInfo
 
+from dom.config import SPEND_AREAS, SpendArea
+
 if TYPE_CHECKING:
     import httpx
 
@@ -27,6 +29,19 @@ if TYPE_CHECKING:
 Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation",
                "studio_voice", "studio_image", "studio_video"]
 log = logging.getLogger("dom.usage")
+
+# Which monthly area a kind of paid call is counted under. Everything counts toward the monthly cap whatever its area;
+# an unlisted kind counts as chat. Embeddings and summaries belong to memory.
+AREA_OF_KIND: dict[str, SpendArea] = {
+    "chat": "chat", "triage": "chat", "guard": "chat", "escalation": "chat",
+    "media": "media", "studio_voice": "media", "studio_image": "media", "studio_video": "media",
+    "search": "search", "desktop": "desktop",
+    "memory": "memory", "reflection": "memory", "embedding": "memory",
+}
+
+
+def area_of(kind: str) -> SpendArea:
+    return AREA_OF_KIND.get(kind, "chat")
 
 
 def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -248,38 +263,108 @@ class Usage(UsageRecorder):
         ]
         return [day for day, _, _ in bounds], await self.store.usage_by_day(bounds)
 
-    async def over_cap(
-        self, config: Config, bot, *, sleep=None,
-        spawn_notice: Callable[[Coroutine[None, None, None]], object] | None = None,
-    ) -> bool:
-        cap = config.daily_spend_cap_usd
-        if cap == 0:
-            return False
-        start, end = self._day_bounds(ZoneInfo(config.timezone))
-        _, spent = await self.store.usage_totals(
+    def month_bounds(self, tz: ZoneInfo) -> tuple[datetime, datetime]:
+        """The calendar month that contains now, in the owner's timezone."""
+        today = self.now().astimezone(tz).date()
+        first = today.replace(day=1)
+        following = (first + timedelta(days=32)).replace(day=1)
+        return datetime.combine(first, time.min, tz), datetime.combine(following, time.min, tz)
+
+    async def month_by_kind(self, tz: ZoneInfo) -> dict[str, float]:
+        """This month's spend per kind of call. Reads the live rows, so a cost reported late counts once it is set."""
+        start, end = self.month_bounds(tz)
+        return await self.store.usage_cost_by_kind(
             start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat(),
         )
-        if spent < cap and not isclose(spent, cap, rel_tol=1e-12):
+
+    async def month_by_area(self, tz: ZoneInfo) -> dict[SpendArea, float]:
+        areas: dict[SpendArea, float] = dict.fromkeys(SPEND_AREAS, 0.0)
+        for kind, cost in (await self.month_by_kind(tz)).items():
+            areas[area_of(kind)] += cost
+        return areas
+
+    async def one_off_room(self, config: Config, area: SpendArea | None = None) -> float | None:
+        """What a one-off (an event day) may still spend: the month's unused budget under the monthly cap and, when
+        given, the area's own monthly limit, whichever is less. None means no limit applies."""
+        tz = ZoneInfo(config.timezone)
+        by_area = await self.month_by_area(tz)
+        rooms = []
+        if config.monthly_spend_cap_usd:
+            rooms.append(config.monthly_spend_cap_usd - sum(by_area.values()))
+        if area is not None and (area_cap := config.area_spend_caps_usd.get(area)):
+            rooms.append(area_cap - by_area[area])
+        return max(0.0, min(rooms)) if rooms else None
+
+    async def may_spend_one_off(self, config: Config, amount: float, *, area: SpendArea | None = None) -> bool:
+        """May a one-off spend `amount` USD? It draws only on the month's unused budget and never passes the monthly cap."""
+        if not 0 <= amount < float("inf"):
+            return False
+        room = await self.one_off_room(config, area)
+        return room is None or amount <= room or isclose(amount, room, rel_tol=1e-12)
+
+    async def over_cap(
+        self, config: Config, bot, *, sleep=None, area: SpendArea | None = None,
+        spawn_notice: Callable[[Coroutine[None, None, None]], object] | None = None,
+    ) -> bool:
+        """True while the daily cap, the monthly cap or `area`'s monthly limit is reached. `area` defaults to the area
+        of the model request in progress, if there is one. The first time each limit trips, the owner is told once."""
+        request = _request.get()
+        if area is None and request is not None:
+            area = area_of(request.kind)
+        area_cap = config.area_spend_caps_usd.get(area, 0) if area is not None else 0
+        daily, monthly = config.daily_spend_cap_usd, config.monthly_spend_cap_usd
+        if not (daily or monthly or area_cap):
+            return False
+        tz = ZoneInfo(config.timezone)
+        day_start, day_end = self._day_bounds(tz)
+        tripped: list[tuple[str, str]] = []  # (notice key, text)
+        if daily:
+            _, spent = await self.store.usage_totals(
+                day_start.astimezone(timezone.utc).isoformat(), day_end.astimezone(timezone.utc).isoformat(),
+            )
+            if _reached(spent, daily):
+                tripped.append((day_start.date().isoformat(), (
+                    f"Daily spend cap of ${daily:.2f} reached (${spent:.2f} spent). Friends' chats are paused until "
+                    "midnight. Change `daily_spend_cap_usd` in config.toml."
+                )))
+        if monthly or area_cap:
+            by_area = await self.month_by_area(tz)
+            month = day_start.strftime("%Y-%m")
+            if monthly and _reached(total := sum(by_area.values()), monthly):
+                tripped.append((f"month:{month}", (
+                    f"Monthly spend cap of ${monthly:.2f} reached (${total:.2f} spent this month). Friends' chats are "
+                    "paused until the 1st. Change `monthly_spend_cap_usd` in config.toml or in Settings."
+                )))
+            if area_cap and _reached(spent := by_area[area], area_cap):
+                tripped.append((f"month:{month}:{area}", (
+                    f"The monthly {area} limit of ${area_cap:.2f} is reached (${spent:.2f} spent this month). "
+                    f"Work in that area is paused until the 1st. Change `area_spend_caps_usd` in config.toml or in Settings."
+                )))
+        if not tripped:
             return False
 
         owner_id = self.store.owner_id
-        if owner_id is not None and await self.store.claim_spend_cap_notice(start.date().isoformat()):
-            text = (
-                f"Daily spend cap of ${cap:.2f} reached (${spent:.2f} spent). Friends' chats are paused until midnight. "
-                "Change `daily_spend_cap_usd` in config.toml."
-            )
-            async def notify() -> None:
-                try:
-                    from dom.telegram.executor import FloodBudget, send_text
+        if owner_id is not None:
+            for key, text in tripped:
+                if not await self.store.claim_spend_cap_notice(key):
+                    continue
 
-                    await self.store.record_owner_event(text)
-                    kw = {"sleep": sleep} if sleep is not None else {}
-                    await send_text(bot, owner_id, text, budget=FloodBudget(), **kw)
-                except Exception:
-                    log.exception("could not send or record the owner's daily spend cap notice")
+                async def notify(text: str = text) -> None:
+                    try:
+                        from dom.telegram.executor import FloodBudget, send_text
 
-            if spawn_notice is None:
-                await notify()
-            else:
-                spawn_notice(notify())
+                        await self.store.record_owner_event(text)
+                        kw = {"sleep": sleep} if sleep is not None else {}
+                        await send_text(bot, owner_id, text, budget=FloodBudget(), **kw)
+                    except Exception:
+                        log.exception("could not send or record the owner's spend cap notice")
+
+                if spawn_notice is None:
+                    await notify()
+                else:
+                    spawn_notice(notify())
         return True
+
+
+def _reached(spent: float, cap: float) -> bool:
+    return spent >= cap or isclose(spent, cap, rel_tol=1e-12)

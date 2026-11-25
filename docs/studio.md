@@ -17,6 +17,23 @@ with the generation service and Jev.
 A failed, refused or limited generation leaves one short, rate-limited event in
 that chat's history; it never crosses into another chat.
 
+## Where the studio runs
+
+`dom setup <home>` (see [Set up Dom](setup.md#where-the-studio-runs)) offers three paths:
+
+- **On this machine.** The studio runs beside Dom (default address `http://127.0.0.1:8080`).
+- **On a rented cloud GPU.** The studio runs on a machine you rent by the hour. Join that
+  machine and Dom's host to one Tailscale network and use its MagicDNS name or Tailscale
+  address as `base_url`, as [the studio guide](../studio/README.md) describes for any
+  studio on another network. Never open the studio's port to the internet; the bearer
+  token is still required. Paste the token at the setup prompt or in Settings → Services:
+  it goes to `.env` as `STUDIO_TOKEN` and is never shown again.
+- **External APIs only.** No studio: `[studio] enabled = false` and the cloud backups below
+  make the media.
+
+Settings → Services edits the address and token later, and tests them with a harmless
+health request.
+
 ## Limits
 
 These are rolling windows per chat. The whole studio allows 12 delivered items

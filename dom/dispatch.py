@@ -635,8 +635,17 @@ class Dispatcher:
             for arrival in arrivals.values():
                 arrival.stop_typing()
 
+    async def _sweep_cards(self) -> None:
+        from dom.telegram import cards
+
+        try:
+            await cards.sweep(self.app)
+        except Exception:
+            log.exception("could not expire menu cards")
+
     async def _run(self) -> None:
         self._spawn(self._run_reminders())
+        self._spawn(self._sweep_cards())  # cards that expired while Dom was down
         while True:
             await self.sleep(TICK_SECONDS)
             self.cross_chat.start()
@@ -673,6 +682,7 @@ class Dispatcher:
             from dom.telegram import owner
 
             await owner.refresh_menu(self.app)
+        await self._sweep_cards()
         await self.app.stickers.refresh()
         await self.jobs.tick()
         await self.openers.maybe(self.now())
@@ -723,9 +733,9 @@ class Dispatcher:
         return await gate.decide_chat(self.app.store, chat_id, self.app.owner_id) == "process"
 
     async def spend_paused(self, chat_id: int) -> bool:
-        """Friends' chats pause once today's spend cap is reached; the owner's own chat never does."""
+        """Friends' chats pause once a spend cap is reached; the owner's own chat never does, unless `cap_owner_dm` is on."""
         spawn_notice = partial(self._spawn, committed=True) if request_kind("triage") in ("chat", "guard") else None
-        return chat_id != self.app.owner_id and await self.usage.over_cap(
+        return (chat_id != self.app.owner_id or self.app.config.cap_owner_dm) and await self.usage.over_cap(
             self.app.config, self.app.bot, sleep=self.app.sleep, spawn_notice=spawn_notice,
         )
 
@@ -739,8 +749,8 @@ class Dispatcher:
         """Why the desktop worker must stop before its next model call, or None. Desktop spend counts toward the daily cap."""
         if not await self.turn_allowed(chat_id, "owner_dm"):
             return "model calls are not allowed"
-        if await self.usage.over_cap(self.app.config, self.app.bot, sleep=self.app.sleep):
-            return "paused by today's spend cap"
+        if await self.usage.over_cap(self.app.config, self.app.bot, sleep=self.app.sleep, area="desktop"):
+            return "paused by a spend cap"
         settings = self.app.config.desktop
         cap = settings.task_cost_cap_usd
         if cap and await self.app.store.usage_cost(
@@ -1921,7 +1931,7 @@ class Dispatcher:
     ) -> bool:
         app = self.app
         if (
-            self.jev is None or scope == "owner_dm" or not app.config.leak_check or actions.no_response
+            self.jev is None or scope == "owner_dm" or app.config.leak_cutoff is None or actions.no_response
             or not (actions.bubbles or actions.gif)
         ):
             return False
@@ -1932,7 +1942,7 @@ class Dispatcher:
         self, chat_id: int, text: str, title: str, *, hold_if_unavailable: bool = False,
     ) -> bool:
         app = self.app
-        if self.jev is None or not app.config.leak_check:
+        if self.jev is None or app.config.leak_cutoff is None:
             return False
         try:
             with model_request("guard", chat_id, partial(self.model_allowed, chat_id)):
@@ -1950,7 +1960,8 @@ class Dispatcher:
         if score is None:
             log.warning("leak check unavailable in chat %s", chat_id)
             return hold_if_unavailable
-        if score < app.config.leak_threshold:
+        cutoff = app.config.leak_cutoff  # read after the call: the owner may have changed the level meanwhile
+        if cutoff is None or score < cutoff:
             return False
 
         if app.owner_id is not None:

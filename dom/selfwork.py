@@ -424,7 +424,7 @@ class SelfWork:
         except (TimeoutError, SandboxError, PlanBreach, ModelCallSkipped) as exc:
             error = "time budget reached" if isinstance(exc, TimeoutError) else str(exc)
             if isinstance(exc, ModelCallSkipped):
-                error = progress.paused or "paused by today's spend cap"
+                error = progress.paused or "paused by a spend cap"
             if "step limit" in error:
                 error = "step budget reached"
             if error == "step budget reached" and progress.wrapped:  # out of steps, but it reported what it found
