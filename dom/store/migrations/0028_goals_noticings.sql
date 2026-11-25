@@ -66,4 +66,4 @@ CREATE INDEX idx_noticings_status ON noticings(status, id DESC);
 CREATE INDEX idx_noticings_day ON noticings(day, id DESC);
 CREATE INDEX idx_noticings_opener ON noticings(sent_as_opener_at);
 
-PRAGMA user_version = 27;
+PRAGMA user_version = 29;
