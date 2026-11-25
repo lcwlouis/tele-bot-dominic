@@ -2,10 +2,11 @@ import json
 
 from dom.studio.policy import UNAVAILABLE_NOTE
 import socket
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
+from aiogram.exceptions import TelegramAPIError
 import pytest
 import pytest_asyncio
 from aiohttp import web
@@ -248,6 +249,31 @@ async def test_profile_follows_everywhere_and_throttles_updates(make_app, studio
     await sync_profile(app)
     assert photos == [b"fake media", b"fake media"]
     assert studio_server[2][-1] == ("/v1/portrait/formal", None)
+
+
+async def test_a_refused_profile_photo_is_retried_after_an_hour(make_app, studio_server):
+    app = make_app()
+    await connect(app, studio_server)
+    config = app.config.studio.model_copy(update={"profile_photo_follows_preset": True})
+    app.config = app.config.model_copy(update={"studio": config})
+    put(app.home, "presets/one.md", "---\noutfits: [casual]\n---\nHello.")
+    calls = []
+
+    async def set_photo(*, photo):
+        calls.append(photo.photo.data)
+        if len(calls) == 1:
+            raise TelegramAPIError(method=None, message="busy")
+
+    app.bot.set_my_profile_photo = set_photo
+    await set_global_preset(app, "one", "Owner")
+    await sync_profile(app)
+    assert len(calls) == 1
+    await sync_profile(app)
+    assert len(calls) == 1  # not straight away
+    stamp = datetime.fromisoformat(await app.store.kv_get("studio:profile_at"))
+    await app.store.kv_set("studio:profile_at", (stamp - timedelta(hours=1)).isoformat())
+    await sync_profile(app)
+    assert len(calls) == 2
 
 
 async def test_studio_command_is_owner_only(make_app, studio_server):

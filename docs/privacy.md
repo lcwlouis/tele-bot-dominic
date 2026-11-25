@@ -146,8 +146,10 @@ Cloudflare. Keep local bearer-token testing on loopback.
   back the text and alerts the owner. If Jev cannot score the text, Dom may send
   it and record that the check was unavailable. `leak_check = false` turns off
   this additional check. The chat-scope boundary still applies. Proposed studio
-  speech and scenes go through a local credential and private-note check and
-  the configured Jev check, including in the owner DM, before media generation.
+  speech and scenes go through a local credential and private-note check before
+  media generation, including in the owner DM. Outside the owner DM they also go
+  through the configured Jev check, so in the owner DM speech and scenes can reach
+  a cloud backup after the local check alone.
   When a configured Jev check cannot score speech or a scene, Dom holds that
   media back and can still send the other bubbles.
 

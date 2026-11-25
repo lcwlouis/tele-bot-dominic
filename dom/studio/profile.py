@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 PROFILE_AT = "studio:profile_at"
 PROFILE_OUTFIT = "studio:profile_outfit"
+PROFILE_RETRY = timedelta(hours=1)
 
 
 async def maintain(app: App) -> None:
@@ -64,6 +65,9 @@ async def sync_profile(app: App) -> None:
         ))
     except TelegramAPIError:
         log.warning("studio profile photo update failed")
+        # A refused change is tried again after an hour instead of a whole interval.
+        retry = app.dispatch.now() - timedelta(days=config.profile_photo_every_days) + PROFILE_RETRY
+        await app.store.kv_set(PROFILE_AT, retry.isoformat())
     else:
         await app.store.kv_set(PROFILE_OUTFIT, outfit)
 

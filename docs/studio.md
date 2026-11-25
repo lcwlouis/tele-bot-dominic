@@ -43,7 +43,8 @@ Add an inline list of your server's wardrobe IDs to a preset's front matter,
 for example `outfits: [casual, formal]`. The first ID is the default for that
 preset. Presets without a list use `[studio] default_outfit` if configured.
 With `profile_photo_follows_preset` on, Dom uses the default portrait of the
-Everywhere preset. Telegram photo updates are attempted at most once per hour.
+Everywhere preset. Telegram photo updates are attempted at most once per `profile_photo_every_days`
+(1, 7, 14 or 30 days, default 14). A refused update is tried again after an hour.
 
 ## Model licences
 
@@ -61,8 +62,9 @@ terms for the checkpoints and the voice and portrait references you install.
 ## Optional cloud fallbacks
 
 Configure only the providers you want to use when the local Studio cannot
-complete a request. Put the key value in the instance's `.env`. Keep
-`[studio]` and the corresponding media switches enabled.
+complete a request. Put the key value in the instance's `.env`. Keep the
+corresponding media switches on. A backup can also serve on its own, with no
+local studio configured.
 
 ```toml
 [[studio.voice_fallbacks]]
