@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import doctor, habits, reflection, release, service
+from dom import doctor, habits, journal_archive, reflection, release, service
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -151,6 +151,7 @@ async def run(home: Path) -> None:
             app.dispatch.jobs.register("reflection", reflection.due, partial(reflection.run, app))
             # Self-directed work is planned in the same nightly window, after the reflection (the daydream).
             app.dispatch.jobs.register("self-work", reflection.due, app.self_work.plan)
+            app.dispatch.jobs.register("memory-upkeep", journal_archive.due, partial(journal_archive.run, app))
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
             if config.owner_id is not None:

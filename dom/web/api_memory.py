@@ -118,6 +118,15 @@ async def read_memory(request: Request) -> dict:
     }
 
 
+@router.get(PREFIX + "/core")
+async def core_memories(request: Request) -> dict:
+    """Every core memory across Dom's notes, private ones included (owner only), with who pinned it and why. The
+    owner deletes one by editing its file (/file, /save)."""
+    app = owner_app(request)
+    items = await asyncio.to_thread(app.home.scoped(allow_private=True).core_memories)
+    return {"cap": app.config.core_memory_cap, "items": items}
+
+
 @router.get(PREFIX + "/file")
 async def read_file(request: Request, file: str) -> dict:
     file_ = await _memory_file(owner_app(request), file)

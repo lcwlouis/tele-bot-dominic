@@ -267,7 +267,7 @@ def apply_proposal(config: Config, home: Home, body: dict) -> None:
     check_no_private_to_public(config, home, rel, current, new)
     scoped = home.scoped(allow_private=rel.startswith("private/"))
     try:
-        result = scoped.save_memory(rel, new, version)
+        result = scoped.save_memory(rel, new, version, pin=False)  # an approved proposal is not a hand edit
     except PrivateAccessError:
         raise ValueError(f"{rel} is a link; notes must be regular files") from None
     if not result.ok:

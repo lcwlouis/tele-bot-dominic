@@ -91,7 +91,10 @@ async def _search(args: dict, ctx: TurnCtx) -> str:
             ensure_ascii=False,
         )
     limit = args.get("limit", 10)
-    hits = await ctx.store.search_chat_history(query, str(ctx.chat_id), limit if isinstance(limit, int) else 10)
+    hits = await ctx.store.search_chat_history(
+        query, str(ctx.chat_id), limit if isinstance(limit, int) else 10,
+        keep_days=await asyncio.to_thread(ctx.home.scoped(allow_private=False).core_days),
+    )
     return json.dumps(
         [{k: h[k] for k in ("chat_id", "msg_id", "sender_name", "text", "created_at")} for h in hits],
         ensure_ascii=False,

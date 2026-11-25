@@ -560,6 +560,7 @@ class Config(BaseModel):
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why.")
     memory_self_edit: bool = Field(False, description="Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves.")
+    core_memory_cap: int = Field(30, ge=1, description="Most core memories (pinned note lines) across all of Dom's notes, the owner's pins included. Core memories never fade and the memory pass never rewrites them. At the cap Dom must unpin one of his own to pin another.")
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_threshold: float = Field(1.2, ge=0, le=3, description="Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call.")
 

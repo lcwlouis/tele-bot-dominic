@@ -50,9 +50,20 @@ fact goes, and each offered note carries its purpose:
 - `MEMORY.md` holds Dom's own life and general facts, never other people's private matters;
 - when unsure, the group's notes.
 
-The code enforces which files a pass can write; the model decides what goes into them, so these rules lower the
-chance of a leak and do not rule it out. A later release will record where Dom learned each fact and use it only in
-chats whose members were there.
+The model decides what goes into the notes, so those rules lower the chance of a leak and do not rule it out. Since
+v0.8.4 code backs them up with source tags (see `docs/memory-format.md`):
+
+- every line in a person's or chat's notes records the chat it came from, or `any` for a general, non-sensitive fact
+  the person would share anywhere. The pass picks the tag; the default is the chat it is running for;
+- the prompt builder drops lines tagged to another chat and strips the tags, in code, before the model sees a note. A
+  fact tagged to group A never reaches group B's prompt, even for a person who is in both. The owner's DM reads every
+  public line. Untagged older lines count as `any`;
+- a group's memory pass is shown only the lines it may use and cannot replace, remove or pin a line tagged to another
+  chat;
+- `MEMORY.md` is read by every chat and refuses chat-tagged lines;
+- the journal archive (`memory/journal/`, `private/journal/`) and the "recent life" summaries made from it are
+  owner-DM only, because the diary mentions people from every chat. The private archive never leaves
+  the owner's scope.
 
 ## Search and export
 
