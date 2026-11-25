@@ -21,6 +21,7 @@ from dom.config import Config, load_config
 from dom.desktop import network as desktop_network
 from dom.home import Home, init_home
 from dom.gifs import GifSearch
+from dom.reachability import check_reachability
 from dom.studio.client import StudioClient
 from dom.studio.cloud import CloudStudio
 from dom.importer import import_v2
@@ -162,6 +163,9 @@ async def run(home: Path) -> None:
             # aiogram stops on SIGINT/SIGTERM; it waits a bounded time for running handlers.
             async with serving(app, auth):
                 app.dispatch.start()
+                app.dispatch._spawn(check_reachability(app))
+                if app.cloud_studio is not None:
+                    await app.cloud_studio.reconcile_pending(config)
                 try:
                     release.mark_ready(home)  # a deploy in progress waits for this before it keeps the release
                 except OSError:

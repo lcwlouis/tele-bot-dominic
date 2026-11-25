@@ -206,6 +206,7 @@ async def test_status_lists_approved_chats_with_buttons_and_a_footer(two_approve
         [("☀️ Wake Book Club", f"wake:{FRIEND_GROUP}"), ("🌙 Sleep", f"sleep:{FRIEND_GROUP}"),
          ("🚪 Leave", f"leave:{FRIEND_GROUP}")],
         [("☀️ Wake DM with Fran", f"wake:{FRIEND}"), ("🌙 Sleep", f"sleep:{FRIEND}")],
+        [("✕ Close", "card:close")],
     ]
     assert app.script.requests == []
 
@@ -249,7 +250,8 @@ async def test_status_truncates_a_long_list(make_app):
     import re
     more = re.search(r"…and (\d+) more", text)
     assert more
-    shown = len(markup.inline_keyboard)
+    assert markup.inline_keyboard[-1][0].callback_data == "card:close"
+    shown = len(markup.inline_keyboard) - 1  # excluding the trailing Close row
     assert shown == len(rows_of(text)) and shown + int(more.group(1)) == 301
     assert sum(len(row) for row in markup.inline_keyboard) <= 100  # Telegram's button limit
 
@@ -533,6 +535,7 @@ async def test_chats_groups_every_known_chat_by_status_with_member_counts(two_ap
     assert buttons(markup) == [
         [("🚪 Leave Book Club", f"leave:{FRIEND_GROUP}")],
         [("🚪 Leave The Group", f"leave:{GROUP}")],
+        [("✕ Close", "card:close")],
     ]
 
 

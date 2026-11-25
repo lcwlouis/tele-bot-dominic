@@ -59,6 +59,8 @@ MIGRATIONS: list[tuple[int, str]] = [
     (24, "0023_escalation_usage.sql"),
     (25, "0024_desktop_step_budget.sql"),
     (26, "0025_studio_usage.sql"),
+    (29, "0028_chat_reachability.sql"),
+    (30, "0029_autoincrement_ids.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -620,7 +622,7 @@ class Store:
         return [dict(r) for r in self._conn.execute(
             "SELECT c.chat_id, c.title, c.invited_by_handle, (SELECT m.text FROM messages m WHERE m.chat_id = c.chat_id "
             "AND m.role = 'user' AND m.text IS NOT NULL AND m.text != '' ORDER BY m.id LIMIT 1) AS first_text FROM chats c "
-            "WHERE c.authorization_status = 'pending_approval' ORDER BY c.chat_id"
+            "WHERE c.authorization_status = 'pending_approval' AND c.reachable = 1 AND c.hidden = 0 ORDER BY c.chat_id"
         )]
 
     async def release_approval_prompt(self, chat_id: int | str) -> None:
@@ -667,7 +669,8 @@ class Store:
 
     def _list_chats(self, status: str | None) -> list[dict[str, Any]]:
         sql = (
-            "SELECT chat_id, authorization_status, title, preset, is_sleeping, is_offline, last_read_msg_id, updated_at "
+            "SELECT chat_id, chat_type, authorization_status, title, preset, is_sleeping, is_offline, last_read_msg_id, "
+            "reachable, unreachable_reason, unreachable_at, hidden, updated_at "
             "FROM chats"
         )
         params = ()
@@ -678,7 +681,106 @@ class Store:
         for chat in chats:
             chat["is_sleeping"] = bool(chat["is_sleeping"])
             chat["is_offline"] = bool(chat["is_offline"])
+            chat["reachable"] = bool(chat["reachable"])
+            chat["hidden"] = bool(chat["hidden"])
         return chats
+
+    async def list_reachability_targets(self) -> list[dict[str, Any]]:
+        """Every chat Dom lists as current (approved, pending_approval, ignored) that has not been hidden."""
+        return await self._run(self._list_reachability_targets)
+
+    def _list_reachability_targets(self) -> list[dict[str, Any]]:
+        rows = [dict(row) for row in self._conn.execute(
+            "SELECT chat_id, chat_type, authorization_status, title, reachable FROM chats "
+            "WHERE authorization_status IN ('approved', 'pending_approval', 'ignored') AND hidden = 0 "
+            "ORDER BY chat_id"
+        )]
+        for row in rows:
+            row["reachable"] = bool(row["reachable"])
+        return rows
+
+    async def set_chat_reachable(self, chat_id: int | str, reachable: bool, reason: str = "") -> bool:
+        """Mark a known chat reachable or not, keeping its prior authorization_status for restore."""
+        return await self._run(self._set_chat_reachable, str(chat_id), reachable, reason)
+
+    def _set_chat_reachable(self, chat_id: str, reachable: bool, reason: str) -> bool:
+        now = _now()
+        with self._tx() as conn:
+            if reachable:
+                cur = conn.execute(
+                    "UPDATE chats SET reachable = 1, unreachable_reason = '', unreachable_at = NULL, "
+                    "hidden = 0, updated_at = ? WHERE chat_id = ? AND (reachable = 0 OR hidden = 1)",
+                    (now, chat_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE chats SET reachable = 0, unreachable_reason = ?, "
+                    "unreachable_at = COALESCE(unreachable_at, ?), updated_at = ? WHERE chat_id = ?",
+                    (reason[:160], now, now, chat_id),
+                )
+            return cur.rowcount == 1
+
+    async def list_unreachable_chats(self, *, include_hidden: bool = False) -> list[dict[str, Any]]:
+        """Chats the current bot can no longer reach, with their prior status and last activity."""
+        return await self._run(self._list_unreachable_chats, include_hidden)
+
+    def _list_unreachable_chats(self, include_hidden: bool) -> list[dict[str, Any]]:
+        where = "c.reachable = 0" + ("" if include_hidden else " AND c.hidden = 0")
+        rows = [dict(row) for row in self._conn.execute(
+            "SELECT c.chat_id, c.chat_type, c.authorization_status, c.title, c.unreachable_reason, "
+            "c.unreachable_at, c.hidden, "
+            "COALESCE((SELECT MAX(created_at) FROM messages m WHERE m.chat_id = c.chat_id), c.updated_at) "
+            "AS last_activity, "
+            "(SELECT sender_name FROM messages m WHERE m.chat_id = c.chat_id AND m.is_bot = 0 "
+            "AND m.sender_name != '' ORDER BY m.id DESC LIMIT 1) AS peer_name "
+            f"FROM chats c WHERE {where}"
+        )]
+        for row in rows:
+            row["hidden"] = bool(row["hidden"])
+        rows.sort(key=lambda chat: chat["last_activity"] or "", reverse=True)
+        return rows
+
+    async def hide_chat(self, chat_id: int | str, hidden: bool = True) -> bool:
+        """Hide (or unhide) a non-owner chat from dashboard and Telegram lists while keeping its history."""
+        return await self._run(self._hide_chat, str(chat_id), hidden)
+
+    def _hide_chat(self, chat_id: str, hidden: bool) -> bool:
+        if self._is_owner_chat(chat_id):
+            return False
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE chats SET hidden = ?, updated_at = ? WHERE chat_id = ?",
+                (int(hidden), _now(), chat_id),
+            )
+            return cur.rowcount == 1
+
+    async def forget_chat(self, chat_id: int | str, *, delete_history: bool = False) -> bool:
+        """Remove a non-owner chat from Dom's chat lists. Keeps message history searchable by the owner
+        unless `delete_history` is True."""
+        return await self._run(self._forget_chat, str(chat_id), delete_history)
+
+    def _forget_chat(self, chat_id: str, delete_history: bool) -> bool:
+        if self._is_owner_chat(chat_id):
+            return False
+        with self._tx() as conn:
+            aliases = sorted(self._chat_id_aliases(chat_id))
+            cur = conn.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
+            if cur.rowcount == 0:
+                return False
+            conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
+            conn.execute("DELETE FROM chat_topic_reads WHERE chat_id = ?", (chat_id,))
+            if delete_history:
+                marks = ",".join("?" * len(aliases))
+                conn.execute(f"DELETE FROM messages WHERE chat_id IN ({marks})", aliases)
+                conn.execute(
+                    f"DELETE FROM chat_migrations WHERE old_chat_id IN ({marks}) OR new_chat_id IN ({marks})",
+                    (*aliases, *aliases),
+                )
+        if delete_history:
+            for alias in aliases:
+                if re.fullmatch(r"-?\d+", alias):
+                    (self.home / "transcripts" / f"{alias}.jsonl").unlink(missing_ok=True)
+        return True
 
     async def get_chat_personality(self, chat_id: int | str) -> tuple[str, str]:
         return await self._run(self._get_chat_personality, str(chat_id))
@@ -714,14 +816,14 @@ class Store:
     def _opener_candidates(self, owner: str, after: str, limit: int, groups: bool, friends: bool) -> list[dict[str, Any]]:
         return [dict(row) for row in self._conn.execute(
             "SELECT chat_id, chat_type FROM chats WHERE chat_id > ? AND chat_id != ? "
-            "AND authorization_status = 'approved' "
+            "AND authorization_status = 'approved' AND reachable = 1 AND hidden = 0 "
             "AND ((? AND chat_type IN ('group', 'supergroup')) OR (? AND chat_type = 'private')) "
             "ORDER BY chat_id LIMIT ?",
             (after, owner, groups, friends, limit),
         )]
 
     async def list_approved_chats(self) -> list[dict[str, Any]]:
-        """Read-only (never creates a row): every approved chat with its presence columns, when it last
+        """Read-only (never creates a row): every approved, reachable chat with its presence columns, when it last
         saw a message and, for private chats, the other person's name. The owner's DM always comes first."""
         return await self._run(self._list_approved_chats)
 
@@ -733,15 +835,17 @@ class Store:
             "AS last_activity, "
             "(SELECT sender_name FROM messages m WHERE m.chat_id = c.chat_id AND m.is_bot = 0 "
             "AND m.sender_name != '' ORDER BY m.id DESC LIMIT 1) AS peer_name "
-            "FROM chats c WHERE c.authorization_status = 'approved'"
+            "FROM chats c WHERE c.authorization_status = 'approved' AND c.reachable = 1 AND c.hidden = 0"
         )]
         chats.sort(key=lambda chat: chat["last_activity"] or "", reverse=True)
         chats.sort(key=lambda chat: not self._is_owner_chat(chat["chat_id"]))
         if self.owner_id is not None and not any(self._is_owner_chat(c["chat_id"]) for c in chats):
-            chats.insert(0, {  # approved by definition, but they have not written yet
-                "chat_id": str(self.owner_id), "title": "", "is_sleeping": 0, "sleep_until": None,
-                "is_offline": 0, "offline_until": None, "online_until": None, "last_activity": None, "peer_name": None,
-            })
+            owner_row = self._conn.execute("SELECT 1 FROM chats WHERE chat_id = ?", (str(self.owner_id),)).fetchone()
+            if owner_row is None:
+                chats.insert(0, {  # approved by definition, but they have not written yet
+                    "chat_id": str(self.owner_id), "title": "", "is_sleeping": 0, "sleep_until": None,
+                    "is_offline": 0, "offline_until": None, "online_until": None, "last_activity": None, "peer_name": None,
+                })
         return chats
 
     async def get_presence(self, chat_id: int | str) -> dict[str, Any]:
@@ -1416,6 +1520,32 @@ class Store:
     ) -> list[StoredMessage]:
         return await self._run(self._get_recent_chat_window, str(chat_id), limit, through_id, thread_id, filter_thread)
 
+    async def get_recent_chat_messages(
+        self, chat_id: int | str, limit: int = 20, *, before_id: int | None = None,
+    ) -> tuple[list[StoredMessage], int | None]:
+        """Visible user/assistant messages in a chat, newest first, with a cursor (the oldest returned row id)
+        when more older messages exist."""
+        return await self._run(self._get_recent_chat_messages, str(chat_id), limit, before_id)
+
+    def _get_recent_chat_messages(
+        self, chat_id: str, limit: int, before_id: int | None,
+    ) -> tuple[list[StoredMessage], int | None]:
+        limit = max(1, min(limit, 100))
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        where = f"chat_id = ? AND is_deleted = 0 AND role IN ('user', 'assistant'){hide}"
+        args: list[Any] = [chat_id]
+        if before_id is not None:
+            where += " AND id < ?"
+            args.append(before_id)
+        rows = self._conn.execute(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY id DESC LIMIT ?",
+            (*args, limit + 1),
+        ).fetchall()
+        has_more = len(rows) > limit
+        page = [_row_to_message(r) for r in rows[:limit]]
+        next_before = page[-1].id if has_more and page else None
+        return page, next_before
+
     async def chat_participant_names(self, chat_id: int | str) -> list[list[str]]:
         """For each person who has written in this chat, the names and Telegram handles they go by there: what they wrote
         under, plus their current Telegram name and handle, which the chat sees too."""
@@ -1602,6 +1732,17 @@ class Store:
 
     async def kv_delete(self, key: str) -> None:
         await self._run(self._conn.execute, "DELETE FROM kv WHERE key = ?", (key,))
+
+    async def kv_prefix(self, prefix: str) -> list[tuple[str, str]]:
+        """Every (key, value) pair whose key starts with `prefix`."""
+        return await self._run(self._kv_prefix, prefix)
+
+    def _kv_prefix(self, prefix: str) -> list[tuple[str, str]]:
+        rows = self._conn.execute(
+            "SELECT key, value FROM kv WHERE key >= ? AND key < ? ORDER BY key",
+            (prefix, prefix + "\uffff"),
+        ).fetchall()
+        return [(row[0], row[1]) for row in rows]
 
     async def kv_set_many(self, values: dict[str, str]) -> None:
         await self._run(self._kv_set_many, values)
@@ -2574,6 +2715,10 @@ class Store:
             "output_tokens = COALESCE(?, output_tokens) WHERE id = ?",
             (cost_usd, input_tokens, output_tokens, usage_id),
         )
+
+    async def delete_usage(self, usage_id: int) -> None:
+        """Remove a reserved usage row when a request failed before being accepted."""
+        await self._run(self._conn.execute, "DELETE FROM usage WHERE id = ?", (usage_id,))
 
     async def last_usage_id(self) -> int:
         return await self._run(lambda: self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM usage").fetchone()[0])

@@ -12,17 +12,22 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from dom.reachability import check_reachability
 from dom.telegram import owner
 from dom.traits import NAMES
 from dom.web.api import _local, _preview, _when
 from dom.web.model_settings import _input
-from dom.web.shared import WHO, _chats, owner_app
+from dom.web.shared import WHO, _chats, _title, owner_app
 
 router = APIRouter()
-JSON_POSTS = {"/api/chats/action", "/api/chats/preset", "/api/chats/traits", "/api/chats/traits/reset", "/api/stickers", "/api/stickers/refresh"}
+JSON_POSTS = {
+    "/api/chats/action", "/api/chats/preset", "/api/chats/traits", "/api/chats/traits/reset",
+    "/api/chats/reachability", "/api/chats/hide", "/api/chats/forget",
+    "/api/stickers", "/api/stickers/refresh",
+}
 ChatId = int
 
 
@@ -58,6 +63,37 @@ class Nothing(Strict):
     pass
 
 
+class ChatHide(Strict):
+    chat_id: ChatId
+    hidden: bool = True
+
+
+class ChatForget(Strict):
+    chat_id: ChatId
+    delete_history: bool = False
+    confirm: bool = False
+
+
+async def _unreachable_rows(app, *, include_hidden: bool = False) -> list[dict]:
+    now = app.dispatch.now()
+    tz = app.dispatch.presence.tz
+    rows = await app.store.list_unreachable_chats(include_hidden=include_hidden)
+    return [
+        {
+            "id": int(row["chat_id"]),
+            "title": _title(row, app.owner_id),
+            "scope": app.store.scope_for(
+                row["chat_id"], row["chat_type"] or ("group" if int(row["chat_id"]) < 0 else "private"),
+            ),
+            "prior_status": row["authorization_status"],
+            "reason": row["unreachable_reason"],
+            "since": _when(_local(row["unreachable_at"], tz), now.astimezone(tz)) if row["unreachable_at"] else "",
+            "hidden": row["hidden"],
+        }
+        for row in rows
+    ]
+
+
 async def _view(app) -> dict:
     data = await _chats(app)
     now = app.dispatch.now()
@@ -75,6 +111,7 @@ async def _view(app) -> dict:
             }
             for row in data["rows"]
         ],
+        "unreachable": await _unreachable_rows(app),
         "presets": [{"name": item.name, "title": item.title, "description": item.description} for item in data["presets"]],
         "everywhere": data["everywhere"],
         "pending": data["pending"],
@@ -92,27 +129,85 @@ async def read_chats(request: Request) -> dict:
     return await _view(owner_app(request))
 
 
+@router.get("/api/chats/unreachable")
+async def read_unreachable_chats(request: Request, include_hidden: bool = Query(False)) -> dict:
+    app = owner_app(request)
+    return {"unreachable": await _unreachable_rows(app, include_hidden=include_hidden)}
+
+
+@router.post("/api/chats/reachability")
+async def run_reachability(request: Request) -> dict:
+    app = owner_app(request)
+    await _input(request, Nothing)
+    summary = await check_reachability(app)
+    message = f"Checked {summary['checked']} chat{'s' * (summary['checked'] != 1)}; {summary['unreachable']} not reachable."
+    return {"message": message, "summary": summary, **await _view(app)}
+
+
+@router.post("/api/chats/hide")
+async def hide_chat(request: Request) -> dict:
+    app = owner_app(request)
+    update = await _input(request, ChatHide)
+    if update.chat_id == app.owner_id:
+        raise HTTPException(409, "Cannot hide your own DM.")
+    if not await app.store.hide_chat(update.chat_id, update.hidden):
+        raise HTTPException(404, "Unknown chat.")
+    label = "Hid" if update.hidden else "Restored"
+    await owner.record_event(app, f"{WHO} {label.lower()} chat {update.chat_id}")
+    return await _done(app, f"{label} chat.")
+
+
+@router.post("/api/chats/forget")
+async def forget_chat(request: Request) -> dict:
+    app = owner_app(request)
+    update = await _input(request, ChatForget)
+    if update.chat_id == app.owner_id:
+        raise HTTPException(409, "Cannot forget your own DM.")
+    if update.delete_history and not update.confirm:
+        raise HTTPException(422, "Confirm history deletion before forgetting this chat's messages.")
+    if not await app.store.forget_chat(update.chat_id, delete_history=update.delete_history):
+        raise HTTPException(404, "Unknown chat.")
+    detail = " and deleted its history" if update.delete_history else " (history kept)"
+    await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}")
+    return await _done(app, f"Forgot chat{detail}.")
+
+
 RECENT_MESSAGES = 20
 
 
 @router.get("/api/chats/{chat_id}/messages")
-async def read_messages(request: Request, chat_id: int) -> dict:
+async def read_messages(
+    request: Request,
+    chat_id: int,
+    limit: int = Query(RECENT_MESSAGES, ge=1, le=100),
+    before: int | None = Query(None, ge=1),
+) -> dict:
     app = owner_app(request)
     chat = next((row for row in (await _chats(app))["rows"] if row["id"] == chat_id), None)
     if chat is None:
-        raise HTTPException(404, "Unknown chat.")
-    full = chat["scope"] == "owner_dm"
+        unreachable = await app.store.list_unreachable_chats(include_hidden=True)
+        match = next((row for row in unreachable if int(row["chat_id"]) == chat_id), None)
+        if match is None:
+            raise HTTPException(404, "Unknown chat.")
+        scope = app.store.scope_for(chat_id, match["chat_type"] or ("group" if chat_id < 0 else "private"))
+    else:
+        scope = chat["scope"]
+    full = scope == "owner_dm"
     tz = app.dispatch.presence.tz
     now = app.dispatch.now().astimezone(tz)
-    rows = [row for row in await app.store.get_recent_chat_window(chat_id, RECENT_MESSAGES) if row.role in ("user", "assistant")]
+    rows, next_before = await app.store.get_recent_chat_messages(chat_id, limit, before_id=before)
     return {
-        "chat_id": chat_id, "full": full,
+        "chat_id": chat_id,
+        "full": full,
         "messages": [{
+            "id": row.id,
             "who": "Dom" if row.role == "assistant" else "You" if full else (row.sender_name or "Someone"),
             "mine": row.role == "assistant",
             "text": row.text if full else _preview(row.text),
             "at": _when(_local(row.created_at, tz), now),
         } for row in rows],
+        "next_before": next_before,
+        "has_more": next_before is not None,
     }
 
 

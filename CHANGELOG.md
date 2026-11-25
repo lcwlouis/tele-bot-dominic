@@ -6,6 +6,10 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Unreachable chats and reachability checks.** Dom checks current chats on startup and on demand via the dashboard API, moving unreachable chats (including stale pending approvals) to a separate list while keeping their prior status and searchable history, with hide and forget controls; a chat that messages Dom again becomes reachable automatically.
+- **Progressive recent messages and Telegram card cleanup.** The recent-messages API now returns messages newest first with cursor pagination (`before`), and Telegram menu cards (including `/status` and `/chats`) gain a Close button and clear their buttons once used or stale.
+- **Hardening, AUTOINCREMENT IDs, and pinned CI.** Refused media keys that match a chat key's value at config validation and against running clients, serialized video spend-cap reservation before network submits, added a startup reconciler for persisted cloud video jobs, guarded settings views against malformed `.env` files, fixed search provider rewrites and OpenRouter search role-type validation, rebuilt `desktop_tasks` and `reminders` with `AUTOINCREMENT`, and pinned GitHub Actions by SHA and the Playwright CI image by digest with `npm ci --ignore-scripts`.
+
 ## [0.8.3] - 2026-11-25
 
 Dom gets his own studio: voice notes, round video notes and photos made on your own Mac, with cloud backups when it is away. Providers and models are set up from the dashboard, everything he remembers can be exported and searched, and he can message first in more chats.

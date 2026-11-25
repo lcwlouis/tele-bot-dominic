@@ -76,10 +76,12 @@ async def test_preset_buttons_work_only_in_owner_dm(make_app):
     [(_, _, _, kw)] = app.bot.of("send", OWNER)
     assert buttons(kw["reply_markup"]) == [
         [("Everywhere · None", "preset:all")], [("Book Club · uses Everywhere", f"preset:{GROUP}")],
+        [("✕ Close", "card:close")],
     ]
     await handlers.handle_callback(app, callback(app, OWNER, f"preset:{GROUP}"))
     assert buttons(app.bot.of("send", OWNER)[-1][3]["reply_markup"]) == [
         [("Classic", f"presetset:{GROUP}:classic")], [("None", f"presetset:{GROUP}:")],
+        [("✕ Close", "card:close")],
     ]
 
     data = f"presetset:{GROUP}:classic"
@@ -151,6 +153,7 @@ async def test_preset_everywhere_flow(make_app):
     markup = app.bot.of("send", OWNER)[-1][3]["reply_markup"]
     assert buttons(markup) == [
         [("Classic", "presetset:all:classic")], [("Auto (Dom picks daily)", "presetset:all:auto")], [("None", "presetset:all:")],
+        [("✕ Close", "card:close")],
     ]
 
     data = "presetset:all:classic"

@@ -14,20 +14,23 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
+      options: --ipc=host
     timeout-minutes: 20
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: web/.nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm run build
       - name: The committed build matches the sources
@@ -38,11 +41,10 @@ jobs:
             echo "::error::dom/web/static/app is out of date. Run 'npm run build' in web/ and commit the result."
             exit 1
           fi
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           python-version: "3.12"
       - run: uv sync --locked
-      - run: npx playwright install --with-deps chromium
       - name: CSP, accessibility and navigation checks
         run: npx playwright test --ignore-snapshots
         env:

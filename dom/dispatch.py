@@ -678,6 +678,8 @@ class Dispatcher:
             return []
         tasks = []
         for row in await self.app.store.list_chats("approved"):
+            if not row.get("reachable", True) or row.get("hidden", False):
+                continue
             chat_id = int(row["chat_id"])
             if self._debounce_pending(chat_id):
                 continue
@@ -2218,12 +2220,20 @@ class Dispatcher:
         media_offered: set[str] = set()  # media kinds this turn's note offers
         if not final_bot_turn and (app.studio is not None or app.cloud_studio is not None):
             config = app.config
+            running_keys = app.running_chat_keys()
+
+            def _has_media_secret(name: str) -> bool:
+                try:
+                    return bool(config.media_secret(name, extra_chat_values=running_keys))
+                except (OSError, ValueError):
+                    return False
+
             # Kinds switched on for this scope that something could serve: the local studio once set up, else a
             # backup whose key holds a value (the key lookup reads .env). With none, media never comes up.
             usable = await asyncio.to_thread(lambda: {
                 kind for kind in get_args(StudioKind) if studio_enabled(config.studio, scope, kind) and (
                     app.studio is not None
-                    or any(config.media_secret(backup.api_key_env) for backup in studio_providers(config.studio, kind)))
+                    or any(_has_media_secret(backup.api_key_env) for backup in studio_providers(config.studio, kind)))
             })
             if usable:
                 remaining = {}
@@ -2232,7 +2242,7 @@ class Dispatcher:
                     if not local_ready:
                         keyed = await asyncio.to_thread(lambda: {
                             kind for kind in remaining
-                            if any(config.media_secret(b.api_key_env) for b in studio_providers(config.studio, kind))
+                            if any(_has_media_secret(b.api_key_env) for b in studio_providers(config.studio, kind))
                         })
                         remaining = {kind: count for kind, count in remaining.items() if kind in keyed}
                 media_offered = set(remaining)

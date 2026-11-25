@@ -65,7 +65,15 @@ def cache_key(base_url: str, api_key_env: str | None, type_: str = "chat") -> st
 
 def secret_values(config: Config) -> frozenset[str]:
     """The values of every key variable config.toml names, and the fixed credentials Dom reads, that are set."""
-    return frozenset(value for name in config.secret_names() if (value := config.secret(name)) and len(value) >= MIN_SECRET)
+    found: set[str] = set()
+    for name in config.secret_names():
+        try:
+            value = config.secret(name)
+        except (OSError, ValueError):
+            continue
+        if value and len(value) >= MIN_SECRET:
+            found.add(value)
+    return frozenset(found)
 
 
 def _holds_secret(texts: Collection[str], secrets: Collection[str]) -> bool:
