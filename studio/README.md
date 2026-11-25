@@ -23,6 +23,10 @@ Use the same token in the bot's private environment. Keep the token path, refere
 
 Copy [studio.example.toml](studio.example.toml) to the private directory as `studio.toml`. Replace the sample addresses and paths. Use the real LAN interface address for `bind_host` and prefer one address per allowed interface of the bot host. Include local container and VM CIDRs in `denied_sources`, even if they overlap an allowed range. The built-in denies cover loopback, the host's interfaces and the standard desktop VM and bridge ranges. If the host also runs desktop sandboxes, copy its maximum container count, per-container memory in MiB and minimum free memory into `[desktop]`.
 
+### Over Tailscale
+
+Tailscale is the recommended way to reach the studio when the bot host is on another network, or to avoid tying the studio to home-network addresses that change. Put the studio host and every bot host on one tailnet. Set `bind_host` to the studio host's Tailscale address (`tailscale ip -4`). List each bot host in `allowed_sources` by its MagicDNS name (`<bot-host>.<tailnet>.ts.net`) or its Tailscale address. Names ending in `.ts.net` are looked up again regularly, like `.local` names. In Dom's config, set `[studio] base_url` to `http://<studio host's MagicDNS name or Tailscale address>:<port>`. The bearer token is still required, and traffic between hosts is encrypted by Tailscale. A tailnet access rule limiting the studio's port to the bot hosts is a sensible extra layer.
+
 Supply all worker paths as absolute paths. For the video worker, use the prepared `flash-src` checkout as its working directory. The special worker uses the `ltx-2-mlx` executable in the prepared checkout's virtual environment. Put local `ffmpeg` and `ffprobe` on the same search path for the LTX runtime. The worker commands receive only local snapshot and asset paths.
 
 ```sh

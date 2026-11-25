@@ -7,6 +7,7 @@ named `vX.Y.Z`.
 ## [Unreleased]
 
 - **Edit media limits from the dashboard.** Settings → What Dom may do → Media limits sets how many voice notes, video notes, photos and special videos Dom may send in your DM, friends’ DMs and groups, per day or per week, plus the gap between media and the total across all chats. It also shows what's left in your DM now and when the next media can go, such as "Next media from 22:37". A save applies at once. In config.toml, `video_daily = false` or `image_daily = false` now uses the weekly limit when that tier's daily default is set.
+- **Studio over Tailscale.** The studio can allow bot hosts by their Tailscale name, and its setup guide covers running it on a tailnet.
 - **Version label.** A development copy shows the release being built, such as "v0.8.3 pre-release", instead of the last release.
 - **Photos in your own DM.** The leak guard no longer checks Dom's photos, voice notes and video notes in the owner's DM, as it already didn't for his messages. It had held back an ordinary "morning pic".
 - **No pretend media.** When Dom can't send a voice note, video note or photo right now, he's told so and says not now. A bubble that writes media out as text ("[photo] a scene") becomes the real photo, voice note or video note when one is allowed, and is never sent as text.
