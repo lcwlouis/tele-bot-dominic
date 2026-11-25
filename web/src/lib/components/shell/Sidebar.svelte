@@ -7,7 +7,7 @@
   import { destinations, workspace, type Destination } from "$lib/nav";
   import { shell } from "$lib/shell.svelte";
   import { sidebar, typing } from "$lib/sidebar.svelte";
-  import { cn } from "$lib/utils";
+  import { cn, tipTrigger } from "$lib/utils";
 
   let { path, current }: { path: string; current: Destination } = $props();
 
@@ -61,7 +61,7 @@
     <Tooltip.Trigger>
       {#snippet child({ props })}
         <a
-          {...props}
+          {...tipTrigger(props)}
           {href}
           class={cn(item, small && "h-9", compact && "w-10 justify-center px-0", here && active)}
           aria-current={aria}
@@ -97,8 +97,10 @@
     <Tooltip.Root>
       <Tooltip.Trigger>
         {#snippet child({ props })}
+          <!-- Its tooltip adds only the "[" key (aria-keyshortcuts) to the name, except on a peek, where it says
+               what a click does. -->
           <button
-            {...props}
+            {...tipTrigger(props, { onclick: toggle }, !peek)}
             type="button"
             class="group/logo grid size-10 shrink-0 place-items-center rounded-[0.7rem] text-muted-foreground transition-colors duration-(--motion-quick) hover:bg-raised hover:text-foreground"
             aria-expanded={!sidebar.collapsed}
@@ -106,7 +108,6 @@
             aria-label={sidebar.collapsed ? "Expand sidebar" : "Collapse sidebar"}
             aria-keyshortcuts="["
             data-sidebar-toggle
-            onclick={toggle}
           >
             <span class="group-hover/logo:hidden group-focus-visible/logo:hidden" aria-hidden="true"><Orbit size="sm" activity="idle" /></span>
             <span class="hidden group-hover/logo:block group-focus-visible/logo:block" aria-hidden="true">
@@ -152,7 +153,7 @@
         {#snippet child({ props })}
           <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
           <p
-            {...props}
+            {...tipTrigger(props)}
             tabindex={compact ? 0 : undefined}
             class={cn("mt-4 rounded-sm font-mono text-[0.68rem] text-muted-foreground", !compact && "px-3")}
             aria-label={compact ? `Dom ${shell.version}` : undefined}

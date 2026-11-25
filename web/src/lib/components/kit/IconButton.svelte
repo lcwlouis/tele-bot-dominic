@@ -2,6 +2,7 @@
   import type { Component, Snippet } from "svelte";
   import { Button, type ButtonProps, type ButtonSize, type ButtonVariant } from "$lib/components/ui/button";
   import * as Tooltip from "$lib/components/ui/tooltip";
+  import { tipTrigger } from "$lib/utils";
 
   // Every icon-only button: the label is required, and it is both the accessible name and the tooltip shown on
   // hover and keyboard focus (E78). A shortcut, when there is one, shows in the tooltip and is announced.
@@ -32,7 +33,7 @@
 <Tooltip.Root>
   <Tooltip.Trigger>
     {#snippet child({ props })}
-      <Button {...props} {...rest} bind:ref {variant} {size} class={className} aria-label={label} aria-keyshortcuts={shortcut}>
+      <Button {...tipTrigger(props, rest, !tip)} bind:ref {variant} {size} class={className} aria-label={label} aria-keyshortcuts={shortcut}>
         <Icon aria-hidden="true" />
       </Button>
     {/snippet}

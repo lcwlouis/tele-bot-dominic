@@ -36,3 +36,24 @@ export function ago(at: Date | string, now: Date = new Date()): string {
   }
   return "now";
 }
+
+const monthName = new Intl.DateTimeFormat(undefined, { month: "long" });
+const monthYear = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" });
+
+/**
+ * The strip list's date group for a time, in the viewer's own time zone: "Upcoming", "Today", "Yesterday",
+ * "This week" (from Monday), "This month", then the month's name ("October", or "October 2025" in another year).
+ */
+export function dayGroup(at: Date | string, now: Date = new Date()): string {
+  const when = new Date(at);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const day = new Date(when.getFullYear(), when.getMonth(), when.getDate());
+  // Whole calendar days between the two, rounded so a daylight-saving change doesn't shift a day.
+  const days = Math.round((today.getTime() - day.getTime()) / 86_400_000);
+  if (days < 0) return "Upcoming";
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days <= (today.getDay() + 6) % 7) return "This week"; // days since Monday
+  if (when.getFullYear() === now.getFullYear() && when.getMonth() === now.getMonth()) return "This month";
+  return (when.getFullYear() === now.getFullYear() ? monthName : monthYear).format(when);
+}

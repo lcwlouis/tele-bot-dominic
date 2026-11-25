@@ -29,6 +29,9 @@
   const uid = $props.id();
   let open = $state(false);
   let query = $state("");
+  // What the field shows: the filter while open, the chosen option's label once closed. Typing keeps it in step,
+  // so setting it back on close always reaches the field.
+  let text = $state("");
   const chosen = $derived(options.find((option) => option.value === value));
   const shown = $derived.by(() => {
     const needle = query.trim().toLowerCase();
@@ -36,9 +39,11 @@
     return options.filter((option) => option.label.toLowerCase().includes(needle) || option.detail?.toLowerCase().includes(needle));
   });
 
-  // Closed, the field reads as the chosen option; open, it is the filter.
+  // Closed, the field reads as the chosen option again, whether the list closed on a pick, Esc or a click away.
   $effect(() => {
-    if (!open) query = "";
+    if (open) return;
+    query = "";
+    text = chosen?.label ?? "";
   });
 </script>
 
@@ -49,7 +54,8 @@
     bind:open
     {value}
     items={options}
-    inputValue={chosen?.label ?? ""}
+    allowDeselect={false}
+    inputValue={text}
     onValueChange={(next) => {
       value = next;
       onchange?.(next);
@@ -69,7 +75,7 @@
           event.currentTarget.select();
         }}
         oninput={(event) => {
-          query = event.currentTarget.value;
+          query = text = event.currentTarget.value;
           open = true;
         }}
       />

@@ -1,8 +1,9 @@
 import type { Status } from "$lib/components/kit/status";
 
 // Fictional data for the component library's mock Work list and Turn log. Times count back from a pinned clock,
-// so "5 min ago" reads the same in every screenshot.
-export const NOW = new Date("2026-11-25T18:00:00Z");
+// so "5 min ago" reads the same in every screenshot. Every time falls between 00:00 and 16:00 UTC, so its date,
+// and with it the list's date group, is the same from UTC to UTC+8 (CI and the owner's machine).
+export const NOW = new Date("2026-11-25T10:00:00Z");
 const minutes = (n: number) => new Date(NOW.getTime() - n * 60_000);
 
 export type MockTask = { id: string; status: Status; title: string; at: Date; kind: string; steps: string[]; note?: string };
@@ -16,17 +17,39 @@ export const tasks: MockTask[] = [
   { id: "t6", status: "done", title: "Find a vegetarian recipe with leeks", at: minutes(60 * 75), kind: "Desktop task", steps: ["Found four recipes", "Saved the shortest"] },
 ];
 
-/** Older tasks, as a second page would bring them. */
-export function olderTasks(from: number): MockTask[] {
-  const titles = ["Check the train times for Saturday", "Draft a thank-you note", "Look up the museum's late opening", "Price a replacement kettle"];
-  return titles.map((title, index) => ({
-    id: `old-${from + index}`,
-    status: index % 3 === 1 ? "failed" : "done",
-    title,
-    at: minutes(60 * 24 * (4 + from + index)),
-    kind: index % 2 ? "Own work" : "Desktop task",
-    steps: ["Started", "Finished"],
-  }));
+/** How many tasks the mock Work list has in all, so the owner can feel a long list. */
+export const TASK_TOTAL = 400;
+
+const olderTitles = [
+  "Check the train times for Saturday",
+  "Draft a thank-you note",
+  "Look up the museum's late opening",
+  "Price a replacement kettle",
+  "Find the warranty for the washing machine",
+  "Book a table for four on Friday",
+  "Compare two phone plans",
+  "Collect the week's receipts into one folder",
+  "Find a quiet café near the station",
+  "Check when the library books are due",
+  "Summarise the neighbourhood group's notices",
+  "Look up how to descale the coffee machine",
+];
+const olderStatuses: Status[] = ["done", "done", "failed", "done", "paused", "done", "held", "done"];
+
+/** Tasks older than the seed ones, `count` of them from position `from`: a day or so apart, back about four months. */
+export function olderTasks(from: number, count: number): MockTask[] {
+  return Array.from({ length: count }, (_, offset) => {
+    const index = from + offset;
+    const day = new Date(Date.UTC(NOW.getUTCFullYear(), NOW.getUTCMonth(), NOW.getUTCDate() - 4 - Math.floor(index / 3)));
+    return {
+      id: `old-${index}`,
+      status: olderStatuses[index % olderStatuses.length],
+      title: olderTitles[index % olderTitles.length],
+      at: new Date(day.getTime() + (14 - (index % 3) * 4) * 3_600_000),
+      kind: index % 2 ? "Own work" : "Desktop task",
+      steps: ["Started", "Finished"],
+    };
+  });
 }
 
 export const chats = [
@@ -45,5 +68,5 @@ export const turns: MockTurn[] = [
   { id: "u3", chat: "crew", status: "held", title: "Held back: the reply mentioned your DM", at: minutes(12), model: "example/chat-large", took: "2.7 s", calls: ["leak check"] },
   { id: "u4", chat: "book", status: "done", title: "Reacted with a laugh", at: minutes(40), model: "example/chat-small", took: "0.9 s", calls: ["final"] },
   { id: "u5", chat: "sam", status: "failed", title: "The model didn't answer in time", at: minutes(64), model: "example/chat-large", took: "30 s", calls: [] },
-  { id: "u6", chat: "book", status: "done", title: "Stayed quiet", at: minutes(130), model: "example/triage", took: "0.4 s", calls: [] },
+  { id: "u6", chat: "book", status: "done", title: "Stayed quiet", at: minutes(60 * 20), model: "example/triage", took: "0.4 s", calls: [] },
 ];

@@ -7,6 +7,7 @@ named `vX.Y.Z`.
 ## [Unreleased]
 
 - **Dashboard design baseline.** The component library now shows the pieces list pages will be rebuilt from: a strip list whose details open beside it on a laptop or in a bottom sheet on a phone, icon buttons that show their label on hover and focus, info glyphs for descriptive text, status glyphs, a filterable picker, and tidied tokens for surfaces, status, type and motion. The folded sidebar opens for a look while the mouse rests on it, and its logo is the fold button.
+- **Long lists stay calm.** The strip list groups its strips under Today, Yesterday, This week, This month and month names, takes a filter bar (text and status chips, filtered in place or by the page), counts what is loaded, offers back to top, and skips drawing strips that are off screen. On a laptop it scrolls in its own pane that fills the screen, beside its details; on a phone the page shows the newest ten and See all opens the rest as its own screen, which the back gesture closes. Tooltips no longer repeat a button's name to screen readers, a pinned info glyph closes on a tap elsewhere, and the picker goes back to the chosen option on Esc.
 
 ## [0.8.3] - 2026-11-25
 

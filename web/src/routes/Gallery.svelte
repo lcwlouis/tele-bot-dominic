@@ -29,9 +29,9 @@
   import IconButton from "$lib/components/kit/IconButton.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import StatusGlyph from "$lib/components/kit/StatusGlyph.svelte";
-  import StripList from "$lib/components/kit/StripList.svelte";
+  import StripList, { type StripFilter } from "$lib/components/kit/StripList.svelte";
   import { STATUS, type Status } from "$lib/components/kit/status";
-  import { chats, NOW, olderTasks, tasks as seedTasks, turns, type MockTask, type MockTurn } from "./gallery-fixtures";
+  import { chats, NOW, olderTasks, TASK_TOTAL, tasks as seedTasks, turns, type MockTask, type MockTurn } from "./gallery-fixtures";
 
   // Every component the new dashboard uses, in every state the kit shows. It stands in for a Storybook:
   // it runs inside the real app, so it is checked under Dom's real CSP (see web/README.md).
@@ -66,22 +66,42 @@
   let warmth = $state(65);
   let selected = $state(true);
   let unselected = $state(false);
-  // The baseline (v0.8.4 W4): a mock Work list and Turn log on the strip list, with fixture data only.
-  let tasks = $state<MockTask[]>([...seedTasks]);
-  let pages = $state(0);
+  // The baseline (v0.8.4 W4): a mock Work list and Turn log on the strip list, with fixture data only. The Work
+  // list is long (400 tasks, 50 a page) and filters what is loaded; the Turn log hands its filter to the "server".
+  const PAGE = 50;
+  let tasks = $state<MockTask[]>([...seedTasks, ...olderTasks(0, PAGE - seedTasks.length)]);
+  // The next older task a page brings, and how many the demo trash took, which the total no longer counts.
+  let next = $state(PAGE - seedTasks.length);
+  let trashed = $state(0);
   let task = $state<string | null>(null);
   let turn = $state<string | null>(null);
   let chat = $state("");
-  const shownTurns = $derived(chat ? turns.filter((item) => item.chat === chat) : turns);
+  let turnFilter = $state<StripFilter>({ text: "", statuses: [] });
+  const shownTurns = $derived(
+    turns.filter(
+      (item) =>
+        (!chat || item.chat === chat) &&
+        (!turnFilter.statuses.length || turnFilter.statuses.includes(item.status)) &&
+        (!turnFilter.text || item.title.toLowerCase().includes(turnFilter.text)),
+    ),
+  );
   const chatName = (id: string) => chats.find((item) => item.value === id)?.label ?? id;
   const statuses = Object.keys(STATUS) as Status[];
+  const older = TASK_TOTAL - seedTasks.length;
+  // A demo switch: pages fail while it is on, to show the list stops asking and offers to try again.
+  let failing = $state(false);
+  // A demo switch: on a phone, the whole list on the page, as a page that is only this list would have it.
+  let whole = $state(false);
   async function loadOlder() {
     await new Promise((resolve) => setTimeout(resolve, 150));
-    tasks = [...tasks, ...olderTasks(pages * 4)];
-    pages += 1;
+    if (failing) throw new Error("Demo: the next page didn't load");
+    const count = Math.min(PAGE, older - next);
+    tasks = [...tasks, ...olderTasks(next, count)];
+    next += count;
   }
   function remove(item: MockTask) {
     tasks = tasks.filter((other) => other.id !== item.id);
+    trashed += 1;
     if (task === item.id) task = null;
     toast.show("ok", `Moved "${item.title}" to the trash (a demo: nothing changed)`);
   }
@@ -117,14 +137,24 @@
 <section aria-labelledby="g-baseline" class="mb-10">
   <h2 id="g-baseline" class="text-heading font-semibold tracking-tight">Baseline</h2>
   <p class="mt-1 max-w-[60ch] text-body text-muted-foreground">
-    The pieces list pages are rebuilt from. Pick a strip to open its details: beside the list on a wide screen, in a sheet on a phone.
+    The pieces list pages are rebuilt from. Pick a strip to open its details: beside the list on a wide screen, in a sheet on a phone. The switches are for the demo only.
   </p>
 
   <div class="mt-6 grid gap-8">
     <section aria-labelledby="g-work" class="grid gap-3">
-      <div class="flex items-center gap-1.5">
+      <div class="flex flex-wrap items-center gap-1.5">
         <h3 id="g-work" class="text-title font-semibold">Mock Work list</h3>
-        <InfoGlyph label="About this list">Desktop tasks and Dom's own work, newest first. Scroll to the end to load older ones.</InfoGlyph>
+        <InfoGlyph label="About this list">Desktop tasks and Dom's own work, newest first: 400 of them, 50 a page as you scroll. On a wide screen it scrolls in its own pane; on a phone the newest ten show, and See all opens the rest.</InfoGlyph>
+        <div class="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div class="flex items-center gap-2">
+            <Switch id="g-failing" bind:checked={failing} />
+            <Label for="g-failing" class="text-meta text-muted-foreground">Pages fail</Label>
+          </div>
+          <div class="flex items-center gap-2 lg:hidden">
+            <Switch id="g-whole" bind:checked={whole} />
+            <Label for="g-whole" class="text-meta text-muted-foreground">Whole list on the page</Label>
+          </div>
+        </div>
       </div>
       <StripList
         items={tasks}
@@ -132,8 +162,14 @@
         strip={(item) => ({ status: item.status, title: item.title, at: item.at, meta: item.kind })}
         label="Tasks, newest first"
         bind:selected={task}
-        hasMore={pages < 1}
+        hasMore={next < older}
         onmore={loadOlder}
+        total={TASK_TOTAL - trashed}
+        search="Filter tasks"
+        {statuses}
+        level={4}
+        name="Tasks"
+        preview={whole ? false : 10}
         now={NOW}
       >
         {#snippet actions(item)}
@@ -155,12 +191,9 @@
     </section>
 
     <section aria-labelledby="g-turns" class="grid gap-3">
-      <div class="flex flex-wrap items-end justify-between gap-3">
-        <div class="flex items-center gap-1.5">
-          <h3 id="g-turns" class="text-title font-semibold">Mock Turn log</h3>
-          <InfoGlyph label="About the turn log">Every turn Dom took: what he did, how long it took and which model ran.</InfoGlyph>
-        </div>
-        <AppPicker label="Chat" options={chats} bind:value={chat} class="w-64" />
+      <div class="flex items-center gap-1.5">
+        <h3 id="g-turns" class="text-title font-semibold">Mock Turn log</h3>
+        <InfoGlyph label="About the turn log">Every turn Dom took: what he did, how long it took and which model ran. This one searches on the server.</InfoGlyph>
       </div>
       <StripList
         items={shownTurns}
@@ -168,8 +201,14 @@
         strip={(item: MockTurn) => ({ status: item.status, title: item.title, at: item.at, meta: chatName(item.chat) })}
         label="Turns, newest first"
         bind:selected={turn}
+        search="Search turns"
+        statuses={["held", "failed"]}
+        onfilter={(filter) => (turnFilter = filter)}
+        level={4}
+        contained={false}
         now={NOW}
       >
+        {#snippet toolbar()}<AppPicker label="Chat" options={chats} bind:value={chat} class="w-full sm:w-56 [&>label]:sr-only" />{/snippet}
         {#snippet details(item: MockTurn)}
           <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-body">
             <dt class="text-muted-foreground">Chat</dt><dd>{chatName(item.chat)}</dd>
@@ -179,7 +218,7 @@
             <dd class="flex flex-wrap gap-1">{#each item.calls as call (call)}<Badge variant="outline">{call}</Badge>{:else}<span class="text-muted-foreground">None</span>{/each}</dd>
           </dl>
         {/snippet}
-        {#snippet empty()}<StatusNote title="No turns for this chat" detail="Dom replies when someone messages him." />{/snippet}
+        {#snippet empty()}<StatusNote title="No turns match" detail="Try another chat, or clear the search." />{/snippet}
       </StripList>
     </section>
 
@@ -250,7 +289,8 @@
   </div>
 </section>
 
-<h2 class="mb-4 text-heading font-semibold tracking-tight">Components</h2>
+<section aria-labelledby="g-components">
+<h2 id="g-components" class="mb-4 text-heading font-semibold tracking-tight">Components</h2>
 <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
   <Card.Root class="md:col-span-2" aria-labelledby="g-buttons">
     <Card.Header>
@@ -480,3 +520,5 @@
     </Card.Content>
   </Card.Root>
 </div>
+</section>
+

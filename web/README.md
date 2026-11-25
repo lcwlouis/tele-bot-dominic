@@ -18,6 +18,9 @@ npm run test:screens          # Playwright against tests/web_preview.py (fiction
 npm run test:screens:update   # re-render the PNG baselines in screens/baseline after a visual change
 ```
 
+The screens start the preview on port 8765, or reuse a server already there. With another worktree's preview
+running, set `DOM_PREVIEW_PORT` to a free port so the screens test this checkout.
+
 `npm run dev` serves the app with hot reload and proxies `/api` to a fictional Dom: start
 `uv run python tests/web_preview.py` from the repo root first. The dev server does not send Dom's CSP, so check
 CSP-sensitive changes with `npm run build` and `npm run test:screens`.
@@ -58,8 +61,26 @@ All in `src/app.css`, for both themes; every text pair is checked for WCAG AA by
 - **`StripList`**: a newest-first list of one-line strips (status glyph, title, optional meta, relative time,
   trailing action glyphs). Clicking a strip, or Enter or Space on it, opens its details beside the list on a wide
   screen (1024 px and up) or in a bottom sheet on a phone. Focus moves to the details' title and back to the strip on
-  Esc or close. Give it `hasMore` and `onmore` and it loads the next page as the end scrolls into view, with a
-  "Load more" button as the fallback. Generic over the item, for Work tasks, turns, messages and reminders.
+  Esc or close. Generic over the item, for Work tasks, turns, messages and reminders. Long lists come with it:
+  - **Date groups**: Today, Yesterday, This week (from Monday), This month, then month names, each a heading over a
+    list it names. They stick to the top while their strips scroll.
+  - **Filter bar**: `search` (a text filter's label) and `statuses` (status chips) as the page chooses, plus a
+    `toolbar` snippet for its own controls. Without `onfilter` it filters what is loaded; with it, the page gets
+    the filter (debounced) and searches on the server. Esc in the field empties it before it closes the details.
+  - **Loading and count**: `hasMore` and `onmore` load the next page as the end scrolls into view, with "Load more"
+    as the fallback; a failed or empty page stops the loading and offers to try again. The count reads "Showing 50
+    of 312" with `total`, or "50 loaded".
+  - **Back to top** appears two screens down and returns focus to the first strip.
+  - **Bounded rendering**: strips use `content-visibility: auto`, so the browser skips laying out and painting
+    those off screen while they stay in the page (focus, find-in-page and the open strip survive). Measured on a
+    phone-sized screen at 6x CPU slowdown, scrolling holds 60 fps at 400 strips; at 2,000 the p95 frame is 26 ms
+    (51 ms without it). Past a few thousand, a real window would be the next step.
+  - **Wide screens** (`contained`, on by default): the list is a pane from its top to the bottom of the screen
+    that scrolls inside, so the page doesn't grow; the details beside it fill the same height. Turn it off for a
+    short list.
+  - **Phones** (`preview`, 10 by default): the page shows the newest few and "See all (312)", so what is below stays
+    in reach. See all opens the whole list as its own screen with its own history entry: Back, Esc or the back
+    gesture return to the page where it was. `preview={false}` shows the whole list on a page that is only it.
 - **`AppPicker`**: the app's own combobox for a choice from a list, with a visible label and type-to-filter, in
   place of a native `<select>`.
 
