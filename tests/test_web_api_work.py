@@ -364,11 +364,11 @@ async def test_reminders_bulk_cancel_never_cancels_a_new_reminder_that_reused_a_
     await app.store.delete_reminder(OWNER, first, stale, "Deleted in another tab", stale)
     app.dispatch.now.advance(minutes=1)
     reused = await app.dispatch.reminders.create("2026-06-02T12:00", "Call the plumber")
-    assert reused == first  # SQLite handed the deleted reminder's id to the new one
+    assert reused > first  # AUTOINCREMENT never reuses the deleted reminder's id
     async with browser(app) as client:
         result = (await client.post(
             "/api/work/reminders/bulk", headers=JSON,
-            json={"action": "cancel", "items": [{"id": first, "expected": stale}]},
+            json={"action": "cancel", "items": [{"id": reused, "expected": stale}]},
         )).json()
     assert result["ok"] is False and "has changed" in result["message"]
     assert (await app.store.get_reminder(OWNER, reused))["status"] == "active"

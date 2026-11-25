@@ -28,7 +28,7 @@ def _href(hit: global_search.Hit) -> str:
 @router.get("/api/search")
 async def search(request: Request, q: str = Query("", max_length=global_search.MAX_QUERY)) -> dict:
     app = owner_app(request)
-    titles = {row["chat_id"]: _title(row, app.owner_id) for row in await app.store.list_approved_chats()}
+    titles = {row["chat_id"]: _title(row, app.owner_id) for row in await app.store.list_chats()}
     found = await global_search.search_all(app.store, app.home, q, titles)
     return {
         "query": " ".join(q.split()),

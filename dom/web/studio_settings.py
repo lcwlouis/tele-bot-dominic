@@ -351,7 +351,7 @@ async def probe(app: App, config, backup: StudioFallback) -> TestResult:
     key = None
     try:
         _check_keys(config, [ProviderEndpoint(base_url=backup.base_url, api_key_env=backup.api_key_env)])
-        if await asyncio.to_thread(config.media_key_shared, backup.api_key_env):
+        if await asyncio.to_thread(config.media_key_shared, backup.api_key_env, extra_chat_values=app.running_chat_keys()):
             return TestResult(ok=False, latency_ms=0, error=SHARED_KEY.format(name=backup.api_key_env))
         key = await asyncio.to_thread(config.secret, backup.api_key_env)
         if backup.provider == "openrouter_video":
@@ -407,7 +407,7 @@ async def probe_key(app: App, config, kind: str, api_key_env: str | None) -> Tes
     key = None
     try:
         _check_keys(config, [ProviderEndpoint(base_url=base, api_key_env=api_key_env)])
-        if api_key_env and await asyncio.to_thread(config.media_key_shared, api_key_env):
+        if api_key_env and await asyncio.to_thread(config.media_key_shared, api_key_env, extra_chat_values=app.running_chat_keys()):
             return TestResult(ok=False, latency_ms=0, error=SHARED_KEY.format(name=api_key_env))
         key = await asyncio.to_thread(config.secret, api_key_env) if api_key_env else None
         if not key:

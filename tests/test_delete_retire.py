@@ -354,10 +354,10 @@ async def test_reminder_delete_stale_id_reuse_and_in_use(make_app, browser):
         assert await app.store.get_reminder(OWNER, r1) is None
         assert len(_new_archives(app.home.root, before)) == 1
 
-        # Simulate SQLite INTEGER PRIMARY KEY reuse with a different created_at!
+        # With AUTOINCREMENT, a deleted reminder's id is never reused, and stale stamps are still refused.
         app.dispatch.now.advance(seconds=5)
         reused = await app.dispatch.reminders.create("2026-06-02T12:00", "Reused ID reminder")
-        assert reused == r1
+        assert reused > r1
         row_reused = await app.store.get_reminder(OWNER, reused)
         assert row_reused["created_at"] != row1["created_at"]
 
@@ -652,10 +652,10 @@ async def test_reminder_delete_clears_and_archives_retry_kv_state(make_app):
     assert manifest["rows"]["reminder"]["id"] == rem_id
     assert manifest["rows"]["kv"] == [{"key": retry_key, "value": saved_retry}]
 
-    # A new critical reminder reusing the same SQLite ID does not inherit the old retry/undeliverable KV state.
+    # A new critical reminder gets a fresh AUTOINCREMENT id and does not inherit the old retry/undeliverable KV state.
     app.bot.send_message = orig_send
     reused = await app.dispatch.reminders.create("2026-01-01T12:05", "Take meds again", "critical")
-    assert reused == rem_id
+    assert reused > rem_id
     app.dispatch.now.advance(minutes=4)
     await app.dispatch.tick()
     assert await app.dispatch.reminders.active() == []
