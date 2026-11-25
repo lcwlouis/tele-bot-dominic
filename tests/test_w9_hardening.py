@@ -292,15 +292,15 @@ async def test_openrouter_search_save_with_omitted_key_cannot_land_on_decisions_
         assert "decisions provider" in resp.json()["detail"]
 
 
-# ---- 5. AUTOINCREMENT migration 0029 ------------------------------------------------
+# ---- 5. AUTOINCREMENT migration 0027 ------------------------------------------------
 
-def test_migration_0029_autoincrement_preserves_rows_indexes_and_never_reuses_ids(tmp_path):
+def test_migration_0027_autoincrement_preserves_rows_indexes_and_never_reuses_ids(tmp_path):
     db_path = tmp_path / "state.db"
     conn = sqlite3.connect(db_path, isolation_level=None)
     try:
-        # Apply every migration up to 0028 (user_version 29), BEFORE 0029.
+        # Apply every migration up to 0026 (user_version 27), BEFORE 0027.
         for version, filename in MIGRATIONS:
-            if version >= 30:
+            if version >= 28:
                 break
             sql = (MIGRATIONS_DIR / filename).read_text(encoding="utf-8")
             conn.execute("BEGIN IMMEDIATE")
@@ -319,7 +319,7 @@ def test_migration_0029_autoincrement_preserves_rows_indexes_and_never_reuses_id
     finally:
         conn.close()
 
-    assert migrate_database(db_path) == 30
+    assert migrate_database(db_path) == 28
 
     conn = sqlite3.connect(db_path)
     try:

@@ -5,4 +5,4 @@ ALTER TABLE chats ADD COLUMN unreachable_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE chats ADD COLUMN unreachable_at TEXT;
 ALTER TABLE chats ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
 
-PRAGMA user_version = 29;
+PRAGMA user_version = 27;

@@ -54,4 +54,4 @@ SELECT 'desktop_tasks', COALESCE(MAX(id), 0) FROM desktop_tasks;
 INSERT INTO sqlite_sequence (name, seq)
 SELECT 'reminders', COALESCE(MAX(id), 0) FROM reminders;
 
-PRAGMA user_version = 30;
+PRAGMA user_version = 28;
