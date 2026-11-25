@@ -13,7 +13,7 @@ import shutil
 import struct
 import tempfile
 import wave
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -29,13 +29,18 @@ from dom.usage import ModelCallSkipped, UsageRecorder, check_model_allowed, mode
 log = logging.getLogger(__name__)
 
 
-def _backup_key(config: Config, provider: StudioFallback) -> str | None:
+def _backup_key(
+    config: Config, provider: StudioFallback, running_chat_keys: Collection[str] = (),
+) -> str | None:
     """The backup's key value, or None when it is unset or also a chat route's key (refused, with the reason logged)."""
-    if config.media_key_shared(provider.api_key_env):
+    if config.media_key_shared(provider.api_key_env, extra_chat_values=running_chat_keys):
         log.warning("studio backup %s skipped: %s holds the same key as a chat route; give studio backups their own key",
                     provider.model, provider.api_key_env)
         return None
-    return config.secret(provider.api_key_env)
+    try:
+        return config.secret(provider.api_key_env)
+    except (OSError, ValueError):
+        return None
 PNG = b"\x89PNG\r\n\x1a\n"
 MAX_PORTRAIT_BYTES = 4 * 1024 * 1024
 MAX_AUDIO_BYTES = 3 * 1024 * 1024
@@ -335,11 +340,22 @@ def _prepare_photo(encoded: str, mime: str) -> bytes:
 
 
 class CloudStudio:
-    def __init__(self, http: httpx.AsyncClient, usage: UsageRecorder):
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        usage: UsageRecorder,
+        *,
+        running_chat_keys: Callable[[], Collection[str]] | None = None,
+    ):
         self.http = http
         self.usage = usage
+        self.running_chat_keys = running_chat_keys
         self._video_models: tuple[float, dict[str, dict]] | None = None
         self._reconciling: set[asyncio.Task] = set()
+        self._video_reserve_lock = asyncio.Lock()
+
+    def _chat_key_values(self) -> Collection[str]:
+        return self.running_chat_keys() if self.running_chat_keys is not None else ()
 
     async def _read(
         self, url: str, headers: dict, mime: str, limit: int, *,
@@ -427,7 +443,7 @@ class CloudStudio:
         self, config: Config, provider: StudioFallback, kind: Kind, text: str, outfit: str | None, chat_id: int,
         allowed: Callable[[], Awaitable[bool]],
     ) -> bytes | None:
-        key = await asyncio.to_thread(_backup_key, config, provider)
+        key = await asyncio.to_thread(_backup_key, config, provider, self._chat_key_values())
         if not key:
             return None
         base = provider.base_url
@@ -535,7 +551,7 @@ class CloudStudio:
                 references = None
                 for provider in providers(config.studio, kind):
                     try:
-                        key = await asyncio.to_thread(_backup_key, config, provider)
+                        key = await asyncio.to_thread(_backup_key, config, provider, self._chat_key_values())
                         if not key:
                             continue
                         entry = await self._video_entry(provider.base_url, provider.model)
@@ -572,17 +588,26 @@ class CloudStudio:
         payload = {"model": provider.model, **plan, "input_references": references,
                    "provider": routing_preferences(provider.data_policy)}
         estimate = video_estimate(entry, plan, duration)
+        host = httpx.URL(base).host
         with model_request("studio_video", chat_id, allowed):
-            await check_model_allowed()
-            raw, _ = await self._read(base + "/videos", headers, "application/json", 64 * 1024, payload=payload)
-            job = json.loads(raw)
-            job_id = job.get("id") if isinstance(job, dict) else None
-            if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
-                raise ValueError("invalid video job")
-            accepted = asyncio.create_task(self._record_job(provider, chat_id, job_id, estimate))
+            # Reserve the estimated cost under a lock so concurrent video submits cannot both pass the cap,
+            # then release the lock before the network call.
+            async with self._video_reserve_lock:
+                await check_model_allowed()
+                row = await self.usage.record(
+                    "studio_video", provider.model, host, {"cost": estimate}, chat_id, fallback=True,
+                )
+            job_id: str | None = None
             settled = False
             try:
-                row = await asyncio.shield(accepted)
+                raw, _ = await self._read(base + "/videos", headers, "application/json", 64 * 1024, payload=payload)
+                job = json.loads(raw)
+                parsed_id = job.get("id") if isinstance(job, dict) else None
+                if not isinstance(parsed_id, str) or not JOB_ID.fullmatch(parsed_id):
+                    raise ValueError("invalid video job")
+                job_id = parsed_id
+                if row is not None:
+                    await asyncio.shield(self._persist_job(provider, job_id, row, estimate))
                 while True:
                     status = job.get("status")
                     if status not in ("pending", "in_progress"):
@@ -599,21 +624,20 @@ class CloudStudio:
                 return await video_note(clip, wav, duration)
             finally:
                 if not settled:
-                    async def reconcile() -> None:
-                        await self._reconcile(base, headers, job_id, await accepted)
+                    if job_id is not None:
+                        self._track_reconcile(self._reconcile(base, headers, job_id, row))
+                    elif row is not None:
+                        await asyncio.shield(self.usage.store.delete_usage(row))
 
-                    self._track_reconcile(reconcile())
-
-    async def _record_job(self, provider: StudioFallback, chat_id: int, job_id: str, estimate: float) -> int | None:
-        row = await self.usage.record(
-            "studio_video", provider.model, httpx.URL(provider.base_url).host, {"cost": estimate}, chat_id, fallback=True,
-        )
-        if row is not None:
-            await self.usage.store.kv_set(VIDEO_JOB + job_id, json.dumps({
-                "row": row, "model": provider.model, "estimate": estimate,
-                "at": datetime.now(timezone.utc).isoformat(),
-            }))
-        return row
+    async def _persist_job(self, provider: StudioFallback, job_id: str, row: int, estimate: float) -> None:
+        await self.usage.store.kv_set(VIDEO_JOB + job_id, json.dumps({
+            "row": row,
+            "model": provider.model,
+            "base_url": provider.base_url,
+            "api_key_env": provider.api_key_env,
+            "estimate": estimate,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }))
 
     async def _settle(self, job_id: str, row: int | None, job: dict) -> None:
         """Replace a job's estimate with its reported cost (none reported for a failed job means nothing was billed)."""
@@ -625,10 +649,13 @@ class CloudStudio:
                 await asyncio.shield(self.usage.store.set_usage_cost(row, float(reported)))
         await asyncio.shield(self.usage.store.kv_delete(VIDEO_JOB + job_id))
 
-    async def _reconcile(self, base: str, headers: dict, job_id: str, row: int | None) -> None:
-        """After the deadline: keep asking for the job's final cost for a bounded time. Until then the estimate stays."""
+    async def _reconcile(
+        self, base: str, headers: dict, job_id: str, row: int | None, *, deadline_seconds: float = RECONCILE_SECONDS,
+    ) -> None:
+        """After the deadline or a restart: keep asking for the job's final cost for a bounded time.
+        Until then the estimate stays."""
         try:
-            async with asyncio.timeout(RECONCILE_SECONDS):
+            async with asyncio.timeout(max(0.0, deadline_seconds)):
                 while True:
                     try:
                         job = await self._job(base, headers, job_id)
@@ -640,3 +667,55 @@ class CloudStudio:
                     await asyncio.sleep(RECONCILE_POLL_SECONDS)
         except TimeoutError:
             log.warning("a cloud video job's final cost never arrived; its estimate stays")
+            await asyncio.shield(self.usage.store.kv_delete(VIDEO_JOB + job_id))
+
+    async def reconcile_pending(self, config: Config) -> int:
+        """On startup: resume reconciling any persisted video jobs whose final cost was not settled before shutdown."""
+        entries = await self.usage.store.kv_prefix(VIDEO_JOB)
+        scheduled = 0
+        now = datetime.now(timezone.utc)
+        for key, raw in entries:
+            job_id = key.removeprefix(VIDEO_JOB)
+            try:
+                data = json.loads(raw)
+                row = data.get("row")
+            except (ValueError, AttributeError):
+                await self.usage.store.kv_delete(key)
+                continue
+            if not JOB_ID.fullmatch(job_id) or type(row) is not int:
+                await self.usage.store.kv_delete(key)
+                continue
+            model = data.get("model")
+            base_url = data.get("base_url")
+            api_key_env = data.get("api_key_env")
+            provider = next(
+                (p for p in config.studio.video_fallbacks
+                 if (not base_url or p.base_url == base_url)
+                 and (not api_key_env or p.api_key_env == api_key_env)
+                 and (not model or p.model == model)),
+                next((p for p in config.studio.video_fallbacks if model and p.model == model), None),
+            )
+            base = base_url or (provider.base_url if provider is not None else None)
+            key_env = api_key_env or (provider.api_key_env if provider is not None else None)
+            secret = (
+                await asyncio.to_thread(
+                    config.media_secret, key_env, extra_chat_values=self._chat_key_values(),
+                )
+                if key_env else None
+            )
+            if not base or not secret:
+                log.warning("cannot reconcile persisted video job %s: missing endpoint or media key", job_id)
+                continue
+            remaining = float(RECONCILE_SECONDS)
+            if isinstance(at := data.get("at"), str):
+                try:
+                    started = datetime.fromisoformat(at)
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    remaining = max(5.0, RECONCILE_SECONDS - (now - started).total_seconds())
+                except ValueError:
+                    pass
+            headers = {"Authorization": f"Bearer {secret}"}
+            self._track_reconcile(self._reconcile(base, headers, job_id, row, deadline_seconds=remaining))
+            scheduled += 1
+        return scheduled

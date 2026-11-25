@@ -115,6 +115,29 @@ class App:
         self.self_work = SelfWork(self)
         if self.config.desktop_hosts:
             self.desktop_worker = DesktopFleet(self)
+        if self.cloud_studio is not None and self.cloud_studio.running_chat_keys is None:
+            self.cloud_studio.running_chat_keys = self.running_chat_keys
+
+    def running_chat_keys(self) -> frozenset[str]:
+        """Every API key currently held in memory by running chat, triage, media, drafting, escalation or search
+        clients, so a media key rotated to a running chat client's old value without a restart is still refused."""
+        keys: set[str] = set()
+        for holder in (
+            self.client,
+            getattr(self.media_describer, "client", None),
+            self.draft_client,
+            self.escalation_client,
+            self.jev,
+            self.search_client,
+        ):
+            if holder is None:
+                continue
+            children = getattr(holder, "clients", None)
+            for item in children if children is not None else (holder,):
+                key = getattr(item, "api_key", None)
+                if isinstance(key, str) and key:
+                    keys.add(key)
+        return frozenset(keys)
 
     @property
     def owner_id(self) -> int | None:
@@ -322,6 +345,8 @@ async def handle_message(app: App, message: Message) -> None:
     msg = to_incoming(message)
     if _is_own_message(app, msg):
         return
+    # Any message from a chat proves it is reachable again, including commands handled before the gate.
+    await app.store.set_chat_reachable(msg.chat_id, True)
     if app.owner_id is None and not msg.is_bot:  # until an owner exists, the only thing Dom answers is /claim
         code = _claim_code(msg.text, app.bot_username)
         if code is not None:
@@ -593,6 +618,34 @@ async def _settle_button(app: App, query: CallbackQuery, outcome: str, suffix: s
         log.info("could not mark the handled button in chat %s", message.chat.id)
 
 
+async def _clear_buttons(app: App, query: CallbackQuery) -> None:
+    """Remove a card's inline keyboard once closed, used or stale."""
+    if query.message is None:
+        return
+    try:
+        await retry_telegram(
+            lambda: app.bot.edit_message_reply_markup(
+                chat_id=query.message.chat.id, message_id=query.message.message_id, reply_markup=None,
+            ),
+            sleep=app.sleep,
+        )
+    except (TelegramBadRequest, TelegramRetryAfter):
+        log.info("could not clear card buttons in chat %s", query.message.chat.id)
+
+
+async def _close_card(app: App, query: CallbackQuery) -> None:
+    """Close removes the whole card. Telegram refuses to delete messages older than 48 hours, so then only its buttons go."""
+    if query.message is None:
+        return
+    try:
+        await retry_telegram(
+            lambda: app.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id),
+            sleep=app.sleep,
+        )
+    except (TelegramBadRequest, TelegramRetryAfter):
+        await _clear_buttons(app, query)
+
+
 async def _replace_with_prompt(app: App, query: CallbackQuery, text: str, markup: InlineKeyboardMarkup) -> None:
     """Rich messages cannot be edited, so the owner's old /status message is deleted and the new one sent after it."""
     if query.message is None:
@@ -619,11 +672,14 @@ async def _handle_override(app: App, query: CallbackQuery, action: str, raw_chat
         chat_id = int(raw_chat_id)
     except ValueError:
         await _toast(app, query, "unknown chat")
+        await _clear_buttons(app, query)
         return
     result = await owner.override_chat(app, chat_id, _OVERRIDES[action], _person(query.from_user.full_name))
     await _toast(app, query, result.message if result else "unknown chat")
     if result is not None:
         await _refresh_status(app, query)
+    else:
+        await _clear_buttons(app, query)
 
 
 async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id: str) -> None:
@@ -642,16 +698,20 @@ async def _handle_leave(app: App, query: CallbackQuery, action: str, raw_chat_id
         chat_id = int(raw_chat_id)
     except ValueError:
         await _toast(app, query, "unknown chat")
+        await _clear_buttons(app, query)
         return
     if action == "leaveyes":
         result, left = await owner.leave_chat(app, chat_id, who)
         await _toast(app, query, result)
         if left:
             await _refresh_status(app, query)
+        else:
+            await _clear_buttons(app, query)
         return
     chat = await owner.leavable_chat(app, chat_id)
     if chat is None:
         await _toast(app, query, "unknown chat")
+        await _clear_buttons(app, query)
         return
     title = owner.display_title(chat, app.owner_id)
     await _toast(app, query)
@@ -674,27 +734,33 @@ async def _handle_preset(app: App, query: CallbackQuery, action: str, data: str)
     if raw_id == "all":
         if action == "preset":
             await _toast(app, query)
+            await _clear_buttons(app, query)
             await owner.choose_preset(app, None)
             return
         text = await owner.set_global_preset(app, name, _person(query.from_user.full_name))
         await _toast(app, query, None if text else "preset unavailable")
+        await _clear_buttons(app, query)
         if text:
             await _send(app, owner_id, text)
         return
     chat = await owner.approved_chat(app, raw_id)
     if chat is None:
         await _toast(app, query, "unknown chat")
+        await _clear_buttons(app, query)
         return
     if action == "preset":
         await _toast(app, query)
+        await _clear_buttons(app, query)
         await owner.choose_preset(app, chat)
         return
 
     text = await owner.set_preset(app, chat, name)
     if text is None:
         await _toast(app, query, "preset or chat unavailable")
+        await _clear_buttons(app, query)
         return
     await _toast(app, query)
+    await _clear_buttons(app, query)
     await _send(app, owner_id, text)
 
 
@@ -831,7 +897,9 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
         first, _, last = payload.partition(":")
         first_id, last_id = _item_id(first), _item_id(last)
         if first_id is not None and last_id is not None:
-            await _toast(app, query, await owner.approve_proposal_page(app, first_id, last_id))
+            outcome = await owner.approve_proposal_page(app, first_id, last_id)
+            await _toast(app, query, outcome)
+            await _settle_button(app, query, "already handled")
         return
     raw_id, _, token = payload.partition(":")
     proposal_id = _item_id(raw_id)
@@ -843,6 +911,7 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
         await _settle_button(app, query, outcome)
     elif action == "page" and not token:
         await _toast(app, query)
+        await _clear_buttons(app, query)
         await owner.show_proposals(app, proposal_id)
         await owner.record_event(app, "Paged through pending proposals")
     elif action == "show" and not token:
@@ -851,6 +920,8 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
         if row:
             await app.proposals.send(row)
             await owner.record_event(app, f"Viewed proposal #{proposal_id}")
+        else:
+            await _settle_button(app, query, "already handled")
     elif action == "del":
         error = await _confirm_delete_proposal(app, proposal_id, token or None)
         await _toast(app, query, error)
@@ -868,6 +939,13 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
     action, _, raw_chat_id = (query.data or "").partition(":")
     if action == "noop":  # a button that only shows how something was settled
         await _toast(app, query)
+        return
+    if action == "card" and raw_chat_id == "close":
+        if app.owner_id is None or query.from_user.is_bot or query.from_user.id != app.owner_id:
+            await _toast(app, query, "not allowed")
+            return
+        await _toast(app, query)
+        await _close_card(app, query)
         return
     if action in ("preset", "presetset"):
         await _handle_preset(app, query, action, raw_chat_id)
@@ -908,6 +986,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             if decision == "cancel" and not rest and app.desktop_worker is not None:
                 changed = await app.desktop_worker.cancel(owner_id, task_id)
                 await _toast(app, query, "Cancelled" if changed else "already handled")
+                await _clear_buttons(app, query)
             elif decision == "done" and app.desktop_worker is not None and (steps := _item_id(rest)) is not None:
                 changed = await app.desktop_worker.resume(owner_id, task_id, steps)
                 await _toast(app, query, "Resumed" if changed else "already handled")
@@ -939,6 +1018,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             if decision == "cancel" and not token:
                 changed = await app.self_work.cancel(item_id)
                 await _toast(app, query, "Cancelled" if changed else "already handled")
+                await _clear_buttons(app, query)
             elif decision == "del":
                 error = await _confirm_delete_own_task(app, item_id, token or None)
                 await _toast(app, query, error)
@@ -972,9 +1052,11 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
                 if decision == "retire":
                     _, message = await owner.retire_skill(app, name)
                     await _toast(app, query, message)
+                    await _clear_buttons(app, query)
                 elif decision == "restore":
                     _, message = await owner.restore_skill(app, name)
                     await _toast(app, query, message)
+                    await _clear_buttons(app, query)
                 elif decision == "del":
                     error = await _confirm_delete_skill(app, name, digest or None)
                     await _toast(app, query, error)
@@ -985,6 +1067,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
                         await _settle_confirm(app, query, f"Deleted {name}")
         elif raw_chat_id.startswith("disable:"):
             await _toast(app, query, await owner.disable_plugin(app, raw_chat_id.removeprefix("disable:")))
+            await _clear_buttons(app, query)
         elif raw_chat_id.startswith("del:"):
             name, _, digest = raw_chat_id.removeprefix("del:").partition(":")
             error = await _confirm_delete_plugin(app, name, digest or None)
@@ -1008,6 +1091,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         decision, _, nonce = raw_chat_id.partition(":")
         if decision in ("go", "no"):
             await _toast(app, query, await owner.decide_update(app, decision, nonce))
+            await _clear_buttons(app, query)
         return
     if action == "rem":
         decision, _, payload = raw_chat_id.partition(":")
@@ -1048,6 +1132,8 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             app.bot, query.message.chat.id, query.message.message_id, f"{label}: {chat['title'] or chat_id}",
             sleep=app.sleep, literal=True,
         )
+    elif chat is None:
+        await _clear_buttons(app, query)
 
 
 async def _note_removed(app: App, update: ChatMemberUpdated, owner_id: int) -> None:
@@ -1073,6 +1159,7 @@ async def handle_my_chat_member(app: App, update: ChatMemberUpdated) -> None:
         return
     if status not in ("member", "administrator"):
         return
+    await app.store.set_chat_reachable(update.chat.id, True)
     inviter = f"@{update.from_user.username}" if update.from_user.username else update.from_user.full_name
     if (await app.store.get_chat_auth_status(update.chat.id))["authorization_status"] in ("left", "ignored"):
         await app.store.set_chat_auth_status(update.chat.id, "pending_approval", approval_prompt_sent=False)

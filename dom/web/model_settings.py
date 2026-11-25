@@ -520,14 +520,19 @@ def _check_role_types(config: Config, role: SettingsRole, slots: list[ProviderEn
 def _save(current: Snapshot, update: ModelUpdate) -> Snapshot:
     """The settings with `update` applied, validated but not written."""
     _check_revision(current, update.revision)
-    _check_role_types(current.config, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
+    submitted = [*([update.primary] if update.primary else []), *update.fallbacks]
+    _check_role_types(current.config, update.role, submitted)
     try:
-        _check_keys(current.config, [*([update.primary] if update.primary else []), *update.fallbacks])
+        _check_keys(current.config, submitted)
     except KeyPairing as exc:
         raise HTTPException(422, str(exc)) from None
     document = tomlkit.parse(current.text)
-    set_role(document, update.role, [*([update.primary] if update.primary else []), *update.fallbacks])
-    return validated(current, document)
+    set_role(document, update.role, submitted)
+    saved = validated(current, document)
+    # Starter defaults (e.g. OpenRouter search's default api_key_env) are filled in by validated();
+    # re-check role types against the effective chain so an omitted key cannot land on a decisions provider.
+    _check_role_types(saved.config, update.role, list(chain(saved.config, update.role)))
+    return saved
 
 
 
@@ -669,10 +674,11 @@ def _uses(config: Config) -> Iterator[tuple[SettingsRole | StudioChain, int, Pro
 
 def provider_catalog(config: Config) -> list[ProviderSetupView]:
     """Saved providers first, then each other address, key variable and type a role or studio backup uses, with every
-    slot that uses it. One address and key is one provider per type (E70)."""
-    found: dict[tuple[str, str | None, str], ProviderSetupView] = {}
+    slot that uses it. One address and key is one provider per type (E70), and per search service."""
+    found: dict[tuple[str, str | None, str, str | None], ProviderSetupView] = {}
     for name, setup in config.provider_setups.items():
-        found.setdefault((setup.base_url.rstrip("/"), setup.api_key_env, setup.type), ProviderSetupView(
+        search_kind = setup.kind if setup.type == "search" else None
+        found.setdefault((setup.base_url.rstrip("/"), setup.api_key_env, setup.type, search_kind), ProviderSetupView(
             name=name, kind=setup.kind, type=setup.type, base_url=setup.base_url, api_key_env=setup.api_key_env,
             key_set=_key_set(config, setup.api_key_env), is_local=_is_local(setup.base_url), saved=True,
             listable=model_lists.listable(setup.kind, setup.type, setup.base_url), uses=[],
@@ -689,7 +695,7 @@ def provider_catalog(config: Config) -> list[ProviderSetupView]:
             if not view.base_url:  # a hand-written address the settings API can't show
                 continue
             (kind, type_), base_url, variable, key_set = slot_kind(role, slot), view.base_url, view.api_key_env, view.key_set
-        key = (base_url.rstrip("/"), variable, type_)  # a trailing slash names the same address
+        key = (base_url.rstrip("/"), variable, type_, kind if type_ == "search" else None)  # a trailing slash names the same address
         if key not in found:
             service = KIND_LABELS.get(kind) if kind != "openrouter" or openrouter_host(httpx.URL(base_url).host) else None
             label = " ".join(filter(None, (service or httpx.URL(base_url).host, TYPE_LABELS[type_])))

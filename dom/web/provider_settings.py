@@ -241,7 +241,9 @@ def _apply(current: Snapshot, edit: ProviderSave) -> Snapshot:
                 continue
             slots = [
                 endpoint.model_copy(update={"base_url": edit.base_url, "api_key_env": edit.api_key_env})
-                if same_url(endpoint.base_url, original.base_url) and (endpoint.api_key_env or None) == original.api_key_env
+                if same_url(endpoint.base_url, original.base_url)
+                and (endpoint.api_key_env or None) == original.api_key_env
+                and kind_fits(original.kind, original.type, role, endpoint)
                 else endpoint
                 for endpoint in chain(config, role)
             ]

@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+import os
 import re
 import time
 from collections.abc import Collection
@@ -66,7 +68,16 @@ def cache_key(base_url: str, api_key_env: str | None, type_: str = "chat") -> st
 
 def secret_values(config: Config) -> frozenset[str]:
     """The values of every key variable config.toml names, and the fixed credentials Dom reads, that are set."""
-    return frozenset(value for name in config.secret_names() if (value := config.secret(name)) and len(value) >= MIN_SECRET)
+    found: set[str] = set()
+    for name in config.secret_names():
+        try:
+            value = config.secret(name)
+        except UnicodeDecodeError:  # malformed .env: still redact the process environment's value
+            logging.getLogger("dom.model_lists").warning(".env is not valid UTF-8; redacting environment keys only")
+            value = os.environ.get(name)
+        if value and len(value) >= MIN_SECRET:
+            found.add(value)
+    return frozenset(found)
 
 
 def _holds_secret(texts: Collection[str], secrets: Collection[str]) -> bool:

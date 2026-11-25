@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import copy
 import ipaddress
+import logging
 import os
 import re
 import stat
 import tempfile
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from importlib import resources
 from pathlib import Path
 from typing import Literal, get_args
@@ -633,7 +634,7 @@ class Config(BaseModel):
         model_routes = [*(endpoint for _, endpoint in self.model_endpoints()), *self.provider_setups.values()]
         chat_keys = self.chat_keys()
         for provider in fallbacks:
-            if provider.api_key_env in chat_keys:  # a media key's looser data policy never reaches chat content
+            if provider.api_key_env in chat_keys or self.media_key_shared(provider.api_key_env):  # a media key's looser data policy never reaches chat content
                 raise ValueError(MEDIA_KEY_RULE.format(name=provider.api_key_env))
             origin = httpx.URL(provider.base_url).copy_with(path="/")
             if provider.api_key_env in reserved or any(
@@ -649,7 +650,9 @@ class Config(BaseModel):
         """A media provider's key may take a looser data policy (E66), so no chat or decisions route may share it."""
         chat_keys = self.chat_keys()
         for setup in self.provider_setups.values():
-            if setup.type == "media" and setup.api_key_env in chat_keys:
+            if setup.type == "media" and setup.api_key_env and (
+                setup.api_key_env in chat_keys or self.media_key_shared(setup.api_key_env)
+            ):
                 raise ValueError(MEDIA_PROVIDER_KEY_RULE.format(name=setup.api_key_env))
         return self
 
@@ -664,19 +667,26 @@ class Config(BaseModel):
                   *(setup for setup in self.provider_setups.values() if setup.type != "media")]
         return {route.api_key_env for route in routes if route.api_key_env}
 
-    def media_key_shared(self, name: str) -> bool:
+    def media_key_shared(self, name: str, *, extra_chat_values: Iterable[str] = ()) -> bool:
         """Whether a studio backup's key variable holds the same value as a key a chat, decisions or search route uses
-        under another name. Config validation compares names only; this compares the values, read from .env on each
-        call, so a value changed there counts at once."""
-        env = _read_dotenv(self.home / ".env")
+        under another name, or as any running chat client's key value (e.g. after rotating .env without a restart)."""
+        try:
+            env = _read_dotenv(self.home / ".env")
+        except UnicodeDecodeError:  # a malformed .env must not break settings; other I/O errors still surface
+            logging.getLogger("dom.config").warning(".env is not valid UTF-8; comparing keys from the environment only")
+            env = {}
         value = env.get(name) or os.environ.get(name)
-        return bool(value) and any(
+        if not value:
+            return False
+        if any(other_value and other_value == value for other_value in extra_chat_values):
+            return True
+        return any(
             (env.get(other) or os.environ.get(other)) == value for other in self.chat_keys() if other != name)
 
-    def media_secret(self, name: str) -> str | None:
+    def media_secret(self, name: str, *, extra_chat_values: Iterable[str] = ()) -> str | None:
         """A studio backup's key value, or None when it is unset or also a chat route's key (E66): a media key may
         take a looser data policy, so it never carries a credential that chat content uses."""
-        return None if self.media_key_shared(name) else self.secret(name)
+        return None if self.media_key_shared(name, extra_chat_values=extra_chat_values) else self.secret(name)
 
     @field_validator("provider_setups")
     @classmethod
