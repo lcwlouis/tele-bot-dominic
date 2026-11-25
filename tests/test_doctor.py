@@ -450,3 +450,12 @@ async def test_doctor_probes_searxng_deepseek_and_tavily_search_providers():
     assert ("GET", "http://192.0.2.10:8080/search?q=test&format=json") in seen
     assert ("POST", "https://api.deepseek.com/v1/tools/search") in seen
     assert ("POST", "https://api.tavily.com/search") in seen
+
+
+def test_unknown_config_keys_reads_providers_by_its_table_name():
+    from dom.doctor import _unknown_config_keys
+    raw = {"providers": {"Router": {
+        "kind": "openrouter", "type": "chat", "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY", "colour": "blue",
+    }}}
+    assert _unknown_config_keys(raw) == ["providers.Router.colour"]

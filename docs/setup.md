@@ -107,6 +107,7 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/export` | Sends a zip of everything Dom remembers: `SOUL.md`, `memory/`, `private/`, skills and presets. Never `.env`, `state.db` or backups; use `dom backup` for a full copy. |
 | `/tasks` | Lists, cancels and deletes finished desktop tasks (`/tasks delete <id>`). |
 | `/ownwork` | Lists, cancels and deletes finished self-directed tasks (`/ownwork delete <id>`). |
+| `/studio` | Says which kinds of studio media (voice notes, round videos, photos, special videos, profile photo) are available, unavailable for now, or off. |
 | `/t3` | Shows T3 Code sign-in, linked machines and audit history ([T3 Code bridge](t3-bridge.md)). |
 | `/plugins` | Lists, disables (retires) and deletes plugins (`/plugins delete <name>`). |
 | `/update` | Shows the newest `vX.Y.Z` release with its changelog and deploys it on your confirmation (see [Deploy on a Raspberry Pi](deploy-pi.md#update-to-a-new-release)). |

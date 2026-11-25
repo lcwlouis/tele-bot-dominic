@@ -111,7 +111,7 @@ async def test_self_inspect_shape_and_owner_only_tools(make_app):
         "everywhere": "", "chats_with_own": [], "task_mode": {"on": False}, "today": {"mode": "none", "preset": None, "your_reason": None, "how": None},
     }
     assert found["studio"] == "off (configure [studio])"
-    assert not any(found["studio_features"].values())
+    assert set(found["studio_features"].values()) == {"off"}
     assert found["plugin_sandbox_failure"] is None
     app.plugin_runner.last_failure = "network probe: bind allowed"
     assert json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))["plugin_sandbox_failure"] == (

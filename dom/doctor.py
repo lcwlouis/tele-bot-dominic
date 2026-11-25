@@ -205,9 +205,12 @@ def _unknown_config_keys(raw: dict) -> list[str]:
     def walk(prefix: str, table: object, model: type[BaseModel]) -> None:
         if not isinstance(table, dict):
             return
-        known = model.model_fields.keys() - NOT_CONFIG_KEYS.get(model, set()) | SHORTHAND_KEYS.get(model, set())
+        # config.toml spells a field by its alias when it has one ([providers] is Config.provider_setups).
+        names = {field.alias or name for name, field in model.model_fields.items()}
+        known = names - NOT_CONFIG_KEYS.get(model, set()) | SHORTHAND_KEYS.get(model, set())
         unknown.extend(prefix + key for key in table.keys() - known)
         for name, field in model.model_fields.items():
+            name = field.alias or name
             value, annotation = table.get(name), field.annotation
             args = get_args(annotation)
             if nested := submodel(annotation):

@@ -41,7 +41,6 @@ named `vX.Y.Z`.
 - **Switches need a server.** Studio switches turn on only when the studio or a backup with its key set can serve them, and `/status` says when one is on with nothing behind it. A backup alone now serves its switch without the local studio. `/studio` shows availability per kind; worker and memory details stay on the dashboard.
 - **Profile photo interval.** The profile photo changes at most every 1, 7, 14 or 30 days (default 14) instead of every hour. A refused change is tried again after an hour.
 
-- **Rollback note: providers.** v0.8.2 and older refuse a `[providers.<name>]` table with a `type` line or `kind = "gemini"`. Delete those tables before starting an older release (see docs/deploy-pi.md, "Roll back by hand").
 - **Rollback note: effort.** A reasoning effort other than `low` or `medium` (such as `high`) saved from Settings makes v0.8.2 and older refuse to start. Before starting the older release, set each `reasoning_effort` in `config.toml` back to `low` or `medium` (or delete it), and check again after restoring any backup copy (see docs/deploy-pi.md, "Roll back by hand").
 
 ## [0.8.2] - 2026-11-23
