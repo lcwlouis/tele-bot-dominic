@@ -127,3 +127,14 @@ def test_the_cli_takes_flags_and_skips_the_questions(home, monkeypatch, capsys):
     assert capsys.readouterr().out.count(setup.ZDR_RECOMMENDATION) == 1
     assert cli.main(["setup", str(home), "--studio", "local", "--studio-url", "http://localhost:9000"]) == 0
     assert load_config(home).studio.base_url == "http://localhost:9000"
+
+
+def test_the_wizard_asks_before_replacing_studio_settings_and_keeps_them_when_declined(home):
+    # Review of #84: setup rewrote an existing studio configuration without asking.
+    assert run(home, ["2", "http://gpu.example.test:8080", TOKEN])[0] == 0
+    before = (home / "config.toml").read_text()
+    code, said = run(home, ["3", "n"])
+    assert code == 0 and "Left the studio settings as they were." in said
+    assert (home / "config.toml").read_text() == before
+    code, _ = run(home, ["3", "y"])
+    assert code == 0 and load_config(home).studio.enabled is False

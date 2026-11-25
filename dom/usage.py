@@ -304,7 +304,7 @@ class Usage(UsageRecorder):
 
     async def over_cap(
         self, config: Config, bot, *, sleep=None, area: SpendArea | None = None,
-        spawn_notice: Callable[[Coroutine[None, None, None]], object] | None = None,
+        spawn_notice: Callable[[Coroutine[None, None, None]], object] | None = None, include_daily: bool = True,
     ) -> bool:
         """True while the daily cap, the monthly cap or `area`'s monthly limit is reached. `area` defaults to the area
         of the model request in progress, if there is one. The first time each limit trips, the owner is told once."""
@@ -312,7 +312,7 @@ class Usage(UsageRecorder):
         if area is None and request is not None:
             area = area_of(request.kind)
         area_cap = config.area_spend_caps_usd.get(area, 0) if area is not None else 0
-        daily, monthly = config.daily_spend_cap_usd, config.monthly_spend_cap_usd
+        daily, monthly = (config.daily_spend_cap_usd if include_daily else 0), config.monthly_spend_cap_usd
         if not (daily or monthly or area_cap):
             return False
         tz = ZoneInfo(config.timezone)

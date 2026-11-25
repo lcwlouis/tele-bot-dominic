@@ -218,7 +218,7 @@ class SelfWork:
         ]
         plan = None
         try:
-            with model_request("reflection", owner, partial(app.dispatch.model_allowed, owner)):
+            with model_request("reflection", owner, partial(app.dispatch.background_allowed, owner)):
                 for attempt in range(2):
                     await check_model_allowed()
                     reply = await app.client.complete(request, [])

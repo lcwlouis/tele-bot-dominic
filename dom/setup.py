@@ -80,6 +80,17 @@ def apply_studio_path(
     return todo
 
 
+def _current_studio(home: Path) -> str:
+    """A one-line summary of studio settings already in config.toml, or "" when there are none to replace."""
+    try:
+        studio = tomllib.loads((home / "config.toml").read_text()).get("studio") or {}
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+    if not isinstance(studio, dict) or not (studio.get("enabled") or studio.get("base_url")):
+        return ""
+    return f"enabled={bool(studio.get('enabled'))}, address={studio.get('base_url') or 'none'}"
+
+
 def run_setup(
     home: Path, *, ask: Callable[[str], str] | None = None, ask_secret: Callable[[str], str] | None = None,
     say: Callable[[str], None] = print, path: StudioPath | None = None, base_url: str = "",
@@ -102,6 +113,10 @@ def run_setup(
     if path != "apis":
         base_url = base_url or ask(f"Studio address [{LOCAL_URL if path == 'local' else 'required'}]: ").strip()
         token = ask_secret("Studio token (hidden; leave empty to add it to .env yourself): ").strip() or None
+    current = _current_studio(home)
+    if current and ask(f"This replaces your current studio settings ({current}). Continue? [y/N]: ").strip().lower() not in ("y", "yes"):
+        say("Left the studio settings as they were.")
+        return 0
     try:
         todo = apply_studio_path(home, path, base_url=base_url, token=token)
     except (OSError, ValueError) as error:

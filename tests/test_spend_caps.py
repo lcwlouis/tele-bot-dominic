@@ -180,3 +180,15 @@ async def test_a_cost_reported_late_counts_once_it_arrives(make_app):
     assert await over(app)
     by_area = await app.dispatch.usage.month_by_area(ZoneInfo("UTC"))
     assert by_area["media"] == pytest.approx(1.2)
+
+
+async def test_background_work_stops_at_the_monthly_cap_even_for_the_exempt_owner(make_app):
+    # Review of #84: reflection and Own work planning ran as the owner, so the exemption let them pass the monthly cap.
+    app = make_app()
+    app.dispatch.now.at = CLOCK_START
+    configure(app, daily_spend_cap_usd=1.0, monthly_spend_cap_usd=0)
+    await spend(app, "chat", 1.5, chat_id=OWNER)
+    assert await app.dispatch.background_allowed(OWNER)  # the daily cap alone doesn't stop the owner's background work
+    configure(app, monthly_spend_cap_usd=1.0)
+    assert await app.dispatch.model_allowed(OWNER)  # the owner's own chat stays exempt
+    assert not await app.dispatch.background_allowed(OWNER)

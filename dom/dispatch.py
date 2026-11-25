@@ -742,6 +742,13 @@ class Dispatcher:
     async def model_allowed(self, chat_id: int) -> bool:
         return await self._approved(chat_id) and not await self.spend_paused(chat_id)
 
+    async def background_allowed(self, chat_id: int) -> bool:
+        """For Dom's own background work (reflection, Own work planning): the owner DM's daily-cap exemption does not
+        extend to it past the monthly cap or an area's monthly limit, which are hard ceilings."""
+        return await self.model_allowed(chat_id) and not await self.usage.over_cap(
+            self.app.config, self.app.bot, sleep=self.app.sleep, include_daily=False,
+        )
+
     async def turn_allowed(self, chat_id: int, scope: Scope) -> bool:
         return (scope != "owner_dm" or chat_id == self.app.owner_id) and await self.model_allowed(chat_id)
 
