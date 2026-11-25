@@ -5,13 +5,14 @@ journal archive, for people editing files by hand and for the dashboard.
 
 ## Note lines
 
-People notes (`memory/people/<id>.md`), chat notes (`memory/chats/<id>.md`), `memory/MEMORY.md` and the owner's
+People notes (`memory/people/<id>.md`), chat notes (`memory/chats/<id>.md`), entity notes under `memory/places/`,
+`memory/projects/` and `memory/goals/`, `memory/MEMORY.md` and the owner's
 `private/USER.md` and `private/NOTES.md` are bullet lists. A line may end with metadata groups in braces:
 
 ```
 - Works as a nurse (as of 2026-11) {chat -100123}
 - Hates surprises {any}
-- Plans a trip to Japan (until 2027-04-30) {chat -100123} {core dom 2026-11-25: she talks about it all the time}
+- Plans a trip to Japan (until 2027-04-30) {chat -100123} {entities person:123|place:japan|goal:take-a-break} {core dom 2026-11-25: she talks about it all the time}
 - Loves tea {core owner 2026-11-25}
 ```
 
@@ -22,17 +23,32 @@ People notes (`memory/people/<id>.md`), chat notes (`memory/chats/<id>.md`), `me
 | none | An older line, or one typed by hand: counts as `{any}`. |
 | `{core owner DATE}` | A core memory the owner pinned. Dom can't unpin it. |
 | `{core dom DATE: why}` | A core memory Dom chose, with the day and his reason. |
+| `{entities person:ID\|place:slug\|project:slug\|goal:slug}` | The people, places, projects and goals this fact links. Slugs use lowercase letters, digits and dashes. |
 
 A group counts wherever it stands in the line (`- Secret {chat -100123} (confirmed)` is tagged to that chat), and every
-prompt, search result and summary shows the line without it. Tags never count toward a file's size limit. `MEMORY.md` is
+prompt, search result and summary shows the line without it. Source, entity and core groups never count toward a file's size limit. `MEMORY.md` is
 read in every chat, so it refuses `{chat ...}` tags. The owner can change any tag by editing the file.
 
-Only people and chat notes carry source tags. When the memory pass writes anywhere else (`MEMORY.md`, the owner's
+People, chat and entity notes carry source tags. When the memory pass writes anywhere else (`MEMORY.md`, the owner's
 `private/` notes) the tags in its text are dropped, and it can never write a `{core ...}` group in any file: a replace
 takes the new line's tag from the new text alone (the old line's `{any}` or `{chat ...}` does not carry over).
 
 `(as of YYYY-MM)` and `(until YYYY-MM-DD)` are plain text in the line. The daily upkeep job moves a line whose `until`
 date has passed to the former file. Core lines never expire.
+
+## Entity files and the graph index
+
+People keep their existing numeric files. When the background memory pass first needs a durable place, project or
+goal, it may create `memory/places/<slug>.md`, `memory/projects/<slug>.md` or `memory/goals/<slug>.md`. Each fact line
+records every entity it is about; entities on the same line are linked. The source chat tag remains the privacy
+boundary, so a group or friend's DM can retrieve only its own lines and `{any}` lines, while the owner DM can retrieve
+all public lines.
+
+SQLite is a rebuildable index, not the source of truth. It records each fact's file, line, source chat, dates, entities
+and links, and indexes messages for retrieval. `dom rebuild-index HOME` rebuilds it from Markdown and message history.
+Search mode `keyword` is the fast default; `meaning` blends BM25, embeddings and the same recency weighting; `entity`
+returns everything visible about an entity and the entities linked on those facts. Entity and core groups are stripped
+before a model sees a note.
 
 ## Core memories
 

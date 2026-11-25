@@ -19,6 +19,7 @@ from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
 from dom.desktop import network as desktop_network
+from dom.embedding import routed_embedding_client
 from dom.home import Home, init_home
 from dom.gifs import GifSearch
 from dom.reachability import check_reachability
@@ -26,6 +27,7 @@ from dom.studio.client import StudioClient
 from dom.studio.cloud import CloudStudio
 from dom.importer import import_v2
 from dom.jev import JevClient
+from dom.knowledge import KnowledgeIndex
 from dom.llm import FallbackClient, routed_client
 from dom.media import MediaDescriber
 from dom.search import SearchRouter, routed_search_client
@@ -141,6 +143,7 @@ async def run(home: Path) -> None:
                 cloud_studio=CloudStudio(studio_http, usage),
                 draft_client=routed_client(config, "drafting", http, usage),
                 escalation_client=routed_client(config, "escalation", http, usage),
+                embedding_client=routed_embedding_client(config, http, usage),
             )
             await app.stickers.refresh()
             from dom.deletion import recover_deletions
@@ -153,6 +156,7 @@ async def run(home: Path) -> None:
             # Self-directed work is planned in the same nightly window, after the reflection (the daydream).
             app.dispatch.jobs.register("self-work", reflection.due, app.self_work.plan)
             app.dispatch.jobs.register("memory-upkeep", journal_archive.due, partial(journal_archive.run, app))
+            app.dispatch._spawn(app.knowledge.run_pending())
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
             if config.owner_id is not None:
@@ -240,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
     check_cmd.add_argument("lan_address", help="IPv4 address or <name>.local of a known reachable LAN service")
     check_cmd.add_argument("--lan-port", type=int, default=443)
     check_cmd.add_argument("--public-address", default=None, help="override [desktop] probe_control (port 443)")
+    index_cmd = sub.add_parser("rebuild-index", help="rebuild the graph index from notes and message history")
+    index_cmd.add_argument("home", type=Path)
     args = parser.parse_args(argv)
     if args.command in ("desktop-setup", "desktop-check"):
         try:
@@ -262,6 +268,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "doctor":
         return doctor.run(args.home, online=args.online)
+    if args.command == "rebuild-index":
+        store = Store(args.home, load_config(args.home).owner_id)
+        try:
+            result = asyncio.run(KnowledgeIndex(store, Home(args.home)).rebuild())
+        finally:
+            store.close()
+        print(f"Indexed {result['facts']} facts and {result['entities']} entities from {result['files']} files.")
+        return 0
     if args.command == "deploy":
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
         try:

@@ -18,6 +18,7 @@ MODEL_ROLES = {
     "drafting": ("Built in", "Skill and plugin drafts. Tried after the drafting role's own providers fail or lack their key: the chat route (chat, then fallback) is the last resort."),
     "search": ("Optional", "Web search role with ordered provider fallback: `searxng` (self-hosted JSON API), `openrouter` (OpenRouter web plugin with ZDR), `deepseek` (DeepSeek Search API) and `tavily` (Tavily Search API). If `[models.search]` omits `base_url` with no other provider set, it uses the starter OpenRouter search settings."),
     "escalation": ("Optional", "The bigger model offered on an owner-DM task card after two model rounds and more than 60 seconds (Switch / Keep local, or Retry after a failed task). Only the owner DM uses it, and only after the owner taps. Without `[models.escalation]` it uses the drafting role's providers."),
+    "embedding": ("Optional", "Meaning-search embeddings through an OpenAI-compatible `/embeddings` endpoint. Indexing runs in background batches; each fallback keeps its own vector index."),
 }
 
 
@@ -64,7 +65,7 @@ def render() -> str:
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
         "A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.",
         table(fields(ProviderEndpoint, "models.<name>.")),
-        "Chat, fallback, media, drafting, search and escalation can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.",
+        "Chat, fallback, media, drafting, search, escalation and embedding can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.",
         table(fields(ModelEndpoint, "models.<name>.", exclude=ProviderEndpoint.model_fields.keys())),
         "Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. "
         "Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. "
@@ -74,6 +75,13 @@ def render() -> str:
         "`config.toml.bak`. The test sends a short synthetic prompt to the selected saved provider. "
         "Before sending conversation data to any new cloud model, run a real test and verify that your provider "
         "and account enforce zero data retention. Dom requests ZDR routing for OpenRouter chat completions.",
+        "For the home-lab default, point `[models.embedding]` at its OpenAI-compatible `/v1` base and use the "
+        "embedding model it serves (for example `qwen3-vl-embedding-2b`). No address or model is built into Dom. "
+        "Keyword search remains the default. A model change is staged: `GET /api/memory/index/estimate` shows the "
+        "item count and rough time; `POST /api/memory/index/confirm` starts a side-by-side rebuild; "
+        "`GET /api/memory/index/progress` reports done, left, model, state and the last error; and "
+        "`POST /api/memory/index/cancel` keeps the completed old index serving. `dom rebuild-index HOME` rebuilds "
+        "the graph from its source files and message history without calling a model.",
         "### Saved providers",
         "The dashboard's Providers tab saves each provider as a `[providers.<name>]` table. Roles keep their own "
         "address and key variable, so routing never depends on these tables; the dashboard uses them to offer "

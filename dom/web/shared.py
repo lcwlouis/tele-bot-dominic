@@ -529,6 +529,7 @@ SOUL = "SOUL.md"
 async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     """The memory files the dashboard lists, by section: (path, label). Private files sit only under "Only in your DM"."""
     people, chats = app.home.list_memory_notes()
+    entities = app.home.list_entity_notes()
     known = {c["chat_id"]: c for c in await app.store.list_chats()}
     known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
     chat_notes, owner_notes = [], []
@@ -543,6 +544,9 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     return [
         ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
         ("People", [(rel, Path(rel).name) for rel in people]),
+        ("Places, projects and goals", [
+            (rel, f"{Path(rel).parent.name[:-1].title()} · {Path(rel).stem.replace('-', ' ')}") for rel in entities
+        ]),
         ("Chats", chat_notes),
         ("Only in your DM", [
             ("private/USER.md", "USER.md"), ("private/NOTES.md", "NOTES.md"),

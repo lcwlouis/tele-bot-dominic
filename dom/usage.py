@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from dom.store import Store
 
 Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation",
-               "studio_voice", "studio_image", "studio_video"]
+               "studio_voice", "studio_image", "studio_video", "embedding"]
 log = logging.getLogger("dom.usage")
 
 

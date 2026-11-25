@@ -84,13 +84,27 @@ async def _search(args: dict, ctx: TurnCtx) -> str:
     """The owner's DM searches everything Dom holds (dom/global_search.py). Anywhere else the scope is fixed in code to
     this chat's own history: memory files, other chats and private notes cannot surface, whatever the model asks."""
     query = str(args.get("query", ""))
+    mode = args.get("mode", "keyword")
+    mode = mode if mode in ("keyword", "meaning", "entity") else "keyword"
     if ctx.scope == "owner_dm" and ctx.chat_id == ctx.owner_id and ctx.sender_id in (None, ctx.owner_id):
-        found = await global_search.search_all(ctx.store, ctx.home, query)
+        found = await global_search.search_all(
+            ctx.store, ctx.home, query, mode=mode, knowledge=ctx.app.knowledge if ctx.app else None,
+        )
         return json.dumps(
             [{"kind": h.kind, "title": h.title, "text": h.text, "at": h.at} for hits in found.values() for h in hits],
             ensure_ascii=False,
         )
     limit = args.get("limit", 10)
+    if ctx.app is not None:
+        hits = await ctx.app.knowledge.search(
+            query, requester_chat_id=ctx.chat_id, owner=False, mode=mode,
+            limit=limit if isinstance(limit, int) else 10,
+        )
+        if hits or mode != "keyword":
+            return json.dumps([
+                {"text": hit.text, "file": hit.file, "at": hit.at, "entities": hit.entities}
+                for hit in hits
+            ], ensure_ascii=False)
     hits = await ctx.store.search_chat_history(
         query, str(ctx.chat_id), limit if isinstance(limit, int) else 10,
         keep_days=await asyncio.to_thread(ctx.home.scoped(allow_private=False).core_days),
@@ -106,11 +120,15 @@ SEARCH_TOOL = Tool(
     description=(
         "Full-text search of older messages beyond the chat window, to recall what was said earlier. "
         "Searches this chat only; in the owner's DM it searches everything you hold: every chat, memory files, "
-        "briefs, reminders, desktop tasks, skills and plugins."
+        "briefs, reminders, desktop tasks, skills and plugins. Keyword is the fast default; use meaning when exact "
+        "words miss, or entity to retrieve facts and linked people, places, projects and goals."
     ),
     schema={
         "type": "object",
-        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+        "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer"},
+            "mode": {"type": "string", "enum": ["keyword", "meaning", "entity"], "default": "keyword"},
+        },
         "required": ["query"],
     },
     handler=_search,

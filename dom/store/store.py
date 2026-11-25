@@ -12,6 +12,7 @@ import asyncio
 import json
 import re
 import sqlite3
+import sqlite_vec
 import threading
 import uuid
 from contextlib import contextmanager
@@ -61,6 +62,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (26, "0025_studio_usage.sql"),
     (27, "0026_chat_reachability.sql"),
     (28, "0027_autoincrement_ids.sql"),
+    (29, "0028_knowledge_index.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -334,6 +336,11 @@ class Store:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.enable_load_extension(True)
+        try:
+            sqlite_vec.load(self._conn)
+        finally:
+            self._conn.enable_load_extension(False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
