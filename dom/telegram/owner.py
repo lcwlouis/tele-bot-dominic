@@ -1098,8 +1098,14 @@ def watch_update(app: App) -> None:
         return
 
     async def send(text: str) -> None:
+        state = release.read_state(app.home.root)
+        if state and state.get("ok") is True and isinstance(state.get("tag"), str):
+            tag = state["tag"]
+            section = release.installed_notes(tag)
+            await app.store.record_owner_event_once(f"release-notes:{tag}", section)
+        else:
+            await record_event(app, text[:250])
         await _send(app, text)
-        await record_event(app, text[:250])
 
     task = asyncio.create_task(release.deliver_result(app.home.root, send, sleep=asyncio.sleep))
     _update_reports.add(task)

@@ -58,6 +58,15 @@ MAX_FLOOD_WAIT_SECONDS = 10.0  # total flood-wait budget per reply so a chat loc
 _background: set[asyncio.Task] = set()  # keeps scheduled deletions alive until they run
 
 
+async def _note_failure(
+    store: Store, chat_id: int, category: str, text: str, *, thread_id: int | None = None,
+) -> None:
+    try:
+        await store.record_chat_event_limited(chat_id, category, text, thread_id=thread_id)
+    except Exception:
+        log.exception("could not record %s failure in chat %s", category, chat_id)
+
+
 class FloodBudgetExhausted(Exception):
     """Raised when retrying a Telegram flood wait would exceed the reply's time budget."""
 
@@ -234,7 +243,14 @@ async def _tell_owner_held_back(store: Store, chat_id: int, why: str) -> None:
         title = (await store.get_chat_auth_status(chat_id))["title"] or str(chat_id)
         await store.record_owner_event(f"Held back a private reply in {title}: {why}")
     except Exception:
-        log.exception("could not record the held-back private reply")
+        log.exception("could not record the held-back private reply for the owner")
+    try:
+        await store.record_chat_event_limited(
+            chat_id, "private-reply-send",
+            "A private reply for the owner was not delivered because Telegram refused both destinations.",
+        )
+    except Exception:
+        log.exception("could not record the held-back private reply in chat %s", chat_id)
 
 
 async def send_chunk(
@@ -506,6 +522,13 @@ async def perform(
                 reaction_result=reaction_result,
                 flood_limited=True,
             )
+        except TelegramAPIError as error:
+            await _note_failure(
+                store, chat_id, "telegram-reply",
+                f"A reply was not sent because Telegram rejected it ({type(error).__name__}).",
+                thread_id=thread_id,
+            )
+            raise
         turn_log.bubble_sent()
         if record:
             await store.record_new_message(
@@ -536,6 +559,10 @@ async def perform(
         if not choices:
             log.warning("unknown sticker emoji %r in chat %s", actions.sticker, chat_id)
             sticker_failed = True
+            await _note_failure(
+                store, chat_id, "sticker-send", "The sticker was not sent because it was not available; text was used instead.",
+                thread_id=thread_id,
+            )
         else:
             picked = choice(choices)
             try:
@@ -599,6 +626,10 @@ async def perform(
             sent_ids.append(gif_id)
         else:
             gif_failed = True
+            await _note_failure(
+                store, chat_id, "gif-send", "The GIF was not sent because it could not be found or delivered; text was used instead.",
+                thread_id=thread_id,
+            )
 
     media_fallback = False
     fallback_text = None
@@ -629,6 +660,13 @@ async def perform(
                 reaction_result=reaction_result,
                 flood_limited=True,
             )
+        except TelegramAPIError as error:
+            await _note_failure(
+                store, chat_id, "telegram-reply",
+                f"A fallback reply was not sent because Telegram rejected it ({type(error).__name__}).",
+                thread_id=thread_id,
+            )
+            raise
         turn_log.bubble_sent()
         if record:
             await store.record_new_message(StoredMessage(
@@ -676,8 +714,13 @@ async def _send_media(
             sent = await retry_telegram(attempt, sleep=sleep, budget=budget)
     except TelegramMigrateToChat:
         raise
-    except TelegramAPIError:
+    except TelegramAPIError as error:
         log.warning("%s send failed in chat %s", kind, chat_id)
+        await _note_failure(
+            store, chat_id, f"{kind}-send",
+            f"The {kind.replace('_', ' ')} was not sent because Telegram rejected it ({type(error).__name__}).",
+            thread_id=thread_id,
+        )
         return None
     turn_log.bubble_sent()
     if record:
@@ -725,6 +768,11 @@ async def deliver_studio(
     async def generate(kind: Kind, text: str, *, reuse_video_voice: bool = False) -> bool | None:
         # None is a refused job. A failed video job may still fall back to an allowed voice note.
         if not await allowed(kind):
+            await _note_failure(
+                app.store, chat_id, f"studio-{kind}-policy",
+                f"The requested {kind.replace('_', ' ')} was not sent because media is not allowed in this chat right now.",
+                thread_id=thread_id,
+            )
             return None
         local_ready = client is not None and client.ready
         cloud = app.cloud_studio
@@ -733,9 +781,19 @@ async def deliver_studio(
         if not reuse_video_voice and not local_ready and not cloud_ready and not (
             kind in {"video_note", "special"} and voice_backup
         ):
+            await _note_failure(
+                app.store, chat_id, f"studio-{kind}-unavailable",
+                f"The requested {kind.replace('_', ' ')} was not made because no studio provider was available.",
+                thread_id=thread_id,
+            )
             return None
         async with app.studio_quota.reserve(app.config.studio, scope, chat_id, kind, now()) as reserved:
             if not reserved or not await allowed(kind):
+                reason = "its media limit or minimum gap was reached" if not reserved else "media stopped being allowed"
+                await _note_failure(
+                    app.store, chat_id, f"studio-{kind}-limit",
+                    f"The requested {kind.replace('_', ' ')} was not sent because {reason}.", thread_id=thread_id,
+                )
                 return None
             if kind == "voice":
                 action, filename, send = "record_voice", "voice.ogg", app.bot.send_voice
@@ -746,10 +804,16 @@ async def deliver_studio(
             else:
                 action, filename, send = "record_video_note", "video.mp4", app.bot.send_video_note
                 request = client.video(text, kind == "special", actions.outfit) if local_ready else None
+            cloud_refused = False
+
             async def cloud_allowed() -> bool:
+                nonlocal cloud_refused
                 if not await allowed(kind):
+                    cloud_refused = True
                     return False
-                return not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
+                permitted = not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
+                cloud_refused = not permitted
+                return permitted
 
             async def make_video_voice() -> bytes | None:
                 nonlocal video_voice, video_voice_attempted
@@ -780,8 +844,18 @@ async def deliver_studio(
                 indicator.cancel()
                 await asyncio.gather(indicator, return_exceptions=True)
             if data is None:
+                reason = "the spend cap stopped the provider call" if cloud_refused else "generation failed"
+                await _note_failure(
+                    app.store, chat_id, f"studio-{kind}-generation",
+                    f"The requested {kind.replace('_', ' ')} was not made because {reason}.", thread_id=thread_id,
+                )
                 return False
             if not await allowed(kind):
+                await _note_failure(
+                    app.store, chat_id, f"studio-{kind}-policy",
+                    f"The generated {kind.replace('_', ' ')} was held because media stopped being allowed before send.",
+                    thread_id=thread_id,
+                )
                 return None
             if kind == "photo" and data.startswith(b"\xff\xd8\xff"):
                 filename = "photo.jpg"
@@ -797,6 +871,9 @@ async def deliver_studio(
                     app.store, chat_id, message_kind, media, now, on_sent, thread_id=thread_id,
                     sleep=app.sleep, budget=budget, trigger_msg_id=trigger_msg_id, history_text=f"[{message_kind}] {text}",
                 )
+            if delivered is not None and message_kind in {"photo", "video_note"}:
+                mime = "image/jpeg" if filename.endswith(".jpg") else "image/png" if message_kind == "photo" else "video/mp4"
+                app.dispatch._spawn(app.dispatch.describe_sent_media(chat_id, delivered, message_kind, data, mime))
             return delivered is not None
 
     async def fallback(kind: Kind, text: str) -> None:
@@ -828,8 +905,17 @@ async def deliver_studio(
             await generate("photo", actions.image)
     except (TelegramMigrateToChat, FloodBudgetExhausted):
         log.warning("studio delivery stopped in chat %s", chat_id)
+        await _note_failure(
+            app.store, chat_id, "studio-delivery", "Studio media was not sent because Telegram stopped the delivery.",
+            thread_id=thread_id,
+        )
     except Exception as error:
         log.warning("studio delivery failed (%s)", type(error).__name__)
+        await _note_failure(
+            app.store, chat_id, "studio-delivery",
+            f"Studio media was not sent because background delivery failed ({type(error).__name__}).",
+            thread_id=thread_id,
+        )
 
 
 async def react(

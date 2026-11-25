@@ -1060,6 +1060,59 @@ class Store:
             thread_id=thread_id, created_at=_now(),
         ))
 
+    async def record_chat_event_limited(
+        self, chat_id: int | str, category: str, text: str, *, thread_id: int | None = None,
+        interval: timedelta = timedelta(minutes=30), now: datetime | None = None,
+    ) -> bool:
+        """Record the existing chat-event note at most once per category and interval, including across restarts."""
+        stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        return await self._run(
+            self._record_chat_event_limited, str(chat_id), category, text, thread_id, interval, stamp,
+        )
+
+    def _record_chat_event_limited(
+        self, chat_id: str, category: str, text: str, thread_id: int | None,
+        interval: timedelta, now: datetime,
+    ) -> bool:
+        key = f"chat-event:{chat_id}:{thread_id or 0}:{category[:100]}"
+        created_at = now.isoformat()
+        with self._tx() as conn:
+            row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+            if row is not None:
+                try:
+                    if now - datetime.fromisoformat(row["value"]) < interval:
+                        return False
+                except (TypeError, ValueError):
+                    pass
+            self._ensure_chat(conn, chat_id, self.visibility_for(chat_id))
+            self._insert_message(conn, StoredMessage(
+                chat_id=chat_id, role="event", visibility_scope=self.visibility_for(chat_id), text=text,
+                thread_id=thread_id, created_at=created_at,
+            ))
+            self._write_kv(conn, {key: created_at})
+        self._append_transcript(
+            chat_id, "message_created", visibility_scope=self.visibility_for(chat_id), sender_name="",
+            sender_handle="", sender_user_id=None, msg_id=None, reply_to_msg_id=None, thread_id=thread_id,
+            role="event", is_bot=False, text=text, media_json=None, message_created_at=created_at,
+        )
+        return True
+
+    async def record_owner_event_once(self, key: str, text: str) -> bool:
+        """Atomically record one owner event for an external outcome that may be reported again after restart."""
+        if self.owner_id is None:
+            raise ValueError("there is no owner to record an event for")
+        return await self._run(self._record_owner_event_once, key, text, _now())
+
+    def _record_owner_event_once(self, key: str, text: str, created_at: str) -> bool:
+        marker = f"owner-event-once:{key[:160]}"
+        with self._tx() as conn:
+            if conn.execute("SELECT 1 FROM kv WHERE key = ?", (marker,)).fetchone() is not None:
+                return False
+            self._insert_owner_event(conn, text, created_at)
+            self._write_kv(conn, {marker: created_at})
+        self._append_owner_event_transcript(text, created_at)
+        return True
+
     async def has_message(self, chat_id: int | str, msg_id: int) -> bool:
         return await self._run(self._has_message, str(chat_id), msg_id)
 

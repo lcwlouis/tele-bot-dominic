@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Dom knows what happened.** Successful updates put the installed release's full changelog section into the owner DM history once; background failures leave short, rate-limited notes only in the affected chat; and sent photos and round videos are described after delivery so later turns know what they showed.
+
 ## [0.8.3] - 2026-11-25
 
 Dom gets his own studio: voice notes, round video notes and photos made on your own Mac, with cloud backups when it is away. Providers and models are set up from the dashboard, everything he remembers can be exported and searched, and he can message first in more chats.

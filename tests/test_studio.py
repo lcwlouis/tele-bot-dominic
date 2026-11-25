@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 import pytest
 import pytest_asyncio
 from aiohttp import web
@@ -14,11 +14,14 @@ from pydantic import ValidationError
 
 from dom.actions import Actions
 from dom.config import StudioConfig
+from dom.media import MediaDescriber
+from dom.models import StoredMessage
 from dom.studio.client import AWAY_SECONDS, StudioClient
 from dom.studio.profile import sync_profile
 from dom.telegram.handlers import handle_message
 from dom.telegram.owner import set_global_preset
 from test_guard import FakeJev
+from test_owner_events import events
 from test_traits import put
 from test_usage import deliver, online
 from tghelpers import FRIEND, GROUP, OWNER, drain_dispatch, tg, turn_requests
@@ -107,6 +110,77 @@ async def test_owner_turn_sends_after_bubbles_and_records_media(make_app, studio
     assert json.loads(latest.media_json)["kind"] == kind
 
 
+@pytest.mark.parametrize(("action", "sent_kind", "media_kind", "history", "mime"), [
+    ({"image": "A sunny park"}, "photo", "photo", "[photo] A sunny park", "image/png"),
+    ({"video_note": {"text": "Morning from the park"}}, "video_note", "video_note",
+     "[video_note] Morning from the park", "video/mp4"),
+])
+async def test_sent_visual_media_is_described_after_send_and_saved_next_to_its_prompt(
+    make_app, studio_server, action, sent_kind, media_kind, history, mime,
+):
+    app = make_app(contents=(json.dumps(action),))
+    await connect(app, studio_server)
+    seen = []
+
+    class Describer:
+        async def describe_sent(self, kind, data, mime, *, request):
+            assert app.bot.of(sent_kind)  # Telegram accepted it before vision starts.
+            async with request:
+                seen.append((kind, data, mime))
+            return "Dom is standing in a sunny park beside a red bench."
+
+    app.media_describer = Describer()
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    latest = (await app.store.get_recent_chat_window(OWNER, 1))[0]
+    media = json.loads(latest.media_json)
+    assert latest.text == history and media["kind"] == media_kind and "red bench" in media["description"]
+    assert seen == [(media_kind, b"fake media", mime)]
+
+
+async def test_sent_media_description_skips_under_spend_cap_and_keeps_prompt(make_app, monkeypatch):
+    app = make_app()
+
+    class Client:
+        async def complete(self, messages, tools):
+            raise AssertionError("model call should be blocked by the cap")
+
+    app.media_describer = MediaDescriber(Client(), app.bot)
+
+    async def capped(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(app.dispatch.usage, "over_cap", capped)
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(OWNER), msg_id=77, is_bot=True, role="assistant",
+        visibility_scope=app.store.visibility_for(OWNER), text="[photo] A quiet room",
+        media_json=json.dumps({"kind": "photo", "scene": "A quiet room"}),
+        created_at=app.dispatch.now().isoformat(),
+    ))
+    await app.dispatch.describe_sent_media(OWNER, 77, "photo", b"image bytes", "image/png")
+    stored = await app.store.get_message(OWNER, 77)
+    assert json.loads(stored.media_json) == {"kind": "photo", "scene": "A quiet room"}
+
+
+async def test_sent_media_description_failure_keeps_the_prompt(make_app):
+    app = make_app()
+
+    class Describer:
+        async def describe_sent(self, *args, **kwargs):
+            return None
+
+    app.media_describer = Describer()
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(OWNER), msg_id=78, is_bot=True, role="assistant",
+        visibility_scope=app.store.visibility_for(OWNER), text="[video_note] Hello",
+        media_json=json.dumps({"kind": "video_note", "text": "Hello"}),
+        created_at=app.dispatch.now().isoformat(),
+    ))
+    await app.dispatch.describe_sent_media(OWNER, 78, "video_note", b"video", "video/mp4")
+    stored = await app.store.get_message(OWNER, 78)
+    assert json.loads(stored.media_json) == {"kind": "video_note", "text": "Hello"}
+
+
 async def test_away_studio_does_not_advertise_media(make_app, studio_server):
     app = make_app(contents=('{"bubbles":["hey"],"voice":"A quiet hello","image":"A sunny park"}',))
     studio_server[3]["/v1/health"] = 503
@@ -144,6 +218,44 @@ async def test_failed_video_uses_voice_when_available(make_app, studio_server):
     assert app.bot.of("voice") and not app.bot.of("send")
 
 
+async def test_failed_photo_generation_leaves_one_history_note(make_app, studio_server):
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    studio_server[3]["/v1/image"] = 500
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    notes = [row["text"] for row in await events(app)]
+    assert len(notes) == 1 and "photo was not made" in notes[0]
+
+
+async def test_studio_limit_leaves_a_plain_history_note(make_app, studio_server):
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={
+            "limits": app.config.studio.limits.model_copy(update={"daily": 0}),
+        }),
+    })
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    notes = [row["text"] for row in await events(app)]
+    assert len(notes) == 1 and "limit or minimum gap" in notes[0]
+
+
+async def test_telegram_media_refusal_leaves_a_plain_history_note(make_app, studio_server):
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+
+    async def reject_photo(*args, **kwargs):
+        raise TelegramNetworkError(method=None, message="network down")
+
+    app.bot.send_photo = reject_photo
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    notes = [row["text"] for row in await events(app)]
+    assert len(notes) == 1 and "photo was not sent" in notes[0]
+
+
 @pytest.mark.parametrize(("chat", "action", "jev_score"), [
     (OWNER, {"voice": "A fictional phrase from the owner's private notes"}, None),
     (GROUP, {"video_note": {"text": "It is 7319"}, "image": "A photo with the same code"}, 3.0),
@@ -168,6 +280,7 @@ async def test_private_media_stays_off_the_wire(make_app, studio_server, chat, a
     await deliver(app, tg(chat_id=chat, sender=OWNER if chat == OWNER else FRIEND))
     assert studio_server[2] == [("/v1/health", None)]
     assert [call[2] for call in app.bot.of("send", chat)] == ["hey"]
+    assert len(await events(app, chat)) == 1
 
 
 async def test_owner_dm_media_skips_the_model_leak_check(make_app, studio_server):
