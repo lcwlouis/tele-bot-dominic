@@ -77,14 +77,19 @@ def _page(text: str, limit: int, part: object, how: str) -> str:
     pieces = _pieces(text, limit)
     if len(pieces) == 1:
         return text
-    number = part if isinstance(part, int) and not isinstance(part, bool) else 1
-    if not 1 <= number <= len(pieces):
-        return f"error: part must be 1 to {len(pieces)}"
+    if part is None:
+        part = 1
+    elif isinstance(part, str) and part.strip().isdigit():
+        part = int(part)
+    if not isinstance(part, int) or isinstance(part, bool) or not 1 <= part <= len(pieces):
+        return f"error: part must be a number from 1 to {len(pieces)}"
+    number = part
     start = sum(len(piece) for piece in pieces[:number - 1])
     end = start + len(pieces[number - 1])
     footer = f"[truncated: part {number} of {len(pieces)}, characters {start + 1}-{end} of {len(text)}"
     footer += f"; {how} with part {number + 1} for the rest]" if number < len(pieces) else "]"
-    return f"{pieces[number - 1].rstrip(chr(10))}\n{footer}"
+    piece = pieces[number - 1]  # kept whole, blank lines included, so the character range is exact
+    return f"{piece}{'' if piece.endswith(chr(10)) else chr(10)}{footer}"
 
 
 def _resolve(base: Path, rel: object) -> Path | str:
