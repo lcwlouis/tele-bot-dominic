@@ -1,6 +1,12 @@
 <script lang="ts">
   import CodeEditor from "$lib/components/code/CodeEditor.svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+  import Archive from "@lucide/svelte/icons/archive";
+  import Bot from "@lucide/svelte/icons/bot";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import Pin from "@lucide/svelte/icons/pin";
+  import Trash from "@lucide/svelte/icons/trash-2";
+  import UserRound from "@lucide/svelte/icons/user-round";
   import Copy from "@lucide/svelte/icons/copy";
   import Download from "@lucide/svelte/icons/download";
   import FileText from "@lucide/svelte/icons/file-text";
@@ -9,8 +15,13 @@
   import Eye from "@lucide/svelte/icons/eye";
   import PenLine from "@lucide/svelte/icons/pen-line";
   import Upload from "@lucide/svelte/icons/upload";
+  import X from "@lucide/svelte/icons/x";
   import { onMount } from "svelte";
-  import { getJSON, send, ApiError, type MemoryFile, type MemoryIndex, type MemoryWaiting } from "$lib/api";
+  import { getJSON, send, ApiError, type CoreMemories, type CoreMemory, type MemoryFile, type MemoryIndex, type MemoryWaiting } from "$lib/api";
+  import IconButton from "$lib/components/kit/IconButton.svelte";
+  import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
+  import * as Sheet from "$lib/components/ui/sheet";
+  import { setMemoryTags, stripTags } from "$lib/memory-tags";
   import DiffLines from "$lib/components/memory/DiffLines.svelte";
   import SoulChat, { type SoulTurn } from "$lib/components/memory/SoulChat.svelte";
   import Markdown from "$lib/components/markdown/Markdown.svelte";
@@ -32,6 +43,7 @@
   let { destination }: { destination: Destination } = $props();
 
   const SOUL = "SOUL.md";
+  const CORE = "core"; // the Core memories view, opened like a file
   const FIRST = "memory/MEMORY.md";
   const MAX_DOCUMENT_BYTES = 1024 * 1024;
   const field =
@@ -81,14 +93,66 @@
     try {
       file = await getJSON<MemoryFile>(`/api/memory/file?file=${encodeURIComponent(path)}`);
       draft = file.content;
-      view = readOnly(file) ? "preview" : "edit";
+      view = "preview"; // preview by default; Edit is one tap away
     } catch (error) {
       fileError = error instanceof Error ? error.message : "Unknown error";
     }
   }
 
-  // Dom writes HABITS.md and the journals himself: they open as a rendered page; the rest open in the editor.
-  const readOnly = (item: MemoryFile) => item.readonly || item.file.endsWith("JOURNAL.md");
+  // A journal keeps every line break: its mood, entry and nudges sit on lines of their own.
+  const journal = (path: string) => /(^|\/)JOURNAL\.md$|(^|\/)journal\//.test(path);
+  // Source tags read as the chat's name in the preview's chips.
+  setMemoryTags(() => index?.chat_names ?? {});
+  const archived = $derived(new Set(index?.sections.filter((section) => section.archive).flatMap((section) => section.files.map((item) => item.path)) ?? []));
+  const labelOf = (path: string) => index?.sections.flatMap((section) => section.files).find((item) => item.path === path)?.label ?? path;
+
+  // Core memories (W2): every pinned line, who pinned it and why. Deleting one edits its file through the same save.
+  let core = $state<CoreMemories | null>(null);
+  let coreError = $state("");
+  let dropping = $state<CoreMemory | null>(null);
+  let coreBusy = $state(false);
+
+  async function openCore() {
+    open = CORE;
+    talking = false;
+    file = null;
+    fileError = "";
+    coreError = "";
+    try {
+      core = await getJSON<CoreMemories>("/api/memory/core");
+    } catch (error) {
+      coreError = error instanceof Error ? error.message : "Unknown error";
+    }
+  }
+
+  const PIN = /[ \t]*\{core (?:owner|dom) \d{4}-\d{2}-\d{2}(?::[^{}\n]*)?\}/;
+  /** Unpin (drop the line's core mark, keep the fact) or delete the whole line, saved like a hand edit. */
+  async function dropCore(item: CoreMemory, mode: "unpin" | "delete") {
+    if (coreBusy) return;
+    coreBusy = true;
+    try {
+      const current = await getJSON<MemoryFile>(`/api/memory/file?file=${encodeURIComponent(item.file)}`);
+      const lines = current.content.split("\n");
+      const at = lines.findIndex((line) => PIN.test(line) && stripTags(line) === item.text);
+      if (at < 0) {
+        toast.show("error", "That line has changed since the list loaded. Reload the list and try again.");
+        return;
+      }
+      if (mode === "unpin") lines[at] = lines[at].replace(PIN, "");
+      else lines.splice(at, 1);
+      await send("/api/memory/save", { file: item.file, version: current.version, content: lines.join("\n") });
+      toast.show("ok", mode === "unpin" ? "Unpinned. The line stays in its file." : "Deleted the core memory.");
+      core = await getJSON<CoreMemories>("/api/memory/core");
+    } catch {
+      // send() toasts the reason; a failed read shows on the next try
+    } finally {
+      coreBusy = false;
+    }
+  }
+  const bullet = (text: string) => text.replace(/^[ \t]*[-*][ \t]+/, "");
+  const index_chat = (source: string) => (/^-?\d+$/.test(source) ? (index?.chat_names[source] ?? `chat ${source}`) : "");
+
+  let importOpen = $state(false); // the Import sheet
 
   /** Go somewhere else; a draft with changes asks first. */
   function guard(action: () => void) {
@@ -197,6 +261,7 @@
     <a href="/api/memory/export" download class={buttonVariants({ variant: "outline" })}>
       <Download aria-hidden="true" /> Export memory
     </a>
+    <Button variant="outline" onclick={() => (importOpen = true)}><Upload aria-hidden="true" /> Import memories</Button>
     <Button
       variant={talking ? "default" : "secondary"}
       aria-pressed={talking}
@@ -286,10 +351,25 @@
   <div class="grid items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
     <!-- On a phone the file list is a screen of its own, and a file opens full width with a way back. -->
     <nav aria-label="Memory files" class={cn("rounded-xl border bg-surface p-3", open !== null && "max-lg:hidden")}>
-      {#each memory.sections as section (section.heading)}
-        <h2 class="kicker px-2 pt-3 pb-1.5 first:pt-1">{section.heading}</h2>
+      <ul class="grid gap-0.5 pb-1">
+        <li>
+          <button
+            type="button"
+            aria-current={open === CORE ? "page" : undefined}
+            onclick={() => guard(openCore)}
+            class={cn(
+              "flex min-h-11 w-full items-center gap-2.5 rounded-[0.6rem] px-2.5 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-raised hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-9",
+              open === CORE && "bg-tint text-signal-strong hover:bg-tint hover:text-signal-strong",
+            )}
+          >
+            <Pin class="size-4 shrink-0" aria-hidden="true" />
+            <span class="min-w-0 truncate">Core memories</span>
+          </button>
+        </li>
+      </ul>
+      {#snippet entries(files: { path: string; label: string }[])}
         <ul class="grid gap-0.5">
-          {#each section.files as item (item.path)}
+          {#each files as item (item.path)}
             {@const here = open === item.path}
             <li>
               <button
@@ -301,46 +381,123 @@
                   here && "bg-tint text-signal-strong hover:bg-tint hover:text-signal-strong",
                 )}
               >
-                {#if item.path.startsWith("private/")}<Lock class="size-4 shrink-0" aria-hidden="true" />{:else}<FileText class="size-4 shrink-0" aria-hidden="true" />{/if}
+                {#if archived.has(item.path)}<Archive class="size-4 shrink-0" aria-hidden="true" />{:else if item.path.startsWith("private/")}<Lock class="size-4 shrink-0" aria-hidden="true" />{:else}<FileText class="size-4 shrink-0" aria-hidden="true" />{/if}
                 <span class="min-w-0 truncate">{item.label}</span>
               </button>
             </li>
           {/each}
         </ul>
+      {/snippet}
+      {#each memory.sections as section (section.heading)}
+        {#if section.archive}
+          <!-- The record: journal months and former lines, read-only and folded until wanted. -->
+          <details class="group mt-2 border-t pt-1" open={section.files.some((item) => item.path === open)}>
+            <summary class="flex min-h-9 cursor-pointer list-none items-center gap-1.5 rounded-[0.6rem] px-2 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+              <ChevronRight class="size-3.5 text-muted-foreground transition-transform duration-(--motion-quick) group-open:rotate-90" aria-hidden="true" />
+              <h2 class="kicker">{section.heading}</h2>
+              <span class="text-caption text-muted-foreground tabular-nums">{section.files.length}</span>
+            </summary>
+            {@render entries(section.files)}
+          </details>
+        {:else}
+          <h2 class="kicker px-2 pt-3 pb-1.5">{section.heading}</h2>
+          {@render entries(section.files)}
+        {/if}
       {/each}
     </nav>
 
     <div class={cn("min-w-0", open === null && "max-lg:hidden")}>
-      {#if fileError}
+      {#if open === CORE}
+        <Card.Root aria-labelledby="core-title">
+          <Card.Header>
+            <Button variant="ghost" size="sm" class="mb-1 w-fit lg:hidden" onclick={() => (open = null)}>
+              <ArrowLeft aria-hidden="true" /> Files
+            </Button>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <h2 id="core-title" class="text-lg font-semibold">Core memories</h2>
+              <InfoGlyph label="About core memories">
+                Lines that never fade: summaries never drop them and the memory pass never rewrites them. Dom pins his own with a reason; lines you add or change
+                on this page are pinned for you. Unpin one to let it age like the rest, or delete the line.
+              </InfoGlyph>
+              {#if core}<span class="ml-auto text-meta text-muted-foreground tabular-nums">{core.items.length} of {core.cap}</span>{/if}
+            </div>
+          </Card.Header>
+          <Card.Content>
+            {#if coreError}
+              <StatusNote tone="error" title="Couldn't load core memories" detail={coreError}>
+                <Button variant="secondary" onclick={openCore}>Retry</Button>
+              </StatusNote>
+            {:else if core === null}
+              <div class="h-40 animate-pulse rounded-lg bg-raised/60" aria-hidden="true"></div>
+            {:else if core.items.length === 0}
+              <StatusNote title="No core memories yet" detail="Dom pins the moments that matter to him; lines you write here are pinned too." />
+            {:else}
+              <ul class="divide-y divide-line/70 rounded-lg border" aria-label="Core memories">
+                {#each core.items as item, index (index)}
+                  <li class="flex items-start gap-3 px-3 py-2.5">
+                    <span
+                      class={cn("mt-0.5 grid size-7 shrink-0 place-items-center rounded-full border", item.by === "owner" ? "border-signal/50 bg-tint text-signal-strong" : "border-status-held/50 text-status-held")}
+                      aria-hidden="true"
+                    >
+                      {#if item.by === "owner"}<UserRound class="size-3.5" />{:else}<Bot class="size-3.5" />{/if}
+                    </span>
+                    <div class="min-w-0 flex-1">
+                      <p class="text-body break-words">{bullet(item.text)}</p>
+                      <p class="mt-0.5 text-meta text-muted-foreground">
+                        <span class={item.by === "owner" ? "text-signal-strong" : "text-status-held"}>{item.by === "owner" ? "Pinned by you" : "Pinned by Dom"}</span>
+                        on {item.day} in {labelOf(item.file)}{item.source !== "any" && index_chat(item.source) ? `, from ${index_chat(item.source)}` : ""}
+                      </p>
+                      {#if item.why}<p class="mt-1 text-meta break-words text-muted-foreground">Why: {item.why}</p>{/if}
+                    </div>
+                    <IconButton
+                      label={`Delete core memory: ${bullet(item.text)}`}
+                      icon={Trash}
+                      class="bg-transparent text-muted-foreground hover:bg-coral-tint hover:text-coral"
+                      disabled={coreBusy}
+                      onclick={() => (dropping = item)}
+                    />
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </Card.Content>
+        </Card.Root>
+      {:else if fileError}
         <StatusNote tone="error" title="Couldn't open that file" detail={fileError}>
           <Button variant="secondary" onclick={() => open && openFile(open)}>Retry</Button>
         </StatusNote>
       {:else if file}
+        {@const locked = file.readonly}
         <Card.Root>
           <Card.Header>
             <Button variant="ghost" size="sm" class="mb-1 w-fit lg:hidden" onclick={() => guard(() => (open = null))}>
               <ArrowLeft aria-hidden="true" /> Files
             </Button>
-            <Card.Title class="font-mono text-lg">{file.label}</Card.Title>
-            {#if file.readonly}
-              <Card.Description>Dom writes this from message counts, so it is read-only.</Card.Description>
-            {:else if file.file.startsWith("private/")}
-              <Card.Description>Only in your DM: Dom never shares this file with other chats.</Card.Description>
-            {/if}
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <Card.Title class="text-lg">{file.label}</Card.Title>
+              {#if archived.has(file.file)}
+                <span class="rounded-full border px-2 text-caption text-muted-foreground">Archive, read-only</span>
+              {:else if file.readonly}
+                <InfoGlyph label="About this file">Dom writes this from message counts, so it is read-only.</InfoGlyph>
+              {:else if file.file.startsWith("private/")}
+                <InfoGlyph label="About private files">Only in your DM: Dom never shares this file with other chats.</InfoGlyph>
+              {/if}
+            </div>
+            <p class="font-mono text-caption text-muted-foreground">{file.file}</p>
           </Card.Header>
           <Card.Content class="grid gap-3">
             <Tabs.Root bind:value={view}>
               <Tabs.List class="mb-1 w-fit">
                 <Tabs.Trigger value="preview" class="px-3"><Eye aria-hidden="true" /> Preview</Tabs.Trigger>
-                <Tabs.Trigger value="edit" class="px-3"><PenLine aria-hidden="true" /> {file.readonly ? "Source" : "Edit"}</Tabs.Trigger>
+                <Tabs.Trigger value="edit" class="px-3"><PenLine aria-hidden="true" /> {locked ? "Source" : "Edit"}</Tabs.Trigger>
               </Tabs.List>
               <Tabs.Content value="preview">
                 {#if draft.trim()}
                   <div class="min-h-[22rem] rounded-[0.65rem] border bg-canvas/50 px-4 py-3.5 sm:px-5 lg:min-h-[28rem]">
-                    <Markdown text={draft} />
+                    <Markdown text={draft} breaks={journal(file.file)} />
                   </div>
                 {:else}
-                  <StatusNote title="Nothing here yet" detail={file.readonly ? "Dom fills this in as he goes." : "Open Edit to write the first lines."} />
+                  <StatusNote title="Nothing here yet" detail={locked ? "Dom fills this in as he goes." : "Open Edit to write the first lines."} />
                 {/if}
                 {#if dirty}<p class="mt-2 text-sm text-muted-foreground">Showing your unsaved edits.</p>{/if}
               </Tabs.Content>
@@ -351,14 +508,14 @@
                   class={cn(field, "min-h-[22rem] resize-y leading-relaxed lg:min-h-[28rem]")}
                   language={file.file}
                   spellcheck="false"
-                  readonly={file.readonly}
+                  readonly={locked}
                   aria-describedby="memory-count"
                   aria-invalid={over || undefined}
                   bind:value={draft}
                 />
                 <p id="memory-count" class={cn("text-sm text-muted-foreground", over && "text-coral")}>
                   {count(used)}
-                  {#if file.limit != null}of {count(file.limit)} characters{:else}characters · No character limit{/if}{over ? ". Over the limit: shorten it to save." : ""}
+                  {#if file.limit != null}of {count(file.limit)} characters{:else}characters, no limit{/if}{over ? ". Over the limit: shorten it to save." : ""}
                 </p>
               </Tabs.Content>
             </Tabs.Root>
@@ -371,7 +528,7 @@
               </div>
             {/if}
           </Card.Content>
-          {#if !file.readonly}
+          {#if !locked && (view === "edit" || dirty)}
             <!-- Sticky on a phone, so Save stays in reach however long the file is. -->
             <Card.Footer class="sticky bottom-0 z-10 flex flex-wrap gap-2 border-t bg-card py-3 lg:static">
               <Button disabled={!dirty || over || saving} onclick={save}>{saving ? "Saving…" : "Save changes"}</Button>
@@ -388,50 +545,56 @@
 
   {/if}
 
-  <Card.Root class="mt-6">
-    <Card.Header>
-      <Card.Title class="text-lg">Import memories</Card.Title>
-      <Card.Description>Bring in what another assistant knows about you. Its facts wait above for your review.</Card.Description>
-    </Card.Header>
-    <Card.Content class="grid gap-5">
-      <div class="grid gap-2">
-        <p class="text-sm"><span class="kicker mr-2 text-signal">1</span>Paste this prompt into ChatGPT, Claude, Muse or any other assistant, and save its answer as a .txt or .md file.</p>
-        <div class="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" onclick={copyPrompt}><Copy aria-hidden="true" /> Copy prompt</Button>
-        </div>
-        <details class="rounded-lg border bg-canvas/50 px-3 py-2 text-sm">
-          <summary class="cursor-pointer font-medium">Show the prompt</summary>
-          <pre class="mt-2 max-h-64 overflow-auto font-mono text-[0.8rem] leading-relaxed break-words whitespace-pre-wrap">{memory.export_prompt}</pre>
-        </details>
+  <!-- Import: a .txt or .md export from another assistant; its facts wait above for review. -->
+  <Sheet.Root bind:open={importOpen}>
+    <Sheet.Content class="w-[min(30rem,100vw)] overflow-y-auto bg-overlay" onswipe={() => (importOpen = false)}>
+      <div class="sticky top-0 z-10 flex items-center gap-2 border-b bg-overlay px-4 py-3">
+        <Sheet.Title class="min-w-0 flex-1 text-title font-semibold">Import memories</Sheet.Title>
+        <Sheet.Close>
+          {#snippet child({ props })}<IconButton {...props} label="Close import" icon={X} />{/snippet}
+        </Sheet.Close>
       </div>
-      <p class="text-sm"><span class="kicker mr-2 text-signal">2</span>Upload that file here.</p>
-      <form class="grid gap-4 sm:grid-cols-[12rem_minmax(0,1fr)_auto] sm:items-end" onsubmit={(event) => (event.preventDefault(), runImport())}>
-        <div class="grid gap-1.5">
-          <Label id="import-service-label">Service</Label>
-          <Select.Root type="single" bind:value={service}>
-            <Select.Trigger class="h-9 w-full" aria-labelledby="import-service-label">{serviceLabel(service)}</Select.Trigger>
-            <Select.Content>
-              {#each memory.services as item (item.id)}
-                <Select.Item value={item.id} label={item.label} />
-              {/each}
-            </Select.Content>
-          </Select.Root>
+      <Sheet.Description class="px-4 pt-3 text-body text-muted-foreground">Bring in what another assistant knows about you. Its facts wait on this page for your review.</Sheet.Description>
+      <div class="grid gap-5 px-4 py-4">
+        <div class="grid gap-2">
+          <p class="text-sm">Paste this prompt into ChatGPT, Claude, Muse or any other assistant, and save its answer as a .txt or .md file.</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onclick={copyPrompt}><Copy aria-hidden="true" /> Copy prompt</Button>
+          </div>
+          <details class="rounded-lg border bg-canvas/50 px-3 py-2 text-sm">
+            <summary class="cursor-pointer font-medium">Show the prompt</summary>
+            <pre class="mt-2 max-h-64 overflow-auto font-mono text-[0.8rem] leading-relaxed break-words whitespace-pre-wrap">{memory.export_prompt}</pre>
+          </details>
         </div>
-        <div class="grid gap-1.5">
-          <Label for="import-file">Export file (.txt or .md)</Label>
-          <Input
-            id="import-file"
-            type="file"
-            accept=".txt,.md,text/plain,text/markdown"
-            onchange={(event) => (exportFile = event.currentTarget.files?.[0] ?? null)}
-          />
-        </div>
-        <Button type="submit" disabled={!exportFile || importing}><Upload aria-hidden="true" /> {importing ? "Importing…" : "Import"}</Button>
-      </form>
-      {#if importError}<p role="alert" class="text-sm text-coral">{importError}</p>{/if}
-      {#if importResult}<p role="status" class="text-sm text-muted-foreground">{importResult}</p>{/if}
-    </Card.Content>
-  </Card.Root>
+        <p class="text-sm">Then upload that file here.</p>
+        <form class="grid gap-4" onsubmit={(event) => (event.preventDefault(), runImport())}>
+          <div class="grid gap-1.5">
+            <Label id="import-service-label">Service</Label>
+            <Select.Root type="single" bind:value={service}>
+              <Select.Trigger class="h-9 w-full" aria-labelledby="import-service-label">{serviceLabel(service)}</Select.Trigger>
+              <Select.Content>
+                {#each memory.services as item (item.id)}
+                  <Select.Item value={item.id} label={item.label} />
+                {/each}
+              </Select.Content>
+            </Select.Root>
+          </div>
+          <div class="grid gap-1.5">
+            <Label for="import-file">Export file (.txt or .md)</Label>
+            <Input
+              id="import-file"
+              type="file"
+              accept=".txt,.md,text/plain,text/markdown"
+              onchange={(event) => (exportFile = event.currentTarget.files?.[0] ?? null)}
+            />
+          </div>
+          <Button type="submit" class="w-fit" disabled={!exportFile || importing}><Upload aria-hidden="true" /> {importing ? "Importing…" : "Import"}</Button>
+        </form>
+        {#if importError}<p role="alert" class="text-sm text-coral">{importError}</p>{/if}
+        {#if importResult}<p role="status" class="text-sm text-muted-foreground">{importResult}</p>{/if}
+      </div>
+    </Sheet.Content>
+  </Sheet.Root>
 {/if}
 
 <AlertDialog.Root open={leaving !== null} onOpenChange={(value) => !value && (leaving = null)}>
@@ -461,6 +624,22 @@
       >
         Reject all
       </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<AlertDialog.Root open={dropping !== null} onOpenChange={(value) => !value && (dropping = null)}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Delete this core memory?</AlertDialog.Title>
+      <AlertDialog.Description>
+        “{dropping ? bullet(dropping.text) : ""}”. Unpin it to keep the line and let it age like the rest, or delete the line from {dropping ? labelOf(dropping.file) : ""}.
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel variant="outline">Keep it</AlertDialog.Cancel>
+      <AlertDialog.Action variant="secondary" onclick={() => { const item = dropping; dropping = null; item && dropCore(item, "unpin"); }}>Unpin, keep the line</AlertDialog.Action>
+      <AlertDialog.Action variant="destructive-solid" onclick={() => { const item = dropping; dropping = null; item && dropCore(item, "delete"); }}>Delete the line</AlertDialog.Action>
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>

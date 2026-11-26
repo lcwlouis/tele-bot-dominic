@@ -250,7 +250,10 @@ export type MemoryImportCard = { id: number; service: string; facts: { id: numbe
 export type MemoryEdit = { id: number; kind: "soul_edit" | "memory_edit"; label: string; title: string; diff: string[] };
 export type MemoryWaiting = { imports: MemoryImportCard[]; edits: MemoryEdit[] };
 export type MemoryIndex = MemoryWaiting & {
-  sections: { heading: string; files: { path: string; label: string }[] }[];
+  /** `archive`: the journal archive and the former files, read-only and folded by default. */
+  sections: { heading: string; archive: boolean; files: { path: string; label: string }[] }[];
+  /** Every chat's name by ID, for the preview's source chips ({chat -100123} reads "from: Weekend crew"). */
+  chat_names: Record<string, string>;
   services: { id: string; label: string }[];
   export_prompt: string;
   max_soul_request: number;
@@ -263,11 +266,31 @@ export type SearchData = {
   groups: { kind: string; label: string; hits: { title: string; text: string; href: string; at: string; full: boolean }[] }[];
 };
 export type MemoryFile = { file: string; label: string; readonly: boolean; limit: number | null; content: string; version: string };
+/** GET /api/memory/core: every core memory, with who pinned it ("owner" or "dom"), the day and Dom's reason. */
+export type CoreMemory = { file: string; text: string; source: string; by: "owner" | "dom"; day: string; why: string };
+export type CoreMemories = { cap: number; items: CoreMemory[] };
 
 /** GET /api/chats and the chat writes (dom/web/api_chats.py). Every write answers { message, ...ChatsData }. */
 export type ChatSlider = { name: string; value: number; custom: boolean };
 /** GET /api/chats/{id}/messages: full text only in the owner's DM (`full`), one line per message elsewhere. */
-export type ChatMessages = { chat_id: number; full: boolean; messages: { who: string; mine: boolean; text: string; at: string }[] };
+export type ChatMessages = {
+  chat_id: number;
+  full: boolean;
+  messages: { id: number; who: string; mine: boolean; text: string; at: string }[];
+  /** The cursor for the next older page (GET …/messages?before=…), null at the start of the chat. */
+  next_before: number | null;
+  has_more: boolean;
+};
+/** GET /api/chats/unreachable: chats the current bot can no longer reach (E74). Their history is kept. */
+export type UnreachableChat = {
+  id: number;
+  title: string;
+  scope: "owner_dm" | "friend_dm" | "group";
+  prior_status: string;
+  reason: string | null;
+  since: string;
+  hidden: boolean;
+};
 export type Chat = {
   id: number;
   title: string;
@@ -287,12 +310,13 @@ export type ChatsData = {
   pending: number;
   vibe: { mode: "auto" | "locked" | "none"; title: string; description: string; reason: string; source: string; since: string };
   stickers: string[];
+  unreachable: UnreachableChat[];
 };
 
 /** GET /api/work/* and the Work writes (dom/web/api_work.py). Every write answers { ok, message, ...the tab's data }. */
 // steps_budget: the step budget the task started with (null on tasks from before v0.8.3); extra_steps: steps the owner added.
 export type StepBudget = { steps_budget: number | null; extra_steps: number };
-export type DeskTask = { id: number; status: string; steps: number; brief: string; error: string | null } & StepBudget;
+export type DeskTask = { id: number; status: string; steps: number; brief: string; error: string | null; created_at: string } & StepBudget;
 export type DeskContainer = {
   name: string;
   host: string;
@@ -313,6 +337,7 @@ export type DeskHistory = {
   error: string;
   finished: string;
   created_at: string;
+  finished_at: string | null;
 } & StepBudget;
 export type DeskData = {
   enabled: boolean;
@@ -344,6 +369,7 @@ export type OwnTask = {
   error: string;
   files: string[];
   announced_at: string;
+  finished_at: string | null;
 };
 export type Skill = { name: string; description: string; body: string; hash: string; retired: boolean };
 export type OwnData = {

@@ -12,12 +12,13 @@ import asyncio
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from dom import skills
 from dom.briefs import list_briefs, markdown_blocks
 from dom.telegram import owner
+from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.web.desktop import _context, _lane, resume_handoff, run_computer_action
 from dom.web.model_settings import _input
 from dom.web.shared import _own_work, _reminders, _skills, owner_app, own_work_file
@@ -26,7 +27,7 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 PREFIX = "/api/work"
 JSON_POSTS = {
-    f"{PREFIX}/desk/computer", f"{PREFIX}/desk/done", f"{PREFIX}/desk/delete",
+    f"{PREFIX}/desk/computer", f"{PREFIX}/desk/done", f"{PREFIX}/desk/delete", f"{PREFIX}/desk/cancel",
     f"{PREFIX}/own/cancel", f"{PREFIX}/own/delete", f"{PREFIX}/skills/action",
     f"{PREFIX}/reminders/cancel", f"{PREFIX}/reminders/delete", f"{PREFIX}/reminders/bulk",
 }
@@ -85,7 +86,7 @@ def _short(text: str | None) -> str:
 def _task(row: dict | None) -> dict | None:
     if row is None:
         return None
-    return {**{key: row[key] for key in ("id", "status", "steps", "brief", "error")}, **_budget(row)}
+    return {**{key: row[key] for key in ("id", "status", "steps", "brief", "error", "created_at")}, **_budget(row)}
 
 
 def _budget(row: dict) -> dict:
@@ -93,9 +94,15 @@ def _budget(row: dict) -> dict:
     return {"steps_budget": row.get("steps_budget"), "extra_steps": row.get("extra_steps") or 0}
 
 
-async def _desk(app, lane) -> dict:
+async def _desk(app, lane, focus: int | None = None) -> dict:
+    """The desk's page data. `focus` is a task a link names (a Telegram notice's ?task=): an older one than the
+    history holds is added to it, so the page can open it; one that is gone, or still active, adds nothing."""
     state = await _context(app, lane)
     history = state["history"]["rows"]  # _context already read it
+    if focus is not None and all(row["id"] != focus for row in history):
+        row = await app.store.get_desktop_task(app.owner_id, focus) if app.owner_id is not None else None
+        if row is not None and row["status"] not in DESKTOP_ACTIVE:
+            history = [*history, {**row, "finished_local": ""}]
     return {
         "enabled": state["enabled"],
         "status": state["status"],
@@ -117,14 +124,15 @@ async def _desk(app, lane) -> dict:
             "id": row["id"], "status": row["status"], "container": row["container"], "steps": row["steps"],
             **_budget(row), "brief": row["brief"], "result": _short(row.get("result")), "error": _short(row.get("error")),
             "finished": row["finished_local"], "created_at": row["created_at"],
+            "finished_at": row.get("finished_at"),
         } for row in history],
     }
 
 
 @router.get(PREFIX + "/desk")
-async def read_desk(request: Request, container: str = "") -> dict:
+async def read_desk(request: Request, container: str = "", task: int | None = Query(None, gt=0, lt=2**63)) -> dict:
     app = owner_app(request)
-    return await _desk(app, _lane(app, container))
+    return await _desk(app, _lane(app, container), task)
 
 
 @router.post(PREFIX + "/desk/computer")
@@ -147,6 +155,18 @@ async def desk_done(request: Request) -> dict:
     return {"ok": message == "Task resumed.", "message": message, **await _desk(app, lane)}
 
 
+@router.post(PREFIX + "/desk/cancel")
+async def desk_cancel(request: Request) -> dict:
+    """Stop an active desktop task, as the Telegram card's Cancel does: the worker records it and reports to Dom."""
+    app = owner_app(request)
+    update = await _input(request, Cancel)
+    if app.desktop_worker is None or app.owner_id is None:
+        raise HTTPException(409, "The desktop is off.")
+    cancelled = await app.desktop_worker.cancel(app.owner_id, update.id)
+    message = f"Cancelled desktop task #{update.id}." if cancelled else f"Desktop task #{update.id} had already finished."
+    return {"ok": cancelled, "message": message, **await _desk(app, _lane(app, ""))}
+
+
 @router.post(PREFIX + "/desk/delete")
 async def desk_delete(request: Request) -> dict:
     app = owner_app(request)
@@ -160,8 +180,8 @@ async def desk_delete(request: Request) -> dict:
 # --- own work and skills ----------------------------------------------------------------------------------------
 
 
-async def _own(app) -> dict:
-    state = await _own_work(app)
+async def _own(app, focus: int | None = None) -> dict:
+    state = await _own_work(app, focus=focus)
     settings = state["settings"]
     guard = state["guard"]
     return {
@@ -174,15 +194,15 @@ async def _own(app) -> dict:
             "sites": row["sites"], "minutes": row["minutes"], "steps_budget": row["steps_budget"], "steps": row["steps"],
             "announced": row["announced_local"], "starts": row["not_before_local"], "finished": row["finished_local"],
             "result": _short(row.get("result")), "error": _short(row.get("error")), "files": row["files"],
-            "announced_at": row["announced_at"],
+            "announced_at": row["announced_at"], "finished_at": row.get("finished_at"),
         } for row in state["rows"]],
         "skills": [{key: skill[key] for key in ("name", "description", "body", "hash", "retired")} for skill in (await _skills(app))["rows"]],
     }
 
 
 @router.get(PREFIX + "/own")
-async def read_own(request: Request) -> dict:
-    return await _own(owner_app(request))
+async def read_own(request: Request, own: int | None = Query(None, gt=0, lt=2**63)) -> dict:
+    return await _own(owner_app(request), own)
 
 
 @router.get(PREFIX + "/own/{task_id:int}/files/{name}")
@@ -230,17 +250,17 @@ async def skill_action(request: Request) -> dict:
 # --- reminders --------------------------------------------------------------------------------------------------
 
 
-async def _reminder_rows(app) -> dict:
+async def _reminder_rows(app, focus: int | None = None) -> dict:
     return {"reminders": [{
         "id": row["id"], "due": row["due_local"], "importance": row["importance"], "repeat": row["repeat"],
         "status": row["status"], "undeliverable": bool(row["undeliverable"]), "text": row["text"],
         "created_at": row["created_at"],
-    } for row in (await _reminders(app))["rows"]]}
+    } for row in (await _reminders(app, focus=focus))["rows"]]}
 
 
 @router.get(PREFIX + "/reminders")
-async def read_reminders(request: Request) -> dict:
-    return await _reminder_rows(owner_app(request))
+async def read_reminders(request: Request, id: int | None = Query(None, gt=0, lt=2**63)) -> dict:  # noqa: A002 (the link's ?id=)
+    return await _reminder_rows(owner_app(request), id)
 
 
 @router.post(PREFIX + "/reminders/cancel")

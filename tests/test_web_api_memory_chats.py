@@ -458,3 +458,55 @@ async def test_soul_chat_keeps_the_reply_when_soul_goes_unreadable_mid_chat(make
         assert response.status_code == 200 and response.json()["proposal"] is None
         assert response.json()["reply"].startswith("Noted.") and "exact place in SOUL.md" in response.json()["reply"]
     assert len(app.script.requests) == 1 and await app.proposals.pending() == []
+
+
+async def test_memory_labels_people_by_name_and_lists_the_archive_read_only(make_app, browser):
+    app = make_app()
+    app.store._conn.execute(
+        "INSERT INTO people_identities (person_key, telegram_user_id, current_handle, known_handles_json, display_name, "
+        "preferred_name, profile_path, updated_at) VALUES ('uid_7', 7, 'robin_x', '[]', 'Robin Example', 'Robin', 'memory/people/7.md', 'now')",
+    )
+    app.home._write_regular("memory/people/7.md", "- Likes tea {any}")
+    app.home._write_regular("memory/people/8.md", "- Someone new")
+    app.home._write_regular("memory/people/handle_sky.md", "- Sky")
+    app.home._write_regular("memory/people/7.former.md", "- Liked coffee [former 2026-01-01: replaced]")
+    app.home._write_regular("memory/journal/2026-09.md", "## 2026-09-03\nA day")
+    private = app.home.scoped(allow_private=True)
+    private._write_regular("private/journal/2026-08.md", "## 2026-08-01\nPrivate day")
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Weekend crew")
+    async with browser(app) as client:
+        index = (await client.get("/api/memory")).json()
+        sections = {section["heading"]: section for section in index["sections"]}
+        people = [(f["path"], f["label"]) for f in sections["People"]["files"]]
+        assert people == [("memory/people/handle_sky.md", "@sky"), ("memory/people/8.md", "Person 8"), ("memory/people/7.md", "Robin")]
+        assert not sections["People"]["archive"] and sections["Archive"]["archive"]
+        archive = [(f["path"], f["label"]) for f in sections["Archive"]["files"]]
+        assert archive == [
+            ("memory/journal/2026-09.md", "Journal, September 2026"),
+            ("private/journal/2026-08.md", "Private journal, August 2026"),
+            ("memory/people/7.former.md", "Robin (former)"),
+        ]
+        assert index["chat_names"][str(GROUP)] == "Weekend crew"
+        for path in ("memory/journal/2026-09.md", "private/journal/2026-08.md", "memory/people/7.former.md"):
+            opened = (await client.get("/api/memory/file", params={"file": path})).json()
+            assert opened["readonly"] is True
+            refused = await client.post("/api/memory/save", headers=JSON, json={"file": path, "version": opened["version"], "content": "x"})
+            assert refused.status_code == 403 and "read-only" in refused.json()["detail"]
+        assert app.home.read("memory/people/7.former.md").startswith("- Liked coffee")
+
+
+async def test_unpinning_a_core_memory_on_the_page_keeps_the_line_unpinned(make_app, browser):
+    """The Core memories view deletes a pin by saving the file without its {core} group: a tag-only edit, so the
+    save's own pinning of hand edits leaves it alone."""
+    app = make_app()
+    rel = f"memory/people/{FRIEND}.md"
+    app.home._write_regular(rel, "- Allergic to peanuts {core owner 2026-11-21}\n- Plans a trip {chat -1} {core dom 2026-11-20: often}\n")
+    async with browser(app) as client:
+        core = (await client.get("/api/memory/core")).json()
+        assert [(item["text"], item["by"]) for item in core["items"]] == [("- Allergic to peanuts", "owner"), ("- Plans a trip", "dom")]
+        current = (await client.get("/api/memory/file", params={"file": rel})).json()
+        content = current["content"].replace(" {core owner 2026-11-21}", "")
+        saved = await client.post("/api/memory/save", headers=JSON, json={"file": rel, "version": current["version"], "content": content})
+        assert saved.status_code == 200
+        assert app.home.read(rel).splitlines()[0] == "- Allergic to peanuts"
+        assert [item["by"] for item in (await client.get("/api/memory/core")).json()["items"]] == ["dom"]

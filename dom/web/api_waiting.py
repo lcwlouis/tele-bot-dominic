@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from dom.plugins.manifest import NETWORK_NOTICE
@@ -93,8 +93,8 @@ def _card(row: dict) -> dict:
     return card
 
 
-async def _view(app, kind: str = "", source: str = "") -> dict:
-    data = await _proposals(app, kind, source)
+async def _view(app, kind: str = "", source: str = "", linked: int | None = None) -> dict:
+    data = await _proposals(app, kind, source, linked)
     cards = [
         {"type": "import", "id": card["id"], "service": card["service"], "facts": [{"id": fact["id"], "text": fact["body"]["text"]} for fact in card["facts"]]}
         if "facts" in card else _card(card)
@@ -112,8 +112,11 @@ async def _view(app, kind: str = "", source: str = "") -> dict:
 
 
 @router.get(PREFIX)
-async def read_waiting(request: Request, kind: str = "", source: str = "") -> dict:
-    return await _view(owner_app(request), kind[:40], source[:80])
+async def read_waiting(
+    request: Request, kind: str = "", source: str = "", id: int | None = Query(default=None, gt=0, lt=2**63),
+) -> dict:
+    """The page; `id` (from a ?proposal= link) also brings that proposal under Settled when it is older than the latest."""
+    return await _view(owner_app(request), kind[:40], source[:80], id)
 
 
 @router.post(PREFIX + "/decide")

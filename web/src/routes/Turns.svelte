@@ -1,12 +1,16 @@
 <script lang="ts">
+  import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import { onMount } from "svelte";
-  import type { TurnsData } from "$lib/api";
+  import type { Turn, TurnsData } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
+  import AppPicker from "$lib/components/kit/AppPicker.svelte";
+  import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
+  import StripList from "$lib/components/kit/StripList.svelte";
+  import type { Status } from "$lib/components/kit/status";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
-  import { Label } from "$lib/components/ui/label";
   import type { Destination, Tab } from "$lib/nav";
   import { WorkPage } from "$lib/work.svelte";
 
@@ -15,23 +19,42 @@
   const page = new WorkPage<TurnsData>("/api/system/turns");
   // The chat filter rides in the address (?chat=<id>), so a chat's page can link straight to its turns.
   let chat = $state(new URLSearchParams(location.search).get("chat") ?? "");
-  let shown = $state(25); // the log keeps 200 turns; a page of them at a time keeps it light
+  let selected = $state<string | null>(null);
   onMount(() => page.load(chat ? `?${new URLSearchParams({ chat })}` : ""));
 
-  function reload() {
-    shown = 25;
+  function reload(next: string) {
+    chat = next;
+    selected = null;
     const url = new URL(location.href);
     if (chat) url.searchParams.set("chat", chat);
     else url.searchParams.delete("chat");
     history.replaceState(history.state, "", url);
     page.load(`?${new URLSearchParams({ chat })}`);
   }
+
+  type Row = Turn & { key: string; status: Status };
+  // A turn's status from what it did: held back (a guard or the budget), failed, paused, or done.
+  function statusOf(outcome: string): Status {
+    if (outcome.startsWith("Held back") || outcome === "Provider budget exhausted" || outcome === "Flood limited") return "held";
+    if (outcome === "Turn failed" || outcome === "Reaction failed" || outcome === "Interrupted") return "failed";
+    if (outcome === "Paused") return "paused";
+    return "done";
+  }
+  // Turns have no ID: their time and place in the log keep them apart (two can share a millisecond).
+  const rows = $derived<Row[]>((page.data?.turns ?? []).map((turn, index) => ({ ...turn, key: `${turn.at}#${index}`, status: statusOf(turn.outcome) })));
+  const options = $derived([{ value: "", label: "All chats" }, ...(page.data?.choices ?? []).map((choice) => ({ value: choice.id, label: choice.title }))]);
+
   const duration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
-  const tokens = (value: number | null) => (value === null ? "—" : value);
+  const tokens = (value: number | null) => (value === null ? "unknown" : value.toLocaleString("en-US"));
   const words = (text: string) => text.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
-  const held = (outcome: string) => outcome.startsWith("Held back") || outcome === "Turn failed";
+  const queueWait = (turn: Turn) => turn.segments.find((segment) => segment.stage === "queue_wait")?.ms ?? null;
+  const cached = (turn: Turn) => {
+    const measured = turn.model_calls.filter((call) => call.input_tokens && call.cached_tokens !== null);
+    const input = measured.reduce((sum, call) => sum + (call.input_tokens ?? 0), 0);
+    return input ? Math.round((100 * measured.reduce((sum, call) => sum + (call.cached_tokens ?? 0), 0)) / input) : null;
+  };
   // Stage colours are classes, not inline styles (Dom's CSP allows none). Every segment is also named in its title
-  // and in the chips under it.
+  // and in the list under it.
   const fills: Record<string, string> = {
     away_wait: "fill-muted-foreground/50",
     debounce: "fill-line",
@@ -49,7 +72,6 @@
     after_reply: "fill-muted-foreground/30",
   };
   const fillOf = (stage: string) => fills[stage] ?? "fill-muted-foreground";
-  const select = "h-10 rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 </script>
 
 <PageHeader kicker={destination.label} title={tab.label} subtitle={tab.blurb} />
@@ -63,149 +85,177 @@
   <div class="h-56 animate-pulse rounded-xl border bg-surface" aria-hidden="true"></div>
 {:else}
   {@const data = page.data}
-  {#if data.choices.length}
-    <div class="mb-5 grid w-fit gap-1.5">
-      <Label for="turn-chat">Chat</Label>
-      <select id="turn-chat" class={select} bind:value={chat} onchange={reload}>
-        <option value="">All chats</option>
-        {#each data.choices as choice (choice.id)}<option value={choice.id}>{choice.title}</option>{/each}
-      </select>
-    </div>
-  {/if}
-
-  {#if data.visits.length}
-    <section aria-labelledby="attention" class="mb-6 rounded-xl border bg-surface p-4">
-      <h2 id="attention" class="text-lg font-semibold">Attention loop</h2>
-      <p class="mt-2 flex justify-between font-mono text-xs text-muted-foreground"><time>{data.visits[0].time}</time><time>{data.visits[data.visits.length - 1].time}</time></p>
-      <ol class="mt-2 grid gap-1.5" aria-label="Attention visits">
-        {#each data.visits as visit, index (index)}
-          <li>
-            <span class="text-sm">{visit.title} · {duration(visit.duration_ms)} · {visit.depth} ready</span>
-            <svg viewBox="0 0 1000 10" preserveAspectRatio="none" class="h-2.5 w-full" aria-hidden="true">
-              <rect width="1000" height="10" class="fill-raised" />
-              <rect x={visit.left} width={visit.width} height="10" class="fill-signal" />
-            </svg>
-          </li>
-        {/each}
-      </ol>
-      <h3 class="mt-5 mb-2 font-semibold">Cache on return</h3>
-      <div class="overflow-x-auto">
-        <table class="w-full min-w-[28rem] text-sm">
-          <thead>
-            <tr class="text-left text-muted-foreground">
-              <th scope="col" class="py-2 pr-3 font-medium">Gap</th>
-              <th scope="col" class="px-3 py-2 font-medium">Returns</th>
-              <th scope="col" class="px-3 py-2 font-medium">Cache hit rate</th>
-              <th scope="col" class="py-2 pl-3 font-medium">Median intervening tokens</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each data.cache as row (row.gap)}
-              <tr class="border-t">
-                <th scope="row" class="py-2 pr-3 text-left font-normal">{row.gap}</th>
-                <td class="px-3 py-2 font-mono">{row.returns}</td>
-                <td class="px-3 py-2 font-mono">{row.hit === null ? "—" : `${row.hit.toFixed(1)}%`}</td>
-                <td class="py-2 pl-3 font-mono">{row.between ?? "—"}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  {/if}
-
-  {#if data.cross_chat.length}
-    <section aria-labelledby="cross-chat" class="mb-6 rounded-xl border bg-surface p-4">
-      <h2 id="cross-chat" class="text-lg font-semibold">Cross-chat</h2>
-      <ol class="mt-3 grid gap-2" aria-label="Cross-chat deliveries">
-        {#each data.cross_chat as item, index (index)}
-          <li>
-            <details class="rounded-lg border bg-raised/40 px-3 py-2 text-sm">
-              <summary class="cursor-pointer font-medium break-words">
-                {words(item.kind)} · {item.source} → {item.target} · {item.status.replaceAll("_", " ")}{item.drop_reason ? ` (${item.drop_reason})` : ""}
-              </summary>
-              <p class="mt-2 text-muted-foreground">
-                Created <time datetime={item.created_at}>{item.created_at}</time>
-                {#if item.queued_at} · Queued <time datetime={item.queued_at}>{item.queued_at}</time>{/if}
-                {#if item.sending_at} · Sending <time datetime={item.sending_at}>{item.sending_at}</time>{/if}
-                · Updated <time datetime={item.updated_at}>{item.updated_at}</time>
-              </p>
-              <pre class="mt-2 max-h-64 overflow-auto rounded-lg border bg-surface p-3 font-mono text-[0.8rem] break-words whitespace-pre-wrap">{item.text}</pre>
-            </details>
-          </li>
-        {/each}
-      </ol>
-    </section>
-  {/if}
-
-  {#if data.turns.length === 0}
-    <StatusNote title={`No turns yet${data.chat ? " for this chat" : ""}`} detail="Dom replies when someone messages him." />
-  {:else}
-    {#if data.visible_stages.length}
-      <ul class="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" aria-label="Stage colours">
-        {#each data.visible_stages as stage (stage)}
-          <li class="flex items-center gap-1.5"><svg viewBox="0 0 10 10" class="size-2.5" aria-hidden="true"><rect width="10" height="10" class={fillOf(stage)} /></svg>{data.stages[stage]}</li>
-        {/each}
-      </ul>
-    {/if}
-    <ol class="grid gap-2" aria-label="Turns, newest first">
-      {#each data.turns.slice(0, shown) as turn, index (index)}
-        <li>
-          <details class="rounded-xl border bg-surface px-4 py-3">
-            <summary class="grid cursor-pointer gap-1.5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-baseline sm:gap-x-3">
-              <time datetime={turn.at} title={turn.full_time} class="font-mono text-sm text-muted-foreground">{turn.time}</time>
-              <span class="min-w-0 font-medium break-words {held(turn.outcome) ? 'text-coral' : ''}">{turn.title} · {turn.outcome}</span>
-              <span class="font-mono text-xs text-muted-foreground">
-                {#if turn.first_bubble_ms !== null && turn.last_bubble_ms !== null}
-                  First bubble {duration(turn.first_bubble_ms)} · Last bubble {duration(turn.last_bubble_ms)}
-                {:else}
-                  Turn {duration(turn.duration_ms)}
-                {/if}
-              </span>
-              {#if turn.segments.length}
-                <svg viewBox={`0 0 ${turn.bar_ms} 10`} preserveAspectRatio="none" class="h-2.5 w-full sm:col-span-3" role="img" aria-label="Stage durations">
-                  {#each turn.segments as segment, segmentIndex (segmentIndex)}
-                    <rect x={segment.x} width={segment.ms} height="10" class={fillOf(segment.stage)}><title>{segment.label} {duration(segment.ms)}</title></rect>
-                  {/each}
-                </svg>
-              {/if}
-            </summary>
-            <div class="mt-3 flex flex-wrap gap-1.5">
-              {#each turn.steps as step, stepIndex (stepIndex)}<Badge variant="outline">{step === "web_search" ? "Search" : words(step)}</Badge>{/each}
-              {#each turn.visits as visit, visitIndex (visitIndex)}
-                <Badge variant="outline">Picked: {visit.reason}{visit.behind ? ` · Waited behind ${visit.behind}` : ""}{visit.capped ? ` · Skipped ${visit.capped} after two visits` : ""}</Badge>
-              {/each}
-              {#each turn.timing as item, timingIndex (timingIndex)}<Badge variant="outline">{item.label} {duration(item.ms)}</Badge>{/each}
-              {#if turn.model}<Badge variant="outline">{turn.model}</Badge>{/if}
-              {#if turn.fallback}<Badge variant="destructive">Fallback</Badge>{/if}
-              <Badge variant="outline">{turn.calls} {turn.calls === 1 ? "call" : "calls"}</Badge>
-            </div>
-            {#if turn.model_calls.length}
-              <ol class="mt-3 grid gap-2" aria-label="Model calls">
-                {#each turn.model_calls as call, callIndex (callIndex)}
-                  <li class="rounded-lg border bg-raised/40 px-3 py-2 text-sm">
-                    <p class="break-words">
-                      {data.stages[call.kind] ?? words(call.kind)} · {call.model}{call.host ? ` · ${call.host}` : ""}{call.fallback ? " · Fallback" : ""} · {duration(call.duration_ms)}{call.status ? ` · ${call.status}` : ""}
-                    </p>
-                    <p class="font-mono text-xs text-muted-foreground">
-                      Input {tokens(call.input_tokens)} · Output {tokens(call.output_tokens)} · Cached {tokens(call.cached_tokens)} tokens
-                    </p>
-                    {#if call.gap_ms !== null && call.gap_ms !== undefined}
-                      <p class="font-mono text-xs text-muted-foreground">Return after {duration(call.gap_ms)} · {call.between_tokens} intervening tokens</p>
-                    {/if}
-                    <p class="mt-1 font-mono text-xs break-all text-muted-foreground">
-                      System <code>{call.system_hash}</code> · Tools <code>{call.tools_hash}</code>{#if call.user_hash} · User <code>{call.user_hash}</code>{/if}{#if call.user_prefix_hash} · User prefix <code>{call.user_prefix_hash}</code>{/if}
-                    </p>
+  {#if data.visits.length || data.cross_chat.length}
+    <!-- What spans turns, folded so the turns lead the page. -->
+    <div class="mb-5 grid gap-3 lg:grid-cols-2">
+      {#if data.visits.length}
+        <details class="group rounded-xl border bg-surface">
+          <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-xl px-4 font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+            <ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform duration-(--motion-quick) group-open:rotate-180" aria-hidden="true" />
+            Attention loop <span class="text-meta font-normal text-muted-foreground">{data.visits.length} visits</span>
+          </summary>
+          <section aria-label="Attention loop" class="grid gap-4 border-t px-4 pt-3 pb-4">
+            <div>
+              <p class="flex justify-between font-mono text-xs text-muted-foreground"><time>{data.visits[0].time}</time><time>{data.visits[data.visits.length - 1].time}</time></p>
+              <ol class="mt-2 grid gap-1.5" aria-label="Attention visits">
+                {#each data.visits as visit, index (index)}
+                  <li>
+                    <span class="text-sm">{visit.title}, {duration(visit.duration_ms)}, {visit.depth} ready</span>
+                    <svg viewBox="0 0 1000 10" preserveAspectRatio="none" class="h-2.5 w-full" aria-hidden="true">
+                      <rect width="1000" height="10" class="fill-raised" />
+                      <rect x={visit.left} width={visit.width} height="10" class="fill-signal" />
+                    </svg>
                   </li>
                 {/each}
               </ol>
-            {/if}
-          </details>
-        </li>
-      {/each}
-    </ol>
-    {#if data.turns.length > shown}
-      <Button variant="outline" class="mt-4" onclick={() => (shown += 50)}>Show more turns ({data.turns.length - shown} left)</Button>
-    {/if}
+            </div>
+            <div>
+              <h3 class="mb-2 flex items-center gap-1.5 font-semibold">
+                Cache on return
+                <InfoGlyph label="About cache on return">How much of the prompt the provider had cached when Dom came back to a chat, by how long he was away.</InfoGlyph>
+              </h3>
+              <div class="overflow-x-auto">
+                <table class="w-full min-w-[24rem] text-sm">
+                  <thead>
+                    <tr class="text-left text-muted-foreground">
+                      <th scope="col" class="py-2 pr-3 font-medium">Gap</th>
+                      <th scope="col" class="px-3 py-2 font-medium">Returns</th>
+                      <th scope="col" class="px-3 py-2 font-medium">Cache hit rate</th>
+                      <th scope="col" class="py-2 pl-3 font-medium">Median intervening tokens</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each data.cache as row (row.gap)}
+                      <tr class="border-t">
+                        <th scope="row" class="py-2 pr-3 text-left font-normal">{row.gap}</th>
+                        <td class="px-3 py-2 font-mono">{row.returns}</td>
+                        <td class="px-3 py-2 font-mono">{row.hit === null ? "—" : `${row.hit.toFixed(1)}%`}</td>
+                        <td class="py-2 pl-3 font-mono">{row.between ?? "—"}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </details>
+      {/if}
+      {#if data.cross_chat.length}
+        <details class="group rounded-xl border bg-surface">
+          <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-xl px-4 font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+            <ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform duration-(--motion-quick) group-open:rotate-180" aria-hidden="true" />
+            Cross-chat <span class="text-meta font-normal text-muted-foreground">{data.cross_chat.length} deliveries</span>
+          </summary>
+          <ol class="grid gap-2 border-t px-4 pt-3 pb-4" aria-label="Cross-chat deliveries">
+            {#each data.cross_chat as item, index (index)}
+              <li class="rounded-lg border bg-raised/40 px-3 py-2 text-sm">
+                <p class="font-medium break-words">
+                  {words(item.kind)} from {item.source} to {item.target}: {item.status.replaceAll("_", " ")}{item.drop_reason ? ` (${item.drop_reason})` : ""}
+                </p>
+                <p class="mt-1 text-meta text-muted-foreground">
+                  Created <time datetime={item.created_at}>{item.created_at}</time>{#if item.queued_at}, queued <time datetime={item.queued_at}>{item.queued_at}</time>{/if}{#if item.sending_at}, sending <time datetime={item.sending_at}>{item.sending_at}</time>{/if}, updated <time datetime={item.updated_at}>{item.updated_at}</time>
+                </p>
+                <pre class="mt-2 max-h-64 overflow-auto rounded-lg border bg-surface p-3 font-mono text-[0.8rem] break-words whitespace-pre-wrap">{item.text}</pre>
+              </li>
+            {/each}
+          </ol>
+        </details>
+      {/if}
+    </div>
   {/if}
+
+  <StripList
+    items={rows}
+    key={(row) => row.key}
+    strip={(row) => ({ status: row.status, title: row.outcome, at: row.at, meta: row.title })}
+    detailTitle={(row) => `${row.outcome} in ${row.title}`}
+    label="Turns, newest first"
+    bind:selected
+    search="Filter turns"
+    statuses={["held", "failed"]}
+    level={2}
+    name="Turns"
+  >
+    {#snippet toolbar()}
+      {#if data.choices.length}<AppPicker label="Chat" {options} value={chat} onchange={reload} class="w-full sm:w-56 [&>label]:sr-only" />{/if}
+    {/snippet}
+    {#snippet details(turn)}
+      {@const wait = queueWait(turn)}
+      {@const hit = cached(turn)}
+      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-body">
+        <dt class="text-muted-foreground">When</dt>
+        <dd>{turn.full_time}</dd>
+        {#if turn.first_bubble_ms !== null && turn.last_bubble_ms !== null}
+          <dt class="text-muted-foreground">Bubbles</dt>
+          <dd class="tabular-nums">First after {duration(turn.first_bubble_ms)}, last after {duration(turn.last_bubble_ms)}</dd>
+        {:else}
+          <dt class="text-muted-foreground">Took</dt>
+          <dd class="tabular-nums">{duration(turn.duration_ms)}</dd>
+        {/if}
+        {#if wait !== null}<dt class="text-muted-foreground">Queue wait</dt><dd class="tabular-nums">{duration(wait)}</dd>{/if}
+        {#if turn.model}
+          <dt class="text-muted-foreground">Model</dt>
+          <dd class="flex flex-wrap items-center gap-1.5 font-mono text-meta break-all">{turn.model}{#if turn.fallback}<Badge variant="destructive">Fallback</Badge>{/if}</dd>
+        {/if}
+        <dt class="text-muted-foreground">Calls</dt>
+        <dd class="tabular-nums">{turn.calls}{hit !== null ? `, ${hit}% of the prompt cached` : ""}</dd>
+        {#if turn.steps.length}
+          <dt class="text-muted-foreground">Tools</dt>
+          <dd class="flex flex-wrap gap-1">{#each turn.steps as step, index (index)}<Badge variant="outline">{step === "web_search" ? "Search" : words(step)}</Badge>{/each}</dd>
+        {/if}
+        {#each turn.visits as visit, index (index)}
+          <dt class="text-muted-foreground">Picked</dt>
+          <dd>{visit.reason}{visit.behind ? `, waited behind ${visit.behind}` : ""}{visit.capped ? `, skipped ${visit.capped} after two visits` : ""}</dd>
+        {/each}
+      </dl>
+
+      {#if turn.segments.length}
+        <h3 class="mt-4 text-meta font-medium text-muted-foreground">Where the time went</h3>
+        <svg viewBox={`0 0 ${turn.bar_ms} 10`} preserveAspectRatio="none" class="mt-1.5 h-2.5 w-full rounded-sm" role="img" aria-label="Stage durations">
+          {#each turn.segments as segment, index (index)}
+            <rect x={segment.x} width={segment.ms} height="10" class={fillOf(segment.stage)}><title>{segment.label} {duration(segment.ms)}</title></rect>
+          {/each}
+        </svg>
+        <ul class="mt-2 grid gap-1 text-meta" aria-label="Stages">
+          {#each turn.timing as item, index (index)}
+            <li class="flex items-center gap-2 tabular-nums">
+              <span class="min-w-0 flex-1">{item.label}</span><span class="text-muted-foreground">{duration(item.ms)}</span>
+            </li>
+          {/each}
+        </ul>
+        <ul class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-caption text-muted-foreground" aria-label="Stage colours">
+          {#each turn.segments as segment, index (index)}
+            <li class="flex items-center gap-1.5"><svg viewBox="0 0 10 10" class="size-2.5" aria-hidden="true"><rect width="10" height="10" class={fillOf(segment.stage)} /></svg>{segment.label}</li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if turn.model_calls.length}
+        <h3 class="mt-4 text-meta font-medium text-muted-foreground">Model calls</h3>
+        <ol class="mt-1.5 grid gap-2" aria-label="Model calls">
+          {#each turn.model_calls as call, index (index)}
+            <li class="rounded-lg border bg-raised/40 px-3 py-2 text-sm">
+              <p class="break-words">
+                {data.stages[call.kind] ?? words(call.kind)}: {call.model}{call.host ? ` on ${call.host}` : ""}{call.fallback ? ", fallback" : ""}, {duration(call.duration_ms)}{call.status ? `, ${call.status}` : ""}
+              </p>
+              <p class="text-meta text-muted-foreground tabular-nums">
+                Input {tokens(call.input_tokens)}, output {tokens(call.output_tokens)}, cached {tokens(call.cached_tokens)} tokens
+              </p>
+              {#if call.gap_ms !== null && call.gap_ms !== undefined}
+                <p class="text-meta text-muted-foreground tabular-nums">Came back after {duration(call.gap_ms)}, {call.between_tokens} intervening tokens</p>
+              {/if}
+              <p class="mt-1 flex flex-wrap items-center gap-x-2 font-mono text-xs break-all text-muted-foreground">
+                <span class="font-sans">Prompt fingerprint</span>
+                <span>system <code>{call.system_hash}</code></span>
+                <span>tools <code>{call.tools_hash}</code></span>
+                {#if call.user_hash}<span>user <code>{call.user_hash}</code></span>{/if}
+                {#if call.user_prefix_hash}<span>user prefix <code>{call.user_prefix_hash}</code></span>{/if}
+              </p>
+            </li>
+          {/each}
+        </ol>
+      {/if}
+    {/snippet}
+    {#snippet empty()}<StatusNote title={`No turns yet${data.chat ? " for this chat" : ""}`} detail="Dom replies when someone messages him." />{/snippet}
+  </StripList>
 {/if}

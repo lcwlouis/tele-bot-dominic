@@ -172,7 +172,7 @@ def _proposal_label(kind: str, source: str) -> str:
     return "Plugin draft" if kind == "plugin" else kind.replace("_", " ").capitalize()
 
 
-async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
+async def _proposals(app: App, kind: str = "", source: str = "", linked: int | None = None) -> dict:
     rows = await app.proposals.pending()
     cards, imports = [], {}
     for raw in rows:
@@ -215,7 +215,7 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
                 "first": gate.first_line(chat.get("first_text")),
             })
     count = len(pending_chats) + sum(len(card["facts"]) if "facts" in card else 1 for card in cards)
-    settled_rows = await app.proposals.settled()
+    settled_rows = await app.proposals.settled(include=linked)  # a link may name an older settled one
     settled = [
         _proposal_body(raw) | {"label": _proposal_label(raw["kind"], raw["source"])}
         for raw in settled_rows
@@ -450,9 +450,13 @@ async def _plugin_panels(app: App) -> list[tuple[str, object]]:
 
 
 
-async def _own_work(app: App, message: str = "") -> dict:
-    """Self-directed work (W13): the planned, running and finished tasks, and the network guard's last check."""
+async def _own_work(app: App, message: str = "", focus: int | None = None) -> dict:
+    """Self-directed work (W13): the planned, running and finished tasks, and the network guard's last check.
+    `focus` is a task a link names: an older one than the list holds is added at its end."""
     tz = ZoneInfo(app.config.timezone)
+    listed = await app.store.self_tasks()
+    if focus is not None and all(row["id"] != focus for row in listed) and (extra := await app.store.get_self_task(focus)):
+        listed.append(extra)
 
     def local(stamp: str | None) -> str:
         return f"{datetime.fromisoformat(stamp).astimezone(tz):%a %d %b %H:%M}" if stamp else ""
@@ -462,7 +466,7 @@ async def _own_work(app: App, message: str = "") -> dict:
         "files": json.loads(row["files_json"]),
         "not_before_local": "" if row["not_before"] >= selfwork.UNANNOUNCED.isoformat() else local(row["not_before"]),
         "announced_local": local(row["announced_at"]), "finished_local": local(row["finished_at"]),
-    } for row in await app.store.self_tasks()]
+    } for row in listed]
     guard = None
     if raw := await app.store.kv_get(selfwork.GUARD_KEY):
         try:
@@ -482,12 +486,17 @@ async def _own_work(app: App, message: str = "") -> dict:
 
 
 
-async def _reminders(app: App, message: str = "") -> dict:
+async def _reminders(app: App, message: str = "", focus: int | None = None) -> dict:
+    """The reminders the page lists. `focus` is one a link names: an older one than the list holds is added."""
     tz = ZoneInfo(app.config.timezone)
+    listed = await app.dispatch.reminders.list_all()
+    if focus is not None and all(row["id"] != focus for row in listed) and app.owner_id is not None:
+        if extra := await app.store.get_reminder(app.owner_id, focus):
+            listed.append(extra)
     rows = [{
         **row,
         "due_local": f"{datetime.fromisoformat(row['due_at']).astimezone(tz):%Y-%m-%d %H:%M}",
-    } for row in await app.dispatch.reminders.list_all()]
+    } for row in listed]
     return {"rows": rows, "message": message}
 
 
@@ -526,24 +535,70 @@ HABITS = "memory/HABITS.md"
 SOUL = "SOUL.md"
 
 
+ARCHIVE = "Archive"  # the journal archive and the former files: listed for reading, never saved from the page
+
+
+def _person_label(rel: str, names: dict[str, str]) -> str:
+    """A person's notes file by the person's name: `memory/people/<id>.md` reads as their name, `handle_x` as @x."""
+    stem = Path(rel).name.removesuffix(".former.md").removesuffix(".md")
+    if stem.isdecimal():
+        return names.get(stem, f"Person {stem}")
+    return f"@{stem.removeprefix('handle_')}" if stem.startswith("handle_") else stem
+
+
+def _archive_label(rel: str) -> str:
+    """`memory/journal/2025-12.md` -> "Journal, December 2025"; a year file -> "Journal, 2025"."""
+    stem = Path(rel).stem
+    journal = "Private journal" if rel.startswith("private/") else "Journal"
+    try:
+        when = f"{datetime.strptime(stem, '%Y-%m'):%B %Y}" if "-" in stem else stem
+    except ValueError:
+        when = stem
+    return f"{journal}, {when}"
+
+
 async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
-    """The memory files the dashboard lists, by section: (path, label). Private files sit only under "Only in your DM"."""
+    """The memory files the dashboard lists, by section: (path, label). Private files sit only under "Only in your
+    DM". People read as their names, chats as their titles. The archive (journal months, former files) comes last."""
     people, chats = app.home.list_memory_notes()
     entities = app.home.list_entity_notes()
     known = {c["chat_id"]: c for c in await app.store.list_chats()}
     known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
+    names = await app.store.people_names()
     chat_notes, owner_notes = [], []
-    for rel in chats:
-        chat_id = Path(rel).stem
+
+    def chat_label(rel: str) -> str:
+        chat_id = Path(rel).name.removesuffix(".former.md").removesuffix(".md")
         if chat_id == str(app.owner_id):
-            owner_notes.append((rel, "Your DM notes"))
+            return "Your DM notes"
+        chat = known.get(chat_id, {"chat_id": chat_id, "title": ""})
+        return _title(chat, app.owner_id) if chat_id.startswith("-") else f"Friend DM \u00b7 {_title(chat, app.owner_id)}"
+
+    for rel in chats:
+        (owner_notes if Path(rel).stem == str(app.owner_id) else chat_notes).append((rel, chat_label(rel)))
+    labels = {
+        MEMORY: "MEMORY.md", "private/USER.md": "USER.md", "private/NOTES.md": "NOTES.md",
+        "memory/JOURNAL.md": "Journal", "private/JOURNAL.md": "Private journal",
+    }
+
+    def former_label(rel: str) -> str:
+        base = rel.removesuffix(".former.md") + ".md"
+        if base.startswith("memory/people/"):
+            label = _person_label(base, names)
+        elif base.startswith("memory/chats/"):
+            label = chat_label(base)
         else:
-            chat = known.get(chat_id, {"chat_id": chat_id, "title": ""})
-            label = _title(chat, app.owner_id) if chat_id.startswith("-") else f"Friend DM \u00b7 {_title(chat, app.owner_id)}"
-            chat_notes.append((rel, label))
+            label = labels.get(base, Path(base).name)
+        return f"{label} (former)"
+
+    private = app.home.scoped(allow_private=True)
+    archive = [
+        *((rel, _archive_label(rel)) for flag in (False, True) for rel in reversed(private.journal_archive_files(flag))),
+        *((rel, former_label(rel)) for rel in private.former_files()),
+    ]
     return [
         ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
-        ("People", [(rel, Path(rel).name) for rel in people]),
+        ("People", sorted(((rel, _person_label(rel, names)) for rel in people), key=lambda item: item[1].casefold())),
         ("Places, projects and goals", [
             (rel, f"{Path(rel).parent.name[:-1].title()} · {Path(rel).stem.replace('-', ' ')}") for rel in entities
         ]),
@@ -552,6 +607,7 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
             ("private/USER.md", "USER.md"), ("private/NOTES.md", "NOTES.md"),
             ("private/JOURNAL.md", "Private journal"), *owner_notes,
         ]),
+        (ARCHIVE, archive),
     ]
 
 
@@ -559,6 +615,7 @@ async def _memory_file(app: App, file: str) -> dict:
     """One listed memory file and its text. Only listed files open, and a private one opens only in the private scope."""
     sections = await _memory_sections(app)
     labels = {rel: label for _, files in sections for rel, label in files}
+    archived = {rel for heading, files in sections if heading == ARCHIVE for rel, _ in files}
     if file not in labels:
         raise HTTPException(404, "Unknown memory file.")
     home = app.home.scoped(allow_private=file.startswith("private/"))
@@ -567,7 +624,7 @@ async def _memory_file(app: App, file: str) -> dict:
     except (OSError, ValueError):
         raise HTTPException(404, "Memory file unavailable.") from None
     return {
-        "sections": sections, "file": file, "label": labels[file], "readonly": file == HABITS,
+        "sections": sections, "file": file, "label": labels[file], "readonly": file == HABITS or file in archived,
         "limit": MAX_SOUL if file == SOUL else limit_for(file),
         "content": content, "version": content_version(content),
     }

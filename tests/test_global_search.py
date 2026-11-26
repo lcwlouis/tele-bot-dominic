@@ -200,6 +200,11 @@ async def test_search_route_needs_auth_and_returns_grouped_hits_with_previews_on
         assert by_title["Your DM"]["full"] and not friend["full"]
         assert "\n" not in friend["text"] and len(friend["text"]) <= global_search.PREVIEW
         assert any(hit["href"] == "/app/memory?file=private%2FUSER.md" for hit in groups["memory"]["hits"])
+        # A task or reminder hit links to that one item, which its page opens.
+        task = (await app.store.desktop_tasks(app.owner_id))[0]
+        assert [hit["href"] for hit in groups["task"]["hits"]] == [f"/app/work?task={task['id']}"]
+        reminder = (await app.store.list_reminders(app.owner_id))[0]
+        assert [hit["href"] for hit in groups["reminder"]["hits"]] == [f"/app/work/reminders?id={reminder['id']}"]
         assert (await client.get("/api/search", params={"q": ""})).json()["groups"] == []
         assert (await client.get("/api/search", params={"q": "x" * 201})).status_code == 422
 

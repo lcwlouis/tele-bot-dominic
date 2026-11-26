@@ -25,11 +25,13 @@ from dom.home import MAX_SOUL_EDIT, content_version
 from dom.telegram import owner
 from dom.web.model_settings import _input
 from dom.web.shared import (
+    ARCHIVE,
     HABITS,
     IMPORT_SERVICES,
     MAX_SOUL_CHAT,
     MAX_SOUL_TURNS,
     OwnerError,
+    _title,
     _memory_file,
     _memory_sections,
     _proposals,
@@ -115,14 +117,22 @@ async def _waiting(app) -> dict:
     return {"imports": imports, "edits": edits}
 
 
+async def _chat_names(app) -> dict[str, str]:
+    known = {c["chat_id"]: c for c in await app.store.list_chats()}
+    known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
+    return {str(chat_id): _title(chat, app.owner_id) for chat_id, chat in known.items()}
+
+
 @router.get(PREFIX)
 async def read_memory(request: Request) -> dict:
     app = owner_app(request)
     return {
         "sections": [
-            {"heading": heading, "files": [{"path": path, "label": label} for path, label in files]}
+            {"heading": heading, "archive": heading == ARCHIVE, "files": [{"path": path, "label": label} for path, label in files]}
             for heading, files in await _memory_sections(app) if files
         ],
+        # Source tags ({chat -100123}) show in the preview as the chat's name: every chat Dom knows, by ID.
+        "chat_names": await _chat_names(app),
         "services": [{"id": key, "label": label} for key, label in IMPORT_SERVICES.items()],
         "export_prompt": memory_import.export_prompt().strip(),  # what the owner pastes into the other assistant
         "max_soul_request": MAX_SOUL_EDIT,
@@ -184,6 +194,8 @@ async def save_file(request: Request) -> dict:
     if update.file == HABITS:
         raise HTTPException(403, "HABITS.md is read-only.")
     listed = await _memory_file(app, update.file)
+    if listed["readonly"]:  # the journal archive and the former files are the record: read, never rewritten here
+        raise HTTPException(403, f"{listed['label']} is read-only.")
     content = update.content.replace("\r\n", "\n").replace("\r", "\n")
     home = app.home.scoped(allow_private=update.file.startswith("private/"))
     try:

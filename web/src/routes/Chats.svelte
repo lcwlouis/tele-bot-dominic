@@ -1,13 +1,19 @@
 <script lang="ts">
+  import EyeOff from "@lucide/svelte/icons/eye-off";
   import Moon from "@lucide/svelte/icons/moon";
+  import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+  import Unplug from "@lucide/svelte/icons/unplug";
   import Sun from "@lucide/svelte/icons/sun";
   import MessageCircle from "@lucide/svelte/icons/message-circle";
   import Sparkles from "@lucide/svelte/icons/sparkles";
   import { onMount } from "svelte";
-  import { getJSON, send, type Chat, type ChatsData } from "$lib/api";
+  import { getJSON, send, type Chat, type ChatsData, type UnreachableChat } from "$lib/api";
   import ChatMessages from "$lib/components/ChatMessages.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
+  import IconButton from "$lib/components/kit/IconButton.svelte";
+  import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
+  import { Checkbox } from "$lib/components/ui/checkbox";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
@@ -34,6 +40,22 @@
   let resetting = $state<Chat | null>(null);
   let removing = $state(false);
   let sticker = $state("");
+  // Not reachable (E74): chats the current bot can no longer reach, hidden ones included so they can come back.
+  let unreachable = $state<UnreachableChat[]>([]);
+  let forgetting = $state<UnreachableChat | null>(null);
+  let wipe = $state(false); // "Delete history too", which asks a second time
+  let wiping = $state<UnreachableChat | null>(null);
+  let freshening = $state<Chat | null>(null);
+  let freshened = $state<number | null>(null); // the chat just started fresh, which offers Undo
+  let readingGone = $state<number | null>(null);
+
+  async function loadUnreachable() {
+    try {
+      unreachable = (await getJSON<{ unreachable: UnreachableChat[] }>("/api/chats/unreachable?include_hidden=true")).unreachable;
+    } catch {
+      // The section keeps what it showed; the main list's error covers a dashboard that isn't answering.
+    }
+  }
 
   async function load() {
     try {
@@ -44,7 +66,10 @@
     }
   }
 
-  onMount(load);
+  onMount(() => {
+    load();
+    loadUnreachable();
+  });
 
   /** Run one write; its answer is the fresh page data. A refused write toasts its reason and changes nothing. */
   async function write(path: string, body: object, tone: (changed?: boolean) => "ok" | "error" = () => "ok"): Promise<boolean> {
@@ -62,6 +87,24 @@
       busy = false;
     }
   }
+
+  async function checkNow() {
+    if (await write("/api/chats/reachability", {})) await loadUnreachable();
+  }
+  async function hide(chat: UnreachableChat, hidden: boolean) {
+    if (await write("/api/chats/hide", { chat_id: chat.id, hidden })) await loadUnreachable();
+  }
+  async function forget(chat: UnreachableChat, deleteHistory: boolean) {
+    if (await write("/api/chats/forget", { chat_id: chat.id, delete_history: deleteHistory, confirm: deleteHistory })) {
+      if (readingGone === chat.id) readingGone = null;
+      await loadUnreachable();
+    }
+  }
+  async function fresh(chat: Chat, undo: boolean) {
+    if (await write("/api/chats/fresh", { chat_id: chat.id, undo })) freshened = undo ? null : chat.id;
+  }
+  const shown = $derived(unreachable.filter((chat) => !chat.hidden));
+  const hidden = $derived(unreachable.filter((chat) => chat.hidden));
 
   const act = (chat: Chat, action: "wake" | "sleep" | "leave") => write("/api/chats/action", { chat_id: chat.id, action });
   const setPreset = (chat: Chat | "all", preset: string) => write("/api/chats/preset", { chat_id: chat === "all" ? chat : chat.id, preset });
@@ -126,7 +169,10 @@
         </p>
       </div>
       <div class="grid gap-1.5">
-        <Label id="everywhere-label">Everywhere <span class="font-normal text-muted-foreground">(a chat's own preset wins)</span></Label>
+        <div class="flex items-center gap-1">
+          <Label id="everywhere-label">Everywhere</Label>
+          <InfoGlyph label="About the everywhere preset">A chat's own preset wins over this one.</InfoGlyph>
+        </div>
         <Select.Root type="single" value={chats.everywhere} disabled={busy} onValueChange={(value) => setPreset("all", value)}>
           <Select.Trigger class="h-9 w-full" aria-labelledby="everywhere-label">{everywhereLabel}</Select.Trigger>
           <Select.Content>
@@ -192,6 +238,11 @@
                 >
                   Messages
                 </Button>
+                <!-- The rescue: earlier messages leave the prompt, never the history; the last start can be undone. -->
+                <Button variant="ghost" disabled={busy} aria-label={`Fresh start in ${chat.title}`} onclick={() => (freshening = chat)}>Fresh start</Button>
+                {#if freshened === chat.id}
+                  <Button variant="ghost" disabled={busy} aria-label={`Undo the fresh start in ${chat.title}`} onclick={() => fresh(chat, true)}>Undo fresh start</Button>
+                {/if}
                 {#if chat.scope === "group"}
                   <Button variant="destructive" disabled={busy} aria-label={`Leave ${chat.title}`} onclick={() => (leaving = chat)}>Leave group</Button>
                 {/if}
@@ -257,10 +308,68 @@
     </ul>
   {/if}
 
+  <section aria-labelledby="unreachable-title" class="mt-8 grid gap-3">
+    <div class="flex flex-wrap items-center gap-x-1.5 gap-y-2">
+      <h2 id="unreachable-title" class="text-title font-semibold">Not reachable</h2>
+      <InfoGlyph label="About chats Dom can't reach">
+        Chats the current bot can no longer reach, for example after a bot token change. Their history is kept and stays searchable. Hide one to
+        tidy this list, or forget it to drop it from Dom's chats.
+      </InfoGlyph>
+      <Button variant="outline" size="sm" class="ml-auto" disabled={busy} onclick={checkNow}><RefreshCw data-icon="inline-start" aria-hidden="true" /> Check now</Button>
+    </div>
+    {#if shown.length === 0}
+      <p class="rounded-xl border border-dashed px-4 py-3 text-body text-muted-foreground">Dom can reach every chat he knows.</p>
+    {:else}
+      <ul class="divide-y divide-line/70 rounded-xl border bg-surface" aria-label="Chats Dom can't reach">
+        {#each shown as chat (chat.id)}
+          <li class="grid gap-3 px-3.5 py-2.5">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <Unplug class="size-4 shrink-0 text-status-paused" aria-hidden="true" />
+              <div class="min-w-0 flex-1 basis-40">
+                <p class="truncate text-body font-medium">{chat.title}</p>
+                <p class="text-meta text-muted-foreground">
+                  {scopeLabel[chat.scope]}{chat.since ? `, unreachable since ${chat.since}` : ""}{chat.reason ? `: ${chat.reason}` : ""}
+                </p>
+              </div>
+              <div class="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={readingGone === chat.id}
+                  aria-label={`Messages in ${chat.title}`}
+                  onclick={() => (readingGone = readingGone === chat.id ? null : chat.id)}
+                >
+                  Messages
+                </Button>
+                <IconButton label={`Hide ${chat.title}`} icon={EyeOff} disabled={busy} onclick={() => hide(chat, true)} />
+                <Button variant="destructive" size="sm" disabled={busy} aria-label={`Forget ${chat.title}`} onclick={() => ((wipe = false), (forgetting = chat))}>Forget</Button>
+              </div>
+            </div>
+            {#if readingGone === chat.id}<ChatMessages chatId={chat.id} title={chat.title} turns={false} />{/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    {#if hidden.length}
+      <details class="group rounded-xl border bg-surface text-body">
+        <summary class="flex min-h-10 cursor-pointer items-center px-3.5 text-muted-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50">Hidden ({hidden.length})</summary>
+        <ul class="divide-y divide-line/70 border-t" aria-label="Hidden chats">
+          {#each hidden as chat (chat.id)}
+            <li class="flex items-center gap-3 px-3.5 py-2">
+              <span class="min-w-0 flex-1 truncate">{chat.title}</span>
+              <Button variant="ghost" size="sm" disabled={busy} aria-label={`Show ${chat.title} again`} onclick={() => hide(chat, false)}>Show again</Button>
+            </li>
+          {/each}
+        </ul>
+      </details>
+    {/if}
+  </section>
+
   <Card.Root class="mt-6" aria-labelledby="stickers-title">
     <Card.Header>
-      <Card.Title id="stickers-title" class="text-lg">Sticker sets</Card.Title>
-      <Card.Description>The sets Dom picks stickers from.</Card.Description>
+      <Card.Title id="stickers-title" class="flex items-center gap-1.5 text-lg">
+        Sticker sets <InfoGlyph label="About sticker sets">The sets Dom picks stickers from.</InfoGlyph>
+      </Card.Title>
     </Card.Header>
     <Card.Content class="grid gap-4">
       {#if chats.stickers.length}
@@ -338,6 +447,60 @@
     <AlertDialog.Footer>
       <AlertDialog.Cancel variant="outline">Keep it</AlertDialog.Cancel>
       <AlertDialog.Action variant="destructive-solid" onclick={() => { removing = false; addOrRemove("remove"); }}>Remove set</AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<AlertDialog.Root open={forgetting !== null} onOpenChange={(open) => !open && (forgetting = null)}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Forget {forgetting?.title}?</AlertDialog.Title>
+      <AlertDialog.Description>Dom drops it from his chats. Its history is kept and stays searchable unless you delete it too.</AlertDialog.Description>
+    </AlertDialog.Header>
+    <div class="flex items-start gap-2.5">
+      <Checkbox id="forget-wipe" class="mt-0.5" bind:checked={wipe} />
+      <Label for="forget-wipe" class="items-start leading-snug font-normal">Delete history too</Label>
+    </div>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel variant="outline">Keep it</AlertDialog.Cancel>
+      <AlertDialog.Action
+        variant="destructive-solid"
+        onclick={() => {
+          const chat = forgetting;
+          forgetting = null;
+          if (!chat) return;
+          if (wipe) wiping = chat; // the second, explicit confirm
+          else forget(chat, false);
+        }}
+      >
+        Forget chat
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<AlertDialog.Root open={wiping !== null} onOpenChange={(open) => !open && (wiping = null)}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Delete every message from {wiping?.title}?</AlertDialog.Title>
+      <AlertDialog.Description>This can't be undone. Dom forgets the chat and its history is deleted, so search won't find it either.</AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel variant="outline">Keep the history</AlertDialog.Cancel>
+      <AlertDialog.Action variant="destructive-solid" onclick={() => { const chat = wiping; wiping = null; chat && forget(chat, true); }}>Delete history and forget</AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<AlertDialog.Root open={freshening !== null} onOpenChange={(open) => !open && (freshening = null)}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Start {freshening?.title} fresh?</AlertDialog.Title>
+      <AlertDialog.Description>Earlier messages leave Dom's prompt; nothing is deleted.</AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel variant="outline">Not now</AlertDialog.Cancel>
+      <AlertDialog.Action onclick={() => { const chat = freshening; freshening = null; chat && fresh(chat, false); }}>Start fresh</AlertDialog.Action>
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>

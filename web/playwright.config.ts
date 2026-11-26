@@ -13,6 +13,8 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${PORT}`,
     extraHTTPHeaders: { Authorization: "Bearer " + TOKEN },
     browserName: "chromium",
+    // The strip lists group by the viewer's own day: one time zone everywhere keeps the groups in every baseline.
+    timezoneId: "UTC",
   },
   expect: { toHaveScreenshot: { animations: "disabled", caret: "hide", maxDiffPixelRatio: 0.01 } },
   webServer: {

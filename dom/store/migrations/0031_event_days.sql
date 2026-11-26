@@ -10,4 +10,12 @@ CREATE TABLE event_days (
 );
 CREATE INDEX idx_event_days_day ON event_days(day);
 
+-- Every fresh still made for a video note, delivered or not: each is studio work that counts toward the daily total.
+CREATE TABLE studio_stills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_studio_stills_created ON studio_stills(created_at);
+
 PRAGMA user_version = 32;

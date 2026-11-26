@@ -20,7 +20,7 @@ from test_studio_limits import LIMITS, _deliver, _save
 from test_studio_video import VIDEO
 from test_usage import deliver, online
 from test_web_model_settings import ORIGIN_HEADER, START, dashboard  # noqa: F401 (fixture)
-from tghelpers import FRIEND, OWNER, tg
+from tghelpers import FRIEND, GROUP, OWNER, tg
 
 NOW = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
 
@@ -84,6 +84,16 @@ def test_gap_settings_take_false_and_stay_within_a_week():
 
 
 # --- event days ------------------------------------------------------------------------------------------------------
+
+def test_a_boost_never_rounds_a_limit_past_the_ceiling_or_below_the_normal_one():
+    limits = StudioLimits(owner_dm=OwnerStudioTier(voice_daily=1, special_daily=0), daily=1)
+    now = standing(limits, "owner_dm", 0, [], NOW, boost=1.1)
+    assert now.left["voice"] == 1 and now.daily_left == 1  # 1 x 1.1 stays 1: rounded down, not up to 2
+    assert standing(limits, "owner_dm", 0, [], NOW, boost=1.0).left["voice"] == 1
+    big = StudioLimits(owner_dm=OwnerStudioTier(voice_daily=3), daily=12)
+    assert standing(big, "owner_dm", 0, [], NOW, boost=1.5).left["voice"] == 4  # 4.5 down to 4
+    assert standing(big, "owner_dm", 0, [], NOW, boost=1.5).daily_left == 18
+
 
 def test_an_event_day_raises_every_limit_and_leaves_the_normal_ones_visible():
     limits = StudioLimits()  # owner DM: 3 voice, 1 video, 2 photos, 1 special; 12 a day in all
@@ -222,6 +232,19 @@ async def test_dom_is_told_in_his_turn_when_an_event_day_is_on(make_app, studio_
     await app.event_days.declare("Concert", app.dispatch.now())
     await deliver(app, tg(chat_id=OWNER, sender=OWNER))
     assert "event day you declared (Concert)" in json.dumps(app.script.requests[0])
+
+
+@pytest.mark.parametrize("chat", [FRIEND, GROUP])
+async def test_the_event_days_title_stays_in_the_owner_dm(make_app, studio_server, chat):
+    app = make_app(contents=('{"bubbles":["hey"]}',))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={"studio": app.config.studio.model_copy(update={"voice": True})})
+    await online(app, chat)
+    await app.event_days.declare("Surprise party for the owner", app.dispatch.now())
+    await deliver(app, tg(chat_id=chat, sender=FRIEND))
+    prompt = json.dumps(app.script.requests[0])
+    assert "Surprise party" not in prompt and "event day you declared" not in prompt
+    assert "can send" in prompt  # media is on in this chat, so the leak would have had somewhere to land
 
 
 def ctx(app, scope="owner_dm", chat=OWNER):
@@ -401,6 +424,26 @@ async def test_the_still_counts_toward_the_studio_wide_total_but_not_the_chats_p
     assert total == 2 and [kind for kind, _ in rows] == ["video_note"]  # two items of studio work, one delivered note
     left = (await app.studio_quota.standing(app.config.studio, "owner_dm", OWNER, app.dispatch.now())).left
     assert left["photo"] == 2 and left["video_note"] == 0
+
+
+async def test_a_still_that_has_no_room_left_in_the_daily_total_is_not_made(make_app, studio_server, raw_stills):
+    app = await scene_app(make_app, studio_server, limits=StudioLimits(daily=1))
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert posts(studio_server, "/v1/image") == []  # one slot: the note takes it, animating the portrait
+    assert "still" not in posts(studio_server, "/v1/video_note")[0] and len(app.bot.of("video_note")) == 1
+    total, _ = await app.store.studio_usage(OWNER, app.dispatch.now())
+    assert total == 1
+
+
+async def test_a_still_counts_toward_the_total_even_when_the_note_is_never_delivered(
+    make_app, studio_server, raw_stills,
+):
+    studio_server[3]["/v1/video_note"] = 503
+    app = await scene_app(make_app, studio_server)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert len(posts(studio_server, "/v1/image")) == 1 and not app.bot.of("video_note")
+    total, rows = await app.store.studio_usage(OWNER, app.dispatch.now())
+    assert total == 1 and rows == []  # the picture was made and paid for; no media was delivered
 
 
 async def test_no_scene_given_the_still_is_made_from_what_he_says(make_app, studio_server, raw_stills):

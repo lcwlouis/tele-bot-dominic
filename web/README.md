@@ -18,7 +18,8 @@ npm run test:screens          # Playwright against tests/web_preview.py (fiction
 npm run test:screens:update   # re-render the PNG baselines in screens/baseline after a visual change
 ```
 
-The screens start the preview on port 8765, or reuse a server already there. With another worktree's preview
+The screens pin the browser to the preview's clock and to UTC, so relative times and date groups hold in every
+baseline. The screens start the preview on port 8765, or reuse a server already there. With another worktree's preview
 running, set `DOM_PREVIEW_PORT` to a free port so the screens test this checkout.
 
 `npm run dev` serves the app with hot reload and proxies `/api` to a fictional Dom: start
@@ -45,6 +46,7 @@ All in `src/app.css`, for both themes; every text pair is checked for WCAG AA by
   (fields, hover, inset blocks), `overlay` (the details panel and sheets).
 - **Status**: `status-done`, `status-running`, `status-waiting`, `status-failed`, `status-held`, `status-paused`, as
   `text-status-*` and friends. Always with the status's glyph (`kit/status.ts`), so colour is never the only cue.
+  `queued` borrows the paused tone and `cancelled` the muted text; each has its own glyph.
 - **Type scale**: `text-caption`, `text-meta`, `text-body`, `text-title`, `text-heading`, `text-display`, each with
   its line height. New components use these; older pages move over as they are ported.
 - **Spacing**: Tailwind's steps 1, 2, 3, 4, 6, 8 and 12 (4 to 48 px). Avoid one-off values in new components.
@@ -81,6 +83,12 @@ All in `src/app.css`, for both themes; every text pair is checked for WCAG AA by
   - **Phones** (`preview`, 10 by default): the page shows the newest few and "See all (312)", so what is below stays
     in reach. See all opens the whole list as its own screen with its own history entry: Back, Esc or the back
     gesture return to the page where it was. `preview={false}` shows the whole list on a page that is only it.
+- **`GoneNote`**: the quiet note a page shows when a link names an item it no longer has ("That task is gone"),
+  dismissed with its glyph.
+- **Deep links** (`$lib/deep-link`): a page whose items sit in a strip list opens the linked item's details
+  (`/app/work?task=<id>`, `?own=<id>`); any other page selects it in place, scrolled into view, outlined and
+  focused (`/app/waiting?proposal=<id>`, `/app/work/reminders?id=<id>`). The API returns a linked item older than
+  its first page with that page.
 - **`AppPicker`**: the app's own combobox for a choice from a list, with a visible label and type-to-filter, in
   place of a native `<select>`.
 

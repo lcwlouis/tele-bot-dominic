@@ -881,6 +881,8 @@ async def deliver_studio(
             async def make_still(prompt: str) -> bytes | None:
                 """A fresh picture of Dom in the scene, made from the outfit's portrait as the identity reference: by
                 the local studio's image worker, else a cloud image backup. It stays inside this note's reservation."""
+                if not await app.studio_quota.has_room_for_still(app.config.studio, scope, chat_id, now()):
+                    return None  # the daily total has no slot left (a retry counts too): the note animates the portrait
                 made = None
                 if local_ready and client.takes_still:
                     made = await client.image(prompt, actions.outfit)
@@ -890,6 +892,8 @@ async def deliver_studio(
                         ))
                 if made is None and cloud is not None and studio_providers(app.config.studio, "photo"):
                     made = await cloud.generate(app.config, "photo", prompt, actions.outfit, chat_id, cloud_allowed)
+                if made is not None:  # counted at once: the note may still fail, and the still was made
+                    await asyncio.shield(app.store.record_still(chat_id, now()))
                 return made
 
             indicator = asyncio.create_task(_studio_indicator(app.bot, chat_id, thread_id, action))

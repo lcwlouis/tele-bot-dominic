@@ -2356,10 +2356,12 @@ class Dispatcher:
                     note += f"\ncan send: {', '.join(dict.fromkeys(sendable))}"
                 # Without a note, Dom sees his past media in the window and may imitate it in text: say it's not now.
                 event = await app.event_days.today(self.now()) if remaining else None
-                event_note = (
-                    f"Today is an event day you declared ({event['title']}): your media limits are raised, so a few "
-                    "more than usual are fine, for what the day is about." if event else ""
-                )
+                event_note = ""
+                if event:  # the title was declared in the owner DM: only that chat hears it, the rest a generic line
+                    what = f" you declared ({event['title']})" if scope == "owner_dm" else ""
+                    event_note = (
+                        f"Today is an event day{what}: your media limits are raised, so a few more than usual are fine."
+                    )
                 note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset), event_note) or STUDIO_UNAVAILABLE}"
         if attempt is not None:
             attempt.assistant = preset is not None and preset.name == ASSISTANT

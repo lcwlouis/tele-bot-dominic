@@ -1917,10 +1917,10 @@ class Store:
         def read() -> tuple[int, list[tuple[str, datetime]]]:
             kinds = """role = 'assistant' AND json_valid(media_json)
                        AND json_extract(media_json, '$.kind') IN ('voice', 'video_note', 'photo')"""
-            # A video note made from a fresh still also cost the studio an image, so it counts twice in the total.
+            # A video note's fresh still also cost the studio an image, delivered note or not: stills count on their own.
             total = self._conn.execute(
-                f"SELECT count(*) + coalesce(sum(json_extract(media_json, '$.still') IS 1), 0) FROM messages "
-                f"WHERE created_at > ? AND {kinds}", (day,),
+                f"SELECT (SELECT count(*) FROM messages WHERE created_at > ? AND {kinds}) "
+                "+ (SELECT count(*) FROM studio_stills WHERE created_at > ?)", (day, day),
             ).fetchone()[0]
             rows = self._conn.execute(
                 f"SELECT media_json, created_at FROM messages WHERE chat_id = ? AND created_at > ? AND {kinds}",
@@ -1934,6 +1934,14 @@ class Store:
             return total, result
 
         return await self._run(read)
+
+    async def record_still(self, chat_id: int, now: datetime) -> None:
+        """A fresh still was made for a video note; it counts toward the daily total whether or not the note is sent."""
+        def write() -> None:
+            with self._tx() as conn:
+                conn.execute("INSERT INTO studio_stills (chat_id, created_at) VALUES (?, ?)", (str(chat_id), now.isoformat()))
+
+        await self._run(write)
 
     async def declare_event_day(
         self, day: str, title: str, multiplier: float, now: datetime, per_week: int,
@@ -2509,6 +2517,22 @@ class Store:
                     self._rekey_cross_chat(conn, int(old), int(new), title or new)
 
         await self._run(rekey)
+
+    async def people_names(self) -> dict[str, str]:
+        """Each known person's name by Telegram user ID, as the dashboard labels their notes file: the name they
+        go by, else their display name, else their handle."""
+        def select() -> dict[str, str]:
+            rows = self._conn.execute(
+                "SELECT telegram_user_id, preferred_name, display_name, current_handle FROM people_identities "
+                "WHERE telegram_user_id IS NOT NULL",
+            ).fetchall()
+            names = {}
+            for user_id, preferred, display, handle in rows:
+                if name := (preferred or display or (f"@{handle}" if handle else "")).strip():
+                    names[str(user_id)] = name
+            return names
+
+        return await self._run(select)
 
     async def person_handle(self, user_id: int) -> str:
         def select() -> str:

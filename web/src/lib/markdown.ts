@@ -5,9 +5,10 @@ import { Lexer, type Token, type TokensList } from "marked";
 
 export type { Token };
 
-/** The block tokens of `text`, GitHub-flavoured (tables, task lists, autolinks). */
-export function tokens(text: string): TokensList {
-  return new Lexer({ gfm: true }).lex(text);
+/** The block tokens of `text`, GitHub-flavoured (tables, task lists, autolinks). `breaks` keeps every line break,
+ *  for a journal whose mood, entry and nudges sit on lines of their own. */
+export function tokens(text: string, breaks = false): TokensList {
+  return new Lexer({ gfm: true, breaks }).lex(text);
 }
 
 const SAFE = new Set(["http:", "https:", "mailto:"]);

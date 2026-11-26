@@ -7,7 +7,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from math import ceil
+from math import floor
 from typing import TYPE_CHECKING, Literal
 
 from dom.config import StudioConfig, StudioFallback, StudioLimits, StudioTier
@@ -158,6 +158,12 @@ def gap_ends(tier: StudioTier, rows: list[tuple[str, datetime]], now: datetime) 
     return ends
 
 
+def boosted(limit: int, boost: float) -> int:
+    """A limit under an event day's multiplier: rounded down, so it never passes the owner's ceiling, and never below
+    the normal limit."""
+    return max(limit, floor(limit * boost + 1e-9))
+
+
 def standing(
     limits: StudioLimits, scope: str, total: int, rows: list[tuple[str, datetime]], now: datetime,
     boost: float = 1.0,
@@ -166,12 +172,12 @@ def standing(
     chat's rolling week of deliveries. `boost` is the event-day multiplier on every limit (1 when there is none): `left`
     counts what the boosted limits allow, `normal` what the usual ones do."""
     tier = getattr(limits, scope)
-    daily_normal, daily_boosted = max(limits.daily - total, 0), max(ceil(limits.daily * boost) - total, 0)
+    daily_normal, daily_boosted = max(limits.daily - total, 0), max(boosted(limits.daily, boost) - total, 0)
     left, normal = {}, {}
     for kind, (cap, window) in windows(tier).items():
         count = sum(item == kind and stamp > now - window for item, stamp in rows)
         normal[kind] = max(min(cap - count, daily_normal), 0)
-        left[kind] = max(min(ceil(cap * boost) - count, daily_boosted), 0)
+        left[kind] = max(min(boosted(cap, boost) - count, daily_boosted), 0)
     return Standing(left, daily_boosted, gap_ends(tier, rows, now), normal)
 
 
@@ -209,6 +215,15 @@ class StudioQuota:
         counts toward the global total."""
         total, rows = await self.store.studio_usage(chat_id, now)
         return standing(config.limits, scope, total + len(self._pending), rows, now, await self._boost(now))
+
+    async def has_room_for_still(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> bool:
+        """After this chat's reserved video note, is there still a slot in the daily total for the still it is filmed
+        from? Without one the note animates the portrait instead."""
+        async with self._lock:
+            total, rows = await self.store.studio_usage(chat_id, now)
+            return standing(
+                config.limits, scope, total + len(self._pending), rows, now, await self._boost(now),
+            ).daily_left > 0
 
     async def remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:
         async with self._lock:
