@@ -2048,6 +2048,27 @@ class Store:
     async def kv_set(self, key: str, value: str) -> None:
         await self.kv_set_many({key: value})
 
+    async def kv_claim(self, key: str, value: str) -> bool:
+        """Create `key` only if it does not exist yet; True when this call created it. The check and the write are one
+        statement, so of two callers at once exactly one wins."""
+        def claim() -> bool:
+            with self._tx() as conn:
+                return conn.execute(
+                    "INSERT OR IGNORE INTO kv (key, value, updated_at) VALUES (?, ?, ?)", (key, value, _now()),
+                ).rowcount == 1
+
+        return await self._run(claim)
+
+    async def kv_swap(self, key: str, expected: str, value: str) -> bool:
+        """Set `key` to `value` only while it still holds `expected`; True when it did."""
+        def swap() -> bool:
+            with self._tx() as conn:
+                return conn.execute(
+                    "UPDATE kv SET value = ?, updated_at = ? WHERE key = ? AND value = ?", (value, _now(), key, expected),
+                ).rowcount == 1
+
+        return await self._run(swap)
+
     async def kv_delete(self, key: str) -> None:
         await self._run(self._conn.execute, "DELETE FROM kv WHERE key = ?", (key,))
 

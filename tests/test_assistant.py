@@ -37,12 +37,16 @@ async def last(app, kind="morning"):
     return json.loads(await app.store.kv_get(f"assistant:{kind}:last"))
 
 
+async def claim(app, kind="morning", day="2026-01-01"):
+    return await app.store.kv_get(f"assistant:{kind}:{day}")
+
+
 def sent(app):
     return app.bot.of("send", OWNER)
 
 
 def plan_request(app):
-    return turn_requests(app)[-1]["messages"][-1]["content"]
+    return app.script.requests[-1]["messages"][-1]["content"]
 
 
 # ---- the usage migration ----------------------------------------------------------------------------------------------
@@ -95,7 +99,7 @@ async def test_nothing_is_sent_while_the_mode_is_off(make_app):
     await remind(app)
     await app.assistant.tick(app.dispatch.now())
     assert sent(app) == [] and app.script.requests == []
-    assert await app.store.kv_get("assistant:morning:day") is None
+    assert await claim(app) is None
 
 
 async def test_the_command_switches_the_mode_live_and_saves_it(make_app):
@@ -208,7 +212,7 @@ async def test_a_failed_send_keeps_the_claim_and_does_not_retry(make_app):
     app.bot.send_message = boom
     await app.assistant.tick(app.dispatch.now())
     assert (await last(app))["state"] == "failed"
-    assert await app.store.kv_get("assistant:morning:day") == "2026-01-01"
+    assert await claim(app) == "failed"
     app.dispatch.now.advance(minutes=10)
     await app.assistant.tick(app.dispatch.now())
     assert len(app.script.requests) == 1  # no retry loop, no second model call
@@ -236,7 +240,7 @@ async def test_nothing_is_sent_before_the_time(make_app):
     app = await ready(make_app, PLAN, at=datetime(2026, 1, 1, 7, 59, tzinfo=timezone.utc))
     await remind(app)
     await app.assistant.tick(app.dispatch.now())
-    assert sent(app) == [] and await app.store.kv_get("assistant:morning:day") is None
+    assert sent(app) == [] and await claim(app) is None
 
 
 async def test_each_message_has_its_own_toggle_and_claim(make_app):
@@ -244,7 +248,7 @@ async def test_each_message_has_its_own_toggle_and_claim(make_app):
     await remind(app, hours=12)
     await app.assistant.tick(app.dispatch.now())
     assert len(sent(app)) == 1 and "wrap-up" in plan_request(app)
-    assert await app.store.kv_get("assistant:morning:day") is None  # empty: off, never claimed
+    assert await claim(app) is None  # empty: off, never claimed
     assert (await last(app, "evening"))["state"] == "sent"
 
     none = await ready(make_app, PLAN, morning="", evening="")
@@ -260,7 +264,7 @@ async def test_a_message_that_straddles_midnight_in_the_owner_timezone(make_app)
     await remind(app, hours=12)
     await app.assistant.tick(app.dispatch.now())
     assert len(sent(app)) == 1
-    assert await app.store.kv_get("assistant:evening:day") == "2026-01-01"
+    assert await claim(app, "evening") == "sent"
 
     app.dispatch.now.advance(hours=1)  # 00:45 on the 2nd in Singapore: still the first evening's day, already claimed
     await app.assistant.tick(app.dispatch.now())
@@ -269,7 +273,7 @@ async def test_a_message_that_straddles_midnight_in_the_owner_timezone(make_app)
     app.dispatch.now.advance(hours=23)  # 23:45 on the 2nd: the next evening
     await remind(app, "Water the plants", hours=6)
     await app.assistant.tick(app.dispatch.now())
-    assert len(sent(app)) == 2 and await app.store.kv_get("assistant:evening:day") == "2026-01-02"
+    assert len(sent(app)) == 2 and await claim(app, "evening", "2026-01-02") == "sent"
 
 
 async def test_the_local_date_not_the_utc_date_decides_which_day_it_is(make_app):
@@ -278,7 +282,7 @@ async def test_the_local_date_not_the_utc_date_decides_which_day_it_is(make_app)
     app.config = app.config.model_copy(update={"timezone": "America/Los_Angeles"})
     await remind(app, hours=2)
     await app.assistant.tick(app.dispatch.now())  # 08:05 on the 1st in Los Angeles
-    assert len(sent(app)) == 1 and await app.store.kv_get("assistant:morning:day") == "2026-01-01"
+    assert len(sent(app)) == 1 and await claim(app) == "sent"
     app.dispatch.now.advance(hours=11)  # 03:05 UTC on the 2nd, 19:05 on the 1st in Los Angeles
     await online(app, OWNER)
     await app.assistant.tick(app.dispatch.now())
@@ -286,7 +290,7 @@ async def test_the_local_date_not_the_utc_date_decides_which_day_it_is(make_app)
     app.dispatch.now.advance(hours=13)  # 08:05 on the 2nd in Los Angeles
     await online(app, OWNER)
     await app.assistant.tick(app.dispatch.now())
-    assert len(sent(app)) == 2 and await app.store.kv_get("assistant:morning:day") == "2026-01-02"
+    assert len(sent(app)) == 2 and await claim(app, "morning", "2026-01-02") == "sent"
 
 
 async def test_a_spring_forward_gap_still_has_one_send(make_app):
@@ -310,7 +314,7 @@ async def test_a_plan_waits_while_dom_is_asleep_and_goes_when_he_is_up(make_app)
     await app.dispatch.presence.sleep(OWNER, parse_habits(""))
     await app.assistant.tick(app.dispatch.now())
     assert sent(app) == [] and (await last(app))["state"] == "asleep"
-    assert await app.store.kv_get("assistant:morning:day") is None  # waiting is not a claim
+    assert await claim(app) is None  # waiting is not a claim
 
     app.dispatch.now.advance(minutes=30)
     await app.dispatch.presence.go_online(OWNER, parse_habits(""))
@@ -349,7 +353,7 @@ async def test_a_capped_plan_records_why_and_never_retries(make_app):
     await remind(app)
     await app.assistant.tick(app.dispatch.now())
     assert (await last(app))["state"] == "blocked"
-    assert await app.store.kv_get("assistant:morning:day") == "2026-01-01"
+    assert await claim(app) == "blocked"
     app.dispatch.now.advance(minutes=30)
     await app.assistant.tick(app.dispatch.now())
     assert app.script.requests == []  # the one thing sent is the cap's own notice, never a plan
@@ -392,7 +396,7 @@ async def test_an_empty_day_sends_nothing_and_calls_no_model(make_app):
     await app.assistant.tick(app.dispatch.now())
     assert sent(app) == [] and app.script.requests == []
     assert (await last(app))["state"] == "nothing"
-    assert await app.store.kv_get("assistant:morning:day") == "2026-01-01"  # a day with nothing to say is spent too
+    assert await claim(app) == "nothing"  # a day with nothing to say is spent too
 
 
 async def test_a_model_that_has_nothing_to_say_sends_nothing(make_app):
@@ -406,7 +410,7 @@ async def test_the_calendar_is_left_out_when_google_is_not_connected(make_app, m
     app = await ready(make_app, PLAN)
     await remind(app)
 
-    async def agenda(google):
+    async def agenda(google, day=None):
         raise AssertionError("the calendar must not be read")
 
     monkeypatch.setattr("dom.google_tools.agenda_text", agenda)
@@ -415,7 +419,7 @@ async def test_the_calendar_is_left_out_when_google_is_not_connected(make_app, m
 
 
 async def test_the_calendar_is_included_only_while_calendar_read_is_on(make_app, monkeypatch):
-    async def agenda(google):
+    async def agenda(google, day=None):
         return "today 09:00-10:00 Dentist"
 
     monkeypatch.setattr("dom.google_tools.agenda_text", agenda)
@@ -441,7 +445,7 @@ async def test_the_calendar_is_included_only_while_calendar_read_is_on(make_app,
 
 
 async def test_a_calendar_that_fails_is_left_out_not_fatal(make_app, monkeypatch):
-    async def agenda(google):
+    async def agenda(google, day=None):
         raise GoogleError("down")
 
     monkeypatch.setattr("dom.google_tools.agenda_text", agenda)
@@ -505,7 +509,7 @@ async def test_group_and_friend_turn_notes_get_nothing(make_app):
     assert "Secret errand" in await app.assistant.turn_note("owner_dm", OWNER)
     for scope, chat_id in (("group", GROUP), ("friend_dm", FRIEND), ("owner_dm", FRIEND), ("owner_dm", GROUP), ("group", OWNER)):
         assert await app.assistant.turn_note(scope, chat_id) == ""
-    assert await app.store.kv_get("assistant:nudged") is not None  # only the owner's call was tracked
+    assert json.loads(await app.store.kv_get("assistant:offered"))["items"]  # only the owner's call was tracked
 
 
 async def test_a_friend_or_group_prompt_never_carries_assistant_content(make_app):
@@ -560,12 +564,16 @@ async def test_the_follow_through_block_lists_due_reminders_and_stale_goals(make
     assert "never a nag" in block and "twice in a day" in block
 
 
-async def test_the_follow_through_block_never_repeats_an_item_the_same_day(make_app):
+async def test_an_item_is_marked_only_once_a_delivered_reply_raises_it(make_app):
     app = await ready(make_app)
     await remind(app, "Soon thing", hours=5)
-    first = await app.assistant.turn_note("owner_dm", OWNER)
-    assert "Soon thing" in first
-    assert await app.assistant.turn_note("owner_dm", OWNER) == ""  # same day, same item: not again
+    assert "Soon thing" in await app.assistant.turn_note("owner_dm", OWNER)
+    # The model was shown it but the turn failed, or the reply never mentioned it: it is still on offer.
+    assert "Soon thing" in await app.assistant.turn_note("owner_dm", OWNER)
+    await app.assistant.delivered(OWNER, "owner_dm", ["how's the garden doing?"])
+    assert "Soon thing" in await app.assistant.turn_note("owner_dm", OWNER)
+    await app.assistant.delivered(OWNER, "owner_dm", ["hey, don't forget the SOON THING later"])  # any case
+    assert await app.assistant.turn_note("owner_dm", OWNER) == ""  # raised: not again today
     await remind(app, "Another thing", hours=6)
     again = await app.assistant.turn_note("owner_dm", OWNER)
     assert "Another thing" in again and "Soon thing" not in again
@@ -575,12 +583,34 @@ async def test_the_follow_through_block_never_repeats_an_item_the_same_day(make_
     assert "Soon thing" in await app.assistant.turn_note("owner_dm", OWNER)
 
 
+async def test_a_reply_in_another_chat_never_marks_anything(make_app):
+    app = await ready(make_app)
+    await remind(app, "Soon thing", hours=5)
+    await app.assistant.turn_note("owner_dm", OWNER)
+    await app.assistant.delivered(FRIEND, "friend_dm", ["soon thing"])
+    await app.assistant.delivered(GROUP, "group", ["soon thing"])
+    assert await app.store.kv_get("assistant:nudged") is None
+
+
+async def test_a_real_owner_turn_marks_what_its_delivered_reply_raised(make_app):
+    from dom.telegram import handlers
+    from tghelpers import drain_dispatch, tg
+
+    raised = json.dumps({"no_response": False, "react": None, "bubbles": [{"text": "psst, soon thing is due later"}]})
+    app = await ready(make_app, raised)
+    await remind(app, "Soon thing", hours=5)
+    await handlers.handle_message(app, tg(OWNER, OWNER, "hello", msg_id=78))
+    await drain_dispatch(app.dispatch)
+    assert json.loads(await app.store.kv_get("assistant:nudged"))["items"]
+    assert await app.assistant.turn_note("owner_dm", OWNER) == ""
+
+
 async def test_the_follow_through_block_is_off_with_the_mode(make_app):
     app = await ready(make_app)
     await remind(app, "Soon thing", hours=5)
     app.config = app.config.model_copy(update={"assistant": AssistantConfig(enabled=False)})
     assert await app.assistant.turn_note("owner_dm", OWNER) == ""
-    assert await app.store.kv_get("assistant:nudged") is None
+    assert await app.store.kv_get("assistant:offered") is None
 
 
 async def test_the_block_reaches_the_owner_dm_turn_after_the_window(make_app):
@@ -605,3 +635,241 @@ async def test_the_status_view_says_why_a_message_was_not_sent(make_app):
     morning = view["messages"][0]
     assert morning["last"]["state"] == "nothing" and morning["last"]["label"] == assistant_module.LABELS["nothing"]
     assert view["messages"][1]["last"] is None
+
+
+# ---- review fixes ------------------------------------------------------------------------------------------------------
+
+
+async def test_two_ticks_at_once_send_one_message(make_app):
+    import asyncio
+
+    app = await ready(make_app, PLAN, PLAN, PLAN)
+    await remind(app)
+    await asyncio.gather(*(app.assistant.tick(app.dispatch.now()) for _ in range(4)))
+    assert len(sent(app)) == 1 and len(app.script.requests) == 1
+    assert await claim(app) == "sent"
+
+
+async def test_the_claim_is_atomic_in_the_store(make_app):
+    app = make_app()
+    assert await app.store.kv_claim("k", "a") is True
+    assert await app.store.kv_claim("k", "b") is False and await app.store.kv_get("k") == "a"
+    assert await app.store.kv_swap("k", "x", "c") is False and await app.store.kv_swap("k", "a", "c") is True
+    assert await app.store.kv_get("k") == "c"
+
+
+async def test_a_clock_moved_back_never_sends_a_day_twice(make_app):
+    app = await ready(make_app, PLAN, PLAN, PLAN, PLAN)
+    await remind(app, hours=2)
+    await app.assistant.tick(app.dispatch.now())
+    app.dispatch.now.advance(days=1)
+    await online(app, OWNER)
+    await remind(app, "Second day", hours=2)
+    await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 2
+    app.dispatch.now.advance(days=-1)  # the clock steps back to the first day, then forward again
+    await online(app, OWNER)
+    await app.assistant.tick(app.dispatch.now())
+    app.dispatch.now.advance(days=1)
+    await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 2 and len(app.script.requests) == 2
+    assert await claim(app) == "sent" and await claim(app, "morning", "2026-01-02") == "sent"
+
+
+async def test_claims_older_than_a_week_are_pruned(make_app):
+    app = await ready(make_app, PLAN)
+    for day in ("2025-12-01", "2025-12-24", "2025-12-26"):
+        await app.store.kv_set(f"assistant:morning:{day}", "sent")
+    await app.store.kv_set("assistant:evening:2025-12-01", "sent")
+    await remind(app)
+    await app.assistant.tick(app.dispatch.now())
+    assert await claim(app, "morning", "2025-12-01") is None and await claim(app, "morning", "2025-12-24") is None
+    assert await claim(app, "morning", "2025-12-26") == "sent"  # inside the week
+    assert await claim(app, "evening", "2025-12-01") == "sent"  # the other message prunes on its own tick
+    assert await app.store.kv_get("assistant:morning:last") is not None  # the status key is not a claim
+
+
+def sleeps_at_noon(app):
+    """Dom's sleep window moved to midday, so a test in the small hours finds him awake."""
+    habits = app.home.root / "memory" / "HABITS.md"
+    habits.parent.mkdir(exist_ok=True)
+    habits.write_text("sleep: 12:00-13:00\n")
+
+
+async def london(make_app, *, at, morning, hours=3):
+    app = await ready(make_app, PLAN, morning=morning, evening="", at=at)
+    app.config = app.config.model_copy(update={"timezone": "Europe/London"})
+    await remind(app, hours=hours)
+    sleeps_at_noon(app)
+    await online(app, OWNER)
+    return app
+
+
+async def test_a_spring_forward_morning_counts_its_window_in_real_time(make_app):
+    # 01:30 does not exist in London on 2026-03-29 (the clocks go 01:00 -> 02:00). It counts from 01:30 GMT = 02:30 BST,
+    # so 04:25 UTC (05:25 BST) is 2h55 in. By wall-clock subtraction it would be 3h55 and wrongly skipped.
+    app = await london(make_app, at=datetime(2026, 3, 29, 4, 25, tzinfo=timezone.utc), morning="01:30")
+    await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 1
+
+    late = await london(make_app, at=datetime(2026, 3, 29, 4, 35, tzinfo=timezone.utc), morning="01:30")
+    late.dispatch.now.at = datetime(2026, 3, 29, 4, 35, tzinfo=timezone.utc)
+    await late.store.kv_delete("assistant:morning:2026-03-29")
+    before = len(sent(late))
+    await late.assistant.tick(late.dispatch.now())
+    assert len(sent(late)) == before and (await last(late))["state"] == "late"
+
+
+async def test_a_fall_back_morning_uses_the_first_01_30_and_sends_once(make_app):
+    # 01:30 happens twice in London on 2026-10-25. The first (BST) is 00:30 UTC, so the window ends at 03:30 UTC.
+    app = await london(make_app, at=datetime(2026, 10, 25, 3, 25, tzinfo=timezone.utc), morning="01:30")
+    await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 1
+    app.dispatch.now.at = datetime(2026, 10, 25, 1, 31, tzinfo=timezone.utc)  # the second 01:30, on the wall
+    await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 1  # one claim per local date, whichever 01:30 it is
+
+    late = await london(make_app, at=datetime(2026, 10, 25, 3, 35, tzinfo=timezone.utc), morning="01:30")
+    await late.store.kv_delete("assistant:morning:2026-10-25")
+    before = len(sent(late))
+    await late.assistant.tick(late.dispatch.now())  # 3h05 after the first 01:30; by the wall it would be only 2h05
+    assert len(sent(late)) == before and (await last(late))["state"] == "late"
+
+
+async def test_a_late_wrap_up_covers_the_day_it_was_claimed_for(make_app, monkeypatch):
+    # The 23:30 wrap-up of the 1st goes out at 00:20 on the 2nd and must talk about the 1st, with the 2nd as tomorrow.
+    app = await ready(make_app, PLAN, morning="", evening="23:30", at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))
+    went_off = await remind(app, "Went off on the first", hours=1)
+    await app.store.finish_reminder(went_off, (app.dispatch.now() + timedelta(hours=1)).isoformat(), None)
+    await remind(app, "Due on the second", hours=14)  # 02:00 on the 2nd
+    await remind(app, "Due on the third", hours=40)
+    seen = []
+
+    async def agenda(google, day=None):
+        seen.append(day)
+        return "meeting"
+
+    async def available(name):
+        return True
+
+    monkeypatch.setattr("dom.google_tools.agenda_text", agenda)
+    monkeypatch.setattr(app.google, "available", available)
+    app.dispatch.now.at = datetime(2026, 1, 2, 0, 20, tzinfo=timezone.utc)
+    sleeps_at_noon(app)
+    await online(app, OWNER)
+    await app.assistant.tick(app.dispatch.now())
+    note = plan_request(app)
+    assert len(sent(app)) == 1 and await claim(app, "evening", "2026-01-01") == "sent"
+    assert "Went off on the first" in note and "Due on the second" in note and "Due on the third" not in note
+    assert seen[0] == datetime(2026, 1, 1).date() and "Thursday 01 January" in note  # the turn note adds its own, undated, read
+
+
+async def asleep_during_generation(app):
+    """Dom falls asleep after the plan was composed and before it is delivered."""
+    compose = app.dispatch._compose_turn
+
+    async def compose_then_sleep(*args, **kwargs):
+        actions = await compose(*args, **kwargs)
+        await app.dispatch.presence.sleep(OWNER, parse_habits(""))
+        return actions
+
+    app.dispatch._compose_turn = compose_then_sleep
+
+
+async def test_falling_asleep_mid_generation_defers_and_a_later_tick_sends_once(make_app):
+    app = await ready(make_app, PLAN, PLAN, PLAN)
+    await remind(app)
+    await asleep_during_generation(app)
+    await app.assistant.tick(app.dispatch.now())
+    assert sent(app) == [] and await claim(app) == "deferred" and (await last(app))["state"] == "asleep"
+
+    app.dispatch._compose_turn = type(app.dispatch)._compose_turn.__get__(app.dispatch)
+    app.dispatch.now.advance(minutes=30)
+    await app.dispatch.presence.go_online(OWNER, parse_habits(""))
+    await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 1 and await claim(app) == "sent"
+    for _ in range(2):  # and never again
+        app.dispatch.now.advance(minutes=10)
+        await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 1
+
+
+async def test_a_deferred_claim_is_taken_by_one_tick_only(make_app):
+    import asyncio
+
+    app = await ready(make_app, PLAN, PLAN)
+    await remind(app)
+    await app.store.kv_set("assistant:morning:2026-01-01", "deferred")
+    await asyncio.gather(*(app.assistant.tick(app.dispatch.now()) for _ in range(3)))
+    assert len(sent(app)) == 1
+
+
+async def test_turning_the_mode_off_mid_call_drops_the_message(make_app):
+    app = await ready(make_app, PLAN)
+    await remind(app)
+    compose = app.dispatch._compose_turn
+
+    async def compose_then_switch_off(*args, **kwargs):
+        actions = await compose(*args, **kwargs)
+        app.config = app.config.model_copy(update={"assistant": AssistantConfig(enabled=False)})
+        return actions
+
+    app.dispatch._compose_turn = compose_then_switch_off
+    await app.assistant.tick(app.dispatch.now())
+    assert sent(app) == [] and await claim(app) == "off"
+    assert (await last(app))["state"] == "off" and "turned off" in (await last(app)).get("label", "turned off")
+    view = await app.assistant.view()
+    assert view["messages"][0]["last"]["label"] == assistant_module.LABELS["off"]
+    app.config = app.config.model_copy(update={"assistant": AssistantConfig(enabled=True)})
+    app.dispatch.now.advance(minutes=10)
+    await app.assistant.tick(app.dispatch.now())
+    assert sent(app) == []  # the day is spent: switching back on does not send a stale plan
+
+
+async def test_the_plan_is_one_tool_free_completion_and_no_tool_can_run(make_app):
+    import httpx
+
+    app = await ready(make_app)
+    await remind(app, "Pay the rent")
+    before = len(await app.dispatch.reminders.active())
+    requests = []
+
+    def endpoint(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:  # a model that tries to call a tool anyway
+            message = {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "c1", "type": "function", "function": {"name": "remind", "arguments": json.dumps({
+                    "when": "2026-01-02T09:00:00+00:00", "text": "injected",
+                })},
+            }]}
+        else:
+            message = {"role": "assistant", "content": PLAN}
+        return httpx.Response(200, json={"choices": [{"message": message}]})
+
+    from dom.config import ModelEndpoint
+    from dom.llm import ChatClient
+    from tghelpers import no_sleep
+
+    endpoint_config = ModelEndpoint(base_url="https://llm.test/v1", model="m", api_key_env=None, input=("text",))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as http:
+        app.client = ChatClient(endpoint_config, None, http, sleep=no_sleep)
+        await app.assistant.tick(app.dispatch.now())
+    assert requests and all(not body.get("tools") for body in requests)  # no tool was ever offered
+    assert len(await app.dispatch.reminders.active()) == before  # and the injected call created nothing
+    assert len(sent(app)) == 1
+
+
+async def test_an_owner_change_before_delivery_drops_the_message(make_app):
+    app = await ready(make_app, PLAN)
+    await remind(app)
+    compose = app.dispatch._compose_turn
+
+    async def compose_then_lose_the_owner(*args, **kwargs):
+        actions = await compose(*args, **kwargs)
+        app.store.owner_id = FRIEND
+        return actions
+
+    app.dispatch._compose_turn = compose_then_lose_the_owner
+    await app.assistant.tick(app.dispatch.now())
+    assert app.bot.of("send", OWNER) == [] and app.bot.of("send", FRIEND) == []

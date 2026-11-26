@@ -457,7 +457,8 @@ Assistant mode is off until the owner turns it on, and it only ever speaks in th
   only for the owner DM, and code checks that the chat is the owner's DM and the owner's chat id every time. A group
   or a friend's DM never gets the block, a message or any of its content; tests cover both.
 - **What goes to which model.** Each plan is one call to the chat model route that serves the owner DM (and its
-  fallbacks), under the same `zdr` routing and provider rules. It carries the day's facts: reminders and goal text, the
+  fallbacks), under the same `zdr` routing and provider rules. It is one completion with no tool offered, so nothing
+  can run while the model holds the day's facts. It carries the day's facts: reminders and goal text, the
   weather and holiday line, and, only while Google is connected and Calendar read is on, today's and tomorrow's event
   titles, times, locations and attendees, fenced as untrusted data. Nothing goes to the media, search, drafting,
   embedding or any other service. The call is attributed to `assistant` in usage and obeys the monthly cap and the

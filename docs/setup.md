@@ -170,11 +170,14 @@ applies at once, with no restart. On, Dom keeps your day in view, in your DM onl
   `timezone`; an empty time turns that message off. The calendar is included only while Google is connected and
   Calendar read is on ([Google](google.md)).
 - Each message is one chat-model call in Dom's voice, sent as a normal DM message. It goes out once a day, restarts
-  included, and late only within three hours of its time. It waits while Dom is asleep. With nothing worth saying Dom
-  sends nothing and no model is called. The call counts as background work (the monthly cap and the area limits apply,
+  included, and late only within three hours of its time. A message waits while Dom is asleep (and is sent when he wakes,
+  inside that window) but not while he is merely offline: like an opener, it brings him online. It covers the day it was
+  scheduled for, even when it goes out just after midnight. With nothing worth saying Dom sends nothing and no model
+  is called. The call counts as background work (the monthly cap and the area limits apply,
   not the daily cap) and shows as **Assistant** in Usage. A message held back by a cap is not retried that day.
 - **Follow-through:** in your DM Dom is also shown reminders due within a day or overdue and goals with no update for
-  a week, and may check in on them when it fits, never twice about the same thing in a day.
+  a week, and may check in on them when it fits. An item counts as raised only once a delivered reply mentions it, and
+  is then left out for the rest of the day.
 
 Settings shows both times and, for each message, when it was last sent or why not. Off, Dom is the friend he is today.
 Nothing from assistant mode reaches groups or friends' DMs. Booking appointments is not part of it yet.

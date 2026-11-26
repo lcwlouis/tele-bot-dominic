@@ -149,11 +149,11 @@ async def _events(
     return items[:limit], bool(token)
 
 
-async def agenda_text(g: GoogleIntegration) -> str:
-    """Today's and tomorrow's events, one per line, fenced as untrusted text; empty when nothing is scheduled."""
+async def agenda_text(g: GoogleIntegration, day: date | None = None) -> str:
+    """The events of `day` (today by default) and the day after, one per line, fenced as untrusted text; empty when
+    nothing is scheduled."""
     zone = _zone(g.app)
-    now = datetime.now(zone)
-    start = datetime.combine(now.date(), dtime.min, zone)
+    start = datetime.combine(day or datetime.now(zone).date(), dtime.min, zone)
     items, more = await _events(g, start, start + timedelta(days=2), 12)
     if not items:
         return ""
