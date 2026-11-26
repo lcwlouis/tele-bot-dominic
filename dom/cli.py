@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import doctor, habits, journal_archive, reflection, release, service, setup
+from dom import doctor, habits, journal_archive, reflection, release, service, setup, tracer
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -203,6 +203,18 @@ async def run(home: Path) -> bool:
                     await app.media_files.reconcile()  # before anything new is saved
                 except Exception:
                     logging.getLogger("dom").warning("could not reconcile the kept media", exc_info=True)
+                try:
+                    app.traces = tracer.open_writer(home, lambda: app.config)
+                    app.traces.start()
+                except Exception:  # the tracer is a debugging aid: Dom runs without it rather than not at all
+                    logging.getLogger("dom").warning("could not open the trace store; turns are not traced", exc_info=True)
+                    app.traces = None
+                if app.traces is not None:
+                    try:  # a forget that could not delete its traces left them for now
+                        await tracer.apply_pending_forget(app.traces, home)
+                        await app.traces.prune()
+                    except Exception:
+                        logging.getLogger("dom").warning("could not tidy the trace store at start", exc_info=True)
                 app.dispatch.start()
                 app.dispatch._spawn(check_reachability(app))
                 if app.cloud_studio is not None:
@@ -224,6 +236,9 @@ async def run(home: Path) -> bool:
                     if app.desktop_worker is not None:
                         await app.desktop_worker.close()
                     await app.dispatch.close()
+                    if app.traces is not None:
+                        await app.traces.close()
+                        app.traces.store.close()
     finally:
         if app is not None and app.desktop_worker is not None:
             await app.desktop_worker.close()

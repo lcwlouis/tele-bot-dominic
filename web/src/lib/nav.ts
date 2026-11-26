@@ -7,6 +7,7 @@ import Images from "@lucide/svelte/icons/images";
 import KeyRound from "@lucide/svelte/icons/key-round";
 import Layers from "@lucide/svelte/icons/layers";
 import MessageCircle from "@lucide/svelte/icons/message-circle";
+import MessagesSquare from "@lucide/svelte/icons/messages-square";
 import Monitor from "@lucide/svelte/icons/monitor";
 import PiggyBank from "@lucide/svelte/icons/piggy-bank";
 import NotebookText from "@lucide/svelte/icons/notebook-text";
@@ -27,9 +28,13 @@ export type Destination = {
   tabs?: Tab[];
 };
 
-/** The five destinations: the phone's menu and the desktop sidebar's "Control surface" group. */
+/** The six destinations: the phone's menu and the desktop sidebar's "Control surface" group. */
 export const destinations: Destination[] = [
   { id: "home", label: "Home", href: "/app", icon: House, blurb: "What Dom is doing and what waits for you." },
+  {
+    id: "talk", label: "Talk", href: "/app/talk", icon: MessagesSquare,
+    blurb: "Talk to Dom here, in the same conversation as your Telegram DM, with every turn's trace a switch away.",
+  },
   {
     id: "chats", label: "Chats", href: "/app/chats", icon: MessageCircle,
     blurb: "Every chat Dom is in: presence, presets and personality per chat.",

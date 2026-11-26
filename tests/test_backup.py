@@ -34,6 +34,8 @@ def create_fixture_files(home):
         "state.db-stale": "excluded",
         ".claim": "excluded",
         "memory/MEMORY.md.bak-old": "excluded",
+        "traces.db": "excluded",
+        "traces.db-wal": "excluded",
     }.items():
         (home / name).write_text(text)
 

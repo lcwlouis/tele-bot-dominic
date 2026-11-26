@@ -328,7 +328,7 @@ async def _private_reply_to_dm(
                     bot, owner, chunk, sleep=sleep, budget=budget,
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
                 )
-            turn_log.bubble_sent()
+            turn_log.bubble_sent("private reply in the owner DM", chat_id=owner, msg_id=sent.message_id, text=chunk[0])
             sent_ids.append(sent.message_id)
             if on_sent is not None:
                 await on_sent(sent.message_id)
@@ -443,7 +443,7 @@ async def perform(
                     sleep=sleep, budget=flood, on_sent=on_sent,
                 )
                 return PerformResult(sent_ids + moved, flood_limited=flood.exhausted)
-            turn_log.bubble_sent()
+            turn_log.bubble_sent("ephemeral bubble", chat_id=chat_id, msg_id=sent.message_id, text=bubble.text)
             sent_ids.append(sent.message_id)
             if on_sent is not None:
                 await on_sent(sent.message_id)
@@ -526,7 +526,7 @@ async def perform(
                 thread_id=thread_id,
             )
             raise
-        turn_log.bubble_sent()
+        turn_log.bubble_sent("bubble", chat_id=chat_id, msg_id=sent.message_id, text=bubble.text)
         if record:
             await store.record_new_message(
                 StoredMessage(
@@ -664,7 +664,7 @@ async def perform(
                 thread_id=thread_id,
             )
             raise
-        turn_log.bubble_sent()
+        turn_log.bubble_sent("media fallback line", chat_id=chat_id, msg_id=sent.message_id, text=fallback_text)
         if record:
             await store.record_new_message(StoredMessage(
                 chat_id=str(chat_id), msg_id=sent.message_id, reply_to_msg_id=trigger_msg_id, thread_id=thread_id,
@@ -722,7 +722,7 @@ async def _send_media(
             thread_id=thread_id,
         )
         return None
-    turn_log.bubble_sent()
+    turn_log.bubble_sent(kind, chat_id=chat_id, msg_id=sent.message_id, text=history_text)
     if media is not None and keep is not None:
         try:
             media = {**media, **await keep(sent)}
@@ -774,8 +774,10 @@ async def _look_before_send(
         else:
             fix = await look.fix_for(app, chat_id, scene, shown)
         if fix is None:
+            turn_log.event("look", kind=kind, scene=scene, result="kept: it matches the scene")
             return data
         turn_log.step("looked: regenerating")
+        turn_log.event("look", kind=kind, scene=scene, fix=fix, result="regenerating")
         with provenance.redoing():
             again = await produce(fix)
         if again is None:
@@ -783,7 +785,9 @@ async def _look_before_send(
         second = again if kind == "photo" else await look.first_frame(again)
         if second is not None and await look.second_is_better(app, chat_id, scene, shown, second):
             provenance.kept_redo()
+            turn_log.event("look", kind=kind, scene=scene, result="kept the redo")
             return again
+        turn_log.event("look", kind=kind, scene=scene, result="kept the first")
         return data
     except Exception as exc:
         log.warning("look before send failed in chat %s (%s)", chat_id, type(exc).__name__)
@@ -794,7 +798,20 @@ async def deliver_studio(
     app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
     actions: Actions, on_sent: Callable[[int], Awaitable[None]],
 ) -> None:
-    """Generate and send screened media after the text, without occupying a turn."""
+    """Generate and send screened media after the text, without occupying a turn. Traced as work after the turn."""
+    with turn_log.follow_up("studio", chat_id, scope):
+        turn_log.event(
+            "studio", requested={key: value for key, value in (
+                ("image", actions.image), ("voice", actions.voice), ("video_note", actions.video_note),
+            ) if value},
+        )
+        await _deliver_studio(app, chat_id, scope, thread_id, trigger_msg_id, actions, on_sent)
+
+
+async def _deliver_studio(
+    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
+    actions: Actions, on_sent: Callable[[int], Awaitable[None]],
+) -> None:
     if actions.private or actions.no_response:
         return
     client = app.studio
@@ -1089,10 +1106,13 @@ async def react(
         raise
     except (TelegramBadRequest, ValidationError):
         log.warning("reaction %r rejected in chat %s", emoji, chat_id)
+        turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result="refused")
         return False
     except (TelegramAPIError, FloodBudgetExhausted) as error:
         log.warning("reaction %r failed in chat %s (%s)", emoji, chat_id, type(error).__name__)
+        turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result=f"failed: {type(error).__name__}")
         return None
+    turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result="sent")
     return True
 
 
