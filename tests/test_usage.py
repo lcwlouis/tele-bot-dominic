@@ -134,11 +134,8 @@ async def test_cap_blocks_group_turn_triage_media_and_memory_but_not_owner(make_
         "Daily spend cap of $1.00 reached ($1.25 spent). Friends' chats are paused until midnight. "
         "Change `daily_spend_cap_usd` in config.toml."
     )
-    assert notice[2] == (
-        "Daily spend cap reached: $1.25 of $1.00\nFriends' chats are paused until midnight.\n"
-        "Change daily_spend_cap_usd in config.toml."
-    )
-    assert [entity.type for entity in notice[3]["entities"]] == ["bold"]
+    assert notice[2] == expected.replace("`", "")
+    assert [entity.type for entity in notice[3]["entities"]] == ["code"]
     events = [m for m in await app.store.get_recent_chat_window(OWNER) if m.role == "event"]
     assert [m.text for m in events] == [expected]
 
