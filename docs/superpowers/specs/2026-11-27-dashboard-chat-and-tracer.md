@@ -11,8 +11,8 @@ The chat gets its own page, **Talk** (`/app/talk`), as the second destination af
 - A conversation needs the full height of the screen, with the composer pinned to the bottom. Home is a summary page
   of cards that scrolls.
 - The page polls every second while Dom is typing. Home's cards shouldn't refresh that often.
-- The Trace toggle and the open turn live in the address (`?trace=1&turn=<id>`), so a Turn log link lands on that
-  turn's audit.
+- The Trace toggle and the open turn live in the address (`?trace=1&turn=<id>`), so a link can open Talk on that
+  turn's audit. The Turn log links every turn to its standalone trace page instead (see below).
 
 On a desktop the side panel sits to the right of the conversation. It shows Dom's profile and presence, the approvals
 waiting and what he's working on (his desktop task and own work). On a phone the panel folds into a sheet, opened from

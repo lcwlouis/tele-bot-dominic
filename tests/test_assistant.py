@@ -969,3 +969,21 @@ async def test_a_plan_and_an_owner_turn_never_compose_at_once(make_app):
     app.dispatch.now.advance(minutes=10)
     await app.assistant.tick(app.dispatch.now())
     assert await claim(app) == "sent"  # the next tick inside the window sends it, once
+
+
+async def test_a_plan_waits_while_a_message_of_the_owners_is_still_unanswered(make_app, monkeypatch):
+    """Gate round 4: a message still in its debounce is unread. The plan must not land ahead of the reply to it."""
+    app = await ready(make_app, PLAN)
+    await remind(app)
+    real = app.store.get_unread
+
+    async def one_unread(chat_id, *args, **kwargs):
+        found = await real(chat_id, *args, **kwargs)
+        return (1, *found[1:])
+
+    monkeypatch.setattr(app.store, "get_unread", one_unread)
+    await app.assistant.tick(app.dispatch.now())
+    assert sent(app) == [] and app.script.requests == []  # no claim spent, no model call
+    monkeypatch.setattr(app.store, "get_unread", real)
+    await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 1

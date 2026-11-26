@@ -57,7 +57,7 @@ LABELS = {
     "busy": "Waiting: you wrote while it was being written",
     "blocked": "Not sent: a spend cap or the chat's approval stopped it",
     "nothing": "Nothing worth saying",
-    "late": "Skipped: Dom was not up within three hours of its time",
+    "late": "Skipped: it could not go out within three hours of its time (Dom asleep, or you were chatting)",
     "failed": "Not sent: the model or Telegram failed",
     "off": "Not sent: assistant mode was turned off while it was being written",
 }
@@ -157,8 +157,10 @@ class Assistant:
             return
         owner = self._owner()
         dispatch = app.dispatch
-        if dispatch.turn_running(owner) or app.locks[owner].locked():
-            return  # the owner is mid-conversation: try again on the next tick, still inside the window
+        if dispatch.turn_running(owner) or app.locks[owner].locked() or (await app.store.get_unread(owner))[0] > 0:
+            # The owner is mid-conversation, or wrote something Dom has not answered yet (still in its debounce):
+            # try again on the next tick, still inside the window, so the plan never lands ahead of that reply.
+            return
         habits = read_habits(app.home)
         state, _ = dispatch.presence.peek(await app.store.get_presence(owner), habits)
         if state == "asleep":
@@ -233,6 +235,8 @@ class Assistant:
                 # The owner DM's turn slot, as an owner turn holds it from compose to delivery: a plan and an owner
                 # turn never compose at once, and `assistant:offered` is read and written by one of them at a time.
                 async with dispatch._dispatch_slot(owner, wait_media=False):
+                    if (await store.get_unread(owner))[0] > 0:
+                        return "busy"  # the owner wrote while the slot was being taken: their reply comes first
                     latest = await store.latest_chat_message(owner)
                     async with app.locks[owner]:
                         window = await dispatch._window(owner)
