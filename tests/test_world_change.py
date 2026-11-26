@@ -188,3 +188,11 @@ async def test_two_calls_at_once_change_the_sheet_once(make_app):
     assert sorted(results) == [False, True]
     text = app.home.read(WORLD)
     assert ("From the first" in text) != ("From the second" in text)
+
+
+async def test_a_damaged_marker_keeps_the_week_closed(make_app):
+    app = make_app()
+    app.home.write_file(world_change.MARKER, "{not json")
+    found = await world_change.last_change(app)
+    assert found is not None and found[0] == date.today()
+    assert not await world_change.due(app, date.today())

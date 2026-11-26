@@ -129,8 +129,8 @@ class PlacePhotos:
         if not keys:
             return ""
         return (
-            'places with a photo you may show (set "place" on an image or video_note only when the scene really is '
-            "there, to exactly one of these keys; otherwise leave it out): " + ", ".join(keys)
+            'places with a photo you may show (only when the scene really is there, set "image_place" next to "image", '
+            'or "place" inside "video_note", to exactly one of these keys; otherwise leave it out): ' + ", ".join(keys)
         )
 
     def _known_to(self, slug: str, chat_id: int) -> bool:

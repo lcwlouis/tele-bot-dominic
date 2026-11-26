@@ -41,11 +41,25 @@ FORMAT = (
 
 
 def _marker(home: Home) -> tuple[date, str] | None:
+    """The last change's day and reason; None only when the sheet has never changed (there is no marker file). A
+    marker that can't be read counts as a change on the day the file was last written, so a damaged file never
+    reopens the week."""
+    path = home.root / MARKER
     try:
-        data = json.loads(home.scoped(allow_private=False).read(MARKER) or "null")
-        return date.fromisoformat(data["day"]), str(data.get("reason", ""))
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, PrivateAccessError):
+        raw = home.scoped(allow_private=False).read(MARKER)
+    except (OSError, ValueError, PrivateAccessError):
+        raw = ""
+    if not raw and not path.is_file():
         return None
+    try:
+        data = json.loads(raw)
+        return date.fromisoformat(data["day"]), str(data.get("reason", ""))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        log.warning("the world change marker could not be read; counting it as a change on the day it was written")
+    try:
+        return date.fromtimestamp(path.stat().st_mtime), ""
+    except OSError:
+        return date.today(), ""
 
 
 def _is_due(found: tuple[date, str] | None, today: date) -> bool:
