@@ -93,6 +93,7 @@ class TurnTrace:
     scope: str = ""
     parent: TurnTrace | None = None  # for an `after` part: the turn it belongs to, whose row id is read when written
     turn_id: int | None = None  # for an `after` part started outside its turn: that turn's row
+    children: list[TurnTrace] = field(default_factory=list)  # `after` parts that finished before this turn was saved
 
     def add_timing(self, what: str, elapsed_ms: int) -> None:
         self.timings.append(f"{what}@{elapsed_ms}")
@@ -110,6 +111,10 @@ class TurnTrace:
         self.events[:0] = other.events
         self.dropped_events += other.dropped_events
         self.started = min(self.started, other.started)
+        for child in other.children:  # work a restarted attempt spawned belongs to the turn that replaced it
+            child.parent = self
+        self.children.extend(other.children)
+        other.children.clear()
 
 
 MAX_EVENTS = 2000
@@ -123,10 +128,22 @@ def set_sink(sink: Callable[[TurnTrace], None] | None) -> None:
 
 
 def submit(trace: TurnTrace) -> None:
-    """Hand a finished trace to the writer: a non-blocking put into a bounded queue, so it costs the reply path nothing."""
+    """Hand a finished trace to the writer: a non-blocking put into a bounded queue, so it costs the reply path nothing.
+    An `after` part that finishes before its turn is saved waits on that turn, so it is written with the turn's id."""
     if trace.sealed:
         return
     trace.sealed = True
+    parent = trace.parent
+    if parent is not None and parent.row_id is None and not parent.sealed:
+        parent.children.append(trace)
+        return
+    _hand_over(trace)
+    children, trace.children = trace.children, []
+    for child in children:
+        _hand_over(child)
+
+
+def _hand_over(trace: TurnTrace) -> None:
     if _sink is not None and (trace.events or trace.steps or trace.model_calls):
         try:
             _sink(trace)
@@ -346,7 +363,8 @@ async def capture(
                 )
             except Exception:
                 log.exception("could not save turn metadata in chat %s", chat_id)
-            submit(trace)
+        if not trace.superseded:
+            submit(trace)  # also when nothing was recorded: work it spawned waits on it for its turn id
 
 
 @contextmanager

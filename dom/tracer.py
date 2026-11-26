@@ -2,10 +2,13 @@
 
 turn_log collects a turn's events as plain references while the turn runs. When the turn ends, `turn_log.submit`
 puts the trace into this module's bounded queue without waiting. One writer task takes it from there, in a worker
-thread: it parses the responses, strips media, redacts secrets (the instance's real secret values, then the credential
-shapes in dom.secret_patterns), compresses, and stores it in `<home>/traces.db`. That file is its own SQLite database,
-so trace writes never wait on, or hold up, the store's lock that the reply path uses. Retention and a size cap with
-oldest-first eviction keep it bounded (`[tracer]` in config.toml). See
+thread: it reads the instance's secret values, parses the responses, strips media, redacts secrets, compresses, and
+stores the trace in `<home>/traces.db`. Redaction covers every value in `.env`, every configured key variable and the
+fixed credentials, in their raw, JSON-escaped and ASCII-escaped forms, plus the credential shapes in
+dom.secret_patterns. It runs on each string before any cut, again on JSON inside strings, and once more on the
+serialised text. traces.db is its own owner-only SQLite database, so trace writes never wait on, or hold up, the store's
+lock that the reply path uses. Retention and a size cap with oldest-first eviction keep it bounded (`[tracer]` in
+config.toml). Reads unpack and serialise in a worker thread too. See
 docs/superpowers/specs/2026-11-27-dashboard-chat-and-tracer.md.
 """
 
@@ -15,9 +18,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
+import time
 import zlib
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -34,10 +39,14 @@ log = logging.getLogger("dom.tracer")
 
 VERSION = 1
 QUEUE_SIZE = 32  # traces waiting to be written; past this a trace is dropped (and counted), never awaited
-MAX_TRACE_BYTES = 8_000_000  # one trace, compressed; past it long strings are cut, then bodies are dropped
+MAX_TRACE_BYTES = 8_000_000  # one trace, compressed; past it long strings are cut, then bodies dropped, then a stub
 CUT_CHARS = 65_536  # a string kept in full is at most this long once a trace is over MAX_TRACE_BYTES
 MEDIA_MIN_CHARS = 4096  # a base64 string this long or longer is media, kept as a placeholder
-EXPORT_LIMIT = 500
+MIN_SECRET_CHARS = 4  # shorter values are not redacted: they would mangle ordinary words
+EXPORT_LIMIT = 500  # parts in one range export
+EXPORT_MAX_BYTES = 64_000_000  # serialised bytes in one range export; past it the export stops and says so
+SUMMARY_LIMIT = 200
+FILE_MODE = 0o600
 REDACTED = "[redacted]"
 _BASE64 = re.compile(r"[A-Za-z0-9+/=\s_-]+")
 _DATA_URL = re.compile(r"data:([\w.+-]+/[\w.+-]+)?(?:;[\w=.-]+)*;base64,", re.IGNORECASE)
@@ -61,20 +70,73 @@ CREATE INDEX IF NOT EXISTS idx_traces_at ON traces(at);
 """
 
 
+# --- secrets ------------------------------------------------------------------------------------------------------
+
+
+def _forms(secret: str) -> set[str]:
+    """A secret as it may appear in text: raw, JSON-escaped, and JSON-escaped with non-ASCII as \\uXXXX."""
+    return {secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=True)[1:-1]}
+
+
+def _dotenv_values(path: Path) -> set[str]:
+    values: set[str] = set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return values
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        value = line.partition("=")[2].strip()
+        values.add(value)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            values.add(value[1:-1])
+    return values
+
+
+def instance_secrets(config: Any) -> tuple[str, ...]:
+    """Every value the instance holds as a secret: all of `.env`, every key variable config.toml names (`*_env`,
+    including `api_key_env` and the dashboard's `dev_token_env`) and the fixed credentials (the bot token among them)
+    from `.env` or the process environment. Longest first, so a value inside another is never left half-redacted.
+    Reads files: call it off the event loop."""
+    values = _dotenv_values(Path(config.home) / ".env")
+    for name in config.secret_names():
+        if value := os.environ.get(name):
+            values.add(value)
+    return tuple(sorted({value for value in values if len(value) >= MIN_SECRET_CHARS}, key=len, reverse=True))
+
+
 # --- encoding -----------------------------------------------------------------------------------------------------
 
 
 @dataclass
 class _Cleaner:
     """One pass over a trace's values: media becomes a placeholder, secrets become [redacted], and with `cut` long
-    strings are shortened. Every string is redacted before it is cut, so a cut never leaves half a secret behind."""
+    strings are shortened. Every string is redacted before it is cut, so a cut never leaves half a secret behind, and
+    a string holding JSON (a tool's raw arguments) is parsed and cleaned too, so escapes can't hide a secret."""
 
     secrets: tuple[str, ...]
     cut: int | None = None
     redactions: int = 0
     media: int = 0
     truncated: bool = False
-    drop_bodies: bool = False
+    forms: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        self.forms = tuple(sorted({form for secret in self.secrets for form in _forms(secret)}, key=len, reverse=True))
+
+    def redact(self, text: str) -> str:
+        for form in self.forms:
+            if form in text:
+                self.redactions += text.count(form)
+                text = text.replace(form, REDACTED)
+        for pattern in (API_KEY, TELEGRAM_BOT_TOKEN):
+            text, count = pattern.subn(REDACTED, text)
+            self.redactions += count
+        text, count = BEARER_TOKEN.subn(lambda match: match.group(0).replace(match.group(1), REDACTED), text)
+        self.redactions += count
+        return text
 
     def string(self, text: str) -> str:
         if len(text) >= MEDIA_MIN_CHARS:
@@ -82,15 +144,15 @@ class _Cleaner:
             if placeholder is not None:
                 self.media += 1
                 return placeholder
-        for secret in self.secrets:
-            if secret in text:
-                self.redactions += text.count(secret)
-                text = text.replace(secret, REDACTED)
-        for pattern in (API_KEY, TELEGRAM_BOT_TOKEN):
-            text, count = pattern.subn(REDACTED, text)
-            self.redactions += count
-        text, count = BEARER_TOKEN.subn(lambda match: match.group(0).replace(match.group(1), REDACTED), text)
-        self.redactions += count
+        stripped = text.strip()
+        if stripped[:1] in ("{", "[") and len(stripped) < 2_000_000:
+            try:
+                parsed = json.loads(stripped)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                text = json.dumps(self.clean(parsed), ensure_ascii=False)
+        text = self.redact(text)
         if self.cut is not None and len(text) > self.cut:
             self.truncated = True
             text = f"{text[:self.cut]}… [cut {len(text) - self.cut} characters]"
@@ -176,42 +238,66 @@ def _parse_timing(text: str) -> dict:
         return {"what": text, "ms": None}
 
 
-def encode(trace: turn_log.TurnTrace, secrets: Iterable[str], *, cut: int | None = None, drop_bodies: bool = False) -> dict:
-    """The trace as the JSON body stored, cleaned (media out, secrets redacted). Runs in a worker thread."""
+def turn_id_of(trace: turn_log.TurnTrace) -> int | None:
+    if trace.kind == "turn":
+        return trace.row_id
+    return trace.turn_id or (trace.parent.row_id if trace.parent is not None else None)
+
+
+def encode(
+    trace: turn_log.TurnTrace, secrets: Iterable[str], *, cut: int | None = None, drop_bodies: bool = False,
+    stub: bool = False,
+) -> dict:
+    """The trace as the JSON body stored, cleaned (media out, secrets redacted). Runs in a worker thread. A `stub`
+    keeps only each event's type and time: the last resort for a trace still over the cap without its bodies."""
     started = trace.started
     events = sorted(trace.events, key=lambda item: item.get("at", started))
     ended = max([started, *(item.get("at", started) for item in events)])
-    turn_id = trace.row_id if trace.kind == "turn" else trace.turn_id or (
-        trace.parent.row_id if trace.parent is not None else None
-    )
+    turn_id = turn_id_of(trace)
     kind = trace.kind if trace.kind == "turn" or turn_id is not None else "background"
+    encoded = [_event(item, started, drop_bodies) for item in events]
+    if stub:
+        encoded = [{key: event[key] for key in ("type", "at", "t_ms")} for event in encoded]
     body = {
         "version": VERSION, "turn_id": turn_id, "chat_id": str(trace.chat_id) if trace.chat_id is not None else "",
         "scope": trace.scope, "kind": kind, "label": trace.label,
         "started_at": _iso(started), "ended_at": _iso(ended), "duration_ms": round((ended - started) * 1000),
         "outcome": trace.outcome, "model": trace.model, "fallback": trace.fallback,
-        "steps": turn_log.visible_steps(trace.steps), "visits": turn_log.visits_in(trace.steps),
-        "timings": [_parse_timing(item) for item in trace.timings],
+        "steps": turn_log.visible_steps(trace.steps)[:200], "visits": turn_log.visits_in(trace.steps)[:50],
+        "timings": [_parse_timing(item) for item in trace.timings][:200],
         "first_bubble_ms": trace.first_bubble_ms, "last_bubble_ms": trace.last_bubble_ms,
-        "events": [_event(item, started, drop_bodies) for item in events],
+        "events": encoded,
         "dropped_events": trace.dropped_events,
     }
-    cleaner = _Cleaner(tuple(sorted({s for s in secrets if s}, key=len, reverse=True)), cut=cut)
+    cleaner = _Cleaner(tuple(secrets), cut=CUT_CHARS if stub else cut)
     cleaned = cleaner.clean(body)
     cleaned.update(redactions=cleaner.redactions, media_stripped=cleaner.media,
-                   truncated=cleaner.truncated or drop_bodies)
+                   truncated=cleaner.truncated or drop_bodies or stub)
     return cleaned
 
 
+def _serialise(body: dict, secrets: tuple[str, ...]) -> bytes:
+    """The body as compressed JSON, with one more redaction pass over the serialised text itself."""
+    cleaner = _Cleaner(secrets)
+    text = cleaner.redact(json.dumps(body, ensure_ascii=False))
+    if cleaner.redactions:
+        body["redactions"] += cleaner.redactions
+        text = cleaner.redact(json.dumps(body, ensure_ascii=False))
+    return zlib.compress(text.encode(), 6)
+
+
 def pack(trace: turn_log.TurnTrace, secrets: Iterable[str]) -> tuple[dict, bytes]:
-    """Encode and compress, shrinking a trace past MAX_TRACE_BYTES: cut long strings, then drop the bodies."""
+    """Encode and compress, shrinking a trace past MAX_TRACE_BYTES: cut long strings, then drop the bodies, then keep
+    a stub of event types and times. The stub has at most turn_log.MAX_EVENTS short events, so it always fits."""
     secrets = tuple(secrets)
-    for options in ({}, {"cut": CUT_CHARS}, {"cut": CUT_CHARS, "drop_bodies": True}):
+    for options in ({}, {"cut": CUT_CHARS}, {"cut": CUT_CHARS, "drop_bodies": True}, {"drop_bodies": True, "stub": True}):
         body = encode(trace, secrets, **options)
-        blob = zlib.compress(json.dumps(body, ensure_ascii=False).encode(), 6)
+        blob = _serialise(body, secrets)
         if len(blob) <= MAX_TRACE_BYTES:
-            break
-    return body, blob
+            return body, blob
+    log.warning("a trace for chat %s is over the cap even as a stub; storing its outline only", trace.chat_id)
+    body = {**body, "events": [], "steps": [], "timings": [], "visits": [], "truncated": True}
+    return body, _serialise(body, secrets)
 
 
 def unpack(blob: bytes) -> dict:
@@ -221,12 +307,24 @@ def unpack(blob: bytes) -> dict:
 # --- storage ------------------------------------------------------------------------------------------------------
 
 
+def _private(path: Path) -> None:
+    """traces.db and its WAL sidecars are the owner's alone (they hold whole conversations)."""
+    for item in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+        try:
+            os.chmod(item, FILE_MODE)
+        except FileNotFoundError:
+            pass
+
+
 class TraceStore:
-    """`<home>/traces.db`: its own connection and lock, apart from state.db's."""
+    """`<home>/traces.db`: its own connection and lock, apart from state.db's. Every read unpacks in a worker thread."""
 
     def __init__(self, path: Path):
         self.path = path
         self._lock = threading.Lock()
+        # Created owner-only before SQLite opens it: SQLite gives the WAL and shm files the database file's mode.
+        os.close(os.open(path, os.O_CREAT | os.O_RDWR, FILE_MODE))
+        _private(path)
         self._conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -234,7 +332,9 @@ class TraceStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(SCHEMA)
         self._conn.execute(f"PRAGMA user_version = {VERSION}")
+        _private(path)
         self._total: int | None = None
+        self._forgotten: dict[str, float] = {}  # chat -> when it was forgotten: older traces of it are never stored
 
     def close(self) -> None:
         with self._lock:
@@ -247,9 +347,15 @@ class TraceStore:
 
         return await asyncio.to_thread(locked)
 
-    # Called with the lock held, from the writer's thread.
-    def insert(self, body: dict, blob: bytes, max_bytes: int) -> int:
+    def refused(self, chat_id: str, started: float) -> bool:
+        forgotten = self._forgotten.get(chat_id)
+        return forgotten is not None and started <= forgotten
+
+    # Called from the writer's thread.
+    def insert(self, body: dict, blob: bytes, max_bytes: int, *, started: float | None = None) -> int | None:
         with self._lock:
+            if started is not None and self.refused(body["chat_id"], started):
+                return None  # its chat was forgotten while this trace waited or was being encoded
             cursor = self._conn.execute(
                 "INSERT INTO traces (turn_id, chat_id, scope, kind, label, at, outcome, size, body) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -297,20 +403,48 @@ class TraceStore:
 
         await self._run(evict)
 
-    async def delete_chat(self, chat_id: int | str) -> int:
+    async def delete_chats(self, chat_ids: Iterable[int | str], *, forgotten_at: float | None = None) -> int:
+        """Delete every trace of these chats (a chat and its earlier ids), and with `forgotten_at` refuse any trace of
+        theirs that started before it, so one still queued or being encoded is never stored afterwards."""
+        keys = sorted({str(chat_id) for chat_id in chat_ids})
+
         def delete() -> int:
-            count = self._conn.execute("DELETE FROM traces WHERE chat_id = ?", (str(chat_id),)).rowcount
+            if forgotten_at is not None:
+                for key in keys:
+                    self._forgotten[key] = max(self._forgotten.get(key, 0.0), forgotten_at)
+            count = self._conn.execute(
+                f"DELETE FROM traces WHERE chat_id IN ({','.join('?' * len(keys))})", keys,
+            ).rowcount if keys else 0
             self._total = None
             return count
 
         return await self._run(delete)
 
+    async def delete_chat(self, chat_id: int | str) -> int:
+        return await self.delete_chats([chat_id])
+
+    async def turn_json(self, turn_id: int) -> bytes | None:
+        """Every part of one turn as `{"turn_id", "parts"}` JSON, the turn first, then the work after it in order."""
+        def read() -> bytes | None:
+            rows = self._conn.execute(
+                "SELECT body FROM traces WHERE turn_id = ? ORDER BY kind != 'turn', at, id", (turn_id,),
+            ).fetchall()
+            if not rows:
+                return None
+            return _join([zlib.decompress(row["body"]) for row in rows], {"turn_id": turn_id})
+
+        return await self._run(read)
+
+    async def part_json(self, trace_id: int) -> bytes | None:
+        def read() -> bytes | None:
+            row = self._conn.execute("SELECT body FROM traces WHERE id = ?", (trace_id,)).fetchone()
+            return _join([zlib.decompress(row["body"])], {}) if row is not None else None
+
+        return await self._run(read)
+
     async def turn(self, turn_id: int) -> list[dict]:
-        """Every part of one turn, the turn itself first, then the work after it in order."""
-        rows = await self._run(lambda: self._conn.execute(
-            "SELECT body FROM traces WHERE turn_id = ? ORDER BY kind != 'turn', at, id", (turn_id,),
-        ).fetchall())
-        return [unpack(row["body"]) for row in rows]
+        data = await self.turn_json(turn_id)
+        return await asyncio.to_thread(lambda: json.loads(data)["parts"]) if data is not None else []
 
     async def traced(self, turn_ids: Iterable[int]) -> set[int]:
         ids = [int(turn_id) for turn_id in turn_ids][:500]
@@ -321,22 +455,25 @@ class TraceStore:
         ).fetchall())
         return {row["turn_id"] for row in rows}
 
-    async def summaries(self, chat_id: int | str, since: datetime) -> list[dict]:
-        """One line per part in a chat since a time: what the dashboard's Trace view lays beside the messages."""
+    async def summaries(self, chat_id: int | str, since: datetime | None = None, *, after_id: int | None = None) -> list[dict]:
+        """One line per part in a chat, from a time or after a trace id (the Talk page's own cursor), oldest first."""
+        if after_id is not None:
+            sql, args = "chat_id = ? AND id > ?", (str(chat_id), after_id)
+        else:
+            stamp = (since or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+            sql, args = "chat_id = ? AND at >= ?", (str(chat_id), stamp)
         rows = await self._run(lambda: self._conn.execute(
-            "SELECT id, turn_id, kind, label, at, outcome, size FROM traces WHERE chat_id = ? AND at >= ? "
-            "ORDER BY at, id LIMIT 500",
-            (str(chat_id), since.astimezone(timezone.utc).isoformat()),
+            f"SELECT id, turn_id, kind, label, at, outcome, size FROM traces WHERE {sql} ORDER BY id LIMIT ?",
+            (*args, SUMMARY_LIMIT),
         ).fetchall())
         return [dict(row) for row in rows]
 
-    async def part(self, trace_id: int) -> dict | None:
-        row = await self._run(lambda: self._conn.execute("SELECT body FROM traces WHERE id = ?", (trace_id,)).fetchone())
-        return unpack(row["body"]) if row is not None else None
-
-    async def export(
-        self, chat_id: str | None, start: datetime | None, end: datetime | None, limit: int = EXPORT_LIMIT,
-    ) -> tuple[list[dict], bool]:
+    async def export_json(
+        self, chat_id: str | None, start: datetime | None, end: datetime | None, extra: dict,
+        limit: int = EXPORT_LIMIT, max_bytes: int = EXPORT_MAX_BYTES,
+    ) -> bytes:
+        """The parts in a range, oldest first, as JSON built in a worker thread: at most `limit` parts and `max_bytes`
+        of them, with `truncated` when more matched."""
         clauses, params = [], []
         if chat_id:
             clauses.append("chat_id = ?")
@@ -348,16 +485,34 @@ class TraceStore:
             clauses.append("at < ?")
             params.append(end.astimezone(timezone.utc).isoformat())
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = await self._run(lambda: self._conn.execute(
-            f"SELECT body FROM traces {where} ORDER BY at, id LIMIT ?", (*params, limit + 1),
-        ).fetchall())
-        return [unpack(row["body"]) for row in rows[:limit]], len(rows) > limit
+
+        def read() -> bytes:
+            parts, total, truncated = [], 0, False
+            for index, row in enumerate(self._conn.execute(
+                f"SELECT body FROM traces {where} ORDER BY at, id LIMIT ?", (*params, limit + 1),
+            )):
+                part = zlib.decompress(row["body"])
+                if index >= limit or total + len(part) > max_bytes:
+                    truncated = True
+                    break
+                parts.append(part)
+                total += len(part)
+            return _join(parts, {**extra, "truncated": truncated})
+
+        return await self._run(read)
 
     async def stats(self) -> dict:
         row = await self._run(lambda: self._conn.execute(
             "SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes, MIN(at) AS oldest FROM traces",
         ).fetchone())
         return dict(row)
+
+
+def _join(parts: list[bytes], head: dict) -> bytes:
+    """`{...head, "parts": [...]}` from stored JSON bodies, without parsing them again."""
+    prefix = json.dumps(head, ensure_ascii=False)[:-1]
+    joined = b",".join(parts)
+    return (prefix + (", " if head else "") + '"parts": [').encode() + joined + b"]}"
 
 
 # --- the writer ---------------------------------------------------------------------------------------------------
@@ -369,7 +524,7 @@ class TraceWriter:
 
     store: TraceStore
     settings: Callable[[], tuple[int, int]]  # (retention days, cap in bytes), read at each write
-    secrets: Callable[[], Iterable[str]]
+    secrets: Callable[[], Iterable[str]]  # may read files: called in the worker thread, never on the event loop
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     dropped: int = 0
     written: int = 0
@@ -410,17 +565,33 @@ class TraceWriter:
             finally:
                 self._queue.task_done()
 
-    async def write(self, trace: turn_log.TurnTrace) -> int:
+    async def write(self, trace: turn_log.TurnTrace) -> int | None:
         _, cap = self.settings()
-        secrets = tuple(self.secrets())
+        chat = str(trace.chat_id) if trace.chat_id is not None else ""
+        if self.store.refused(chat, trace.started):
+            return None
 
-        def work() -> int:
-            body, blob = pack(trace, secrets)
-            return self.store.insert(body, blob, cap)
+        def work() -> int | None:
+            body, blob = pack(trace, tuple(self.secrets()))
+            return self.store.insert(body, blob, cap, started=trace.started)
 
         trace_id = await asyncio.to_thread(work)
-        self.written += 1
+        if trace_id is not None:
+            self.written += 1
         return trace_id
+
+    async def forget(self, chat_ids: Iterable[int | str]) -> int:
+        """Delete every trace of these chats, drop their queued ones, and refuse any of theirs still in flight."""
+        keys = {str(chat_id) for chat_id in chat_ids}
+        kept: list[turn_log.TurnTrace] = []
+        while not self._queue.empty():
+            trace = self._queue.get_nowait()
+            self._queue.task_done()
+            if str(trace.chat_id) not in keys:
+                kept.append(trace)
+        for trace in kept:
+            self._queue.put_nowait(trace)
+        return await self.store.delete_chats(keys, forgotten_at=time.time())
 
     async def prune(self) -> None:
         days, cap = self.settings()
@@ -430,15 +601,9 @@ class TraceWriter:
 
 def open_writer(home: Path, config: Callable[[], Any]) -> TraceWriter:
     """The instance's writer, reading `[tracer]` and the secret values from the live config at each use."""
-    from dom.model_lists import secret_values
 
     def settings() -> tuple[int, int]:
         tracer = config().tracer
         return tracer.retention_days, tracer.max_mb * 1_000_000
 
-    def secrets() -> Iterable[str]:
-        current = config()
-        values = set(secret_values(current))
-        return values
-
-    return TraceWriter(TraceStore(Path(home) / "traces.db"), settings, secrets)
+    return TraceWriter(TraceStore(Path(home) / "traces.db"), settings, lambda: instance_secrets(config()))

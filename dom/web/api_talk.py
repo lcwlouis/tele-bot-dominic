@@ -66,8 +66,11 @@ async def read_talk(
     after: int | None = Query(None, ge=0),
     before: int | None = Query(None, ge=1),
     trace: bool = False,
+    trace_after: int | None = Query(None, ge=0),
 ) -> dict:
-    """The owner DM. No cursor: the newest page. `after`: what came since (the poll). `before`: an older page."""
+    """The owner DM. No cursor: the newest page. `after`: what came since (the poll). `before`: an older page.
+    With `trace`, the trace parts beside them: from the oldest message shown, or after `trace_after`, the page's own
+    trace cursor, so a part written long after its messages still arrives."""
     app = owner_app(request)
     owner = app.owner_id
     has_more = False
@@ -83,10 +86,13 @@ async def read_talk(
         "traced": app.traces is not None,
     }
     if trace and app.traces is not None:
-        since = datetime.fromisoformat(rows[0].created_at) - timedelta(minutes=5) if rows else (
-            datetime.now(timezone.utc) - timedelta(minutes=5)
-        )
-        data["turns"] = await app.traces.store.summaries(owner, since)
+        if trace_after is not None:
+            data["turns"] = await app.traces.store.summaries(owner, after_id=trace_after)
+        else:
+            since = datetime.fromisoformat(rows[0].created_at) - timedelta(minutes=5) if rows else (
+                datetime.now(timezone.utc) - timedelta(minutes=5)
+            )
+            data["turns"] = await app.traces.store.summaries(owner, since)
     return data
 
 
@@ -116,35 +122,37 @@ def _traces(request: Request):
     return app.traces.store
 
 
+# Trace bodies are stored as JSON: they are unpacked and joined in the trace store's worker thread and sent as they
+# are, so a large trace is never parsed or serialised on the event loop.
+def _json(data: bytes, name: str | None = None) -> Response:
+    headers = {"Cache-Control": "private, no-store"}
+    if name is not None:
+        headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    return Response(data, media_type="application/json", headers=headers)
+
+
 @router.get("/api/traces/turn/{turn_id}")
-async def read_turn_trace(request: Request, turn_id: int) -> dict:
-    parts = await _traces(request).turn(turn_id)
-    if not parts:
+async def read_turn_trace(request: Request, turn_id: int) -> Response:
+    data = await _traces(request).turn_json(turn_id)
+    if data is None:
         raise HTTPException(404, "No trace for that turn: it is older than the trace retention, or ran before tracing.")
-    return {"turn_id": turn_id, "parts": parts}
+    return _json(data)
 
 
 @router.get("/api/traces/part/{trace_id}")
-async def read_trace_part(request: Request, trace_id: int) -> dict:
-    part = await _traces(request).part(trace_id)
-    if part is None:
+async def read_trace_part(request: Request, trace_id: int) -> Response:
+    data = await _traces(request).part_json(trace_id)
+    if data is None:
         raise HTTPException(404, "That trace is gone.")
-    return {"parts": [part]}
-
-
-def _download(data: object, name: str) -> Response:
-    return Response(
-        json.dumps(data, ensure_ascii=False, indent=2), media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "private, no-store"},
-    )
+    return _json(data)
 
 
 @router.get("/api/traces/turn/{turn_id}/export")
 async def export_turn(request: Request, turn_id: int) -> Response:
-    parts = await _traces(request).turn(turn_id)
-    if not parts:
+    data = await _traces(request).turn_json(turn_id)
+    if data is None:
         raise HTTPException(404, "No trace for that turn.")
-    return _download({"turn_id": turn_id, "parts": parts}, f"dom-trace-turn-{turn_id}.json")
+    return _json(data, f"dom-trace-turn-{turn_id}.json")
 
 
 def _when(value: str, name: str) -> datetime | None:
@@ -163,9 +171,7 @@ async def export_range(
     end: str = Query("", alias="to", max_length=40),
 ) -> Response:
     store = _traces(request)
-    parts, truncated = await store.export(chat or None, _when(start, "from"), _when(end, "to"))
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return _download(
-        {"chat": chat or None, "from": start or None, "to": end or None, "truncated": truncated, "parts": parts},
-        f"dom-traces-{stamp}.json",
+    data = await store.export_json(
+        chat or None, _when(start, "from"), _when(end, "to"), {"chat": chat or None, "from": start or None, "to": end or None},
     )
+    return _json(data, f"dom-traces-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.json")

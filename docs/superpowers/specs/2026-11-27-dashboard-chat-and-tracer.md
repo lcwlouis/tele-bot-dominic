@@ -169,26 +169,48 @@ everything.
 - `retention_days` is 7 by default, from 1 to 90. A daily job deletes older traces.
 - `max_mb` is 256 by default, from 16 to 10,000. After each insert the writer keeps a running total and deletes the
   oldest traces until the total is under the cap.
-- A single trace over 8 MB (compressed) is shrunk: strings longer than 64 kB are cut and the trace is marked
-  `truncated`. A trace that's still over 8 MB is replaced by a stub that keeps its events without bodies.
+- A single trace over 8 MB (compressed) is shrunk in steps until it fits:
+  1. strings longer than 64 kB are cut;
+  2. model request and response bodies are dropped;
+  3. a stub keeps only each event's type and time.
 
-Forgetting a chat with its history (`/api/chats/forget`) also deletes its traces. A deleted Telegram message stays in
-traces until retention removes it, which is noted in docs/privacy.md.
+  The trace is marked `truncated`.
+- `traces.db` and its `-wal` and `-shm` files are created owner-only (0600), and an existing file is set to 0600 when
+  it's opened.
+- Reads and exports unpack and join the stored JSON in the store's worker thread and send it as is. A range export
+  stops at 500 parts or 64 MB and says `truncated: true`.
+
+A deleted Telegram message stays in traces until retention removes it, which is noted in docs/privacy.md.
 
 ## Redaction
 
-Redaction happens in the encoder, before anything reaches the disk:
+Redaction happens in the encoder, in the writer's worker thread, before anything reaches the disk:
 
-1. Media is stripped first. A base64 `data:` URL, or any base64-only string of 4 kB or more, becomes
-   `[media image/jpeg, 341 kB, sha256 1a2b3c4d]`. Media isn't a secret, but it would swamp the cap.
-2. Each of the instance's actual secret values (`model_lists.secret_values(config)`: every key variable config.toml
-   names, plus the Telegram bot token) is replaced by `[redacted]`. The JSON-escaped form is replaced too. Longer
-   values go first, so a value that contains another is never left half-redacted.
-3. The shapes in `dom/secret_patterns.py` (`API_KEY`, `BEARER_TOKEN`, `TELEGRAM_BOT_TOKEN`) are replaced the same way.
-   This catches a key Dom read from a page or a tool result.
-4. Request headers are never captured. The `Authorization` header isn't in the body.
+1. **Which values:** every value in `.env`, plus every key variable `config.toml` names (`*_env`, including
+   `api_key_env` and the dashboard's `dev_token_env`) and the fixed credentials (the bot token among them), read from
+   `.env` or the process environment. Values shorter than 4 characters are skipped, so common words aren't mangled.
+   The values are read at each write in the worker thread, never on the event loop.
+2. **Which forms:** each value is redacted raw, JSON-escaped (`"` and `\`), and with non-ASCII as `\uXXXX`. Longer
+   forms go first, so a value inside another is never left half-redacted.
+3. **Where:**
+   - on every string, before any cut, so a cut never leaves half a secret behind;
+   - inside any string that holds JSON (a tool's raw arguments), which is parsed and cleaned, so other escapes such
+     as an ASCII character written as `\u0041` can't hide a value;
+   - once more on the serialised text.
+4. **Shapes:** `API_KEY`, `BEARER_TOKEN` and `TELEGRAM_BOT_TOKEN` from `dom/secret_patterns.py` catch a key Dom read
+   from a page or a tool result.
+5. **Media:** a base64 `data:` URL, or any base64-only string of 4 kB or more, becomes
+   `[media image/jpeg, 341 kB, sha256 1a2b3c4d]`.
+6. **Headers:** request headers are never captured.
 
-`redactions` counts the replacements, so the viewer can say "2 values redacted".
+`redactions` counts the replacements.
+
+## Forgetting a chat
+
+Forgetting a chat with its history deletes its traces under every id it had (a group that became a supergroup), as
+`store.chat_id_aliases` resolves them before the forget. It also drops its queued traces and refuses any trace of
+it that started before the forget and is still being encoded. A trace that starts after the forget (the chat came
+back) is kept. If the deletion fails, the owner gets an error that says so, not a plain success.
 
 ## Export
 

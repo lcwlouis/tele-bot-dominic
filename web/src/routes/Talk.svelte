@@ -48,6 +48,11 @@
   let fileInput = $state<HTMLInputElement | null>(null);
 
   const lastId = () => (messages.length ? messages[messages.length - 1].id : 0);
+  // Traces have their own cursor: a long turn, or a slow writer, finishes after the messages it answered.
+  const lastTrace = () => Math.max(0, ...turns.keys());
+  // Every request this page makes stops when it goes away, so no poll outlives it.
+  const abort = new AbortController();
+  let disposed = false;
 
   function merge(rows: TalkMessage[], older = false) {
     const known = new Set(messages.map((row) => row.id));
@@ -71,7 +76,7 @@
 
   async function load() {
     try {
-      const data = await getJSON<TalkData>(`/api/talk${tracing ? "?trace=1" : ""}`);
+      const data = await getJSON<TalkData>(`/api/talk${tracing ? "?trace=1" : ""}`, abort.signal);
       messages = [];
       merge(data.messages);
       turns = new Map();
@@ -87,10 +92,10 @@
   }
 
   async function poll() {
-    if (!loaded || document.visibilityState !== "visible") return;
+    if (disposed || !loaded || document.visibilityState !== "visible") return;
     try {
       const stick = nearBottom();
-      const data = await getJSON<TalkData>(`/api/talk?after=${lastId()}${tracing ? "&trace=1" : ""}`);
+      const data = await getJSON<TalkData>(`/api/talk?after=${lastId()}${tracing ? `&trace=1&trace_after=${lastTrace()}` : ""}`, abort.signal);
       const added = merge(data.messages);
       mergeTurns(data.turns);
       typing = data.typing;
@@ -104,7 +109,7 @@
     const first = messages[0]?.id;
     if (!first) return;
     const height = scroller?.scrollHeight ?? 0;
-    const data = await getJSON<TalkData>(`/api/talk?before=${first}${tracing ? "&trace=1" : ""}`);
+    const data = await getJSON<TalkData>(`/api/talk?before=${first}${tracing ? "&trace=1" : ""}`, abort.signal);
     merge(data.messages, true);
     mergeTurns(data.turns);
     hasMore = data.has_more;
@@ -114,7 +119,7 @@
 
   async function loadHome() {
     try {
-      home = await getJSON<HomeData>("/api/home");
+      home = await getJSON<HomeData>("/api/home", abort.signal);
     } catch {
       // the side panel is a convenience: it keeps the last answer
     }
@@ -126,13 +131,15 @@
     let timer: ReturnType<typeof setTimeout>;
     const loop = async () => {
       await poll();
-      timer = setTimeout(loop, typing ? FAST_MS : SLOW_MS);
+      if (!disposed) timer = setTimeout(loop, typing ? FAST_MS : SLOW_MS);
     };
     timer = setTimeout(loop, SLOW_MS);
     const panel = setInterval(() => document.visibilityState === "visible" && loadHome(), PANEL_MS);
     const onVisible = () => document.visibilityState === "visible" && poll();
     document.addEventListener("visibilitychange", onVisible);
     return () => {
+      disposed = true;
+      abort.abort();
       clearTimeout(timer);
       clearInterval(panel);
       document.removeEventListener("visibilitychange", onVisible);

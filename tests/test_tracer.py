@@ -3,7 +3,10 @@ the reply path, and the dashboard's Talk and trace routes."""
 
 import asyncio
 import json
+import os
 import sqlite3
+import stat
+import threading
 import time
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -111,8 +114,18 @@ def test_an_oversized_trace_is_cut_then_stripped_of_bodies(monkeypatch):
                                    "request": {"messages": [{"role": "user", "content": noise}]}, "error": None})
     body, blob = tracer.pack(trace, [])
     assert body["truncated"]
-    assert body["events"][0]["request"].startswith("[dropped")
-    assert len(blob) <= 2_000 or body["events"][0]["request"].startswith("[dropped")
+    assert len(blob) <= 2_000
+
+
+def test_a_trace_still_too_big_without_bodies_is_stored_as_a_bounded_stub(monkeypatch):
+    monkeypatch.setattr(tracer, "MAX_TRACE_BYTES", 3_000)
+    trace = turn_log.TurnTrace()
+    for index in range(40):  # many events whose own text, not a model body, is what is big
+        noise = "".join(chr(0x4E00 + (i * 7919 + index) % 20000) for i in range(2_000))
+        trace.add_event("tool", {"name": "web_search", "result": noise})
+    body, blob = tracer.pack(trace, [])
+    assert len(blob) <= 3_000
+    assert body["truncated"] and all(set(event) == {"type", "at", "t_ms"} for event in body["events"])
 
 
 def test_events_after_submit_are_ignored_and_the_cap_counts_drops(monkeypatch):
@@ -242,8 +255,8 @@ async def test_a_tool_call_is_traced_with_its_arguments_and_result(traced):
 
 
 async def test_tracing_adds_no_latency_to_the_reply_path(make_app):
-    """The reply path only appends references and hands the trace over: a full owner-DM turn takes no measurably
-    longer traced than untraced, and nothing is encoded until the writer runs."""
+    """With the writer running beside the turns, a full owner-DM turn takes no measurably longer traced than
+    untraced: the reply path only appends references and hands the trace over, and the writer encodes in a thread."""
     async def turns(app, first_id: int, count: int) -> float:
         started = time.perf_counter()
         for index in range(count):
@@ -260,21 +273,35 @@ async def test_tracing_adds_no_latency_to_the_reply_path(make_app):
     app = make_app()
     await online(app)
     writer = writer_for(app)
-    encoded = []
-    original = tracer.pack
-    tracer.pack = lambda *args, **kwargs: encoded.append(1) or original(*args, **kwargs)
-    turn_log.set_sink(writer.submit)
+    writer.start()
     try:
         await turns(app, 100, 3)  # the fixture's apps share one home: new message ids
         traced_time = await turns(app, 110, rounds)
-        assert not encoded  # handed over, not encoded, while the turns ran
-        assert writer._queue.qsize() == 15
     finally:
-        turn_log.set_sink(None)
-        tracer.pack = original
+        await writer.close()
     assert traced_time - untraced < 0.005, (traced_time, untraced)
-    await flush(writer)
-    assert len(rows(writer)) == 15
+    assert writer.written == 15 and len(rows(writer)) == 15
+    writer.store.close()
+
+
+async def test_submit_hands_over_without_encoding():
+    writer = TraceWriter(None, lambda: (7, 10**9), lambda: pytest.fail("secrets read on submit"))
+    trace = turn_log.TurnTrace()
+    trace.add_event("note", {"text": "hi"})
+    writer.submit(trace)
+    assert writer._queue.qsize() == 1
+
+
+async def test_the_writer_reads_secrets_off_the_event_loop(make_app):
+    app = make_app()
+    loop_thread = threading.get_ident()
+    seen = []
+    writer = writer_for(app)
+    writer.secrets = lambda: seen.append(threading.get_ident()) or (SECRET,)
+    trace = turn_log.TurnTrace(chat_id=OWNER)
+    trace.add_event("note", {"text": SECRET})
+    await writer.write(trace)
+    assert seen and seen[0] != loop_thread
     writer.store.close()
 
 
@@ -411,3 +438,133 @@ async def test_forgetting_a_chat_with_its_history_deletes_its_traces(traced, bro
         )
     assert response.status_code == 200, response.text
     assert await writer.store.traced([7]) == set()
+
+
+# --- review fixes (PR #99) ------------------------------------------------------------------------------------------
+
+
+def _escaped(text: str) -> str:
+    """Every character as a JSON \\uXXXX escape, as a model may write a tool argument."""
+    return "".join(f"\\u{ord(char):04x}" for char in text)
+
+
+async def test_every_env_value_is_redacted_through_the_writer_the_store_and_the_export(make_app, browser, monkeypatch):
+    app = make_app()
+    weird, accented, short = 'pa"ss\\wd-9', "pässwörd-42", "zq7k"
+    token = ":".join(("7" * 9, "B" * 35))
+    (app.store.home / ".env").write_text(
+        f"WEIRD_VALUE={weird}\nACCENTED=\"{accented}\"\nSHORT_ONE={short}\nTELEGRAM_BOT_TOKEN={token}\nTINY=ab\n"
+    )
+    monkeypatch.setenv("JEV_API_KEY", "only-in-the-environment-77")
+    writer = tracer.open_writer(app.store.home, lambda: app.config)
+    app.traces = writer
+    trace = turn_log.TurnTrace(chat_id=OWNER, scope="owner_dm")
+    trace.add_event("tool", {
+        "name": "read_file",
+        "arguments": json.dumps({"path": weird, "also": accented}),  # JSON-escaped forms
+        "result": f"x{short}y {token} only-in-the-environment-77",
+        "raw": '{"q": "' + _escaped(accented) + '", "w": "' + _escaped(weird) + '"}',  # \uXXXX forms
+        "tiny": "ab stays: too short to redact",
+    })
+    await writer.write(trace)
+    stored = "".join(json.dumps(row["body"], ensure_ascii=False) for row in rows(writer))
+    async with browser(app) as client:
+        exported = (await client.get("/api/traces/export", headers=SAME_SITE)).text
+    for text in (stored, exported):
+        for secret in (weird, accented, short, token, "only-in-the-environment-77"):
+            for form in {secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=True)[1:-1], _escaped(secret)}:
+                assert form not in text, form
+        assert "ab stays" in text
+    writer.store.close()
+
+
+async def test_forgetting_a_chat_removes_its_aliases_queued_and_in_flight_traces(traced, browser):
+    app, writer = traced()
+    old, new = -1001, GROUP
+    await app.store.set_chat_auth_status(old, "approved", title="Old group")
+    await app.store.migrate_chat(old, new, title="The Group")
+    await app.store.set_chat_reachable(new, False, "kicked")
+    writer.store.insert(*_part(datetime.now(timezone.utc), chat=str(old), turn_id=1), max_bytes=10**9)
+    writer.store.insert(*_part(datetime.now(timezone.utc), chat=str(new), turn_id=2), max_bytes=10**9)
+    queued = turn_log.TurnTrace(chat_id=new)
+    queued.add_event("note", {"text": "queued"})
+    writer.submit(queued)
+    in_flight = turn_log.TurnTrace(chat_id=old)  # started before the forget, written after it
+    in_flight.add_event("note", {"text": "in flight"})
+    other = turn_log.TurnTrace(chat_id=OWNER)
+    other.add_event("note", {"text": "someone else's"})
+    writer.submit(other)
+    async with browser(app) as client:
+        response = await client.post(
+            "/api/chats/forget", json={"chat_id": new, "delete_history": True, "confirm": True}, headers=JSON,
+        )
+    assert response.status_code == 200, response.text
+    assert await writer.write(in_flight) is None
+    assert await writer.store.traced([1, 2]) == set()
+    assert writer._queue.qsize() == 1  # only the other chat's trace is left to write
+    await flush(writer)
+    assert {row["chat_id"] for row in rows(writer)} == {str(OWNER)}
+    later = turn_log.TurnTrace(chat_id=new)  # the chat comes back later: its new traces are kept
+    later.add_event("note", {"text": "back again"})
+    assert await writer.write(later) is not None
+
+
+async def test_a_failed_trace_deletion_is_reported_not_a_plain_success(traced, browser):
+    app, writer = traced()
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    await app.store.set_chat_reachable(GROUP, False, "kicked")
+
+    async def broken(chat_ids):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    writer.forget = broken
+    async with browser(app) as client:
+        response = await client.post(
+            "/api/chats/forget", json={"chat_id": GROUP, "delete_history": True, "confirm": True}, headers=JSON,
+        )
+    assert response.status_code == 500 and "debug traces could not be deleted" in response.json()["detail"]
+
+
+async def test_the_trace_files_are_owner_only(tmp_path):
+    path = tmp_path / "traces.db"
+    path.write_bytes(b"")
+    os.chmod(path, 0o644)  # an existing file, made before this release
+    store = TraceStore(path)
+    store.insert(*_part(datetime.now(timezone.utc)), max_bytes=10**9)
+    for name in ("traces.db", "traces.db-wal", "traces.db-shm"):
+        item = tmp_path / name
+        assert item.exists() and stat.S_IMODE(item.stat().st_mode) == 0o600, name
+    store.close()
+
+
+def test_work_after_a_turn_that_finishes_first_still_joins_its_turn():
+    handed = []
+    turn_log.set_sink(handed.append)
+    try:
+        parent = turn_log.TurnTrace(chat_id=OWNER, scope="owner_dm")
+        with turn_log.track(parent):
+            with turn_log.follow_up("studio", OWNER, "owner_dm"):
+                turn_log.event("studio", requested={"image": "a park"})
+        assert handed == []  # the studio part waits for its turn's row
+        parent.row_id = 41
+        parent.add_event("note", {"text": "turn"})
+        turn_log.submit(parent)
+    finally:
+        turn_log.set_sink(None)
+    assert [trace.label for trace in handed] == ["turn", "studio"]
+    assert tracer.encode(handed[1], [])["turn_id"] == 41 and tracer.encode(handed[1], [])["kind"] == "after"
+
+
+async def test_talk_polls_traces_with_their_own_cursor(traced, browser):
+    app, writer = traced()
+    old = turn_log.TurnTrace(chat_id=OWNER, scope="owner_dm", started=time.time() - 3600)  # a long, slow turn
+    old.row_id = 5
+    old.add_event("note", {"text": "finished late"})
+    async with browser(app) as client:
+        first = (await client.get("/api/talk?trace=1&after=0&trace_after=0", headers=SAME_SITE)).json()
+        assert first["turns"] == []
+        await writer.write(old)
+        polled = (await client.get("/api/talk?trace=1&after=0&trace_after=0", headers=SAME_SITE)).json()
+        assert [part["turn_id"] for part in polled["turns"]] == [5]
+        again = (await client.get(f"/api/talk?trace=1&after=0&trace_after={polled['turns'][0]['id']}", headers=SAME_SITE)).json()
+        assert again["turns"] == []

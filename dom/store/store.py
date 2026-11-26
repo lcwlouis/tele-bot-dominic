@@ -510,6 +510,10 @@ class Store:
             seen.add(nxt)
             current = nxt
 
+    async def chat_id_aliases(self, chat_id: int | str) -> set[str]:
+        """A chat's id and every older id that migrated to it (a group that became a supergroup)."""
+        return await self._run(self._chat_id_aliases, str(chat_id))
+
     def _chat_id_aliases(self, chat_id: str) -> set[str]:
         """Return `chat_id` plus any old chat ids that migrated to it (for read-only history search)."""
         canonical = self._resolve_chat_id(chat_id)

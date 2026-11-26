@@ -172,14 +172,20 @@ async def forget_chat(request: Request) -> dict:
         raise HTTPException(409, "Cannot forget your own DM.")
     if update.delete_history and not update.confirm:
         raise HTTPException(422, "Confirm history deletion before forgetting this chat's messages.")
+    aliases = await app.store.chat_id_aliases(update.chat_id)  # before the forget drops the migration records
     if not await app.store.forget_chat(update.chat_id, delete_history=update.delete_history):
         raise HTTPException(404, "Unknown chat, or one Dom can still reach.")
+    detail = " and deleted its history" if update.delete_history else " (history kept)"
     if update.delete_history and app.traces is not None:
-        try:  # its traces hold its messages too
-            await app.traces.store.delete_chat(update.chat_id)
+        try:  # its debug traces hold its messages too, under every id it had
+            await app.traces.forget(aliases)
         except Exception:
             log.exception("could not delete the traces of forgotten chat %s", update.chat_id)
-    detail = " and deleted its history" if update.delete_history else " (history kept)"
+            await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}, but its debug traces stayed")
+            raise HTTPException(
+                500, "Forgot the chat and its history, but its debug traces could not be deleted. "
+                "They expire after tracer.retention_days; check traces.db and Dom's log.",
+            ) from None
     await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}")
     return await _done(app, f"Forgot chat{detail}.")
 
