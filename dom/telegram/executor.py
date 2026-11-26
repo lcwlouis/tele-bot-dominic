@@ -328,7 +328,7 @@ async def _private_reply_to_dm(
                     bot, owner, chunk, sleep=sleep, budget=budget,
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
                 )
-            turn_log.bubble_sent()
+            turn_log.bubble_sent("private reply in the owner DM", chat_id=owner, msg_id=sent.message_id, text=chunk[0])
             sent_ids.append(sent.message_id)
             if on_sent is not None:
                 await on_sent(sent.message_id)
@@ -443,7 +443,7 @@ async def perform(
                     sleep=sleep, budget=flood, on_sent=on_sent,
                 )
                 return PerformResult(sent_ids + moved, flood_limited=flood.exhausted)
-            turn_log.bubble_sent()
+            turn_log.bubble_sent("ephemeral bubble", chat_id=chat_id, msg_id=sent.message_id, text=bubble.text)
             sent_ids.append(sent.message_id)
             if on_sent is not None:
                 await on_sent(sent.message_id)
@@ -526,7 +526,7 @@ async def perform(
                 thread_id=thread_id,
             )
             raise
-        turn_log.bubble_sent()
+        turn_log.bubble_sent("bubble", chat_id=chat_id, msg_id=sent.message_id, text=bubble.text)
         if record:
             await store.record_new_message(
                 StoredMessage(
@@ -664,7 +664,7 @@ async def perform(
                 thread_id=thread_id,
             )
             raise
-        turn_log.bubble_sent()
+        turn_log.bubble_sent("media fallback line", chat_id=chat_id, msg_id=sent.message_id, text=fallback_text)
         if record:
             await store.record_new_message(StoredMessage(
                 chat_id=str(chat_id), msg_id=sent.message_id, reply_to_msg_id=trigger_msg_id, thread_id=thread_id,
@@ -722,7 +722,7 @@ async def _send_media(
             thread_id=thread_id,
         )
         return None
-    turn_log.bubble_sent()
+    turn_log.bubble_sent(kind, chat_id=chat_id, msg_id=sent.message_id, text=history_text)
     if media is not None and keep is not None:
         try:
             media = {**media, **await keep(sent)}
@@ -774,8 +774,10 @@ async def _look_before_send(
         else:
             fix = await look.fix_for(app, chat_id, scene, shown)
         if fix is None:
+            turn_log.event("look", kind=kind, scene=scene, result="kept: it matches the scene")
             return data
         turn_log.step("looked: regenerating")
+        turn_log.event("look", kind=kind, scene=scene, fix=fix, result="regenerating")
         with provenance.redoing():
             again = await produce(fix)
         if again is None:
@@ -783,7 +785,9 @@ async def _look_before_send(
         second = again if kind == "photo" else await look.first_frame(again)
         if second is not None and await look.second_is_better(app, chat_id, scene, shown, second):
             provenance.kept_redo()
+            turn_log.event("look", kind=kind, scene=scene, result="kept the redo")
             return again
+        turn_log.event("look", kind=kind, scene=scene, result="kept the first")
         return data
     except Exception as exc:
         log.warning("look before send failed in chat %s (%s)", chat_id, type(exc).__name__)
@@ -794,7 +798,20 @@ async def deliver_studio(
     app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
     actions: Actions, on_sent: Callable[[int], Awaitable[None]],
 ) -> None:
-    """Generate and send screened media after the text, without occupying a turn."""
+    """Generate and send screened media after the text, without occupying a turn. Traced as work after the turn."""
+    with turn_log.follow_up("studio", chat_id, scope):
+        turn_log.event(
+            "studio", requested={key: value for key, value in (
+                ("image", actions.image), ("voice", actions.voice), ("video_note", actions.video_note),
+            ) if value},
+        )
+        await _deliver_studio(app, chat_id, scope, thread_id, trigger_msg_id, actions, on_sent)
+
+
+async def _deliver_studio(
+    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
+    actions: Actions, on_sent: Callable[[int], Awaitable[None]],
+) -> None:
     if actions.private or actions.no_response:
         return
     client = app.studio
@@ -811,9 +828,11 @@ async def deliver_studio(
             and await app.dispatch._approved(chat_id)
         )
 
-    async def generate(kind: Kind, text: str, *, reuse_video_voice: bool = False, scene: str = "") -> bool | None:
+    async def generate(
+        kind: Kind, text: str, *, reuse_video_voice: bool = False, scene: str = "", place: str = "",
+    ) -> bool | None:
         # None is a refused job. A failed video job may still fall back to an allowed voice note. `scene` is where a
-        # video note is filmed.
+        # video note is filmed, and `place` the key of the known place Dom named for the picture, if any.
         if not await allowed(kind):
             await _note_failure(
                 app.store, chat_id, f"studio-{kind}-policy",
@@ -893,6 +912,14 @@ async def deliver_studio(
             if not local_serves and not cloud_ready and not reuse_video_voice:
                 return False
 
+            async def place_reference() -> bytes | None:
+                """The owner's photo of the known place Dom named for this picture, if this chat may see it."""
+                try:
+                    return await app.place_photos.reference_for(place, scope, chat_id)
+                except Exception:
+                    log.exception("could not look up a place photo")
+                    return None
+
             async def make_still(prompt: str) -> bytes | None:
                 """A fresh picture of Dom in the scene, made from the outfit's portrait as the identity reference: by
                 the local studio's image worker, else a cloud image backup. It stays inside this note's reservation."""
@@ -906,7 +933,9 @@ async def deliver_studio(
                             "studio_image", client.model_for("image"), provenance.LOCAL_HOST, {}, chat_id,
                         ))
                 if made is None and cloud is not None and studio_providers(app.config.studio, "photo"):
-                    made = await cloud.generate(app.config, "photo", prompt, actions.outfit, chat_id, cloud_allowed)
+                    made = await cloud.generate(
+                        app.config, "photo", prompt, actions.outfit, chat_id, cloud_allowed, await place_reference(),
+                    )
                 if made is not None:  # counted at once: the note may still fail, and the still was made
                     await asyncio.shield(app.store.record_still(chat_id, now()))
                 return made
@@ -948,7 +977,10 @@ async def deliver_studio(
                                 app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice, still,
                             )
                         else:
-                            data = await cloud.generate(app.config, kind, text, actions.outfit, chat_id, cloud_allowed)
+                            data = await cloud.generate(
+                                app.config, kind, text, actions.outfit, chat_id, cloud_allowed,
+                                await place_reference() if kind == "photo" else None,
+                            )
                     if data is not None and not reuse_video_voice and kind != "voice":
                         async def produce(prompt: str) -> bytes | None:
                             again = start(prompt)
@@ -956,7 +988,9 @@ async def deliver_studio(
                             if made is not None and again is not None:
                                 note_local()
                             if made is None and cloud_ready and kind == "photo":
-                                made = await cloud.generate(app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed)
+                                made = await cloud.generate(
+                                    app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed, await place_reference(),
+                                )
                             elif made is None and cloud_ready and not local_ready and kind in {"video_note", "special"}:
                                 made = await cloud.generate_video(
                                     app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice, still,
@@ -1046,13 +1080,13 @@ async def deliver_studio(
         if actions.video_note:
             video = actions.video_note
             kind = "special" if video.special else "video_note"
-            result = await generate(kind, video.text, scene=video.scene)
+            result = await generate(kind, video.text, scene=video.scene, place=video.place)
             if result is False and await allowed(kind) and (not video_voice_attempted or video_voice is not None):
                 result = await generate("voice", video.text, reuse_video_voice=video_voice_attempted)
             if not result:
                 await fallback(kind, video.text)
         if actions.image:
-            await generate("photo", actions.image)
+            await generate("photo", actions.image, place=actions.image_place or "")
     except (TelegramMigrateToChat, FloodBudgetExhausted):
         log.warning("studio delivery stopped in chat %s", chat_id)
         await _note_failure(
@@ -1089,10 +1123,13 @@ async def react(
         raise
     except (TelegramBadRequest, ValidationError):
         log.warning("reaction %r rejected in chat %s", emoji, chat_id)
+        turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result="refused")
         return False
     except (TelegramAPIError, FloodBudgetExhausted) as error:
         log.warning("reaction %r failed in chat %s (%s)", emoji, chat_id, type(error).__name__)
+        turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result=f"failed: {type(error).__name__}")
         return None
+    turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result="sent")
     return True
 
 

@@ -27,6 +27,7 @@
   import Markdown from "$lib/components/markdown/Markdown.svelte";
   import * as Tabs from "$lib/components/ui/tabs";
   import PageHeader from "$lib/components/PageHeader.svelte";
+  import PageTabs from "$lib/components/PageTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
@@ -36,11 +37,11 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import * as Select from "$lib/components/ui/select";
-  import type { Destination } from "$lib/nav";
+  import type { Destination, Tab } from "$lib/nav";
   import { cn } from "$lib/utils";
   import { toast } from "$lib/toast.svelte";
 
-  let { destination }: { destination: Destination } = $props();
+  let { destination, tab }: { destination: Destination; tab?: Tab } = $props();
 
   const SOUL = "SOUL.md";
   const CORE = "core"; // the Core memories view, opened like a file
@@ -294,6 +295,7 @@
     </Button>
   {/snippet}
 </PageHeader>
+<PageTabs {destination} {tab} />
 
 {#if index === null && failed}
   <StatusNote tone="error" title="Couldn't load memory" detail={`Dom's dashboard answered: ${failed}.`}>

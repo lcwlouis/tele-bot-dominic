@@ -10,11 +10,13 @@ shows Dom's replies; the dashboard is not a place to read friends' chats.
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from dom import tracer
 from dom.reachability import check_reachability
 from dom.telegram import owner
 from dom.traits import NAMES
@@ -24,6 +26,7 @@ from dom.web.shared import WHO, _chats, _title, owner_app
 from dom.web.studio_settings import MediaStanding, media_standing
 
 router = APIRouter()
+log = logging.getLogger("dom.web")
 JSON_POSTS = {
     "/api/chats/action", "/api/chats/preset", "/api/chats/traits", "/api/chats/traits/reset",
     "/api/chats/reachability", "/api/chats/hide", "/api/chats/forget", "/api/chats/fresh",
@@ -171,9 +174,27 @@ async def forget_chat(request: Request) -> dict:
         raise HTTPException(409, "Cannot forget your own DM.")
     if update.delete_history and not update.confirm:
         raise HTTPException(422, "Confirm history deletion before forgetting this chat's messages.")
+    aliases = await app.store.chat_id_aliases(update.chat_id)  # before the forget drops the migration records
     if not await app.store.forget_chat(update.chat_id, delete_history=update.delete_history):
         raise HTTPException(404, "Unknown chat, or one Dom can still reach.")
     detail = " and deleted its history" if update.delete_history else " (history kept)"
+    if update.delete_history:
+        try:  # its debug traces hold its messages too, under every id it had
+            if app.traces is not None:
+                await app.traces.forget(aliases)
+            else:  # the tracer did not open: traces.db may still hold this chat
+                await tracer.forget_stored(app.store.home, aliases)
+        except Exception:
+            log.exception("could not delete the traces of forgotten chat %s", update.chat_id)
+            try:
+                tracer.save_pending_forget(app.store.home, aliases)
+            except OSError:
+                log.exception("could not save the pending trace deletion for chat %s", update.chat_id)
+            await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}, but its debug traces were not deleted")
+            raise HTTPException(
+                500, "Forgot the chat and its history, but its debug traces were not deleted. Dom will delete them "
+                "the next time he starts; until then they are in traces.db.",
+            ) from None
     await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}")
     return await _done(app, f"Forgot chat{detail}.")
 

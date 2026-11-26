@@ -43,6 +43,7 @@ class StoredMessage(BaseModel):
     is_deleted: bool = False
     created_at: str
     updated_at: str | None = None
+    origin: str | None = None  # "dashboard": typed on the dashboard's Talk page; None: from Telegram
 
 
 class PersonIdentity(BaseModel):

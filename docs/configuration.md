@@ -21,7 +21,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `window_size` | `500` | Safety bound on the messages in one chat's window, for chats of very short messages: past it a trim also happens, down to 60% of it. Not the normal trigger. |
 | `daily_spend_cap_usd` | `1.0` | Daily USD cap, the normal pace: once today's paid calls reach it, friends' and groups' chats and their background work pause until midnight in `timezone`. The owner's DM is exempt unless `cap_owner_dm` is on, and so is background work done for it (reflection, the memory pass, the look before a send, aged media), which obeys only the monthly cap and the area limits. Zero disables the cap. |
 | `monthly_spend_cap_usd` | `0.0` | Monthly USD ceiling for the calendar month in `timezone`, over every paid call: chat, media, search, desktop tasks, embeddings, summaries and studio cloud backups. Once reached, friends' and groups' chats and all background work, the owner's included, pause until the 1st; one-offs such as event days draw only on the month's unused budget and never pass it. The owner's own turns in the DM are exempt unless `cap_owner_dm` is on. Zero disables the cap. |
-| `cap_owner_dm` | `false` | Make the owner's DM obey both spend caps. Off (the default), the owner's own chat is never paused by a cap, though what it spends still counts toward them. |
+| `cap_owner_dm` | `false` | Make the owner's DM obey both spend caps. Off (the default), the owner's own chat is never paused by a cap, though what it spends still counts toward them. A cap is checked before each paid call and the cost counts once it returns, so calls already in flight (one per lane, the owner DM's included, plus background work) can finish past it by their own cost. |
 | `area_spend_caps_usd` | `{}` | Optional monthly USD limit per area (`chat`, `media`, `search`, `desktop`, `memory`), as a `[area_spend_caps_usd]` table. An area at its limit pauses that kind of work for the rest of the month while the others go on. An area left out, or set to zero, has no limit of its own. |
 | `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why. |
 | `memory_self_edit` | `false` | Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves. |
@@ -273,6 +273,16 @@ Set place, latitude and longitude all together or not at all. With a place, ever
 
 With a `country`, another line gives today's public holiday and the next one within 14 days, such as `Today is a public holiday in SG: Christmas Day. Next public holiday in SG: New Year's Day, Friday 2027-01-01 (in 7 days).` It comes from [Nager.Date](https://date.nager.at/) (no key), fetched in the background about once a day and cached, so no reply waits on it. Only the country code and the year leave the host (see [Privacy](privacy.md)). Today's date is read in `timezone`. Holidays that apply to some regions only are left out. When the list can't be fetched, the line is left out once the cached list is a week old. The country works without a place. News and local events are not included: no free source without a key was reliable enough to trust in his notes.
 
+The same block carries Dom's life sheet (`memory/WORLD.md`: home, work, routine, regular spots), the routine slot for the current weekday and part of the day, what the notes a chat may read say about that slot's places, and a variety hint when Dom has just said one of his usual options in this chat. The sheet works without `[world]`; only the weather line needs the place. See [Memory formats](memory-format.md) for the format and who can change it, and the dashboard's Memory → World page to edit it.
+
+## Dispatch
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `dispatch.fast_lane` | `true` | Give the owner's DM a compose lane of its own, so his turns (and the turns his approval cards start) never wait for a turn in another chat. Off, every chat's turns compose one at a time, owner first. |
+
+With the fast lane on, Dom composes the owner's DM turns apart from every other chat's: each turn is still composed one at a time within its lane, and one chat's turns stay in order, but the owner's never wait behind a long turn in a group or a friend's DM. The lanes share the prompt prefix, the spend caps and the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.
+
 ## Presence
 
 | Key | Default | Meaning |
@@ -302,6 +312,15 @@ See [Self-directed work](desktop.md#self-directed-work) for the network guard it
 | `web.access_emails` | `[]` | Optional allowlist for the Access assertion's email claim. |
 | `web.dev_token_env` | `""` | Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings. |
 | `web.public_url` | `""` | HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages. |
+
+## Debug tracer
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `tracer.retention_days` | `7` | Days the debug tracer keeps each turn's full trace (prompts, model requests and responses, tool calls and deliveries, for every chat). Older traces are deleted once a day. |
+| `tracer.max_mb` | `256` | Size cap of the trace store (`traces.db` in Dom's home), in megabytes of compressed traces. Past it the oldest traces are deleted first. |
+
+Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See [Privacy](privacy.md#debug-traces).
 
 ## T3 Code
 

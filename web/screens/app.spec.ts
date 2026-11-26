@@ -49,6 +49,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "memory-person", path: "/app/memory?file=memory/people/4002.md", heading: "Memory" },
   // Every core memory, who pinned it and why.
   { name: "memory-core", path: "/app/memory", heading: "Memory", click: "Core memories" },
+  // Dom's world: the life sheet with when and why he last changed it, and the places with a reference photo.
+  { name: "memory-world", path: "/app/memory/world", heading: "World" },
   // On a phone the list is its own screen and a file opens full width; on a desktop the list stays beside it.
   { name: "memory-file", path: "/app/memory", heading: "Memory", click: "MEMORY.md" },
   // A memory file rendered as markdown: headings, a list, a code span, a link and a quote.
@@ -67,6 +69,12 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "system-turns", path: "/app/system/turns", heading: "Turn log" },
   // One turn's details: timing, model calls with their cache and prompt fingerprint.
   { name: "system-turn-detail", path: "/app/system/turns", heading: "Turn log", strip: "Replied in 2 bubbles" },
+  // One turn's full trace on its own page (the Turn log's link for any chat).
+  { name: "system-turn-trace", path: "/app/system/turns/900", heading: "Turn 900" },
+  // Talk: the owner DM with a message typed on the dashboard, then the same conversation with Trace on and the
+  // turn's audit open (tests/web_preview.py seed_talk).
+  { name: "talk", path: "/app/talk", heading: "Dom" },
+  { name: "talk-trace", path: "/app/talk?trace=1&turn=900", heading: "Dom" },
   { name: "waiting", path: "/app/waiting", heading: "Waiting for you" },
   // The phone's menu, open over a page: every destination with its tabs, and what waits for the owner.
   { name: "menu", path: "/app/work/briefs", heading: "Briefs", menu: true, phoneOnly: true },
@@ -258,6 +266,32 @@ for (const scheme of ["dark", "light"] as const) {
 
 test.describe("interactions under the CSP", () => {
   test.use({ viewport: viewports.desktop, colorScheme: "dark" });
+
+  test("talk: work after a turn that is written later appears in the open trace", async ({ page }) => {
+    const problems = await watch(page);
+    let late = false; // set once a poll has brought the studio job's part
+    await page.route("**/api/talk?after=*", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (new URL(route.request().url()).searchParams.get("trace") === "1") {
+        late = true;
+        data.turns = [...(data.turns ?? []), { id: 99999, turn_id: 900, kind: "after", label: "studio", at: "2026-11-22T20:24:30+00:00", outcome: "", size: 1 }];
+      }
+      await route.fulfill({ response, json: data });
+    });
+    await page.route("**/api/traces/turn/900", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (late) data.parts.push({ ...data.parts[0], kind: "after", label: "studio", events: [] });
+      await route.fulfill({ response, json: data });
+    });
+    await page.goto("/app/talk?trace=1&turn=900");
+    await expect(page.getByRole("region", { name: "Delivery" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "After the turn" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "After the turn" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("region", { name: "After the turn" })).toContainText("Studio");
+    expect(problems).toEqual([]);
+  });
 
   test("strip list: a strip opens its details beside the list, Esc closes back to the strip, trash works", async ({ page }) => {
     const problems = await watch(page);
@@ -1188,6 +1222,47 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Reject all" }).click();
     await dialog.getByRole("button", { name: "Keep them" }).click();
     await expect(dialog).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("world: the sheet edits and saves, a place is added, a photo is set and removed", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory/world");
+    await expect(page.getByRole("heading", { name: "World", level: 1 })).toBeVisible();
+    await expect(page.getByText("Dom last changed it on 18 November 2026: He took up climbing")).toBeVisible();
+    await expect(page.getByRole("img", { name: "Reference photo of the harbour cafe" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Edit sheet" }).click();
+    const editor = page.getByRole("textbox", { name: "Life sheet, as text" });
+    const original = await editor.inputValue();
+    await editor.fill(original + "- Plays chess online\n");
+    await page.getByRole("button", { name: "Save sheet" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved the sheet." })).toBeVisible();
+    await expect(page.getByText("Plays chess online")).toBeVisible();
+    await page.getByRole("button", { name: "Edit sheet" }).click();
+    await page.getByRole("textbox", { name: "Life sheet, as text" }).fill(original);
+    await page.getByRole("button", { name: "Save sheet" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved the sheet." })).toBeVisible();
+
+    // Adding a place is answered from a canned world, so the preview keeps its places for the other screens.
+    await page.route("**/api/world/place", async (route) => {
+      const world = await (await page.request.get("/api/world")).json();
+      world.places.push({ slug: "the-blue-door-gym", name: "the blue door gym", note: "Small climbing gym, open late", photo: false });
+      await route.fulfill({ json: world });
+    });
+    await page.getByLabel("Place name").fill("The Blue-Door Gym");
+    await page.getByLabel("One line about it").fill("Small climbing gym, open late");
+    await page.getByRole("button", { name: "Add place" }).click();
+    await expect(page.getByRole("heading", { name: "the blue door gym" })).toBeVisible();
+    await page.unroute("**/api/world/place");
+
+    // A photo goes onto a place that has none, then comes off again.
+    const photo = await page.request.get("/api/world/places/the-harbour-cafe/photo");
+    const picture = await photo.body();
+    await page.getByLabel("Add the photo of the bakery").setInputFiles({ name: "bakery.jpg", mimeType: "image/jpeg", buffer: picture });
+    await expect(page.getByRole("img", { name: "Reference photo of the bakery" })).toBeVisible();
+    await page.getByRole("button", { name: "Remove the photo of the bakery" }).click();
+    await expect(page.getByRole("img", { name: "Reference photo of the bakery" })).toBeHidden();
     expect(problems).toEqual([]);
   });
 

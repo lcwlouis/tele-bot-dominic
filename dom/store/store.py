@@ -74,6 +74,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (32, "0031_event_days.sql"),
     (33, "0032_usage_settled.sql"),
     (34, "0033_credentials_and_permissions.sql"),
+    (35, "0034_message_origin.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -89,7 +90,7 @@ _ADD_COLUMN_RE = re.compile(
 _MESSAGE_COLUMNS = (
     "id, chat_id, msg_id, reply_to_msg_id, thread_id, sender_user_id, sender_handle, sender_name, "
     "is_bot, role, visibility_scope, text, media_json, is_edited, original_seen_before_edit, "
-    "previous_seen_text, is_deleted, created_at, updated_at"
+    "previous_seen_text, is_deleted, created_at, updated_at, origin"
 )
 _MESSAGE_COLUMNS_M = ", ".join(f"m.{col.strip()}" for col in _MESSAGE_COLUMNS.split(","))
 _UNREAD_SQL = (
@@ -328,6 +329,7 @@ def _row_to_message(row: sqlite3.Row) -> StoredMessage:
         is_deleted=bool(row["is_deleted"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        origin=row["origin"] if "origin" in row.keys() else None,
     )
 
 
@@ -508,6 +510,10 @@ class Store:
                 return current
             seen.add(nxt)
             current = nxt
+
+    async def chat_id_aliases(self, chat_id: int | str) -> set[str]:
+        """A chat's id and every older id that migrated to it (a group that became a supergroup)."""
+        return await self._run(self._chat_id_aliases, str(chat_id))
 
     def _chat_id_aliases(self, chat_id: str) -> set[str]:
         """Return `chat_id` plus any old chat ids that migrated to it (for read-only history search)."""
@@ -1132,6 +1138,7 @@ class Store:
             text=msg.text,
             media_json=msg.media_json,
             message_created_at=msg.created_at,
+            **({"origin": msg.origin} if msg.origin else {}),
         )
         return row_id
 
@@ -1141,15 +1148,15 @@ class Store:
             INSERT INTO messages (
                 chat_id, msg_id, reply_to_msg_id, thread_id, sender_user_id, sender_handle, sender_name,
                 is_bot, role, visibility_scope, text, media_json, is_edited,
-                original_seen_before_edit, previous_seen_text, is_deleted, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                original_seen_before_edit, previous_seen_text, is_deleted, created_at, updated_at, origin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             """,
             (
                 msg.chat_id, msg.msg_id, msg.reply_to_msg_id, msg.thread_id, msg.sender_user_id,
                 msg.sender_handle, msg.sender_name, int(msg.is_bot), msg.role,
                 msg.visibility_scope, msg.text, msg.media_json, int(msg.is_edited),
                 int(msg.original_seen_before_edit), msg.previous_seen_text,
-                msg.created_at, msg.updated_at,
+                msg.created_at, msg.updated_at, msg.origin,
             ),
         )
         return int(cur.lastrowid)
@@ -1781,6 +1788,22 @@ class Store:
         page = [_row_to_message(r) for r in rows[:limit]]
         next_before = page[-1].id if has_more and page else None
         return page, next_before
+
+    async def get_chat_messages_after(
+        self, chat_id: int | str, after_id: int, limit: int = 100,
+    ) -> list[StoredMessage]:
+        """Visible user/assistant messages newer than a row id, oldest first: the dashboard Talk page's poll."""
+        return await self._run(self._get_chat_messages_after, str(chat_id), after_id, limit)
+
+    def _get_chat_messages_after(self, chat_id: str, after_id: int, limit: int) -> list[StoredMessage]:
+        limit = max(1, min(limit, 200))
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        rows = self._conn.execute(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND id > ? AND is_deleted = 0 "
+            f"AND role IN ('user', 'assistant'){hide} ORDER BY id LIMIT ?",
+            (chat_id, after_id, limit),
+        ).fetchall()
+        return [_row_to_message(r) for r in rows]
 
     async def chat_participant_names(self, chat_id: int | str) -> list[list[str]]:
         """For each person who has written in this chat, the names and Telegram handles they go by there: what they wrote

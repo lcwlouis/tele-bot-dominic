@@ -51,11 +51,20 @@ SPECIAL_TEXT_MAX = 120
 SCENE_MAX = 200
 
 
+PLACE_KEY = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")  # a note name under memory/places/
+
+
 class VideoNote(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=VIDEO_TEXT_MAX, strict=True)
     special: bool = Field(default=False, strict=True)
     scene: str = Field(default="", max_length=SCENE_MAX, strict=True)  # where Dom is; the note is filmed there
+    place: str = Field(default="", strict=True)  # the key of a known place the scene is set in (dom/place_photos.py)
+
+    @field_validator("place", mode="before")
+    @classmethod
+    def _a_key_or_nothing(cls, value: object) -> object:
+        return value if isinstance(value, str) and PLACE_KEY.fullmatch(value) else ""
 
     @model_validator(mode="after")
     def _special_is_shorter(self) -> VideoNote:
@@ -163,9 +172,16 @@ class Actions(BaseModel):
     voice: str | None = Field(default=None, min_length=1, max_length=600, strict=True)
     video_note: VideoNote | None = None
     image: str | None = Field(default=None, min_length=1, max_length=300, strict=True)
+    image_place: str | None = Field(default=None, strict=True)  # the key of a known place the image is set in
     outfit: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list)
     elsewhere: str | None = None
+
+    @field_validator("image_place", mode="before")
+    @classmethod
+    def _a_key_or_nothing(cls, value: object) -> object:
+        """A place is a key from the turn note's list; anything else is no place, never a repair round."""
+        return value if isinstance(value, str) and PLACE_KEY.fullmatch(value) else None
 
     @field_validator("elsewhere", mode="before")
     @classmethod

@@ -267,7 +267,9 @@ class SearchClient:
             body["provider"] = {"zdr": True}
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         total, request_timeout = self._timeout(timeout)
-        with turn_log.model_call(self.usage_model, "search", messages, plugins, fallback=fallback, host=self.address) as call:
+        with turn_log.model_call(
+            self.usage_model, "search", messages, plugins, fallback=fallback, host=self.address, body=body,
+        ) as call:
             async with asyncio.timeout(total):
                 response = await self.http.post(
                     f"{self.endpoint.base_url.rstrip('/')}/chat/completions",
@@ -293,7 +295,9 @@ class SearchClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         total, request_timeout = self._timeout(timeout)
-        with turn_log.model_call(self.usage_model, "search", [], [], fallback=fallback, host=self.address) as call:
+        with turn_log.model_call(
+            self.usage_model, "search", [], [], fallback=fallback, host=self.address, body={"q": query},
+        ) as call:
             async with asyncio.timeout(total):
                 response = await self.http.get(
                     _join_path(self.endpoint.base_url, "/search"),
@@ -327,7 +331,7 @@ class SearchClient:
         body = {"query": trimmed, "count": MAX_RESULTS, "need_content": False}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         total, request_timeout = self._timeout(timeout)
-        with turn_log.model_call(self.usage_model, "search", [], [], fallback=fallback, host=self.address) as call:
+        with turn_log.model_call(self.usage_model, "search", [], [], fallback=fallback, host=self.address, body=body) as call:
             async with asyncio.timeout(total):
                 response = await self.http.post(
                     _join_path(self.endpoint.base_url, "/tools/search"),
@@ -372,7 +376,7 @@ class SearchClient:
         }
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         total, request_timeout = self._timeout(timeout)
-        with turn_log.model_call(self.usage_model, "search", [], [], fallback=fallback, host=self.address) as call:
+        with turn_log.model_call(self.usage_model, "search", [], [], fallback=fallback, host=self.address, body=body) as call:
             async with asyncio.timeout(total):
                 response = await self.http.post(
                     _join_path(self.endpoint.base_url, "/search"),

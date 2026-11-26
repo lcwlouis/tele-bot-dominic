@@ -2,11 +2,13 @@ import type { Component } from "svelte";
 import Bell from "@lucide/svelte/icons/bell";
 import FileText from "@lucide/svelte/icons/file-text";
 import Gauge from "@lucide/svelte/icons/gauge";
+import Globe from "@lucide/svelte/icons/globe";
 import House from "@lucide/svelte/icons/house";
 import Images from "@lucide/svelte/icons/images";
 import KeyRound from "@lucide/svelte/icons/key-round";
 import Layers from "@lucide/svelte/icons/layers";
 import MessageCircle from "@lucide/svelte/icons/message-circle";
+import MessagesSquare from "@lucide/svelte/icons/messages-square";
 import Monitor from "@lucide/svelte/icons/monitor";
 import PiggyBank from "@lucide/svelte/icons/piggy-bank";
 import NotebookText from "@lucide/svelte/icons/notebook-text";
@@ -27,9 +29,13 @@ export type Destination = {
   tabs?: Tab[];
 };
 
-/** The five destinations: the phone's menu and the desktop sidebar's "Control surface" group. */
+/** The six destinations: the phone's menu and the desktop sidebar's "Control surface" group. */
 export const destinations: Destination[] = [
   { id: "home", label: "Home", href: "/app", icon: House, blurb: "What Dom is doing and what waits for you." },
+  {
+    id: "talk", label: "Talk", href: "/app/talk", icon: MessagesSquare,
+    blurb: "Talk to Dom here, in the same conversation as your Telegram DM, with every turn's trace a switch away.",
+  },
   {
     id: "chats", label: "Chats", href: "/app/chats", icon: MessageCircle,
     blurb: "Every chat Dom is in: presence, presets and personality per chat.",
@@ -37,6 +43,10 @@ export const destinations: Destination[] = [
   {
     id: "memory", label: "Memory", href: "/app/memory", icon: NotebookText,
     blurb: "What Dom remembers, his soul file and memory imports.",
+    tabs: [
+      { id: "notes", label: "Notes", href: "/app/memory", icon: NotebookText, blurb: "What Dom remembers, his soul file and memory imports." },
+      { id: "world", label: "World", href: "/app/memory/world", icon: Globe, blurb: "Dom's own life: where he lives and works, his routine and the places he goes." },
+    ],
   },
   {
     id: "work", label: "Work", href: "/app/work", icon: Monitor,
