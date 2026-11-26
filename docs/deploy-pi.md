@@ -100,7 +100,7 @@ and `dom run` exits with code 75, which systemd treats as a failure and restarts
 launchd agent restarts it the same way with `KeepAlive` set to `{ SuccessfulExit = false; }`. Run by hand,
 `dom run` simply stops. The persistent timer runs the backup at 04:00 in the
 Pi's local time, with idle I/O scheduling. The backup command keeps the latest
-seven archives in `~/dom/backups`. Archives include `.env` and private data.
+seven archives in `~/dom/backups`. Archives include `.env` and private data, and the owner's place photos (`media/places/`); the rest of `media/` is left out, since Telegram keeps those files.
 
 ## Update to a new release
 

@@ -162,9 +162,10 @@ location data is dropped, in a private folder and moved into place atomically, l
 against `keep_cap_mb`.
 
 When Dom's photo, or the still of a video note, is made by a cloud image backup that takes a reference
-(`supports_reference`) and its scene names a place that has a photo (the place's name as words, for example "at the
-blue door gym"), the photo goes as a second reference, with a line telling the model to keep how that place looks. A chat
-only gets a place's photo when it has a line in the place's note (the owner's DM always does). The local studio's image
+(`supports_reference`) and Dom names an offered place by its key (`image_place` on a photo, `video_note.place` on a video
+note) that has a photo, the photo goes as a second reference, with a line telling the model to keep how that place
+looks. It is never chosen from the scene's words: no key, no photo. A chat only sees a place's key, and so only gets its
+photo, when it has a line in the place's note (the owner's DM always does). The local studio's image
 worker takes one reference, the outfit's portrait, so local photos are not changed.
 
 ## Preset outfits

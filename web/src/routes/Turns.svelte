@@ -209,7 +209,7 @@
       {@const hit = cached(turn)}
       {#if turn.has_trace}
         <a
-          href={turn.chat_id === data.owner_chat ? `/app/talk?trace=1&turn=${turn.id}` : `${tab.href}/${turn.id}`}
+          href={`${tab.href}/${turn.id}`}
           class="mb-3 inline-flex items-center gap-1.5 text-meta font-medium text-signal-strong underline-offset-4 hover:underline"
         ><ScrollText class="size-3.5" aria-hidden="true" />Open the full trace</a>
       {:else}

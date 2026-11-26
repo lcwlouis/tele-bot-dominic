@@ -24,8 +24,10 @@ def _home_files(tar: tarfile.TarFile, home: Path, folder: Path, destination: Pat
             continue
         if folder == home and name.startswith("traces.db"):  # debug traces: large and short-lived (tracer.retention_days)
             continue
-        if folder == home and name == "media":  # the media Dom sent: large, and Telegram keeps each file's copy
-            continue
+        if folder == home and name == "media":
+            # The media Dom sent is large, and Telegram keeps each file's copy. Only the place photos, the owner's own
+            # uploads with no other copy, are archived (a missing folder is skipped below).
+            path = path / "places"
         arcname = path.relative_to(home).as_posix()
         try:
             info = tar.gettarinfo(arcname=arcname, name=str(path))

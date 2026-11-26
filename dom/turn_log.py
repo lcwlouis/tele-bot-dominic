@@ -121,7 +121,8 @@ class TurnTrace:
 
 
 MAX_EVENTS = 2000
-TURN_KINDS = ("chat", "triage", "guard", "media", "search", "escalation")  # the calls a Turn log row counts
+TURN_KINDS = ("chat", "triage", "guard", "media", "search", "escalation", "assistant")  # the calls a Turn log row counts
+MODEL_KINDS = ("chat", "escalation", "assistant")  # the calls that write the reply, so one names the turn's model
 _sink: Callable[[TurnTrace], None] | None = None  # dom.tracer's writer, set while Dom runs
 
 
@@ -292,7 +293,7 @@ def model_call(
         visit = None
     trace.model_calls.append(call)
     trace.calls += 1
-    if kind in ("chat", "escalation") or (not trace.model and kind == "triage"):
+    if kind in MODEL_KINDS or (not trace.model and kind == "triage"):
         trace.model = model
     trace.fallback |= fallback
     if kind in ("triage", "guard"):
@@ -312,7 +313,7 @@ def model_call(
             attention.record_call(chat_id, at, call.input_tokens or 0)
         if _inside_timed.get():
             pass  # e.g. a plugin tool's leak-guard call: the enclosing tool timing already covers it
-        elif kind in ("chat", "escalation"):
+        elif kind in MODEL_KINDS:
             trace.add_timing("fallback_model" if fallback else "model", call.duration_ms)
         elif kind in ("triage", "guard"):
             trace.add_timing(kind, call.duration_ms)

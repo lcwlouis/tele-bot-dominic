@@ -136,7 +136,8 @@ reach another chat's prompt. The dashboard's owner-only API lists and serves
 them (`/api/media/files`, `/api/media/usage`). Total size is capped by
 `studio.keep_cap_mb` (default 2048): past it the oldest files are removed, and
 their messages keep the `file_id`, so Telegram can still provide them. The
-folder is left out of `dom backup`. At startup, files no message records (a
+folder is left out of `dom backup`, except `media/places/`: the owner's place photos exist nowhere else, and `dom restore`
+brings them back. At startup, files no message records (a
 crash between saving and recording) are removed, so the cap matches the disk. Dom's other chats and friends can't see this
 folder or its listing.
 

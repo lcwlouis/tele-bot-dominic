@@ -158,6 +158,16 @@ def test_model_call_keeps_a_frozen_copy_of_the_request():
     assert [call.kind for call in trace.model_calls] == ["chat"]
 
 
+def test_an_assistant_plan_call_counts_in_the_turn_log_row():
+    trace = turn_log.TurnTrace()
+    with turn_log.track(trace):
+        with turn_log.model_call("plan-model", "assistant", [{"role": "user", "content": "plan"}], []) as call:
+            call.input_tokens = 7
+    assert [call.kind for call in trace.model_calls] == ["assistant"]
+    assert trace.model == "plan-model" and trace.calls == 1
+    assert [timing.split("@")[0] for timing in trace.timings] == ["model"]
+
+
 # --- storage, the cap and retention -------------------------------------------------------------------------------
 
 
@@ -394,7 +404,7 @@ async def test_a_dashboard_message_joins_the_owner_dm_and_is_answered(traced, br
         assert json.loads(ranged.text)["parts"] and json.loads(ranged.text)["truncated"] is False
 
         turns = (await client.get("/api/system/turns")).json()
-        assert turns["turns"][0]["has_trace"] is True and turns["owner_chat"] == str(OWNER)
+        assert turns["turns"][0]["has_trace"] is True
 
 
 async def test_the_talk_routes_refuse_what_they_should(traced, browser):

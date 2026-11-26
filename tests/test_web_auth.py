@@ -396,3 +396,33 @@ def test_blank_access_email_refused(tmp_path):
 
     with pytest.raises(ValueError, match="access_emails"):
         Auth(Config(home=tmp_path, web={"access_team": "example-team", "access_aud": "x", "access_emails": [""]}))
+
+
+async def test_google_callback_skips_identity_only_on_a_token_only_dashboard(tmp_path, monkeypatch, access_keys):
+    import jwt
+
+    from dom.google import CALLBACK_PATH
+    from dom.web.app import create_app
+    from dom.web.auth import Auth
+
+    (key, jwk), _ = access_keys
+
+    async def jwks(url):
+        return {"keys": [jwk]}
+
+    monkeypatch.setenv("DOM_TEST_TOKEN", TOKEN)
+    token_only = create_app(SimpleNamespace(owner_id=None), Auth(Config(home=tmp_path, web={"dev_token_env": "DOM_TEST_TOKEN"})))
+    access = create_app(SimpleNamespace(owner_id=None), Auth(Config(
+        home=tmp_path, web={"enabled": True, "access_team": "example-team", "access_aud": "example-audience"},
+    ), jwks))
+    assertion = jwt.encode(
+        {"aud": "example-audience", "iss": ISSUER, "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
+        key, "RS256", headers={"kid": "first"},
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=token_only, raise_app_exceptions=False), base_url=ORIGIN) as client:
+        assert (await client.get(CALLBACK_PATH)).status_code != 403  # reaches the route, which checks the state cookie
+        assert (await client.post(CALLBACK_PATH)).status_code == 403
+        assert (await client.get("/app")).status_code == 403
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=access, raise_app_exceptions=False), base_url=ORIGIN) as client:
+        assert (await client.get(CALLBACK_PATH)).status_code == 403
+        assert (await client.get(CALLBACK_PATH, headers={"Cf-Access-Jwt-Assertion": assertion})).status_code != 403

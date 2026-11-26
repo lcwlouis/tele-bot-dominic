@@ -162,3 +162,18 @@ def test_backup_falls_back_when_hard_links_are_unsupported(source, tmp_path, mon
     assert archive.is_file()
     with tarfile.open(archive) as tar:
         assert "state.db" in tar.getnames()
+
+
+def test_backup_keeps_the_owner_place_photos_and_leaves_out_the_other_media(source, tmp_path):
+    (source / "media" / "places").mkdir(parents=True)
+    (source / "media" / "places" / "cafe.jpg").write_bytes(b"photo")
+    (source / "media" / "7").mkdir()
+    (source / "media" / "7" / "note.ogg").write_bytes(b"voice")
+    assert main(["backup", str(source)]) == 0
+    (archive,) = (tmp_path / "backups").glob("*.tar.gz")
+    with tarfile.open(archive) as tar:
+        assert {member.name for member in tar if member.isfile()} == {"state.db", "media/places/cafe.jpg"}
+    restored = tmp_path / "restored"
+    assert main(["restore", str(archive), str(restored)]) == 0
+    assert (restored / "media" / "places" / "cafe.jpg").read_bytes() == b"photo"
+    assert not (restored / "media" / "7").exists()

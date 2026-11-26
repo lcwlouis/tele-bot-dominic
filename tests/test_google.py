@@ -549,6 +549,10 @@ async def test_the_access_page_lists_each_google_kind_and_can_decide_a_card(setu
     await _calendar({"action": "add", "title": "From the page", "start": "2099-03-02T15:00"}, owner_ctx(app))
     row = await pending(app)
     assert row["can_allow_always"] is True
+    assert row["google"] is True  # the Waiting page labels it a Google approval, not a desktop permission
+    from dom.web.api_system import restart_refusal
+
+    assert restart_refusal(app) == "An approval card is waiting for your answer. Answer it first."
     done = await client.post("/api/access/decide", headers=HEADERS, json={"id": row["id"], "decision": "once"})
     assert done.status_code == 200
     await settle(app)

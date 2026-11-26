@@ -61,6 +61,12 @@ export function chipText(tag: Tag): string {
   return tag.by === "owner" ? "core, pinned by you" : "core, pinned by Dom";
 }
 
+/** The characters a notes file counts against its size limit: its lines without their metadata groups (dom/notes.py's
+ * `visible_len`), so a counter shown beside an editor matches the server's. */
+export function visibleLength(text: string): number {
+  return Array.from(text.split("\n").map(stripTags).join("\n")).length;
+}
+
 /** A line of a notes file without its metadata groups: what /api/memory/core reports as a core memory's text. */
 export function stripTags(line: string): string {
   return line.replace(META, "").trimEnd();

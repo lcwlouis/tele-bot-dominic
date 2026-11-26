@@ -254,5 +254,6 @@ Both are owner-dashboard GETs behind the usual auth and `fetch_site_ok` check, s
 
   Request and response bodies are folded `<details>` blocks with JSON highlighted by `$lib/highlight` and a copy
   button. Each turn has an export button.
-- **Turn log:** each turn's details get an "Open trace" link to `/app/talk?trace=1&turn=<id>` for the owner DM's
-  turns. For other chats it goes to `/app/system/turns/<id>`, a page that shows the same `TraceView` alone.
+- **Turn log:** each turn's details get an "Open the full trace" link to `/app/system/turns/<id>`, a page that shows
+  the same `TraceView` alone and works for any traced turn, the owner DM's included (Talk's own window covers only its
+  newest messages). Talk keeps its inline traces.

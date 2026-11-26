@@ -74,12 +74,13 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     @web.middleware("http")
     async def protect(request: Request, call_next):
         identity = await auth.authenticate(request)
-        if identity is None and not (request.method == "GET" and request.url.path == CALLBACK_PATH):
+        if identity is None and not (auth.token_only and request.method == "GET" and request.url.path == CALLBACK_PATH):
             response = PlainTextResponse("Forbidden", status_code=403)
         elif identity is None:
-            # Google's browser redirect carries no dashboard credential, so this one GET path alone skips the check.
-            # It authenticates itself: the single-use, unexpired state must match the HttpOnly cookie that only an
-            # authenticated owner's connect request set (dom/google.py, dom/web/api_google.py).
+            # A token-only dashboard has no Access cookie to carry on Google's redirect, so on this one GET path it
+            # skips the identity check. The callback authenticates itself: the single-use, unexpired state must match
+            # the HttpOnly cookie that only an authenticated owner's connect request set (dom/google.py,
+            # dom/web/api_google.py). With Access configured the callback needs an Access identity like any request.
             response = await call_next(request)
         elif (
             request.url.path in MEMORY_GETS | SEARCH_GETS | TALK_GETS

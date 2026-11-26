@@ -18,7 +18,7 @@
 
   const arrival = $derived(of(["arrival", "triage"]));
   const calls = $derived(of(["model_call"]));
-  const chatCall = $derived(calls.find((call) => call.kind === "chat" || call.kind === "escalation"));
+  const chatCall = $derived(calls.find((call) => call.kind === "chat" || call.kind === "escalation" || call.kind === "assistant"));
   const prompt = $derived(of(["prompt"]));
   const windows = $derived(of(["window"]));
   const tools = $derived(of(["tool"]));
