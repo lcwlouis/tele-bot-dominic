@@ -166,6 +166,10 @@ async def run(home: Path) -> None:
                 )
             # aiogram stops on SIGINT/SIGTERM; it waits a bounded time for running handlers.
             async with serving(app, auth):
+                try:
+                    await app.media_files.reconcile()  # before anything new is saved
+                except Exception:
+                    logging.getLogger("dom").warning("could not reconcile the kept media", exc_info=True)
                 app.dispatch.start()
                 app.dispatch._spawn(check_reachability(app))
                 if app.cloud_studio is not None:
