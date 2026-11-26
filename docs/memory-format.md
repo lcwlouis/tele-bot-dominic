@@ -65,6 +65,43 @@ preview parser matches is `{entities REF(|REF)*}`, where `REF` is `person:<digit
 `<key>` made of lowercase letters, digits and dashes (1 to 64 characters, starting with a letter or digit). A group may
 stand anywhere in the line, with the space before it hidden along with it.
 
+## Dom's world: `memory/WORLD.md`
+
+Dom's life sheet: where he lives, where he works, his routine and his regular spots. It is a note like the others
+(bullets, the same metadata groups, 2,400 characters) under four headings the starter home creates:
+
+```
+## Home and work
+- Lives in a small flat near the river
+## Routine
+- Weekday lunch: cai fan, laksa, kopi and toast {entities place:hawker-centre}
+- Thursday evening: usually gym {entities place:the-gym}
+- Weekend mornings: a long walk in the park
+## Regular spots
+- Coffee: the kopitiam on the corner
+## Projects
+- A picture book about a fox
+```
+
+- **Routine lines** start with a label before the colon: a weekday (`Thursday`), `Weekday` or `Weekend`, or none for
+  every day, plus optionally a part of the day (`morning`, `lunch`, `afternoon`, `evening`, `night`; `breakfast` and
+  `dinner` work too). The line whose label covers the moment is Dom's "slot for now" in the turn note.
+- **Options.** After the colon, a comma-, `/`- or `or`-separated list is a set of choices (`cai fan, laksa, kopi and
+  toast`). When Dom has said one of them in the last two days in the same chat, the turn note tells him so and lists the
+  others, so lunch and dinner aren't the same dish.
+- **Places.** `{entities place:slug}` on a routine line links it to `memory/places/<slug>.md`; what that note says, as
+  that chat may read it, is added to the turn note.
+- **Who changes it.** The owner edits the sheet on the Memory page or the World page, and those lines are pinned like
+  every hand edit. Dom changes it only through the nightly reflection, at most once a week and with a reason
+  (`memory/WORLD.change.json`, written before the sheet in one atomic step and checked and written without yielding,
+  records the day and reason, so a crash or two proposals at once can never open the week twice; the World page shows them). His edit can never replace or remove a
+  pinned line or one tagged to a chat, and can't write a `{core ...}` or `{chat ...}` group.
+- **Who sees it.** The tag rules above apply as for any note: a line tagged `{chat <id>}` (by hand) shows only in that
+  chat and in the owner's DM; untagged and `{any}` lines show everywhere. The block is built on every turn and sits
+  after the chat window, so it never changes the cached prompt prefix.
+
+A place may also have a reference photo, kept at `media/places/<slug>.jpg` (see `docs/studio.md`).
+
 ## Core memories
 
 A core memory is a pinned line. It never fades, the memory pass never rewrites or drops it, and a period summary links

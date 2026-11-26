@@ -3,35 +3,43 @@
   import TopBar from "$lib/components/shell/TopBar.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
   import * as Tooltip from "$lib/components/ui/tooltip";
-  import { gallery, locate, search, waiting } from "$lib/nav";
+  import { gallery, locate, search, secretEntry, waiting } from "$lib/nav";
   import { interceptLinks, route } from "$lib/router.svelte";
   import { shell } from "$lib/shell.svelte";
   import { sidebar } from "$lib/sidebar.svelte";
   import { cn } from "$lib/utils";
+  import Access from "./routes/Access.svelte";
   import Gallery from "./routes/Gallery.svelte";
   import Briefs from "./routes/Briefs.svelte";
   import Chats from "./routes/Chats.svelte";
   import Desk from "./routes/Desk.svelte";
   import Home from "./routes/Home.svelte";
   import Memory from "./routes/Memory.svelte";
+  import World from "./routes/World.svelte";
   import OwnWork from "./routes/OwnWork.svelte";
   import Reminders from "./routes/Reminders.svelte";
   import Plugins from "./routes/Plugins.svelte";
   import PluginReview from "./routes/PluginReview.svelte";
+  import Talk from "./routes/Talk.svelte";
+  import TracePage from "./routes/TracePage.svelte";
   import Turns from "./routes/Turns.svelte";
   import Usage from "./routes/Usage.svelte";
   import Spend from "./routes/Spend.svelte";
   import Library from "./routes/Library.svelte";
   import Waiting from "./routes/Waiting.svelte";
   import Search from "./routes/Search.svelte";
+  import SecretEntry from "./routes/SecretEntry.svelte";
   import Settings from "./routes/Settings.svelte";
 
   const isGallery = $derived(route.path === gallery.href);
   const isWaiting = $derived(route.path === waiting.href);
   const isSearch = $derived(route.path === search.href);
+  const isSecret = $derived(route.path === secretEntry.href);
   const where = $derived(locate(route.path));
   // /app/system/plugins/{name}/{digest}: one plugin version's code review.
   const review = $derived(where.tab?.id === "plugins" ? route.path.slice(where.tab.href.length + 1).split("/") : []);
+  // /app/system/turns/{id}: one turn's trace.
+  const traced = $derived(where.tab?.id === "turns" ? Number(route.path.slice(where.tab.href.length + 1)) || null : null);
 
   // The menu's waiting dot: fresh on every page change, and every minute while the tab is in view.
   $effect(() => {
@@ -44,7 +52,7 @@
   });
 
   $effect(() => {
-    const page = isGallery ? gallery.label : isWaiting ? waiting.label : isSearch ? search.label : (where.tab?.label ?? where.destination.label);
+    const page = isGallery ? gallery.label : isWaiting ? waiting.label : isSearch ? search.label : isSecret ? secretEntry.label : (where.tab?.label ?? where.destination.label);
     document.title = page === "Home" ? "Dom" : `${page} · Dom`;
   });
 </script>
@@ -70,7 +78,7 @@
       <TopBar
         destination={where.destination}
         tab={where.tab}
-        title={isGallery ? gallery.label : isWaiting ? waiting.label : isSearch ? search.label : undefined}
+        title={isGallery ? gallery.label : isWaiting ? waiting.label : isSearch ? search.label : isSecret ? secretEntry.label : undefined}
         path={route.path}
         current={isGallery ? { ...where.destination, id: "" } : where.destination}
       />
@@ -81,14 +89,22 @@
           <Waiting />
         {:else if isSearch}
           <Search />
+        {:else if isSecret}
+          <SecretEntry />
         {:else if where.destination.id === "home"}
           <Home />
+        {:else if where.destination.id === "talk"}
+          <Talk />
         {:else if where.destination.id === "chats"}
           <Chats destination={where.destination} />
+        {:else if where.tab?.id === "world"}
+          <World destination={where.destination} tab={where.tab} />
         {:else if where.destination.id === "memory"}
-          <Memory destination={where.destination} />
+          <Memory destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "settings"}
           <Settings destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "access"}
+          <Access destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "desk"}
           <Desk destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "own-work"}
@@ -107,6 +123,8 @@
           <Spend destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "usage"}
           <Usage destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "turns" && traced !== null}
+          <TracePage destination={where.destination} tab={where.tab} turnId={traced} />
         {:else if where.tab?.id === "turns"}
           <Turns destination={where.destination} tab={where.tab} />
         {/if}

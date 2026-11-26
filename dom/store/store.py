@@ -73,6 +73,8 @@ MIGRATIONS: list[tuple[int, str]] = [
     (31, "0030_knowledge_index.sql"),
     (32, "0031_event_days.sql"),
     (33, "0032_usage_settled.sql"),
+    (34, "0033_credentials_and_permissions.sql"),
+    (35, "0034_message_origin.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -88,7 +90,7 @@ _ADD_COLUMN_RE = re.compile(
 _MESSAGE_COLUMNS = (
     "id, chat_id, msg_id, reply_to_msg_id, thread_id, sender_user_id, sender_handle, sender_name, "
     "is_bot, role, visibility_scope, text, media_json, is_edited, original_seen_before_edit, "
-    "previous_seen_text, is_deleted, created_at, updated_at"
+    "previous_seen_text, is_deleted, created_at, updated_at, origin"
 )
 _MESSAGE_COLUMNS_M = ", ".join(f"m.{col.strip()}" for col in _MESSAGE_COLUMNS.split(","))
 _UNREAD_SQL = (
@@ -327,6 +329,7 @@ def _row_to_message(row: sqlite3.Row) -> StoredMessage:
         is_deleted=bool(row["is_deleted"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        origin=row["origin"] if "origin" in row.keys() else None,
     )
 
 
@@ -507,6 +510,10 @@ class Store:
                 return current
             seen.add(nxt)
             current = nxt
+
+    async def chat_id_aliases(self, chat_id: int | str) -> set[str]:
+        """A chat's id and every older id that migrated to it (a group that became a supergroup)."""
+        return await self._run(self._chat_id_aliases, str(chat_id))
 
     def _chat_id_aliases(self, chat_id: str) -> set[str]:
         """Return `chat_id` plus any old chat ids that migrated to it (for read-only history search)."""
@@ -1110,6 +1117,7 @@ class Store:
             text=msg.text,
             media_json=msg.media_json,
             message_created_at=msg.created_at,
+            **({"origin": msg.origin} if msg.origin else {}),
         )
         return row_id
 
@@ -1119,15 +1127,15 @@ class Store:
             INSERT INTO messages (
                 chat_id, msg_id, reply_to_msg_id, thread_id, sender_user_id, sender_handle, sender_name,
                 is_bot, role, visibility_scope, text, media_json, is_edited,
-                original_seen_before_edit, previous_seen_text, is_deleted, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                original_seen_before_edit, previous_seen_text, is_deleted, created_at, updated_at, origin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             """,
             (
                 msg.chat_id, msg.msg_id, msg.reply_to_msg_id, msg.thread_id, msg.sender_user_id,
                 msg.sender_handle, msg.sender_name, int(msg.is_bot), msg.role,
                 msg.visibility_scope, msg.text, msg.media_json, int(msg.is_edited),
                 int(msg.original_seen_before_edit), msg.previous_seen_text,
-                msg.created_at, msg.updated_at,
+                msg.created_at, msg.updated_at, msg.origin,
             ),
         )
         return int(cur.lastrowid)
@@ -1759,6 +1767,22 @@ class Store:
         page = [_row_to_message(r) for r in rows[:limit]]
         next_before = page[-1].id if has_more and page else None
         return page, next_before
+
+    async def get_chat_messages_after(
+        self, chat_id: int | str, after_id: int, limit: int = 100,
+    ) -> list[StoredMessage]:
+        """Visible user/assistant messages newer than a row id, oldest first: the dashboard Talk page's poll."""
+        return await self._run(self._get_chat_messages_after, str(chat_id), after_id, limit)
+
+    def _get_chat_messages_after(self, chat_id: str, after_id: int, limit: int) -> list[StoredMessage]:
+        limit = max(1, min(limit, 200))
+        hide = "" if self._is_owner_chat(chat_id) else f" AND visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
+        rows = self._conn.execute(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND id > ? AND is_deleted = 0 "
+            f"AND role IN ('user', 'assistant'){hide} ORDER BY id LIMIT ?",
+            (chat_id, after_id, limit),
+        ).fetchall()
+        return [_row_to_message(r) for r in rows]
 
     async def chat_participant_names(self, chat_id: int | str) -> list[list[str]]:
         """For each person who has written in this chat, the names and Telegram handles they go by there: what they wrote
@@ -3726,3 +3750,524 @@ class Store:
             return "deleted"
 
         return await self._run(delete)
+
+    # ---- encrypted secrets (v0.8.5 W3, shared with W4) -----------------------------------------------------------
+
+    async def put_encrypted_secret(
+        self, namespace: str, key: str, key_id: str, ciphertext: str, now: str,
+    ) -> None:
+        def upsert() -> None:
+            with self._tx() as conn:
+                conn.execute(
+                    "INSERT INTO encrypted_secrets (namespace, key, key_id, ciphertext, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(namespace, key) DO UPDATE SET key_id = excluded.key_id, "
+                    "ciphertext = excluded.ciphertext, updated_at = excluded.updated_at",
+                    (namespace, key, key_id, ciphertext, now, now),
+                )
+
+        await self._run(upsert)
+
+    async def get_encrypted_secret(self, namespace: str, key: str) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute(
+                "SELECT namespace, key, key_id, ciphertext, created_at, updated_at "
+                "FROM encrypted_secrets WHERE namespace = ? AND key = ?",
+                (namespace, key),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def delete_encrypted_secret(self, namespace: str, key: str) -> bool:
+        def delete() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "DELETE FROM encrypted_secrets WHERE namespace = ? AND key = ?",
+                    (namespace, key),
+                )
+                return cur.rowcount > 0
+
+        return await self._run(delete)
+
+    async def list_encrypted_secrets(self, namespace: str) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT namespace, key, key_id, created_at, updated_at "
+                "FROM encrypted_secrets WHERE namespace = ? ORDER BY key",
+                (namespace,),
+            )
+        ])
+
+    async def all_encrypted_secrets(self) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT namespace, key, key_id, ciphertext, created_at, updated_at "
+                "FROM encrypted_secrets ORDER BY namespace, key",
+            )
+        ])
+
+    async def count_encrypted_secrets(self) -> int:
+        return await self._run(lambda: int(
+            self._conn.execute("SELECT COUNT(*) FROM encrypted_secrets").fetchone()[0]
+        ))
+
+    async def replace_encrypted_secrets(self, items: list[tuple[str, str, str, str, str]]) -> None:
+        def update_all() -> None:
+            with self._tx() as conn:
+                for namespace, key, key_id, ciphertext, updated_at in items:
+                    conn.execute(
+                        "UPDATE encrypted_secrets SET key_id = ?, ciphertext = ?, updated_at = ? "
+                        "WHERE namespace = ? AND key = ?",
+                        (key_id, ciphertext, updated_at, namespace, key),
+                    )
+
+        await self._run(update_all)
+
+    # ---- saved logins & owner secrets metadata (v0.8.5 W3) -------------------------------------------------------
+
+    async def list_saved_logins(self, site: str | None = None) -> list[dict[str, Any]]:
+        def select() -> list[dict[str, Any]]:
+            if site:
+                rows = self._conn.execute(
+                    "SELECT * FROM saved_logins WHERE site = ? ORDER BY updated_at DESC, id DESC",
+                    (site,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM saved_logins ORDER BY site ASC, label ASC, id ASC",
+                ).fetchall()
+            return [dict(row) for row in rows]
+
+        return await self._run(select)
+
+    async def get_saved_login(self, login_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM saved_logins WHERE id = ?", (login_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def create_saved_login(
+        self,
+        *,
+        site: str,
+        label: str,
+        username_masked: str,
+        has_username: bool,
+        has_password: bool,
+        match_subdomains: bool,
+        now: str,
+    ) -> int:
+        def insert() -> int:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "INSERT INTO saved_logins "
+                    "(site, label, username_masked, has_username, has_password, match_subdomains, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (site, label, username_masked, int(has_username), int(has_password), int(match_subdomains), now, now),
+                )
+                return int(cur.lastrowid)
+
+        return await self._run(insert)
+
+    async def update_saved_login(
+        self,
+        login_id: int,
+        *,
+        site: str,
+        label: str,
+        username_masked: str,
+        has_username: bool,
+        has_password: bool,
+        match_subdomains: bool,
+        now: str,
+    ) -> bool:
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE saved_logins SET site = ?, label = ?, username_masked = ?, "
+                    "has_username = ?, has_password = ?, match_subdomains = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (site, label, username_masked, int(has_username), int(has_password), int(match_subdomains), now, login_id),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def delete_saved_login(self, login_id: int) -> bool:
+        def delete() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute("DELETE FROM saved_logins WHERE id = ?", (login_id,))
+                return cur.rowcount == 1
+
+        return await self._run(delete)
+
+    async def list_owner_secrets(self) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT key, label, created_at, updated_at FROM owner_secrets ORDER BY updated_at DESC, key ASC",
+            )
+        ])
+
+    async def upsert_owner_secret(self, key: str, label: str, now: str) -> None:
+        def upsert() -> None:
+            with self._tx() as conn:
+                conn.execute(
+                    "INSERT INTO owner_secrets (key, label, created_at, updated_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET label = excluded.label, updated_at = excluded.updated_at",
+                    (key, label, now, now),
+                )
+
+        await self._run(upsert)
+
+    async def delete_owner_secret(self, key: str) -> bool:
+        def delete() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute("DELETE FROM owner_secrets WHERE key = ?", (key,))
+                return cur.rowcount > 0
+
+        return await self._run(delete)
+
+    # ---- desktop browser permissions & approvals history (v0.8.5 W3) ---------------------------------------------
+
+    async def desktop_action_policies(self) -> dict[str, str]:
+        return await self._run(lambda: {
+            row["action"]: row["policy"]
+            for row in self._conn.execute("SELECT action, policy FROM desktop_action_policies")
+        })
+
+    async def set_desktop_action_policy(self, action: str, policy: str, now: str) -> None:
+        def upsert() -> None:
+            with self._tx() as conn:
+                conn.execute(
+                    "INSERT INTO desktop_action_policies (action, policy, updated_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(action) DO UPDATE SET policy = excluded.policy, updated_at = excluded.updated_at",
+                    (action, policy, now),
+                )
+
+        await self._run(upsert)
+
+    async def list_desktop_site_permissions(self) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT site, action, policy, updated_at FROM desktop_site_permissions "
+                "ORDER BY site ASC, action ASC",
+            )
+        ])
+
+    async def get_desktop_site_permission(self, site: str, action: str) -> str | None:
+        def select() -> str | None:
+            row = self._conn.execute(
+                "SELECT policy FROM desktop_site_permissions WHERE site = ? AND action = ?",
+                (site, action),
+            ).fetchone()
+            return str(row["policy"]) if row is not None else None
+
+        return await self._run(select)
+
+    async def set_desktop_site_permission(self, site: str, action: str, policy: str, now: str) -> None:
+        def upsert() -> None:
+            with self._tx() as conn:
+                conn.execute(
+                    "INSERT INTO desktop_site_permissions (site, action, policy, updated_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(site, action) DO UPDATE SET policy = excluded.policy, updated_at = excluded.updated_at",
+                    (site, action, policy, now),
+                )
+
+        await self._run(upsert)
+
+    async def delete_desktop_site_permission(self, site: str, action: str) -> bool:
+        def delete() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "DELETE FROM desktop_site_permissions WHERE site = ? AND action = ?",
+                    (site, action),
+                )
+                return cur.rowcount > 0
+
+        return await self._run(delete)
+
+    async def clear_desktop_site_allows(self, action: str) -> int:
+        def delete() -> int:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "DELETE FROM desktop_site_permissions WHERE action = ? AND policy = 'allow'",
+                    (action,),
+                )
+                return int(cur.rowcount)
+
+        return await self._run(delete)
+
+    async def create_desktop_permission_request(
+        self,
+        *,
+        action: str,
+        site: str,
+        detail: str,
+        token_hash: str,
+        created_at: str,
+        task_id: int | None = None,
+        self_task_id: int | None = None,
+    ) -> int:
+        def insert() -> int:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "INSERT INTO desktop_permission_history "
+                    "(task_id, self_task_id, action, site, detail, status, decided_via, token_hash, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'pending', '', ?, ?)",
+                    (task_id, self_task_id, action, site, detail, token_hash, created_at),
+                )
+                return int(cur.lastrowid)
+
+        return await self._run(insert)
+
+    async def set_desktop_permission_card(self, request_id: int, message_id: int) -> None:
+        def update() -> None:
+            with self._tx() as conn:
+                conn.execute(
+                    "UPDATE desktop_permission_history SET card_message_id = ? WHERE id = ?",
+                    (message_id, request_id),
+                )
+
+        await self._run(update)
+
+    async def get_desktop_permission_request(self, request_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute(
+                "SELECT * FROM desktop_permission_history WHERE id = ?", (request_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def decide_desktop_permission_request(
+        self, request_id: int, status: str, decided_via: str, decided_at: str,
+    ) -> dict[str, Any] | None:
+        def update() -> dict[str, Any] | None:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE desktop_permission_history SET status = ?, decided_via = ?, decided_at = ? "
+                    "WHERE id = ? AND status = 'pending'",
+                    (status, decided_via, decided_at, request_id),
+                )
+                if cur.rowcount != 1:
+                    return None
+                row = conn.execute(
+                    "SELECT * FROM desktop_permission_history WHERE id = ?", (request_id,),
+                ).fetchone()
+                return dict(row) if row is not None else None
+
+        return await self._run(update)
+
+    async def record_desktop_permission_event(
+        self,
+        *,
+        action: str,
+        site: str,
+        detail: str,
+        status: str,
+        decided_via: str,
+        at: str,
+        task_id: int | None = None,
+        self_task_id: int | None = None,
+    ) -> int:
+        def insert() -> int:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "INSERT INTO desktop_permission_history "
+                    "(task_id, self_task_id, action, site, detail, status, decided_via, token_hash, created_at, decided_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)",
+                    (task_id, self_task_id, action, site, detail, status, decided_via, at, at),
+                )
+                return int(cur.lastrowid)
+
+        return await self._run(insert)
+
+    async def pending_desktop_permission_requests(self) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT id, task_id, self_task_id, action, site, detail, status, card_message_id, created_at "
+                "FROM desktop_permission_history WHERE status = 'pending' ORDER BY id ASC",
+            )
+        ])
+
+    async def list_desktop_permission_history(
+        self, *, action: str = "", status: str = "", limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        def select() -> list[dict[str, Any]]:
+            clauses, params = [], []
+            if action:
+                clauses.append("action = ?")
+                params.append(action)
+            if status:
+                clauses.append("status = ?")
+                params.append(status)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(max(1, min(limit, 500)))
+            rows = self._conn.execute(
+                f"SELECT id, task_id, self_task_id, action, site, detail, status, decided_via, created_at, decided_at "
+                f"FROM desktop_permission_history {where} ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+        return await self._run(select)
+
+    async def expire_desktop_permission_requests(self, now: str) -> list[dict[str, Any]]:
+        def update() -> list[dict[str, Any]]:
+            with self._tx() as conn:
+                rows = [
+                    dict(row) for row in conn.execute(
+                        "SELECT id, card_message_id FROM desktop_permission_history WHERE status = 'pending'",
+                    ).fetchall()
+                ]
+                if rows:
+                    conn.execute(
+                        "UPDATE desktop_permission_history SET status = 'expired', decided_via = 'timeout', decided_at = ? "
+                        "WHERE status = 'pending'",
+                        (now,),
+                    )
+                return rows
+
+        return await self._run(update)
+
+    # ---- E101 secure secret requests -----------------------------------------------------------------------------
+
+    async def create_secret_request(
+        self,
+        *,
+        label: str,
+        reason: str,
+        target: str,
+        target_key: str,
+        token_hash: str,
+        created_at: str,
+        expires_at: str,
+    ) -> int:
+        def insert() -> int:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "INSERT INTO secret_requests "
+                    "(label, reason, target, target_key, token_hash, status, created_at, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    (label, reason, target, target_key, token_hash, created_at, expires_at),
+                )
+                return int(cur.lastrowid)
+
+        return await self._run(insert)
+
+    async def set_secret_request_card(self, request_id: int, message_id: int) -> None:
+        def update() -> None:
+            with self._tx() as conn:
+                conn.execute(
+                    "UPDATE secret_requests SET card_message_id = ? WHERE id = ?",
+                    (message_id, request_id),
+                )
+
+        await self._run(update)
+
+    async def get_secret_request(self, request_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM secret_requests WHERE id = ?", (request_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def get_secret_request_by_hash(self, token_hash: str) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM secret_requests WHERE token_hash = ?", (token_hash,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def pending_secret_requests(self, now: str) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT id, label, reason, target, target_key, status, card_message_id, created_at, expires_at "
+                "FROM secret_requests WHERE status = 'pending' AND expires_at > ? ORDER BY id DESC",
+                (now,),
+            )
+        ])
+
+    async def resolve_secret_request(self, request_id: int, status: str, resolved_at: str) -> bool:
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE secret_requests SET status = ?, resolved_at = ? "
+                    "WHERE id = ? AND status = 'pending'",
+                    (status, resolved_at, request_id),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def claim_secret_request(self, request_id: int) -> bool:
+        """Atomically transition a pending request to `submitting` while its value is being written."""
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE secret_requests SET status = 'submitting' "
+                    "WHERE id = ? AND status = 'pending'",
+                    (request_id,),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def reopen_secret_request(self, request_id: int) -> bool:
+        """Revert a `submitting` request back to `pending` if writing the secret failed."""
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE secret_requests SET status = 'pending', resolved_at = NULL "
+                    "WHERE id = ? AND status = 'submitting'",
+                    (request_id,),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def complete_secret_request(self, request_id: int, status: str, resolved_at: str) -> bool:
+        """Finalize a request once its secret has been durably written. A request that crossed its expiry mid-write
+        (`expired`) is finalized too: the secret exists, so the row must not claim otherwise."""
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE secret_requests SET status = ?, resolved_at = ? "
+                    "WHERE id = ? AND status IN ('submitting', 'expired')",
+                    (status, resolved_at, request_id),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def latest_cancelled_secret_request(self) -> str | None:
+        """Return the most recent cancellation timestamp for dismissal cooldown enforcement."""
+        def select() -> str | None:
+            row = self._conn.execute(
+                "SELECT MAX(resolved_at) FROM secret_requests WHERE status = 'cancelled' AND resolved_at IS NOT NULL",
+            ).fetchone()
+            return str(row[0]) if row is not None and row[0] else None
+
+        return await self._run(select)
+
+    async def expire_secret_requests(self, now: str) -> list[dict[str, Any]]:
+        def update() -> list[dict[str, Any]]:
+            with self._tx() as conn:
+                rows = [
+                    dict(row) for row in conn.execute(
+                        "SELECT id, card_message_id FROM secret_requests "
+                        "WHERE status IN ('pending', 'submitting') AND expires_at <= ?",
+                        (now,),
+                    ).fetchall()
+                ]
+                if rows:
+                    conn.execute(
+                        "UPDATE secret_requests SET status = 'expired', resolved_at = ? "
+                        "WHERE status IN ('pending', 'submitting') AND expires_at <= ?",
+                        (now, now),
+                    )
+                return rows
+
+        return await self._run(update)

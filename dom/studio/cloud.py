@@ -441,13 +441,15 @@ class CloudStudio:
 
     async def generate(
         self, config: Config, kind: Kind, text: str, outfit: str | None, chat_id: int,
-        allowed: Callable[[], Awaitable[bool]],
+        allowed: Callable[[], Awaitable[bool]], place_reference: bytes | None = None,
     ) -> bytes | None:
+        """`place_reference` is the owner's photo of the place a picture is set in (dom/place_photos.py); only a photo
+        model that takes references is sent it."""
         if kind in {"video_note", "special"}:
             raise ValueError("Use generate_video with Dom's voice path.")
         for provider in providers(config.studio, kind):
             try:
-                media = await self._generate(config, provider, kind, text, outfit, chat_id, allowed)
+                media = await self._generate(config, provider, kind, text, outfit, chat_id, allowed, place_reference)
             except ModelCallSkipped:
                 return None
             except (httpx.HTTPError, TimeoutError, ValueError, OSError, KeyError, IndexError, TypeError, AttributeError) as error:
@@ -459,7 +461,7 @@ class CloudStudio:
 
     async def _generate(
         self, config: Config, provider: StudioFallback, kind: Kind, text: str, outfit: str | None, chat_id: int,
-        allowed: Callable[[], Awaitable[bool]],
+        allowed: Callable[[], Awaitable[bool]], place_reference: bytes | None = None,
     ) -> bytes | None:
         key = await asyncio.to_thread(_backup_key, config, provider, self._chat_key_values())
         if not key:
@@ -481,6 +483,15 @@ class CloudStudio:
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64," + reference}},
                 ]
                 text = "Keep the same identity and appearance as the reference. " + text
+            if place_reference and provider.supports_reference:  # the second picture: where the scene is set
+                place = await asyncio.to_thread(lambda: base64.b64encode(place_reference).decode("ascii"))
+                payload.setdefault("input_references", []).append(
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + place}},
+                )
+                text += (
+                    " The scene is set at the real place shown in the last reference: keep how that place looks."
+                    if portrait else " The scene is set at the real place shown in the reference: keep how it looks."
+                )
             path = "/images"
             payload["prompt"] = text
             if re.fullmatch(r"bytedance-seed/seedream-5-5(?:-[0-9]{8})?", provider.model):

@@ -55,6 +55,7 @@ from dom.config import (
     StudioFallback,
     _replace_file,
     set_dotenv,
+    set_dotenv_many,
     validate_config,
 )
 from dom import model_lists
@@ -1095,8 +1096,8 @@ async def save_values(
             set_value(document, path, value)
         text = tomlkit.dumps(document)
         saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
-        for name, value in (env or {}).items():
-            set_dotenv(current.config.home, name, value)
+        if env:
+            set_dotenv_many(current.config.home, env)
         _write(current, saved)
         return saved
 

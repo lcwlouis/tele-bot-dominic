@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from dom import provenance
 from dom.config import SPEND_AREAS, SpendArea
+from dom.secrets import active_redactions, redact_secrets
 
 if TYPE_CHECKING:
     import httpx
@@ -208,6 +209,9 @@ class UsageRecorder:
         try:
             data = usage if isinstance(usage, dict) else {}
             input_tokens, output_tokens, _ = token_counts(data)
+            if active_redactions():
+                model = redact_secrets(model)
+                host = redact_secrets(host)
             row = await self.store.record_usage(
                 self.now().astimezone(timezone.utc).isoformat(), kind, model, host, chat_id,
                 input_tokens or 0, output_tokens or 0,

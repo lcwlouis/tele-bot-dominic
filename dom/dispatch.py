@@ -23,6 +23,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom import guard, notice, salvage, turn_log
+from dom.secrets import redact_secrets
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
 from dom.attention import FACT_INSTRUCTION, Attention, Tier, filter_fact
@@ -214,6 +215,7 @@ class Dispatcher:
         self.jobs = DailyJobs(app, now)
         self.jobs.register("proposal-expiry", lambda local, habits: True, app.proposals.expire)
         self.jobs.register("turn-log-retention", lambda local, habits: True, self._prune_turn_log)
+        self.jobs.register("trace-retention", lambda local, habits: True, self._prune_traces)
         self.jobs.register("t3-maintenance", lambda local, habits: True, self._maintain_t3)
         self.openers = Openers(app, presence.rng)
         self.escalation = Escalation(app, self._spawn)
@@ -331,6 +333,10 @@ class Dispatcher:
             card, xml = persona_card(self.app.home), self._triage_xml(chat_id, rows)
             skills = await self._skill_choices() if state == "online" else []
             with turn_log.track(arrival.trace), model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
+                turn_log.event(
+                    "arrival", stage="triage", msg_id=msg.msg_id, state=state, scope=scope, unread=count,
+                    skills=[name for name, _ in skills],
+                )
                 await check_model_allowed()
                 if state == "online":
                     arrival.verdict = await triage_online(
@@ -339,8 +345,10 @@ class Dispatcher:
                     self._log_triage(arrival.verdict)
                 elif scope == "owner_dm":
                     arrival.urgency = await triage_urgency(self.jev, card, xml)
+                    turn_log.event("triage", mode="away", state=state, urgency=arrival.urgency)
                 else:
                     arrival.verdict = await triage_offline(self.jev, card, xml)
+                    turn_log.event("triage", mode="offline", state=state, verdict=arrival.verdict)
         except (JevUnavailable, ModelCallSkipped):
             return
         except Exception:
@@ -376,6 +384,7 @@ class Dispatcher:
 
     @staticmethod
     def _log_triage(verdict: Triage) -> None:
+        turn_log.event("triage", mode="online", verdict=verdict)
         turn_log.step(f"Jev action={verdict.action} confidence={verdict.confidence}")
         turn_log.step(f"Jev done={verdict.done} confidence={verdict.done_confidence}")
         if verdict.skill:
@@ -457,7 +466,9 @@ class Dispatcher:
             await self._wait_for_turns(chat_id)
             async with self._memory_slot:
                 await self._describe_memory_media(chat_id)
-                ran = await MemoryPass(self.app).run(chat_id)
+                scope = self.app.store.scope_for(chat_id, "group" if chat_id < 0 else "private")
+                with turn_log.background("memory pass", chat_id, scope):
+                    ran = await MemoryPass(self.app).run(chat_id)
         except Exception:
             log.exception("memory pass failed in chat %s", chat_id)
         finally:
@@ -723,6 +734,10 @@ class Dispatcher:
         before = self.now() - timedelta(days=30)
         await self.app.store.prune_turn_history(before)
         await self.app.store.prune_cross_chat(before)
+
+    async def _prune_traces(self) -> None:
+        if self.app.traces is not None:
+            await self.app.traces.prune()
 
     async def _background_jobs(self) -> None:
         if self.app.menu_dirty:
@@ -1284,6 +1299,13 @@ class Dispatcher:
                 # in its timings, which are merged in below, so counting the wait too would show it twice.
                 trace.add_timing("lock_wait", waits.lock_ms)
             async with turn_log.capture(store, self.now(), chat_id, scope, trace=trace):
+                turn_log.event(
+                    "arrival", stage="turn", msg_id=newest.msg_id, message_at=newest.created_at, state=state,
+                    until=until, catch_up=catch_up, background=background, unread=count, total_unread=total_unread,
+                    bots_only=bots_only, resumed=resumed, thread_id=topic_thread_id,
+                    waits={"debounce_until": waits.debounce_until, "media_ms": waits.media_ms, "lock_ms": waits.lock_ms,
+                           "early": waits.early},
+                )
                 try:
                     woke, new_until, flood_limited = await self._respond(
                         chat_id, habits, state, until, count, total_unread, newest, background, catch_up, bot_depth,
@@ -1297,6 +1319,8 @@ class Dispatcher:
                     calls = [call for item in [*(a.trace for a in arrivals), *media_traces]
                              for call in item.model_calls if call.status]
                     trace.steps[:0] = [step for a in arrivals for step in a.trace.steps]
+                    for item in [*(a.trace for a in arrivals), *media_traces]:
+                        trace.absorb(item)
                     trace.model_calls[:0] = calls
                     trace.calls += len(calls)
                     if not trace.superseded:
@@ -1309,6 +1333,8 @@ class Dispatcher:
                             trace.steps[:0] = [step for item in interrupted for step in item.trace.steps]
                             trace.model_calls[:0] = [call for item in interrupted for call in item.trace.model_calls]
                             trace.timings[:0] = [timing for item in interrupted for timing in item.trace.timings]
+                            for item in interrupted:
+                                trace.absorb(item.trace)
                             trace.calls += sum(item.trace.calls for item in interrupted)
                             trace.fallback |= any(item.trace.fallback for item in interrupted)
                     if not trace.model and trace.model_calls:
@@ -1397,13 +1423,16 @@ class Dispatcher:
                 return
             rows = await self.app.store.get_window_from(chat_id, None, TRIAGE_WINDOW * 2)
             card, xml = persona_card(self.app.home), self._triage_xml(chat_id, rows)
-            trace, minutes = turn_log.TurnTrace(), 0
-            try:
-                with turn_log.track(trace), model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
-                    await check_model_allowed()
-                    minutes = await triage_stay(jev, card, xml)
-            except (JevUnavailable, ModelCallSkipped):
-                pass
+            scope = self.app.store.scope_for(chat_id, "group" if chat_id < 0 else "private")
+            minutes = 0
+            with turn_log.follow_up("stay check", chat_id, scope, turn_id=row_id) as trace:
+                try:
+                    with model_request("triage", chat_id, partial(self.model_allowed, chat_id)):
+                        await check_model_allowed()
+                        minutes = await triage_stay(jev, card, xml)
+                except (JevUnavailable, ModelCallSkipped):
+                    pass
+                turn_log.event("triage", mode="stay", minutes=minutes, left=left, room=room)
             if row_id is not None and trace.model_calls:
                 # Same row as the reply it followed, as Jev time after the last bubble (not chat, not typing).
                 spent = sum(call.duration_ms for call in trace.model_calls)
@@ -1925,7 +1954,7 @@ class Dispatcher:
     async def _screen_studio(self, chat_id: int, scope: Scope, actions: Actions, title: str) -> Actions:
         if not (actions.voice or actions.video_note or actions.image):
             return actions
-        update = {"voice": None, "video_note": None, "image": None}
+        update = {"voice": None, "video_note": None, "image": None, "image_place": None}
         if actions.private:
             # Only the owner DM hears about it: a note in a group would reveal that a private reply existed.
             if scope == "owner_dm":
@@ -1949,7 +1978,7 @@ class Dispatcher:
             if studio_enabled(config, scope, kind):
                 update["video_note"] = actions.video_note
         if studio_enabled(config, scope, "photo"):
-            update["image"] = actions.image
+            update["image"], update["image_place"] = actions.image, actions.image_place
         if (
             (actions.voice and update["voice"] is None)
             or (actions.video_note is not None and update["video_note"] is None)
@@ -2014,8 +2043,10 @@ class Dispatcher:
             raise ModelCallSkipped
         if score is None:
             log.warning("leak check unavailable in chat %s", chat_id)
+            turn_log.event("leak_check", score=None, held=hold_if_unavailable, text=text, note="leak check unavailable")
             return hold_if_unavailable
         cutoff = app.config.leak_cutoff  # read after the call: the owner may have changed the level meanwhile
+        turn_log.event("leak_check", score=score, cutoff=cutoff, held=cutoff is not None and score >= cutoff, text=text)
         if cutoff is None or score < cutoff:
             return False
 
@@ -2135,13 +2166,14 @@ class Dispatcher:
         if chat_id != app.owner_id:
             return
         status = "finished" if row["status"] == "done" else row["status"]
-        result = row["result"] or row["error"] or "No result."
+        result = redact_secrets(row["result"] or row["error"] or "No result.", app.config)
+        safe_error = redact_secrets(row["error"] or "no reason was reported", app.config)
         container = row.get("container", DEFAULT)
         where = "" if container == DEFAULT else f" on the {container} desktop"
         event = f"Desktop task #{task_id}{where} {status}"
         if row["status"] != "done":
-            event += f"; it did not finish: {untrusted(row['error'] or 'no reason was reported', limit=250)}"
-        await app.store.record_owner_event(event)
+            event += f"; it did not finish: {untrusted(safe_error, limit=250)}"
+        await app.store.record_owner_event(redact_secrets(event, app.config))
         async with self._dispatch_slot(chat_id, wait_media=False):
             note = (
                 f"Your desktop task #{task_id}{where} {status}. Result: {untrusted(result)} "
@@ -2181,8 +2213,8 @@ class Dispatcher:
                 if row["status"] == "done":
                     details = [first_sentence(result)]
                 else:  # the reason first, then whatever the task had found
-                    details = [first_sentence(row["error"] or "no reason was reported")]
-                    details += [first_sentence(row["result"])] if row["result"] else []
+                    details = [first_sentence(safe_error)]
+                    details += [first_sentence(redact_secrets(row["result"], app.config))] if row["result"] else []
                 if where:
                     details.append(f"On the {container} desktop.")
                 await notice.send_notice(
@@ -2193,7 +2225,8 @@ class Dispatcher:
                 # The bubbles reach the owner but stay out of the history the model reads: the text was
                 # composed from untrusted task output.
                 await executor.perform(
-                    app.bot, app.store, chat_id, None, Actions(bubbles=[Bubble(text=b.text) for b in actions.bubbles]),
+                    app.bot, app.store, chat_id, None,
+                    Actions(bubbles=[Bubble(text=redact_secrets(b.text, app.config)) for b in actions.bubbles]),
                     sleep=app.sleep, link_previews=False, record=False,
                 )
                 await app.store.record_owner_event(f"Dom reported desktop task #{task_id}")
@@ -2282,8 +2315,12 @@ class Dispatcher:
             f"state: online\n"
             f"messages that arrived while away: {away_count}\n{describe(app, scope, tools)}"
         )
-        if weather := app.world.line():  # cached by a background fetch: nothing here waits on the network
-            note += f"\n{weather}"
+        if world := app.world.block(app.home, scope, chat_id, window, now):  # files and a cached forecast: no waiting
+            note += f"\n{world}"
+        if (studio_enabled(app.config.studio, scope, "photo") or studio_enabled(app.config.studio, scope, "video_note")) and (
+            places := app.place_photos.offer(scope, chat_id)
+        ):
+            note += f"\n{places}"
         if any(tool.name.startswith("plugin_") for tool in tools):
             note += (
                 "\nPlugin tools receive their arguments only. Pass only task inputs explicitly provided for the plugin. "

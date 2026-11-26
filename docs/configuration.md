@@ -270,6 +270,8 @@ Results are sorted strictly by score. Each meaning hit carries its score and a c
 
 Set all three or none. With a place, every turn note carries one short line after the chat window, such as `Weather in Singapore now: 31°C (feels like 38°C), partly cloudy, humid. Today 25–33°C, 70% chance of rain.` It comes from [Open-Meteo](https://open-meteo.com/) (no key), fetched in the background about every 45 minutes and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.
 
+The same block carries Dom's life sheet (`memory/WORLD.md`: home, work, routine, regular spots), the routine slot for the current weekday and part of the day, what the notes a chat may read say about that slot's places, and a variety hint when Dom has just said one of his usual options in this chat. The sheet works without `[world]`; only the weather line needs the place. See [Memory formats](memory-format.md) for the format and who can change it, and the dashboard's Memory → World page to edit it.
+
 ## Dispatch
 
 | Key | Default | Meaning |
@@ -307,6 +309,15 @@ See [Self-directed work](desktop.md#self-directed-work) for the network guard it
 | `web.access_emails` | `[]` | Optional allowlist for the Access assertion's email claim. |
 | `web.dev_token_env` | `""` | Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings. |
 | `web.public_url` | `""` | HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages. |
+
+## Debug tracer
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `tracer.retention_days` | `7` | Days the debug tracer keeps each turn's full trace (prompts, model requests and responses, tool calls and deliveries, for every chat). Older traces are deleted once a day. |
+| `tracer.max_mb` | `256` | Size cap of the trace store (`traces.db` in Dom's home), in megabytes of compressed traces. Past it the oldest traces are deleted first. |
+
+Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See [Privacy](privacy.md#debug-traces).
 
 ## T3 Code
 

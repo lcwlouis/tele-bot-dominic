@@ -4,8 +4,30 @@
 
 The instance home holds `config.toml`, the `.env` secrets, the bot's personality
 in `SOUL.md`, notes, skills and plugins. `state.db` stores chat state, searchable
-messages, jobs, usage and approvals. `transcripts/` holds per-chat JSON Lines
+messages, jobs, usage, approvals, and encrypted credentials. `transcripts/` holds per-chat JSON Lines
 records. Protect both the database and the transcripts as conversation data.
+
+Saved desktop logins, owner-provided secrets (via `request_secret`), and integration
+tokens are encrypted at rest with AES-256-GCM using `DOM_MASTER_KEY` in `.env`
+(mode `0600`, rotatable via **System → Access** while Dom runs or `dom rotate-key <home>`
+while Dom is stopped). E101 secrets and saved-login credentials are owner-only and
+unreachable from groups or friends' DMs. Dom never sends a saved password or E101 secret
+through Telegram chat, any model prompt or tool argument, any traced sandbox HTTP API
+request (`/v1/browser/page/type`, `fill`, `evaluate`), any turn log, debug trace, usage
+row, or Python log line (including `websockets` debug logging). Saved-login filling
+always submits the form and, if a password is still in a field after the submit, clears
+it over VNC; if anything fails or is cancelled after the password is typed and before the
+submit, it makes a best-effort attempt to erase it over VNC before returning (a failed
+attempt is possible, for example if the sandbox is unreachable). It aborts and alerts the
+owner DM if focus leaves the password field mid-typing, and registers the username and password in a per-run redaction set for the
+rest of that desktop task. Residual risk: once typed into Chromium inside the sandbox,
+the password is present in the browser on the matched HTTPS origin. The page checks Dom
+runs through the page's own JavaScript (focus, active field, form action) can be lied to
+by a hostile page, so the browser's tab list, which a page cannot forge, is the trust anchor
+for the site and is re-read right before each typing step. A hostile or
+compromised page on that matched origin (or a compromised sandbox container/shell
+during an owner task) could still capture the input, reveal it in an altered form or
+screenshot that verbatim redaction cannot match, or steal the resulting session cookies.
 
 General notes, habits and the public-safe journal live in `memory/`, with
 separate notes about people and chats. Owner preferences, personal notes and the
@@ -61,6 +83,15 @@ v0.8.4 code backs them up with source tags (see `docs/memory-format.md`):
 - a group's memory pass is shown only the lines it may use and cannot replace, remove or pin a line tagged to another
   chat;
 - `MEMORY.md` is read by every chat and refuses chat-tagged lines;
+- Dom's life sheet (`memory/WORLD.md`, see `docs/memory-format.md`) and the place notes it links are read through the
+  same filter, in code, for every chat: a line tagged to another chat never reaches a group's or friend's prompt, and the
+  owner's DM reads all of it. The variety hints are built only from Dom's own recent messages in the chat being
+  answered. The nightly reflection that may change the sheet reads only group content and the lines no chat owns (never
+  the owner's DM or `private/`), writes no tag, and cannot touch a pinned or chat-tagged line;
+- a place's reference photo (`media/places/`) is the owner's own picture, saved without its camera data, and goes to
+  an image model only when Dom names the place by its key on the image or video note (never guessed from the scene's
+  words), the model takes a reference, and the chat has a line about that place (the owner's DM has them all); the
+  turn note offers each chat only the keys it may see;
 - the journal archive (`memory/journal/`, `private/journal/`) and the "recent life" summaries made from it are
   owner-DM only, because the diary mentions people from every chat. The private archive never leaves
   the owner's scope.
@@ -153,6 +184,31 @@ instance home and its backups outside the checkout and restrict access to them.
 Local desktop browser state lives outside the instance home in a persistent
 profile directory. It can contain signed-in sessions and needs its own file
 permissions and backup policy.
+
+## Debug traces
+
+The debug tracer keeps a full record of every turn in every chat (owner decision E102: "this is a debug trace for a
+reason"), so the owner can see how Dom decided and how to guide him. A trace holds the exact prompt, every model request
+and response, tool arguments and results, the checks and what was sent. That includes friends' and groups' messages in
+full, which is the one place the dashboard shows another chat's text beyond a one-line preview.
+
+- **Where:** `traces.db` in the instance home, a separate owner-only (0600) SQLite file with its own connection.
+  `dom backup` leaves it out.
+- **How long:** `tracer.retention_days` (7 by default). The store is capped at `tracer.max_mb` (256 MB by default), and
+  the oldest traces are deleted first.
+- **Redaction:** secrets are redacted before anything is written. They are:
+  - the values of every key variable `config.toml` names, the Telegram bot token and the other fixed credentials,
+    also when they come only from the environment;
+  - any `.env` variable whose name says it holds a credential (KEY, TOKEN, SECRET, PASSWORD, AUTH, COOKIE, SESSION…).
+
+  Each value is matched raw, JSON-escaped, URL-encoded and base64-encoded; a value shorter than 8 characters is
+  matched only as a whole word. Any `Authorization`, `Cookie` or `Set-Cookie` value, `Basic` or `Bearer` credential,
+  and API key or bot token shape is redacted whatever its value. Request headers are never recorded. Media inside
+  requests is replaced by a placeholder with its type, size and hash.
+- **Residual risk:** a secret split across two separate strings, such as two tool arguments, is not caught.
+- **Who sees it:** only the owner, on the dashboard. The trace reads and exports are same-site only.
+- **Deletion:** forgetting a chat with its history deletes its traces, under every id it had, including ones still
+  waiting to be written. If that fails, the dashboard says so and Dom deletes them at the next start. A message deleted in Telegram stays in older traces until retention removes it.
 
 ## Chat scopes
 
