@@ -46,7 +46,7 @@ export const destinations: Destination[] = [
       { id: "own-work", label: "Own work", href: "/app/work/own-work", icon: Sparkles, blurb: "How Dom's own work runs, and the skills he learned." },
       { id: "reminders", label: "Reminders", href: "/app/work/reminders", icon: Bell, blurb: "What Dom will remind you of, and when." },
       { id: "briefs", label: "Briefs", href: "/app/work/briefs", icon: FileText, blurb: "The briefs Dom wrote for you." },
-      { id: "library", label: "Library", href: "/app/work/library", icon: Images, blurb: "What Dom made and kept: photos, voice and video notes, task files and exports." },
+      { id: "library", label: "Library", href: "/app/work/library", icon: Images, blurb: "What Dom made and kept: photos, voice and video notes, his own files and exports." },
     ],
   },
   {

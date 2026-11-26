@@ -168,14 +168,11 @@ class App:
             self.escalation_client,
             self.jev,
             self.search_client,
+            self.embedding_client,
+            self.knowledge.router,
+            self.knowledge.staged_router,
         ):
-            if holder is None:
-                continue
-            children = getattr(holder, "clients", None)
-            for item in children if children is not None else (holder,):
-                key = getattr(item, "api_key", None)
-                if isinstance(key, str) and key:
-                    keys.add(key)
+            _collect_api_keys(holder, keys)
         return frozenset(keys)
 
     @property
@@ -254,6 +251,20 @@ class ModelRoutes:
 
 
 # ---- owner events ------------------------------------------------------------------
+
+def _collect_api_keys(holder: object, keys: set[str]) -> None:
+    """Add every leaf api_key under a client, fallback chain or router (`providers`, or `clients`) to `keys`."""
+    if holder is None:
+        return
+    children = getattr(holder, "providers", None) or getattr(holder, "clients", None)
+    if children is not None:
+        for child in children:
+            _collect_api_keys(child, keys)
+        return
+    key = getattr(holder, "api_key", None)
+    if isinstance(key, str) and key:
+        keys.add(key)
+
 
 def _person(name: str) -> str:
     return " ".join(name.split()) or "The owner"

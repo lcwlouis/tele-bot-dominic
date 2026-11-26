@@ -62,9 +62,9 @@ def dashboard_url(base: str, path: str) -> str | None:
     return None
 
 
-def link_button(app, path: str | None, label: str = DETAILS_LABEL) -> InlineKeyboardButton | None:
+def link_button(config, path: str | None, label: str = DETAILS_LABEL) -> InlineKeyboardButton | None:
     """A URL button to the dashboard `path`, or None without a safe `web.public_url` (or without a path)."""
-    url = dashboard_url(app.config.web.public_url, path) if path else None
+    url = dashboard_url(config.web.public_url, path) if path else None
     return InlineKeyboardButton(text=label, url=url) if url else None
 
 
@@ -84,25 +84,31 @@ def compose(
 
 
 def markup(
-    app, path: str | None = None, *, label: str = DETAILS_LABEL, buttons: Sequence[InlineKeyboardButton] = (),
+    config, path: str | None = None, *, label: str = DETAILS_LABEL, buttons: Sequence[InlineKeyboardButton] = (),
 ) -> InlineKeyboardMarkup | None:
     """One row of `buttons`, then the dashboard link on its own row; None when there is nothing to show."""
     rows = [list(buttons)] if buttons else []
-    if link := link_button(app, path, label):
+    if link := link_button(config, path, label):
         rows.append([link])
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-async def send_notice(
-    app, chat_id: int, lead: str, details: Sequence[str] = (), *, path: str | None = None, label: str = DETAILS_LABEL,
-    tag: str | None = None, bullets: bool = False, buttons: Sequence[InlineKeyboardButton] = (), **options,
+async def send_notice_to(
+    bot, config, chat_id: int, lead: str, details: Sequence[str] = (), *, path: str | None = None,
+    label: str = DETAILS_LABEL, tag: str | None = None, bullets: bool = False,
+    buttons: Sequence[InlineKeyboardButton] = (), **options,
 ):
     """Send one notice. Without a public dashboard address it is the same short text with no link."""
     from dom.telegram.executor import send_chunk  # imported here: the executor's own imports reach modules that send notices
 
     text, entities = compose(lead, details, tag=tag, bullets=bullets)
     options.setdefault("link_preview_options", LinkPreviewOptions(is_disabled=True))
-    options.setdefault("sleep", app.sleep)
     return await send_chunk(
-        app.bot, chat_id, (text, entities), reply_markup=markup(app, path, label=label, buttons=buttons), **options,
+        bot, chat_id, (text, entities), reply_markup=markup(config, path, label=label, buttons=buttons), **options,
     )
+
+
+async def send_notice(app, chat_id: int, lead: str, details: Sequence[str] = (), **options):
+    """`send_notice_to` for the running app (its bot, config and sleep)."""
+    options.setdefault("sleep", app.sleep)
+    return await send_notice_to(app.bot, app.config, chat_id, lead, details, **options)
