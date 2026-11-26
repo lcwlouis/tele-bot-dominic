@@ -24,6 +24,7 @@ from dom.claim import try_claim
 from dom.config import MODEL_ROLES, Config, load_config
 from dom.deletion import STALE_MESSAGE, hash_matches, stamp_matches, stamp_token
 from dom.dispatch import Dispatcher
+from dom.tracer import TraceWriter
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
 from dom.embedding import EmbeddingRouter, routed_embedding_client
@@ -107,6 +108,7 @@ class App:
     noticings: Noticings = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
     menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
+    traces: TraceWriter | None = None  # the debug tracer (dom.tracer), opened by `dom run`
 
     def __post_init__(self) -> None:
         def now() -> datetime:
@@ -261,7 +263,16 @@ def _command_name(text: str, username: str) -> str | None:
     return name if not target or target.lower() == username.lower() else None
 
 
-async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = False, notify: bool = False) -> None:
+async def record_incoming(
+    app: App, msg: IncomingMessage, *, origin: str | None = None,
+) -> None:
+    """Record a message Dom must answer, as Telegram ingress does: describe its media and wake the dispatcher."""
+    await _record(app, msg, describe_media=True, notify=True, origin=origin)
+
+
+async def _record(
+    app: App, msg: IncomingMessage, *, describe_media: bool = False, notify: bool = False, origin: str | None = None,
+) -> None:
     new_media = (
         describe_media and msg.media is not None
         and not await app.store.has_message(msg.chat_id, msg.msg_id)
@@ -281,6 +292,7 @@ async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = Fals
             text=msg.text or (f"[{msg.media['kind']}]" if msg.media else ""),
             media_json=json.dumps({**msg.media, "description": None}) if msg.media else None,
             created_at=msg.date.isoformat(),
+            origin=origin,
         )
     )
     if new_media:

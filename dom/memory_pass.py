@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
-from dom import notes
+from dom import notes, turn_log
 from dom.agent import unfence
 from dom.home import PrivateAccessError, limit_for
 from dom.models import Scope
@@ -281,6 +281,9 @@ class MemoryPass:
         applied, refused = 0, []
         for op in ops:
             problem = self._write(home, scope, chat_id, offered, op, refused)
+            turn_log.event(
+                "memory_op", op=op, result="written" if problem is None else "refused for size" if not problem else problem,
+            )
             if problem is None:
                 applied += 1
             elif problem:

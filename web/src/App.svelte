@@ -18,6 +18,8 @@
   import Reminders from "./routes/Reminders.svelte";
   import Plugins from "./routes/Plugins.svelte";
   import PluginReview from "./routes/PluginReview.svelte";
+  import Talk from "./routes/Talk.svelte";
+  import TracePage from "./routes/TracePage.svelte";
   import Turns from "./routes/Turns.svelte";
   import Usage from "./routes/Usage.svelte";
   import Spend from "./routes/Spend.svelte";
@@ -32,6 +34,8 @@
   const where = $derived(locate(route.path));
   // /app/system/plugins/{name}/{digest}: one plugin version's code review.
   const review = $derived(where.tab?.id === "plugins" ? route.path.slice(where.tab.href.length + 1).split("/") : []);
+  // /app/system/turns/{id}: one turn's trace.
+  const traced = $derived(where.tab?.id === "turns" ? Number(route.path.slice(where.tab.href.length + 1)) || null : null);
 
   // The menu's waiting dot: fresh on every page change, and every minute while the tab is in view.
   $effect(() => {
@@ -83,6 +87,8 @@
           <Search />
         {:else if where.destination.id === "home"}
           <Home />
+        {:else if where.destination.id === "talk"}
+          <Talk />
         {:else if where.destination.id === "chats"}
           <Chats destination={where.destination} />
         {:else if where.destination.id === "memory"}
@@ -107,6 +113,8 @@
           <Spend destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "usage"}
           <Usage destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "turns" && traced !== null}
+          <TracePage destination={where.destination} tab={where.tab} turnId={traced} />
         {:else if where.tab?.id === "turns"}
           <Turns destination={where.destination} tab={where.tab} />
         {/if}

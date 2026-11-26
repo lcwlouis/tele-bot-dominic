@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import doctor, habits, journal_archive, reflection, release, service, setup
+from dom import doctor, habits, journal_archive, reflection, release, service, setup, tracer
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -178,6 +178,13 @@ async def run(home: Path) -> bool:
                     await app.media_files.reconcile()  # before anything new is saved
                 except Exception:
                     logging.getLogger("dom").warning("could not reconcile the kept media", exc_info=True)
+                try:
+                    app.traces = tracer.open_writer(home, lambda: app.config)
+                    app.traces.start()
+                    await app.traces.prune()
+                except Exception:  # the tracer is a debugging aid: Dom runs without it rather than not at all
+                    logging.getLogger("dom").warning("could not open the trace store; turns are not traced", exc_info=True)
+                    app.traces = None
                 app.dispatch.start()
                 app.dispatch._spawn(check_reachability(app))
                 if app.cloud_studio is not None:
@@ -199,6 +206,9 @@ async def run(home: Path) -> bool:
                     if app.desktop_worker is not None:
                         await app.desktop_worker.close()
                     await app.dispatch.close()
+                    if app.traces is not None:
+                        await app.traces.close()
+                        app.traces.store.close()
     finally:
         if app is not None and app.desktop_worker is not None:
             await app.desktop_worker.close()

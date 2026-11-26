@@ -67,6 +67,12 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "system-turns", path: "/app/system/turns", heading: "Turn log" },
   // One turn's details: timing, model calls with their cache and prompt fingerprint.
   { name: "system-turn-detail", path: "/app/system/turns", heading: "Turn log", strip: "Replied in 2 bubbles" },
+  // One turn's full trace on its own page (the Turn log's link for any chat).
+  { name: "system-turn-trace", path: "/app/system/turns/900", heading: "Turn 900" },
+  // Talk: the owner DM with a message typed on the dashboard, then the same conversation with Trace on and the
+  // turn's audit open (tests/web_preview.py seed_talk).
+  { name: "talk", path: "/app/talk", heading: "Dom" },
+  { name: "talk-trace", path: "/app/talk?trace=1&turn=900", heading: "Dom" },
   { name: "waiting", path: "/app/waiting", heading: "Waiting for you" },
   // The phone's menu, open over a page: every destination with its tabs, and what waits for the owner.
   { name: "menu", path: "/app/work/briefs", heading: "Briefs", menu: true, phoneOnly: true },

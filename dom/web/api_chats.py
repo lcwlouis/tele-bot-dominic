@@ -10,6 +10,7 @@ shows Dom's replies; the dashboard is not a place to read friends' chats.
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -23,6 +24,7 @@ from dom.web.model_settings import _input
 from dom.web.shared import WHO, _chats, _title, owner_app
 
 router = APIRouter()
+log = logging.getLogger("dom.web")
 JSON_POSTS = {
     "/api/chats/action", "/api/chats/preset", "/api/chats/traits", "/api/chats/traits/reset",
     "/api/chats/reachability", "/api/chats/hide", "/api/chats/forget", "/api/chats/fresh",
@@ -172,6 +174,11 @@ async def forget_chat(request: Request) -> dict:
         raise HTTPException(422, "Confirm history deletion before forgetting this chat's messages.")
     if not await app.store.forget_chat(update.chat_id, delete_history=update.delete_history):
         raise HTTPException(404, "Unknown chat, or one Dom can still reach.")
+    if update.delete_history and app.traces is not None:
+        try:  # its traces hold its messages too
+            await app.traces.store.delete_chat(update.chat_id)
+        except Exception:
+            log.exception("could not delete the traces of forgotten chat %s", update.chat_id)
     detail = " and deleted its history" if update.delete_history else " (history kept)"
     await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}")
     return await _done(app, f"Forgot chat{detail}.")

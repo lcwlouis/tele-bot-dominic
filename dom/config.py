@@ -271,6 +271,25 @@ class WorldConfig(BaseModel):
         return bool(self.place.strip()) and self.latitude is not None and self.longitude is not None
 
 
+class TracerConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    retention_days: int = Field(
+        7, ge=1, le=90,
+        description=(
+            "Days the debug tracer keeps each turn's full trace (prompts, model requests and responses, tool calls and "
+            "deliveries, for every chat). Older traces are deleted once a day."
+        ),
+    )
+    max_mb: int = Field(
+        256, ge=16, le=10000,
+        description=(
+            "Size cap of the trace store (`traces.db` in Dom's home), in megabytes of compressed traces. Past it the "
+            "oldest traces are deleted first."
+        ),
+    )
+
+
 class WebConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -682,6 +701,7 @@ class Config(BaseModel):
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     world: WorldConfig = Field(default_factory=WorldConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    tracer: TracerConfig = Field(default_factory=TracerConfig)
     t3: T3Config = Field(default_factory=T3Config)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why.")

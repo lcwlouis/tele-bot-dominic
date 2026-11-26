@@ -509,6 +509,10 @@ export type ModelCall = {
   user_prefix_hash: string | null;
 };
 export type Turn = {
+  id: number;
+  chat_id: string;
+  /** Whether the debug tracer has this turn's full trace (traces are kept for `tracer.retention_days`). */
+  has_trace: boolean;
   at: string;
   time: string;
   full_time: string;
@@ -529,6 +533,7 @@ export type Turn = {
 };
 export type TurnsData = {
   chat: string;
+  owner_chat: string;
   stages: Record<string, string>;
   visible_stages: string[];
   choices: { id: string; title: string }[];
@@ -679,3 +684,56 @@ export type MediaInputs = {
 /** GET /api/memory/index/estimate and /progress, POST …/confirm and …/cancel (dom/web/api_memory.py). */
 export type IndexEstimate = { items: number; rough_seconds: number; model: string; staged: boolean; rebuild: boolean };
 export type IndexProgress = { done: number; left: number; model: string; state: string; last_error: string; stale: boolean };
+
+/** One message in the owner DM, as the Talk page shows it. */
+export type TalkMessage = {
+  id: number;
+  msg_id: number | null;
+  mine: boolean;
+  who: string;
+  text: string;
+  at: string;
+  /** "dashboard" when the owner wrote it on the Talk page. */
+  origin: string | null;
+  edited: boolean;
+  media: { kind: string; url: string | null; description: string | null } | null;
+};
+
+/** One stored trace part (a turn, the work after it, or background work), as listed beside the messages. */
+export type TraceSummary = { id: number; turn_id: number | null; kind: string; label: string; at: string; outcome: string; size: number };
+
+export type TalkData = {
+  messages: TalkMessage[];
+  has_more: boolean;
+  typing: boolean;
+  traced: boolean;
+  turns?: TraceSummary[];
+};
+
+/** One event in a trace (dom/tracer.py); fields beyond these depend on `type`. */
+export type TraceEvent = { type: string; at: string; t_ms: number; [field: string]: unknown };
+
+export type TracePart = {
+  version: number;
+  turn_id: number | null;
+  chat_id: string;
+  scope: string;
+  kind: "turn" | "after" | "background";
+  label: string;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  outcome: string;
+  model: string;
+  fallback: boolean;
+  steps: string[];
+  visits: { reason: string; duration_ms: number; behind: string | null; capped: string | null; depth: number }[];
+  timings: { what: string; ms: number | null }[];
+  first_bubble_ms: number | null;
+  last_bubble_ms: number | null;
+  events: TraceEvent[];
+  dropped_events: number;
+  redactions: number;
+  media_stripped: number;
+  truncated: boolean;
+};

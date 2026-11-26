@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, WorldConfig, starter_config
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -59,7 +59,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "presence", "self_work", "studio", "knowledge", "world", "web", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -165,6 +165,10 @@ def render() -> str:
         "See [Self-directed work](desktop.md#self-directed-work) for the network guard it needs and what it may do.",
         "## Web",
         table(fields(WebConfig, "web.")),
+        "## Debug tracer",
+        table(fields(TracerConfig, "tracer.")),
+        "Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See "
+        "[Privacy](privacy.md#debug-traces).",
         "## T3 Code",
         table(fields(T3Config, "t3.")),
         "See the [T3 Code bridge guide](t3-bridge.md) for service setup and CLI compatibility.",
