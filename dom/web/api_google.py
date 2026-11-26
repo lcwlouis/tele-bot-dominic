@@ -4,10 +4,12 @@ GET  /api/integrations/google             the card: credentials set or not (neve
 POST /api/integrations/google/connect     starts the OAuth flow and returns Google's consent URL; it also sets the
                                           short-lived binding cookie that ties the flow to this browser.
 GET  /api/integrations/google/callback    where Google sends the browser back. It is a top-level cross-site navigation,
-                                          so it carries no Origin and a `Sec-Fetch-Site: cross-site`; it is not a
-                                          `fetch_site` guarded read. It is safe because it still passes the dashboard's
-                                          authentication (the Cloudflare Access session cookie, which a top-level GET
-                                          navigation sends) and then needs the single-use `state` and the binding cookie.
+                                          so it carries no Origin and a `Sec-Fetch-Site: cross-site`, and no bearer
+                                          header, so the dashboard middleware lets this one GET path through without
+                                          an identity (behind Cloudflare Access the Access session cookie is sent and
+                                          Access itself gates it). It authenticates itself: the single-use, unexpired
+                                          `state` must match the HttpOnly binding cookie that only an authenticated
+                                          owner's connect request set. It is not a `fetch_site` guarded read.
 POST /api/integrations/google/disconnect  revokes the token at Google and deletes it here.
 POST /api/integrations/google/switch      turns one of the four switches on or off.
 
@@ -77,11 +79,13 @@ async def callback(request: Request):
         )
     except GoogleError as exc:
         log.warning("Google connect failed: %s", exc)
-        await app.google.record_failure(str(exc))
+        if request.cookies.get(BINDING_COOKIE):  # only a flow this browser began may write what the card shows
+            await app.google.record_failure(str(exc))
         outcome = "failed"
     except Exception:
         log.exception("Google connect failed unexpectedly")
-        await app.google.record_failure("Connecting Google failed. Check Dom's log.")
+        if request.cookies.get(BINDING_COOKIE):
+            await app.google.record_failure("Connecting Google failed. Check Dom's log.")
         outcome = "failed"
     else:
         outcome = "connected"

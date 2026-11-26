@@ -75,12 +75,37 @@ authenticates the request like any other. If the Access session expired while yo
 Access redirects to its own sign-in and the code is lost: press Connect again.
 
 The route is deliberately not one of the dashboard's `Sec-Fetch-Site: same-origin` guarded reads, since Google's
-redirect is cross-site by nature. It stays safe because it still needs the dashboard authentication, a `state` Dom
-created that has not been used or expired, and the binding cookie from the browser that started the flow. A request
-that is not a navigation (`Sec-Fetch-Mode` other than `navigate`) is refused.
+redirect is cross-site by nature.
 
-A local bearer token (`web.dev_token_env`) is sent by scripts, not by a browser navigation, so a browser cannot finish
-the callback behind a token-only dashboard. Connect from an Access-protected dashboard.
+**With a token-only dashboard** (`web.dev_token_env`, loopback) a browser cannot send the token header on Google's
+redirect, so that one `GET` path alone skips the token check. It authenticates itself instead: the connect request is
+authenticated (and sets the `HttpOnly`, `Secure`, `SameSite=Lax` binding cookie for exactly one single-use `state`), and
+the callback succeeds only when the unexpired, unused `state` in the URL matches that cookie. A request without the
+cookie, with a wrong, expired or replayed `state`, or that is not a navigation (`Sec-Fetch-Mode` other than `navigate`),
+is refused and changes nothing; every other path and every other method still needs the token. Behind
+Cloudflare Access the same checks apply on top of Access's own gate.
+
+## Approvals
+
+Add, move, delete and draft each go through an owner-DM card, and the tool returns at once ("asked the owner"); the
+action runs in the background after the tap and its outcome is written to the DM history for Dom's next turn.
+
+- **The card shows everything that matters:** the title or subject, every attendee or recipient, the times with the
+  timezone and, for a move, the old and the new time. If that cannot be shown whole in a Telegram card without cutting
+  anything (say, ten long addresses), the card only summarises ("10 recipients, too long to list here") and has just
+  **Reject** and a link: only the dashboard's **Waiting for you** or **System → Access** view, which shows the complete
+  details, can approve it.
+- **Before it runs,** Dom checks again that the switch is still on and that Google is still the same connection that
+  was asked. Turning a switch off, disconnecting, or connecting a different account cancels the waiting cards ("Cancelled").
+- **A tap that lands as the wait runs out still counts:** a committed approval always runs or is reported as failed.
+  Allow always is saved only after the action ran.
+- **Writes are not repeated blindly.** A calendar insert carries its own event id, so a retry cannot make a second
+  event. A draft that got no clear answer (a timeout or a 5xx after Google may have made it) is reported as "may or may
+  not have been created, check Gmail's Drafts folder" and not sent again.
+- **A slow Google never holds a reply.** Inside a turn Dom spends at most 8 seconds on Google in all and then says it
+  is slow; refreshes and approved actions in the background keep the longer retries.
+- **Free/busy** reads up to four pages of events; if the range holds more it says the answer is incomplete and never calls
+  that range free.
 
 ## Quotas and failures
 

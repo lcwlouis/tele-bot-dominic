@@ -208,7 +208,8 @@
           <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-raised/40 p-3">
             <div class="min-w-0 flex-1">
               <p class="text-sm font-medium">{req.action_label}{#if req.site} · <span class="font-mono">{req.site}</span>{/if}</p>
-              {#if req.detail}<p class="text-xs break-words text-muted-foreground">{req.detail}</p>{/if}
+              {#if req.detail}<p class="text-xs break-words whitespace-pre-line text-muted-foreground">{req.detail}</p>{/if}
+              {#if req.dashboard_only}<p class="text-xs text-coral">Too long for the Telegram card: approve it here.</p>{/if}
             </div>
             <div class="flex flex-wrap gap-2">
               <Button size="sm" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "once" })}>Allow once</Button>

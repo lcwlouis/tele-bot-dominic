@@ -426,7 +426,10 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
 
 - **Where tokens live.** The OAuth refresh and access tokens are encrypted in `state.db` with the same AES-256-GCM key
   as the other secrets (`DOM_MASTER_KEY` in `.env`, namespace `google`). The OAuth client id and secret are in `.env`.
-  No token, code or client secret is written to any log, trace, turn log, usage row or prompt, and a database copy
+  No token, code or client secret is written to any log, turn log, usage row, prompt or tool result, and none reaches the
+  debug tracer: Dom's tool results and its own log lines never carry one, and the tracer also redacts the client secret
+  by its instance list. Calendar and mail text that Dom reads in the owner DM is turn content like any other, so the
+  tracer's full trace of that turn holds it (owner-only, on the dashboard). A database copy
   without `.env` is unreadable. A full backup holds both, like it does for `.env` today. Disconnect revokes the token
   at Google and deletes it here.
 - **Who can reach it.** The `calendar` and `gmail` tools are offered only in the owner's DM, only for the switches
