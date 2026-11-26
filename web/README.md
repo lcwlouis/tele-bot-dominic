@@ -44,6 +44,9 @@ All in `src/app.css`, for both themes; every text pair is checked for WCAG AA by
 
 - **Surfaces**, from back to front: `canvas` (the page), `rail` (the sidebar), `surface` (cards, lists), `raised`
   (fields, hover, inset blocks), `overlay` (the details panel and sheets).
+- **Chart series**: `chart-1` to `chart-5`, as `fill-chart-*`, for categories in a chart (the Spend page's areas). They are
+  checked for colour-blind separation against each theme's surface; a chart using them always has a legend and a
+  table view.
 - **Status**: `status-done`, `status-running`, `status-waiting`, `status-failed`, `status-held`, `status-paused`, as
   `text-status-*` and friends. Always with the status's glyph (`kit/status.ts`), so colour is never the only cue.
   `queued` borrows the paused tone and `cancelled` the muted text; each has its own glyph.

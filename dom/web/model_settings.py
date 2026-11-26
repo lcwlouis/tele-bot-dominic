@@ -59,6 +59,7 @@ from dom.config import (
 )
 from dom import model_lists
 from dom.doctor import _probe_hint, is_zdr_refusal
+from dom.embedding import EmbeddingProvider
 from dom.jev import DEFAULT_BASE_URL as DECISIONS_BASE_URL, JevClient, JevUnavailable
 from dom.llm import ChatClient, FallbackClient, MissingProviderKey, ProviderBudgetError, openrouter_host
 from dom.provider_budget import budget_line
@@ -92,7 +93,7 @@ REVISION = r"^[a-f0-9]{64}$"
 CREDENTIAL_PATTERNS = (API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN)
 # Decision models (Jev's decisions API) edited beside the routing roles. Each has one endpoint: no fallbacks, no effort.
 DECISION_ROLES = ("triage",)
-SettingsRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation", "triage"]
+SettingsRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation", "embedding", "triage"]
 SETTINGS_ROLES = get_args(SettingsRole)
 assert SETTINGS_ROLES == (*MODEL_ROLES, *DECISION_ROLES)
 
@@ -154,6 +155,8 @@ def _validate_slot_for_role(role: SettingsRole, slot: ProviderInput) -> Provider
     if role != "search":
         if slot.provider is not None:
             raise ValueError("Only the search role accepts a search provider type.")
+        if role == "embedding" and slot.reasoning_effort is not None:
+            raise ValueError("Embedding models do not take a reasoning effort.")
         if not slot.model:
             raise ValueError("Enter a model ID without spaces or credentials.")
         return slot
@@ -182,8 +185,8 @@ class ModelUpdate(BaseModel):
     def _validate_role_slots(self) -> ModelUpdate:
         if self.role in DECISION_ROLES and (self.primary is None or self.fallbacks):
             raise ValueError("Triage takes exactly one endpoint.")
-        if self.primary is None and (self.role not in ("fallback", "search", "escalation") or self.fallbacks):
-            raise ValueError("Only fallback, search and escalation may be left empty.")
+        if self.primary is None and (self.role not in ("fallback", "search", "escalation", "embedding") or self.fallbacks):
+            raise ValueError("Only fallback, search, escalation and embedding may be left empty.")
         if self.primary is not None:
             self.primary = _validate_slot_for_role(self.role, self.primary)
         self.fallbacks = [_validate_slot_for_role(self.role, provider) for provider in self.fallbacks]
@@ -1337,6 +1340,8 @@ async def _probe(
         return await _probe_decisions(app, http, config, provider)
     if role == "search":
         return await _probe_search(app, http, config, provider)
+    if role == "embedding":
+        return await _probe_embedding(app, http, config, provider)
     local = _is_local(provider.base_url)
     escalation_owner = app.owner_id if role == "escalation" else None
 
@@ -1398,3 +1403,44 @@ async def _probe(
     else:
         return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=reply[:2000])
     return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=error)
+
+
+async def _probe_embedding(app: App, http: httpx.AsyncClient, config: Config, provider: ProviderEndpoint) -> TestResult:
+    """Embed one short text: the same request the knowledge index makes, recorded in usage like it."""
+    local = _is_local(provider.base_url)
+
+    async def allowed() -> bool:  # a local endpoint costs nothing, so the spend cap never blocks testing it
+        return local or not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
+
+    start = monotonic()
+    key: str | None = None
+    try:
+        _validate_slot_for_role(
+            "embedding", ProviderInput(base_url=provider.base_url, model=provider.model, api_key_env=provider.api_key_env or None),
+        )
+        _check_keys(config, [provider])
+        key = config.secret(provider.api_key_env) if provider.api_key_env else None
+        client = EmbeddingProvider(provider, key, http, usage=app.dispatch.usage)
+        async with asyncio.timeout(TEST_TIMEOUT):
+            with model_request("embedding", None, allowed):
+                batch = await client.embed(["OK"])
+    except KeyPairing as exc:
+        error = str(exc)
+    except ValidationError:
+        error = "Fix this provider's URL, model or key variable in settings."
+    except ModelCallSkipped:
+        error = "The daily spend cap has been reached."
+    except MissingProviderKey:
+        error = MISSING_KEY
+    except (TimeoutError, httpx.TimeoutException):
+        error = "Provider test timed out."
+    except httpx.HTTPStatusError as exc:
+        error = f"Provider returned HTTP {exc.response.status_code}."
+    except (httpx.HTTPError, httpx.InvalidURL, OSError):
+        error = "Could not reach the provider."
+    except (ValueError, KeyError, IndexError, TypeError):
+        error = "Provider did not return a valid embedding."
+    else:
+        dimensions = len(batch.vectors[0]) if batch.vectors else 0
+        return TestResult(ok=True, latency_ms=round((monotonic() - start) * 1000), reply=f"{dimensions} dimensions")
+    return TestResult(ok=False, latency_ms=round((monotonic() - start) * 1000), error=_redact(error, key))

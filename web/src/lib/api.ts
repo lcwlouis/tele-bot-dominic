@@ -22,6 +22,8 @@ export type HomeData =
       };
       recent: { chat: string; text: string; at: string }[];
       desktop: { enabled: boolean; task: { brief: string; status: string } | null };
+      for_you?: ForYou;
+      goals?: { active_count: number };
     };
 
 export async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -90,7 +92,7 @@ function fail(error: ApiError, quiet: boolean): never {
 }
 
 /** GET/POST /api/models and /api/models/test (dom/web/model_settings.py). */
-export type Role = "chat" | "fallback" | "media" | "drafting" | "search" | "escalation";
+export type Role = "chat" | "fallback" | "media" | "drafting" | "search" | "escalation" | "embedding";
 /** The routing roles plus the decision roles (triage), which have one endpoint and no effort. */
 export type SettingsRole = Role | "triage";
 export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily";
@@ -263,6 +265,7 @@ export type MemoryIndex = MemoryWaiting & {
 /** GET /api/search (dom/web/api_search.py): hits by kind; `full` is false for another chat's one-line preview. */
 export type SearchData = {
   query: string;
+  mode?: "keyword" | "meaning" | "entity";
   groups: { kind: string; label: string; hits: { title: string; text: string; href: string; at: string; full: boolean }[] }[];
 };
 export type MemoryFile = { file: string; label: string; readonly: boolean; limit: number | null; content: string; version: string };
@@ -522,3 +525,123 @@ export type TurnsData = {
   cross_chat: { kind: string; source: string; target: string; status: string; drop_reason: string | null; created_at: string; queued_at: string | null; sending_at: string | null; updated_at: string; text: string }[];
   turns: Turn[];
 };
+
+/** GET /api/health (dom/web/api_system.py): `boot` is new in every process, so a restarted Dom answers with another. */
+export type Health = { ok: boolean; boot: string; version: string };
+/** POST /api/system/restart: refused with 409 and the reason while a desktop task or a card would be lost. */
+export type RestartResult = { ok: boolean; message: string; boot: string };
+
+/** GET /api/spend and POST /api/spend/caps (dom/web/spend_settings.py). A null cap means none is set. */
+export type SpendArea = "chat" | "media" | "search" | "desktop" | "memory";
+export type Money = { spent: number; cap: number | null; left: number | null };
+export type SpendView = {
+  revision: string;
+  timezone: string;
+  today: Money;
+  month: Money;
+  month_label: string;
+  month_ends: string;
+  cap_owner_dm: boolean;
+  areas: (Money & { area: SpendArea; label: string; help: string })[];
+  daily: { date: string; spent: number; areas: Record<SpendArea, number> }[];
+  help: Record<"daily_spend_cap_usd" | "monthly_spend_cap_usd" | "cap_owner_dm" | "area_caps", string>;
+  one_off_room: number | null;
+};
+
+/** GET/POST /api/leak-scan (dom/web/spend_settings.py). `custom`: a legacy threshold between the levels. */
+export type LeakLevelId = "strict" | "standard" | "relaxed" | "off";
+export type LeakScanView = {
+  revision: string;
+  level: LeakLevelId | "custom";
+  cutoff: number | null;
+  levels: { id: LeakLevelId; label: string; help: string; cutoff: number | null }[];
+  available: boolean;
+  help: string;
+};
+
+/** GET /api/services and POST /api/services/save|test (dom/web/services_settings.py). A secret field never carries
+ * its value: only `is_set`. */
+export type ServiceState = "ok" | "missing" | "error" | "off";
+export type ServiceField = {
+  name: string;
+  label: string;
+  kind: "text" | "url" | "secret" | "bool" | "int";
+  value: string | number | boolean | null;
+  is_set: boolean | null;
+  editable: boolean;
+  help: string;
+  min: number | null;
+  max: number | null;
+};
+export type Service = {
+  id: string;
+  label: string;
+  state: ServiceState;
+  detail: string;
+  help: string;
+  fields: ServiceField[];
+  links: { label: string; kind: "telegram" | "command"; text: string }[];
+  permissions: { id: string; label: string; detail: string }[];
+  children: Service[];
+  can_test: boolean;
+  restart_required: boolean;
+};
+export type ServicesView = { revision: string; services: Service[]; notices: { id: string; glyph: "info"; text: string }[] };
+export type ServiceTestResult = { ok: boolean; detail: string; latency_ms: number };
+
+/** GET /api/goals and its writes (dom/web/api_goals.py). Every write answers { ok, message, ...GoalsData }. */
+export type GoalStatus = "active" | "paused" | "done" | "dropped";
+export type Goal = {
+  id: number;
+  text: string;
+  category: string;
+  target_date: string | null;
+  check_in_rhythm: string;
+  status: GoalStatus;
+  progress_note: string;
+  last_checkin_at: string | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+};
+export type GoalsData = { goals: Goal[]; categories: string[]; rhythms: string[]; statuses: GoalStatus[] };
+
+/** GET /api/noticings and its writes (dom/web/api_noticings.py), and Home's `for_you`. */
+export type Noticing = {
+  id: number;
+  day: string;
+  kind: "deadline" | "help" | "followup" | "idea";
+  title: string;
+  body: string;
+  action_kind: string;
+  source_label: string;
+  status: "pending" | "accepted" | "dismissed";
+  outcome: string;
+  created_at: string;
+};
+export type NoticingsData = { noticings: Noticing[]; pending_count: number; kinds: string[]; statuses: string[] };
+export type ForYou = { count: number; items: { id: number; kind: string; title: string; body: string; source_label: string; created_at: string }[] };
+
+/** GET /api/media/files, /api/media/usage and /api/media/inputs (dom/web/api_media.py). */
+export type MediaFile = {
+  chat_id: number;
+  chat: string;
+  msg_id: number;
+  kind: "photo" | "voice" | "video_note" | string;
+  special: boolean;
+  text: string;
+  at: string;
+  bytes: number | null;
+  stored: boolean;
+  url: string;
+};
+export type MediaFiles = { files: MediaFile[]; next: string | null };
+export type MediaUsage = { files: number; bytes: number; cap_bytes: number };
+export type MediaInputs = {
+  providers: { model: string; accepts: string[]; source: "config" | "list" | "probe" | "unknown" }[];
+  route_accepts: string[];
+};
+
+/** GET /api/memory/index/estimate and /progress, POST …/confirm and …/cancel (dom/web/api_memory.py). */
+export type IndexEstimate = { items: number; rough_seconds: number; model: string; staged: boolean; rebuild: boolean };
+export type IndexProgress = { done: number; left: number; model: string; state: string; last_error: string; stale: boolean };

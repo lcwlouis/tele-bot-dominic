@@ -74,6 +74,10 @@ class App:
     ingest_locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))  # decide + record, in order
 
     jev: JevClient | None = None
+    # The dashboard's Restart: `dom run` exits with RESTART_EXIT once polling stops, so the service manager starts it again.
+    # Once set, no new desktop task, model switch card or T3 send card starts (each admission checks it).
+    restart_requested: bool = False
+    restart_gate: asyncio.Lock = field(default_factory=asyncio.Lock)  # one restart decision at a time
     bot_id: int | None = None
     media_describer: MediaDescriber | None = None
     search_client: SearchClient | SearchRouter | None = None

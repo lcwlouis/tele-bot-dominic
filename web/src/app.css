@@ -41,6 +41,12 @@
   --status-failed: #e3a595;
   --status-held: #bcb4ea;
   --status-paused: #9bb0c0;
+  /* Chart series (the Spend chart areas), validated for colour-blind separation against this surface. */
+  --chart-1: #338ced;
+  --chart-2: #e76624;
+  --chart-3: #00a888;
+  --chart-4: #d28e05;
+  --chart-5: #e24d8b;
 }
 
 [data-theme="light"] {
@@ -72,6 +78,12 @@
   --status-failed: #a24f3f;
   --status-held: #5b4f98;
   --status-paused: #4d6468;
+  /* Chart series (the Spend chart areas), validated for colour-blind separation against this surface. */
+  --chart-1: #257de0;
+  --chart-2: #f47230;
+  --chart-3: #00b894;
+  --chart-4: #f2a600;
+  --chart-5: #ee7fac;
 }
 
 /* Motion: calm, short and answering the owner. Reduced motion drops every duration to nothing; the
@@ -153,6 +165,11 @@
   --color-coral-fill: var(--coral-fill);
   --color-on-coral: var(--on-coral);
   --color-amber: var(--amber);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
   --color-overlay: var(--overlay);
   --color-status-done: var(--status-done);
   --color-status-running: var(--status-running);

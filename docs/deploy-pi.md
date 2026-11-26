@@ -95,7 +95,10 @@ command if linger is off, using an account authorized to enable it. Linger lets
 the user service start at boot and continue after logout.
 
 The bot service uses `MemoryHigh=500M`, `MemoryMax=700M`, `Restart=on-failure`,
-`RestartSec=15` and `Nice=5`. The persistent timer runs the backup at 04:00 in the
+`RestartSec=15` and `Nice=5`. The dashboard's Restart button relies on `Restart=on-failure`: Dom stops gracefully
+and `dom run` exits with code 75, which systemd treats as a failure and restarts after `RestartSec`. On macOS, a
+launchd agent restarts it the same way with `KeepAlive` set to `{ SuccessfulExit = false; }`. Run by hand,
+`dom run` simply stops. The persistent timer runs the backup at 04:00 in the
 Pi's local time, with idle I/O scheduling. The backup command keeps the latest
 seven archives in `~/dom/backups`. Archives include `.env` and private data.
 

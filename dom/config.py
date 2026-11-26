@@ -25,8 +25,8 @@ SearchProvider = Literal["searxng", "openrouter", "deepseek", "tavily"]
 SEARCH_PROVIDERS = get_args(SearchProvider)
 
 ModelRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation", "embedding"]
-# Roles edited by the current Settings UI. W5 adds the embedding controls; config and the owner reindex APIs land now.
-MODEL_ROLES = ("chat", "fallback", "media", "drafting", "search", "escalation")
+# Roles edited by Settings → Models: every routed role. Embedding serves meaning search (dom/knowledge.py).
+MODEL_ROLES = ("chat", "fallback", "media", "drafting", "search", "escalation", "embedding")
 MODEL_ROUTE_ROLES = get_args(ModelRole)
 
 # The kinds of paid work a monthly limit can cover (dom/usage.py maps each usage kind to one).

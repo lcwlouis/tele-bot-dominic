@@ -82,7 +82,7 @@ async def test_save_backs_up_config_and_applies_new_routes_without_restart(dashb
     route = dict(PRIMARY, model="local-media")
     async with browser() as client:
         initial = (await client.get(API)).json()
-        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search", "escalation", "triage"}
+        assert set(initial["roles"]) == {"chat", "fallback", "media", "drafting", "search", "escalation", "embedding", "triage"}
         assert initial["roles"]["search"] == {"primary": None, "fallbacks": []}
         assert {item["id"] for item in initial["search_providers"]} == {"searxng", "openrouter", "deepseek", "tavily"}
         assert initial["roles"]["fallback"]["primary"]["key_set"] is True
@@ -953,3 +953,34 @@ async def test_save_says_when_the_provider_budget_is_spent(dashboard, monkeypatc
         error = bad.json()["errors"][0]["error"]
         assert error.startswith("OpenRouter's workspace budget ($0.50) is used up.") and "Resets 25 Nov" in error
         assert path.read_text() == START
+
+
+async def test_embedding_role_is_tested_with_an_embedding_request_saved_and_staged(dashboard):
+    app, path, browser = dashboard
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append((request.url.path, body["model"]))
+        if body["model"] == "broken-embed":
+            return httpx.Response(503, json={"error": "unavailable"})
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http, browser() as client:
+        app.client = ChatClient(app.config.models["chat"], None, http)
+        embed = dict(PRIMARY, model="embed-model")
+        # No reasoning effort on an embedding model.
+        assert (await _save(client, "embedding", dict(embed, reasoning_effort="high"))).status_code == 422
+        bad = await _save(client, "embedding", dict(embed, model="broken-embed"))
+        assert bad.status_code == 422 and bad.json()["errors"] == [{"index": 0, "error": "Provider returned HTTP 503."}]
+        assert seen == [("/v1/embeddings", "broken-embed")]
+        saved = await _save(client, "embedding", embed)
+        assert saved.status_code == 200
+        assert saved.json()["roles"]["embedding"]["primary"]["model"] == "embed-model"
+        assert not saved.json()["restart_required"]
+        assert app.knowledge.staged_router is not None  # a new model waits for the owner's reindex confirm
+        revision = saved.json()["revision"]
+        tested = (await client.post(API + "/test", headers=ORIGIN_HEADER, json={"revision": revision, "role": "embedding", "index": 0})).json()
+        assert tested["ok"] and tested["reply"] == "3 dimensions"
+        # Embedding may be left unset: meaning search is then off.
+        assert (await _save(client, "embedding", None)).status_code == 200

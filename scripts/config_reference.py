@@ -75,6 +75,8 @@ def render() -> str:
         "`config.toml.bak`. The test sends a short synthetic prompt to the selected saved provider. "
         "Before sending conversation data to any new cloud model, run a real test and verify that your provider "
         "and account enforce zero data retention. Dom requests ZDR routing for OpenRouter chat completions.",
+        "Settings → Models edits the embedding role like the others (no reasoning effort; its test embeds one short "
+        "text), and its Meaning index card shows the staged model, the estimate, Confirm and Cancel and live progress. "
         "For the home-lab default, point `[models.embedding]` at its OpenAI-compatible `/v1` base and use the "
         "embedding model it serves (for example `qwen3-vl-embedding-2b`). No address or model is built into Dom. "
         "Keyword search remains the default. A model change is staged: `GET /api/memory/index/estimate` shows the "

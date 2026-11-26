@@ -236,7 +236,7 @@ class EscalationTurn:
         return True
 
     def publish_retry(self) -> None:
-        if self.manager.closed:
+        if self.manager.closed or self.manager.app.restart_requested:  # a card offered now would die with the process
             return
         self.retry_until = self.manager.clock() + RETRY_OFFER_SECONDS
         self.expiry = asyncio.get_running_loop().call_later(RETRY_OFFER_SECONDS, self.expire)
@@ -271,7 +271,7 @@ class EscalationTurn:
         self._offer_switch()
 
     def _offer_switch(self) -> None:
-        if not self.manager.closed and self.token not in self.manager.pending:
+        if not self.manager.closed and not self.manager.app.restart_requested and self.token not in self.manager.pending:
             self.manager.pending[self.token] = self
             self.update_card()
 

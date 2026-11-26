@@ -1,7 +1,8 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount, untrack } from "svelte";
-  import { getJSON, send, type StudioKind, type StudioLimits, type StudioLimitsView, type StudioScope, type StudioTier } from "$lib/api";
+  import { getJSON, send, type SpendView, type StudioKind, type StudioLimits, type StudioLimitsView, type StudioScope, type StudioTier } from "$lib/api";
+  import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
@@ -15,9 +16,6 @@
   // so a save applies at once.
   let { revision = $bindable() }: { revision: string } = $props();
 
-  const SCOPES: { scope: StudioScope; label: string }[] = [
-    { scope: "owner_dm", label: "Your DM" }, { scope: "friend_dm", label: "Friends’ DMs" }, { scope: "group", label: "Groups" },
-  ];
   const KINDS: Record<StudioKind, string> = {
     voice: "Voice notes", video_note: "Video notes", photo: "Photos", special: "Special videos",
   };
@@ -37,6 +35,8 @@
   let drafts = $state<Record<StudioScope, Draft> | null>(null);
   let daily = $state<number | null>(null);
   let saving = $state(false);
+  // Cloud media spend this month against the media area's limit (E86), where /api/spend answers.
+  let mediaSpend = $state<SpendView["areas"][number] | null>(null);
   // Any edit since the limits were last shown, valid or not: a reload must never overwrite it.
   let edited = $state(false);
 
@@ -69,7 +69,13 @@
     }
   }
 
-  onMount(load);
+  onMount(() => {
+    load();
+    getJSON<SpendView>("/api/spend")
+      .then((spend) => (mediaSpend = spend.areas.find((area) => area.area === "media") ?? null))
+      .catch(() => (mediaSpend = null)); // the limits still work without it
+  });
+  const money = (amount: number) => `$${amount.toFixed(2)}`;
 
   const whole = (n: number | null, max = Infinity) => Number.isInteger(n) && n! >= 0 && n! <= max;
   const optionalGap = (n: number | null) => n === null || whole(n, GAP_MAX);
@@ -209,12 +215,41 @@
   </div>
 {/snippet}
 
+{#snippet scopeFields(scope: StudioScope, label: string)}
+  {@const d = drafts![scope]}
+  <fieldset class="grid content-start gap-2.5">
+    <legend class="mb-2.5 font-medium">{label}</legend>
+    {@render count(`limit-${scope}-voice`, KINDS.voice, d.voice, (n) => (d.voice = n), "per day")}
+    {@render periodic(`limit-${scope}-video`, KINDS.video_note, d.video, (n) => (d.video = n), d.videoWeek, (w) => (d.videoWeek = w))}
+    {@render periodic(`limit-${scope}-image`, KINDS.photo, d.image, (n) => (d.image = n), d.imageWeek, (w) => (d.imageWeek = w))}
+    {#if scope === "owner_dm"}
+      {@render count(`limit-${scope}-special`, KINDS.special, d.special, (n) => (d.special = n), "per day")}
+    {/if}
+    {@render count(`limit-${scope}-gap`, "Gap", d.gap, (n) => (d.gap = n), "minutes", GAP_MAX)}
+          <details class="rounded-lg border px-3 py-2">
+            <summary class="cursor-pointer text-sm">Gaps for one kind</summary>
+            <div class="mt-2.5 grid gap-2.5">
+              {@render gapField(`limit-${scope}-voice-gap`, "Voice gap", d.voiceGap, (n) => (d.voiceGap = n))}
+              {@render gapField(`limit-${scope}-video-gap`, "Video gap", d.videoGap, (n) => (d.videoGap = n))}
+              {@render gapField(`limit-${scope}-image-gap`, "Photo gap", d.imageGap, (n) => (d.imageGap = n))}
+              {#if scope === "owner_dm"}
+                {@render gapField(`limit-${scope}-special-gap`, "Special gap", d.specialGap, (n) => (d.specialGap = n))}
+              {/if}
+              <p class="text-xs text-muted-foreground">
+                A kind with its own gap is spaced only from its last one, so a voice note and a photo can arrive together.
+                The rest share the general gap.
+              </p>
+            </div>
+          </details>
+  </fieldset>
+{/snippet}
+
 <Card.Root class="mt-6" role="region" aria-labelledby="media-limits-title">
   <Card.Header>
     <Card.Title id="media-limits-title" class="text-base">Media limits</Card.Title>
-    <Card.Description>
-      How many voice notes, video notes and photos Dom may send. The gap is the least time between two media in one chat;
-      a kind can have a gap of its own.
+    <Card.Description class="flex items-center gap-1">
+      How many voice notes, video notes and photos Dom may send.
+      <InfoGlyph label="About the gap">The gap is the least time between two media in one chat; a kind can have a gap of its own.</InfoGlyph>
     </Card.Description>
   </Card.Header>
   <Card.Content>
@@ -226,54 +261,37 @@
       <p role="status" class="text-sm text-muted-foreground">Loading…</p>
     {:else}
       {@const owner = view.owner}
-      <section aria-labelledby="media-left-title" class="mb-5 rounded-xl border bg-surface p-3.5">
-        <h3 id="media-left-title" class="kicker mb-2">Left now in your DM</h3>
-        <ul class="flex flex-wrap gap-x-5 gap-y-1 text-sm">
-          {#each owner.kinds as item (item.kind)}
-            <li class={item.on ? "" : "text-muted-foreground"}>
-              {KINDS[item.kind]}: <span class="font-mono">{item.left}</span>{item.on ? "" : " (off)"}
-            </li>
-          {/each}
-        </ul>
-        <p class="mt-2 text-sm text-muted-foreground">
-          {nowNote(owner)}
-          {#if owner.daily_left > 0}<span class="font-mono">{owner.daily_left}</span> left across all chats.{/if}
-        </p>
-      </section>
-
       <form onsubmit={save} oninput={() => (edited = true)} onchange={() => (edited = true)}>
         <div class="grid gap-5 md:grid-cols-3">
-          {#each SCOPES as { scope, label } (scope)}
-            {@const d = drafts[scope]}
-            <fieldset class="grid content-start gap-2.5">
-              <legend class="mb-2.5 font-medium">{label}</legend>
-              {@render count(`limit-${scope}-voice`, KINDS.voice, d.voice, (n) => (d.voice = n), "per day")}
-              {@render periodic(`limit-${scope}-video`, KINDS.video_note, d.video, (n) => (d.video = n), d.videoWeek, (w) => (d.videoWeek = w))}
-              {@render periodic(`limit-${scope}-image`, KINDS.photo, d.image, (n) => (d.image = n), d.imageWeek, (w) => (d.imageWeek = w))}
-              {#if scope === "owner_dm"}
-                {@render count(`limit-${scope}-special`, KINDS.special, d.special, (n) => (d.special = n), "per day")}
+          <div class="grid content-start gap-5">
+            <fieldset class="grid content-start gap-2.5 rounded-xl border bg-surface p-3.5">
+              <legend class="float-left mb-2.5 font-medium">Global limits</legend>
+              {@render count("limit-daily", "All chats", daily, (n) => (daily = n), "per day")}
+              <p class="text-sm text-muted-foreground">
+                {#if owner.daily_left > 0}<span class="font-mono">{owner.daily_left}</span> left today across all chats.{:else}All chats have used today's total.{/if}
+              </p>
+              {#if mediaSpend}
+                <p class="text-sm text-muted-foreground" data-media-spend>
+                  Cloud media this month: <span class="font-mono">{money(mediaSpend.spent)}</span>{#if mediaSpend.cap !== null}{" "}of
+                  <span class="font-mono">{money(mediaSpend.cap)}</span> (<span class="font-mono">{money(mediaSpend.left ?? 0)}</span>{" "}left){:else}, no limit{/if}.
+                </p>
               {/if}
-              {@render count(`limit-${scope}-gap`, "Gap", d.gap, (n) => (d.gap = n), "minutes", GAP_MAX)}
-              <details class="rounded-lg border px-3 py-2">
-                <summary class="cursor-pointer text-sm">Gaps for one kind</summary>
-                <div class="mt-2.5 grid gap-2.5">
-                  {@render gapField(`limit-${scope}-voice-gap`, "Voice gap", d.voiceGap, (n) => (d.voiceGap = n))}
-                  {@render gapField(`limit-${scope}-video-gap`, "Video gap", d.videoGap, (n) => (d.videoGap = n))}
-                  {@render gapField(`limit-${scope}-image-gap`, "Photo gap", d.imageGap, (n) => (d.imageGap = n))}
-                  {#if scope === "owner_dm"}
-                    {@render gapField(`limit-${scope}-special-gap`, "Special gap", d.specialGap, (n) => (d.specialGap = n))}
-                  {/if}
-                  <p class="text-xs text-muted-foreground">
-                    A kind with its own gap is spaced only from its last one, so a voice note and a photo can arrive together.
-                    The rest share the general gap.
-                  </p>
-                </div>
-              </details>
             </fieldset>
-          {/each}
-        </div>
-        <div class="mt-5 border-t pt-4 md:w-[calc((100%-2.5rem)/3)]">
-          {@render count("limit-daily", "All chats", daily, (n) => (daily = n), "per day")}
+            {@render scopeFields("owner_dm", "Your DM")}
+            <section aria-labelledby="media-left-title" class="rounded-xl border bg-surface p-3.5">
+              <h3 id="media-left-title" class="kicker mb-2">Left now in your DM</h3>
+              <ul class="grid gap-1 text-sm">
+                {#each owner.kinds as item (item.kind)}
+                  <li class="flex justify-between gap-3 {item.on ? '' : 'text-muted-foreground'}">
+                    <span>{KINDS[item.kind]}</span><span><span class="font-mono">{item.left}</span>{item.on ? "" : " (off)"}</span>
+                  </li>
+                {/each}
+              </ul>
+              <p class="mt-2 text-sm text-muted-foreground">{nowNote(owner)}</p>
+            </section>
+          </div>
+          {@render scopeFields("friend_dm", "Friends’ DMs")}
+          {@render scopeFields("group", "Groups")}
         </div>
         <div class="mt-4 flex flex-wrap items-center gap-3">
           <Button type="submit" disabled={!changed || saving}>
