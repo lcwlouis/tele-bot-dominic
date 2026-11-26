@@ -17,6 +17,7 @@ START = """\
 # Keep the instance options and comments.
 timezone = "UTC"
 daily_spend_cap_usd = 1.0  # the normal pace
+monthly_spend_cap_usd = 30.0
 leak_threshold = 1.2
 
 [models.chat]

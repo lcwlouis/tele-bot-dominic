@@ -109,8 +109,8 @@ or send `/pending` in the owner DM to resend pending requests.
 ## Spend limits
 
 `daily_spend_cap_usd` (default `1.0`) is the normal daily pace and
-`monthly_spend_cap_usd` (default `30.0`) a hard ceiling for the calendar month in
-`timezone`. Both cover every paid call: chat, media, search, desktop tasks, embeddings,
+`monthly_spend_cap_usd` (off by default; set it, for example to `30`) a hard ceiling for the
+calendar month in `timezone`. Both cover every paid call: chat, media, search, desktop tasks, embeddings,
 summaries and studio cloud backups. Zero turns a cap off. When either is reached,
 friends' chats and background work pause, and you get one message per day or month.
 Your own DM is never paused by a cap unless `cap_owner_dm = true`; either way, what it

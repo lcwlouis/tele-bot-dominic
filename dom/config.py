@@ -565,7 +565,7 @@ class Config(BaseModel):
         "past it a trim also happens, down to 60% of it. Not the normal trigger.",
     )
     daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap, the normal pace: once today's paid calls reach it, friends' chats and background work pause until midnight in `timezone`. The owner's DM is exempt unless `cap_owner_dm` is on. Zero disables the cap.")
-    monthly_spend_cap_usd: float = Field(30.0, ge=0, allow_inf_nan=False, description="Monthly USD ceiling for the calendar month in `timezone`, over every paid call: chat, media, search, desktop tasks, embeddings, summaries and studio cloud backups. Once reached, friends' chats and background work pause until the 1st; one-offs such as event days draw only on the month's unused budget and never pass it. The owner's DM is exempt unless `cap_owner_dm` is on. Zero disables the cap.")
+    monthly_spend_cap_usd: float = Field(0.0, ge=0, allow_inf_nan=False, description="Monthly USD ceiling for the calendar month in `timezone`, over every paid call: chat, media, search, desktop tasks, embeddings, summaries and studio cloud backups. Once reached, friends' chats and background work pause until the 1st; one-offs such as event days draw only on the month's unused budget and never pass it. The owner's DM is exempt unless `cap_owner_dm` is on. Zero disables the cap.")
     cap_owner_dm: bool = Field(False, description="Make the owner's DM obey both spend caps. Off (the default), the owner's own chat is never paused by a cap, though what it spends still counts toward them.")
     area_spend_caps_usd: dict[SpendArea, Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(
         default_factory=dict,
