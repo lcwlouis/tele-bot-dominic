@@ -13,7 +13,7 @@ from typing import Awaitable, Callable
 
 import httpx
 
-from dom import turn_log
+from dom import modalities, turn_log
 from dom.config import DEEPSEEK_EFFORT_ERROR, DEEPSEEK_EFFORTS, Config, ModelRole, ProviderEndpoint, deepseek_chat_host
 from dom.usage import Kind, UsageRecorder, check_model_allowed, provider_address, request_kind
 
@@ -22,6 +22,7 @@ CONNECT_TIMEOUT_SECONDS = 5  # an unreachable home lab should fail over fast
 
 log = logging.getLogger("dom.llm")
 RETRY_BACKOFF = (1, 3)  # seconds before the 1st and 2nd retry
+MEDIA_REFUSALS = (400, 413, 415, 422)  # a server turning down the request itself, as it does for a type it can't read
 
 
 def _retryable(status: int) -> bool:
@@ -163,6 +164,9 @@ class ChatClient:
         self._sleep = sleep
         self.usage = usage
         self.kind = kind
+        # The input types (image, audio, video) this endpoint takes, set by the dispatcher before a turn. Attachments
+        # of any other type are sent as their description, and unknown means text-only.
+        self.inputs: frozenset[str] = frozenset()
         url = httpx.URL(endpoint.base_url)
         self.host = url.host
         self.address = provider_address(url)
@@ -175,8 +179,27 @@ class ChatClient:
         self, messages: list[dict], tools: list[dict], *, fallback: bool = False, once: bool = False,
         max_tokens: int | None = None, timeout: float = TIMEOUT_SECONDS,
     ) -> dict:
-        """POST /chat/completions and return the assistant message."""
-        body: dict = {"model": self.endpoint.model, "messages": messages}
+        """POST /chat/completions and return the assistant message. A message may carry `attachments` (see
+        dom.modalities): the ones this model takes go as content parts, the rest as their description. If the server
+        refuses the request with media in it, it is sent once more with every attachment described."""
+        if not modalities.has_attachments(messages):
+            return await self._post(messages, messages, tools, fallback, once, max_tokens, timeout)
+        wire, native = await modalities.prepare(messages, self.inputs)
+        try:
+            return await self._post(messages, wire, tools, fallback, once, max_tokens, timeout)
+        except httpx.HTTPStatusError as exc:
+            if not native or exc.response.status_code not in MEDIA_REFUSALS or isinstance(exc, ProviderBudgetError):
+                raise
+        log.warning("model %s refused attached media; describing it instead", self.endpoint.model)
+        wire, _ = await modalities.prepare(messages, frozenset())
+        turn_log.step("media refused")
+        return await self._post(messages, wire, tools, fallback, once, max_tokens, timeout)
+
+    async def _post(
+        self, messages: list[dict], wire: list[dict], tools: list[dict], fallback: bool, once: bool,
+        max_tokens: int | None, timeout: float,
+    ) -> dict:
+        body: dict = {"model": self.endpoint.model, "messages": wire}
         if tools:
             body["tools"] = tools
         if max_tokens is not None:
@@ -188,7 +211,7 @@ class ChatClient:
                 body["thinking"] = {"type": "disabled"}
             elif self.endpoint.reasoning_effort in DEEPSEEK_EFFORTS:
                 body["thinking"] = {"type": "enabled"}
-                body["messages"] = _with_reasoning_slots(messages)
+                body["messages"] = _with_reasoning_slots(wire)
             else:
                 raise ValueError(DEEPSEEK_EFFORT_ERROR)
         if openrouter:

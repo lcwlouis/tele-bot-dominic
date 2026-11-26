@@ -11,6 +11,10 @@ minus the estimated size of the window it carried is the prompt's fixed part (sy
 with the start. The window's current size is that plus an estimate for every message now in it. Messages are
 estimated at one token per three UTF-8 bytes (plain text over-counts a little, CJK and emoji come out right).
 
+A fresh start (`/fresh`, or the dashboard) moves the whole chat's window start to now with a per-chat floor: nothing
+is deleted and search still finds the earlier messages, they just leave the prompt. The floor applies to every forum
+topic of the chat, and an undo puts back the floor it replaced.
+
 A trim never drops a message the memory pass has not read yet: it waits (`Window.blocked`) while the caller starts
 the pass, so the pass rewrites the notes and the trim moves the window start in the same turn.
 """
@@ -54,6 +58,53 @@ class Window:
     trim_seq: int = 0  # increments on every trim so the prompt cache knows when to swap notes
 
 
+def _floor_key(chat_id: int) -> str:
+    return f"fresh:{chat_id}"
+
+
+def _undo_key(chat_id: int) -> str:
+    return f"fresh-undo:{chat_id}"
+
+
+async def _floor(store: Store, chat_id: int) -> tuple[int, str] | None:
+    try:
+        raw = json.loads(await store.kv_get(_floor_key(chat_id)) or "null")
+        return (int(raw["id"]), str(raw["at"])) if raw else None
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+async def start_fresh(store: Store, chat_id: int, first_id: int, at: str) -> None:
+    """Make `first_id` (the row of the fresh-start event) the first message the model reads in this chat. The floor
+    it replaces is kept for one undo."""
+    previous = await store.kv_get(_floor_key(chat_id))
+    await store.kv_set_many({
+        _undo_key(chat_id): previous or "null",
+        _floor_key(chat_id): json.dumps({"id": first_id, "at": at}),
+    })
+    await _renew_notes(store, chat_id)
+
+
+async def undo_fresh(store: Store, chat_id: int) -> bool:
+    """Put back the floor the last fresh start replaced. False when there is nothing to undo."""
+    previous = await store.kv_get(_undo_key(chat_id))
+    if previous is None:
+        return False
+    if previous == "null":
+        await store.kv_delete(_floor_key(chat_id))
+    else:
+        await store.kv_set(_floor_key(chat_id), previous)
+    await store.kv_delete(_undo_key(chat_id))
+    await _renew_notes(store, chat_id)
+    return True
+
+
+async def _renew_notes(store: Store, chat_id: int) -> None:
+    """The window changed under the prompt cache, as a trim would: the next prompt takes fresh notes."""
+    start, fixed, trims = await _state(store, chat_id)
+    await _save(store, chat_id, start, fixed, trims + 1)
+
+
 async def _state(store: Store, chat_id: int, thread_id: int | None = None) -> tuple[tuple[int, str] | None, int, int]:
     try:
         raw = json.loads(await store.kv_get(_key(chat_id, thread_id)) or "{}")
@@ -89,6 +140,8 @@ async def load(
 ) -> Window:
     """The messages the model reads for this chat (or forum topic), trimming first if the prompt has reached its budget."""
     start, fixed, trims = await _state(store, chat_id, thread_id)
+    if (floor := await _floor(store, chat_id)) is not None and (start is None or floor[0] > start[0]):
+        start = floor
     limit = config.window_size * (FETCH_FACTOR if start else 1)  # with no start yet, begin from the newest `window_size`
     rows = await store.get_window_from(chat_id, start, limit, through_id=through_id, thread_id=thread_id, filter_thread=True)
     tokens = fixed + sum(estimate_tokens(message) for message in rows)

@@ -50,7 +50,7 @@ async def make_app(tmp_path):
     apps = []
 
     def make(owner_id=OWNER, contents=()):
-        endpoint = ModelEndpoint(base_url="https://llm.test/v1", model="m", api_key_env=None)
+        endpoint = ModelEndpoint(base_url="https://llm.test/v1", model="m", api_key_env=None, input=("text",))  # text-only: no probe call
         config = Config(  # the leak check ships on; tests that are not about it keep their Jev calls to themselves
             home=tmp_path, owner_id=owner_id, timezone="UTC", models={"chat": endpoint}, leak_check=False,
         )

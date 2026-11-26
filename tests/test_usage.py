@@ -32,7 +32,7 @@ def usage_rows(app):
 
 
 def chat(http, app, model="mock-chat"):
-    endpoint = ModelEndpoint(base_url=f"https://{model}.example.org/v1", model=model)
+    endpoint = ModelEndpoint(base_url=f"https://{model}.example.org/v1", model=model, input=("text",))
     return ChatClient(endpoint, None, http, sleep=no_sleep, usage=app.dispatch.usage)
 
 

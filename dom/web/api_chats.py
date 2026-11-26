@@ -25,7 +25,7 @@ from dom.web.shared import WHO, _chats, _title, owner_app
 router = APIRouter()
 JSON_POSTS = {
     "/api/chats/action", "/api/chats/preset", "/api/chats/traits", "/api/chats/traits/reset",
-    "/api/chats/reachability", "/api/chats/hide", "/api/chats/forget",
+    "/api/chats/reachability", "/api/chats/hide", "/api/chats/forget", "/api/chats/fresh",
     "/api/stickers", "/api/stickers/refresh",
 }
 ChatId = int
@@ -52,6 +52,11 @@ class TraitsUpdate(Strict):
 
 class TraitsReset(Strict):
     chat_id: ChatId
+
+
+class FreshStart(Strict):
+    chat_id: ChatId
+    undo: bool = False
 
 
 class StickerChange(Strict):
@@ -263,6 +268,17 @@ async def reset_traits(request: Request) -> dict:
     message = await owner.reset_traits(app, chat) if chat is not None else None
     if message is None:
         raise HTTPException(422, "Traits or chat unavailable.")
+    return await _done(app, message)
+
+
+@router.post("/api/chats/fresh")
+async def fresh_start(request: Request) -> dict:
+    """Start any approved chat's window from now, or undo the last start. Nothing is deleted; Dom is told in that chat."""
+    app = owner_app(request)
+    update = await _input(request, FreshStart)
+    message = await owner.fresh_start(app, update.chat_id, WHO, undo=update.undo)
+    if message is None:
+        raise HTTPException(404, "Unknown chat.")
     return await _done(app, message)
 
 
