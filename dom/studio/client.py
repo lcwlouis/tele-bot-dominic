@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from datetime import datetime, timezone
@@ -111,10 +112,17 @@ class StudioClient:
     async def voice(self, text: str) -> bytes | None:
         return await self._request("voice", self.config.timeouts.voice, payload={"text": text}, mime="audio/ogg")
 
-    async def video(self, text: str, special: bool, outfit: str | None) -> bytes | None:
+    @property
+    def takes_still(self) -> bool:
+        """The studio can film a note from a fresh still (0.8.4 on); an older one only animates the portrait."""
+        return bool(self.health and self.health.get("video_still"))
+
+    async def video(self, text: str, special: bool, outfit: str | None, still: bytes | None = None) -> bytes | None:
         payload = {"text": text, "special": special}
         if outfit is not None:
             payload["outfit"] = outfit
+        if still is not None:
+            payload["still"] = base64.b64encode(still).decode("ascii")
         timeout = self.config.timeouts.special if special else self.config.timeouts.video_notes
         return await self._request("video_note", timeout, payload=payload, mime="video/mp4")
 

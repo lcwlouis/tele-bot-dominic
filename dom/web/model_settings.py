@@ -320,6 +320,7 @@ class StudioFallbackView(BaseModel):
     api_key_env: str
     key_set: bool
     paid: bool
+    voice: str | None = None
     supports_reference: bool
     allow_without_reference: bool
     data_policy: DataPolicy

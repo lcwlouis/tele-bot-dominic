@@ -1,13 +1,15 @@
 """The versioned HTTP surface shared with the bot."""
 
 import asyncio
+import base64
+import binascii
 from contextlib import asynccontextmanager
 from functools import partial
 from hmac import compare_digest
 import json
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.applications import Starlette
 from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse, Response
@@ -18,8 +20,11 @@ from .process import WorkerError
 from .service import read_output
 
 
-VERSION = "0.8.3"
+VERSION = "0.8.4"
 MAX_BODY = 16 * 1024
+MAX_STILL = 3 * 1024**2  # a fresh still for a video note, as a PNG
+MAX_STILL_BODY = MAX_STILL * 4 // 3 + MAX_BODY  # that still as base64, plus the rest of the request
+PNG = b"\x89PNG\r\n\x1a\n"
 MIME = {"voice": "audio/ogg", "image": "image/png", "video": "video/mp4", "special": "video/mp4"}
 VoiceText = Annotated[str, Field(min_length=1, max_length=600)]
 
@@ -44,6 +49,24 @@ class Video(Payload):
     text: Annotated[str, Field(min_length=1, max_length=200)]
     special: bool = False
     outfit: OutfitName | None = None
+    # A fresh still of the host's character in the scene to film, sent as base64 PNG and held as the decoded bytes.
+    # Without it the outfit's portrait is animated.
+    still: bytes | None = None
+
+    @field_validator("still", mode="before")
+    @classmethod
+    def decode_still(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) > MAX_STILL * 4 // 3 + 4:
+            raise ValueError("still must be base64 text of at most 3 MiB")
+        try:
+            data = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("still is not base64") from None
+        if not data.startswith(PNG) or len(data) > MAX_STILL:
+            raise ValueError("still must be a PNG of at most 3 MiB")
+        return data
 
     @model_validator(mode="after")
     def validate_special_text(self):
@@ -114,6 +137,7 @@ def create_app(studio, sources, token):
             "available_memory_bytes": reading.available if reading else None,
             "queue_depth": len(studio.pending),
             "version": VERSION,
+            "video_still": True,
         })
 
     async def portrait(request):
@@ -136,10 +160,11 @@ def create_app(studio, sources, token):
         if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
             return error(415, "expected-json")
         body = bytearray()
+        limit = MAX_STILL_BODY if kind == "video" else MAX_BODY
         try:
-            async with asyncio.timeout(5):
+            async with asyncio.timeout(5 if kind != "video" else 15):
                 async for chunk in request.stream():
-                    if len(body) + len(chunk) > MAX_BODY:
+                    if len(body) + len(chunk) > limit:
                         return error(413, "body-too-large")
                     body.extend(chunk)
             values = MODELS[kind].model_validate(json.loads(body))

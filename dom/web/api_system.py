@@ -294,11 +294,25 @@ async def restart(request: Request) -> dict:
     reason) while something in memory would be lost."""
     app = owner_app(request)
     await _input(request, Nothing)
-    if app.restart_requested:
-        return {"ok": True, "message": "Dom is already restarting.", "boot": BOOT_ID}
-    if (reason := restart_refusal(app)) is not None:
-        raise HTTPException(409, reason)
-    app.restart_requested = True
+    async with app.restart_gate:
+        if app.restart_requested:
+            return {"ok": True, "message": "Dom is already restarting.", "boot": BOOT_ID}
+        # Close admission first, then wait out any desktop task part-way through being admitted (each holds its
+        # worker's `control` while it starts), so the check below sees everything that will run. A refusal reopens it.
+        app.restart_requested = True
+        try:
+            fleet = app.desktop_worker
+            for lane in list(getattr(fleet, "lanes", {}).values()) if fleet is not None else []:
+                if (control := getattr(lane.worker, "control", None)) is not None:
+                    async with control:
+                        pass
+            reason = restart_refusal(app)
+        except BaseException:
+            app.restart_requested = False
+            raise
+        if reason is not None:
+            app.restart_requested = False
+            raise HTTPException(409, reason)
     try:
         await app.store.record_owner_event("The owner restarted Dom from the dashboard.")
     except Exception:

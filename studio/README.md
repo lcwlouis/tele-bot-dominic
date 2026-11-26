@@ -43,3 +43,21 @@ uv run --locked pytest -q
 ```
 
 The tests use fake JSON-line workers, an encoder stub and fake memory readings.
+
+## Wardrobe portraits
+
+Each outfit needs its own approved portrait, and only the reference outfit (`default_outfit`) is real at first.
+`python -m studio_service.portraits generate studio.toml` makes one candidate portrait per other outfit from the
+reference outfit's portrait and turnaround, using the image worker and each outfit's optional `description`
+(for example `description = "a plain grey hoodie"`; the name is used when it is empty). Candidates are saved under
+`candidates/<outfit>/` beside the reference portrait; nothing configured is touched. Name outfits with `--outfit`,
+fix a render with `--seed`. Look at the candidates, then
+`python -m studio_service.portraits approve studio.toml <outfit> <candidate.png>` copies one over that outfit's
+portrait and keeps the old one as `<portrait>.previous`. Stop the studio service first: the image worker needs the
+memory the service holds. For the cloud backups, also copy each approved portrait to the bot's
+`DOM_HOME/studio-portraits/<outfit>.png`.
+
+## Video notes from a still
+
+`POST /v1/video_note` takes an optional `still`, a base64 PNG of at most 3 MiB, to animate in place of the outfit's
+portrait. `GET /v1/health` reports `"video_still": true` when the studio takes one; the bot sends it only then.

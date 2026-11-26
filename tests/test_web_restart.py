@@ -108,3 +108,50 @@ def test_dom_run_exits_75_only_after_a_dashboard_restart(monkeypatch, tmp_path, 
     monkeypatch.setattr(cli, "run", run)
     assert cli.main(["run", str(tmp_path)]) == code
     assert cli.RESTART_EXIT == 75
+
+
+async def test_a_task_admitted_while_a_restart_decides_is_seen_and_refuses_the_restart(make_app, browser, kills):
+    """A desktop task part-way through admission when Restart is pressed: the restart waits for it, sees it running
+    and refuses, so shutdown never cancels it."""
+    from test_desktop_worker import worker_for
+
+    app = make_app()
+
+    async def blocked():
+        await asyncio.Future()
+
+    worker = await worker_for(app, blocked)
+    admitting, release = asyncio.Event(), asyncio.Event()
+
+    async def admit():
+        admitting.set()
+        await release.wait()  # still being admitted: busy() is not yet true
+        return None
+
+    enqueue = asyncio.create_task(worker.enqueue(OWNER, "Example", admit=admit))
+    await admitting.wait()
+    assert not worker.busy()
+    async with browser(app) as client:
+        restart = asyncio.create_task(client.post("/api/system/restart", json={}, headers=JSON))
+        await asyncio.sleep(0.01)
+        assert not restart.done()  # it waits for the admission rather than deciding without it
+        release.set()
+        task_id = await enqueue
+        response = await restart
+    assert isinstance(task_id, int)
+    assert response.status_code == 409 and "desktop task is running" in response.json()["detail"]
+    assert not app.restart_requested and kills == []
+    worker._job.cancel()
+    await asyncio.gather(worker._job, return_exceptions=True)
+
+
+async def test_no_desktop_task_starts_once_a_restart_is_committed(make_app, browser, kills):
+    from test_desktop_worker import worker_for
+
+    app = make_app()
+    worker = await worker_for(app)
+    async with browser(app) as client:
+        assert (await client.post("/api/system/restart", json={}, headers=JSON)).status_code == 200
+    with pytest.raises(ValueError, match="Dom is restarting"):
+        await worker.enqueue(OWNER, "Example")
+    assert await app.store.desktop_tasks(OWNER) == [] and not worker.busy()

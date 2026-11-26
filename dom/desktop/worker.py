@@ -68,6 +68,7 @@ OWN_SYSTEM_PROMPT = (
     "its path in finish files."
 )
 ACTIVE = ("queued", "running", "waiting_owner")
+RESTARTING = "Dom is restarting; try again once he is back"
 BUDGET_CAP = 3  # an owner's task may be extended up to this many times its starting step budget in all
 WRAP_UP = (
     "You have used every step this task had. Do not use any other tool. Call finish now with what you found so far, "
@@ -286,6 +287,8 @@ class DesktopWorker:
         if container not in (None, self.container):
             raise ValueError(f"this worker runs the {self.container} container")
         async with self.control:
+            if self.app.restart_requested:
+                raise ValueError(RESTARTING)
             if self._job is not None and not self._job.done():
                 raise ValueError(f"I'm already on something{self._where}")
             if self._stopping:

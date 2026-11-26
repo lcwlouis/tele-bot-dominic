@@ -26,6 +26,8 @@
   type Draft = {
     voice: number | null; video: number | null; videoWeek: boolean; image: number | null; imageWeek: boolean;
     special: number | null; gap: number | null;
+    // A gap of a kind's own, spaced only from that kind; empty uses the general gap.
+    voiceGap: number | null; videoGap: number | null; imageGap: number | null; specialGap: number | null;
   };
 
   let view = $state<StudioLimitsView | null>(null);
@@ -43,6 +45,8 @@
     video: tier.video_daily ?? tier.video_weekly, videoWeek: tier.video_daily === null,
     image: tier.image_daily ?? tier.image_weekly, imageWeek: tier.image_daily === null,
     special: tier.special_daily, gap: tier.gap_minutes,
+    voiceGap: tier.voice_gap_minutes, videoGap: tier.video_gap_minutes,
+    imageGap: tier.image_gap_minutes, specialGap: tier.special_gap_minutes,
   });
 
   function show(loaded: StudioLimitsView) {
@@ -74,13 +78,18 @@
   const money = (amount: number) => `$${amount.toFixed(2)}`;
 
   const whole = (n: number | null, max = Infinity) => Number.isInteger(n) && n! >= 0 && n! <= max;
-  const draftValid = (d: Draft) => [d.voice, d.video, d.image, d.special].every((n) => whole(n)) && whole(d.gap, GAP_MAX);
+  const optionalGap = (n: number | null) => n === null || whole(n, GAP_MAX);
+  const draftValid = (d: Draft) =>
+    [d.voice, d.video, d.image, d.special].every((n) => whole(n)) && whole(d.gap, GAP_MAX) &&
+    [d.voiceGap, d.videoGap, d.imageGap, d.specialGap].every(optionalGap);
   const valid = $derived(drafts !== null && whole(daily) && Object.values(drafts).every(draftValid));
 
   function tier(saved: StudioTier, d: Draft): StudioTier {
     return {
       ...saved,
       voice_daily: d.voice!, special_daily: d.special!, gap_minutes: d.gap!,
+      voice_gap_minutes: d.voiceGap, video_gap_minutes: d.videoGap, image_gap_minutes: d.imageGap,
+      special_gap_minutes: d.specialGap,
       video_daily: d.videoWeek ? null : d.video!, video_weekly: d.videoWeek ? d.video! : saved.video_weekly,
       image_daily: d.imageWeek ? null : d.image!, image_weekly: d.imageWeek ? d.image! : saved.image_weekly,
     };
@@ -159,6 +168,27 @@
   </div>
 {/snippet}
 
+{#snippet gapField(id: string, label: string, value: number | null, set: (n: number | null) => void)}
+  <div class="flex items-center justify-between gap-3">
+    <label for={id} class="text-sm">{label}</label>
+    <span class="flex items-center gap-2">
+      <Input
+        {id}
+        class="h-9 w-20"
+        type="number"
+        inputmode="numeric"
+        min="0"
+        max={GAP_MAX}
+        step="1"
+        placeholder="general"
+        aria-invalid={!optionalGap(value) || undefined}
+        bind:value={() => value, set}
+      />
+      <span class="w-24 text-sm text-muted-foreground">minutes</span>
+    </span>
+  </div>
+{/snippet}
+
 {#snippet periodic(id: string, label: string, value: number | null, set: (n: number | null) => void, week: boolean, setWeek: (w: boolean) => void)}
   <div class="flex items-center justify-between gap-3">
     <label for={id} class="text-sm">{label}</label>
@@ -196,6 +226,21 @@
       {@render count(`limit-${scope}-special`, KINDS.special, d.special, (n) => (d.special = n), "per day")}
     {/if}
     {@render count(`limit-${scope}-gap`, "Gap", d.gap, (n) => (d.gap = n), "minutes", GAP_MAX)}
+          <details class="rounded-lg border px-3 py-2">
+            <summary class="cursor-pointer text-sm">Gaps for one kind</summary>
+            <div class="mt-2.5 grid gap-2.5">
+              {@render gapField(`limit-${scope}-voice-gap`, "Voice gap", d.voiceGap, (n) => (d.voiceGap = n))}
+              {@render gapField(`limit-${scope}-video-gap`, "Video gap", d.videoGap, (n) => (d.videoGap = n))}
+              {@render gapField(`limit-${scope}-image-gap`, "Photo gap", d.imageGap, (n) => (d.imageGap = n))}
+              {#if scope === "owner_dm"}
+                {@render gapField(`limit-${scope}-special-gap`, "Special gap", d.specialGap, (n) => (d.specialGap = n))}
+              {/if}
+              <p class="text-xs text-muted-foreground">
+                A kind with its own gap is spaced only from its last one, so a voice note and a photo can arrive together.
+                The rest share the general gap.
+              </p>
+            </div>
+          </details>
   </fieldset>
 {/snippet}
 
@@ -204,7 +249,7 @@
     <Card.Title id="media-limits-title" class="text-base">Media limits</Card.Title>
     <Card.Description class="flex items-center gap-1">
       How many voice notes, video notes and photos Dom may send.
-      <InfoGlyph label="About the gap">The gap is the least time between any two media in one chat.</InfoGlyph>
+      <InfoGlyph label="About the gap">The gap is the least time between two media in one chat; a kind can have a gap of its own.</InfoGlyph>
     </Card.Description>
   </Card.Header>
   <Card.Content>

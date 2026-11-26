@@ -18,7 +18,10 @@ for line in sys.stdin:
         assert request["turnaround"].endswith("turnaround.png")
         assert "Keep the same outfit" in request["prompt"]
     if kind in ("video", "special"):
-        assert request["portrait"].endswith("portrait.png")
+        if request["portrait"].endswith("still.png"):
+            assert Path(request["portrait"]).read_bytes().startswith(b"\x89PNG")
+        else:
+            assert request["portrait"].endswith("portrait.png")
         assert Path(request["audio"]).read_bytes() == b"fake"
     Path(request["output"]).write_bytes(b"fake")
     print('{"event":"done"}', flush=True)

@@ -191,6 +191,9 @@ class Bridge:
         now = time.monotonic()
         self.pending = {key: item for key, item in self.pending.items() if item.until > now}
         audit_id = await self.audit("coding_send", display(machine["label"]), display(thread["title"]), text, "staged")
+        if self.app.restart_requested:  # checked after the await: a card staged now would die with the process
+            await self.app.store.finish_t3(audit_id, "error", "Dom is restarting.")
+            return "Dom is restarting, so nothing was staged. Try again once he is back."
         self.pending[token] = Pending(audit_id, now + 600, machine, thread, text)
         body = f'Send to {display(thread["title"])} on {display(machine["label"])}?\n\n{text}'
         markup = InlineKeyboardMarkup(inline_keyboard=[[

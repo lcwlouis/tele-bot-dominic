@@ -33,6 +33,7 @@
   import Services from "$lib/components/settings/Services.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import RestartBanner from "$lib/components/system/RestartBanner.svelte";
+  import EventDays from "$lib/components/settings/EventDays.svelte";
   import MediaLimits from "$lib/components/settings/MediaLimits.svelte";
   import { forgetLists } from "$lib/components/settings/modelLists.svelte";
   import ProviderEditor from "$lib/components/settings/ProviderEditor.svelte";
@@ -266,7 +267,7 @@
     { id: "messaging", label: "Messaging", ids: ["openers", "openers_friends", "openers_groups", "ephemeral_replies"], words: "" },
     {
       id: "media", label: "Media", ids: ["studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile"],
-      words: "media limits voice notes video photos gap per day week left spend",
+      words: "media limits voice notes video photos gap per day week left spend event days special trip birthday",
     },
     { id: "desktop", label: "Desktop", ids: [], words: "desktop tasks steps step budget computer" },
     { id: "memory", label: "Memory", ids: ["memory_self_edit"], words: "" },
@@ -805,6 +806,7 @@
             {/if}
             {#if group.id === "media" && group.extras}
               <MediaLimits bind:revision />
+              <EventDays />
             {/if}
             {#if group.id === "desktop" && group.extras && desktopSteps}
               <DesktopSteps bind:revision budget={desktopSteps} onsaved={(result) => (desktopSteps = result.desktop_steps)} />
