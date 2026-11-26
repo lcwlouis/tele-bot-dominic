@@ -253,6 +253,16 @@ See [Studio](studio.md) for outfit setup and model licences.
 | `openers.friends` | `false` | Allow Dom to start conversations in approved friends' DMs. |
 | `openers.max_per_day` | `2` | Maximum number of openers per chat per day in the configured timezone. |
 
+## Assistant mode
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `assistant.enabled` | `false` | Assistant mode, owner DM only: Dom keeps your day in view with a morning plan, an evening wrap-up and check-ins on reminders and goals. Off, he is the friend he is. It never reaches groups or friends' DMs. Switch it with `/assistant on`, `/assistant off` and `/assistant status` in your DM, or in Settings → What Dom may do. |
+| `assistant.morning` | `"08:00"` | Local time (24-hour `HH:MM`, in `timezone`) of the morning plan. Empty turns the morning plan off. |
+| `assistant.evening` | `"21:30"` | Local time (24-hour `HH:MM`, in `timezone`) of the evening wrap-up. Empty turns the wrap-up off. |
+
+A plan is sent at most once a day each, and late only within three hours of its time. See [Assistant mode](setup.md#assistant-mode).
+
 ## Meaning search
 
 | Key | Default | Meaning |

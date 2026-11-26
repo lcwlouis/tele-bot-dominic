@@ -752,6 +752,7 @@ class Dispatcher:
         self._spawn(self.app.chat_titles.refresh())  # a few Telegram asks, likewise on their own
         await self.jobs.tick()
         await self.openers.maybe(self.now())
+        await self.app.assistant.tick(self.now())
         if self._closing:
             return
         try:
@@ -1884,6 +1885,7 @@ class Dispatcher:
                 self._reactions_off.add(chat_id)
             if sent:  # Dom has answered, so media he saw as it was won't be attached again: describe it for later turns
                 self.native.describe_aged(chat_id, window)
+                await app.assistant.delivered(chat_id, scope, [bubble.text for bubble in actions.bubbles])
             if sent.flood_limited:
                 log.warning("reply in chat %s hit Telegram flood-wait budget (%d sent)", chat_id, len(sent))
                 turn_log.outcome(
@@ -2305,13 +2307,15 @@ class Dispatcher:
         self, chat_id: int, scope: Scope, newest: StoredMessage | None, live: IncomingMessage | None,
         window: list[StoredMessage], until: datetime, away_count: int, final_bot_turn: bool, habits: Habits,
         *, extra_note: str = "", attempt: TurnAttempt | None = None, skill: str | None = None,
+        tool_free: bool = False,
     ) -> Actions:
+        """`tool_free` offers no tool at all, so nothing can run while the model holds the note's private facts."""
         app = self.app
         now = self.now().astimezone(self.presence.tz)
         minutes = max(0, (until - now).total_seconds() / 60)
         title = live.chat_title if live else ""
         where = f'chat "{title}"' if title else ("a group" if scope == "group" else "a direct message")
-        tools = await enabled_tools(app, scope)
+        tools = [] if tool_free else await enabled_tools(app, scope)
         await self.native.accepted()  # so the capability note below knows what his chat model takes as it is
         note = (
             f"It is {now:%A %Y-%m-%d %H:%M} ({app.config.timezone}). You are in {where} ({scope}).\n"
@@ -2354,6 +2358,8 @@ class Dispatcher:
                 note += f"\n{goals_block}"
             if agenda_block := await app.google.turn_note(scope, chat_id):
                 note += f"\n{agenda_block}"
+            if assistant_block := await app.assistant.turn_note(scope, chat_id):
+                note += f"\n{assistant_block}"
         if self._ephemeral_recipient(scope, newest) is not None:
             note += (
                 '\nThe latest message is from the owner. For an assistant-like answer to that message, '

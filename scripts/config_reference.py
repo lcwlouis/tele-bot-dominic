@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorldConfig, starter_config
+from dom.config import AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -59,7 +59,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "dispatch", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -148,6 +148,9 @@ def render() -> str:
         "See [Studio](studio.md) for outfit setup and model licences.",
         "## Openers",
         table(fields(OpenersConfig, "openers.")),
+        "## Assistant mode",
+        table(fields(AssistantConfig, "assistant.")),
+        "A plan is sent at most once a day each, and late only within three hours of its time. See [Assistant mode](setup.md#assistant-mode).",
         "## Meaning search",
         table(fields(KnowledgeConfig, "knowledge.")),
         "Results are sorted strictly by score. Each meaning hit carries its score and a coarse label: `strong` (0.5 and up, "

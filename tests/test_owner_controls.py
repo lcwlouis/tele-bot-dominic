@@ -105,6 +105,7 @@ def test_owner_commands():
         ("t3", "View T3 sign-in, machines and audit history"),
         ("tasks", "List, cancel and delete desktop tasks"),
         ("ownwork", "List, cancel and delete self-directed tasks"),
+        ("assistant", "Assistant mode: /assistant on, off or status"),
         ("stickers", "Add or remove a sticker set"),
         ("import", "Bring memories from another assistant"),
         ("export", "Get a zip of everything Dom remembers"),

@@ -449,6 +449,24 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
 - **Drafts and events.** Adding, moving or deleting an event and saving a draft each need an approval card unless the
   owner chose Allow always for that kind. Dom has no way to send mail.
 
+## Assistant mode
+
+Assistant mode is off until the owner turns it on, and it only ever speaks in the owner's DM.
+
+- **Who can reach it.** The morning plan, the evening wrap-up and the follow-through block in the turn note are built
+  only for the owner DM, and code checks that the chat is the owner's DM and the owner's chat id every time. A group
+  or a friend's DM never gets the block, a message or any of its content; tests cover both.
+- **What goes to which model.** Each plan is one call to the chat model route that serves the owner DM (and its
+  fallbacks), under the same `zdr` routing and provider rules. It is one completion with no tool offered, so nothing
+  can run while the model holds the day's facts. It carries the day's facts: reminders and goal text, the
+  weather and holiday line, and, only while Google is connected and Calendar read is on, today's and tomorrow's event
+  titles, times, locations and attendees, fenced as untrusted data. Nothing goes to the media, search, drafting,
+  embedding or any other service. The call is attributed to `assistant` in usage and obeys the monthly cap and the
+  area limits.
+- **What is kept.** The plan is a normal DM message in chat history, so the next turn and the memory pass see it as
+  any owner DM message; the owner DM's notes stay owner-private. The dashboard shows only when each message was last
+  sent and a one-line reason, never its text or the facts behind it.
+
 ## Plugins and desktop
 
 A plugin tool receives the arguments Dom passes to it. A plugin slash command

@@ -544,6 +544,11 @@ async def seed_system(app: handlers.App) -> None:
     guitar = await app.goals.create("Practise guitar twice a week", category="interests", check_in_rhythm="weekly")
     await app.goals.set_status(guitar["id"], "paused")
     await app.goals.add_progress(walk["id"], "Three good days this week.")
+    # Assistant mode (R15): what became of each message's last day, as the Settings card shows it.
+    await store.kv_set_many({
+        "assistant:morning:last": json.dumps({"day": "2026-11-21", "state": "sent", "at": "2026-11-21T00:06:00+00:00"}),
+        "assistant:evening:last": json.dumps({"day": "2026-11-21", "state": "asleep", "at": "2026-11-21T13:40:00+00:00"}),
+    })
     await store.create_noticings(now.date().isoformat(), [
         {"kind": "followup", "title": "Ask Alex how the night shift went", "body": "She mentioned a double shift on Friday.",
          "action_kind": "chat", "action_payload_json": "{}", "source_kind": "owner_dm", "source_chat_id": None,

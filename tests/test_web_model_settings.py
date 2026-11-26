@@ -804,7 +804,7 @@ async def test_permission_save_writes_config_and_applies_without_restart(dashboa
     async with browser() as client:
         initial = (await client.get(PERMISSIONS)).json()
         assert {item["id"]: item["enabled"] for item in initial["items"]} == {
-            "memory_self_edit": False, "openers": False, "openers_groups": False, "openers_friends": False,
+            "memory_self_edit": False, "openers": False, "assistant": False, "openers_groups": False, "openers_friends": False,
             "ephemeral_replies": False, "leak_check": True,
             "studio_voice": False, "studio_video": False, "studio_images": False, "studio_special": False,
             "studio_profile": False,

@@ -75,6 +75,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (33, "0032_usage_settled.sql"),
     (34, "0033_credentials_and_permissions.sql"),
     (35, "0034_message_origin.sql"),
+    (36, "0035_assistant_usage.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -2046,6 +2047,27 @@ class Store:
 
     async def kv_set(self, key: str, value: str) -> None:
         await self.kv_set_many({key: value})
+
+    async def kv_claim(self, key: str, value: str) -> bool:
+        """Create `key` only if it does not exist yet; True when this call created it. The check and the write are one
+        statement, so of two callers at once exactly one wins."""
+        def claim() -> bool:
+            with self._tx() as conn:
+                return conn.execute(
+                    "INSERT OR IGNORE INTO kv (key, value, updated_at) VALUES (?, ?, ?)", (key, value, _now()),
+                ).rowcount == 1
+
+        return await self._run(claim)
+
+    async def kv_swap(self, key: str, expected: str, value: str) -> bool:
+        """Set `key` to `value` only while it still holds `expected`; True when it did."""
+        def swap() -> bool:
+            with self._tx() as conn:
+                return conn.execute(
+                    "UPDATE kv SET value = ?, updated_at = ? WHERE key = ? AND value = ?", (value, _now(), key, expected),
+                ).rowcount == 1
+
+        return await self._run(swap)
 
     async def kv_delete(self, key: str) -> None:
         await self._run(self._conn.execute, "DELETE FROM kv WHERE key = ?", (key,))

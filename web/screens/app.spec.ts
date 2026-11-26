@@ -33,6 +33,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "settings-studio-backup", path: "/app/system", heading: "Settings", click: "Add backup for video notes" },
   // The media limits editor on its own: what is left in the owner's DM and each chat type's limits.
   { name: "settings-media-limits", path: "/app/system", heading: "Settings", tab: "What Dom may do", region: "Media limits" },
+  // Assistant mode's schedule: both times, and what became of each message's last day.
+  { name: "settings-assistant", path: "/app/system", heading: "Settings", tab: "What Dom may do", region: "Assistant schedule" },
   // Services (E81): each with its state, detail, fields (secrets only as set or not set) and Test.
   { name: "settings-services", path: "/app/system", heading: "Settings", tab: "Services" },
   // Spend (E86): today and the month against the caps, each area, 30 days by area and the cap editor.
@@ -2061,11 +2063,37 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("settings: assistant mode switches on, saves its schedule and shows why a message waited", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "What Dom may do" }).click();
+    const mode = page.getByRole("switch", { name: "Assistant mode" });
+    await expect(mode).toHaveAttribute("aria-checked", "false");
+    const card = page.getByRole("region", { name: "Assistant schedule" });
+    await expect(card).toContainText("Assistant mode is off.");
+    await mode.click();
+    await expect(page.getByRole("status").filter({ hasText: "Assistant mode: on." })).toBeVisible();
+    await expect(card).toContainText("Last, 2026-11-21: sent");
+    await expect(card).toContainText("waiting: Dom is asleep");
+    const save = card.getByRole("button", { name: "Save schedule" });
+    await expect(save).toBeDisabled();
+    await card.getByLabel("Morning plan").fill("07:15");
+    await card.getByLabel("Evening wrap-up").fill("");
+    await save.click();
+    await expect(page.getByRole("status").filter({ hasText: "Assistant schedule saved." })).toBeVisible();
+    await page.reload();
+    await page.getByRole("tab", { name: "What Dom may do" }).click();
+    await expect(page.getByRole("region", { name: "Assistant schedule" }).getByLabel("Morning plan")).toHaveValue("07:15");
+    await expect(page.getByRole("region", { name: "Assistant schedule" }).getByLabel("Evening wrap-up")).toHaveValue("");
+    await expect(page.getByRole("switch", { name: "Assistant mode" })).toHaveAttribute("aria-checked", "true");
+    expect(problems).toEqual([]);
+  });
+
   test("settings: What Dom may do narrows by search and keeps its sections", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/system");
     await page.getByRole("tab", { name: "What Dom may do" }).click();
-    for (const name of ["Messaging", "Media", "Desktop", "Memory", "Safety"]) {
+    for (const name of ["Messaging", "Assistant", "Media", "Desktop", "Memory", "Safety"]) {
       await expect(page.getByRole("heading", { level: 2, name, exact: true })).toBeVisible();
     }
     await page.getByLabel("Find a setting").fill("leak");
