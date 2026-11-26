@@ -402,7 +402,7 @@ async def test_a_video_note_is_filmed_from_a_fresh_still_of_the_scene(make_app, 
     app = await scene_app(make_app, studio_server)
     await deliver(app, tg(chat_id=OWNER, sender=OWNER))
     [image], [video] = posts(studio_server, "/v1/image"), posts(studio_server, "/v1/video_note")
-    assert "on a rooftop at dusk" in image["scene"]
+    assert "on a rooftop at dusk" in image["scene"] and image["scene"].endswith("nothing covering it.")
     assert image.get("outfit") == video.get("outfit")  # the same outfit for the still and the note
     assert video["still"] == STILL and video["text"] == "waving hello"
     assert [path for path, _ in studio_server[2] if path != "/v1/health"] == ["/v1/image", "/v1/video_note"]
@@ -493,7 +493,9 @@ async def test_the_look_checks_the_still_before_animating_not_the_video(make_app
     see(app, ("text", "image"))
     await deliver(app, tg(chat_id=OWNER, sender=OWNER))
     images = posts(studio_server, "/v1/image")
-    assert [post["scene"].endswith(tail) for post, tail in zip(images, ("dusk", "facing the camera"))] == [True, True]
+    from dom.studio.policy import STILL_FRAMING
+    assert [tail in post["scene"] for post, tail in zip(images, ("dusk", "facing the camera"))] == [True, True]
+    assert all(post["scene"].endswith(STILL_FRAMING) for post in images)  # the retake keeps the framing too
     assert len(posts(studio_server, "/v1/video_note")) == 1 and len(app.script.requests) == 3  # turn, look, compare
 
 
@@ -666,3 +668,12 @@ async def test_the_studio_client_never_sends_a_still_to_a_studio_without_video_s
     app.studio._health = {**app.studio._health, "video_still": True}
     await app.studio.video("hi", False, None, b"S")
     assert "still" in posts(studio_server, "/v1/video_note")[1]
+
+
+def test_a_still_prompt_keeps_its_framing_within_the_scene_limit():
+    from dom.studio.policy import SCENE_LIMIT, STILL_FRAMING, still_scene
+
+    short = still_scene("on a rooftop at dusk")
+    assert short == f"on a rooftop at dusk {STILL_FRAMING}"
+    long = still_scene("x" * 290 + "  spaced   out ")
+    assert len(long) <= SCENE_LIMIT and long.endswith(STILL_FRAMING)

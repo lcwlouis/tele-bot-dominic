@@ -59,6 +59,22 @@ checkout https://github.com/manmastersg/soulX-flashHead-local.git e7dc9cbe563684
 checkout https://github.com/Soul-AILab/SoulX-FlashHead.git 9bc03de06bb0de82cd6bc477804512ae06144bf2 "$runtime/flash-upstream"
 # Fill in the VAE source omitted by the Apple Silicon port.
 /usr/bin/rsync -r --ignore-existing "$runtime/flash-upstream/flash_head/ltx_video/" "$runtime/flash-src/flash_head/ltx_video/"
+# The face detector the video-note crop uses. The port fetches these on first use from unpinned branches; fetch them
+# here instead, pinned and checked, so a render never waits on GitHub.
+fetch_checked() {
+    local url=$1 sum=$2 target=$3
+    if [[ ! -f "$target" ]] || ! shasum -a 256 -c --status <<<"$sum  $target"; then
+        curl -fsSL --max-time 120 "$url" -o "$scratch/fetched"
+        (cd "$scratch" && shasum -a 256 -c <<<"$sum  fetched")
+        install -m 644 "$scratch/fetched" "$target"
+    fi
+}
+fetch_checked https://raw.githubusercontent.com/opencv/opencv/4.10.0/samples/dnn/face_detector/deploy.prototxt \
+    dcd661dc48fc9de0a341db1f666a2164ea63a67265c7f779bc12d6b3f2fa67e9 "$runtime/flash-src/deploy.prototxt"
+fetch_checked https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel \
+    2a56a11a57a4a295956b0660b4a3d76bbdca2206c4961cea8efe7d95c7cb2f2d "$runtime/flash-src/res10_300x300_ssd_iter_140000.caffemodel"
+fetch_checked https://raw.githubusercontent.com/opencv/opencv/4.10.0/data/haarcascades/haarcascade_frontalface_default.xml \
+    0f7d4527844eb514d4a4948e822da90fbb16a34a0bbbbc6adc6498747a5aafb0 "$runtime/flash-src/haarcascade_frontalface_default.xml"
 sync_worker flash
 "$runtime/flash/bin/python" - "$runtime/flash-src" <<'PY'
 from pathlib import Path

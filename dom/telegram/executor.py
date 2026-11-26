@@ -32,7 +32,7 @@ from dom.models import StoredMessage
 from dom.store import Store
 from dom.studio import look
 from dom.studio.cloud import png_still, providers as studio_providers
-from dom.studio.policy import Kind, enabled
+from dom.studio.policy import Kind, enabled, still_scene
 from dom.traits import for_chat as chat_traits
 from dom.stickers import resolve_sticker, sticker_fallback
 from dom.telegram.format import TextChunk, format_delivery, format_text, with_entities
@@ -925,6 +925,7 @@ async def _deliver_studio(
                 the local studio's image worker, else a cloud image backup. It stays inside this note's reservation."""
                 if not await app.studio_quota.has_room_for_still(app.config.studio, scope, chat_id, now()):
                     return None  # the daily total has no slot left (a retry counts too): the note animates the portrait
+                prompt = still_scene(prompt)  # every take, a retake after the look included, keeps a face to animate
                 made = None
                 if local_ready and client.takes_still:
                     made = await client.image(prompt, actions.outfit)
