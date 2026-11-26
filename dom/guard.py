@@ -137,6 +137,9 @@ async def notify_held(app: App, notice: str) -> None:
         log.exception("could not notify the owner about a held message")
 
 
+MIN_PRIVATE_WORDS = 3
+
+
 def check_local_private_text(config: Config, home: Home, texts: list[str]) -> None:
     """Keep known credentials and verbatim private notes out of public artifacts and plugin inputs."""
     secrets = [config.secret(name) for name in config.secret_names()]
@@ -145,9 +148,12 @@ def check_local_private_text(config: Config, home: Home, texts: list[str]) -> No
     private = home.scoped(allow_private=True)
     candidates = set()
     for rel in private.private_text_files():
-        for line in private.read(rel).splitlines():
-            line = notes.strip_tags(line).strip(" \t#-*")  # a pinned line is still the private line without its mark
-            if len(line) >= 8:
+        for raw in private.read(rel).splitlines():
+            if raw.lstrip().startswith("#") or raw.startswith("Through "):
+                continue  # headings ("Background", "## 2026-11-25") and the RECENT.md header are structure, not notes
+            line = notes.strip_tags(raw).strip(" \t#-*")  # a pinned line is still the private line without its mark
+            # A fact needs a few words: a lone date or a two-word line ("Watches costs.") matches ordinary text.
+            if len(line) >= 8 and len(line.split()) >= MIN_PRIVATE_WORDS:
                 candidates.add(line.casefold())
     if candidates and any(candidate in text.casefold() for text in texts for candidate in candidates):
         raise ValueError("This content includes private notes.")
