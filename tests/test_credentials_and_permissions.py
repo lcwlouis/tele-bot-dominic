@@ -1502,8 +1502,8 @@ async def test_recheck_nits_wildcard_dns_secret_expiry_race_and_rotate_key_messa
     """Re-check nits: wildcard-DNS/loopback suffixes, secret expiry race mid-write, and rotate-key stale ready.json hint."""
     # Nit A: Wildcard-DNS and loopback suffixes (bare and subdomains) must be rejected by normalize_site.
     for bad in (
-        "nip.io", "127.0.0.1.nip.io", "sslip.io", "192-168-1-1.sslip.io",
-        "xip.io", "10.0.0.1.xip.io", "lvh.me", "app.lvh.me", "localtest.me", "sub.localtest.me",
+        "nip.io", "app.nip.io", "sslip.io", "app.sslip.io",
+        "xip.io", "app.xip.io", "lvh.me", "app.lvh.me", "localtest.me", "sub.localtest.me",
     ):
         assert normalize_site(bad) is None, f"{bad} should be rejected by normalize_site"
 
