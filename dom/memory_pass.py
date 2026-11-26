@@ -207,7 +207,7 @@ class MemoryPass:
     async def _ask(self, chat_id: int, request: list[dict]) -> str | None:
         """One model request, unless the chat has stopped being approved since the pass began."""
         try:
-            with model_request("memory", chat_id, partial(self.app.dispatch.model_allowed, chat_id)):
+            with model_request("memory", chat_id, partial(self.app.dispatch.background_allowed, chat_id)):
                 await check_model_allowed()
                 message = await self.app.client.complete(request, [])
         except ModelCallSkipped:
@@ -235,7 +235,9 @@ class MemoryPass:
     def _visible_lines(self, rel: str, chat_id: int) -> bool:
         """Whether this chat may see a line of the note. A file with none is not offered, so its name never reaches
         a chat that has no line in it."""
-        text = notes.limit_to_chat(self._read(self.app.home.scoped(allow_private=False), rel), chat_id)
+        text = notes.limit_to_chat(
+            self._read(self.app.home.scoped(allow_private=False), rel), chat_id, owner_untagged=self._owners(rel, "group"),
+        )
         return any(notes.is_bullet(raw) for raw in text.splitlines())
 
     @staticmethod
@@ -250,9 +252,14 @@ class MemoryPass:
         one group is never in front of a pass that runs for another; tags and core marks stay so the model sees them."""
         return [
             f'<file name="{name}" limit="{limit_for(rel)}"{self._purpose(rel, scope)}>\n'
-            f'{notes.limit_to_chat(self._read(home, rel), chat_id)}\n</file>'
+            f'{notes.limit_to_chat(self._read(home, rel), chat_id, owner_untagged=self._owners(rel, scope))}\n</file>'
             for name, rel in offered.items()
         ]
+
+    @staticmethod
+    def _owners(rel: str, scope: Scope) -> bool:
+        """A place, project or goal note read outside the owner's DM, where its untagged lines are the owner's alone."""
+        return scope != "owner_dm" and notes.ENTITY_NOTE.fullmatch(rel) is not None
 
     def _core_note(self) -> str:
         cap = self.app.config.core_memory_cap

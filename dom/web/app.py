@@ -16,6 +16,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from dom.web.api import router as api_router
+from dom.web.api_access import JSON_POSTS as ACCESS_POSTS, router as access_router
 from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
 from dom.web.api_goals import JSON_POSTS as GOALS_POSTS, router as goals_router
 from dom.web.api_media import GUARDED_PREFIX as MEDIA_GET_PREFIX, JSON_POSTS as MEDIA_POSTS, router as media_router
@@ -82,6 +83,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
                 JSON_POSTS | PROVIDER_POSTS | STUDIO_POSTS | SPEND_POSTS | SERVICES_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS
                 | MEMORY_POSTS | WORK_POSTS | WAITING_POSTS | SYSTEM_POSTS | GOALS_POSTS | NOTICINGS_POSTS | MEDIA_POSTS
                 | TALK_POSTS
+                | ACCESS_POSTS
             )
             and is_json(request) and "Origin" in request.headers
             and same_origin(request, identity)
@@ -112,6 +114,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.state.auth = auth
     web.include_router(redirects_router)
     web.include_router(api_router)
+    web.include_router(access_router)
     web.include_router(chats_router)
     web.include_router(memory_router)
     web.include_router(media_router)

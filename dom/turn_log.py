@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 from time import monotonic, time
 from typing import TYPE_CHECKING, Any
 
+from dom.secrets import active_redactions, redact_secrets
 from dom.usage import ModelCallSkipped, response_usage, token_counts
 
 if TYPE_CHECKING:
@@ -360,10 +361,22 @@ async def capture(
     finally:
         if not trace.superseded and (trace.steps or trace.calls):
             try:
+                steps_out = [*trace.steps, *trace.timings]
+                model_out = trace.model
+                outcome_out = trace.outcome or "Stayed quiet"
+                calls_out = [asdict(call) for call in trace.model_calls]
+                if active_redactions():
+                    steps_out = [redact_secrets(s) for s in steps_out]
+                    model_out = redact_secrets(model_out)
+                    outcome_out = redact_secrets(outcome_out)
+                    for item in calls_out:
+                        for k, v in item.items():
+                            if isinstance(v, str):
+                                item[k] = redact_secrets(v)
                 trace.row_id = await store.record_turn(
-                    at, chat_id, scope, trace.calls, [*trace.steps, *trace.timings], trace.model, trace.fallback,
-                    round((monotonic() - start) * 1000), trace.outcome or "Stayed quiet",
-                    model_calls=[asdict(call) for call in trace.model_calls],
+                    at, chat_id, scope, trace.calls, steps_out, model_out, trace.fallback,
+                    round((monotonic() - start) * 1000), outcome_out,
+                    model_calls=calls_out,
                     first_bubble_ms=trace.first_bubble_ms, last_bubble_ms=trace.last_bubble_ms,
                 )
             except Exception:

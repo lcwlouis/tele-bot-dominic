@@ -35,7 +35,7 @@ the header. The panel reads `/api/home`, which already gathers this, so nothing 
    media. It then records it through the same `_record` Telegram ingress uses (`resolve_person`,
    `record_new_message`, `describe_media` and `dispatch.notify`). From there the turn is an ordinary owner-DM turn:
    debounce, Jev triage, attention, the agent loop, the guards and delivery.
-4. The stored row has `origin = 'dashboard'` (migration 0033). The dashboard shows a small 🖥 glyph on it. The prompt
+4. The stored row has `origin = 'dashboard'` (migration 0034). The dashboard shows a small 🖥 glyph on it. The prompt
    is unchanged: to Dom it's the owner talking.
 
 Messages starting with `/` are refused with "Commands work in Telegram". Commands are parsed in the Telegram handler,

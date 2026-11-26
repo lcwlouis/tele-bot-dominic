@@ -20,7 +20,7 @@ People notes (`memory/people/<id>.md`), chat notes (`memory/chats/<id>.md`), ent
 |---|---|
 | `{chat <id>}` | Told in that chat. Shown only in that chat's prompt (the owner's DM sees every public line). |
 | `{any}` | General and not sensitive: the person would share it anywhere. Shown wherever the person is. |
-| none | An older line, or one typed by hand: counts as `{any}`. |
+| none | An older line, or one typed by hand. In a person's note it counts as `{any}`; in a chat's note it stays in that chat; in a place, project or goal note it is yours, for the owner DM only. |
 | `{core owner DATE}` | A core memory the owner pinned. Dom can't unpin it. |
 | `{core dom DATE: why}` | A core memory Dom chose, with the day and his reason. |
 | `{entities person:ID\|place:slug\|project:slug\|goal:slug}` | The people, places, projects and goals this fact links. Slugs use lowercase letters, digits and dashes. |
@@ -41,9 +41,11 @@ date has passed to the former file. Core lines never expire.
 People keep their existing numeric files. When the background memory pass first needs a durable place, project or
 goal, it may create `memory/places/<slug>.md`, `memory/projects/<slug>.md` or `memory/goals/<slug>.md`. Each fact line
 records every entity it is about; entities on the same line are linked. The source chat tag remains the privacy
-boundary, so a group or friend's DM can retrieve only its own lines and `{any}` lines, while the owner DM can retrieve
-all public lines. Two rules close the gaps a tag cannot: an untagged line in `memory/chats/<id>.md` belongs to that chat
-alone, and another chat sees a person's note only when that person is in the chat, the same reach as the notes prompt.
+boundary, so a group or friend's DM can retrieve only lines tagged to it and `{any}` lines, while the owner DM can
+retrieve all public lines. Three rules close the gaps a tag cannot: every line of `memory/chats/<id>.md` belongs to that
+chat alone, whatever its tag says; an untagged line in a place, project or goal note is the owner's, for the owner DM
+only (`{any}` shares it), and a group's memory pass neither sees nor changes it; and another chat sees a person's note
+only when that person is in the chat, the same reach as the notes prompt.
 The filter is SQL in code on every mode (keyword, meaning, entity) and on `related`, never prompt text.
 
 SQLite is a rebuildable index, not the source of truth. It records each fact's file, line, source chat, dates, entities

@@ -37,8 +37,9 @@ async def test_monthly_cap_pauses_even_when_the_daily_cap_is_off(make_app):
     await spend(app, "search", 1.0)  # every area counts toward the month
     assert await over(app)
     assert owner_notices(app) == [
-        "Monthly spend cap of $5.00 reached ($5.00 spent this month). Friends' chats are paused until the 1st. "
-        "Change monthly_spend_cap_usd in config.toml or in Settings."
+        "Monthly spend cap reached: $5.00 of $5.00\n"
+        "Friends' chats and background work pause until the 1st.\n"
+        "Change monthly_spend_cap_usd in Settings or config.toml."
     ]
     assert await over(app) and len(owner_notices(app)) == 1  # one notice per month
     events = [m.text for m in await app.store.get_recent_chat_window(OWNER) if m.role == "event"]
@@ -54,7 +55,7 @@ async def test_zero_monthly_cap_disables_it_and_the_daily_cap_still_applies(make
     assert not await over(app)
     await spend(app, "chat", 0.6)
     assert await over(app)
-    assert owner_notices(app)[0].startswith("Daily spend cap of $1.00 reached")
+    assert owner_notices(app)[0].startswith("Daily spend cap reached: $1.10 of $1.00")
     configure(app, daily_spend_cap_usd=0)
     assert not await over(app)
 
@@ -119,8 +120,8 @@ async def test_an_area_limit_pauses_that_area_only(make_app):
     with model_request("chat", FRIEND, lambda: None):
         assert not await over(app)
     assert owner_notices(app) == [
-        "The monthly media limit of $1.00 is reached ($1.10 spent this month). Work in that area is paused until the 1st. "
-        "Change area_spend_caps_usd in config.toml or in Settings."
+        "Monthly media limit reached: $1.10 of $1.00\nMedia work pauses until the 1st.\n"
+        "Change area_spend_caps_usd in Settings or config.toml."
     ]
     await over(app, area="media")
     assert len(owner_notices(app)) == 1

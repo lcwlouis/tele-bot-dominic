@@ -155,8 +155,44 @@ def notes(layout: Layout, tag: str) -> str:
     return f"{tag} has no changelog section."
 
 
+_BULLET = re.compile(r"-\s+(\*\*.+?\*\*)?\s*(.*)")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=\S)")
+DIGEST_SENTENCE = 160
+DIGEST_CLOSING = (
+    'This is each change in short. Read the full section with your own_code tool (action changelog, version "{version}"); '
+    "a long section comes in parts."
+)
+
+
+def _digest(section: str, version: str) -> str:
+    """Every bullet of a changelog section as its bold lead and first sentence, headings kept, never cut mid-bullet.
+    Dom reads this once after an update; the whole text stays one `own_code` call away. Text with no bullets is kept as is."""
+    lines, bullets = [], 0
+    for line in section.splitlines():
+        match = _BULLET.fullmatch(line.strip())
+        if match is None:
+            if line.strip().startswith("-"):
+                continue
+            lines.append(line.rstrip())
+            continue
+        bullets += 1
+        lead, rest = match.groups()
+        first = _SENTENCE_END.split(" ".join(rest.split()), maxsplit=1)[0]
+        if len(first) > DIGEST_SENTENCE:  # a long sentence loses its tail at a word, so the digest stays well under the limit
+            first = first[:DIGEST_SENTENCE - 1].rpartition(" ")[0].rstrip(" ,;:-") + "…"
+        lines.append("- " + " ".join(part for part in (lead, first) if part))
+    if not bullets:
+        return section
+    closing = DIGEST_CLOSING.format(version=version)
+    while len("\n".join([*lines, "", closing])) > HISTORY_NOTES_LIMIT:  # whole bullets only, from the end
+        last = max(index for index, line in enumerate(lines) if line.startswith("- "))
+        del lines[last]
+    return "\n".join([*lines, "", closing])
+
+
 def installed_notes(tag: str, base: Path | None = None) -> str:
-    """The full matching section from the installed release, bounded for chat history rather than Telegram."""
+    """The installed release's changelog section for Dom's chat history: every bullet as its bold lead and first
+    sentence (see `_digest`), bounded rather than Telegram-sized."""
     version = ".".join(map(str, release_tag(tag)))
     path = (base or own_code.installed_base()) / "CHANGELOG.md"
     try:
@@ -165,8 +201,8 @@ def installed_notes(tag: str, base: Path | None = None) -> str:
         text = ""
     for title, section in own_code.changelog_sections(text):
         if title.startswith(f"[{version}]"):
-            section = section.strip()
-            return section if len(section) <= HISTORY_NOTES_LIMIT else section[:HISTORY_NOTES_LIMIT].rstrip() + "\n[…]"
+            digest = _digest(section.strip(), version)
+            return digest if len(digest) <= HISTORY_NOTES_LIMIT else digest[:HISTORY_NOTES_LIMIT].rstrip() + "\n[…]"
     return f"## [{version}]\n\nNo changelog section was installed."
 
 

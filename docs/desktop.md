@@ -251,6 +251,50 @@ example "browser was on login.example.org at 14:05" in the configured timezone.
 If the sandbox marks no tab as active it says "an unknown site". Treat the host as
 a hint: check the live view before you enter anything.
 
+## Desktop permissions and saved logins
+
+Desktop actions are governed by per-action policies (`Ask`, `Allow`, or `Never`)
+and per-site rules under **System → Access** (`/app/system/access`):
+
+- **Visit unfamiliar sites** (default `Allow`): gates `browse` navigation and blocks redirects to `Never` sites.
+- **Fill saved logins** (default `Ask`): every new site asks before filling, with **Allow once**, **Allow always**, and **Reject** buttons in the owner DM and on Waiting for you.
+- **Download files from desktop** (default `Ask`): gates exporting non-screenshot files out of the sandbox.
+- **Upload files** (default `Ask`): gates uploading sandbox files to a web page (`Never` also discards staged `/desktop` inbox attachments).
+- **Background work** (default `Allow`): gates Dom's self-directed Own work tasks (`Ask` pauses before each task launches; `Never` turns planning and execution off).
+
+Saved logins are encrypted at rest in SQLite with AES-256-GCM using `DOM_MASTER_KEY`
+in `DOM_HOME/.env` (mode `0600`, auto-generated on first write when no encrypted rows
+exist, rotatable from **System → Access** while Dom runs or via `dom rotate-key <home>`
+while Dom is stopped — the CLI refuses if `ready.json` points to a running Dom process; stop Dom, or delete
+a stale `ready.json` if Dom is not running).
+When approved, Dom re-reads the active tab's URL from the sandbox browser's tab list
+immediately before typing the username and again before the password, and requires it to
+be `https://` on the saved site and to name the same host as the page's own report. The tab
+list is the trust anchor: a page's JavaScript can forge anything `/v1/browser/page/evaluate`
+returns. As a second layer, Dom verifies via `/v1/browser/page/evaluate` at the same two
+points that `document.hasFocus()` is
+true, the top-level `window.location.href` is `https://` (default port 443) on the saved
+login's site, the active element is the expected top-level input, and any enclosing form's
+`action` stays on the matched site. Keystrokes go strictly as RFB `KeyEvent` frames over
+`/websockify` with `websockets` frame logging silenced. Dom checks after typing that focus
+did not leave the same password input (aborting, clearing, and alerting the owner DM if
+stolen), always submits with `Enter`, clears any leftover password value over VNC if the
+field remains populated after submit, makes a best-effort attempt to erase the typed
+password over VNC if a check fails or the task is cancelled after typing and before the
+submit (it cannot if the sandbox is unreachable), and registers the username and password in a per-run
+redaction set applied to all tool results, `read_page`/`look` text, `finish`/wrap-up
+reports, turn logs, traces, and usage rows for the rest of the task. What is guaranteed:
+Dom never places the plaintext password into model prompts, tool arguments/results, traced
+sandbox HTTP requests, turn logs, traces, usage rows, or Python logs, and self-directed
+tasks never see or use saved logins. Residual risk: a malicious page script can lie about focus and field state to the
+second-layer check (the tab list still pins the origin), and a compromised or malicious page on the
+matched origin itself (or a compromised sandbox container/shell tool during an owner task)
+still sees keystrokes typed into Chromium and could transform/render them visually or steal
+session cookies after login.
+
+See [the credentials and permissions security spec](superpowers/specs/2026-11-27-credentials-and-permissions.md)
+for the full threat model, key-rotation protocol, and E101 secure secret request flow.
+
 ## Self-directed work
 
 With `[self_work] enabled = true` (the default) and a local desktop host, Dom may

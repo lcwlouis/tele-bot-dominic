@@ -23,6 +23,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom import guard, notice, salvage, turn_log
+from dom.secrets import redact_secrets
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
 from dom.attention import FACT_INSTRUCTION, Attention, Tier, filter_fact
@@ -488,7 +489,7 @@ class Dispatcher:
                     continue
                 if row.role == "user" and not row.is_bot and row.msg_id is not None and isinstance(media, dict) \
                         and media.get("kind") and media.get("description") is None:
-                    await self._describe(chat_id, row.msg_id, media, self._media_request(chat_id))
+                    await self._describe(chat_id, row.msg_id, media, self._media_request(chat_id, background=True))
         except Exception:
             log.exception("could not describe media for the memory pass in chat %s", chat_id)
 
@@ -549,8 +550,11 @@ class Dispatcher:
             yield
 
     @asynccontextmanager
-    async def _media_request(self, chat_id: int) -> AsyncIterator[None]:
-        with model_request("media", chat_id, partial(self.model_allowed, chat_id)):
+    async def _media_request(self, chat_id: int, *, background: bool = False) -> AsyncIterator[None]:
+        """A media model call for a chat. Work Dom does on his own (aged media, the memory pass, the look before a send)
+        passes `background`, so the monthly cap and area limits apply to it even in the owner DM; the daily cap does not."""
+        allowed = self.background_allowed if background else self.model_allowed
+        with model_request("media", chat_id, partial(allowed, chat_id)):
             await check_model_allowed()
             yield
 
@@ -1753,7 +1757,8 @@ class Dispatcher:
         )
         if line and owner_id is not None:
             try:
-                await executor.send_text(app.bot, owner_id, line, sleep=app.sleep, literal=True)
+                first, *rest = notice.sentences(line, 3, 200)  # what ran out, then what to do and when it resets
+                await notice.send_notice(app, owner_id, first, rest, path="/app")  # Home shows the provider budget
             except Exception as exc:
                 log.warning("could not send the provider budget notice (%s)", type(exc).__name__)
 
@@ -2161,13 +2166,14 @@ class Dispatcher:
         if chat_id != app.owner_id:
             return
         status = "finished" if row["status"] == "done" else row["status"]
-        result = row["result"] or row["error"] or "No result."
+        result = redact_secrets(row["result"] or row["error"] or "No result.", app.config)
+        safe_error = redact_secrets(row["error"] or "no reason was reported", app.config)
         container = row.get("container", DEFAULT)
         where = "" if container == DEFAULT else f" on the {container} desktop"
         event = f"Desktop task #{task_id}{where} {status}"
         if row["status"] != "done":
-            event += f"; it did not finish: {untrusted(row['error'] or 'no reason was reported', limit=250)}"
-        await app.store.record_owner_event(event)
+            event += f"; it did not finish: {untrusted(safe_error, limit=250)}"
+        await app.store.record_owner_event(redact_secrets(event, app.config))
         async with self._dispatch_slot(chat_id, wait_media=False):
             note = (
                 f"Your desktop task #{task_id}{where} {status}. Result: {untrusted(result)} "
@@ -2207,8 +2213,8 @@ class Dispatcher:
                 if row["status"] == "done":
                     details = [first_sentence(result)]
                 else:  # the reason first, then whatever the task had found
-                    details = [first_sentence(row["error"] or "no reason was reported")]
-                    details += [first_sentence(row["result"])] if row["result"] else []
+                    details = [first_sentence(safe_error)]
+                    details += [first_sentence(redact_secrets(row["result"], app.config))] if row["result"] else []
                 if where:
                     details.append(f"On the {container} desktop.")
                 await notice.send_notice(
@@ -2219,7 +2225,8 @@ class Dispatcher:
                 # The bubbles reach the owner but stay out of the history the model reads: the text was
                 # composed from untrusted task output.
                 await executor.perform(
-                    app.bot, app.store, chat_id, None, Actions(bubbles=[Bubble(text=b.text) for b in actions.bubbles]),
+                    app.bot, app.store, chat_id, None,
+                    Actions(bubbles=[Bubble(text=redact_secrets(b.text, app.config)) for b in actions.bubbles]),
                     sleep=app.sleep, link_previews=False, record=False,
                 )
                 await app.store.record_owner_event(f"Dom reported desktop task #{task_id}")

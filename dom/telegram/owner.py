@@ -43,6 +43,7 @@ from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE, validate_name as validate_plugin_name
 from dom.telegram import cards
+from dom.telegram.cards import CLOSE_BUTTON
 from dom.notice import first_sentence, send_notice, sentences
 from dom.telegram.executor import retry_telegram, send_text
 from dom.traits import AUTO, GLOBAL_PRESET_KEY, ensure_pick, load_preset, vibe
@@ -412,6 +413,8 @@ async def show_tasks(app: App) -> None:
         )]
         for row in rows
     ]
+    if buttons:
+        buttons.append([CLOSE_BUTTON])
     await _send(
         app, "\n".join(lines) or "No desktop tasks yet.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
@@ -555,6 +558,7 @@ async def show_skills(app: App) -> None:
                 text=f"Delete {name}", callback_data=await skill_callback(app, "del", name, digest),
             )
             buttons.append([toggle, delete_btn])
+        buttons.append([CLOSE_BUTTON])
         await _send(
             app, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
@@ -672,9 +676,6 @@ async def send_delete_confirm(app: App, prompt: str, yes_data: str, no_data: str
         InlineKeyboardButton(text="Cancel", callback_data=no_data),
     ]])
     await _send(app, prompt, reply_markup=markup)
-
-
-CLOSE_BUTTON = InlineKeyboardButton(text="✕ Close", callback_data="card:close")
 
 
 async def render_status(app: App) -> View:

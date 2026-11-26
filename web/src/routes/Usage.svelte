@@ -27,6 +27,10 @@
     guard: "fill-signal-strong",
     desktop: "fill-muted-foreground",
     escalation: "fill-foreground",
+    studio_image: "fill-chart-2",
+    studio_voice: "fill-chart-5",
+    studio_video: "fill-chart-1",
+    embedding: "fill-chart-3",
   };
   const fillOf = (kind: string) => fills[kind] ?? "fill-muted-foreground";
   // The segment whose breakdown shows under the chart: a click, a tap, or Enter or Space on a focused segment.

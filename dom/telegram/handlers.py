@@ -27,6 +27,8 @@ from dom.dispatch import Dispatcher
 from dom.tracer import TraceWriter
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
+from dom.desktop.permissions import DesktopPermissions
+from dom.secrets import SecretRequests, SecretStore
 from dom.embedding import EmbeddingRouter, routed_embedding_client
 from dom.t3.tools import Bridge
 from dom.home import Home
@@ -106,6 +108,9 @@ class App:
     self_work: SelfWork = field(init=False)
     goals: Goals = field(init=False)
     noticings: Noticings = field(init=False)
+    secrets: SecretStore = field(init=False)
+    secret_requests: SecretRequests = field(init=False)
+    desktop_permissions: DesktopPermissions = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
     menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
     traces: TraceWriter | None = None  # the debug tracer (dom.tracer), opened by `dom run`
@@ -143,6 +148,9 @@ class App:
         self.self_work = SelfWork(self)
         self.goals = Goals(self)
         self.noticings = Noticings(self)
+        self.secrets = SecretStore(self.store, self.home.root)
+        self.secret_requests = SecretRequests(self)
+        self.desktop_permissions = DesktopPermissions(self)
         if self.config.desktop_hosts:
             self.desktop_worker = DesktopFleet(self)
         if self.cloud_studio is not None and self.cloud_studio.running_chat_keys is None:
@@ -162,14 +170,11 @@ class App:
             self.escalation_client,
             self.jev,
             self.search_client,
+            self.embedding_client,
+            self.knowledge.router,
+            self.knowledge.staged_router,
         ):
-            if holder is None:
-                continue
-            children = getattr(holder, "clients", None)
-            for item in children if children is not None else (holder,):
-                key = getattr(item, "api_key", None)
-                if isinstance(key, str) and key:
-                    keys.add(key)
+            _collect_api_keys(holder, keys)
         return frozenset(keys)
 
     @property
@@ -248,6 +253,20 @@ class ModelRoutes:
 
 
 # ---- owner events ------------------------------------------------------------------
+
+def _collect_api_keys(holder: object, keys: set[str]) -> None:
+    """Add every leaf api_key under a client, fallback chain or router (`providers`, or `clients`) to `keys`."""
+    if holder is None:
+        return
+    children = getattr(holder, "providers", None) or getattr(holder, "clients", None)
+    if children is not None:
+        for child in children:
+            _collect_api_keys(child, keys)
+        return
+    key = getattr(holder, "api_key", None)
+    if isinstance(key, str) and key:
+        keys.add(key)
+
 
 def _person(name: str) -> str:
     return " ".join(name.split()) or "The owner"
@@ -1020,6 +1039,31 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
                 and query.message.chat.id == owner_id and query.message.chat.type == "private"):
             await _toast(app, query)
             await app.t3.callback(owner_id, action, raw_chat_id)
+        return
+    if action == "dperm":
+        if (
+            query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
+        ):
+            return
+        decision, _, payload = raw_chat_id.partition(":")
+        raw_id, _, token = payload.partition(":")
+        request_id = _item_id(raw_id)
+        if request_id is not None and decision in ("once", "always", "reject") and token:
+            ok, label = await app.desktop_permissions.decide(request_id, decision, via="telegram", token=token)
+            await _toast(app, query, label if ok else "already handled")
+        return
+    if action == "sreq":
+        if (
+            query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
+        ):
+            return
+        subaction, _, raw_id = raw_chat_id.partition(":")
+        request_id = _item_id(raw_id)
+        if subaction == "cancel" and request_id is not None:
+            cancelled = await app.secret_requests.cancel(request_id=request_id)
+            await _toast(app, query, "Cancelled" if cancelled else "already handled")
         return
     if action == "desktop":
         if (
