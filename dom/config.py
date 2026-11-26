@@ -439,7 +439,7 @@ class UpdateConfig(BaseModel):
         return url
 
 
-KNOWN_SECRETS = ("TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY")
+KNOWN_SECRETS = ("TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY", "DOM_MASTER_KEY", "DOM_MASTER_KEY_PREVIOUS")
 
 
 OUTFIT_NAME = r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
@@ -891,28 +891,40 @@ _ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 _ENV_VALUE = re.compile(r"[\x21-\x7e]{1,512}")  # printable ASCII, no spaces: a pasted key or token
 
 
-def set_dotenv(home: Path, name: str, value: str | None) -> None:
-    """Set one secret in ``home/.env``, or drop it with None, leaving every other line as it was. The file is replaced
-    atomically and keeps its mode (0600 when new). The value is only ever written, never returned."""
-    if not _ENV_NAME.fullmatch(name):
-        raise ValueError("not a variable name")
-    if value is not None and not _ENV_VALUE.fullmatch(value):
-        raise ValueError("a secret is one run of printable characters without spaces")
+def set_dotenv_many(home: Path, updates: dict[str, str | None]) -> None:
+    """Atomically set or drop several secrets in ``home/.env`` in one file replacement (mode 0600 when new)."""
+    if not updates:
+        return
+    for name, value in updates.items():
+        if not _ENV_NAME.fullmatch(name):
+            raise ValueError("not a variable name")
+        if value is not None and not _ENV_VALUE.fullmatch(value):
+            raise ValueError("a secret is one run of printable characters without spaces")
     path = home / ".env"
     lines = path.read_text().splitlines() if path.is_file() else []
-    kept, placed = [], value is None
+    placed = {name: (value is None) for name, value in updates.items()}
+    kept = []
     for line in lines:
-        if line.strip().partition("=")[0].strip() != name or line.lstrip().startswith("#"):
+        key = line.strip().partition("=")[0].strip()
+        if line.lstrip().startswith("#") or key not in updates:
             kept.append(line)
-        elif not placed:  # the first line for this name takes the new value, where it stood
+        elif not placed[key]:
+            kept.append(f"{key}={updates[key]}")
+            placed[key] = True
+    for name, value in updates.items():
+        if not placed[name] and value is not None:
             kept.append(f"{name}={value}")
-            placed = True
-    if not placed:
-        kept.append(f"{name}={value}")
+            placed[name] = True
     mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
     if not path.is_file():
         path.touch(mode=0o600)
     _replace_file(path, "\n".join(kept) + "\n" if kept else "", mode=mode)
+
+
+def set_dotenv(home: Path, name: str, value: str | None) -> None:
+    """Set one secret in ``home/.env``, or drop it with None, leaving every other line as it was. The file is replaced
+    atomically and keeps its mode (0600 when new). The value is only ever written, never returned."""
+    set_dotenv_many(home, {name: value})
 
 
 def starter_config() -> dict:

@@ -100,9 +100,14 @@ async def _view(app, kind: str = "", source: str = "", linked: int | None = None
         if "facts" in card else _card(card)
         for card in data["cards"]
     ]
+    desktop_permissions = await app.desktop_permissions.pending_requests() if not kind and not source else []
+    secret_requests = await app.secret_requests.pending_list() if not kind and not source else []
     return {
-        "count": data["count"], "kind": kind, "source": source, "kinds": list(KINDS), "sources": data["sources"],
+        "count": data["count"] + len(desktop_permissions) + len(secret_requests),
+        "kind": kind, "source": source, "kinds": list(KINDS), "sources": data["sources"],
         "chats": data["pending_chats"], "cards": cards,
+        "desktop_permissions": desktop_permissions,
+        "secret_requests": secret_requests,
         "settled": [
             {"id": row["id"], "label": row["label"], "status": row["status"], "title": row["title"], "created_at": row["created_at"]}
             for row in data["settled"]

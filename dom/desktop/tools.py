@@ -39,6 +39,25 @@ _TOOLS = {
     "read_file": ("Read a text file inside the sandbox.", {"path": _STRING}),
     "write_file": ("Write a text file inside the sandbox.", {"path": _STRING, "content": _STRING}),
     "handoff": ("Pause for the owner at a login, captcha or payment.", {"reason": _STRING}),
+    "saved_logins": (
+        "List non-secret metadata for saved site logins (id, site, label, masked username hint; never passwords). "
+        "Pass an optional site hostname to filter.",
+        {"site": _STRING},
+    ),
+    "fill_saved_login": (
+        "Fill a saved login into the current HTTPS login page without exposing the password to the model. "
+        "Requires the active browser tab to match the saved login's site and may pause for owner approval.",
+        {
+            "login_id": {"type": "integer", "minimum": 1},
+            "username_selector": _STRING,
+            "password_selector": _STRING,
+            "submit": {"type": "boolean"},
+        },
+    ),
+    "upload_file": (
+        "Upload a file from the sandbox into a page's file input. May pause for owner approval.",
+        {"selector": _STRING, "path": _STRING},
+    ),
     "skill_view": ("Read an owner-approved skill by name.", {"name": _STRING}),
     "propose_skill": ("Only when asked to remember how, or when success needed a workaround found in this run: draft a "
                       "reusable public skill once, after the work succeeds and before finish.", {
@@ -193,12 +212,15 @@ def under_own_roots(path: str) -> bool:
     return any(path == root or path.startswith(root + "/") for root in OWN_FILE_ROOTS)
 
 
+_OPTIONAL_ARGS = frozenset(("files", "part", "site", "username_selector", "password_selector", "submit"))
+
+
 def schemas() -> list[dict]:
     return [{
         "type": "function",
         "function": {
             "name": name, "description": description,
-            "parameters": {"type": "object", "properties": properties, "required": [key for key in properties if key not in ("files", "part")],
+            "parameters": {"type": "object", "properties": properties, "required": [key for key in properties if key not in _OPTIONAL_ARGS],
                            "additionalProperties": False},
         },
     } for name, (description, properties) in _TOOLS.items()]
@@ -210,7 +232,7 @@ def arguments(function: dict) -> tuple[str, dict]:
         raise ValueError("unknown desktop tool")
     args = json.loads(function.get("arguments") or "{}")
     properties = _TOOLS[name][1]
-    required = properties.keys() - {"files", "part"}
+    required = properties.keys() - _OPTIONAL_ARGS
     if not isinstance(args, dict) or not required <= args.keys() <= properties.keys():
         raise ValueError("invalid tool arguments")
     for key, value in args.items():
@@ -220,8 +242,12 @@ def arguments(function: dict) -> tuple[str, dict]:
             raise ValueError("invalid files")
         if key == "selector_or_index" and type(value) is int and value >= 0:
             continue
-        if key == "part":
+        if key in ("part", "login_id"):
             if type(value) is int and value >= 1:
+                continue
+            raise ValueError("invalid tool arguments")
+        if key == "submit":
+            if type(value) is bool:
                 continue
             raise ValueError("invalid tool arguments")
         if not isinstance(value, str):

@@ -555,6 +555,23 @@ async def seed_system(app: handlers.App) -> None:
         "example/chat-model", False, 2100, "Replied in 1 bubble", model_calls=[call, {**call, "duration_ms": 900}], first_bubble_ms=2000, last_bubble_ms=2100,
     )
 
+    # Fictional saved logins, site permissions, and approvals history for System -> Access (deterministic fixed key).
+    from dom.config import set_dotenv
+
+    set_dotenv(app.home.root, "DOM_MASTER_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+    await app.desktop_permissions.save_login(
+        site="library.example.org", label="City library", username="reader", password="preview-only-password",
+    )
+    await app.desktop_permissions.set_site_rule("library.example.org", "fill_login", "allow")
+    await app.desktop_permissions.record_decision(
+        action="fill_login", site="library.example.org", detail="City library (re***)",
+        status="allowed_always", decided_via="telegram",
+    )
+    await app.desktop_permissions.record_decision(
+        action="download", site="docs.example.org", detail="Files: itinerary.pdf",
+        status="rejected", decided_via="dashboard",
+    )
+
 
 async def main(port: int) -> None:
     os.environ[TOKEN_ENV] = TOKEN

@@ -4,8 +4,15 @@
 
 The instance home holds `config.toml`, the `.env` secrets, the bot's personality
 in `SOUL.md`, notes, skills and plugins. `state.db` stores chat state, searchable
-messages, jobs, usage and approvals. `transcripts/` holds per-chat JSON Lines
+messages, jobs, usage, approvals, and encrypted credentials. `transcripts/` holds per-chat JSON Lines
 records. Protect both the database and the transcripts as conversation data.
+
+Saved desktop logins, owner-provided secrets (via `request_secret`), and integration
+tokens are encrypted at rest with AES-256-GCM using `DOM_MASTER_KEY` in `.env`
+(mode `0600`, rotatable via `dom rotate-key <home>` or **System → Access**).
+Saved-login passwords and E101 secrets never pass through Telegram chat, any model
+request, tool result, traced sandbox HTTP request, turn log, debug trace, usage row,
+or log line; they are owner-only and unreachable from groups or friends' DMs.
 
 General notes, habits and the public-safe journal live in `memory/`, with
 separate notes about people and chats. Owner preferences, personal notes and the

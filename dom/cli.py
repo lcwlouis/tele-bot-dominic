@@ -154,6 +154,8 @@ async def run(home: Path) -> bool:
             from dom.deletion import recover_deletions
             await recover_deletions(app.home.root, app.store)
             await app.plugins.cleanup_drafts()
+            await app.desktop_permissions.expire_pending()
+            await app.secret_requests.expire_pending()
             if app.desktop_worker is not None:
                 await app.desktop_worker.recover()
             app.dispatch.jobs.register("habits", habits.due, partial(habits.run, app))
@@ -262,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
     check_cmd.add_argument("--public-address", default=None, help="override [desktop] probe_control (port 443)")
     index_cmd = sub.add_parser("rebuild-index", help="rebuild the graph index from notes and message history")
     index_cmd.add_argument("home", type=Path)
+    rotate_cmd = sub.add_parser("rotate-key", help="rotate DOM_MASTER_KEY and re-encrypt all stored secrets")
+    rotate_cmd.add_argument("home", type=Path)
     args = parser.parse_args(argv)
     if args.command in ("desktop-setup", "desktop-check"):
         try:
@@ -286,6 +290,19 @@ def main(argv: list[str] | None = None) -> int:
         return setup.run_setup(args.home, path=args.studio, base_url=args.studio_url)
     if args.command == "doctor":
         return doctor.run(args.home, online=args.online)
+    if args.command == "rotate-key":
+        from dom.secrets import SecretStore, SecretStoreError
+
+        store = Store(args.home, load_config(args.home).owner_id)
+        try:
+            new_kid, count = asyncio.run(SecretStore(store, args.home).rotate_key())
+        except (OSError, ValueError, SecretStoreError) as exc:
+            print(f"rotate-key failed: {exc}")
+            return 1
+        finally:
+            store.close()
+        print(f"Rotated DOM_MASTER_KEY (key {new_kid}) and re-encrypted {count} secret(s).")
+        return 0
     if args.command == "rebuild-index":
         store = Store(args.home, load_config(args.home).owner_id)
         try:

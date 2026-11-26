@@ -251,6 +251,30 @@ example "browser was on login.example.org at 14:05" in the configured timezone.
 If the sandbox marks no tab as active it says "an unknown site". Treat the host as
 a hint: check the live view before you enter anything.
 
+## Desktop permissions and saved logins
+
+Desktop actions are governed by per-action policies (`Ask`, `Allow`, or `Never`)
+and per-site rules under **System → Access** (`/app/system/access`):
+
+- **Visit unfamiliar sites** (default `Allow`): gates `browse` navigation and blocks redirects to `Never` sites.
+- **Fill saved logins** (default `Ask`): every new site asks before filling, with **Allow once**, **Allow always**, and **Reject** buttons in the owner DM and on Waiting for you.
+- **Download files from desktop** (default `Ask`): gates exporting non-screenshot files out of the sandbox.
+- **Upload files** (default `Ask`): gates uploading sandbox files to a web page (`Never` also discards staged `/desktop` inbox attachments).
+- **Background work** (default `Allow`): gates Dom's self-directed Own work tasks (`Ask` pauses before each task launches; `Never` turns planning and execution off).
+
+Saved logins are encrypted at rest in SQLite with AES-256-GCM using `DOM_MASTER_KEY`
+in `DOM_HOME/.env` (mode `0600`, auto-generated on first write, rotatable with
+`dom rotate-key <home>` or from **System → Access**). When approved, Dom verifies
+the active tab is `https://` on the saved login's site and focuses a visible
+top-level `input[type="password"]`, then types the username and password strictly
+as RFB keystrokes over `/websockify`. Passwords never enter any model prompt,
+tool result, traced sandbox HTTP request (`/v1/browser/page/type`, `fill`,
+`evaluate`), turn log, trace, usage row, or log line. Self-directed tasks never
+see or use saved logins.
+
+See [the credentials and permissions security spec](superpowers/specs/2026-11-27-credentials-and-permissions.md)
+for the full threat model, key-rotation protocol, and E101 secure secret request flow.
+
 ## Self-directed work
 
 With `[self_work] enabled = true` (the default) and a local desktop host, Dom may

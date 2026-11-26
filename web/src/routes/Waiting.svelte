@@ -1,7 +1,9 @@
 <script lang="ts">
   import Code from "$lib/components/code/Code.svelte";
   import { onMount } from "svelte";
-  import type { WaitingData, WaitingCard } from "$lib/api";
+  import { send, type WaitingData, type WaitingCard } from "$lib/api";
+  import { shell } from "$lib/shell.svelte";
+  import { toast } from "$lib/toast.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import GoneNote from "$lib/components/kit/GoneNote.svelte";
@@ -59,6 +61,26 @@
   const reload = () => page.load(`?${new URLSearchParams({ kind, source })}`);
   const chosen = (card: Extract<WaitingCard, { type: "import" }>) => card.facts.filter((fact) => picked[fact.id] !== false).map((fact) => fact.id);
   const select = "h-10 rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
+
+  async function decideDesktopPermission(id: number, decision: "once" | "always" | "reject") {
+    try {
+      const res = await send<{ message: string }>("/api/access/decide", { id, decision });
+      toast.show("ok", res.message || "Saved.");
+      await Promise.all([reload(), shell.refresh()]);
+    } catch {
+      // toast already shown
+    }
+  }
+
+  async function cancelSecretRequest(id: number) {
+    try {
+      await send<{ ok: boolean }>("/api/secrets/request/cancel", { request_id: id });
+      toast.show("ok", "Secret request cancelled.");
+      await Promise.all([reload(), shell.refresh()]);
+    } catch {
+      // toast already shown
+    }
+  }
 </script>
 
 <PageHeader kicker="Home" title="Waiting for you" subtitle="Everything Dom won't do until you say so." />
@@ -93,11 +115,49 @@
     </div>
   {/if}
 
-  {#if data.cards.length === 0 && data.chats.length === 0}
+  {#if data.cards.length === 0 && data.chats.length === 0 && (data.desktop_permissions?.length ?? 0) === 0 && (data.secret_requests?.length ?? 0) === 0}
     <StatusNote title="Nothing is waiting for you" detail="Proposals and approvals land here." />
   {:else}
     <p class="mb-3 text-sm text-muted-foreground" role="status">{data.count} {data.count === 1 ? "thing is" : "things are"} waiting.</p>
     <ul class="grid gap-4 lg:grid-cols-2" aria-label="Waiting for you">
+      {#each data.desktop_permissions ?? [] as perm (perm.id)}
+        <li>
+          <Card.Root class="h-full border-signal/40">
+            <Card.Header>
+              <Card.Title class="text-base">Desktop permission · {perm.action_label}</Card.Title>
+              <Card.Description class="break-words">{perm.site || "Desktop"}</Card.Description>
+            </Card.Header>
+            <Card.Content class="grid gap-3 text-sm">
+              {#if perm.detail}<p class="text-muted-foreground break-words">{perm.detail}</p>{/if}
+              <div class="flex flex-wrap gap-2">
+                <Button disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "once")}>Allow once</Button>
+                <Button variant="secondary" disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "always")}>Allow always</Button>
+                <Button variant="destructive" disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "reject")}>Reject</Button>
+              </div>
+            </Card.Content>
+          </Card.Root>
+        </li>
+      {/each}
+
+      {#each data.secret_requests ?? [] as sreq (sreq.id)}
+        <li>
+          <Card.Root class="h-full border-signal/40">
+            <Card.Header>
+              <Card.Title class="text-base">Secret requested · {sreq.label}</Card.Title>
+              <Card.Description class="break-words">{sreq.reason}</Card.Description>
+            </Card.Header>
+            <Card.Content class="grid gap-3 text-sm">
+              <p class="text-muted-foreground">
+                {sreq.target === "env" ? `Destination: .env variable ${sreq.target_key}` : sreq.target === "login" ? `Destination: saved login (${sreq.target_key || "site"})` : `Destination: encrypted store (${sreq.target_key})`}
+              </p>
+              <div class="flex flex-wrap gap-2">
+                <Button href={`/app/secret?id=${sreq.id}`}>Enter secret</Button>
+                <Button variant="destructive" disabled={page.busy} onclick={() => cancelSecretRequest(sreq.id)}>Cancel</Button>
+              </div>
+            </Card.Content>
+          </Card.Root>
+        </li>
+      {/each}
       {#each data.chats as chat (chat.id)}
         <li>
           <Card.Root class="h-full">

@@ -1986,6 +1986,62 @@ test.describe("interactions under the CSP", () => {
     expect(await tip.evaluate((node) => getComputedStyle(node).animationName)).toBe("none");
   });
 
+  test("access page: masked saved logins, desktop permissions, approvals history and secret entry form", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/system/access");
+    await expect(page.getByRole("heading", { level: 1, name: "Access" })).toBeVisible();
+    const savedList = page.getByRole("list", { name: "Saved logins" });
+    await expect(savedList.getByText("library.example.org")).toBeVisible();
+    await expect(savedList.getByText("re***")).toBeVisible();
+    // Plaintext password must never appear in the rendered page.
+    expect(await page.content()).not.toContain("preview-only-password");
+    // Check accessibility on Saved logins tab.
+    const axe1 = await new AxeBuilder({ page }).analyze();
+    expect(axe1.violations).toEqual([]);
+
+    // Permissions tab: all 5 actions + per-site rule.
+    await page.getByRole("tab", { name: "Permissions" }).click();
+    for (const label of ["Visit unfamiliar sites", "Fill saved logins", "Download files from desktop", "Upload files", "Background work"]) {
+      await expect(page.getByText(label, { exact: true }).first()).toBeVisible();
+    }
+    await expect(page.getByRole("list", { name: "Per-site permissions" })).toContainText("library.example.org");
+    const axe2 = await new AxeBuilder({ page }).analyze();
+    expect(axe2.violations).toEqual([]);
+
+    // History tab: newest-first audit rows.
+    await page.getByRole("tab", { name: "Approvals history" }).click();
+    await expect(page.getByRole("list", { name: "Approvals history" })).toContainText("itinerary.pdf");
+    const axe3 = await new AxeBuilder({ page }).analyze();
+    expect(axe3.violations).toEqual([]);
+
+    // E101 one-time secret entry form (/app/secret#t=...): scrubs fragment from URL and renders form.
+    await page.route("**/api/secrets/request/lookup", async (route) => {
+      await route.fulfill({
+        json: {
+          ok: true,
+          request: {
+            id: 77,
+            label: "Weather API key",
+            reason: "For the local forecast",
+            target: "secret",
+            target_key: "weather_api",
+            created_at: "2026-11-22T20:20:00+00:00",
+            expires_at: "2026-11-22T20:35:00+00:00",
+            overwrites_existing: false,
+          },
+        },
+      });
+    });
+    await page.goto("/app/secret#t=preview-secret-token");
+    await expect(page.getByRole("heading", { level: 1, name: "Enter secret" })).toBeVisible();
+    await expect(page.getByText("Weather API key")).toBeVisible();
+    // Fragment token must be scrubbed from the URL bar.
+    expect(page.url()).not.toContain("preview-secret-token");
+    const axe4 = await new AxeBuilder({ page }).analyze();
+    expect(axe4.violations).toEqual([]);
+    expect(problems).toEqual([]);
+  });
+
   test("the orbit is still under reduced motion", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/app/gallery");
