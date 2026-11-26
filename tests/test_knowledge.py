@@ -814,3 +814,14 @@ def test_migration_runs_on_a_copy_of_a_database_built_before_it(tmp_path):
         )
     finally:
         conn.close()
+
+
+async def test_two_messages_with_the_same_text_both_stay_in_group_search(make_app):
+    # Re-check of #81: deduplicating by text hid a separate message that happened to say the same thing.
+    app = make_app()
+    await add_message(app, 1, "Japan again tonight")
+    await app.knowledge.refresh()
+    await add_message(app, 2, "Japan again tonight")
+    ctx = tool_ctx(app, GROUP, "group", FRIEND, participants=(FRIEND,))
+    texts = [hit["text"] for hit in await tool_search(app, ctx, "Japan")]
+    assert texts.count("Japan again tonight") == 2

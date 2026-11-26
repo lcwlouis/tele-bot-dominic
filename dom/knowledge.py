@@ -47,6 +47,7 @@ class KnowledgeHit:
     at: str
     entities: tuple[str, ...]
     score: float = 0.0
+    message_id: int | None = None  # the messages row a message fact came from; None for note lines
 
 
 def _hash(text: str) -> str:
@@ -534,6 +535,7 @@ class KnowledgeIndex:
     def _hits(rows: list[dict[str, Any]]) -> list[KnowledgeHit]:
         return [KnowledgeHit(
             row["text"], row["file"], row["source_chat"], row["at"], row["entities"], float(row.get("score", 0.0)),
+            row.get("message_id"),
         ) for row in rows]
 
     def _blend(

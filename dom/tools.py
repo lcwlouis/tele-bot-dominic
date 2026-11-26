@@ -111,12 +111,10 @@ async def _search(args: dict, ctx: TurnCtx) -> str:
             keep_days=await asyncio.to_thread(ctx.home.scoped(allow_private=False).core_days),
         )
     found = [{k: h[k] for k in ("chat_id", "msg_id", "sender_name", "text", "created_at")} for h in recent]
-    seen = {" ".join(row["text"].split()) for row in found}
+    seen = {row["id"] for row in recent}  # the same message once; two messages with equal text both stay
     for hit in indexed:
-        key = " ".join(hit.text.split())
-        if hit.file == "" and key in seen:
+        if hit.message_id is not None and hit.message_id in seen:
             continue
-        seen.add(key)
         found.append({"text": hit.text, "file": hit.file, "at": hit.at, "entities": hit.entities})
     return json.dumps(found, ensure_ascii=False)
 
