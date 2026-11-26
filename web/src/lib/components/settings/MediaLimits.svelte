@@ -1,8 +1,9 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount, untrack } from "svelte";
-  import { getJSON, send, type SpendView, type StudioKind, type StudioLimits, type StudioLimitsView, type StudioScope, type StudioTier } from "$lib/api";
+  import { getJSON, send, type SpendView, type StudioLimits, type StudioLimitsView, type StudioScope, type StudioTier } from "$lib/api";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
+  import { KIND_LABELS, standingNote } from "$lib/media-standing";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
@@ -16,9 +17,7 @@
   // so a save applies at once.
   let { revision = $bindable() }: { revision: string } = $props();
 
-  const KINDS: Record<StudioKind, string> = {
-    voice: "Voice notes", video_note: "Video notes", photo: "Photos", special: "Special videos",
-  };
+  const KINDS = KIND_LABELS;
   const GAP_MAX = 10080; // a week: dom/config.py StudioTier.gap_minutes
 
   // One number per kind; video and photos also take a period. Per day sets <kind>_daily; per week clears it and sets
@@ -127,24 +126,6 @@
       if (view && current && current !== view.revision && !saving) void load();
     });
   });
-
-  // Dom's own clock: the API sends each time with Dom's UTC offset, so the label reads the same on any device.
-  const clock = (iso: string) => iso.slice(11, 16);
-  const weekday = (iso: string) => new Date(iso.slice(0, 10) + "T00:00:00Z").toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" });
-  // Across a clock change the offset differs from now's, so it is shown: 01:15 means two different times that night.
-  const offset = (iso: string) => /(Z|[+-]\d\d:\d\d)$/.exec(iso)?.[1] ?? "";
-  const nextLabel = (next: string, now: string) =>
-    `Next media from ${next.slice(0, 10) === now.slice(0, 10) ? "" : weekday(next) + " "}${clock(next)}` +
-    (offset(next) === offset(now) ? "" : ` (UTC${offset(next).replace("Z", "+00:00")})`);
-  // What the owner's DM may get now: the first reason nothing can go, or when the next can.
-  function nowNote(owner: StudioLimitsView["owner"]): string {
-    const on = owner.kinds.filter((item) => item.on);
-    if (owner.daily_left === 0) return "All chats have used the daily total.";
-    if (owner.sending) return "Media is on its way.";
-    if (!on.length) return "Media is off in your DM.";
-    if (!on.some((item) => item.left > 0)) return "Nothing left until a limit resets.";
-    return owner.next_at ? `${nextLabel(owner.next_at, owner.now)}.` : "Media can go now.";
-  }
 </script>
 
 {#snippet count(id: string, label: string, value: number | null, set: (n: number | null) => void, unit: string, max?: number)}
@@ -283,11 +264,11 @@
               <ul class="grid gap-1 text-sm">
                 {#each owner.kinds as item (item.kind)}
                   <li class="flex justify-between gap-3 {item.on ? '' : 'text-muted-foreground'}">
-                    <span>{KINDS[item.kind]}</span><span><span class="font-mono">{item.left}</span>{item.on ? "" : " (off)"}</span>
+                    <span>{KINDS[item.kind]}</span><span><span class="font-mono">{item.used}</span> used · <span class="font-mono">{item.left}</span> left{item.on ? "" : " (off)"}</span>
                   </li>
                 {/each}
               </ul>
-              <p class="mt-2 text-sm text-muted-foreground">{nowNote(owner)}</p>
+              <p class="mt-2 text-sm text-muted-foreground">{standingNote(owner, "in your DM")}</p>
             </section>
           </div>
           {@render scopeFields("friend_dm", "Friends’ DMs")}

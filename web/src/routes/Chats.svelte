@@ -8,6 +8,7 @@
   import Sparkles from "@lucide/svelte/icons/sparkles";
   import { onMount } from "svelte";
   import { getJSON, send, type Chat, type ChatsData, type UnreachableChat } from "$lib/api";
+  import ChatMedia from "$lib/components/ChatMedia.svelte";
   import ChatMessages from "$lib/components/ChatMessages.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
@@ -35,6 +36,7 @@
   let busy = $state(false); // one write at a time: each answer replaces the page data
   let openChat = $state<number | null>(null); // the chat whose personality is showing
   let reading = $state<number | null>(null); // the chat whose recent messages are showing
+  let mediaOpen = $state<number | null>(null); // the chat whose media used and left is showing
   let dragging = $state<Record<string, number>>({}); // `${chat}:${trait}` -> value while a slider moves
   let leaving = $state<Chat | null>(null);
   let resetting = $state<Chat | null>(null);
@@ -238,6 +240,14 @@
                 >
                   Messages
                 </Button>
+                <Button
+                  variant="ghost"
+                  aria-expanded={mediaOpen === chat.id}
+                  aria-label={`Media used and left in ${chat.title}`}
+                  onclick={() => (mediaOpen = mediaOpen === chat.id ? null : chat.id)}
+                >
+                  Media
+                </Button>
                 <!-- The rescue: earlier messages leave the prompt, never the history; the last start can be undone. -->
                 <Button variant="ghost" disabled={busy} aria-label={`Fresh start in ${chat.title}`} onclick={() => (freshening = chat)}>Fresh start</Button>
                 {#if freshened === chat.id}
@@ -250,6 +260,9 @@
 
               {#if reading === chat.id}
                 <ChatMessages chatId={chat.id} title={chat.title} />
+              {/if}
+              {#if mediaOpen === chat.id}
+                <ChatMedia chatId={chat.id} title={chat.title} />
               {/if}
               {#if expanded}
                 <div id={`personality-${chat.id}`} class="grid gap-5 border-t pt-4">
