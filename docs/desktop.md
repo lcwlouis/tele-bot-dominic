@@ -256,7 +256,7 @@ a hint: check the live view before you enter anything.
 Desktop actions are governed by per-action policies (`Ask`, `Allow`, or `Never`)
 and per-site rules under **System → Access** (`/app/system/access`):
 
-- **Visit unfamiliar sites** (default `Allow`): gates `browse` navigation and blocks redirects to `Never` sites.
+- **Visit unfamiliar sites** (default `Allow`): gates `browse`, and any page a click, key, form, redirect or late navigation reaches: each task remembers the sites it was cleared for, and a page tool that finds the browser on any other site gets the same check (`Ask` raises a card, `Never` and a rejection close the page). A permission card's wait does not count against the task's time.
 - **Fill saved logins** (default `Ask`): every new site asks before filling, with **Allow once**, **Allow always**, and **Reject** buttons in the owner DM and on Waiting for you.
 - **Download files from desktop** (default `Ask`): gates exporting non-screenshot files out of the sandbox.
 - **Upload files** (default `Ask`): gates uploading sandbox files to a web page (`Never` also discards staged `/desktop` inbox attachments).

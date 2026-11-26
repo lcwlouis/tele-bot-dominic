@@ -113,6 +113,9 @@ class OwnRun:
     searched: bool = False  # the previous step typed search text, so Enter may follow
 
 
+PAGE_TOOLS = frozenset({"browse", "click", "press", "fill", "read_page", "list_elements", "scroll", "look"})
+
+
 @dataclass
 class Run:
     """One pass of the tool loop: its prompt and brief, the tools it offers, and its limits."""
@@ -134,6 +137,10 @@ class Run:
     # Exact canonical path -> SHA-256 digest of PNG bytes captured by save_screenshot (never trust paths alone).
     screenshots: dict[str, bytes] = field(default_factory=dict)
     redactions: set[str] = field(default_factory=set)
+    # Sites this run may be on (Allow, or the owner approved them): a page that lands anywhere else is asked about.
+    sites: set[str] = field(default_factory=set)
+    # The running tool's time limit, paused while a permission card waits for the owner (that wait is not work time).
+    tool_limit: asyncio.Timeout | None = None
     base_steps: int = field(init=False)  # the budget it started with; max_steps grows when the owner extends it
 
     def __post_init__(self) -> None:
@@ -736,8 +743,12 @@ class DesktopWorker:
                                     draft = Skill(**{key: self._redact(client, value, run) for key, value in args.items()})
                                     result = "Skill drafted for owner approval if the task finishes successfully."
                             else:
-                                async with asyncio.timeout_at(run.deadline):
-                                    result = await run.tool(client, name, args)
+                                async with asyncio.timeout_at(run.deadline) as limit:
+                                    run.tool_limit = limit
+                                    try:
+                                        result = await run.tool(client, name, args)
+                                    finally:
+                                        run.tool_limit = None
                         except (SandboxError, ValueError, TypeError) as exc:
                             result = f"Tool error: {exc}" if isinstance(exc, SandboxError) else "Tool error: invalid arguments"
                         else:
@@ -831,6 +842,8 @@ class DesktopWorker:
             return f"Blocked: {action.replace('_', ' ')} is set to Never{where}."
         clock = asyncio.get_running_loop().time
         before = clock()
+        if run.tool_limit is not None:
+            run.tool_limit.reschedule(None)  # the owner's answer is not working time: the limit waits with the card
         await self.app.store.update_desktop_task(
             run.task_id, run.chat_id, ("running",), "waiting_owner",
             error=f"Permission needed: {action.replace('_', ' ')} ({canonical or 'desktop'})"[:500],
@@ -846,6 +859,8 @@ class DesktopWorker:
             )
         finally:
             run.deadline += clock() - before
+            if run.tool_limit is not None:
+                run.tool_limit.reschedule(run.deadline)
             await self.app.store.update_desktop_task(
                 run.task_id, run.chat_id, ("waiting_owner",), "running", error=None,
             )
@@ -1058,6 +1073,8 @@ class DesktopWorker:
             )
             if refusal is not None:
                 return refusal
+            if canonical:
+                run.sites.add(canonical)
         if name == "save_screenshot":
             stem = PurePosixPath(safe_filename(args.get("name"))).stem or "screenshot"
             path = f"{OUTBOX_DIR}/{'' if self.container == DEFAULT else self.container + '-'}{stem}.png"
@@ -1065,15 +1082,11 @@ class DesktopWorker:
             await client.upload_file(path, data)
             run.screenshots[path] = hashlib.sha256(data).digest()
             return {"path": path}
-        navigates = name in ("browse", "click", "press", "fill")
-        if name == "browse":
-            before = normalize_site(url_host(args["url"]) or "")  # its target was checked above
-        elif navigates:
-            before = normalize_site(await self._browser_host(client) or "")
         result = await self._tool(client, name, args)
-        if navigates:
+        if name in PAGE_TOOLS:
             host = await self._browser_host(client)
-            if host and (canonical := normalize_site(host)):
+            canonical = normalize_site(host) or host if host else None  # an IP literal is its own site, as for browse
+            if canonical:
                 if await self.app.desktop_permissions.resolve("visit_site", canonical) == "never":
                     await self._close_page(client)
                     await self.app.desktop_permissions.record_decision(
@@ -1081,9 +1094,10 @@ class DesktopWorker:
                         status="blocked", decided_via="policy", task_id=run.task_id,
                     )
                     return f"Blocked: {canonical} is set to Never, so the page was closed."
-                if canonical != before:
-                    # A link, a form or a redirect reached a site the action did not name: the same Ask, Allow or
-                    # Never as opening it with browse, so Ask raises a card here too (credentials spec §5.1).
+                if canonical not in run.sites:
+                    # A link, a form, a redirect or a late navigation reached a site this run was not cleared for: the
+                    # same Ask, Allow or Never as opening it with browse (credentials spec §5.1). Checked after every
+                    # page tool, so a host that could not be read once is caught by the next one.
                     has_rule = bool(await self.app.store.get_desktop_site_permission(canonical, "visit_site"))
                     refusal = await self._check_permission(
                         run, "visit_site", host, f"Reached {canonical} after {name}", log_auto=has_rule,
@@ -1091,6 +1105,7 @@ class DesktopWorker:
                     if refusal is not None:
                         await self._close_page(client)
                         return f"{refusal} The page was closed."
+                    run.sites.add(canonical)
         return result
 
     @staticmethod
