@@ -270,6 +270,14 @@ Results are sorted strictly by score. Each meaning hit carries its score and a c
 
 Set all three or none. With a place, every turn note carries one short line after the chat window, such as `Weather in Singapore now: 31°C (feels like 38°C), partly cloudy, humid. Today 25–33°C, 70% chance of rain.` It comes from [Open-Meteo](https://open-meteo.com/) (no key), fetched in the background about every 45 minutes and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.
 
+## Dispatch
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `dispatch.fast_lane` | `true` | Give the owner's DM a compose lane of its own, so his turns (and the turns his approval cards start) never wait for a turn in another chat. Off, every chat's turns compose one at a time, owner first. |
+
+With the fast lane on, Dom composes the owner's DM turns apart from every other chat's: each turn is still composed one at a time within its lane, and one chat's turns stay in order, but the owner's never wait behind a long turn in a group or a friend's DM. The lanes share the prompt prefix, the spend caps and the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.
+
 ## Presence
 
 | Key | Default | Meaning |

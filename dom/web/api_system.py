@@ -243,6 +243,7 @@ async def read_turns(request: Request, chat: str = "") -> dict:
             "title": row["title"], "outcome": row["outcome"], "first_bubble_ms": row["first_bubble_ms"],
             "last_bubble_ms": row["last_bubble_ms"], "duration_ms": row["duration_ms"], "model": row["model"],
             "fallback": bool(row["fallback"]), "calls": row["calls"], "steps": row["steps"],
+            "lane": row["lane"], "queue_wait_ms": row["queue_wait_ms"],
             "visits": [{
                 "reason": visit["reason"], "behind": visit["behind_title"], "capped": visit["capped_title"],
             } for visit in row["visits"]],

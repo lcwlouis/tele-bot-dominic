@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Your DM has a lane of its own.** With `dispatch.fast_lane` (on by default), Dom composes your DM's turns, and the turns your approval cards start, on a token apart from every other chat's, so a long turn in a group or a friend's DM never makes you wait. One chat's turns still run one at a time and in order, and the lanes share the prompt prefix, the spend caps and the usage log. The Turn log shows each turn's lane and how long it waited for its token. Off, every chat shares one token as before.
+
 ## [0.8.4] - 2026-11-27
 
 Dom knows what happened to him: errors from his own work, what changed after an update, and the real photos, voice notes and clips people send. His memory lasts: dated facts, source-tagged lines, rolling summaries, core memories, a linked graph of people, places, projects and goals, and optional meaning search. Spend caps, service settings and leak-scan levels are set from the dashboard, and his studio gains scenes, event days, voices and portraits.

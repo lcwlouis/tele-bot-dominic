@@ -205,7 +205,7 @@ class Dispatcher:
         sleep: Callable[[float], Awaitable[None]], now: Callable[[], datetime],
     ):
         self.app, self.presence, self.jev = app, presence, jev
-        self.attention = Attention()
+        self.attention = Attention(fast_lane=app.config.dispatch.fast_lane)
         self.cross_chat = CrossChat(self)
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
@@ -359,7 +359,7 @@ class Dispatcher:
             if verdict.confident and verdict.action == "react" and verdict.emoji:
                 arrival.reaction = self._spawn(self._perform_reaction(chat_id, msg.msg_id, verdict.emoji))
             elif verdict.action == "reply" or not verdict.confident:
-                if self.attention.can_type(chat_id):
+                if self.attention.can_type(chat_id, scope):
                     arrival.typing = executor.TypingIndicator(self.app.bot, chat_id, msg.thread_id, monotonic)
                 if (scope == "owner_dm" and verdict.action == "reply" and verdict.confident
                         and verdict.ready and verdict.likely_long):
@@ -1746,7 +1746,7 @@ class Dispatcher:
             skill = attempt.escalation_retry.skill
         thread_id = newest.thread_id if newest.thread_id is not None else (live.thread_id if live else None)
         typing = arrival.typing if arrival is not None else None
-        if typing is not None and not self.attention.can_type(chat_id):
+        if typing is not None and not self.attention.can_type(chat_id, scope):
             attempt.credit += typing.stop()
             typing = None
         note = ""
@@ -1788,7 +1788,7 @@ class Dispatcher:
                     if typing is None:
                         typing = executor.TypingIndicator(app.bot, chat_id, thread_id, monotonic)
                     reply_started = monotonic()
-                    with turn_log.attention_visit(self.attention, visit, started, self.now):
+                    with turn_log.attention_visit(self.attention, visit, started, self.now, wait_ms=queue_ms):
                         title = live.chat_title if live else ""
                         fact = ""
                         try:

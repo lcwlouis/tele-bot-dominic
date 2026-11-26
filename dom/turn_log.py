@@ -92,7 +92,9 @@ _visit: ContextVar[tuple[Attention, int, Callable[[], datetime], TurnTrace] | No
 
 
 @contextmanager
-def attention_visit(attention: Attention, entry: Entry, started: datetime, now: Callable[[], datetime]):
+def attention_visit(
+    attention: Attention, entry: Entry, started: datetime, now: Callable[[], datetime], *, wait_ms: int = 0,
+):
     trace = _current.get()
     if trace is None:
         yield
@@ -104,6 +106,7 @@ def attention_visit(attention: Attention, entry: Entry, started: datetime, now: 
         _visit.reset(token)
         trace.steps.append(_VISIT_STEP + json.dumps({
             "chat_id": entry.chat_id, "at": started.isoformat(), "duration_ms": milliseconds(now() - started),
+            "lane": entry.lane, "wait_ms": wait_ms,
             "reason": entry.reason, "behind": entry.behind, "depth": entry.depth, "capped": entry.capped,
         }))
 

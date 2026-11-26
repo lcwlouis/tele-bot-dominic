@@ -214,6 +214,18 @@ class SelfWorkConfig(BaseModel):
     max_steps: int = Field(25, ge=1, le=60, description="Largest step budget (tool calls and model turns) that one task may plan.")
 
 
+class DispatchConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    fast_lane: bool = Field(
+        True,
+        description=(
+            "Give the owner's DM a compose lane of its own, so his turns (and the turns his approval cards start) "
+            "never wait for a turn in another chat. Off, every chat's turns compose one at a time, owner first."
+        ),
+    )
+
+
 class PresenceConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -676,6 +688,7 @@ class Config(BaseModel):
         description="Optional monthly USD limit per area (`chat`, `media`, `search`, `desktop`, `memory`), as a `[area_spend_caps_usd]` table. An area at its limit pauses that kind of work for the rest of the month while the others go on. An area left out, or set to zero, has no limit of its own.",
     )
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
+    dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
     studio: StudioConfig = Field(default_factory=StudioConfig)

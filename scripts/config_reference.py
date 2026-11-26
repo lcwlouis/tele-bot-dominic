@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, WorldConfig, starter_config
+from dom.config import Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -59,7 +59,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "presence", "self_work", "studio", "knowledge", "world", "web", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "dispatch", "presence", "self_work", "studio", "knowledge", "world", "web", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -158,6 +158,12 @@ def render() -> str:
         "and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the "
         "weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also "
         "always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.",
+        "## Dispatch",
+        table(fields(DispatchConfig, "dispatch.")),
+        "With the fast lane on, Dom composes the owner's DM turns apart from every other chat's: each turn is "
+        "still composed one at a time within its lane, and one chat's turns stay in order, but the owner's never "
+        "wait behind a long turn in a group or a friend's DM. The lanes share the prompt prefix, the spend caps and "
+        "the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),
         "## Self-directed work",
