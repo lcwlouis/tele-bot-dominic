@@ -257,11 +257,14 @@ class Home:
         """All core memories in the notes this Home can read, one entry per line."""
         found = []
         for rel in self._note_rels():
-            for line in notes.core_lines(self.read(rel)):
-                core = line.core
+            for raw in self.read(rel).split("\n"):
+                line = notes.parse_line(raw)
+                if (core := line.core) is None:
+                    continue
                 found.append({
                     "file": rel, "text": line.body, "source": line.source or notes.ANY,
                     "by": core.by, "day": core.day, "why": core.why,
+                    "raw": raw,  # the exact line, so the dashboard changes this line and not a twin with the same text
                 })
         return found
 

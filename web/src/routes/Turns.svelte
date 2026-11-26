@@ -86,28 +86,55 @@
 {:else}
   {@const data = page.data}
   {#if data.visits.length || data.cross_chat.length}
-    <!-- What spans turns, folded so the turns lead the page. -->
-    <div class="mb-5 grid gap-3 lg:grid-cols-2">
+    <!-- What spans turns: full-width sections, stacked and folded, so the turns lead the page. -->
+    <div class="mb-5 grid gap-3">
       {#if data.visits.length}
+        {@const longest = Math.max(...data.visits.map((visit) => visit.duration_ms), 1)}
         <details class="group rounded-xl border bg-surface">
           <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-xl px-4 font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
             <ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform duration-(--motion-quick) group-open:rotate-180" aria-hidden="true" />
             Attention loop <span class="text-meta font-normal text-muted-foreground">{data.visits.length} visits</span>
           </summary>
-          <section aria-label="Attention loop" class="grid gap-4 border-t px-4 pt-3 pb-4">
-            <div>
-              <p class="flex justify-between font-mono text-xs text-muted-foreground"><time>{data.visits[0].time}</time><time>{data.visits[data.visits.length - 1].time}</time></p>
-              <ol class="mt-2 grid gap-1.5" aria-label="Attention visits">
-                {#each data.visits as visit, index (index)}
-                  <li>
-                    <span class="text-sm">{visit.title}, {duration(visit.duration_ms)}, {visit.depth} ready</span>
-                    <svg viewBox="0 0 1000 10" preserveAspectRatio="none" class="h-2.5 w-full" aria-hidden="true">
-                      <rect width="1000" height="10" class="fill-raised" />
-                      <rect x={visit.left} width={visit.width} height="10" class="fill-signal" />
-                    </svg>
-                  </li>
-                {/each}
-              </ol>
+          <section aria-label="Attention loop" class="grid grid-cols-[minmax(0,1fr)] gap-5 border-t px-4 pt-3 pb-4">
+            <!-- Rows, newest first; the bar is the visit's length against the longest one, not a place in time. -->
+            <div class="max-h-[26rem] overflow-y-auto overscroll-contain rounded-lg border">
+              <table class="w-full table-fixed text-sm">
+                <caption class="sr-only">Attention visits, newest first</caption>
+                <colgroup>
+                  <col class="w-[6.75rem] sm:w-[9.5rem]" />
+                  <col />
+                  <col class="w-[4.75rem] sm:w-[42%]" />
+                  <col class="w-12 sm:w-14" />
+                </colgroup>
+                <thead class="sticky top-0 bg-surface">
+                  <tr class="text-left text-meta text-muted-foreground">
+                    <th scope="col" class="py-2 pr-2 pl-3 font-medium">When</th>
+                    <th scope="col" class="px-2 py-2 font-medium">Chat</th>
+                    <th scope="col" class="px-2 py-2 font-medium">Stayed</th>
+                    <th scope="col" class="py-2 pr-3 pl-2 text-right font-medium">Ready</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each [...data.visits].reverse() as visit, index (index)}
+                    <tr class="border-t">
+                      <td class="py-1.5 pr-2 pl-3 font-mono text-meta whitespace-nowrap text-muted-foreground tabular-nums">
+                        <time>{visit.time.slice(0, -3)}<span class="max-sm:hidden">{visit.time.slice(-3)}</span></time>
+                      </td>
+                      <th scope="row" class="truncate px-2 py-1.5 text-left font-normal" title={visit.title}>{visit.title}</th>
+                      <td class="px-2 py-1.5">
+                        <span class="flex items-center gap-2">
+                          <span class="shrink-0 tabular-nums sm:w-14 sm:text-right">{duration(visit.duration_ms)}</span>
+                          <svg viewBox="0 0 100 6" preserveAspectRatio="none" class="hidden h-1.5 min-w-0 flex-1 rounded-full sm:block" aria-hidden="true">
+                            <rect width="100" height="6" class="fill-raised" />
+                            <rect width={Math.max(1, (100 * visit.duration_ms) / longest)} height="6" class="fill-signal" />
+                          </svg>
+                        </span>
+                      </td>
+                      <td class="py-1.5 pr-3 pl-2 text-right tabular-nums">{visit.depth}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
             </div>
             <div>
               <h3 class="mb-2 flex items-center gap-1.5 font-semibold">

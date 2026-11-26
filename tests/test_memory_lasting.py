@@ -333,9 +333,23 @@ async def test_the_core_memory_api_lists_every_core_memory_with_the_cap(make_app
         body = (await client.get("/api/memory/core")).json()
     assert body["cap"] == 30
     assert body["items"] == [
-        {"file": "memory/MEMORY.md", "text": "- I fear the sea", "source": "any", "by": "dom", "day": "2026-02-03", "why": "it shaped me"},
-        {"file": "private/USER.md", "text": "- Owner is afraid of heights", "source": "any", "by": "owner", "day": "2026-01-02", "why": ""},
+        {"file": "memory/MEMORY.md", "text": "- I fear the sea", "source": "any", "by": "dom", "day": "2026-02-03",
+         "why": "it shaped me", "raw": "- I fear the sea {core dom 2026-02-03: it shaped me}"},
+        {"file": "private/USER.md", "text": "- Owner is afraid of heights", "source": "any", "by": "owner", "day": "2026-01-02",
+         "why": "", "raw": "- Owner is afraid of heights {core owner 2026-01-02}"},
     ]
+
+
+async def test_two_core_memories_with_the_same_text_keep_their_own_exact_lines(make_app, browser, tmp_path):
+    # Review of #92: the dashboard matched a core memory by its stripped text, so changing the second of two twins
+    # changed the first. Each item carries its exact line for the page to match.
+    app = make_app()
+    write(tmp_path, "memory/people/7.md",
+          "- Likes the sea {any} {core dom 2026-02-03} {entities place:beach}\n- Likes the sea {any} {core owner 2026-02-04}\n")
+    async with browser(app) as client:
+        items = (await client.get("/api/memory/core")).json()["items"]
+    assert [item["text"] for item in items] == ["- Likes the sea", "- Likes the sea"]
+    assert items[0]["raw"] != items[1]["raw"] and all(item["raw"] in read(tmp_path, "memory/people/7.md") for item in items)
 
 
 # --- recency in search ---------------------------------------------------------------------------------------------
