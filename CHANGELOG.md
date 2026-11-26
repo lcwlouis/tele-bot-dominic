@@ -6,6 +6,10 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-27
+
+Dom knows what happened to him: errors from his own work, what changed after an update, and the real photos, voice notes and clips people send. His memory lasts: dated facts, source-tagged lines, rolling summaries, core memories, a linked graph of people, places, projects and goals, and optional meaning search. Spend caps, service settings and leak-scan levels are set from the dashboard, and his studio gains scenes, event days, voices and portraits.
+
 - **Release-gate fixes.** A rotated `.env` key that equals a running chat, media, search or embedding key is now refused in every case (the running-key check walks fallback chains and routers down to each key). An older local studio gets no still, so no cloud still is paid for and nothing it would answer 422 to is sent. `dom doctor --online` probes `[models.embedding]` with a tiny `/embeddings` request. A group's move to a supergroup retags its lines in places, projects and goals as well. `/tasks`, `/skills` and `/t3` cards have a Close button and expire like the other menu cards. The nightly reflection reads notes without their tags. The Usage page names the studio and embedding kinds in plain words, and the Library links to Dom's own files on the Memory page.
 
 - **Every kept photo, voice note and video note remembers where it came from.** The Library's details say whether the local studio or a cloud backup made it, with the model, outfit, preset, how long it took, its length, whether the look before sending redid it, the scene still behind a video note, and what it cost (`local, free`, or `cost pending` until OpenRouter reports it). `GET /api/media/files` returns it as `made`. Cost is read from the linked usage rows, never stored; a studio worker can name its model with `model = "…"`.

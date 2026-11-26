@@ -189,7 +189,7 @@ async def test_tool_reports_bad_arguments(make_app):
 async def test_self_inspect_reports_version_and_latest_release(make_app):
     app = make_app()
     found = json.loads(await SELF_INSPECT_TOOL.handler({}, ctx(app)))
-    assert found["version"] and found["changelog_latest"]["title"] == "[0.8.3] - 2026-11-25"
+    assert found["version"] and found["changelog_latest"]["title"] == "[0.8.4] - 2026-11-27"
     assert len(found["changelog_latest"]["highlights"]) == 3
 
 
