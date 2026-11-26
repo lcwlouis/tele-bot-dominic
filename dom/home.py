@@ -161,7 +161,7 @@ class Home:
             touched = lines[first:last + 1]
             if any(notes.parse_line(line).core is not None for line in touched):
                 return WriteResult(False, current, "that line is a core memory (pinned); leave it as it is")
-            if source is not None and any(_foreign(line, source) for line in touched):
+            if source is not None and any(_foreign(line, source, rel) for line in touched):
                 return WriteResult(False, current, "that line belongs to another chat's notes")
             if op == "replace":
                 line_start = current.rfind("\n", 0, start) + 1
@@ -278,7 +278,7 @@ class Home:
                 return found
             current, lines, index = found
             line = notes.parse_line(lines[index])
-            if source is not None and _foreign(lines[index], source):
+            if source is not None and _foreign(lines[index], source, rel):
                 return WriteResult(False, current, "that line belongs to another chat's notes")
             if line.core is not None:
                 return WriteResult(False, current, "that line is already a core memory")
@@ -295,7 +295,7 @@ class Home:
                 return found
             current, lines, index = found
             line = notes.parse_line(lines[index])
-            if source is not None and _foreign(lines[index], source):
+            if source is not None and _foreign(lines[index], source, rel):
                 return WriteResult(False, current, "that line belongs to another chat's notes")
             if line.core is None:
                 return WriteResult(False, current, "that line is not a core memory")
@@ -436,7 +436,7 @@ class Home:
                 home._write_regular(f"memory/chats/{new_id}.md", notes.retag(old_path.read_text(encoding="utf-8"), old_id, new_id))
                 moved = True
             # Lines other notes tagged to the old chat id now belong to the new one, whether or not it had chat notes.
-            for rel in home.list_memory_notes()[0]:
+            for rel in (*home.list_memory_notes()[0], *home.list_entity_notes()):
                 text = home.read_memory_file(rel)
                 if (retagged := notes.retag(text, old_id, new_id)) != text:
                     home._write_regular(rel, retagged)
@@ -562,9 +562,13 @@ def _join_journal(preamble: str, entries: list[str]) -> str:
     return "\n\n".join(filter(None, [preamble, *entries])) + "\n"
 
 
-def _foreign(line: str, source: str) -> bool:
-    """A line tagged to a chat other than the one writing."""
-    return notes.parse_line(line).source not in (None, notes.ANY, source)
+def _foreign(line: str, source: str, rel: str) -> bool:
+    """A line tagged to a chat other than the one writing, or an untagged line of a place, project or goal note,
+    which is the owner's."""
+    tag = notes.parse_line(line).source
+    if tag is None:
+        return notes.is_bullet(line) and notes.ENTITY_NOTE.fullmatch(rel) is not None
+    return tag not in (notes.ANY, source)
 
 
 def _pin_hand_edits(current: str, text: str, today: date) -> str:

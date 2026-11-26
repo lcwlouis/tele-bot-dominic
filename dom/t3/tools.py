@@ -17,6 +17,7 @@ from dom.desktop.tools import untrusted
 from dom.t3.auth import TOKEN_FILE, command, connect_home
 from dom.t3.client import T3Client, T3Uncertain, T3Unavailable, read_token
 from dom.t3.service import BASE_DIR
+from dom.telegram import cards
 from dom.telegram.executor import FloodBudget, send_text
 from dom.tools import Tool
 
@@ -43,10 +44,10 @@ def display(value, limit=80):
     })[:limit]
 
 
-def reconnect_button():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Reconnect", callback_data="t3reconnect")],
-    ])
+def reconnect_button(*, card: bool = False):
+    """The Reconnect button; `card` adds Close, so the message is a menu card that expires."""
+    rows = [[InlineKeyboardButton(text="Reconnect", callback_data="t3reconnect")]]
+    return InlineKeyboardMarkup(inline_keyboard=[*rows, [cards.CLOSE_BUTTON]] if card else rows)
 
 
 class Bridge:
@@ -361,16 +362,21 @@ class Bridge:
             lines.append(str(exc))
         rows = await self.app.store.t3_history(self.app.owner_id)
         summary = "\n".join(lines)[:3000]
-        await send_text(
-            self.app.bot, self.app.owner_id, summary, reply_markup=reconnect_button(), sleep=self.app.sleep,
+        sent = await send_text(
+            self.app.bot, self.app.owner_id, summary, reply_markup=reconnect_button(card=True), sleep=self.app.sleep,
         )
+        await cards.track(self.app, self.app.owner_id, sent)
         if rows:
             table = ["UTC | Tool | Machine | Target | Outcome"]
             for row in rows:
                 values = (row["at"][:16], row["tool"][:30], row["machine"][:35], row["target"][:45], row["outcome"])
                 table.append(" | ".join(display(value) for value in values))
             table_text = "\n".join(table)
-            await send_text(self.app.bot, self.app.owner_id, table_text, sleep=self.app.sleep, literal=True)
+            sent = await send_text(
+                self.app.bot, self.app.owner_id, table_text, sleep=self.app.sleep, literal=True,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[cards.CLOSE_BUTTON]]),
+            )
+            await cards.track(self.app, self.app.owner_id, sent)
 
 
 def format_thread(result, note):

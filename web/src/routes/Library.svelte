@@ -202,9 +202,23 @@
 </section>
 
 <div class="grid gap-4 md:grid-cols-2">
+  <Card.Root aria-labelledby="library-own-files" class="md:col-span-2">
+    <Card.Header>
+      <Card.Title id="library-own-files" class="text-lg">Dom's own files</Card.Title>
+    </Card.Header>
+    <Card.Content class="grid gap-2 text-sm">
+      <p class="text-muted-foreground">Read them where they live; nothing is copied here.</p>
+      <ul class="flex flex-wrap gap-x-5 gap-y-1">
+        <li><a href="/app/memory?file=SOUL.md" class="font-medium text-signal-strong underline underline-offset-2">SOUL.md</a> <span class="text-muted-foreground">who he is</span></li>
+        <li><a href="/app/memory?file=memory/MEMORY.md" class="font-medium text-signal-strong underline underline-offset-2">MEMORY.md</a> <span class="text-muted-foreground">what he remembers</span></li>
+        <li><a href="/app/work/own-work" class="font-medium text-signal-strong underline underline-offset-2">Skills</a> <span class="text-muted-foreground">procedures he learned</span></li>
+      </ul>
+    </Card.Content>
+  </Card.Root>
+
   <Card.Root aria-labelledby="library-task-files">
     <Card.Header>
-      <Card.Title id="library-task-files" class="text-lg">Task files and screenshots</Card.Title>
+      <Card.Title id="library-task-files" class="text-lg">Files from Dom's own work</Card.Title>
     </Card.Header>
     <Card.Content>
       {#if taskFiles.length}

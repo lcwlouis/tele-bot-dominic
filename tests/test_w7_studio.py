@@ -641,3 +641,28 @@ async def test_a_video_notes_scene_is_screened_like_its_speech(make_app, studio_
     finally:
         guard.check_local_private_text = original
     assert ["waving hello", video["scene"]] in seen
+
+
+async def test_an_older_local_studio_gets_no_still_and_no_cloud_still_is_bought_for_it(
+    make_app, studio_server, cloud_server, raw_stills,
+):
+    app = await scene_app(make_app, studio_server)
+    app.studio._health = {k: v for k, v in app.studio._health.items() if k != "video_still"}  # a 0.8.3 studio
+    configure(app, cloud_server, images=(IMAGE,), default_outfit="casual")
+    (app.config.home / "studio-portraits").mkdir()
+    (app.config.home / "studio-portraits" / "casual.png").write_bytes(PORTRAIT)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert [call for call in cloud_server[1] if call[0] == "/api/v1/images"] == []  # nothing paid for a still
+    assert posts(studio_server, "/v1/image") == []
+    [video] = posts(studio_server, "/v1/video_note")
+    assert "still" not in video and len(app.bot.of("video_note")) == 1
+
+
+async def test_the_studio_client_never_sends_a_still_to_a_studio_without_video_still(make_app, studio_server):
+    app = make_app()
+    await connect(app, studio_server)
+    await app.studio.video("hi", False, None, b"S")
+    assert "still" not in posts(studio_server, "/v1/video_note")[0]
+    app.studio._health = {**app.studio._health, "video_still": True}
+    await app.studio.video("hi", False, None, b"S")
+    assert "still" in posts(studio_server, "/v1/video_note")[1]

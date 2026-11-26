@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from dom.backup import ARCHIVE_NAME
 from dom.config import Config, DesktopConfig, ProviderEndpoint, validate_config
 from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
+from dom.embedding import EmbeddingProvider
 from dom.home import LIMITS, MAX_SOUL, Home
 from dom.jev import JevClient, JevUnavailable
 from dom.llm import MissingProviderKey, openrouter_host
@@ -368,6 +369,8 @@ async def _model(http: httpx.AsyncClient, name: str, endpoint: ProviderEndpoint,
             )
             if (answers["check"] or {}).get("choice") not in ("yes", "no"):
                 raise ValueError
+        elif name == "embedding" or name.startswith("embedding."):
+            await EmbeddingProvider(endpoint, key, http).embed(["Health check."])
         elif (name == "search" or name.startswith("search.")) and search_provider_kind(endpoint) != "openrouter":
             await SearchClient(endpoint, key, http).search("test", timeout=8)
         else:

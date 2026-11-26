@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from dom import world_change
 from dom.agent import unfence
 from dom.home import Home, PrivateAccessError
+from dom.notes import strip_tags
 from dom.presence import Habits, read_habits
 from dom.traits import (
     AUTO, NAMES, Preset, clean_reason, decode, global_preset_name, numeric, random_choice, record_pick, vibe_choices,
@@ -174,7 +175,7 @@ async def _ask(
 def _context(soul: str, notes: str, entries: list[str], messages: str) -> str:
     journal = "\n\n".join(entries[-3:])
     return (
-        f"<soul>\n{escape(soul)}\n</soul>\n<notes>\n{escape(notes)}\n</notes>\n"
+        f"<soul>\n{escape(soul)}\n</soul>\n<notes>\n{escape(strip_tags(notes))}\n</notes>\n"
         f"<journal>\n{escape(journal)}\n</journal>\n<messages>\n{messages}\n</messages>"
     )
 
