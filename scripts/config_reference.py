@@ -80,8 +80,15 @@ def render() -> str:
         "Keyword search remains the default. A model change is staged: `GET /api/memory/index/estimate` shows the "
         "item count and rough time; `POST /api/memory/index/confirm` starts a side-by-side rebuild; "
         "`GET /api/memory/index/progress` reports done, left, model, state and the last error; and "
-        "`POST /api/memory/index/cancel` keeps the completed old index serving. `dom rebuild-index HOME` rebuilds "
-        "the graph from its source files and message history without calling a model.",
+        "`POST /api/memory/index/cancel` stops the rebuild, drops the staged model's partial vectors and keeps the "
+        "completed old index serving. A restart does not apply a changed model by itself: while a complete index of "
+        "another model exists, the new config model is staged until you confirm, and until then meaning search uses "
+        "keywords (the old model's endpoint is no longer configured to embed queries with). When the probe "
+        "sentence's vector drifts from the first one stored, the index is marked stale and paused; `confirm` then "
+        "rebuilds the same model in place. The old model's vectors are deleted after a confirmed switch. If "
+        "`sqlite-vec` cannot load, Dom still starts: it logs one warning, skips embedding and answers meaning "
+        "searches with keywords. `dom rebuild-index HOME` rebuilds the graph from its source files and message "
+        "history without calling a model.",
         "### Saved providers",
         "The dashboard's Providers tab saves each provider as a `[providers.<name>]` table. Roles keep their own "
         "address and key variable, so routing never depends on these tables; the dashboard uses them to offer "

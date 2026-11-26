@@ -319,7 +319,7 @@ def test_migration_0027_autoincrement_preserves_rows_indexes_and_never_reuses_id
     finally:
         conn.close()
 
-    assert migrate_database(db_path) == TARGET_VERSION == 29
+    assert migrate_database(db_path) == TARGET_VERSION
 
     conn = sqlite3.connect(db_path)
     try:

@@ -155,6 +155,8 @@ async def run(home: Path) -> None:
             app.dispatch.jobs.register("reflection", reflection.due, partial(reflection.run, app))
             # Self-directed work is planned in the same nightly window, after the reflection (the daydream).
             app.dispatch.jobs.register("self-work", reflection.due, app.self_work.plan)
+            # Noticings and goal progress run once nightly in the same reflection window (at most one small call).
+            app.dispatch.jobs.register("noticings", reflection.due, app.noticings.reflect)
             app.dispatch.jobs.register("memory-upkeep", journal_archive.due, partial(journal_archive.run, app))
             app.dispatch._spawn(app.knowledge.run_background())
             dispatcher = Dispatcher()

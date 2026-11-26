@@ -145,9 +145,18 @@ SEARCH_TOOL = Tool(
 async def _remind(args: dict, ctx: TurnCtx) -> str:
     if ctx.scope != "owner_dm" or ctx.chat_id != ctx.owner_id or ctx.reminders is None:
         return "error: reminders are available only in the owner's DM"
+    goal_id = args.get("goal_id")
+    if goal_id is not None:
+        if type(goal_id) is not int or goal_id <= 0:
+            return "error: goal_id must be a positive integer"
+        if ctx.app is None or await ctx.app.goals.get(goal_id) is None:
+            return f"error: Goal #{goal_id} not found."
     reminder_id = await ctx.reminders.create(
         args.get("when"), args.get("text"), args.get("importance", "normal"), args.get("repeat", ""),
     )
+    if goal_id is not None and ctx.app is not None:
+        await ctx.app.goals.link_reminder(goal_id, reminder_id, source="dom")
+        return json.dumps({"id": reminder_id, "goal_id": goal_id})
     return json.dumps({"id": reminder_id})
 
 
@@ -156,7 +165,7 @@ REMIND_TOOL = Tool(
     description=(
         "Schedule a reminder for the owner, only when they ask for one or agree to your offer of one; never as a "
         "placeholder, a test or a note to yourself. Give an ISO-8601 date and time in the configured timezone or "
-        "with an offset."
+        "with an offset. Pass goal_id to link the reminder to one of the owner's goals."
     ),
     schema={
         "type": "object",
@@ -165,10 +174,113 @@ REMIND_TOOL = Tool(
             "text": {"type": "string"},
             "importance": {"type": "string", "enum": ["critical", "normal", "casual"], "default": "normal"},
             "repeat": {"type": "string", "enum": ["", "daily", "weekdays", "weekly"], "default": ""},
+            "goal_id": {"type": "integer"},
         },
         "required": ["when", "text"],
     },
     handler=_remind,
+    scopes={"owner_dm"},
+)
+
+
+async def _goals(args: dict, ctx: TurnCtx) -> str:
+    app = ctx.app
+    if (
+        app is None or ctx.owner_id is None or ctx.scope != "owner_dm"
+        or ctx.chat_id != ctx.owner_id or app.owner_id != ctx.owner_id
+        or (ctx.sender_id is not None and ctx.sender_id != ctx.owner_id)
+    ):
+        return "error: goals are available only in the owner's DM"
+    action = args.get("action")
+    try:
+        if action == "list":
+            status = args.get("status")
+            rows = await app.goals.list_all(status=status if isinstance(status, str) and status else None)
+            return json.dumps([
+                {
+                    "id": g["id"], "text": g["text"], "category": g["category"],
+                    "target_date": g["target_date"], "check_in_rhythm": g["check_in_rhythm"],
+                    "status": g["status"], "progress_note": g["progress_note"],
+                    "reminders": [{"id": r["id"], "text": r["text"], "due_at": r["due_at"], "status": r["status"]} for r in g.get("reminders", [])],
+                }
+                for g in rows
+            ], ensure_ascii=False)
+        if action == "create":
+            goal = await app.goals.create(
+                args.get("text"),
+                category=args.get("category", ""),
+                target_date=args.get("target_date"),
+                check_in_rhythm=args.get("check_in_rhythm", ""),
+                source="owner",
+            )
+            return json.dumps({"id": goal["id"], "status": goal["status"]}, ensure_ascii=False)
+        gid = args.get("goal_id")
+        if type(gid) is not int or gid <= 0:
+            return "error: goal_id must be a positive integer"
+        if action == "update":
+            target = args.get("target_date") if "target_date" in args else ...
+            goal = await app.goals.update(
+                gid,
+                text=args.get("text") if "text" in args else None,
+                category=args.get("category") if "category" in args else None,
+                target_date=target,
+                check_in_rhythm=args.get("check_in_rhythm") if "check_in_rhythm" in args else None,
+                source="owner",
+            )
+            return json.dumps({"id": goal["id"], "text": goal["text"], "status": goal["status"]}, ensure_ascii=False)
+        if action == "set_status":
+            goal = await app.goals.set_status(gid, args.get("status"), note=args.get("note", ""), source="owner")
+            return json.dumps({"id": goal["id"], "status": goal["status"]}, ensure_ascii=False)
+        if action == "note":
+            goal = await app.goals.add_progress(gid, args.get("note"), source="owner")
+            return json.dumps({"id": goal["id"], "progress_note": goal["progress_note"]}, ensure_ascii=False)
+        if action in ("link_reminder", "unlink_reminder"):
+            rid = args.get("reminder_id")
+            if type(rid) is not int or rid <= 0:
+                return "error: reminder_id must be a positive integer"
+            if action == "link_reminder":
+                await app.goals.link_reminder(gid, rid, source="owner")
+                return json.dumps({"goal_id": gid, "reminder_id": rid, "linked": True})
+            await app.goals.unlink_reminder(gid, rid, source="owner")
+            return json.dumps({"goal_id": gid, "reminder_id": rid, "linked": False})
+        return "error: action must be list, create, update, set_status, note, link_reminder or unlink_reminder"
+    except ValueError as exc:
+        return f"error: {exc}"
+
+
+GOALS_TOOL = Tool(
+    name="goals",
+    description=(
+        "Owner's DM only. Manage the owner's personal goals when they tell you about one or ask to update, "
+        "pause, finish, drop, note progress on, or link a reminder to a goal. Never mention goals in other chats. "
+        "Categories: health, relationships, money, career, interests, productivity, other. "
+        "Check-in rhythms: daily, every_few_days, weekly, biweekly, monthly (or empty for no automatic check-ins)."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["list", "create", "update", "set_status", "note", "link_reminder", "unlink_reminder"],
+            },
+            "goal_id": {"type": "integer"},
+            "text": {"type": "string", "maxLength": 400},
+            "category": {
+                "type": "string",
+                "enum": ["", "health", "relationships", "money", "career", "interests", "productivity", "other"],
+            },
+            "target_date": {"type": "string", "description": "Optional YYYY-MM-DD target date (empty string to clear)"},
+            "check_in_rhythm": {
+                "type": "string",
+                "enum": ["", "daily", "every_few_days", "weekly", "biweekly", "monthly"],
+            },
+            "status": {"type": "string", "enum": ["active", "paused", "done", "dropped", "all"]},
+            "note": {"type": "string", "maxLength": 300},
+            "reminder_id": {"type": "integer"},
+        },
+        "required": ["action"],
+    },
+    handler=_goals,
     scopes={"owner_dm"},
 )
 
@@ -738,6 +850,7 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
 
     owner_only: list[Tool] = [
         REMIND_TOOL,
+        GOALS_TOOL,
         DRAFT_PLUGIN_TOOL,
         WRITE_BRIEF_TOOL,
         SELF_INSPECT_TOOL,
