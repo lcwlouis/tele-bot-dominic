@@ -177,3 +177,18 @@ def test_backup_keeps_the_owner_place_photos_and_leaves_out_the_other_media(sour
     assert main(["restore", str(archive), str(restored)]) == 0
     assert (restored / "media" / "places" / "cafe.jpg").read_bytes() == b"photo"
     assert not (restored / "media" / "7").exists()
+
+
+def test_backup_never_follows_a_media_link_out_of_the_home(source, tmp_path):
+    outside = tmp_path / "outside"
+    (outside / "places").mkdir(parents=True)
+    (outside / "places" / "secret.jpg").write_bytes(b"not dom's")
+    (source / "media").symlink_to(outside, target_is_directory=True)
+    try:
+        code = main(["backup", str(source)])
+    except ValueError:
+        code = 1
+    assert code != 0
+    for archive in (tmp_path / "backups").glob("*.tar.gz"):
+        with tarfile.open(archive) as tar:
+            assert "media/places/secret.jpg" not in tar.getnames()

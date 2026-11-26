@@ -274,8 +274,9 @@ class GoogleIntegration:
         return f"{AUTH_URL}?{query}", binding
 
     async def finish(self, *, state: str | None, binding: str | None, code: str | None, error: str | None) -> None:
-        """Complete the callback. The state is spent first, so a replay or a second tab finds nothing. The callback
-        carries no dashboard credential (a browser redirect from Google cannot), so the single-use, unexpired state
+        """Complete the callback. The state is spent only once it is valid, so a replay or a second tab finds nothing.
+        Behind Cloudflare Access the request also carries an Access identity; on a token-only dashboard it carries no
+        dashboard credential (a browser redirect from Google cannot). Either way the single-use, unexpired state
         matching the binding cookie that only the owner's authenticated connect request set is what authenticates it."""
         pending = self._pending.get(_sha(state)) if state else None
         if pending is None or pending.expires <= self.clock():

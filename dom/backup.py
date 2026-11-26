@@ -26,7 +26,12 @@ def _home_files(tar: tarfile.TarFile, home: Path, folder: Path, destination: Pat
             continue
         if folder == home and name == "media":
             # The media Dom sent is large, and Telegram keeps each file's copy. Only the place photos, the owner's own
-            # uploads with no other copy, are archived (a missing folder is skipped below).
+            # uploads with no other copy, are archived (a missing folder is skipped below). `media` itself is checked
+            # first, so a link there can never lead the archive outside the home.
+            if path.is_symlink():
+                raise ValueError("cannot archive a link or special file: media")
+            if not path.is_dir():
+                continue
             path = path / "places"
         arcname = path.relative_to(home).as_posix()
         try:
