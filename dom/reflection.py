@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
+from dom import world_change
 from dom.agent import unfence
 from dom.home import Home, PrivateAccessError
 from dom.presence import Habits, read_habits
@@ -141,11 +142,14 @@ def _journal_body(reply: object, private: bool) -> str | None:
 
 
 async def _ask(
-    app: App, owner: int, context: str, *, private: bool, offer_edit: bool = False,
-) -> tuple[str | None, object]:
+    app: App, owner: int, context: str, *, private: bool, offer_edit: bool = False, offer_world: bool = False,
+) -> tuple[str | None, object, object]:
+    """The journal body and the soul and world edits the reply proposes (None for one that was not offered)."""
     format_note = PRIVATE_FORMAT if private else PUBLIC_FORMAT
     if offer_edit:
         format_note += SOUL_EDIT_FORMAT
+    if offer_world:
+        format_note += world_change.FORMAT
     request = [
         {"role": "system", "content": f"{FRAME}\n{format_note}"},
         {"role": "user", "content": context},
@@ -158,13 +162,13 @@ async def _ask(
                 raw = reply.get("content")
                 data = decode(unfence(raw)) if isinstance(raw, str) else None
                 if (body := _journal_body(data, private)) is not None:
-                    return body, data.get("soul_edit") if offer_edit else None
+                    return body, data.get("soul_edit") if offer_edit else None, data.get("world_edit") if offer_world else None
                 if attempt == 0:
                     request.append({"role": "user", "content": "Please answer again with only the required JSON object."})
     except ModelCallSkipped:
-        return None, None
+        return None, None, None
     log.warning("%s reflection skipped after two malformed replies", "private" if private else "public")
-    return None, None
+    return None, None, None
 
 
 def _context(soul: str, notes: str, entries: list[str], messages: str) -> str:
@@ -187,11 +191,18 @@ async def _public(app: App, home: Home, owner: int, day: date, start: datetime, 
     else:
         messages = await app.store.reflection_messages(start, now, private=False)
         context = _context(soul, _read(home, "memory/MEMORY.md"), entries, messages)
-        body, edit = await _ask(app, owner, context, private=False, offer_edit=await app.proposals.reflection_due())
+        offer_world = await world_change.due(app, day)  # asked in this same request, so it costs no extra call
+        if offer_world:
+            context += "\n" + world_change.context(home)
+        body, edit, world = await _ask(
+            app, owner, context, private=False, offer_edit=await app.proposals.reflection_due(), offer_world=offer_world,
+        )
         if edit is not None:
             await app.proposals.from_reflection(edit)
         if body is not None:
             home.append_journal(day, body)
+            if world is not None:  # after the entry, so a refused change never costs the journal
+                await world_change.apply(app, world, day)
 
     values = {PUBLIC_DAY_KEY: day.isoformat()}
     if body is not None:
@@ -211,7 +222,7 @@ async def _private(app: App, home: Home, owner: int, day: date, start: datetime,
         entries = _entries(home, private=True)
         if not entries or not entries[-1].startswith(f"## {day.isoformat()}\n"):
             notes = "\n\n".join(_read(home, f"private/{name}.md") for name in ("USER", "NOTES"))
-            body, _ = await _ask(app, owner, _context(soul, notes, entries, messages), private=True)
+            body, _, _ = await _ask(app, owner, _context(soul, notes, entries, messages), private=True)
             if body is not None:
                 home.append_journal(day, body, private=True)
     await app.store.kv_set(PRIVATE_DAY_KEY, day.isoformat())

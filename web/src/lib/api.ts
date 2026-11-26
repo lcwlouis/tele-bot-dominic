@@ -679,3 +679,13 @@ export type MediaInputs = {
 /** GET /api/memory/index/estimate and /progress, POST …/confirm and …/cancel (dom/web/api_memory.py). */
 export type IndexEstimate = { items: number; rough_seconds: number; model: string; staged: boolean; rebuild: boolean };
 export type IndexProgress = { done: number; left: number; model: string; state: string; last_error: string; stale: boolean };
+
+/** GET /api/world and the writes under /api/world (dom/web/api_world.py). The sheet itself saves through /api/memory/save. */
+export type WorldPlace = { slug: string; name: string; note: string; photo: boolean };
+export type WorldData = {
+  sheet: { file: string; limit: number | null; content: string; version: string; entities: Record<string, string> };
+  last_change: { day: string; reason: string } | null;
+  interval_days: number;
+  places: WorldPlace[];
+  max_photo_mb: number;
+};

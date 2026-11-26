@@ -61,6 +61,14 @@ v0.8.4 code backs them up with source tags (see `docs/memory-format.md`):
 - a group's memory pass is shown only the lines it may use and cannot replace, remove or pin a line tagged to another
   chat;
 - `MEMORY.md` is read by every chat and refuses chat-tagged lines;
+- Dom's life sheet (`memory/WORLD.md`, see `docs/memory-format.md`) and the place notes it links are read through the
+  same filter, in code, for every chat: a line tagged to another chat never reaches a group's or friend's prompt, and the
+  owner's DM reads all of it. The variety hints are built only from Dom's own recent messages in the chat being
+  answered. The nightly reflection that may change the sheet reads only group content and the lines no chat owns (never
+  the owner's DM or `private/`), writes no tag, and cannot touch a pinned or chat-tagged line;
+- a place's reference photo (`media/places/`) is the owner's own picture, saved without its camera data, and goes to
+  an image model only when a photo's scene names the place, the model takes a reference, and the chat has a line about
+  that place (the owner's DM has them all);
 - the journal archive (`memory/journal/`, `private/journal/`) and the "recent life" summaries made from it are
   owner-DM only, because the diary mentions people from every chat. The private archive never leaves
   the owner's scope.

@@ -893,6 +893,14 @@ async def deliver_studio(
             if not local_serves and not cloud_ready and not reuse_video_voice:
                 return False
 
+            async def place_reference(prompt: str) -> bytes | None:
+                """The owner's photo of the known place this scene names, for a chat that may know it."""
+                try:
+                    return await app.place_photos.reference_for(prompt, scope, chat_id)
+                except Exception:
+                    log.exception("could not look up a place photo")
+                    return None
+
             async def make_still(prompt: str) -> bytes | None:
                 """A fresh picture of Dom in the scene, made from the outfit's portrait as the identity reference: by
                 the local studio's image worker, else a cloud image backup. It stays inside this note's reservation."""
@@ -906,7 +914,9 @@ async def deliver_studio(
                             "studio_image", client.model_for("image"), provenance.LOCAL_HOST, {}, chat_id,
                         ))
                 if made is None and cloud is not None and studio_providers(app.config.studio, "photo"):
-                    made = await cloud.generate(app.config, "photo", prompt, actions.outfit, chat_id, cloud_allowed)
+                    made = await cloud.generate(
+                        app.config, "photo", prompt, actions.outfit, chat_id, cloud_allowed, await place_reference(prompt),
+                    )
                 if made is not None:  # counted at once: the note may still fail, and the still was made
                     await asyncio.shield(app.store.record_still(chat_id, now()))
                 return made
@@ -945,7 +955,10 @@ async def deliver_studio(
                                 app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice, still,
                             )
                         else:
-                            data = await cloud.generate(app.config, kind, text, actions.outfit, chat_id, cloud_allowed)
+                            data = await cloud.generate(
+                                app.config, kind, text, actions.outfit, chat_id, cloud_allowed,
+                                await place_reference(text) if kind == "photo" else None,
+                            )
                     if data is not None and not reuse_video_voice and kind != "voice":
                         async def produce(prompt: str) -> bytes | None:
                             again = start(prompt)
@@ -953,7 +966,9 @@ async def deliver_studio(
                             if made is not None and again is not None:
                                 note_local()
                             if made is None and cloud_ready and kind == "photo":
-                                made = await cloud.generate(app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed)
+                                made = await cloud.generate(
+                                    app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed, await place_reference(prompt),
+                                )
                             elif made is None and cloud_ready and not local_ready and kind in {"video_note", "special"}:
                                 made = await cloud.generate_video(
                                     app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice, still,

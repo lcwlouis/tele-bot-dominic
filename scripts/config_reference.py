@@ -158,6 +158,11 @@ def render() -> str:
         "and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the "
         "weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also "
         "always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.",
+        "The same block carries Dom's life sheet (`memory/WORLD.md`: home, work, routine, regular spots), the routine slot "
+        "for the current weekday and part of the day, what the notes a chat may read say about that slot's places, and a "
+        "variety hint when Dom has just said one of his usual options in this chat. The sheet works without `[world]`; "
+        "only the weather line needs the place. See [Memory formats](memory-format.md) for the format and who can change "
+        "it, and the dashboard's Memory → World page to edit it.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),
         "## Self-directed work",
