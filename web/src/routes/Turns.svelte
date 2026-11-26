@@ -47,7 +47,6 @@
   const duration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
   const tokens = (value: number | null) => (value === null ? "unknown" : value.toLocaleString("en-US"));
   const words = (text: string) => text.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
-  const queueWait = (turn: Turn) => turn.segments.find((segment) => segment.stage === "queue_wait")?.ms ?? null;
   const cached = (turn: Turn) => {
     const measured = turn.model_calls.filter((call) => call.input_tokens && call.cached_tokens !== null);
     const input = measured.reduce((sum, call) => sum + (call.input_tokens ?? 0), 0);
@@ -207,7 +206,6 @@
       {#if data.choices.length}<AppPicker label="Chat" {options} value={chat} onchange={reload} class="w-full sm:w-56 [&>label]:sr-only" />{/if}
     {/snippet}
     {#snippet details(turn)}
-      {@const wait = queueWait(turn)}
       {@const hit = cached(turn)}
       {#if turn.has_trace}
         <a
@@ -227,7 +225,13 @@
           <dt class="text-muted-foreground">Took</dt>
           <dd class="tabular-nums">{duration(turn.duration_ms)}</dd>
         {/if}
-        {#if wait !== null}<dt class="text-muted-foreground">Queue wait</dt><dd class="tabular-nums">{duration(wait)}</dd>{/if}
+        {#if turn.lane !== null}
+          <dt class="text-muted-foreground">Lane</dt>
+          <dd class="flex flex-wrap items-center gap-1.5">
+            <Badge variant="outline">{turn.lane === "fast" ? "Fast lane" : "Main lane"}</Badge>
+            <span class="tabular-nums">waited {duration(turn.queue_wait_ms ?? 0)}</span>
+          </dd>
+        {/if}
         {#if turn.model}
           <dt class="text-muted-foreground">Model</dt>
           <dd class="flex flex-wrap items-center gap-1.5 font-mono text-meta break-all">{turn.model}{#if turn.fallback}<Badge variant="destructive">Fallback</Badge>{/if}</dd>

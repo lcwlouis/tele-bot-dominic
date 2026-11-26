@@ -16,7 +16,7 @@ def test_configuration_reference_matches_generator():
 
 def test_configuration_reference_has_every_toml_key():
     doc = (ROOT / "docs/configuration.md").read_text()
-    root = Config.model_fields.keys() - {"home", "models", "provider_setups", "desktop_mode", "desktop", "openers", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"}
+    root = Config.model_fields.keys() - {"home", "models", "provider_setups", "desktop_mode", "desktop", "openers", "dispatch", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"}
     for name in root:
         assert f"| `{name}` |" in doc
     for section, model in (

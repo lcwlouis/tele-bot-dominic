@@ -596,6 +596,9 @@ export type Turn = {
   fallback: boolean;
   calls: number;
   steps: string[];
+  /** The compose lane the turn ran in, and how long it waited for its token; null when it never reached the attention loop. */
+  lane: "main" | "fast" | null;
+  queue_wait_ms: number | null;
   visits: { reason: string; behind: string; capped: string }[];
   timing: { label: string; ms: number }[];
   segments: { stage: string; label: string; x: number; ms: number }[];

@@ -114,7 +114,7 @@ async def test_composing_is_serial_typing_is_deferred_and_sending_is_parallel(se
         await handle_message(app, tg())
         await until(lambda: entered == [GROUP])
         await handle_message(app, tg(chat_id=FRIEND))
-        await until(lambda: FRIEND in dispatch.attention.waiting)
+        await until(lambda: FRIEND in dispatch.attention.main.waiting)
         assert entered == [GROUP]
         assert not app.bot.of("action", FRIEND)
         clock.advance(seconds=5)
@@ -158,13 +158,13 @@ async def test_failed_visit_frees_token_and_spend_cap_skips_compose(setup_dispat
     try:
         await handle_message(app, tg(chat_id=OWNER, sender=OWNER))
         await handle_message(app, tg(chat_id=FRIEND))
-        await until(lambda: FRIEND in dispatch.attention.waiting)
-        assert OWNER not in dispatch.attention.waiting
+        await until(lambda: FRIEND in dispatch.attention.main.waiting)
+        assert OWNER not in dispatch.attention.main.waiting
     finally:
         release_failure.set()
         await asyncio.wait_for(drain_dispatch(dispatch), 2)
     assert entered == [GROUP, FRIEND]
-    assert dispatch.attention.active is None
+    assert dispatch.attention.main.active is None
     assert all(row["chat_id"] != str(OWNER) or not turn_log.visits_in(json.loads(row["trace"]))
                for row in await app.store.recent_turns())
 
@@ -176,9 +176,9 @@ async def test_waiting_supersedes_keep_age_and_do_not_use_restart_budget(setup_d
         since = clock()
         for msg_id in (1, 2, 3, 4):
             await handle_message(app, tg(msg_id=msg_id))
-            await until(lambda: GROUP in dispatch.attention.waiting and dispatch._active[GROUP].msg_id == msg_id)
-            assert dispatch.attention.waiting[GROUP].since == since
-            assert not dispatch.attention.waiting[GROUP].resume
+            await until(lambda: GROUP in dispatch.attention.main.waiting and dispatch._active[GROUP].msg_id == msg_id)
+            assert dispatch.attention.main.waiting[GROUP].since == since
+            assert not dispatch.attention.main.waiting[GROUP].resume
             clock.advance(seconds=1)
         assert sum(attempt.visited for attempt in dispatch._interrupted[GROUP][None]) == 0
     await asyncio.wait_for(drain_dispatch(dispatch), 2)

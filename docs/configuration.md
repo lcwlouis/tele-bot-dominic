@@ -21,7 +21,7 @@ uv run python scripts/config_reference.py > docs/configuration.md
 | `window_size` | `500` | Safety bound on the messages in one chat's window, for chats of very short messages: past it a trim also happens, down to 60% of it. Not the normal trigger. |
 | `daily_spend_cap_usd` | `1.0` | Daily USD cap, the normal pace: once today's paid calls reach it, friends' and groups' chats and their background work pause until midnight in `timezone`. The owner's DM is exempt unless `cap_owner_dm` is on, and so is background work done for it (reflection, the memory pass, the look before a send, aged media), which obeys only the monthly cap and the area limits. Zero disables the cap. |
 | `monthly_spend_cap_usd` | `0.0` | Monthly USD ceiling for the calendar month in `timezone`, over every paid call: chat, media, search, desktop tasks, embeddings, summaries and studio cloud backups. Once reached, friends' and groups' chats and all background work, the owner's included, pause until the 1st; one-offs such as event days draw only on the month's unused budget and never pass it. The owner's own turns in the DM are exempt unless `cap_owner_dm` is on. Zero disables the cap. |
-| `cap_owner_dm` | `false` | Make the owner's DM obey both spend caps. Off (the default), the owner's own chat is never paused by a cap, though what it spends still counts toward them. |
+| `cap_owner_dm` | `false` | Make the owner's DM obey both spend caps. Off (the default), the owner's own chat is never paused by a cap, though what it spends still counts toward them. A cap is checked before each paid call and the cost counts once it returns, so calls already in flight (one per lane, the owner DM's included, plus background work) can finish past it by their own cost. |
 | `area_spend_caps_usd` | `{}` | Optional monthly USD limit per area (`chat`, `media`, `search`, `desktop`, `memory`), as a `[area_spend_caps_usd]` table. An area at its limit pauses that kind of work for the rest of the month while the others go on. An area left out, or set to zero, has no limit of its own. |
 | `ephemeral_replies` | `false` | Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why. |
 | `memory_self_edit` | `false` | Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves. |
@@ -271,6 +271,14 @@ Results are sorted strictly by score. Each meaning hit carries its score and a c
 Set all three or none. With a place, every turn note carries one short line after the chat window, such as `Weather in Singapore now: 31°C (feels like 38°C), partly cloudy, humid. Today 25–33°C, 70% chance of rain.` It comes from [Open-Meteo](https://open-meteo.com/) (no key), fetched in the background about every 45 minutes and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.
 
 The same block carries Dom's life sheet (`memory/WORLD.md`: home, work, routine, regular spots), the routine slot for the current weekday and part of the day, what the notes a chat may read say about that slot's places, and a variety hint when Dom has just said one of his usual options in this chat. The sheet works without `[world]`; only the weather line needs the place. See [Memory formats](memory-format.md) for the format and who can change it, and the dashboard's Memory → World page to edit it.
+
+## Dispatch
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `dispatch.fast_lane` | `true` | Give the owner's DM a compose lane of its own, so his turns (and the turns his approval cards start) never wait for a turn in another chat. Off, every chat's turns compose one at a time, owner first. |
+
+With the fast lane on, Dom composes the owner's DM turns apart from every other chat's: each turn is still composed one at a time within its lane, and one chat's turns stay in order, but the owner's never wait behind a long turn in a group or a friend's DM. The lanes share the prompt prefix, the spend caps and the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.
 
 ## Presence
 

@@ -370,6 +370,9 @@ async def _turns(app: App, chat: str = "") -> dict:
         trace = json.loads(row["trace"])
         row["steps"] = turn_log.visible_steps(trace)
         row["visits"] = turn_log.visits_in(trace)
+        # Rows from before the fast lane have no lane in their visits: they all ran in the one lane there was.
+        row["lane"] = row["visits"][-1].get("lane", "main") if row["visits"] else None
+        row["queue_wait_ms"] = sum(visit.get("wait_ms", 0) for visit in row["visits"]) if row["visits"] else None
         for visit in row["visits"]:
             visit["behind_title"] = title(str(visit["behind"])) if visit["behind"] is not None else ""
             visit["capped_title"] = title(str(visit["capped"])) if visit["capped"] is not None else ""
