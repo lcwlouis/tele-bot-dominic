@@ -77,6 +77,8 @@ async def home(app: App) -> dict:
     desktop_tasks = (
         await app.store.desktop_tasks(app.owner_id, active=True) if app.desktop_worker is not None else []
     )
+    pending_noticings = await app.noticings.pending(limit=20)
+    active_goals = await app.goals.active()
     return {
         "now": {"greeting": _greeting(now), "date": f"{now:%A} {now.day} {now:%b}", "clock": f"{now:%H:%M}", "iso": now.isoformat(timespec="seconds")},
         "presence": {"state": state, "title": title, "detail": detail},
@@ -105,6 +107,17 @@ async def home(app: App) -> dict:
             "enabled": app.desktop_worker is not None,
             "task": {"brief": desktop_tasks[0]["brief"], "status": desktop_tasks[0]["status"]} if desktop_tasks else None,
         },
+        "for_you": {
+            "count": len(pending_noticings),
+            "items": [
+                {
+                    "id": item["id"], "kind": item["kind"], "title": item["title"],
+                    "body": item["body"], "source_label": item["source_label"], "created_at": item["created_at"],
+                }
+                for item in pending_noticings[:3]
+            ],
+        },
+        "goals": {"active_count": len(active_goals)},
     }
 
 

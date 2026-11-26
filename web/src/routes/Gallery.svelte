@@ -22,6 +22,16 @@
   import * as Tooltip from "$lib/components/ui/tooltip";
   import { theme } from "$lib/theme.svelte";
   import { toast } from "$lib/toast.svelte";
+  import Pencil from "@lucide/svelte/icons/pencil";
+  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
+  import Trash from "@lucide/svelte/icons/trash";
+  import AppPicker from "$lib/components/kit/AppPicker.svelte";
+  import IconButton from "$lib/components/kit/IconButton.svelte";
+  import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
+  import StatusGlyph from "$lib/components/kit/StatusGlyph.svelte";
+  import StripList, { type StripFilter } from "$lib/components/kit/StripList.svelte";
+  import { STATUS, type Status } from "$lib/components/kit/status";
+  import { chats, NOW, olderTasks, TASK_TOTAL, tasks as seedTasks, turns, type MockTask, type MockTurn } from "./gallery-fixtures";
 
   // Every component the new dashboard uses, in every state the kit shows. It stands in for a Storybook:
   // it runs inside the real app, so it is checked under Dom's real CSP (see web/README.md).
@@ -56,6 +66,61 @@
   let warmth = $state(65);
   let selected = $state(true);
   let unselected = $state(false);
+  // The baseline (v0.8.4 W4): a mock Work list and Turn log on the strip list, with fixture data only. The Work
+  // list is long (400 tasks, 50 a page) and filters what is loaded; the Turn log hands its filter to the "server".
+  const PAGE = 50;
+  let tasks = $state<MockTask[]>([...seedTasks, ...olderTasks(0, PAGE - seedTasks.length)]);
+  // The next older task a page brings, and how many the demo trash took, which the total no longer counts.
+  let next = $state(PAGE - seedTasks.length);
+  let trashed = $state(0);
+  let task = $state<string | null>(null);
+  let turn = $state<string | null>(null);
+  let chat = $state("");
+  let turnFilter = $state<StripFilter>({ text: "", statuses: [] });
+  const shownTurns = $derived(
+    turns.filter(
+      (item) =>
+        (!chat || item.chat === chat) &&
+        (!turnFilter.statuses.length || turnFilter.statuses.includes(item.status)) &&
+        (!turnFilter.text || item.title.toLowerCase().includes(turnFilter.text)),
+    ),
+  );
+  const chatName = (id: string) => chats.find((item) => item.value === id)?.label ?? id;
+  const statuses = Object.keys(STATUS) as Status[];
+  const older = TASK_TOTAL - seedTasks.length;
+  // A demo switch: pages fail while it is on, to show the list stops asking and offers to try again.
+  let failing = $state(false);
+  // A demo switch: on a phone, the whole list on the page, as a page that is only this list would have it.
+  let whole = $state(false);
+  async function loadOlder() {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (failing) throw new Error("Demo: the next page didn't load");
+    const count = Math.min(PAGE, older - next);
+    tasks = [...tasks, ...olderTasks(next, count)];
+    next += count;
+  }
+  function remove(item: MockTask) {
+    tasks = tasks.filter((other) => other.id !== item.id);
+    trashed += 1;
+    if (task === item.id) task = null;
+    toast.show("ok", `Moved "${item.title}" to the trash (a demo: nothing changed)`);
+  }
+  const surfaces = [
+    ["Canvas", "bg-canvas", "The page"],
+    ["Rail", "bg-rail", "The sidebar"],
+    ["Surface", "bg-surface", "Cards and lists"],
+    ["Raised", "bg-raised", "Fields, hover, inset blocks"],
+    ["Overlay", "bg-overlay", "Details panel, sheets"],
+  ] as const;
+  const scale = [
+    ["Display", "text-display", "2.125 rem"],
+    ["Heading", "text-heading", "1.5 rem"],
+    ["Title", "text-title", "1.125 rem"],
+    ["Body", "text-body", "0.9375 rem"],
+    ["Meta", "text-meta", "0.8125 rem"],
+    ["Caption", "text-caption", "0.75 rem"],
+  ] as const;
+
   const showToast = (tone: "ok" | "error", text: string) => toast.show(tone, text);
 </script>
 
@@ -69,6 +134,163 @@
   {/snippet}
 </PageHeader>
 
+<section aria-labelledby="g-baseline" class="mb-10">
+  <h2 id="g-baseline" class="text-heading font-semibold tracking-tight">Baseline</h2>
+  <p class="mt-1 max-w-[60ch] text-body text-muted-foreground">
+    The pieces list pages are rebuilt from. Pick a strip to open its details: beside the list on a wide screen, in a sheet on a phone. The switches are for the demo only.
+  </p>
+
+  <div class="mt-6 grid gap-8">
+    <section aria-labelledby="g-work" class="grid gap-3">
+      <div class="flex flex-wrap items-center gap-1.5">
+        <h3 id="g-work" class="text-title font-semibold">Mock Work list</h3>
+        <InfoGlyph label="About this list">Desktop tasks and Dom's own work, newest first: 400 of them, 50 a page as you scroll. On a wide screen it scrolls in its own pane; on a phone the newest ten show, and See all opens the rest.</InfoGlyph>
+        <div class="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div class="flex items-center gap-2">
+            <Switch id="g-failing" bind:checked={failing} />
+            <Label for="g-failing" class="text-meta text-muted-foreground">Pages fail</Label>
+          </div>
+          <div class="flex items-center gap-2 lg:hidden">
+            <Switch id="g-whole" bind:checked={whole} />
+            <Label for="g-whole" class="text-meta text-muted-foreground">Whole list on the page</Label>
+          </div>
+        </div>
+      </div>
+      <StripList
+        items={tasks}
+        key={(item) => item.id}
+        strip={(item) => ({ status: item.status, title: item.title, at: item.at, meta: item.kind })}
+        label="Tasks, newest first"
+        bind:selected={task}
+        hasMore={next < older}
+        onmore={loadOlder}
+        total={TASK_TOTAL - trashed}
+        search="Filter tasks"
+        {statuses}
+        level={4}
+        name="Tasks"
+        preview={whole ? false : 10}
+        now={NOW}
+      >
+        {#snippet actions(item)}
+          <IconButton label={`Move "${item.title}" to the trash`} icon={Trash} class="bg-transparent text-muted-foreground hover:bg-coral-tint hover:text-coral" onclick={() => remove(item)} />
+        {/snippet}
+        {#snippet details(item)}
+          {#if item.note}<p class="mb-3 rounded-lg border border-status-waiting/40 bg-raised px-3 py-2 text-body">{item.note}</p>{/if}
+          <h4 class="text-meta font-medium text-muted-foreground">Steps</h4>
+          <ol class="mt-1.5 grid gap-1 text-body">
+            {#each item.steps as step, index (index)}<li class="flex gap-2"><span class="text-muted-foreground tabular-nums">{index + 1}.</span>{step}</li>{/each}
+          </ol>
+          <div class="mt-4 flex flex-wrap gap-2">
+            {#if item.status === "failed"}<Button size="sm" variant="secondary"><RotateCcw data-icon="inline-start" aria-hidden="true" /> Try again</Button>{/if}
+            <Button size="sm" variant="destructive" onclick={() => remove(item)}><Trash data-icon="inline-start" aria-hidden="true" /> Move to trash</Button>
+          </div>
+        {/snippet}
+        {#snippet empty()}<StatusNote title="Nothing on the desk" detail="Ask Dom to do something on the desktop." />{/snippet}
+      </StripList>
+    </section>
+
+    <section aria-labelledby="g-turns" class="grid gap-3">
+      <div class="flex items-center gap-1.5">
+        <h3 id="g-turns" class="text-title font-semibold">Mock Turn log</h3>
+        <InfoGlyph label="About the turn log">Every turn Dom took: what he did, how long it took and which model ran. This one searches on the server.</InfoGlyph>
+      </div>
+      <StripList
+        items={shownTurns}
+        key={(item: MockTurn) => item.id}
+        strip={(item: MockTurn) => ({ status: item.status, title: item.title, at: item.at, meta: chatName(item.chat) })}
+        label="Turns, newest first"
+        bind:selected={turn}
+        search="Search turns"
+        statuses={["held", "failed"]}
+        onfilter={(filter) => (turnFilter = filter)}
+        level={4}
+        contained={false}
+        now={NOW}
+      >
+        {#snippet toolbar()}<AppPicker label="Chat" options={chats} bind:value={chat} class="w-full sm:w-56 [&>label]:sr-only" />{/snippet}
+        {#snippet details(item: MockTurn)}
+          <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-body">
+            <dt class="text-muted-foreground">Chat</dt><dd>{chatName(item.chat)}</dd>
+            <dt class="text-muted-foreground">Model</dt><dd class="font-mono text-meta break-all">{item.model}</dd>
+            <dt class="text-muted-foreground">Took</dt><dd class="tabular-nums">{item.took}</dd>
+            <dt class="text-muted-foreground">Calls</dt>
+            <dd class="flex flex-wrap gap-1">{#each item.calls as call (call)}<Badge variant="outline">{call}</Badge>{:else}<span class="text-muted-foreground">None</span>{/each}</dd>
+          </dl>
+        {/snippet}
+        {#snippet empty()}<StatusNote title="No turns match" detail="Try another chat, or clear the search." />{/snippet}
+      </StripList>
+    </section>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      <Card.Root aria-labelledby="g-status">
+        <Card.Header><Card.Title id="g-status" class="text-lg">Status glyphs</Card.Title></Card.Header>
+        <Card.Content>
+          <ul class="grid grid-cols-2 gap-x-4 gap-y-2.5">
+            {#each statuses as status (status)}<li><StatusGlyph {status} word /></li>{/each}
+          </ul>
+          <p class="mt-4 text-meta text-muted-foreground">Each status has its own shape, so colour is never the only cue. Running turns slowly, and holds still under reduced motion.</p>
+        </Card.Content>
+      </Card.Root>
+
+      <Card.Root aria-labelledby="g-icons">
+        <Card.Header><Card.Title id="g-icons" class="text-lg">Icon buttons and the glyph rule</Card.Title></Card.Header>
+        <Card.Content class="flex flex-col gap-4">
+          <div class="flex items-center gap-1">
+            <IconButton label="Edit reminder" icon={Pencil} />
+            <IconButton label="Try again" icon={RotateCcw} />
+            <IconButton label="Move to trash" icon={Trash} class="hover:text-coral" />
+            <IconButton label="Add provider" icon={Plus} variant="outline" size="icon" shortcut="N" />
+          </div>
+          <p class="text-meta text-muted-foreground">An icon button needs a label: it names the button and shows as its tooltip on hover and focus.</p>
+          <Separator />
+          <div class="flex items-center gap-1.5 text-body">
+            Leak check
+            <InfoGlyph label="About the leak check">Before a reply goes out, a second model reads it for anything from another chat.</InfoGlyph>
+          </div>
+          <p class="flex items-start gap-2 rounded-lg border border-coral/45 bg-coral-tint px-3 py-2 text-body">
+            <TriangleAlert class="mt-0.5 size-4 shrink-0 text-coral" aria-hidden="true" />
+            This provider keeps your messages. Pick a zero-retention one for private chats.
+          </p>
+          <p class="text-meta text-muted-foreground">Descriptions fold into an info glyph. Warnings stay as words.</p>
+        </Card.Content>
+      </Card.Root>
+
+      <Card.Root aria-labelledby="g-surfaces">
+        <Card.Header><Card.Title id="g-surfaces" class="text-lg">Surface levels</Card.Title></Card.Header>
+        <Card.Content>
+          <ol class="grid gap-2">
+            {#each surfaces as [name, swatch, use] (name)}
+              <li class="flex items-center gap-3 text-body">
+                <span class="h-7 w-10 shrink-0 rounded-md border {swatch}" aria-hidden="true"></span>
+                <span class="w-16 font-medium">{name}</span>
+                <span class="text-meta text-muted-foreground">{use}</span>
+              </li>
+            {/each}
+          </ol>
+        </Card.Content>
+      </Card.Root>
+
+      <Card.Root aria-labelledby="g-scale">
+        <Card.Header><Card.Title id="g-scale" class="text-lg">Type scale</Card.Title></Card.Header>
+        <Card.Content>
+          <ul class="grid gap-1.5">
+            {#each scale as [name, size, rem] (name)}
+              <li class="flex items-baseline gap-3">
+                <span class="min-w-0 flex-1 truncate font-semibold tracking-tight {size}">{name}</span>
+                <span class="shrink-0 text-caption text-muted-foreground tabular-nums">{rem}</span>
+              </li>
+            {/each}
+          </ul>
+          <p class="mt-4 text-meta text-muted-foreground">Spacing steps 4, 8, 12, 16, 24, 32 and 48 px. Motion: 120, 220 and 360 ms on one calm curve; none under reduced motion.</p>
+        </Card.Content>
+      </Card.Root>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="g-components">
+<h2 id="g-components" class="mb-4 text-heading font-semibold tracking-tight">Components</h2>
 <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
   <Card.Root class="md:col-span-2" aria-labelledby="g-buttons">
     <Card.Header>
@@ -298,3 +520,5 @@
     </Card.Content>
   </Card.Root>
 </div>
+</section>
+

@@ -18,7 +18,7 @@ from dom.config import StudioFallback, load_config, validate_config
 from dom.home import init_home
 from dom.llm import ChatClient
 from dom.store import Store
-from dom.store.store import MIGRATIONS, MIGRATIONS_DIR, _split_statements, migrate_database
+from dom.store.store import MIGRATIONS, MIGRATIONS_DIR, TARGET_VERSION, _split_statements, migrate_database
 from dom.studio.cloud import VIDEO_JOB, CloudStudio
 from dom.usage import Usage
 from dom.web.studio_settings import SHARED_KEY, probe
@@ -319,7 +319,7 @@ def test_migration_0027_autoincrement_preserves_rows_indexes_and_never_reuses_id
     finally:
         conn.close()
 
-    assert migrate_database(db_path) == 28
+    assert migrate_database(db_path) == TARGET_VERSION
 
     conn = sqlite3.connect(db_path)
     try:

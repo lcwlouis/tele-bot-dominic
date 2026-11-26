@@ -12,6 +12,7 @@
 </script>
 
 <script lang="ts">
+  import IconButton from "$lib/components/kit/IconButton.svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import SendHorizontal from "@lucide/svelte/icons/send-horizontal";
@@ -226,9 +227,7 @@
           bind:value={message}
           onkeydown={keydown}
         ></textarea>
-        <Button type="submit" size="icon" class="size-11 shrink-0" aria-label="Send to Dom" disabled={soulRequest.thinking || full || !message.trim()}>
-          <SendHorizontal aria-hidden="true" />
-        </Button>
+        <IconButton type="submit" variant="default" size="icon" class="size-11 shrink-0" label="Send to Dom" icon={SendHorizontal} disabled={soulRequest.thinking || full || !message.trim()} />
       </div>
       {#if tooLong}<p role="alert" class="text-xs text-coral">{tooLong}</p>{/if}
       <p id="soul-hint" class="text-xs text-muted-foreground">Enter sends, Shift+Enter starts a new line · {count(message.length)} of {count(index.max_soul_request)} characters</p>
