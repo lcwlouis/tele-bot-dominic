@@ -295,6 +295,7 @@ test.describe("interactions under the CSP", () => {
     for (const [scene, expected] of [
       ["Dom on a park bench", ["Cloud backup · openrouter.ai", "bytedance-seed/seedream-5-5", "casual", "Cosy", "Once, after looking; the second try was sent · $0.043", "$0.086"]],
       ["Dom at the harbour at dusk", ["cost pending", "harbour", "Wistful"]],
+      ["Dom waving from the balcony", ["FlashHead", "6.5 s", "redone, the second try was used · local, free", "$0.021"]],
       ["Good morning, the train is at nine", ["Local studio", "Higgs TTS", "4.2 s", "local, free"]],
     ] as const) {
       await list.getByRole("button", { name: new RegExp(scene) }).click();

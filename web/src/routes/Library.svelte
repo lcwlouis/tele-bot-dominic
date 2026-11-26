@@ -170,7 +170,7 @@
               {#if made.seconds}<dt class="text-muted-foreground">Took</dt><dd>{lasted(made.seconds)}</dd>{/if}
               {#if made.redo}
                 <dt class="text-muted-foreground">Redone</dt>
-                <dd>Once, after looking; the {made.redo.kept} try was sent · {spend({ ...made.redo, free: made.free })}</dd>
+                <dd>Once, after looking; the {made.redo.kept} try was sent · {spend(made.redo)}</dd>
               {/if}
               {#if made.voice}
                 <dt class="text-muted-foreground">Voice</dt>
@@ -180,7 +180,7 @@
                 <dt class="text-muted-foreground">Still</dt>
                 <dd>
                   <span class="font-mono break-all">{made.still.model}</span> · {source(made.still)} · {spend(made.still)}
-                  {#if made.still.redo} · redone, the {made.still.redo.kept} try was used{/if}
+                  {#if made.still.redo} · redone, the {made.still.redo.kept} try was used · {spend(made.still.redo)}{/if}
                   {#if file.still_url}· <a href={file.still_url} target="_blank" rel="noopener" class="font-medium text-signal-strong underline underline-offset-2">open</a>{/if}
                 </dd>
               {/if}

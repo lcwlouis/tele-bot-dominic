@@ -77,7 +77,8 @@ async def test_a_cloud_voice_links_its_usage_row_so_a_late_cost_appears_when_it_
     assert made["duration"] > 0
     shown = provenance.describe(made, await costs_of(app, made))
     assert shown["source"] == "cloud" and shown["cost"] == 0.02 and shown["pending"] is False and shown["free"] is False
-    await app.store.set_usage_cost(row, 0.0)  # as if OpenRouter had not reported yet
+    await app.store._run(app.store._conn.execute, "UPDATE usage SET cost_usd = 0, settled = 0 WHERE id = ?", (row,))
+    # as if OpenRouter had not reported yet
     waiting = provenance.describe(made, await costs_of(app, made))
     assert waiting["cost"] == 0 and waiting["pending"] is True
     await app.store.set_usage_cost(row, 0.031)  # the background fetch lands
@@ -100,7 +101,7 @@ async def test_a_redone_cloud_photo_counts_the_redo_and_a_missing_row_is_left_ou
     made = trace.made(outfit="casual", preset="Cosy", seconds=3.26, duration=None)
     assert provenance.usage_ids(made) == [first, again] and made["seconds"] == 3.3
     shown = provenance.describe(made, await costs_of(app, made))
-    assert shown["cost"] == 0.08 and shown["redo"] == {"cost": 0.04, "pending": False, "kept": "second"}
+    assert shown["cost"] == 0.08 and shown["redo"] == {"cost": 0.04, "pending": False, "kept": "second", "free": False}
     assert (shown["outfit"], shown["preset"], shown["still"], shown["voice"]) == ("casual", "Cosy", None, None)
     assert shown["model"] == "vendor/image-a" and shown["host"] == "openrouter.ai"
     # a trace made outside a job records nothing
@@ -115,7 +116,7 @@ def test_describe_ignores_what_is_not_a_record_and_prices_only_cloud_steps():
         {"part": "item", "kind": "studio_video", "model": "avatar", "host": "openrouter.ai", "usage_id": 4},
         {"part": "voice", "kind": "studio_voice", "model": "tts", "host": "local", "usage_id": None},
     ]}
-    shown = provenance.describe(made, {4: 0.0})
+    shown = provenance.describe(made, {4: None})
     assert shown["pending"] is True and shown["free"] is False
     assert shown["voice"]["free"] is True and shown["voice"]["pending"] is False
 
@@ -167,3 +168,31 @@ async def test_the_library_api_shows_where_each_item_came_from_and_what_it_cost(
     async with browser(app) as client:
         again = {f["msg_id"]: f for f in (await client.get("/api/media/files", headers=SAME_SITE)).json()["files"]}
     assert again[9]["made"]["pending"] is False and again[9]["made"]["cost"] == 0.012
+
+
+async def test_a_failed_video_job_settled_at_zero_is_not_pending_but_an_unreported_row_is(make_app):
+    app = make_app()
+    usage = app.dispatch.usage
+    with provenance.tracing() as trace:
+        failed = await usage.record("studio_video", "vendor/video", "openrouter.ai", {"cost": 0.2}, OWNER, fallback=True)
+        with provenance.redoing():
+            backup = await usage.record("studio_video", "vendor/video-b", "openrouter.ai", {"cost": 0.3}, OWNER, fallback=True)
+    made = trace.made(outfit=None, preset=None, seconds=1, duration=None)
+    await app.store.set_usage_cost(failed, 0.0)  # the job failed: the provider billed nothing, and said so
+    await app.store.set_usage_cost(backup, 0.31)
+    shown = provenance.describe(made, await costs_of(app, made))
+    assert shown["cost"] == 0.31 and shown["pending"] is False and shown["redo"]["pending"] is False
+    # a row that has simply not been priced yet stays pending
+    waiting = await app.store.record_usage("2026-01-01T00:00:00+00:00", "studio_voice", "tts", "openrouter.ai", OWNER, 0, 0, 0.0, 1)
+    assert (await app.store.usage_costs([waiting])) == {waiting: None}
+    made = {"steps": [{"part": "item", "kind": "studio_voice", "model": "tts", "host": "openrouter.ai", "usage_id": waiting}]}
+    assert provenance.describe(made, await app.store.usage_costs([waiting]))["pending"] is True
+
+
+def test_the_redo_says_for_itself_whether_it_was_free():
+    made = {"steps": [
+        {"part": "item", "kind": "studio_image", "model": "cloud-m", "host": "openrouter.ai", "usage_id": 1},
+        {"part": "item", "kind": "studio_image", "model": "local-m", "host": "local", "usage_id": None, "redo": True},
+    ], "kept_redo": ["item"]}
+    shown = provenance.describe(made, {1: 0.04})
+    assert shown["free"] is False and shown["redo"]["free"] is True and shown["cost"] == 0.04

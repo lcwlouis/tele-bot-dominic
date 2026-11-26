@@ -267,6 +267,13 @@ async def preview_provenance(store, kind, at, chat_id):
 
     if kind == "voice":
         return {"steps": [step("item", "studio_voice", "Higgs TTS", "local", None)], "preset": "Cosy", "seconds": 6.4, "duration": 4.2}
+    if kind == "video_note":  # the scene still: a cloud first try, then a local redo that was kept
+        still = await store.record_usage(at.isoformat(), "studio_image", "bytedance-seed/seedream-5-5", "openrouter.ai", chat_id, 0, 0, 0.021, 1)
+        return {"steps": [
+            step("still", "studio_image", "bytedance-seed/seedream-5-5", "openrouter.ai", still),
+            step("still", "studio_image", "FLUX.2 klein", "local", None, redo=True),
+            step("item", "studio_video", "FlashHead", "local", None),
+        ], "kept_redo": ["still"], "outfit": "balcony", "preset": "Cosy", "seconds": 40.0, "duration": 6.5}
     model = "bytedance-seed/seedream-5-5"
     first = await store.record_usage(at.isoformat(), "studio_image", model, "openrouter.ai", chat_id, 0, 0, 0.043 if chat_id == OWNER else 0.0, 1)
     steps = [step("item", "studio_image", model, "openrouter.ai", first)]
@@ -315,6 +322,7 @@ async def seed(app: handlers.App) -> None:
     for chat_id, kind, minutes, scene, keep in (
         (OWNER, "voice", 600, "Good morning, the train is at nine.", True),
         (CREW, "photo", 60 * 26, "Dom at the harbour at dusk.", False),
+        (OWNER, "video_note", 60 * 3, "Dom waving from the balcony.", False),
         (OWNER, "photo", 14, "Dom on a park bench with a paper cup of tea.", True),
     ):
         at = now - timedelta(minutes=minutes)

@@ -126,7 +126,7 @@ against `keep_cap_mb`) and shown in the library.
 model id), the outfit and preset, generation time, duration, whether the look before sending redid it (and which try
 was sent), its voice and still, and the usage-row ids of its paid calls. The Library page (Work → Library) shows it in
 an item's details, and `GET /api/media/files` returns it as `made`. Cost is read from those rows each time, so it is
-`local, free` for the studio, and `cost pending` until a late-reported cost lands. A studio worker can name its model
+`local, free` for the studio, and `cost pending` until a late-reported cost lands. A cost the provider settled at $0 (a failed video job bills nothing) is final, not pending; a redo shows its own cost, or `local, free` when the studio made it. A studio worker can name its model
 for this with `model = "…"` under `[workers.<name>]`; the studio then lists it in its health reply, and local usage
 rows and the library show it instead of `local-studio`.
 

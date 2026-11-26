@@ -101,9 +101,9 @@ def usage_ids(made: object) -> list[int]:
     return [step["usage_id"] for step in steps or [] if isinstance(step, dict) and type(step.get("usage_id")) is int]
 
 
-def _cost(steps: list[dict], costs: dict[int, float]) -> dict:
-    """The money behind some steps. Local steps are free. A cloud step whose row still reads 0 has not been priced
-    yet; one whose row is gone is left out."""
+def _cost(steps: list[dict], costs: dict[int, float | None]) -> dict:
+    """The money behind some steps. Local steps are free. A cloud step whose row has no cost yet (None) is pending;
+    one settled at $0 is final; one whose row is gone is left out."""
     total, pending = 0.0, False
     for step in steps:
         if step.get("host") == LOCAL_HOST:
@@ -111,8 +111,8 @@ def _cost(steps: list[dict], costs: dict[int, float]) -> dict:
         row = step.get("usage_id")
         if row not in costs:
             continue
-        total += costs[row]
-        pending = pending or costs[row] <= 0
+        pending = pending or costs[row] is None
+        total += costs[row] or 0.0
     return {"cost": round(total, 6), "pending": pending}
 
 
@@ -120,7 +120,7 @@ def _source(step: dict | None) -> str | None:
     return None if step is None else "local" if step.get("host") == LOCAL_HOST else "cloud"
 
 
-def describe(made: object, costs: dict[int, float]) -> dict | None:
+def describe(made: object, costs: dict[int, float | None]) -> dict | None:
     """What the library shows for one item: from its stored `made` and the current cost of its usage rows."""
     if not isinstance(made, dict) or not isinstance(made.get("steps"), list):
         return None
@@ -138,7 +138,10 @@ def describe(made: object, costs: dict[int, float]) -> dict | None:
             "source": _source(made_by), "model": made_by.get("model"),
             "host": None if made_by.get("host") == LOCAL_HOST else made_by.get("host"),
             **_cost(mine, costs),
-            "redo": None if not redo else {**_cost(redo, costs), "kept": "second" if name in redone else "first"},
+            "redo": None if not redo else {
+                **_cost(redo, costs), "kept": "second" if name in redone else "first",
+                "free": all(step.get("host") == LOCAL_HOST for step in redo),
+            },
             "free": all(step.get("host") == LOCAL_HOST for step in mine),
         }
 

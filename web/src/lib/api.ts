@@ -659,7 +659,7 @@ export type MediaPart = {
   pending: boolean;
   /** Every call behind it was the local studio, so it cost nothing. */
   free: boolean;
-  redo: { cost: number; pending: boolean; kept: "first" | "second" } | null;
+  redo: { cost: number; pending: boolean; free: boolean; kept: "first" | "second" } | null;
 };
 export type MediaMade = MediaPart & {
   outfit: string | null;
