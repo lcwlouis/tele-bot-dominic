@@ -918,7 +918,10 @@ async def deliver_studio(
             ) as trace:
                 indicator = asyncio.create_task(_studio_indicator(app.bot, chat_id, thread_id, action))
                 try:
-                    if kind in {"video_note", "special"} and not reuse_video_voice and app.config.studio.video_scenes:
+                    if (
+                        kind in {"video_note", "special"} and not reuse_video_voice and app.config.studio.video_scenes
+                        and not (local_ready and not client.takes_still)  # an older local studio animates the portrait
+                    ):
                         # A fresh still of Dom in a scene that fits the moment, looked at before it is animated (cheaper
                         # than looking at the video). If it can't be made, the note animates the outfit's portrait.
                         scene_text = scene or f"Dom filmed in a selfie video, somewhere that suits what he says: {text}"

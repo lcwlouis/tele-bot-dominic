@@ -307,7 +307,7 @@ class NativeMedia:
             try:
                 # what the model can't take was described on arrival, or tried then
                 if await self.takes(media) and not await self.d._describe(
-                    chat_id, msg_id, media, self.d._media_request(chat_id),
+                    chat_id, msg_id, media, self.d._media_request(chat_id, background=True),
                 ):
                     for left_over, _ in todo[index:]:  # the budget is used up: offer these again on a later turn
                         self._aged.pop((chat_id, left_over), None)

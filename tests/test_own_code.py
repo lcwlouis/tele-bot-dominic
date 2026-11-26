@@ -60,7 +60,32 @@ def test_read_is_capped_with_a_truncated_note(base):
     (base / "docs/long.md").write_text("a" * 20000)
     text = own_code.read_file(base, "docs/long.md")
     assert text.startswith("a" * 12000) and "a" * 12001 not in text
-    assert "truncated" in text and "12000 of 20000" in text
+    assert "truncated" in text and "12000 of 20000" in text and "part 2" in text
+
+
+def test_a_long_file_reads_in_parts_cut_at_line_ends(base):
+    lines = [f"line {n:05d} " + "x" * 80 for n in range(400)]
+    (base / "docs/long.md").write_text("\n".join(lines) + "\n")
+    seen, part = [], 1
+    while True:
+        text = own_code.read_file(base, "docs/long.md", part)
+        body, _, footer = text.rpartition("\n[truncated: ")
+        seen += body.splitlines()
+        if "for the rest]" not in footer:
+            break
+        part += 1
+    assert part == 4 and seen == lines
+    assert own_code.read_file(base, "docs/long.md", 9).startswith("error: part must be a number from 1 to 4")
+    assert own_code.read_file(base, "docs/long.md", "2") == own_code.read_file(base, "docs/long.md", 2)
+    assert own_code.read_file(base, "docs/long.md", "two").startswith("error:")
+    for bad in ("²", "9" * 5000, "+2", "2.0"):
+        assert own_code.read_file(base, "docs/long.md", bad).startswith("error: part must be")
+
+
+def test_changelog_version_returns_that_release_section(base):
+    (base / "CHANGELOG.md").write_text("## [2.0.0]\n\n- new\n\n## [1.0.0] - d\n\n- old\n")
+    assert own_code.changelog(base, "v1.0.0") == "## [1.0.0] - d\n\n- old\n"
+    assert own_code.changelog(base, "3.0.0") == "error: no changelog section for 3.0.0"
 
 
 @pytest.mark.parametrize("path", [

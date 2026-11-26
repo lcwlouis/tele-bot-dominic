@@ -322,3 +322,24 @@ def test_due_only_in_the_hour_before_sleep(sleep, due_at, not_due_at):
     base = datetime(2026, 1, 2, tzinfo=timezone.utc)
     assert all(reflection.due(base.replace(hour=h, minute=m), habits) for h, m in due_at)
     assert not any(reflection.due(base.replace(hour=h, minute=m), habits) for h, m in not_due_at)
+
+
+async def test_the_reflection_reads_notes_without_their_tags(make_app):
+    from dom import reflection
+
+    app = make_app(contents=(json.dumps(PUBLIC), json.dumps(PRIVATE)))
+    tagged = (
+        "- Likes the cafe {core owner 2025-12-01: said so} {entities place:cafe|person:5}\n"
+        "- Shared fact {any}\n- Group fact {chat -1001}\n"
+    )
+    put(app.home, "memory/MEMORY.md", tagged)
+    put(app.home, "private/USER.md", tagged.replace("Likes", "Private likes"))
+    put(app.home, "private/NOTES.md", "- Another {any}")
+    await record(app, "hello")
+    await record(app, "hello again", OWNER)
+    await reflection.run(app)
+    public, private = (request["messages"][1]["content"] for request in app.script.requests)
+    assert "Likes the cafe" in public and "Private likes the cafe" in private
+    for text in (public, private):
+        for marker in ("{core", "{entities", "{any}", "{chat"):
+            assert marker not in text

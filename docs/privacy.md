@@ -91,7 +91,7 @@ triage model, which can't see.
 What changes for descriptions: a photo Dom saw himself is no longer described
 when it arrives, and the media model's usage is much smaller. It is described
 later only where text is needed: just before the memory pass reads its batch
-(under the spend cap, never on the reply path), when catch-up reads media that
+(under the spend caps, never on the reply path), when catch-up reads media that
 did not fit the per-prompt limits, and when the file can't be downloaded for the
 turn (if that fails too, its `<media>` tag says it couldn't be loaded). Global search and the dashboard never showed
 descriptions, so nothing changes there.
@@ -123,7 +123,12 @@ the adjusted scene if it doesn't match. The better of the two is sent; it never
 loops. A cloud video note, which can't take a new scene and costs money to
 repeat, is redone once with the same inputs, and only when its frame is
 clearly wrong (the wrong person, a broken frame, a wildly wrong setting). The
-calls, redo included, are counted under media usage and respect the spend cap.
+calls, redo included, are counted under media usage and respect the spend caps.
+
+The daily spend cap pauses friends' and groups' chats and their background work. Background work done for the owner's DM
+(the look before a send, aged-media descriptions, the memory pass, reflection) is not paused by the daily cap, but it
+obeys the monthly cap and the area limits. The owner's own turns in the DM, tools included, stay exempt from both caps
+unless `cap_owner_dm` is on.
 
 ## Search and export
 
@@ -132,8 +137,10 @@ owner-only. Messages from the owner DM show in full; a message from any other ch
 the API sends no more than that.
 
 Dom's `search` tool follows the scope. In the owner DM it covers the same items as the dashboard. In a friend's DM or a
-group it searches that chat's own history and nothing else: memory files, other chats and `private/` cannot surface,
-whatever the model asks for. The code checks the scope on every call.
+group it searches that chat's own history and the note lines of the knowledge index that chat may see: `MEMORY.md`
+lines, that chat's own note (whatever its lines are tagged), the notes of people present, and place, project and goal
+lines tagged for that chat or `{any}` (an untagged line in those notes is for the owner DM only). `private/` and other
+chats' lines cannot surface, whatever the model asks for. The code checks the scope on every call.
 
 The memory export is a zip of `SOUL.md`, `memory/`, `private/`, skills and presets, built off the event loop with a size
 cap. It never holds `.env`, `state.db`, transcripts or backups; use `dom backup` for a full copy. Only the owner can get it,
@@ -345,7 +352,7 @@ beyond the models listed above.
   summary). Code filters the `goals` tool, turn-note context and opener
   check-ins so nothing about goals or noticings ever reaches groups or friends'
   DMs. Nightly noticings run in at most one small reflection call under the
-  daily spend cap, reading only owner-DM messages, approved-group context,
+  spend caps, reading only owner-DM messages, approved-group context,
   goals, Own work and R13-filtered notes (never friends' DMs or unapproved
   chats). Any group reference is restricted in code to a one-line paraphrase
   with no verbatim group text, handles or raw R13 tags. Tapping **Let's do it**

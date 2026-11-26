@@ -135,8 +135,10 @@ The steps, in order:
 
 The outcome is saved in the instance home (`update-state.json`) and the Dom
 process that comes up sends it to you in Telegram. After a successful update,
-that installed release's complete changelog section is also recorded once as
-an event in the owner DM history, where Dom reads it on the next turn. Failed
+that installed release's changelog section is also recorded once as an event in
+the owner DM history, where Dom reads it on the next turn: every bullet's bold
+lead with its first sentence (so a long release is never cut halfway), and a
+last line saying he can read the whole section with his `own_code` tool. Failed
 updates do not record release notes. `uv` is looked up on `PATH` and then in
 `~/.local/bin`. Only one deploy runs at a time.
 
