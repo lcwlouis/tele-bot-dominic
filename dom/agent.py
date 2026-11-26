@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from dom import turn_log
 from dom.actions import Actions
-from dom.llm import ChatClient, FallbackClient
+from dom.llm import ChatBudgetExhausted, ChatClient, FallbackClient
 from dom.salvage import Salvaged
 from dom.tools import Tool, TurnCtx
 from dom.usage import ModelCallSkipped
@@ -248,13 +248,16 @@ async def run_turn(
                  {"role": "user", "content": media_promise_request(unkept, media_offered or frozenset())}]
         try:
             fixed = _final(await complete(nudge, []))
-        except Exception as exc:  # the promise is a lesser fault than losing the reply: send the first answer
+        except (ModelCallSkipped, ChatBudgetExhausted):
+            raise  # a spend or chat cap stops the turn, as it does in every other round
+        except Exception as exc:  # the promise is a lesser fault than losing the reply
             log.warning("media promise nudge failed in chat %s (%s)", ctx.chat_id, type(exc).__name__)
             fixed = None
-        if fixed is None:
-            turn_log.step("media promise kept")
-            return succeed(actions)
-        return succeed(fixed)
+        result = actions if fixed is None else fixed
+        if result.unkept_media_promises():  # one repair only: a promise still standing is cut out, never sent
+            turn_log.step("media promise cut")
+            result = result.without_unkept_media_promises()
+        return succeed(result)
 
     for _ in range(max_steps):
         reply = await complete(messages, schemas)

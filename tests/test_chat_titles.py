@@ -140,3 +140,89 @@ async def test_the_dashboard_shows_the_asked_title_instead_of_group_and_the_id(m
         assert labels[f"memory/chats/{NEVER_SEEN}.md"] == "Hiking crew"
         assert labels["memory/chats/-100778.md"] == "Group -100778"  # refused: still just the id
         assert memory["chat_names"][NEVER_SEEN] == "Hiking crew" and "-100778" not in memory["chat_names"]
+
+
+async def test_a_group_named_only_by_a_chat_tag_in_a_note_is_looked_up_too(make_app):
+    app = await _app_with_notes(make_app)
+    app.home._write_regular("memory/people/river.md", f"- Plays chess {{chat {NEVER_SEEN}}}\n- Likes tea {{chat 222}}\n")
+    app.bot = AskedBot({NEVER_SEEN: "Chess club"})
+    await app.chat_titles.refresh()
+    assert app.bot.asked == [int(NEVER_SEEN)]  # the friend's positive ID is not a group
+    assert await app.chat_titles.known() == {NEVER_SEEN: "Chess club"}
+
+
+async def test_the_tag_scan_is_capped(make_app, monkeypatch):
+    monkeypatch.setattr("dom.chat_titles.SCAN_IDS", 2)
+    app = await _app_with_notes(make_app)
+    app.home._write_regular("memory/people/river.md", "".join(f"- Fact {{chat -1009{n}}}\n" for n in range(6)))
+    app.bot = AskedBot({f"-1009{n}": f"Chat {n}" for n in range(6)})
+    for _ in range(3):
+        await app.chat_titles.refresh()
+    assert len(app.bot.asked) == 2
+
+
+async def test_a_title_a_live_message_wrote_during_the_lookup_is_not_overwritten(make_app):
+    app = await _app_with_notes(make_app, str(GROUP), NEVER_SEEN)
+    await app.store.get_chat_auth_status(str(GROUP))  # a row with no title
+
+    class Racing(AskedBot):
+        async def get_chat(self, chat_id):
+            await app.store.set_chat_auth_status(str(chat_id), "approved", title="Live title")  # a message came in meanwhile
+            return SimpleNamespace(title="Stale title")
+
+    app.bot = Racing({})
+    await app.chat_titles.refresh()
+    titles = {chat["chat_id"]: chat["title"] for chat in await app.store.list_chats()}
+    assert titles == {str(GROUP): "Live title", NEVER_SEEN: "Live title"}  # both rows came to hold the live title
+    assert await app.store.kv_prefix(KEY) == []  # and nothing was kept beside them
+
+
+async def test_a_kept_title_is_never_replaced_by_a_later_one(make_app):
+    app = make_app()
+    await app.store.adopt_chat_title(NEVER_SEEN, "First", KEY + NEVER_SEEN, json.dumps({"title": "First"}))
+    await app.store.adopt_chat_title(NEVER_SEEN, "Second", KEY + NEVER_SEEN, json.dumps({"title": "Second"}))
+    assert await app.chat_titles.known() == {NEVER_SEEN: "First"}
+    await app.store.get_chat_auth_status(str(GROUP))
+    await app.store.set_chat_title(GROUP, "Real")
+    await app.store.adopt_chat_title(str(GROUP), "Other", KEY + str(GROUP), "{}")
+    assert [c["title"] for c in await app.store.list_chats()] == ["Real"]
+
+
+async def test_a_rate_limit_is_waited_out_across_passes(make_app):
+    app = await _app_with_notes(make_app, NEVER_SEEN)
+    start = app.dispatch.now()
+    app.bot = AskedBot({NEVER_SEEN: TelegramRetryAfter(method=GetChat(chat_id=1), message="Too Many Requests", retry_after=30)})
+    await app.chat_titles.refresh()
+    await app.chat_titles.refresh()
+    assert len(app.bot.asked) == 1  # the second pass waited
+    app.dispatch.now = lambda: start + timedelta(seconds=29)
+    await app.chat_titles.refresh()
+    assert len(app.bot.asked) == 1
+    app.dispatch.now = lambda: start + timedelta(seconds=31)
+    app.bot.answers[NEVER_SEEN] = "Back"
+    await app.chat_titles.refresh()
+    assert len(app.bot.asked) == 2 and await app.chat_titles.known() == {NEVER_SEEN: "Back"}
+
+
+@pytest.mark.parametrize("message", [
+    "Bad Request: chat not found", "Bad Request: bot is not a member of the supergroup chat", "Forbidden: bot was kicked from the group chat",
+])
+async def test_a_definite_refusal_is_marked_unknown(make_app, message):
+    app = await _app_with_notes(make_app, NEVER_SEEN)
+    app.bot = AskedBot({NEVER_SEEN: TelegramBadRequest(method=GetChat(chat_id=1), message=message)})
+    await app.chat_titles.refresh()
+    assert json.loads(await app.store.kv_get(KEY + NEVER_SEEN))["unknown"] is True
+
+
+async def test_any_other_bad_request_is_not_a_refusal_and_is_tried_again(make_app):
+    app = await _app_with_notes(make_app, NEVER_SEEN, "-100778")
+    app.bot = AskedBot({
+        NEVER_SEEN: TelegramBadRequest(method=GetChat(chat_id=1), message="Bad Request: something odd"),
+        "-100778": "Second chat",
+    })
+    await app.chat_titles.refresh()
+    assert await app.chat_titles.known() == {"-100778": "Second chat"}  # it didn't stop the pass for the others
+    assert await app.store.kv_get(KEY + NEVER_SEEN) is None  # and wasn't marked
+    app.bot.answers[NEVER_SEEN] = "Fine now"
+    await app.chat_titles.refresh()
+    assert (await app.chat_titles.known())[NEVER_SEEN] == "Fine now"

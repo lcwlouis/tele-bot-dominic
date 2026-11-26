@@ -162,7 +162,7 @@ def render() -> str:
         "`Today is a public holiday in SG: Christmas Day. Next public holiday in SG: New Year's Day, Friday 2027-01-01 (in 7 days).` "
         "It comes from [Nager.Date](https://date.nager.at/) (no key), fetched in the background about once a day and "
         "cached, so no reply waits on it. Only the country code and the year leave the host (see [Privacy](privacy.md)). "
-        "Holidays that apply to some regions only are left out. When the list can't be fetched, the line is left out once "
+        "Today's date is read in `timezone`. Holidays that apply to some regions only are left out. When the list can't be fetched, the line is left out once "
         "the cached list is a week old. The country works without a place. News and local events are not included: no free source without a key was reliable enough to trust in his notes.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),

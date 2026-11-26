@@ -18,7 +18,9 @@ When the chat model writes a bubble that promises media ("sending you a pic",
 "here's a voice note") without setting its field, nothing is sent. Dom puts the
 reply back to the model once, to set the field or drop the promise (only to drop
 it when that media isn't on offer), and the turn log shows a `media promise`
-step. A promise is never sent as media on its own.
+step. A promise still standing after that one nudge is cut out of the bubbles, never sent, and a reply left empty
+becomes "Can't send that right now." Only a direct promise to the reader counts: not a question, a negation, a
+third party ("to her"), "take a look", a link, or words in quotes.
 
 A failed, refused or limited generation leaves one short, rate-limited event in
 that chat's history; it never crosses into another chat.

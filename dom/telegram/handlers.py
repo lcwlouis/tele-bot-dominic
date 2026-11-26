@@ -140,7 +140,8 @@ class App:
         async def embedding_allowed() -> bool:
             return not await self.dispatch.usage.over_cap(self.config, self.bot, sleep=self.sleep)
         self.chat_titles = ChatTitles(self)
-        self.world = World(lambda: self.config.world, lambda: self._primary_client().http, lambda: self.dispatch.now())
+        self.world = World(lambda: self.config.world, lambda: self._primary_client().http, lambda: self.dispatch.now(),
+                           lambda: self.dispatch.presence.tz)
         self.knowledge = KnowledgeIndex(
             self.store, self.home, self.embedding_client, allowed=embedding_allowed, chat_id=self.owner_id,
             config=self.config.knowledge,

@@ -248,7 +248,7 @@ class Calendar:
     def __call__(self, request):
         self.requests.append(request)
         year = int(request.url.path.split("/")[-2])
-        answer = self.answers.pop(0) if self.answers else {2026: HOLIDAYS_2026, 2027: HOLIDAYS_2027}[year]
+        answer = self.answers.pop(0) if self.answers else {2026: HOLIDAYS_2026, 2027: HOLIDAYS_2027}.get(year, [])
         return answer if isinstance(answer, httpx.Response) else httpx.Response(200, json=answer)
 
 
@@ -370,3 +370,42 @@ async def test_the_holiday_line_is_in_the_turn_note_after_the_window(make_app):
     prompt = turn_requests(app)[0]["messages"][1]["content"]
     assert prompt.index("</chat_window>") < prompt.index("Today is a public holiday in SG: New Year's Day.")
     await http.aclose()
+
+
+async def test_the_holiday_date_and_year_follow_the_owners_timezone_not_utc():
+    from zoneinfo import ZoneInfo
+
+    # 16:30 UTC on Jan 1 is already 00:30 on Jan 2 in Singapore: New Year's Day is over there.
+    calendar = Calendar()
+    clock = Clock()
+    clock.at = datetime(2026, 1, 1, 16, 30, tzinfo=timezone.utc)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(calendar))
+    world = World(lambda: SG, lambda: http, clock, lambda: ZoneInfo("Asia/Singapore"))
+    await world.refresh()
+    assert world.holiday_line().startswith("Next public holiday in SG: Mid Month Day, Wednesday 2026-01-14 (in 12 days)")
+    assert "Today" not in world.holiday_line()
+    utc = World(lambda: SG, lambda: http, clock)  # the same instant, read in UTC, is still New Year's Day
+    await utc.refresh()
+    assert utc.holiday_line().startswith("Today is a public holiday in SG: New Year's Day.")
+
+    # Year edge, ahead of UTC: 17:00 UTC on Dec 31 is Jan 1 in Singapore, so 2025 is never asked for.
+    calendar.requests.clear()
+    clock.at = datetime(2025, 12, 31, 17, 0, tzinfo=timezone.utc)
+    ahead = World(lambda: SG, lambda: http, clock, lambda: ZoneInfo("Asia/Singapore"))
+    await ahead.refresh()
+    assert [r.url.path.split("/")[-2] for r in calendar.requests] == ["2026"]
+    assert ahead.holiday_line().startswith("Today is a public holiday in SG: New Year's Day.")
+
+    # Year edge, behind UTC: 03:00 UTC on Jan 1 is still Dec 31 in Los Angeles, so 2025 is asked for too.
+    calendar.requests.clear()
+    clock.at = datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc)
+    behind = World(lambda: SG, lambda: http, clock, lambda: ZoneInfo("America/Los_Angeles"))
+    await behind.refresh()
+    assert [r.url.path.split("/")[-2] for r in calendar.requests] == ["2025", "2026"]
+    assert behind.holiday_line().startswith("Next public holiday in SG: New Year's Day, Thursday 2026-01-01 (tomorrow)")
+    await http.aclose()
+
+
+def test_the_apps_world_reads_dates_in_the_owners_timezone(make_app):
+    app = make_app()
+    assert app.world._tz() is app.dispatch.presence.tz

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone, tzinfo
 
 import httpx
 
@@ -98,8 +98,9 @@ def holiday_line(country: str, holidays: list[tuple[date, str]], today: date) ->
 class World:
     def __init__(
         self, config: Callable[[], WorldConfig], http: Callable[[], httpx.AsyncClient], now: Callable[[], datetime],
+        tz: Callable[[], tzinfo] = lambda: timezone.utc,
     ) -> None:
-        self._config, self._http, self._now = config, http, now
+        self._config, self._http, self._now, self._tz = config, http, now, tz
         self._line = ""
         self._for: tuple[str, float | None, float | None] | None = None  # the place the cached line is about
         self._fetched_at: datetime | None = None
@@ -126,7 +127,8 @@ class World:
         now = self._now()
         if not country or self._holidays_for != country or self._holidays_at is None or now - self._holidays_at > HOLIDAY_STALE:
             return ""
-        return holiday_line(country, [item for year in self._holidays.values() for item in year], now.date())
+        today = now.astimezone(self._tz()).date()  # the owner's date, not UTC's
+        return holiday_line(country, [item for year in self._holidays.values() for item in year], today)
 
     async def refresh(self) -> None:
         """Fetch what is due: the forecast and the holidays, each with its own cache. Called from the background tick,
@@ -138,7 +140,8 @@ class World:
         now = self._now()
         if not country or self._holidays_fetching:
             return
-        years = sorted({now.year, (now + HOLIDAY_AHEAD).year})
+        today = now.astimezone(self._tz()).date()
+        years = sorted({today.year, (today + HOLIDAY_AHEAD).year})
         if (self._holidays_for == country and self._holidays_at is not None and now - self._holidays_at < HOLIDAY_REFRESH
                 and all(year in self._holidays for year in years)):
             return
