@@ -24,6 +24,7 @@ from dom.claim import try_claim
 from dom.config import MODEL_ROLES, Config, load_config
 from dom.deletion import STALE_MESSAGE, hash_matches, stamp_matches, stamp_token
 from dom.dispatch import Dispatcher
+from dom.tracer import TraceWriter
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
 from dom.desktop.permissions import DesktopPermissions
@@ -34,6 +35,8 @@ from dom.t3.tools import Bridge
 from dom.home import Home
 from dom.jev import JevClient
 from dom.knowledge import KnowledgeIndex
+from dom.chat_titles import ChatTitles
+from dom.place_photos import PlacePhotos
 from dom.world import World
 from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.media import MediaDescriber
@@ -96,7 +99,8 @@ class App:
     escalation_client: FallbackClient | None = None
     embedding_client: EmbeddingRouter | None = None
     knowledge: KnowledgeIndex = field(init=False)
-    world: World = field(init=False)  # the weather line in the turn note, fetched in the background
+    world: World = field(init=False)  # the weather line and life sheet in the turn note; the forecast is fetched in the background
+    place_photos: PlacePhotos = field(init=False)  # the owner's reference photos of Dom's known places
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
@@ -114,6 +118,7 @@ class App:
     google: GoogleIntegration = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
     menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
+    traces: TraceWriter | None = None  # the debug tracer (dom.tracer), opened by `dom run`
 
     def __post_init__(self) -> None:
         def now() -> datetime:
@@ -122,6 +127,7 @@ class App:
         self.event_days = EventDays(self.store, lambda: self.config, lambda: self.dispatch.usage)
         self.studio_quota = StudioQuota(self.store, self.event_days)
         self.media_files = MediaFiles(self.home.root, self.store, lambda: self.config.studio.keep_cap_mb * 1_000_000)
+        self.place_photos = PlacePhotos(self.home, self.media_files)
         self.plugin_runner = PluginRunner(home=self.home.root, store=self.store)
         self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self), runner=self.plugin_runner)
         self.proposals = Proposals(self)
@@ -140,7 +146,9 @@ class App:
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
         async def embedding_allowed() -> bool:
             return not await self.dispatch.usage.over_cap(self.config, self.bot, sleep=self.sleep)
-        self.world = World(lambda: self.config.world, lambda: self._primary_client().http, lambda: self.dispatch.now())
+        self.chat_titles = ChatTitles(self)
+        self.world = World(lambda: self.config.world, lambda: self._primary_client().http, lambda: self.dispatch.now(),
+                           lambda: self.dispatch.presence.tz)
         self.knowledge = KnowledgeIndex(
             self.store, self.home, self.embedding_client, allowed=embedding_allowed, chat_id=self.owner_id,
             config=self.config.knowledge,
@@ -283,7 +291,16 @@ def _command_name(text: str, username: str) -> str | None:
     return name if not target or target.lower() == username.lower() else None
 
 
-async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = False, notify: bool = False) -> None:
+async def record_incoming(
+    app: App, msg: IncomingMessage, *, origin: str | None = None,
+) -> None:
+    """Record a message Dom must answer, as Telegram ingress does: describe its media and wake the dispatcher."""
+    await _record(app, msg, describe_media=True, notify=True, origin=origin)
+
+
+async def _record(
+    app: App, msg: IncomingMessage, *, describe_media: bool = False, notify: bool = False, origin: str | None = None,
+) -> None:
     new_media = (
         describe_media and msg.media is not None
         and not await app.store.has_message(msg.chat_id, msg.msg_id)
@@ -303,6 +320,7 @@ async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = Fals
             text=msg.text or (f"[{msg.media['kind']}]" if msg.media else ""),
             media_json=json.dumps({**msg.media, "description": None}) if msg.media else None,
             created_at=msg.date.isoformat(),
+            origin=origin,
         )
     )
     if new_media:

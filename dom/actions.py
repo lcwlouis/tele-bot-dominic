@@ -51,11 +51,20 @@ SPECIAL_TEXT_MAX = 120
 SCENE_MAX = 200
 
 
+PLACE_KEY = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")  # a note name under memory/places/
+
+
 class VideoNote(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=VIDEO_TEXT_MAX, strict=True)
     special: bool = Field(default=False, strict=True)
     scene: str = Field(default="", max_length=SCENE_MAX, strict=True)  # where Dom is; the note is filmed there
+    place: str = Field(default="", strict=True)  # the key of a known place the scene is set in (dom/place_photos.py)
+
+    @field_validator("place", mode="before")
+    @classmethod
+    def _a_key_or_nothing(cls, value: object) -> object:
+        return value if isinstance(value, str) and PLACE_KEY.fullmatch(value) else ""
 
     @model_validator(mode="after")
     def _special_is_shorter(self) -> VideoNote:
@@ -83,6 +92,75 @@ def fake_media(text: str) -> bool:
     return bool(_FAKE_MEDIA.search(text))
 
 
+# A bubble that promises media ("sending you a pic", "here's a voice note", "let me take a selfie") when the media
+# field is empty. A deterministic list, English with a little Singlish ("send u pic"), kept narrow on purpose: a missed
+# promise costs one unkept sentence, a wrong hit costs a model call and a changed reply. Only a direct promise to the
+# reader counts: a first-person present or near future statement whose object is the media itself, with the reader
+# ("you", "u") or nobody as its recipient. Never a question, a negation, a deferral, a link, a third party ("to her"),
+# "take a look", or words in quotes or reported speech.
+_MEDIA_NOUN = {
+    "image": r"selfies?|pics?|pix|pictures?|photos?|images?",
+    "voice": r"voice\s*(?:notes?|messages?|msgs?|memos?|clips?)|vns?|audio\s+(?:notes?|messages?)",
+    "video_note": r"(?:video|vid)\s*(?:notes?|messages?|msgs?|clips?)|videos?|vids?",
+}
+_NOUN = "|".join(f"(?P<{kind}>{pattern})" for kind, pattern in _MEDIA_NOUN.items())
+_MODIFIER = r"(?:(?:a|an|one|the|my|your|another|some|quick|little|new|cute|nice|fresh|short|funny)\s+){0,3}"
+_OBJECT = rf"(?:(?:you|u|ya|over)\s+)?{_MODIFIER}(?:{_NOUN})\b"
+_LEAD = r"(?:ok|okay|omg|so|and|now|wait|hold\s+on|ya|yeah|lol|haha|aight|alright)"
+_PROMISE = re.compile(
+    rf"(?:"
+    # "I'll send / let me take / I'm gonna record ... a pic"
+    rf"\b(?:i'll|ill|i\s+will|i'm\s+going\s+to|i\s+am\s+going\s+to|i'm\s+gonna|im\s+gonna|gonna|imma|i'ma|let\s+me|lemme)\s+"
+    rf"(?:just\s+|quickly\s+|go\s+(?:and\s+)?)?(?:send|snap|take|record|shoot|share|show|make|grab)\s+"
+    # "I'm sending a pic", "i am taking a selfie"
+    rf"|\b(?:i'm|im|i\s+am)\s+(?:just\s+)?(?:sending|snapping|taking|recording|attaching)\s+"
+    # "ok sending you a pic", "sending a pic now": the bare form only opens a sentence
+    rf"|^[\s,]*(?:{_LEAD}[\s,!]+)*sending\s+"
+    # "send u pic"
+    rf"|\b(?:send|snap)\s+(?:u|you|ya)\s+"
+    # "here's a selfie", "here is the pic"
+    rf"|\bhere(?:'s|\s+is|\s+are)\s+"
+    rf"){_OBJECT}",
+    re.IGNORECASE,
+)
+_NOT_A_PROMISE = re.compile(
+    r"n't\b|\b(?:not|never|cannot|cant|wont|if|unless|maybe|someday|tomorrow|tonight|later|next\s+time|once|"
+    r"did|do|does|can|could|would|will|should|have|has|are|is|was|were|why|what|how|when|where|who|"
+    r"said|says|told|asked|wrote|texted|replied|quoted|goes|look)\b|https?://",
+    re.IGNORECASE,
+)
+# Whoever else the media is for: "a pic to her", "a selfie for Sam".
+_THIRD_PARTY = re.compile(r"\b(?:to|for)\s+(?:(?i:him|her|them|us|his|everyone|everybody|someone|my\s+\w+)\b|[A-Z][a-z]+)")
+_QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+_SENTENCE = re.compile(r"[^.!?\n]+[.!?]*\s*")
+
+
+def _promises_in(sentence: str) -> set[str]:
+    if sentence.rstrip().endswith("?"):
+        return set()
+    # "here is/are" and "I will/am" are the promise itself; any other question word, negation or deferral rules it out.
+    scrubbed = re.sub(r"\b(?:here\s+(?:is|are)|i\s+will|i\s+am\s+going\s+to|i\s+am)\b", "", sentence, flags=re.IGNORECASE)
+    if _NOT_A_PROMISE.search(scrubbed):
+        return set()
+    kinds: set[str] = set()
+    for match in _PROMISE.finditer(sentence):
+        if not _THIRD_PARTY.search(sentence, match.end()):
+            kinds.update(kind for kind in _MEDIA_NOUN if match.group(kind))
+    return kinds
+
+
+def promising_sentences(text: str) -> list[tuple[int, int, set[str]]]:
+    """The sentences of `text` that promise media, as (start, end, fields). Quoted words are not looked at."""
+    masked = _QUOTED.sub(lambda quoted: " " * len(quoted.group()), text.replace("\u2019", "'"))  # same length: same offsets
+    found = ((sentence.start(), sentence.end(), _promises_in(sentence.group())) for sentence in _SENTENCE.finditer(masked))
+    return [item for item in found if item[2]]
+
+
+def promised_media(text: str) -> set[str]:
+    """The media fields ("image", "voice", "video_note") a bubble's text promises to send."""
+    return set().union(*(kinds for _, _, kinds in promising_sentences(text)))
+
+
 class Actions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -94,9 +172,16 @@ class Actions(BaseModel):
     voice: str | None = Field(default=None, min_length=1, max_length=600, strict=True)
     video_note: VideoNote | None = None
     image: str | None = Field(default=None, min_length=1, max_length=300, strict=True)
+    image_place: str | None = Field(default=None, strict=True)  # the key of a known place the image is set in
     outfit: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
     bubbles: list[Bubble] = Field(default_factory=list)
     elsewhere: str | None = None
+
+    @field_validator("image_place", mode="before")
+    @classmethod
+    def _a_key_or_nothing(cls, value: object) -> object:
+        """A place is a key from the turn note's list; anything else is no place, never a repair round."""
+        return value if isinstance(value, str) and PLACE_KEY.fullmatch(value) else None
 
     @field_validator("elsewhere", mode="before")
     @classmethod
@@ -153,6 +238,30 @@ class Actions(BaseModel):
                 break
         actions = handler(data)
         actions._inferred = inferred
+        return actions
+
+    def unkept_media_promises(self) -> set[str]:
+        """The media fields a bubble promises while that field is empty, so the promise has nothing behind it."""
+        promised: set[str] = set()
+        for bubble in self.bubbles:
+            promised |= promised_media(bubble.text)
+        return {field for field in promised if not getattr(self, field)}
+
+    def without_unkept_media_promises(self) -> Actions:
+        """These actions with every sentence that promises media nothing carries cut out of the bubbles, and a bubble
+        with nothing left dropped. If that leaves the reply with nothing at all, a short honest line stands in."""
+        unkept = self.unkept_media_promises()
+        bubbles = []
+        for bubble in self.bubbles:
+            text = bubble.text
+            for start, end, kinds in reversed(promising_sentences(text)):
+                if kinds & unkept:
+                    text = text[:start] + text[end:]
+            if text.strip():
+                bubbles.append(bubble.model_copy(update={"text": text.strip()}))
+        actions = self.model_copy(update={"bubbles": bubbles})
+        if not bubbles and not any((self.react, self.sticker, self.gif, self.voice, self.video_note, self.image)):
+            actions.bubbles = [Bubble(text="Can't send that right now.")]
         return actions
 
     def without_inferred_media(self) -> Actions:

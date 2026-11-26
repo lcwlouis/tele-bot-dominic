@@ -121,7 +121,9 @@ async def _waiting(app) -> dict:
 async def _chat_names(app) -> dict[str, str]:
     known = {c["chat_id"]: c for c in await app.store.list_chats()}
     known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
-    return {str(chat_id): _title(chat, app.owner_id) for chat_id, chat in known.items()}
+    names = {str(chat_id): _title(chat, app.owner_id) for chat_id, chat in known.items()}
+    asked = await app.chat_titles.known()
+    return {**names, **{chat_id: title for chat_id, title in asked.items() if names.get(chat_id, chat_id) == chat_id}}
 
 
 @router.get(PREFIX)

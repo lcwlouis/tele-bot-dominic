@@ -88,6 +88,9 @@ def note(kind: str, model: str, host: str, usage_id: int | None) -> None:
     if _redo.get():
         step["redo"] = True
     trace.steps.append(step)
+    from dom import turn_log  # here: turn_log imports usage, which imports this module
+
+    turn_log.event("studio_step", **step)
 
 
 def discard(usage_id: int) -> None:

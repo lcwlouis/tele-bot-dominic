@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from math import floor
 from typing import TYPE_CHECKING, Literal
@@ -122,6 +122,7 @@ class Standing:
     daily_left: int
     gaps: dict[Kind, datetime]
     normal: dict[Kind, int]  # what is left under the normal limits alone, with no event day
+    used: dict[Kind, int] = field(default_factory=dict)  # this chat's items of each kind inside its rolling window
 
     @property
     def next_at(self) -> datetime | None:
@@ -174,12 +175,12 @@ def standing(
     counts what the boosted limits allow, `normal` what the usual ones do."""
     tier = getattr(limits, scope)
     daily_normal, daily_boosted = max(limits.daily - total, 0), max(boosted(limits.daily, boost) - total, 0)
-    left, normal = {}, {}
+    left, normal, used = {}, {}, {}
     for kind, (cap, window) in windows(tier).items():
-        count = sum(item == kind and stamp > now - window for item, stamp in rows)
+        count = used[kind] = sum(item == kind and stamp > now - window for item, stamp in rows)
         normal[kind] = max(min(cap - count, daily_normal), 0)
         left[kind] = max(min(boosted(cap, boost) - count, daily_boosted), 0)
-    return Standing(left, daily_boosted, gap_ends(tier, rows, now), normal)
+    return Standing(left, daily_boosted, gap_ends(tier, rows, now), normal, used)
 
 
 class StudioQuota:

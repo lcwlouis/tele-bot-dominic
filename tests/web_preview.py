@@ -44,6 +44,7 @@ from dom.web import api as web_api  # noqa: E402
 from dom.web.app import create_app  # noqa: E402
 from dom.web.auth import Auth  # noqa: E402
 from dom.web.shared import SOUL_INSTRUCTIONS  # noqa: E402
+from dom import tracer, turn_log  # noqa: E402
 from tghelpers import BOT_USER, OWNER, Clock, FakeBot, FixedRandom, ModelScript, no_sleep  # noqa: E402
 
 TOKEN = "preview-token-" + "p" * 32
@@ -147,6 +148,22 @@ class Computer:
 
     def touch(self) -> None:
         pass
+
+
+def _fictional_photo() -> bytes:
+    """A made-up picture of a place: sky above, water below, a blue chair. No real photo is ever in the preview."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (480, 360), (190, 215, 235))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 200, 480, 360), fill=(70, 120, 160))
+    draw.rectangle((150, 150, 210, 230), fill=(30, 70, 180))
+    draw.rectangle((270, 150, 330, 230), fill=(30, 70, 180))
+    out = io.BytesIO()
+    image.save(out, "PNG")
+    return out.getvalue()
 
 
 def screenshot() -> bytes:
@@ -366,6 +383,16 @@ async def seed(app: handlers.App) -> None:
         "## 2026-09-03\nMood: curious\nRiver asked about the early train.\n"
     ))
     app.home._write_regular(f"memory/chats/{CREW}.md", "The crew plans a trip on Saturdays.")
+    app.home._write_regular("memory/WORLD.md", (
+        "# Dom's world\n\n## Home and work\n- Lives in a small flat above a bakery {entities place:the-bakery}\n"
+        "- Draws picture books from a desk by the window\n\n## Routine\n"
+        "- Weekday lunch: noodles, a rice bowl or a sandwich at the harbour cafe {entities place:the-harbour-cafe}\n"
+        "- Thursday evening: usually the climbing gym\n\n## Regular spots\n- Coffee: the corner kiosk {core owner 2026-11-20}\n"
+    ))
+    app.home.write_file("memory/WORLD.change.json", json.dumps({"day": "2026-11-18", "reason": "He took up climbing and wanted a weekly slot for it."}))
+    app.home._write_regular("memory/places/the-harbour-cafe.md", "- A small cafe on the water with blue chairs {any} {entities place:the-harbour-cafe}\n")
+    app.home._write_regular("memory/places/the-bakery.md", "- The bakery downstairs, open from six {any}\n")
+    await app.place_photos.save("the-harbour-cafe", _fictional_photo())
     app.home.scoped(allow_private=True)._write_regular("private/USER.md", "- Likes long walks\n")
     app.home._write_regular("stickers.toml", 'sets = ["example_set_by_examplebot"]\n')
     await app.proposals.create(
@@ -573,12 +600,66 @@ async def seed_system(app: handlers.App) -> None:
     )
 
 
+TRACED_TURN = 900  # the owner-DM turn whose trace the Talk screens open (/app/talk?trace=1&turn=900)
+
+
+async def seed_talk(app: handlers.App) -> None:
+    """The owner DM on the Talk page, one message typed on the dashboard, and the full trace of Dom's answer."""
+    store, now = app.store, NOW
+    start = now - timedelta(minutes=6)
+    lines = [
+        ("user", "Are we still on for board games on Friday?", 70, 0, "dashboard"),
+        ("assistant", "Yes! Alex is bringing the new one with the trains.", 71, 9, None),
+        ("assistant", "Want me to remind you on Friday afternoon?", 72, 11, None),
+    ]
+    for role, text, msg_id, seconds, origin in lines:
+        await store.record_new_message(StoredMessage(
+            chat_id=str(OWNER), role=role, text=text, msg_id=msg_id, is_bot=role == "assistant",
+            sender_user_id=None if role == "assistant" else OWNER, created_at=(start + timedelta(seconds=seconds)).isoformat(),
+            visibility_scope=store.visibility_for(OWNER), origin=origin,
+        ))
+    await store.mark_chat_read(OWNER, 72)  # answered already: the preview must not answer it again at start
+    row = await store.record_turn(start, OWNER, "owner_dm", 1, ["final"], "example/chat-model", False, 11000, "Replied")
+    store._conn.execute("UPDATE turns SET id = ? WHERE id = ?", (TRACED_TURN, row))
+
+    writer = tracer.TraceWriter(tracer.TraceStore(app.home.root / "traces.db"), lambda: (7, 256_000_000), lambda: ())
+    app.traces = writer
+    trace = turn_log.TurnTrace(chat_id=OWNER, scope="owner_dm", started=start.timestamp(), outcome="Replied",
+                               model="example/chat-model", row_id=TRACED_TURN)
+    at = start.timestamp()
+    trace.timings = ["debounce@1500", "model@1300", "typing@2400", "send@120"]
+    trace.events = [
+        {"type": "arrival", "at": at + 0.1, "stage": "triage", "msg_id": 70, "state": "online", "scope": "owner_dm", "unread": 1, "skills": []},
+        {"type": "triage", "at": at + 0.6, "mode": "online", "verdict": {"action": "reply", "confidence": 0.94, "done": "yes", "done_confidence": 0.81, "skill": None, "emoji": "👍"}},
+        {"type": "arrival", "at": at + 1.6, "stage": "turn", "msg_id": 70, "state": "online", "unread": 1, "catch_up": False},
+        {"type": "prompt", "at": at + 1.7, "fingerprint": "system=9f3a2c tools=4be1d7 window=1d5e90", "scope": "owner_dm", "messages": 2, "tools": ["web_search", "remind"]},
+    ]
+    call = turn_log.ModelCall("chat", "example/chat-model", False, "9f3a2c", "4be1d7", "c07a11", "1d5e90", duration_ms=1300,
+                              status=200, input_tokens=2048, output_tokens=96, cached_tokens=1536, host="homelab")
+    answer = json.dumps({"bubbles": [{"text": lines[1][1]}, {"text": lines[2][1]}]})
+    call.raw = httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": answer}}],
+                                         "usage": {"prompt_tokens": 2048, "completion_tokens": 96, "cost": 0.00042}})
+    request = {"model": "example/chat-model", "messages": [
+        {"role": "system", "content": "You are Dom. (The made-up system message of the preview.)"},
+        {"role": "user", "content": "<notes>Board games on Fridays.</notes>\n<chat_window>…</chat_window>\n<turn_note>Sunday evening.</turn_note>"},
+    ], "tools": [{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}},
+                 {"type": "function", "function": {"name": "remind", "parameters": {"type": "object"}}}]}
+    trace.events += [
+        {"type": "model_call", "at": at + 3.0, "call": call, "request": request, "url": "https://llm.example/v1/chat/completions", "error": None},
+        {"type": "actions", "at": at + 3.0, "actions": json.loads(answer)},
+        {"type": "delivery", "at": at + 9.0, "kind": "bubble", "chat_id": OWNER, "msg_id": 71, "text": lines[1][1]},
+        {"type": "delivery", "at": at + 11.0, "kind": "bubble", "chat_id": OWNER, "msg_id": 72, "text": lines[2][1]},
+    ]
+    await writer.write(trace)
+
+
 async def main(port: int) -> None:
     os.environ[TOKEN_ENV] = TOKEN
     with tempfile.TemporaryDirectory() as tmp:
         app = build(Path(tmp), port)
         await seed(app)
         await seed_system(app)
+        await seed_talk(app)
         web_api.running_version = lambda: "v0.0.0 · preview"  # a fixed version, so the screens never change with each commit
         server = uvicorn.Server(uvicorn.Config(
             create_app(app, Auth(app.config)), host="127.0.0.1", port=port, log_level="warning", access_log=False,
@@ -587,6 +668,8 @@ async def main(port: int) -> None:
             await server.serve()
         finally:
             await app.dispatch.close()
+            if app.traces is not None:
+                app.traces.store.close()
             app.store.close()
 
 

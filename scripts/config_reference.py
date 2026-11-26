@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, WorldConfig, starter_config
+from dom.config import Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -59,7 +59,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "presence", "self_work", "studio", "knowledge", "world", "web", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "dispatch", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -156,12 +156,29 @@ def render() -> str:
         "`GET /api/search?mode=meaning` returns `score` and `match` for the dashboard. Changes apply at the next start.",
         "## World now",
         table(fields(WorldConfig, "world.")),
-        "Set all three or none. With a place, every turn note carries one short line after the chat window, such as "
+        "Set place, latitude and longitude all together or not at all. With a place, every turn note carries one short line after the chat window, such as "
         "`Weather in Singapore now: 31°C (feels like 38°C), partly cloudy, humid. Today 25–33°C, 70% chance of rain.` "
         "It comes from [Open-Meteo](https://open-meteo.com/) (no key), fetched in the background about every 45 minutes "
         "and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the "
         "weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also "
         "always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.",
+        "With a `country`, another line gives today's public holiday and the next one within 14 days, such as "
+        "`Today is a public holiday in SG: Christmas Day. Next public holiday in SG: New Year's Day, Friday 2027-01-01 (in 7 days).` "
+        "It comes from [Nager.Date](https://date.nager.at/) (no key), fetched in the background about once a day and "
+        "cached, so no reply waits on it. Only the country code and the year leave the host (see [Privacy](privacy.md)). "
+        "Today's date is read in `timezone`. Holidays that apply to some regions only are left out. When the list can't be fetched, the line is left out once "
+        "the cached list is a week old. The country works without a place. News and local events are not included: no free source without a key was reliable enough to trust in his notes.",
+        "The same block carries Dom's life sheet (`memory/WORLD.md`: home, work, routine, regular spots), the routine slot "
+        "for the current weekday and part of the day, what the notes a chat may read say about that slot's places, and a "
+        "variety hint when Dom has just said one of his usual options in this chat. The sheet works without `[world]`; "
+        "only the weather line needs the place. See [Memory formats](memory-format.md) for the format and who can change "
+        "it, and the dashboard's Memory → World page to edit it.",
+        "## Dispatch",
+        table(fields(DispatchConfig, "dispatch.")),
+        "With the fast lane on, Dom composes the owner's DM turns apart from every other chat's: each turn is "
+        "still composed one at a time within its lane, and one chat's turns stay in order, but the owner's never "
+        "wait behind a long turn in a group or a friend's DM. The lanes share the prompt prefix, the spend caps and "
+        "the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),
         "## Self-directed work",
@@ -169,6 +186,10 @@ def render() -> str:
         "See [Self-directed work](desktop.md#self-directed-work) for the network guard it needs and what it may do.",
         "## Web",
         table(fields(WebConfig, "web.")),
+        "## Debug tracer",
+        table(fields(TracerConfig, "tracer.")),
+        "Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See "
+        "[Privacy](privacy.md#debug-traces).",
         "## T3 Code",
         table(fields(T3Config, "t3.")),
         "See the [T3 Code bridge guide](t3-bridge.md) for service setup and CLI compatibility.",

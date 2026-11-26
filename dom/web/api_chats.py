@@ -10,19 +10,23 @@ shows Dom's replies; the dashboard is not a place to read friends' chats.
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from dom import tracer
 from dom.reachability import check_reachability
 from dom.telegram import owner
 from dom.traits import NAMES
 from dom.web.api import _local, _preview, _when
 from dom.web.model_settings import _input
 from dom.web.shared import WHO, _chats, _title, owner_app
+from dom.web.studio_settings import MediaStanding, media_standing
 
 router = APIRouter()
+log = logging.getLogger("dom.web")
 JSON_POSTS = {
     "/api/chats/action", "/api/chats/preset", "/api/chats/traits", "/api/chats/traits/reset",
     "/api/chats/reachability", "/api/chats/hide", "/api/chats/forget", "/api/chats/fresh",
@@ -170,14 +174,52 @@ async def forget_chat(request: Request) -> dict:
         raise HTTPException(409, "Cannot forget your own DM.")
     if update.delete_history and not update.confirm:
         raise HTTPException(422, "Confirm history deletion before forgetting this chat's messages.")
+    aliases = await app.store.chat_id_aliases(update.chat_id)  # before the forget drops the migration records
     if not await app.store.forget_chat(update.chat_id, delete_history=update.delete_history):
         raise HTTPException(404, "Unknown chat, or one Dom can still reach.")
     detail = " and deleted its history" if update.delete_history else " (history kept)"
+    if update.delete_history:
+        try:  # its debug traces hold its messages too, under every id it had
+            if app.traces is not None:
+                await app.traces.forget(aliases)
+            else:  # the tracer did not open: traces.db may still hold this chat
+                await tracer.forget_stored(app.store.home, aliases)
+        except Exception:
+            log.exception("could not delete the traces of forgotten chat %s", update.chat_id)
+            try:
+                tracer.save_pending_forget(app.store.home, aliases)
+            except OSError:
+                log.exception("could not save the pending trace deletion for chat %s", update.chat_id)
+            await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}, but its debug traces were not deleted")
+            raise HTTPException(
+                500, "Forgot the chat and its history, but its debug traces were not deleted. Dom will delete them "
+                "the next time he starts; until then they are in traces.db.",
+            ) from None
     await owner.record_event(app, f"{WHO} forgot chat {update.chat_id}{detail}")
     return await _done(app, f"Forgot chat{detail}.")
 
 
 RECENT_MESSAGES = 20
+
+
+async def _scope(app, chat_id: int) -> str:
+    """The scope of an approved or unreachable chat; 404 for one the bot has no row for."""
+    chat = next((row for row in (await _chats(app))["rows"] if row["id"] == chat_id), None)
+    if chat is not None:
+        return chat["scope"]
+    unreachable = await app.store.list_unreachable_chats(include_hidden=True)
+    match = next((row for row in unreachable if int(row["chat_id"]) == chat_id), None)
+    if match is None:
+        raise HTTPException(404, "Unknown chat.")
+    return app.store.scope_for(chat_id, match["chat_type"] or ("group" if chat_id < 0 else "private"))
+
+
+@router.get("/api/chats/{chat_id}/media")
+async def read_media_standing(request: Request, chat_id: int) -> MediaStanding:
+    """What studio media this chat has used and has left, against the limits of its own scope (owner DM, friend DM or
+    group) and its own deliveries. Owner only, like every dashboard route."""
+    app = owner_app(request)
+    return await media_standing(app, await _scope(app, chat_id), chat_id)
 
 
 @router.get("/api/chats/{chat_id}/messages")
@@ -188,15 +230,7 @@ async def read_messages(
     before: int | None = Query(None, ge=1),
 ) -> dict:
     app = owner_app(request)
-    chat = next((row for row in (await _chats(app))["rows"] if row["id"] == chat_id), None)
-    if chat is None:
-        unreachable = await app.store.list_unreachable_chats(include_hidden=True)
-        match = next((row for row in unreachable if int(row["chat_id"]) == chat_id), None)
-        if match is None:
-            raise HTTPException(404, "Unknown chat.")
-        scope = app.store.scope_for(chat_id, match["chat_type"] or ("group" if chat_id < 0 else "private"))
-    else:
-        scope = chat["scope"]
+    scope = await _scope(app, chat_id)
     full = scope == "owner_dm"
     tz = app.dispatch.presence.tz
     now = app.dispatch.now().astimezone(tz)

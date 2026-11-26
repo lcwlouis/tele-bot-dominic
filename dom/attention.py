@@ -54,6 +54,9 @@ class Fact:
     at: datetime
 
 
+LaneName = Literal["main", "fast"]
+
+
 @dataclass
 class Entry:
     chat_id: int
@@ -63,21 +66,21 @@ class Entry:
     resume: bool
     ready: asyncio.Future[None]
     behind: int | None
+    lane: LaneName = "main"
     reason: str = ""
     depth: int = 0
     capped: int | None = None
 
 
-class Attention:
-    def __init__(self):
+class Lane:
+    """One compose token and the chats waiting for it. Turns of one lane compose one at a time."""
+
+    def __init__(self, name: LaneName):
+        self.name = name
         self.active: Entry | None = None
         self.waiting: dict[int, Entry] = {}
         self._last_chat: int | None = None
         self._consecutive = 0
-        self._prompt_tokens = 0
-        self._last_call: dict[int, tuple[datetime, int]] = {}
-        self._last_conversation: tuple[int, datetime] | None = None
-        self._facts: deque[Fact] = deque(maxlen=3)
 
     def can_type(self, chat_id: int) -> bool:
         return self.active is None or self.active.chat_id == chat_id
@@ -116,7 +119,7 @@ class Attention:
     async def visit(self, chat_id: int, scope: Scope, tier: Tier, since: datetime, *, resume: bool = False):
         entry = Entry(
             chat_id, scope, tier, since, resume, asyncio.get_running_loop().create_future(),
-            self.active.chat_id if self.active is not None else None,
+            self.active.chat_id if self.active is not None else None, self.name,
         )
         self.waiting[chat_id] = entry
         self._pick()
@@ -133,6 +136,31 @@ class Attention:
             if self.active is entry:
                 self.active = None
             self._pick()
+
+
+class Attention:
+    """The lanes plus what they share: the call history behind the cache metrics and the facts about other chats.
+
+    The fast lane (`fast_lane`) is the owner DM's own token, so its turns never wait for a turn in another chat. Nothing
+    but the owner DM ever uses it, so one chat's turns still run one at a time, in order, through the turn slots.
+    """
+
+    def __init__(self, *, fast_lane: bool = False):
+        self.main, self.fast = Lane("main"), Lane("fast")
+        self.fast_lane = fast_lane
+        self._prompt_tokens = 0
+        self._last_call: dict[int, tuple[datetime, int]] = {}
+        self._last_conversation: tuple[int, datetime] | None = None
+        self._facts: deque[Fact] = deque(maxlen=3)
+
+    def lane_for(self, scope: Scope) -> Lane:
+        return self.fast if self.fast_lane and scope == "owner_dm" else self.main
+
+    def can_type(self, chat_id: int, scope: Scope) -> bool:
+        return self.lane_for(scope).can_type(chat_id)
+
+    def visit(self, chat_id: int, scope: Scope, tier: Tier, since: datetime, *, resume: bool = False):
+        return self.lane_for(scope).visit(chat_id, scope, tier, since, resume=resume)
 
     def previous_call(self, chat_id: int) -> tuple[datetime, int] | None:
         if (previous := self._last_call.get(chat_id)) is not None:
