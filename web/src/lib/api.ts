@@ -220,18 +220,28 @@ export type StudioTier = {
   special_gap_minutes: number | null;
 };
 export type StudioLimits = Record<StudioScope, StudioTier> & { daily: number };
+/** Where one chat stands against the limits of its scope; GET /api/chats/{id}/media, and `owner` of the limits view. */
+export type MediaStanding = {
+  kinds: {
+    kind: StudioKind;
+    left: number;
+    /** This chat's items of the kind inside its rolling window. */
+    used: number;
+    per: "day" | "week";
+    on: boolean;
+    next_at: string | null;
+  }[];
+  daily_left: number;
+  /** A studio item for this chat is being made or sent now. */
+  sending: boolean;
+  /** When the gap between media ends, if it hasn't; like `now`, in Dom's time zone with its offset. */
+  next_at: string | null;
+  now: string;
+};
 export type StudioLimitsView = {
   revision: string;
   limits: StudioLimits;
-  owner: {
-    kinds: { kind: StudioKind; left: number; on: boolean; next_at: string | null }[];
-    daily_left: number;
-    /** A studio item for the owner's DM is being made or sent now. */
-    sending: boolean;
-    /** When the gap between media ends, if it hasn't; like `now`, in Dom's time zone with its offset. */
-    next_at: string | null;
-    now: string;
-  };
+  owner: MediaStanding;
 };
 
 /** GET /api/studio/event-days and POST /api/studio/event-days/cancel: days in Dom's life that raise his media limits. */

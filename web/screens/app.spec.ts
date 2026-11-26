@@ -867,7 +867,7 @@ test.describe("interactions under the CSP", () => {
     const limits = page.getByRole("region", { name: "Media limits" });
     // The preview sent a photo 14 minutes ago, inside the owner DM's 30-minute gap. Every studio switch is off there,
     // so the strip says so instead of when the gap ends.
-    await expect(limits.getByRole("region", { name: "Left now in your DM" }).getByRole("listitem").filter({ hasText: "Photos" })).toHaveText(/Photos\s*1 \(off\)/);
+    await expect(limits.getByRole("region", { name: "Left now in your DM" }).getByRole("listitem").filter({ hasText: "Photos" })).toHaveText(/Photos\s*1 used · \d+ left \(off\)/);
     // Global limits sit with Your DM: the daily total, what is left of it, and cloud media spend against its limit.
     const global = limits.getByRole("group", { name: "Global limits" });
     await expect(global.getByRole("spinbutton", { name: "All chats" })).toBeVisible();
@@ -1408,6 +1408,12 @@ test.describe("interactions under the CSP", () => {
     await expect(page).toHaveURL(/\/app\/system\/turns\?chat=-4001$/);
     await expect(page.getByRole("combobox", { name: "Chat" })).toHaveValue("Weekend crew");
     await expect(page.getByRole("button", { name: /^Held back: leak check/ })).toBeHidden();
+
+    // A group shows what it has used and has left of media, against the group limits.
+    await page.goto("/app/chats");
+    await page.getByRole("button", { name: "Media used and left in Weekend crew" }).click();
+    const crewMedia = page.getByRole("region", { name: "Media used and left in Weekend crew" });
+    await expect(crewMedia.getByRole("listitem").filter({ hasText: "Voice notes" })).toHaveText(/Voice notes\s*\d+ used this day · \d+ left/);
 
     // A usage segment shows its breakdown on click and from the keyboard.
     await page.goto("/app/system/usage");

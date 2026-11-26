@@ -569,13 +569,14 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     known = {c["chat_id"]: c for c in await app.store.list_chats()}
     known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
     names = await app.store.people_names()
+    asked = await app.chat_titles.known()  # titles Telegram gave for chats this bot has no row for
     chat_notes, owner_notes = [], []
 
     def chat_label(rel: str) -> str:
         chat_id = Path(rel).name.removesuffix(".former.md").removesuffix(".md")
         if chat_id == str(app.owner_id):
             return "Your DM notes"
-        chat = known.get(chat_id, {"chat_id": chat_id, "title": ""})
+        chat = known.get(chat_id, {"chat_id": chat_id, "title": asked.get(chat_id, "")})
         if chat_id.startswith("-"):
             # A note can outlive its chat's row (a copied home, a bot that never saw the group): say it is a group.
             title = _title(chat, app.owner_id)

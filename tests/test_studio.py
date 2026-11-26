@@ -427,3 +427,29 @@ def test_media_written_as_text_edge_cases(bubbles, image, texts):
     actions = Actions.model_validate({"bubbles": bubbles})
     assert actions.image == image and [b.text for b in actions.bubbles] == texts
 
+
+
+async def test_a_promised_photo_that_was_never_set_is_nudged_then_sent(make_app, studio_server):
+    first = json.dumps({"bubbles": ["sending you a pic in a sec"]})
+    second = json.dumps({"bubbles": ["here ya go"], "image": "A sunny park"})
+    app = make_app(contents=(first, second))
+    await connect(app, studio_server)
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER, text="show me"))
+    [(route, payload)] = [call for call in studio_server[2] if call[0] != "/v1/health"]
+    assert route == "/v1/image" and payload["scene"] == "A sunny park"
+    assert [call[2] for call in app.bot.of("send")] == ["here ya go"]
+    assert [r for r in app.script.requests if "promises media" in r["messages"][-1]["content"]]
+
+
+async def test_a_promised_photo_is_dropped_when_photos_are_not_on_offer(make_app, studio_server):
+    first = json.dumps({"bubbles": ["sending you a pic in a sec"]})
+    second = json.dumps({"bubbles": ["no pics right now"]})
+    app = make_app(contents=(first, second))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={"studio": app.config.studio.model_copy(update={"images": False})})
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER, text="show me"))
+    assert "/v1/image" not in [route for route, _ in studio_server[2]]
+    assert [call[2] for call in app.bot.of("send")] == ["no pics right now"]
+    assert [r for r in app.script.requests if "can't send a photo right now" in r["messages"][-1]["content"]]

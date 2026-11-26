@@ -680,6 +680,27 @@ class Store:
                 "UPDATE chats SET title = ? WHERE chat_id = ? AND title IS NOT ?", (title, chat_id, title)
             )
 
+    async def adopt_chat_title(self, chat_id: str, title: str, key: str, entry: str) -> None:
+        """Keep a title looked up from Telegram, but never over one that is already there: a live message may have
+        written the chat's real title while the lookup was out. A chat with a row gets it only while its title is empty;
+        one with no row gets `entry` under the kv `key`, unless that already holds a title."""
+        await self._run(self._adopt_chat_title, str(chat_id), title, key, entry)
+
+    def _adopt_chat_title(self, chat_id: str, title: str, key: str, entry: str) -> None:
+        with self._tx() as conn:
+            if conn.execute("SELECT 1 FROM chats WHERE chat_id = ?", (chat_id,)).fetchone() is not None:
+                conn.execute(
+                    "UPDATE chats SET title = ? WHERE chat_id = ? AND (title IS NULL OR TRIM(title) = '')", (title, chat_id),
+                )
+                return
+            row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+            try:
+                held = json.loads(row[0]) if row is not None else {}
+            except ValueError:
+                held = {}
+            if not (isinstance(held, dict) and held.get("title")):
+                self._write_kv(conn, {key: entry})
+
     async def note_pending_chat(self, chat_id: str, title: str, invited_by: str) -> None:
         """Remember who asked and what the chat is called. Never touches the authorization status."""
         await self._run(self._note_pending_chat, str(chat_id), title, invited_by)

@@ -53,9 +53,9 @@ def test_false_unsets_a_daily_default():
     assert OwnerStudioTier().video_daily == 1
 
 
-async def _deliver(app, kind, at):
+async def _deliver(app, kind, at, chat_id=OWNER):
     await app.store.record_new_message(StoredMessage(
-        chat_id=str(OWNER), role="assistant", visibility_scope=f"chat:{OWNER}", text="",
+        chat_id=str(chat_id), role="assistant", visibility_scope=f"chat:{chat_id}", text="",
         media_json=json.dumps({"kind": kind}), created_at=at.isoformat(),
     ))
 
@@ -74,7 +74,8 @@ async def test_read_shows_the_saved_limits_and_what_is_left_in_the_owner_dm(dash
     body = response.json()
     assert body["limits"]["owner_dm"]["gap_minutes"] == 30 and body["limits"]["group"]["video_daily"] is None
     kinds = {item["kind"]: item for item in body["owner"]["kinds"]}
-    assert kinds["photo"] == {"kind": "photo", "left": 1, "on": True, "next_at": body["owner"]["next_at"]}
+    assert kinds["photo"] == {
+        "kind": "photo", "left": 1, "used": 1, "per": "day", "on": True, "next_at": body["owner"]["next_at"]}
     assert kinds["voice"]["next_at"] == body["owner"]["next_at"]  # no per-kind gap: any media holds back the next
     assert kinds["video_note"]["on"] is False  # its switch is off
     assert body["owner"]["daily_left"] == 11
@@ -231,3 +232,45 @@ def test_the_turn_note_says_media_are_answer_fields_not_tools():
     note = turn_note({"photo": 3}, ())
     assert "fields of your final JSON answer" in note and "not tools" in note
     assert '"image": a scene' in note
+
+
+async def test_a_friends_dm_and_a_group_show_their_own_used_and_left(dashboard):
+    from tghelpers import FRIEND, GROUP
+
+    app, path, browser = dashboard
+    limits = StudioLimits(group={"voice_daily": 4})
+    app.config = app.config.model_copy(update={"studio": StudioConfig(
+        enabled=True, base_url="https://studio.example.org", voice=True, images=True, limits=limits)})
+    await app.store.set_chat_auth_status(FRIEND, "approved", title="River")
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    now = app.dispatch.now()
+    await _deliver(app, "photo", now - timedelta(days=2), chat_id=FRIEND)  # the friend tier's photo window is a day
+    await _deliver(app, "voice", now - timedelta(hours=1), chat_id=GROUP)
+    await _deliver(app, "voice", now - timedelta(hours=5), chat_id=GROUP)
+    await _deliver(app, "voice", now - timedelta(minutes=5), chat_id=OWNER)  # another chat's rows don't count
+    async with browser() as client:
+        friend = (await client.get(f"/api/chats/{FRIEND}/media")).json()
+        group = (await client.get(f"/api/chats/{GROUP}/media")).json()
+    tier = app.config.studio.limits
+    friend_kinds = {item["kind"]: item for item in friend["kinds"]}
+    assert friend_kinds["photo"]["used"] == 0 and friend_kinds["photo"]["left"] == tier.friend_dm.image_daily
+    assert friend_kinds["voice"]["used"] == 0 and friend_kinds["special"]["on"] is False
+    group_kinds = {item["kind"]: item for item in group["kinds"]}
+    assert group_kinds["voice"]["used"] == 2 and group_kinds["voice"]["per"] == "day"
+    assert group_kinds["voice"]["left"] == 4 - 2
+    assert group_kinds["voice"]["on"] is True and group_kinds["video_note"]["on"] is False
+    assert group["daily_left"] == tier.daily - 3  # the global total counts every chat
+    assert datetime.fromisoformat(group["next_at"]) > now  # the group's gap since its last voice note
+
+
+async def test_a_chats_media_standing_is_owner_only_and_knows_only_its_chats(dashboard):
+    from tghelpers import FRIEND, GROUP
+
+    app, path, browser = dashboard
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    async with browser(authorized=False) as client:
+        assert (await client.get(f"/api/chats/{GROUP}/media")).status_code == 403
+    async with browser() as client:
+        assert (await client.get(f"/api/chats/{GROUP}/media")).status_code == 200
+        assert (await client.get(f"/api/chats/{FRIEND}/media")).status_code == 404  # no row for it
+        assert (await client.get("/api/chats/12345/media")).status_code == 404
