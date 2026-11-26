@@ -1519,8 +1519,41 @@ test.describe("interactions under the CSP", () => {
     await dialog.getByRole("button", { name: "Delete history and forget" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Forgot chat and deleted its history." })).toBeVisible();
     expect(sent).toEqual({ chat_id: -4005, delete_history: true, confirm: true });
-    // Fresh start waits for the backend to offer it.
-    await expect(page.getByRole("button", { name: /^Fresh start/ })).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
+  test("chats: Fresh start asks first, then starts the chat fresh, and Undo puts the earlier messages back", async ({ page }) => {
+    const problems = await watch(page);
+    const dialog = page.getByRole("alertdialog");
+    const chats = await (await page.request.get("/api/chats")).json();
+    const chat = chats.chats[0];
+    // Answered here, so the preview's chats keep their window for the other screens.
+    const sent: unknown[] = [];
+    await page.route("**/api/chats/fresh", async (route) => {
+      const body = route.request().postDataJSON();
+      sent.push(body);
+      const message = body.undo ? `Put the earlier messages back in ${chat.title}.` : `Started ${chat.title} fresh. Nothing was deleted.`;
+      await route.fulfill({ json: { message, ...chats } });
+    });
+    await page.goto("/app/chats");
+    await expect(page.getByRole("button", { name: `Undo the fresh start in ${chat.title}` })).toHaveCount(0);
+    // Not now changes nothing.
+    await page.getByRole("button", { name: `Fresh start in ${chat.title}` }).click();
+    await expect(dialog.getByText(`Start ${chat.title} fresh?`)).toBeVisible();
+    await expect(dialog.getByText("Earlier messages leave Dom's prompt; nothing is deleted.")).toBeVisible();
+    await dialog.getByRole("button", { name: "Not now" }).click();
+    await expect(dialog).toBeHidden();
+    expect(sent).toEqual([]);
+    // Start fresh sends the chat; the toast says so, and Undo appears for that chat.
+    await page.getByRole("button", { name: `Fresh start in ${chat.title}` }).click();
+    await dialog.getByRole("button", { name: "Start fresh" }).click();
+    await expect(page.getByRole("status").filter({ hasText: `Started ${chat.title} fresh.` })).toBeVisible();
+    expect(sent).toEqual([{ chat_id: chat.id, undo: false }]);
+    const undo = page.getByRole("button", { name: `Undo the fresh start in ${chat.title}` });
+    await undo.click();
+    await expect(page.getByRole("status").filter({ hasText: `Put the earlier messages back in ${chat.title}.` })).toBeVisible();
+    expect(sent).toEqual([{ chat_id: chat.id, undo: false }, { chat_id: chat.id, undo: true }]);
+    await expect(undo).toHaveCount(0);
     expect(problems).toEqual([]);
   });
 

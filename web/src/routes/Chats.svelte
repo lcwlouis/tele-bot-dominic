@@ -46,6 +46,7 @@
   let wipe = $state(false); // "Delete history too", which asks a second time
   let wiping = $state<UnreachableChat | null>(null);
   let freshening = $state<Chat | null>(null);
+  let freshened = $state<number | null>(null); // the chat just started fresh, which offers Undo
   let readingGone = $state<number | null>(null);
 
   async function loadUnreachable() {
@@ -98,6 +99,9 @@
       if (readingGone === chat.id) readingGone = null;
       await loadUnreachable();
     }
+  }
+  async function fresh(chat: Chat, undo: boolean) {
+    if (await write("/api/chats/fresh", { chat_id: chat.id, undo })) freshened = undo ? null : chat.id;
   }
   const shown = $derived(unreachable.filter((chat) => !chat.hidden));
   const hidden = $derived(unreachable.filter((chat) => chat.hidden));
@@ -234,9 +238,10 @@
                 >
                   Messages
                 </Button>
-                {#if chats.features?.fresh}
-                  <!-- W1's rescue: earlier messages leave the prompt, never the history. Hidden until Dom offers it. -->
-                  <Button variant="ghost" disabled={busy} aria-label={`Fresh start in ${chat.title}`} onclick={() => (freshening = chat)}>Fresh start</Button>
+                <!-- The rescue: earlier messages leave the prompt, never the history; the last start can be undone. -->
+                <Button variant="ghost" disabled={busy} aria-label={`Fresh start in ${chat.title}`} onclick={() => (freshening = chat)}>Fresh start</Button>
+                {#if freshened === chat.id}
+                  <Button variant="ghost" disabled={busy} aria-label={`Undo the fresh start in ${chat.title}`} onclick={() => fresh(chat, true)}>Undo fresh start</Button>
                 {/if}
                 {#if chat.scope === "group"}
                   <Button variant="destructive" disabled={busy} aria-label={`Leave ${chat.title}`} onclick={() => (leaving = chat)}>Leave group</Button>
@@ -490,12 +495,12 @@
 <AlertDialog.Root open={freshening !== null} onOpenChange={(open) => !open && (freshening = null)}>
   <AlertDialog.Content>
     <AlertDialog.Header>
-      <AlertDialog.Title>Fresh start in {freshening?.title}?</AlertDialog.Title>
-      <AlertDialog.Description>Dom's window starts from now: earlier messages leave his prompt but stay in the history.</AlertDialog.Description>
+      <AlertDialog.Title>Start {freshening?.title} fresh?</AlertDialog.Title>
+      <AlertDialog.Description>Earlier messages leave Dom's prompt; nothing is deleted.</AlertDialog.Description>
     </AlertDialog.Header>
     <AlertDialog.Footer>
       <AlertDialog.Cancel variant="outline">Not now</AlertDialog.Cancel>
-      <AlertDialog.Action onclick={() => { const chat = freshening; freshening = null; chat && write("/api/chats/fresh", { chat_id: chat.id }); }}>Start fresh</AlertDialog.Action>
+      <AlertDialog.Action onclick={() => { const chat = freshening; freshening = null; chat && fresh(chat, false); }}>Start fresh</AlertDialog.Action>
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>

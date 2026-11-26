@@ -291,8 +291,6 @@ export type ChatsData = {
   vibe: { mode: "auto" | "locked" | "none"; title: string; description: string; reason: string; source: string; since: string };
   stickers: string[];
   unreachable: UnreachableChat[];
-  /** Features this Dom offers; a button for one it doesn't stays hidden. `fresh`: POST /api/chats/fresh. */
-  features?: { fresh?: boolean };
 };
 
 /** GET /api/work/* and the Work writes (dom/web/api_work.py). Every write answers { ok, message, ...the tab's data }. */

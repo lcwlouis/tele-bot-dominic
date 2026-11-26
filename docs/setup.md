@@ -170,7 +170,7 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/pending` | Resends pending chat approval prompts. |
 | `/wake [chat_id]`, `/sleep [chat_id]` | Changes presence in the owner DM or a specified approved chat. |
 | `/preset` | Changes the persona preset for one chat, or for every chat with the "Everywhere" button, which can also be Auto so Dom picks his own daily vibe ([presets](presets.md)). A chat's own preset wins. |
-| `/fresh`, `/fresh undo` | Starts this chat's window from now: earlier messages leave Dom's prompt, but nothing is deleted and search still finds them. Dom is told the chat was started fresh. `/fresh undo` puts the window back as it was. The dashboard can do the same for any chat (`POST /api/chats/fresh`). |
+| `/fresh`, `/fresh undo` | Starts this chat's window from now: earlier messages leave Dom's prompt, but nothing is deleted and search still finds them. Dom is told the chat was started fresh. `/fresh undo` puts the window back as it was. The dashboard can do the same for any chat: Fresh start on the Chats page, with Undo after it (`POST /api/chats/fresh`). |
 | `/proposals` | Shows pending changes for review. Use `/proposals settled` to list settled cards or `/proposals delete <id>` to archive and delete one. |
 | `/reminders` | Lists, cancels and deletes reminders. Use `/reminders all` to include finished or cancelled ones, or `/reminders delete <id>`. |
 | `/skills` | Lists, retires, restores and deletes skills (`/skills retire <name>`, `/skills restore <name>`, `/skills delete <name>`). |
