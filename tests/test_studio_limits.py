@@ -223,3 +223,11 @@ async def test_the_view_says_when_media_for_the_owner_is_on_its_way(dashboard):
             assert (await client.get(LIMITS)).json()["owner"]["sending"] is True
     async with browser() as client:
         assert (await client.get(LIMITS)).json()["owner"]["sending"] is False
+
+
+def test_the_turn_note_says_media_are_answer_fields_not_tools():
+    from dom.studio.policy import turn_note
+
+    note = turn_note({"photo": 3}, ())
+    assert "fields of your final JSON answer" in note and "not tools" in note
+    assert '"image": a scene' in note

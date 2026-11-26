@@ -251,6 +251,25 @@ See [Studio](studio.md) for outfit setup and model licences.
 | `openers.friends` | `false` | Allow Dom to start conversations in approved friends' DMs. |
 | `openers.max_per_day` | `2` | Maximum number of openers per chat per day in the configured timezone. |
 
+## Meaning search
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `knowledge.min_similarity` | `0.35` | Meaning search drops a hit whose embedding cosine similarity to the query is below this. 0.35 suits qwen3-vl-embedding-2b, where unrelated short texts score about 0.1 to 0.3 and related ones 0.45 and up; another embedding model may sit on a different scale. Zero keeps every hit. |
+| `knowledge.min_score` | `0.15` | Meaning search drops a blended hit (keyword relevance and similarity, weighted by recency) scoring below this. The best possible score is 1; a hit found by meaning alone peaks at 0.55. |
+
+Results are sorted strictly by score. Each meaning hit carries its score and a coarse label: `strong` (0.5 and up, which takes a keyword match and a close meaning match together), `good` (0.3 and up) or `weak`. Dom's `search` tool shows the label, for example "strong match", so he can judge how far to trust a hit, and `GET /api/search?mode=meaning` returns `score` and `match` for the dashboard. Changes apply at the next start.
+
+## World now
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `world.place` | `""` | The owner's place, as Dom should name it in the weather line of his turn note (for example `Singapore`). Empty, the default, turns the line off. |
+| `world.latitude` | Unset | Latitude of the place, in degrees. |
+| `world.longitude` | Unset | Longitude of the place, in degrees. |
+
+Set all three or none. With a place, every turn note carries one short line after the chat window, such as `Weather in Singapore now: 31°C (feels like 38°C), partly cloudy, humid. Today 25–33°C, 70% chance of rain.` It comes from [Open-Meteo](https://open-meteo.com/) (no key), fetched in the background about every 45 minutes and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.
+
 ## Presence
 
 | Key | Default | Meaning |

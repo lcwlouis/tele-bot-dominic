@@ -32,6 +32,20 @@ FINAL_REQUEST = (
     "Do not call tools. Answer now with ONLY the JSON object described in the instructions, "
     "and nothing else."
 )
+# Names the chat model gives to media as if they were tools, with the final-answer field each means. Media goes out
+# only as a field of the final JSON, so a call to one of these names is answered with where it belongs.
+MEDIA_FIELDS = {
+    "image": "image", "images": "image", "photo": "image", "photos": "image", "selfie": "image", "picture": "image",
+    "sendphoto": "image", "sendimage": "image", "takephoto": "image", "takeselfie": "image", "generateimage": "image",
+    "voice": "voice", "voicenote": "voice", "sendvoice": "voice", "speak": "voice", "tts": "voice",
+    "videonote": "video_note", "video": "video_note", "sendvideonote": "video_note", "sendvideo": "video_note",
+    "special": "video_note",
+}
+MEDIA_FIELD_SHAPES = {
+    "image": '"image": "<scene>"',
+    "voice": '"voice": "<spoken text>"',
+    "video_note": '"video_note": {"text": "<spoken text>", "scene": "<where you are>"}',
+}
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 Rescue = Callable[[str | None], Awaitable[Salvaged | None]]  # plain prose in, bubbles out (dom.salvage), or None
 ToolRunner = Callable[[dict, dict[str, Tool], TurnCtx], Awaitable[str]]
@@ -137,11 +151,23 @@ def _well_formed(calls: object) -> bool:
     )
 
 
+def unavailable_tool_result(name: str) -> str:
+    """What the model is told for a call to a tool that is not offered. A media action named as a tool is told where
+    it belongs, since the model otherwise concludes the camera is broken."""
+    field = MEDIA_FIELDS.get(re.sub(r"[^a-z]", "", name.lower()))
+    if field is None:
+        return "tool not available here"
+    return (
+        f'"{name}" is not a tool. Media are fields of your final JSON answer, not tools: if it is on offer this turn, '
+        f"add {MEDIA_FIELD_SHAPES[field]} to that answer and it will be sent; if it is not on offer, say so in your own words."
+    )
+
+
 async def execute_tool_call(call: dict, offered: dict[str, Tool], ctx: TurnCtx) -> str:
     function = call["function"]
     tool = offered.get(function.get("name", ""))
     if tool is None:
-        return "tool not available here"
+        return unavailable_tool_result(str(function.get("name", "")))
     try:
         args = json.loads(function.get("arguments") or "{}")
         if not isinstance(args, dict):

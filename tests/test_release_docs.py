@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderSetup, SelfWorkConfig, StudioConfig, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderSetup, SelfWorkConfig, StudioConfig, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, WorldConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,12 +16,12 @@ def test_configuration_reference_matches_generator():
 
 def test_configuration_reference_has_every_toml_key():
     doc = (ROOT / "docs/configuration.md").read_text()
-    root = Config.model_fields.keys() - {"home", "models", "provider_setups", "desktop_mode", "desktop", "openers", "presence", "self_work", "studio", "web", "t3", "update"}
+    root = Config.model_fields.keys() - {"home", "models", "provider_setups", "desktop_mode", "desktop", "openers", "presence", "self_work", "studio", "knowledge", "world", "web", "t3", "update"}
     for name in root:
         assert f"| `{name}` |" in doc
     for section, model in (
         ("desktop", DesktopConfig), ("models.<name>", ModelEndpoint), ("providers.<name>", ProviderSetup),
-        ("web", WebConfig), ("openers", OpenersConfig), ("presence", PresenceConfig), ("self_work", SelfWorkConfig), ("t3", T3Config), ("update", UpdateConfig),
+        ("web", WebConfig), ("openers", OpenersConfig), ("presence", PresenceConfig), ("self_work", SelfWorkConfig), ("t3", T3Config), ("update", UpdateConfig), ("knowledge", KnowledgeConfig), ("world", WorldConfig),
     ):
         for name in model.model_fields:
             assert f"| `{section}.{name}` |" in doc

@@ -93,7 +93,10 @@ async def _search(args: dict, ctx: TurnCtx) -> str:
             ctx.store, ctx.home, query, mode=mode, knowledge=ctx.app.knowledge if ctx.app else None,
         )
         return json.dumps(
-            [{"kind": h.kind, "title": h.title, "text": h.text, "at": h.at} for hits in found.values() for h in hits],
+            [
+                {"kind": h.kind, "title": h.title, "text": h.text, "at": h.at, **({"match": f"{h.match} match"} if h.match else {})}
+                for hits in found.values() for h in hits
+            ],
             ensure_ascii=False,
         )
     limit = args.get("limit", 10)
@@ -112,13 +115,20 @@ async def _search(args: dict, ctx: TurnCtx) -> str:
             query, str(ctx.chat_id), limit,
             keep_days=await asyncio.to_thread(ctx.home.scoped(allow_private=False).core_days),
         )
-    found = [{k: h[k] for k in ("chat_id", "msg_id", "sender_name", "text", "created_at")} for h in recent]
-    seen = {row["id"] for row in recent}  # the same message once; two messages with equal text both stay
+    # One entry per message: the history row carries the sender, the index hit the score, and both are kept.
+    found = {
+        row["id"]: {k: row[k] for k in ("chat_id", "msg_id", "sender_name", "text", "created_at")} for row in recent
+    }
+    extra: list[dict] = []
     for hit in indexed:
-        if hit.message_id is not None and hit.message_id in seen:
-            continue
-        found.append({"text": hit.text, "file": hit.file, "at": hit.at, "entities": hit.entities})
-    return json.dumps(found, ensure_ascii=False)
+        scored = {"score": round(hit.score, 3), "match": f"{hit.match} match"} if mode == "meaning" else {}
+        if hit.message_id in found:
+            found[hit.message_id].update(scored)
+        else:
+            extra.append({"text": hit.text, "file": hit.file, "at": hit.at, "entities": hit.entities, **scored})
+    # Best first; hits with no score (a recent message the index has not reached) follow the ranked ones.
+    ranked = sorted([*found.values(), *extra], key=lambda item: item.get("score", -1.0), reverse=True)
+    return json.dumps(ranked, ensure_ascii=False)
 
 
 SEARCH_TOOL = Tool(

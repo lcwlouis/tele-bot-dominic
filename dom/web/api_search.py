@@ -46,7 +46,10 @@ async def search(
             {
                 "kind": kind, "label": global_search.LABELS[kind],
                 "hits": [
-                    {"title": hit.title, "text": hit.text, "href": _href(hit), "at": hit.at, "full": hit.full}
+                    {
+                        "title": hit.title, "text": hit.text, "href": _href(hit), "at": hit.at, "full": hit.full,
+                        "score": hit.score, "match": hit.match,
+                    }
                     for hit in hits
                 ],
             }

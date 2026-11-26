@@ -287,7 +287,10 @@ def format_chat_window_xml(
             if not isinstance(description, str) and media_notes:
                 description = media_notes.get(m.msg_id)
             description = escape(description) if isinstance(description, str) else ""
-            body += f"<media kind={attr(kind)}{emoji_attr}>{description}</media>"
+            # Media Dom sent says so, so a photo that is no longer attached is not taken for someone else's, and
+            # theirs not for his. A user's media is told by the msg's own from and name.
+            by_attr = ' by="you"' if m.role == "assistant" else ""
+            body += f"<media kind={attr(kind)}{by_attr}{emoji_attr}>{description}</media>"
         if m.is_edited and m.original_seen_before_edit and m.previous_seen_text is not None:
             body += f"<previous_seen_text>{escape(m.previous_seen_text)}</previous_seen_text>"
         out.append(f"  <msg {' '.join(attrs)}>{body}</msg>")

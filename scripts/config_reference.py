@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, starter_config
+from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, UpdateConfig, WebConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -59,7 +59,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "presence", "self_work", "studio", "web", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "presence", "self_work", "studio", "knowledge", "world", "web", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -144,6 +144,20 @@ def render() -> str:
         "See [Studio](studio.md) for outfit setup and model licences.",
         "## Openers",
         table(fields(OpenersConfig, "openers.")),
+        "## Meaning search",
+        table(fields(KnowledgeConfig, "knowledge.")),
+        "Results are sorted strictly by score. Each meaning hit carries its score and a coarse label: `strong` (0.5 and up, "
+        "which takes a keyword match and a close meaning match together), `good` (0.3 and up) or `weak`. Dom's `search` "
+        "tool shows the label, for example \"strong match\", so he can judge how far to trust a hit, and "
+        "`GET /api/search?mode=meaning` returns `score` and `match` for the dashboard. Changes apply at the next start.",
+        "## World now",
+        table(fields(WorldConfig, "world.")),
+        "Set all three or none. With a place, every turn note carries one short line after the chat window, such as "
+        "`Weather in Singapore now: 31°C (feels like 38°C), partly cloudy, humid. Today 25–33°C, 70% chance of rain.` "
+        "It comes from [Open-Meteo](https://open-meteo.com/) (no key), fetched in the background about every 45 minutes "
+        "and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the "
+        "weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also "
+        "always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),
         "## Self-directed work",

@@ -96,6 +96,27 @@ async def test_memory_lists_files_and_keeps_private_ones_in_their_own_section(ma
         assert private.read("private/USER.md") == "Owner only"
 
 
+async def test_file_api_names_the_entities_a_line_links_and_keeps_the_raw_text(make_app, browser):
+    app = make_app()
+    text = (
+        f"- Met up with a friend (as of 2026-11) {{any}} {{entities person:{FRIEND}|place:old-town|project:dom}}\n"
+        "- No links on this line {any}\n- Bad link {entities person:abc}"
+    )
+    app.home._write_regular("memory/MEMORY.md", text)
+    await app.store.set_chat_auth_status(FRIEND, "approved", title="Reader")
+    async with browser(app) as client:
+        opened = (await client.get("/api/memory/file", params={"file": "memory/MEMORY.md"})).json()
+        assert opened["content"] == text  # the editor still gets every group as typed
+        assert opened["entities"] == {
+            f"person:{FRIEND}": f"Person {FRIEND}", "place:old-town": "old town", "project:dom": "dom",
+        }
+        saved = (await client.post(
+            "/api/memory/save", headers=JSON,
+            json={"file": "memory/MEMORY.md", "version": opened["version"], "content": "- Plain {any}"},
+        )).json()
+        assert saved["entities"] == {}
+
+
 async def test_save_checks_limits_versions_and_habits(make_app, browser):
     app = make_app()
     memory = "memory/MEMORY.md"
