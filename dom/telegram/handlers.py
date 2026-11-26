@@ -46,6 +46,7 @@ from dom.goals import Goals
 from dom.noticings import Noticings
 from dom.studio.client import StudioClient
 from dom.studio.cloud import CloudStudio
+from dom.studio.events import EventDays
 from dom.studio.policy import StudioQuota
 from dom.stickers import Stickers
 from dom.store import Store
@@ -81,6 +82,7 @@ class App:
     studio_http: httpx.AsyncClient | None = None  # the studio's client, which ignores proxy settings (cli.py)
     cloud_studio: CloudStudio | None = None
     studio_quota: StudioQuota = field(init=False)
+    event_days: EventDays = field(init=False)  # Dom's special days, which raise his media limits
     media_files: MediaFiles = field(init=False)  # the media Dom sent, kept on disk
     draft_client: ChatClient | FallbackClient | None = None
     escalation_client: FallbackClient | None = None
@@ -104,7 +106,8 @@ class App:
         def now() -> datetime:
             return datetime.now(timezone.utc)
 
-        self.studio_quota = StudioQuota(self.store)
+        self.event_days = EventDays(self.store, lambda: self.config, lambda: self.dispatch.usage)
+        self.studio_quota = StudioQuota(self.store, self.event_days)
         self.media_files = MediaFiles(self.home.root, self.store, lambda: self.config.studio.keep_cap_mb * 1_000_000)
         self.plugin_runner = PluginRunner(home=self.home.root, store=self.store)
         self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self), runner=self.plugin_runner)

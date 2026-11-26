@@ -7,11 +7,15 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from math import ceil
+from typing import TYPE_CHECKING, Literal
 
 from dom.config import StudioConfig, StudioFallback, StudioLimits, StudioTier
 from dom.store import Store
 from dom.traits import Preset
+
+if TYPE_CHECKING:
+    from dom.studio.events import EventDays
 
 Kind = Literal["voice", "video_note", "photo", "special"]
 SWITCH = {"voice": "voice", "video_note": "video_notes", "photo": "images", "special": "special"}
@@ -26,9 +30,10 @@ UNAVAILABLE_NOTE = (
 )
 ACTION_NOTES = {
     "voice": '"voice": spoken text (up to 600 characters)',
-    "video_note": '"video_note": {"text": spoken text up to 200 characters}',
+    "video_note": '"video_note": {"text": spoken text up to 200 characters, "scene": where you are and what is around you, '
+                  'up to 200 characters; each note is filmed in a fresh scene}',
     "photo": '"image": a scene up to 300 characters (a selfie anywhere, or a scene in cyberspace; leave clothing to the outfit)',
-    "special": '"video_note": {"text": spoken text up to 120 characters, "special": true} '
+    "special": '"video_note": {"text": spoken text up to 120 characters, "scene": as above, "special": true} '
                "for a milestone, birthday or an explicit request",
 }
 
@@ -87,10 +92,12 @@ def outfits(config: StudioConfig, preset: Preset | None) -> tuple[str, ...]:
     return (config.default_outfit,) if config.default_outfit else ()
 
 
-def turn_note(remaining: dict[Kind, int], wardrobe: tuple[str, ...]) -> str:
+def turn_note(remaining: dict[Kind, int], wardrobe: tuple[str, ...], event: str = "") -> str:
     if not remaining:
         return ""
     lines = [STUDIO_NOTE, "At most one of these per reply."]
+    if event:
+        lines.append(event)
     for kind, count in remaining.items():
         lines.append(f"Optional action {ACTION_NOTES[kind]} ({count} left in its rolling limit).")
     if wardrobe and any(kind != "voice" for kind in remaining):
@@ -98,14 +105,27 @@ def turn_note(remaining: dict[Kind, int], wardrobe: tuple[str, ...]) -> str:
     return "\n".join(lines)
 
 
+GAP_FIELDS: dict[Kind, str] = {
+    "voice": "voice_gap_minutes", "video_note": "video_gap_minutes", "photo": "image_gap_minutes",
+    "special": "special_gap_minutes",
+}
+
+
 @dataclass(frozen=True)
 class Standing:
     """Where a chat stands against its studio limits: what is left of each kind (counting the global daily total, but
-    not the gap or the switches), how much of the global total is left, and when the gap ends if it hasn't."""
+    not the gaps or the switches), how much of the global total is left, when each kind's gap ends if it hasn't, and
+    the part of `left` that is only there because of an event day (the item would pass the normal limits)."""
 
     left: dict[Kind, int]
     daily_left: int
-    next_at: datetime | None
+    gaps: dict[Kind, datetime]
+    normal: dict[Kind, int]  # what is left under the normal limits alone, with no event day
+
+    @property
+    def next_at(self) -> datetime | None:
+        """When every kind is free of its gap, if any gap is running."""
+        return max(self.gaps.values(), default=None)
 
 
 def windows(tier: StudioTier) -> dict[Kind, tuple[int, timedelta]]:
@@ -119,35 +139,66 @@ def windows(tier: StudioTier) -> dict[Kind, tuple[int, timedelta]]:
     }
 
 
-def standing(limits: StudioLimits, scope: str, total: int, rows: list[tuple[str, datetime]], now: datetime) -> Standing:
+def gap_minutes(tier: StudioTier, kind: Kind) -> int:
+    own = getattr(tier, GAP_FIELDS[kind])
+    return tier.gap_minutes if own is None else own
+
+
+def gap_ends(tier: StudioTier, rows: list[tuple[str, datetime]], now: datetime) -> dict[Kind, datetime]:
+    """When each kind's minimum gap ends, for the kinds still waiting. A kind with a gap of its own is spaced only from
+    its own last item. The kinds without one share the general `gap_minutes` and are spaced from each other, so a
+    config that sets no per-kind gap behaves as it always did: any media holds back the next."""
+    shared = {kind for kind in GAP_FIELDS if getattr(tier, GAP_FIELDS[kind]) is None}
+    ends = {}
+    for kind in GAP_FIELDS:
+        lane = shared if kind in shared else {kind}
+        last = max((stamp for item, stamp in rows if item in lane), default=None)
+        if last is not None and (end := last + timedelta(minutes=gap_minutes(tier, kind))) > now:
+            ends[kind] = end
+    return ends
+
+
+def standing(
+    limits: StudioLimits, scope: str, total: int, rows: list[tuple[str, datetime]], now: datetime,
+    boost: float = 1.0,
+) -> Standing:
     """`total` is the studio items sent across all chats in the last 24 hours (plus any in flight); `rows` is this
-    chat's rolling week of deliveries."""
+    chat's rolling week of deliveries. `boost` is the event-day multiplier on every limit (1 when there is none): `left`
+    counts what the boosted limits allow, `normal` what the usual ones do."""
     tier = getattr(limits, scope)
-    daily_left = max(limits.daily - total, 0)
-    left = {}
+    daily_normal, daily_boosted = max(limits.daily - total, 0), max(ceil(limits.daily * boost) - total, 0)
+    left, normal = {}, {}
     for kind, (cap, window) in windows(tier).items():
         count = sum(item == kind and stamp > now - window for item, stamp in rows)
-        left[kind] = max(min(cap - count, daily_left), 0)
-    gap_end = max((stamp for _, stamp in rows), default=None)
-    if gap_end is not None:
-        gap_end += timedelta(minutes=tier.gap_minutes)
-    return Standing(left, daily_left, gap_end if gap_end is not None and gap_end > now else None)
+        normal[kind] = max(min(cap - count, daily_normal), 0)
+        left[kind] = max(min(ceil(cap * boost) - count, daily_boosted), 0)
+    return Standing(left, daily_boosted, gap_ends(tier, rows, now), normal)
 
 
 class StudioQuota:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, events: EventDays | None = None):
         self.store = store
+        self.events = events
         self._lock = asyncio.Lock()
         self._pending: set[int] = set()
+
+    async def _boost(self, now: datetime) -> float:
+        return 1.0 if self.events is None else await self.events.multiplier(now)
 
     async def _remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:
         if not any(enabled(config, scope, kind) for kind in SWITCH) or chat_id in self._pending:
             return {}
         total, rows = await self.store.studio_usage(chat_id, now)
-        now_standing = standing(config.limits, scope, total + len(self._pending), rows, now)
-        if now_standing.next_at is not None:
-            return {}
-        return {kind: left for kind, left in now_standing.left.items() if left > 0 and enabled(config, scope, kind)}
+        now_standing = standing(config.limits, scope, total + len(self._pending), rows, now, await self._boost(now))
+        result = {}
+        for kind, left in now_standing.left.items():
+            if left <= 0 or kind in now_standing.gaps or not enabled(config, scope, kind):
+                continue
+            # Past its normal limit, an item (an event day's extra) also has to fit the month's unused budget.
+            if now_standing.normal[kind] <= 0 and not (self.events is not None and await self.events.may_extra(kind)):
+                continue
+            result[kind] = left
+        return result
 
     def sending(self, chat_id: int) -> bool:
         """A studio item for this chat is reserved and on its way."""
@@ -157,7 +208,7 @@ class StudioQuota:
         """Where a chat stands now, for the dashboard. It reserves nothing and takes no lock: a reply in flight still
         counts toward the global total."""
         total, rows = await self.store.studio_usage(chat_id, now)
-        return standing(config.limits, scope, total + len(self._pending), rows, now)
+        return standing(config.limits, scope, total + len(self._pending), rows, now, await self._boost(now))
 
     async def remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:
         async with self._lock:

@@ -58,9 +58,73 @@ Customize these via `[studio.limits]` (`daily`) and
 `gap_minutes`. A daily setting takes precedence over the corresponding
 weekly setting.
 
+**A gap per kind.** `gap_minutes` is the gap for every kind that has none of its
+own. A kind can have its own with `voice_gap_minutes`, `video_gap_minutes`,
+`image_gap_minutes` or `special_gap_minutes` (minutes, up to a week; `false`
+unsets one). A kind with its own gap is spaced only from the last item *of that
+kind*; the kinds without one share `gap_minutes` and space each other as before.
+So with no per-kind gaps nothing changes, and with `voice_gap_minutes = 0` and
+`gap_minutes = 30` a voice note and a photo can arrive together, two photos stay
+30 minutes apart, and a voice note never holds back a photo. Settings → What Dom
+may do → Media limits edits all of them (the per-kind gaps sit under "Gaps for
+one kind"; empty uses the general gap).
+
+## Event days
+
+On a special day in his own life (a trip, a concert, his birthday) Dom may raise
+his media limits for that day. He declares it himself with the owner-DM tool
+`declare_event_day` (a title, and optionally a date up to two weeks ahead and a
+multiplier). On that calendar day (Dom's time zone) every per-chat limit and the
+studio-wide daily total are multiplied by up to `[studio] event_day_max_multiplier`
+(default `2`; `0` turns event days off). At most `event_days_per_week` (default
+`1`) may fall within any rolling week; a cancelled one does not count.
+
+The spend cap still holds. Every item beyond the normal limits must pass
+`usage.may_spend_one_off`: it uses only the month's unused budget under
+`monthly_spend_cap_usd` (and the media area's monthly limit, if you set one) and
+never passes it. Each extra item is held to an assumed cost before its real cost is
+known (voice $0.02, photo $0.05, round video $0.50, special $1.00); the real cost is
+recorded as usual when a cloud backup makes it. With no monthly cap there is no
+budget to run out, so the multiplier alone limits it. Gaps are not raised.
+
+Dom is told in that day's turn note. `/studio` lists today's and the coming event
+days, and Settings → What Dom may do → Event days lists them with a Cancel button
+(the limits go back to normal at once). The API is `GET /api/studio/event-days` and
+`POST /api/studio/event-days/cancel` with `{"id": ...}`.
+
 The `[studio.timeouts]` keys are `health` (3 s), `voice` (65 s),
 `video_notes` (185 s), `special` (425 s), `images` (125 s), and
 `portrait` (10 s). Run `/studio` in the owner DM to see status and counts.
+
+## A scene for every video note
+
+A video note used to animate the outfit's wardrobe portrait, so even the
+background never changed. With `[studio] video_scenes = true` (the default) each
+round video starts from a fresh still of Dom in a scene that fits the moment. Dom
+writes the scene in the note's `scene` field (up to 200 characters); without one
+the still is made from what he says. The image model makes the still with the
+outfit's portrait as the identity reference (the local studio's image worker, else
+a cloud image backup that takes a reference), Dom looks at it before it is
+animated when `look_owner_dm`, `look_friend_dm` or `look_group` is on for that
+chat (cheaper than looking at the video, so the video itself is then not looked
+at), and it is animated in place of the portrait. If the still can't be made, or
+the studio is older than 0.8.4 and cannot take one, the note uses the portrait
+as before.
+
+**What it costs.** The still is made inside the video note's reservation, so one
+note can never be refused for lack of a photo allowance, and a refused note makes
+no still. It counts as one more item toward the studio-wide `daily` total (the
+note counts twice there); it does not use the chat's photo allowance. A local
+still costs nothing. A cloud image backup records its cost as `studio_image`
+usage and obeys the spend cap, so a cloud-only video note costs the image plus
+the avatar video (and the voice): if the video then fails, the still's cost is
+already spent. The still is kept beside the video in the home's `media/` folder
+as `<message id>-still.png` (kept and cleaned up with the video, counted with it
+against `keep_cap_mb`) and shown in the library.
+
+The studio service takes the still as an optional `still` field (base64 PNG, at
+most 3 MiB) on `POST /v1/video_note` and reports `"video_still": true` on
+`/v1/health`.
 
 ## Preset outfits
 
@@ -133,6 +197,23 @@ Dom downloads the clip through OpenRouter's authenticated content URL and
 maps his own audio into the Telegram video note. If the avatar fails, eligible
 voice-note fallback can reuse that audio. See [provider data handling](privacy.md#separate-media-key)
 for the required separate media key.
+
+A voice backup takes an optional `voice`, the provider's voice name (`Achird`
+when unset), also in Settings → Models. A direct Gemini backup, and OpenRouter's
+`google/` speech models, accept only Gemini's prebuilt voices (for example `Kore`,
+`Puck`, `Charon`, `Achird`; the 30 names are listed in
+[Gemini's docs](https://ai.google.dev/gemini-api/docs/speech-generation#voices)),
+and Dom refuses to save another name. Other OpenRouter speech models name their own
+voices; Dom checks only the format (a letter, then letters, digits, `-` or `_`),
+so a wrong name there fails when the provider answers and the next backup is tried.
+
+```toml
+[[studio.voice_fallbacks]]
+provider = "openrouter_tts"
+model = "google/gemini-3.8-flash-lite-tts"
+api_key_env = "OPENROUTER_MEDIA_API_KEY"
+voice = "Kore"
+```
 
 Voice and video conversion require `ffmpeg` with `libopus`, `libx264` and `aac` on the **bot host**
 (Debian's and Raspberry Pi OS's `ffmpeg` package has them). Copy each

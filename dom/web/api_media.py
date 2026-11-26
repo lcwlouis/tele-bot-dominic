@@ -39,6 +39,8 @@ def _item(row: dict, titles: dict[str, str]) -> dict[str, Any]:
         "special": bool(media.get("special")), "text": media.get("scene") or media.get("text") or "",
         "at": row["created_at"], "bytes": media.get("bytes"), "stored": bool(media.get("file")),
         "url": f"/api/media/files/{chat_id}/{row['msg_id']}",
+        # a video note keeps the still it was filmed from beside it
+        "still_url": f"/api/media/files/{chat_id}/{row['msg_id']}?still=true" if media.get("still_file") else None,
     }
 
 
@@ -67,10 +69,15 @@ async def list_files(
 
 
 @router.get("/api/media/files/{chat_id}/{msg_id}")
-async def get_file(request: Request, chat_id: int, msg_id: int) -> Response:
+async def get_file(request: Request, chat_id: int, msg_id: int, still: bool = False) -> Response:
     app = owner_app(request)
     row = await app.store.get_message(chat_id, msg_id)
     media = _media(row)
+    if still:  # the picture a video note was filmed from, only while it is kept
+        data = await app.media_files.read(chat_id, str(media["still_file"])) if media.get("still_file") else None
+        if row is None or row.role != "assistant" or data is None:
+            raise HTTPException(404, "No such file.")
+        return Response(data, media_type="image/png", headers={"Content-Disposition": "inline", "Cache-Control": "private, no-store"})
     if row is None or row.role != "assistant" or not (media.get("file") or media.get("file_id")):
         raise HTTPException(404, "No such file.")
     data = await app.media_files.read(chat_id, str(media["file"])) if media.get("file") else None

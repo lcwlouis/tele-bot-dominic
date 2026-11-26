@@ -144,7 +144,11 @@ class Studio:
                 clipped = path / "clipped.wav"
                 await encode([*ffmpeg, "-i", str(audio), "-t", "60", str(clipped)], self.encoders)
                 raw_video = path / "render.mp4"
-                await worker.run({"portrait": str(outfit.portrait), "audio": str(clipped),
+                portrait = outfit.portrait
+                if payload.get("still"):  # a fresh still for this note: animate it in place of the outfit's portrait
+                    portrait = path / "still.png"
+                    await asyncio.to_thread(portrait.write_bytes, payload["still"])
+                await worker.run({"portrait": str(portrait), "audio": str(clipped),
                                   "seed": seed, "output": str(raw_video)})
                 output = path / "note.mp4"
                 await encode([

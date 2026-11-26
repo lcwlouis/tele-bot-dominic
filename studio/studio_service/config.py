@@ -20,6 +20,8 @@ class Settings(BaseModel):
 class Outfit(Settings):
     portrait: Path
     turnaround: Path
+    # What the outfit looks like, in words, for `python -m studio_service.portraits generate`.
+    description: str = ""
 
 
 class Desktop(Settings):

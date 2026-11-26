@@ -48,12 +48,14 @@ class Bubble(BaseModel):
 # text is capped to what finishes inside the studio's deadlines (180 s and 420 s). The studio enforces the same caps.
 VIDEO_TEXT_MAX = 200
 SPECIAL_TEXT_MAX = 120
+SCENE_MAX = 200
 
 
 class VideoNote(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=VIDEO_TEXT_MAX, strict=True)
     special: bool = Field(default=False, strict=True)
+    scene: str = Field(default="", max_length=SCENE_MAX, strict=True)  # where Dom is; the note is filmed there
 
     @model_validator(mode="after")
     def _special_is_shorter(self) -> VideoNote:

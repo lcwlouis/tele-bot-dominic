@@ -583,7 +583,7 @@ async def cloud_video_app(make_app, cloud_server, *replies):
     configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,), enabled=False)
     made = []
 
-    async def generate_video(config, kind, outfit, chat_id, allowed, make_voice):
+    async def generate_video(config, kind, outfit, chat_id, allowed, make_voice, still=None):
         made.append(kind)
         return b"cloud video %d" % len(made)
 

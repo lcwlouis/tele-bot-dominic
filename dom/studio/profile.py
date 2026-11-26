@@ -130,4 +130,10 @@ async def status_text(app: App) -> str:
     count, rows = await app.store.studio_usage(app.owner_id, app.dispatch.now())
     since = app.dispatch.now() - timedelta(days=1)
     owner = sum(stamp > since for _, stamp in rows)
-    return "\n".join([*lines, f"Past 24 hours: {owner} in this chat · {count} across chats"])
+    lines.append(f"Past 24 hours: {owner} in this chat · {count} across chats")
+    now = app.dispatch.now()
+    for event in await app.event_days.listing(now):
+        if event["cancelled_at"] is None and event["day"] >= app.event_days.local_date(now).isoformat():
+            lines.append(f"Event day {event['day']}: {event['title']} (limits up to {event['multiplier']:g}×)"
+                         + (" — on now" if event["active"] else ""))
+    return "\n".join(lines)

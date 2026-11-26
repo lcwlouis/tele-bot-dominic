@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("dom.media_files")
 MEDIA_DIR = "media"
-_PATH = re.compile(r"media/(-?\d+)/(\d{4}-\d{2})/(-?\d+)\.(?:png|jpg|webp|ogg|mp4|mp3)")
+_PATH = re.compile(r"media/(-?\d+)/(\d{4}-\d{2})/(-?\d+)(?:-still)?\.(?:png|jpg|webp|ogg|mp4|mp3)")
 MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "ogg": "audio/ogg", "mp4": "video/mp4", "mp3": "audio/mpeg"}
 
 
@@ -85,15 +85,24 @@ class MediaFiles:
             Path(temp).unlink(missing_ok=True)
             raise
 
-    async def keep(self, chat_id: int, msg_id: int, kind: str, data: bytes, at: datetime) -> dict:
+    async def keep(
+        self, chat_id: int, msg_id: int, kind: str, data: bytes, at: datetime, still: bytes | None = None,
+    ) -> dict:
         """Save one generated file and return the media_json fields that describe it. Nothing is saved when the cap is
-        zero or the file alone is bigger than the cap."""
+        zero or the file alone is bigger than the cap. A video note's `still` (the picture it was filmed from) is saved
+        beside it as `<msg id>-still.png` when both fit; `bytes` then counts the two, so the cap and eviction treat the
+        pair as one item."""
         cap = self.cap_bytes
         if cap <= 0 or len(data) > cap:
             return {}
         rel = relative_path(chat_id, msg_id, kind, data, at)
+        fields = {"file": rel, "bytes": len(data)}
+        if still is not None and len(data) + len(still) <= cap:
+            still_rel = rel.rpartition(".")[0] + "-still.png"
+            await asyncio.to_thread(self.save, still_rel, still)
+            fields |= {"still_file": still_rel, "bytes": len(data) + len(still)}
         await asyncio.to_thread(self.save, rel, data)
-        return {"file": rel, "bytes": len(data)}
+        return fields
 
     async def read(self, chat_id: int | str, rel: str) -> bytes | None:
         """A kept file's bytes, only through its own chat's id."""
@@ -120,7 +129,10 @@ class MediaFiles:
         """Remove files no message records (the process died between saving and recording) and half-written temp
         files, so the cap, which counts recorded files, is also the disk's real use. Run it at startup, before
         anything is being saved. Returns how many went."""
-        known = {str(row["media"]["file"]) for row in await self.store.kept_media()}
+        known = {
+            str(row["media"][key]) for row in await self.store.kept_media() for key in ("file", "still_file")
+            if row["media"].get(key)
+        }
         root = self.home / MEDIA_DIR
 
         def sweep() -> int:
@@ -147,11 +159,12 @@ class MediaFiles:
                 if total <= cap:
                     break
                 media = row["media"]
-                path = self._absolute(str(media.get("file")))
-                if path is not None:
-                    await asyncio.to_thread(path.unlink, True)
+                for key in ("file", "still_file"):
+                    path = self._absolute(str(media.get(key))) if media.get(key) else None
+                    if path is not None:
+                        await asyncio.to_thread(path.unlink, True)
                 await self.store.update_media(
-                    row["chat_id"], row["msg_id"], {"removed": True}, remove=("file", "bytes"),
+                    row["chat_id"], row["msg_id"], {"removed": True}, remove=("file", "bytes", "still_file"),
                 )
                 total -= int(media.get("bytes") or 0)
                 removed += 1

@@ -798,6 +798,10 @@ test.describe("interactions under the CSP", () => {
     await expect(limits.getByText("Media is off in your DM.")).toBeVisible();
     // Special videos are for the owner's DM only.
     await expect(limits.getByLabel("Special videos")).toHaveCount(1);
+    // A gap for one kind sits behind a disclosure; the event days list below the limits.
+    await limits.getByText("Gaps for one kind").first().click();
+    await expect(limits.getByLabel("Voice gap").first()).toHaveValue("");
+    await expect(page.getByRole("region", { name: "Event days" }).getByText("None yet.")).toBeVisible();
     const save = limits.getByRole("button", { name: "Save media limits" });
     await expect(save).toBeDisabled();
 

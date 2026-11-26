@@ -74,7 +74,8 @@ async def test_read_shows_the_saved_limits_and_what_is_left_in_the_owner_dm(dash
     body = response.json()
     assert body["limits"]["owner_dm"]["gap_minutes"] == 30 and body["limits"]["group"]["video_daily"] is None
     kinds = {item["kind"]: item for item in body["owner"]["kinds"]}
-    assert kinds["photo"] == {"kind": "photo", "left": 1, "on": True}
+    assert kinds["photo"] == {"kind": "photo", "left": 1, "on": True, "next_at": body["owner"]["next_at"]}
+    assert kinds["voice"]["next_at"] == body["owner"]["next_at"]  # no per-kind gap: any media holds back the next
     assert kinds["video_note"]["on"] is False  # its switch is off
     assert body["owner"]["daily_left"] == 11
     assert datetime.fromisoformat(body["owner"]["next_at"]) == now + timedelta(minutes=25)

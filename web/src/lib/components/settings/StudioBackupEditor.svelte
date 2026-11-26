@@ -52,6 +52,8 @@
     && item.kind === (info.providers[0] === "gemini_tts" ? "gemini" : "openrouter"))?.api_key_env);
   let keyEnv = $state(start?.api_key_env ?? firstKey ?? STUDIO_PROVIDERS[info.providers[0]].key);
   let paid = $state(start?.paid ?? false);
+  // A voice backup's provider voice name (Gemini's, such as Achird); empty keeps the default.
+  let voice = $state(start?.voice ?? "");
   let supportsReference = $state(start?.supports_reference ?? true);
   let allowWithoutReference = $state(start?.allow_without_reference ?? false);
   // OpenRouter video keeps each video for download, so it can never be zero data retention.
@@ -79,6 +81,7 @@
     error = "";
   }
   const usesReference = $derived(provider === "openrouter_image");
+  const speaks = $derived(provider === "openrouter_tts" || provider === "gemini_tts");
   const policies = $derived(POLICIES.filter((value) => provider !== "openrouter_video" || value !== "zdr"));
 
   function pickProvider(value: StudioProvider) {
@@ -113,6 +116,7 @@
       model: model.trim(),
       api_key_env: keyEnv.trim(),
       paid: provider === "gemini_tts" && paid,
+      voice: speaks && voice.trim() ? voice.trim() : null,
       supports_reference: usesReference ? supportsReference : true,
       allow_without_reference: usesReference && allowWithoutReference,
       data_policy: openrouter ? policy : "zdr",
@@ -230,6 +234,26 @@
           {/if}
         </p>
       </div>
+      {#if speaks}
+        <div class="grid gap-1.5 sm:col-span-2">
+          <Label for={`${id}-voice`}>Voice</Label>
+          <Input
+            id={`${id}-voice`}
+            bind:value={voice}
+            oninput={() => (error = "")}
+            placeholder="Achird"
+            maxlength={64}
+            class="font-mono"
+            autocomplete="off"
+            spellcheck={false}
+            aria-describedby={`${id}-voice-hint`}
+          />
+          <p id={`${id}-voice-hint`} class="text-xs text-muted-foreground">
+            The provider's voice name. Gemini's voices (also on OpenRouter's Google speech models) are checked on save;
+            leave it empty for Achird.
+          </p>
+        </div>
+      {/if}
       {#if openrouter}
         <div class="grid gap-1.5 sm:col-span-2">
           <Label id={`${id}-policy-label`}>Data policy</Label>

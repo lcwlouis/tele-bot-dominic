@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from contextlib import suppress
 from ipaddress import ip_network
 import os
@@ -167,7 +168,8 @@ async def test_generate(studio, path, payload, mime):
         assert health["workers"]
         assert health["queue_depth"] == 0
         assert health["available_memory_bytes"] == 64 * GIB
-        assert health["version"] == "0.8.3"
+        assert health["version"] == "0.8.4"
+        assert health["video_still"] is True
 
 
 async def test_portrait(studio):
@@ -349,3 +351,29 @@ async def test_disconnect_reaps_render(studio):
     assert not studio.pending
     assert not studio.workers["voice"].loaded
     assert not studio.lane.locked()
+
+
+STILL = b"\x89PNG\r\n\x1a\n" + b"still" * 100
+
+
+@pytest.mark.parametrize("special", [False, True])
+async def test_video_note_from_a_fresh_still(studio, special):
+    payload = {"text": "hello", "special": special, "still": base64.b64encode(STILL).decode()}
+    async with client(studio) as http:
+        response = await http.post("/v1/video_note", json=payload)
+        assert response.status_code == 200 and response.content == b"fake"
+
+
+@pytest.mark.parametrize("still", [
+    "not base64!", base64.b64encode(b"GIF89a").decode(), base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(3 * 1024**2)).decode(),
+])
+async def test_a_bad_still_is_refused(studio, still):
+    async with client(studio) as http:
+        assert (await http.post("/v1/video_note", json={"text": "hello", "still": still})).status_code == 422
+
+
+async def test_only_a_video_note_takes_a_big_body(studio):
+    big = {"content": "x" * (64 * 1024), "headers": {"content-type": "application/json"}}
+    async with client(studio) as http:
+        assert (await http.post("/v1/image", **big)).status_code == 413
+        assert (await http.post("/v1/video_note", **big)).status_code == 422  # read in full, then not valid JSON

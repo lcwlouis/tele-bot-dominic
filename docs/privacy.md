@@ -199,8 +199,10 @@ Cloudflare. Keep local bearer-token testing on loopback.
   OpenRouter speech, image and video requests carry the backup's data policy
   (below); speech and images default to zero data retention. Photos can
   include the approved outfit portrait. For a cloud video note, OpenRouter and
-  the avatar provider receive Dom’s voice audio and the approved portrait under
-  the separate media key’s policy. OpenRouter video keeps each finished video for download, so
+  the avatar provider receive Dom’s voice audio and the picture to animate under
+  the separate media key’s policy: the approved portrait, or, with `video_scenes`
+  on (the default), a fresh still made from the note's scene (the scene text goes to
+  the image backup, with the approved portrait as its reference). OpenRouter video keeps each finished video for download, so
   no video endpoint offers zero data retention and a video backup must be set to
   `no_training` or `any`. Direct Gemini gets the
   transcript and the prebuilt voice name only when the owner marks its key
@@ -272,7 +274,7 @@ provider routing preferences ([provider selection](https://openrouter.ai/docs/gu
 | `any` | nothing | Any endpoint, including ones that may train on what is sent. |
 
 A speech or photo backup sends the screened line or scene. Photos can include the outfit's approved portrait.
-The avatar provider receives the approved portrait and Dom's rendered speech under the media key's policy.
+The avatar provider receives the picture to animate (the approved portrait, or a fresh still of Dom in the note's scene) and Dom's rendered speech under the media key's policy. A voice backup's optional `voice` is only a voice name.
 OpenRouter video keeps each finished video for download, so a video backup takes `no_training` or `any`.
 
 A backup's key variable may not be one a chat route uses (a model role or a saved provider), in either direction:
