@@ -224,8 +224,11 @@ async def read_usage(request: Request) -> dict:
 
 @router.get(PREFIX + "/turns")
 async def read_turns(request: Request, chat: str = "") -> dict:
-    data = await _turns(owner_app(request), chat[:64])
+    app = owner_app(request)
+    data = await _turns(app, chat[:64])
+    traced = await app.traces.store.traced(row["id"] for row in data["rows"]) if app.traces is not None else set()
     return {
+        "owner_chat": str(app.owner_id),
         "chat": data["chat"], "stages": data["stages"], "choices": [{"id": key, "title": title} for key, title in data["choices"]],
         "visible_stages": [stage for stage in data["stages"] if stage in data["visible_stages"]],
         "visits": [{
@@ -239,6 +242,7 @@ async def read_turns(request: Request, chat: str = "") -> dict:
             "sending_at": item["sending_at"], "updated_at": item["updated_at"], "text": item["text"],
         } for item in data["cross_chat"]],
         "turns": [{
+            "id": row["id"], "chat_id": row["chat_id"], "has_trace": row["id"] in traced,
             "at": row["at"], "time": f"{row['time']:%H:%M}", "full_time": f"{row['time']:%Y-%m-%d %H:%M %Z}",
             "title": row["title"], "outcome": row["outcome"], "first_bubble_ms": row["first_bubble_ms"],
             "last_bubble_ms": row["last_bubble_ms"], "duration_ms": row["duration_ms"], "model": row["model"],
@@ -280,6 +284,9 @@ def restart_refusal(app) -> str | None:
             return "A desktop task is asking for more steps. Answer its card first."
         if worker.busy():
             return "A desktop task is running. Wait for it to finish or cancel it first."
+    perms = getattr(app, "desktop_permissions", None)
+    if perms is not None and perms.has_pending():
+        return "A desktop permission card is waiting for your answer. Answer it first."
     if app.dispatch.escalation.pending:
         return "A model switch card is waiting for your answer. Answer it first."
     bridge = getattr(app, "t3", None)

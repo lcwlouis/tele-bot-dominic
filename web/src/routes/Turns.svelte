@@ -1,5 +1,6 @@
 <script lang="ts">
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ScrollText from "@lucide/svelte/icons/scroll-text";
   import { onMount } from "svelte";
   import type { Turn, TurnsData } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
@@ -40,8 +41,7 @@
     if (outcome === "Paused") return "paused";
     return "done";
   }
-  // Turns have no ID: their time and place in the log keep them apart (two can share a millisecond).
-  const rows = $derived<Row[]>((page.data?.turns ?? []).map((turn, index) => ({ ...turn, key: `${turn.at}#${index}`, status: statusOf(turn.outcome) })));
+  const rows = $derived<Row[]>((page.data?.turns ?? []).map((turn) => ({ ...turn, key: String(turn.id), status: statusOf(turn.outcome) })));
   const options = $derived([{ value: "", label: "All chats" }, ...(page.data?.choices ?? []).map((choice) => ({ value: choice.id, label: choice.title }))]);
 
   const duration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
@@ -209,6 +209,14 @@
     {#snippet details(turn)}
       {@const wait = queueWait(turn)}
       {@const hit = cached(turn)}
+      {#if turn.has_trace}
+        <a
+          href={turn.chat_id === data.owner_chat ? `/app/talk?trace=1&turn=${turn.id}` : `${tab.href}/${turn.id}`}
+          class="mb-3 inline-flex items-center gap-1.5 text-meta font-medium text-signal-strong underline-offset-4 hover:underline"
+        ><ScrollText class="size-3.5" aria-hidden="true" />Open the full trace</a>
+      {:else}
+        <p class="mb-3 text-meta text-muted-foreground">No full trace: it ran before tracing, or is older than the trace retention.</p>
+      {/if}
       <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-body">
         <dt class="text-muted-foreground">When</dt>
         <dd>{turn.full_time}</dd>

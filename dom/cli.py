@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+import os
 import sqlite3
 import subprocess
 import tarfile
@@ -14,7 +16,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import doctor, habits, journal_archive, reflection, release, service, setup
+from dom import doctor, habits, journal_archive, reflection, release, service, setup, tracer
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -45,6 +47,27 @@ SHUTDOWN_DRAIN_SECONDS = 10
 # launchd's KeepAlive SuccessfulExit=false both start Dom again.
 RESTART_EXIT = 75
 ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"]
+
+
+def _running_bot_pid(home: Path) -> int | None:
+    """Return the PID recorded in ``home/ready.json`` if that process is still alive, else None."""
+    path = Path(home) / release.READY
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    pid = data.get("pid") if isinstance(data, dict) else None
+    if type(pid) is not int or pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    except OSError:
+        return None
+    return pid
 
 
 def require_secret(config: Config, name: str) -> str:
@@ -154,6 +177,8 @@ async def run(home: Path) -> bool:
             from dom.deletion import recover_deletions
             await recover_deletions(app.home.root, app.store)
             await app.plugins.cleanup_drafts()
+            await app.desktop_permissions.expire_pending()
+            await app.secret_requests.expire_pending()
             if app.desktop_worker is not None:
                 await app.desktop_worker.recover()
             app.dispatch.jobs.register("habits", habits.due, partial(habits.run, app))
@@ -178,6 +203,18 @@ async def run(home: Path) -> bool:
                     await app.media_files.reconcile()  # before anything new is saved
                 except Exception:
                     logging.getLogger("dom").warning("could not reconcile the kept media", exc_info=True)
+                try:
+                    app.traces = tracer.open_writer(home, lambda: app.config)
+                    app.traces.start()
+                except Exception:  # the tracer is a debugging aid: Dom runs without it rather than not at all
+                    logging.getLogger("dom").warning("could not open the trace store; turns are not traced", exc_info=True)
+                    app.traces = None
+                if app.traces is not None:
+                    try:  # a forget that could not delete its traces left them for now
+                        await tracer.apply_pending_forget(app.traces, home)
+                        await app.traces.prune()
+                    except Exception:
+                        logging.getLogger("dom").warning("could not tidy the trace store at start", exc_info=True)
                 app.dispatch.start()
                 app.dispatch._spawn(check_reachability(app))
                 if app.cloud_studio is not None:
@@ -199,6 +236,9 @@ async def run(home: Path) -> bool:
                     if app.desktop_worker is not None:
                         await app.desktop_worker.close()
                     await app.dispatch.close()
+                    if app.traces is not None:
+                        await app.traces.close()
+                        app.traces.store.close()
     finally:
         if app is not None and app.desktop_worker is not None:
             await app.desktop_worker.close()
@@ -262,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
     check_cmd.add_argument("--public-address", default=None, help="override [desktop] probe_control (port 443)")
     index_cmd = sub.add_parser("rebuild-index", help="rebuild the graph index from notes and message history")
     index_cmd.add_argument("home", type=Path)
+    rotate_cmd = sub.add_parser("rotate-key", help="rotate DOM_MASTER_KEY and re-encrypt all stored secrets")
+    rotate_cmd.add_argument("home", type=Path)
     args = parser.parse_args(argv)
     if args.command in ("desktop-setup", "desktop-check"):
         try:
@@ -286,6 +328,27 @@ def main(argv: list[str] | None = None) -> int:
         return setup.run_setup(args.home, path=args.studio, base_url=args.studio_url)
     if args.command == "doctor":
         return doctor.run(args.home, online=args.online)
+    if args.command == "rotate-key":
+        from dom.secrets import SecretStore, SecretStoreError
+
+        running_pid = _running_bot_pid(args.home)
+        if running_pid is not None:
+            print(
+                f"rotate-key refused: Dom appears to be running (PID {running_pid} in {release.READY}). "
+                "Stop Dom first, then run this again, or rotate the key from the dashboard (System -> Access). "
+                f"If Dom is not actually running, {release.READY} is stale: delete {Path(args.home) / release.READY} and retry."
+            )
+            return 1
+        store = Store(args.home, load_config(args.home).owner_id)
+        try:
+            new_kid, count = asyncio.run(SecretStore(store, args.home).rotate_key())
+        except (OSError, ValueError, SecretStoreError) as exc:
+            print(f"rotate-key failed: {exc}")
+            return 1
+        finally:
+            store.close()
+        print(f"Rotated DOM_MASTER_KEY (key {new_kid}) and re-encrypted {count} secret(s).")
+        return 0
     if args.command == "rebuild-index":
         store = Store(args.home, load_config(args.home).owner_id)
         try:

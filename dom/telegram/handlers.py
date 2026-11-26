@@ -24,8 +24,11 @@ from dom.claim import try_claim
 from dom.config import MODEL_ROLES, Config, load_config
 from dom.deletion import STALE_MESSAGE, hash_matches, stamp_matches, stamp_token
 from dom.dispatch import Dispatcher
+from dom.tracer import TraceWriter
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
+from dom.desktop.permissions import DesktopPermissions
+from dom.secrets import SecretRequests, SecretStore
 from dom.embedding import EmbeddingRouter, routed_embedding_client
 from dom.t3.tools import Bridge
 from dom.home import Home
@@ -107,8 +110,12 @@ class App:
     self_work: SelfWork = field(init=False)
     goals: Goals = field(init=False)
     noticings: Noticings = field(init=False)
+    secrets: SecretStore = field(init=False)
+    secret_requests: SecretRequests = field(init=False)
+    desktop_permissions: DesktopPermissions = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
     menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
+    traces: TraceWriter | None = None  # the debug tracer (dom.tracer), opened by `dom run`
 
     def __post_init__(self) -> None:
         def now() -> datetime:
@@ -144,6 +151,9 @@ class App:
         self.self_work = SelfWork(self)
         self.goals = Goals(self)
         self.noticings = Noticings(self)
+        self.secrets = SecretStore(self.store, self.home.root)
+        self.secret_requests = SecretRequests(self)
+        self.desktop_permissions = DesktopPermissions(self)
         if self.config.desktop_hosts:
             self.desktop_worker = DesktopFleet(self)
         if self.cloud_studio is not None and self.cloud_studio.running_chat_keys is None:
@@ -275,7 +285,16 @@ def _command_name(text: str, username: str) -> str | None:
     return name if not target or target.lower() == username.lower() else None
 
 
-async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = False, notify: bool = False) -> None:
+async def record_incoming(
+    app: App, msg: IncomingMessage, *, origin: str | None = None,
+) -> None:
+    """Record a message Dom must answer, as Telegram ingress does: describe its media and wake the dispatcher."""
+    await _record(app, msg, describe_media=True, notify=True, origin=origin)
+
+
+async def _record(
+    app: App, msg: IncomingMessage, *, describe_media: bool = False, notify: bool = False, origin: str | None = None,
+) -> None:
     new_media = (
         describe_media and msg.media is not None
         and not await app.store.has_message(msg.chat_id, msg.msg_id)
@@ -295,6 +314,7 @@ async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = Fals
             text=msg.text or (f"[{msg.media['kind']}]" if msg.media else ""),
             media_json=json.dumps({**msg.media, "description": None}) if msg.media else None,
             created_at=msg.date.isoformat(),
+            origin=origin,
         )
     )
     if new_media:
@@ -1022,6 +1042,31 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
                 and query.message.chat.id == owner_id and query.message.chat.type == "private"):
             await _toast(app, query)
             await app.t3.callback(owner_id, action, raw_chat_id)
+        return
+    if action == "dperm":
+        if (
+            query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
+        ):
+            return
+        decision, _, payload = raw_chat_id.partition(":")
+        raw_id, _, token = payload.partition(":")
+        request_id = _item_id(raw_id)
+        if request_id is not None and decision in ("once", "always", "reject") and token:
+            ok, label = await app.desktop_permissions.decide(request_id, decision, via="telegram", token=token)
+            await _toast(app, query, label if ok else "already handled")
+        return
+    if action == "sreq":
+        if (
+            query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
+        ):
+            return
+        subaction, _, raw_id = raw_chat_id.partition(":")
+        request_id = _item_id(raw_id)
+        if subaction == "cancel" and request_id is not None:
+            cancelled = await app.secret_requests.cancel(request_id=request_id)
+            await _toast(app, query, "Cancelled" if cancelled else "already handled")
         return
     if action == "desktop":
         if (

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import ipaddress
 import logging
 import os
 import re
 import stat
 import tempfile
+import threading
 import tomllib
 from collections.abc import Iterable, Iterator
 from importlib import resources
@@ -271,6 +273,25 @@ class WorldConfig(BaseModel):
         return bool(self.place.strip()) and self.latitude is not None and self.longitude is not None
 
 
+class TracerConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    retention_days: int = Field(
+        7, ge=1, le=90,
+        description=(
+            "Days the debug tracer keeps each turn's full trace (prompts, model requests and responses, tool calls and "
+            "deliveries, for every chat). Older traces are deleted once a day."
+        ),
+    )
+    max_mb: int = Field(
+        256, ge=16, le=10000,
+        description=(
+            "Size cap of the trace store (`traces.db` in Dom's home), in megabytes of compressed traces. Past it the "
+            "oldest traces are deleted first."
+        ),
+    )
+
+
 class WebConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -439,7 +460,7 @@ class UpdateConfig(BaseModel):
         return url
 
 
-KNOWN_SECRETS = ("TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY")
+KNOWN_SECRETS = ("TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY", "DOM_MASTER_KEY", "DOM_MASTER_KEY_PREVIOUS")
 
 
 OUTFIT_NAME = r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
@@ -682,6 +703,7 @@ class Config(BaseModel):
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     world: WorldConfig = Field(default_factory=WorldConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    tracer: TracerConfig = Field(default_factory=TracerConfig)
     t3: T3Config = Field(default_factory=T3Config)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why.")
@@ -889,30 +911,57 @@ def _read_dotenv(path: Path) -> dict[str, str]:
 
 _ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 _ENV_VALUE = re.compile(r"[\x21-\x7e]{1,512}")  # printable ASCII, no spaces: a pasted key or token
+_DOTENV_LOCK = threading.Lock()
+
+
+def set_dotenv_many(home: Path, updates: dict[str, str | None]) -> None:
+    """Atomically set or drop several secrets in ``home/.env`` in one file replacement (mode 0600 when new).
+
+    Serialised across threads via a process-wide lock and across processes via an exclusive flock on ``home/.env.lock``.
+    """
+    if not updates:
+        return
+    for name, value in updates.items():
+        if not _ENV_NAME.fullmatch(name):
+            raise ValueError("not a variable name")
+        if value is not None and not _ENV_VALUE.fullmatch(value):
+            raise ValueError("a secret is one run of printable characters without spaces")
+    path = home / ".env"
+    lock_path = home / ".env.lock"
+    with _DOTENV_LOCK:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                lines = path.read_text().splitlines() if path.is_file() else []
+                placed = {name: (value is None) for name, value in updates.items()}
+                kept = []
+                for line in lines:
+                    key = line.strip().partition("=")[0].strip()
+                    if line.lstrip().startswith("#") or key not in updates:
+                        kept.append(line)
+                    elif not placed[key]:
+                        kept.append(f"{key}={updates[key]}")
+                        placed[key] = True
+                for name, value in updates.items():
+                    if not placed[name] and value is not None:
+                        kept.append(f"{name}={value}")
+                        placed[name] = True
+                mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
+                if not path.is_file():
+                    path.touch(mode=0o600)
+                _replace_file(path, "\n".join(kept) + "\n" if kept else "", mode=mode)
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def set_dotenv(home: Path, name: str, value: str | None) -> None:
     """Set one secret in ``home/.env``, or drop it with None, leaving every other line as it was. The file is replaced
     atomically and keeps its mode (0600 when new). The value is only ever written, never returned."""
-    if not _ENV_NAME.fullmatch(name):
-        raise ValueError("not a variable name")
-    if value is not None and not _ENV_VALUE.fullmatch(value):
-        raise ValueError("a secret is one run of printable characters without spaces")
-    path = home / ".env"
-    lines = path.read_text().splitlines() if path.is_file() else []
-    kept, placed = [], value is None
-    for line in lines:
-        if line.strip().partition("=")[0].strip() != name or line.lstrip().startswith("#"):
-            kept.append(line)
-        elif not placed:  # the first line for this name takes the new value, where it stood
-            kept.append(f"{name}={value}")
-            placed = True
-    if not placed:
-        kept.append(f"{name}={value}")
-    mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
-    if not path.is_file():
-        path.touch(mode=0o600)
-    _replace_file(path, "\n".join(kept) + "\n" if kept else "", mode=mode)
+    set_dotenv_many(home, {name: value})
 
 
 def starter_config() -> dict:

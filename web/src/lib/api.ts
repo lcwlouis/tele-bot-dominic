@@ -429,6 +429,75 @@ export type WaitingCard =
       reason?: string;
       leak_score?: number | null;
     });
+export type DesktopAction = "visit_site" | "fill_login" | "download" | "upload" | "background_work";
+export type PermissionPolicy = "ask" | "allow" | "never";
+export type SavedLogin = {
+  id: number;
+  site: string;
+  label: string;
+  username_hint: string;
+  has_username: boolean;
+  has_password: boolean;
+  match_subdomains: boolean;
+  created_at: string;
+  updated_at: string;
+};
+export type OwnerSecret = { key: string; label: string; created_at: string; updated_at: string };
+export type DesktopActionItem = {
+  id: DesktopAction;
+  label: string;
+  description: string;
+  site_scoped: boolean;
+  policy: PermissionPolicy;
+  site_allow_count: number;
+};
+export type SiteRule = { site: string; action: Exclude<DesktopAction, "background_work">; policy: PermissionPolicy; updated_at: string };
+export type PendingPermission = {
+  id: number;
+  task_id: number | null;
+  self_task_id: number | null;
+  action: DesktopAction;
+  action_label: string;
+  site: string;
+  detail: string;
+  created_at: string;
+  can_allow_always?: boolean;
+};
+export type PermissionHistoryRow = {
+  id: number;
+  task_id: number | null;
+  self_task_id: number | null;
+  action: DesktopAction;
+  action_label: string;
+  site: string;
+  detail: string;
+  status: string;
+  decided_via: string;
+  created_at: string;
+  decided_at: string | null;
+};
+export type PendingSecretRequest = {
+  id: number;
+  label: string;
+  reason: string;
+  target: "secret" | "env" | "login";
+  target_key: string;
+  created_at: string;
+  expires_at: string;
+};
+export type SecretRequestLookup = PendingSecretRequest & { overwrites_existing: boolean };
+export type AccessData = {
+  key_status: { configured: boolean; key_id: string | null; previous_present: boolean; total_entries: number; error: string };
+  logins: SavedLogin[];
+  owner_secrets: OwnerSecret[];
+  actions: DesktopActionItem[];
+  policies: Record<DesktopAction, PermissionPolicy>;
+  site_rules: SiteRule[];
+  pending_permissions: PendingPermission[];
+  history: PermissionHistoryRow[];
+  pending_secret_requests: PendingSecretRequest[];
+};
+
 export type WaitingData = {
   count: number;
   kind: string;
@@ -437,6 +506,8 @@ export type WaitingData = {
   sources: string[];
   chats: { id: number; label: string; title: string; detail: string; first: string }[];
   cards: WaitingCard[];
+  desktop_permissions?: PendingPermission[];
+  secret_requests?: PendingSecretRequest[];
   settled: { id: number; label: string; status: string; title: string; created_at: string }[];
   notices: { network: string; storage: string };
 };
@@ -509,6 +580,10 @@ export type ModelCall = {
   user_prefix_hash: string | null;
 };
 export type Turn = {
+  id: number;
+  chat_id: string;
+  /** Whether the debug tracer has this turn's full trace (traces are kept for `tracer.retention_days`). */
+  has_trace: boolean;
   at: string;
   time: string;
   full_time: string;
@@ -529,6 +604,7 @@ export type Turn = {
 };
 export type TurnsData = {
   chat: string;
+  owner_chat: string;
   stages: Record<string, string>;
   visible_stages: string[];
   choices: { id: string; title: string }[];
@@ -688,4 +764,57 @@ export type WorldData = {
   interval_days: number;
   places: WorldPlace[];
   max_photo_mb: number;
+};
+
+/** One message in the owner DM, as the Talk page shows it. */
+export type TalkMessage = {
+  id: number;
+  msg_id: number | null;
+  mine: boolean;
+  who: string;
+  text: string;
+  at: string;
+  /** "dashboard" when the owner wrote it on the Talk page. */
+  origin: string | null;
+  edited: boolean;
+  media: { kind: string; url: string | null; description: string | null } | null;
+};
+
+/** One stored trace part (a turn, the work after it, or background work), as listed beside the messages. */
+export type TraceSummary = { id: number; turn_id: number | null; kind: string; label: string; at: string; outcome: string; size: number };
+
+export type TalkData = {
+  messages: TalkMessage[];
+  has_more: boolean;
+  typing: boolean;
+  traced: boolean;
+  turns?: TraceSummary[];
+};
+
+/** One event in a trace (dom/tracer.py); fields beyond these depend on `type`. */
+export type TraceEvent = { type: string; at: string; t_ms: number; [field: string]: unknown };
+
+export type TracePart = {
+  version: number;
+  turn_id: number | null;
+  chat_id: string;
+  scope: string;
+  kind: "turn" | "after" | "background";
+  label: string;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  outcome: string;
+  model: string;
+  fallback: boolean;
+  steps: string[];
+  visits: { reason: string; duration_ms: number; behind: string | null; capped: string | null; depth: number }[];
+  timings: { what: string; ms: number | null }[];
+  first_bubble_ms: number | null;
+  last_bubble_ms: number | null;
+  events: TraceEvent[];
+  dropped_events: number;
+  redactions: number;
+  media_stripped: number;
+  truncated: boolean;
 };

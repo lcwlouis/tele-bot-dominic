@@ -231,7 +231,7 @@ class ChatClient:
                 raise MissingProviderKey("Set the provider's API key in .env.")
             try:
                 with turn_log.model_call(
-                    self.endpoint.model, kind, messages, tools, fallback=fallback, host=self.address,
+                    self.endpoint.model, kind, messages, tools, fallback=fallback, host=self.address, body=body, url=url,
                 ) as call:
                     started_at = self.usage.now() if deepseek and self.usage is not None else None
                     response = await self.http.post(

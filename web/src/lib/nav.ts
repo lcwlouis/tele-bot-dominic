@@ -5,8 +5,10 @@ import Gauge from "@lucide/svelte/icons/gauge";
 import Globe from "@lucide/svelte/icons/globe";
 import House from "@lucide/svelte/icons/house";
 import Images from "@lucide/svelte/icons/images";
+import KeyRound from "@lucide/svelte/icons/key-round";
 import Layers from "@lucide/svelte/icons/layers";
 import MessageCircle from "@lucide/svelte/icons/message-circle";
+import MessagesSquare from "@lucide/svelte/icons/messages-square";
 import Monitor from "@lucide/svelte/icons/monitor";
 import PiggyBank from "@lucide/svelte/icons/piggy-bank";
 import NotebookText from "@lucide/svelte/icons/notebook-text";
@@ -27,9 +29,13 @@ export type Destination = {
   tabs?: Tab[];
 };
 
-/** The five destinations: the phone's menu and the desktop sidebar's "Control surface" group. */
+/** The six destinations: the phone's menu and the desktop sidebar's "Control surface" group. */
 export const destinations: Destination[] = [
   { id: "home", label: "Home", href: "/app", icon: House, blurb: "What Dom is doing and what waits for you." },
+  {
+    id: "talk", label: "Talk", href: "/app/talk", icon: MessagesSquare,
+    blurb: "Talk to Dom here, in the same conversation as your Telegram DM, with every turn's trace a switch away.",
+  },
   {
     id: "chats", label: "Chats", href: "/app/chats", icon: MessageCircle,
     blurb: "Every chat Dom is in: presence, presets and personality per chat.",
@@ -58,6 +64,7 @@ export const destinations: Destination[] = [
     blurb: "How Dom runs: models and providers, services, plugins, spend and the turn log.",
     tabs: [
       { id: "settings", label: "Settings", href: "/app/system", icon: Settings, blurb: "Models, providers, permissions and services." },
+      { id: "access", label: "Access", href: "/app/system/access", icon: KeyRound, blurb: "Saved logins, desktop permissions and approvals history." },
       { id: "plugins", label: "Plugins", href: "/app/system/plugins", icon: Puzzle, blurb: "Plugins Dom drafted, their reviews and panels." },
       { id: "spend", label: "Spend", href: "/app/system/spend", icon: PiggyBank, blurb: "Today and this month against your caps, by area, and the caps themselves." },
       { id: "usage", label: "Usage", href: "/app/system/usage", icon: Gauge, blurb: "Spend by day, model and kind, against the daily cap." },
@@ -70,11 +77,14 @@ export const destinations: Destination[] = [
  * a tab, which is where the phone reaches them) and the component library. */
 export const workspace: { tab: Tab; home: string }[] = [
   ...["reminders", "briefs", "library"].map((id) => ({ tab: tabOf("work", id), home: "Work" })),
-  ...["plugins", "spend", "usage", "turns"].map((id) => ({ tab: tabOf("system", id), home: "System" })),
+  ...["access", "plugins", "spend", "usage", "turns"].map((id) => ({ tab: tabOf("system", id), home: "System" })),
 ];
 
 // Everything waiting for the owner's yes or no: reached from Home's card and Chats' pending link, not from the navigation.
 export const waiting = { label: "Waiting for you", href: "/app/waiting", blurb: "Everything Dom won't do until you say so." };
+
+// One-time secure secret entry form (E101): opened from Dom's Telegram card link or Waiting, not in navigation.
+export const secretEntry = { label: "Enter secret", href: "/app/secret", blurb: "Enter a secret Dom requested securely." };
 
 // The search box's results, reached from the top row and the phone menu: not a destination.
 export const search = { label: "Search", href: "/app/search", blurb: "One search over chats, memory, briefs, reminders, tasks, skills and plugins." };
@@ -95,7 +105,7 @@ function tabOf(destination: string, id: string): Tab {
 
 /** The destination and tab a path belongs to; unknown paths fall back to Home. */
 export function locate(path: string): { destination: Destination; tab?: Tab } {
-  if (path === waiting.href || path === search.href) return { destination: destinations[0] };
+  if (path === waiting.href || path === search.href || path === secretEntry.href) return { destination: destinations[0] };
   for (const destination of destinations) {
     // A page under a tab (a plugin's review) belongs to that tab. The first tab shares its address with the destination, so only an exact match counts for it.
     const tab = destination.tabs?.find((item) => item.href === path || (item.href !== destination.href && path.startsWith(item.href + "/")));

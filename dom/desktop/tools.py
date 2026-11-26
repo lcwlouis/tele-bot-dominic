@@ -39,6 +39,24 @@ _TOOLS = {
     "read_file": ("Read a text file inside the sandbox.", {"path": _STRING}),
     "write_file": ("Write a text file inside the sandbox.", {"path": _STRING, "content": _STRING}),
     "handoff": ("Pause for the owner at a login, captcha or payment.", {"reason": _STRING}),
+    "saved_logins": (
+        "List non-secret metadata for saved site logins (id, site, label, masked username hint; never passwords). "
+        "Pass an optional site hostname to filter.",
+        {"site": _STRING},
+    ),
+    "fill_saved_login": (
+        "Fill a saved login into the current HTTPS login page and submit it without exposing the password to the model. "
+        "Requires the active browser tab to match the saved login's site and may pause for owner approval.",
+        {
+            "login_id": {"type": "integer", "minimum": 1},
+            "username_selector": _STRING,
+            "password_selector": _STRING,
+        },
+    ),
+    "upload_file": (
+        "Upload a file from the sandbox into a page's file input. May pause for owner approval.",
+        {"selector": _STRING, "path": _STRING},
+    ),
     "skill_view": ("Read an owner-approved skill by name.", {"name": _STRING}),
     "propose_skill": ("Only when asked to remember how, or when success needed a workaround found in this run: draft a "
                       "reusable public skill once, after the work succeeds and before finish.", {
@@ -69,6 +87,9 @@ _SITE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a
 _PRIVATE_SUFFIXES = (
     ".local", ".lan", ".home", ".internal", ".intranet", ".corp", ".arpa", ".localhost", ".test", ".invalid",
 )
+# Wildcard-DNS services: any `<anything>.nip.io` resolves to an address the caller picks (often 127.0.0.1 or a LAN
+# host), so they get the same refusal as an IP literal or a `.local` name.
+_WILDCARD_DNS = ("nip.io", "sslip.io", "xip.io", "lvh.me", "localtest.me", "traefik.me")
 # Public suffixes a planned site may not be, because unrelated owners share them (a plan naming one would allow
 # every tenant). A small built-in list rather than a Public Suffix List dependency: a plan names a few sites, and
 # anything missed here still faces the LAN guard. Country second levels (co.uk, com.au, ne.jp...) are matched by
@@ -81,6 +102,9 @@ _SHARED_SUFFIXES = frozenset((
     "surge.sh", "ngrok.io", "ngrok-free.app", "trycloudflare.com", "duckdns.org", "no-ip.org", "ddns.net",
     "dyndns.org", "myshopify.com", "wixsite.com", "weebly.com", "neocities.org", "codeberg.page", "translate.goog",
     "sourceforge.io", "readthedocs.io", "pythonanywhere.com",
+    "webflow.io", "notion.site", "github.dev", "carrd.co", "framer.app", "my.id",
+    "vercel.dev", "deno.dev", "railway.app", "hf.space", "streamlit.app", "replit.dev",
+    "bitbucket.io", "pantheonsite.io", "bubbleapps.io", "wixstudio.io",
     # CentralNic and similar second levels sold to the public.
     "eu.org", "uk.com", "us.com", "eu.com", "gb.com", "gb.net", "uk.net", "de.com", "jpn.com", "cn.com", "sa.com",
     "za.com", "br.com", "ru.com", "kr.com", "qc.com", "us.org",
@@ -112,6 +136,8 @@ def site(value: object) -> str | None:
         return None
     host = value.strip().lower().removeprefix("www.").rstrip(".")
     if not _SITE.fullmatch(host) or host.endswith(_PRIVATE_SUFFIXES):
+        return None
+    if any(host == name or host.endswith("." + name) for name in _WILDCARD_DNS):
         return None
     if host in _SHARED_SUFFIXES or _CC_SECOND_LEVEL.fullmatch(host) or _SHARED_PATTERNS.fullmatch(host):
         return None
@@ -193,12 +219,15 @@ def under_own_roots(path: str) -> bool:
     return any(path == root or path.startswith(root + "/") for root in OWN_FILE_ROOTS)
 
 
+_OPTIONAL_ARGS = frozenset(("files", "part", "site", "username_selector", "password_selector"))
+
+
 def schemas() -> list[dict]:
     return [{
         "type": "function",
         "function": {
             "name": name, "description": description,
-            "parameters": {"type": "object", "properties": properties, "required": [key for key in properties if key not in ("files", "part")],
+            "parameters": {"type": "object", "properties": properties, "required": [key for key in properties if key not in _OPTIONAL_ARGS],
                            "additionalProperties": False},
         },
     } for name, (description, properties) in _TOOLS.items()]
@@ -210,7 +239,7 @@ def arguments(function: dict) -> tuple[str, dict]:
         raise ValueError("unknown desktop tool")
     args = json.loads(function.get("arguments") or "{}")
     properties = _TOOLS[name][1]
-    required = properties.keys() - {"files", "part"}
+    required = properties.keys() - _OPTIONAL_ARGS
     if not isinstance(args, dict) or not required <= args.keys() <= properties.keys():
         raise ValueError("invalid tool arguments")
     for key, value in args.items():
@@ -220,7 +249,7 @@ def arguments(function: dict) -> tuple[str, dict]:
             raise ValueError("invalid files")
         if key == "selector_or_index" and type(value) is int and value >= 0:
             continue
-        if key == "part":
+        if key in ("part", "login_id"):
             if type(value) is int and value >= 1:
                 continue
             raise ValueError("invalid tool arguments")

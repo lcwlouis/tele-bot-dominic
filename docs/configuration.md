@@ -302,6 +302,15 @@ See [Self-directed work](desktop.md#self-directed-work) for the network guard it
 | `web.dev_token_env` | `""` | Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings. |
 | `web.public_url` | `""` | HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages. |
 
+## Debug tracer
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `tracer.retention_days` | `7` | Days the debug tracer keeps each turn's full trace (prompts, model requests and responses, tool calls and deliveries, for every chat). Older traces are deleted once a day. |
+| `tracer.max_mb` | `256` | Size cap of the trace store (`traces.db` in Dom's home), in megabytes of compressed traces. Past it the oldest traces are deleted first. |
+
+Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See [Privacy](privacy.md#debug-traces).
+
 ## T3 Code
 
 | Key | Default | Meaning |

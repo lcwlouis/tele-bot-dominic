@@ -51,8 +51,12 @@ def activity(*, replying: bool, desktop_task: bool, presence: str) -> Activity:
     return "asleep" if presence == "asleep" else "idle"
 
 
-def _waiting(proposals: dict) -> dict:
+def _waiting(proposals: dict, desktop_permissions: list[dict] = (), secret_requests: list[dict] = ()) -> dict:
     items = []
+    for req in desktop_permissions:
+        items.append({"label": f"Permission: {req['action_label']}", "detail": req["site"] or req["detail"]})
+    for req in secret_requests:
+        items.append({"label": "Secret requested", "detail": req["label"]})
     for card in proposals["cards"]:
         if "facts" in card:
             count = len(card["facts"])
@@ -60,7 +64,10 @@ def _waiting(proposals: dict) -> dict:
         else:
             items.append({"label": card["label"], "detail": card["title"]})
     items.extend({"label": chat["label"], "detail": chat["title"]} for chat in proposals["pending_chats"])
-    return {"count": proposals["count"], "items": items[:3], "href": "/app/waiting"}
+    return {
+        "count": proposals["count"] + len(desktop_permissions) + len(secret_requests),
+        "items": items[:3], "href": "/app/waiting",
+    }
 
 
 async def home(app: App) -> dict:
@@ -91,7 +98,11 @@ async def home(app: App) -> dict:
             "reason": vibe.reason,
             "since": _when(vibe.since.astimezone(tz), now) if vibe.since else "",
         },
-        "waiting": _waiting(await _proposals(app)),
+        "waiting": _waiting(
+            await _proposals(app),
+            await app.desktop_permissions.pending_requests(),
+            await app.secret_requests.pending_list(),
+        ),
         "today": {
             "turns": turns, "replies": replies, "spend": round(spent, 4), "cap": app.config.daily_spend_cap_usd,
             "hourly": await app.store.hourly_message_counts(tz=tz, now=now),
@@ -169,8 +180,15 @@ def running_version() -> str:
 async def shell_api(request: Request) -> dict:
     """What the navigation shows on every page: how many things wait for the owner's yes or no, and the version."""
     app: App = request.app.state.dom
+    waiting_count = 0
+    if app.owner_id is not None:
+        waiting_count = (
+            (await _proposals(app))["count"]
+            + len(await app.desktop_permissions.pending_requests())
+            + len(await app.secret_requests.pending_list())
+        )
     return {
-        "waiting": 0 if app.owner_id is None else (await _proposals(app))["count"],
+        "waiting": waiting_count,
         "version": await asyncio.to_thread(running_version),
     }
 

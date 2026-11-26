@@ -55,6 +55,74 @@ _PASSWORD_FOCUS_JS = (
     " && String(el.type || '').toLowerCase() === 'password');"
     "})()"
 )
+# Top-level-only focus helpers for R5 saved-login fill. Zero secrets ever appear in these scripts:
+# they only locate a visible top-level input (never inside an iframe) and return a strict boolean.
+_TOP_PASSWORD_FOCUS_JS = (
+    "(() => {"
+    " const el = document.activeElement;"
+    " return Boolean(el && String(el.tagName || '').toUpperCase() === 'INPUT'"
+    " && String(el.type || '').toLowerCase() === 'password' && !el.disabled && !el.readOnly);"
+    "})()"
+)
+_FOCUS_PASSWORD_AUTO_JS = (
+    "(() => {"
+    " const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !e.disabled && !e.readOnly; };"
+    " const el = Array.from(document.querySelectorAll('input[type=\"password\"]')).find(visible);"
+    " if (!el) return false;"
+    " el.focus();"
+    " return document.activeElement === el && String(el.type || '').toLowerCase() === 'password';"
+    "})()"
+)
+_FOCUS_USERNAME_AUTO_JS = (
+    "(() => {"
+    " const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !e.disabled && !e.readOnly; };"
+    " const sel = 'input[autocomplete=\"username\"],input[type=\"email\"],input[name*=\"user\" i],input[name*=\"email\" i],input[name*=\"login\" i],input[id*=\"user\" i],input[id*=\"email\" i],input[type=\"text\"]';"
+    " const el = Array.from(document.querySelectorAll(sel)).find((e) => visible(e) && String(e.type || '').toLowerCase() !== 'password' && String(e.type || '').toLowerCase() !== 'hidden');"
+    " if (!el) return false;"
+    " el.focus();"
+    " return document.activeElement === el;"
+    "})()"
+)
+_CHECK_TARGET_AFTER_TYPING_JS = (
+    "(() => {"
+    " const target = window.__domLoginTarget;"
+    " const el = document.activeElement;"
+    " const same = Boolean(target && el === target && el.isConnected"
+    " && String(el.tagName || '').toUpperCase() === 'INPUT'"
+    " && String(el.type || '').toLowerCase() === 'password'"
+    " && !el.disabled && !el.readOnly);"
+    " return { href: String(window.location.href || ''), hasFocus: Boolean(document.hasFocus()),"
+    " topLevel: window === window.top, sameTarget: same };"
+    "})()"
+)
+_PASSWORD_HAS_VALUE_JS = (
+    "(() => {"
+    " const target = window.__domLoginTarget;"
+    " try { delete window.__domLoginTarget; } catch {}"
+    " const visible = (e) => { try { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !e.disabled && !e.readOnly; } catch { return false; } };"
+    " if (target && target.isConnected && String(target.tagName || '').toUpperCase() === 'INPUT'"
+    " && String(target.type || '').toLowerCase() === 'password' && Boolean(target.value)) {"
+    "   try { target.focus(); } catch {}"
+    "   return { hasValue: true };"
+    " }"
+    " const el = Array.from(document.querySelectorAll('input[type=\"password\"]')).find((e) => visible(e) && Boolean(e.value));"
+    " if (el) { try { el.focus(); } catch {} return { hasValue: true }; }"
+    " return { hasValue: false };"
+    "})()"
+)
+_FOCUS_STAMPED_TARGET_JS = (
+    "(() => {"
+    " const target = window.__domLoginTarget;"
+    " try { delete window.__domLoginTarget; } catch {}"
+    " if (!target || !target.isConnected || target.disabled || target.readOnly) return false;"
+    " try { target.focus(); } catch { return false; }"
+    " return document.activeElement === target && Boolean(target.value);"
+    "})()"
+)
+_SAFE_FOCUS_SELECTOR = re.compile(
+    r"^[a-z]*(?:#[\w-]+|\.[\w-]+|\[[\w-]+(?:[~|^$*]?=(?:\"[\w.@ -]*\"|'[\w.@ -]*'|[\w.-]*))?\])+$",
+    re.IGNORECASE,
+)
 # Derive DISPLAY from the environment or the active Xvnc Unix socket (/tmp/.X11-unix/X<n>),
 # then clear both CLIPBOARD and PRIMARY selections and fail non-zero if no tool succeeds.
 _CLEAR_CLIPBOARD_SH = (
@@ -193,16 +261,108 @@ class SandboxClient:
     async def is_password_focused(self, *, timeout: int = 5) -> bool:
         """Whether the active browser tab currently focuses an input[type=password].
         Treats the sandbox response as hostile input: only a literal JSON true returns True."""
+        return await self._eval_bool(_PASSWORD_FOCUS_JS, timeout=timeout)
+
+    async def is_top_level_password_focused(self, *, timeout: int = 5) -> bool:
+        """Whether the top-level document (not an iframe) currently focuses an active input[type=password]."""
+        return await self._eval_bool(_TOP_PASSWORD_FOCUS_JS, timeout=timeout)
+
+    async def focus_login_field(self, kind: str, selector: str | None = None, *, timeout: int = 5) -> bool:
+        """Focus a top-level username or password input without ever sending any secret in the JS expression."""
+        if kind not in ("username", "password"):
+            raise ValueError("kind must be username or password")
+        if selector is not None:
+            sel = selector.strip()
+            if not sel or len(sel) > 120 or not _SAFE_FOCUS_SELECTOR.fullmatch(sel):
+                raise ValueError("invalid login field selector")
+            type_ok = (
+                "String(el.type || '').toLowerCase() === 'password'"
+                if kind == "password"
+                else "String(el.type || '').toLowerCase() !== 'password' && String(el.type || '').toLowerCase() !== 'hidden'"
+            )
+            expression = (
+                f"(() => {{ const el = document.querySelector({json.dumps(sel)}); "
+                f"if (!el || String(el.tagName || '').toUpperCase() !== 'INPUT' || el.disabled || el.readOnly || !({type_ok})) return false; "
+                f"el.focus(); return document.activeElement === el && ({type_ok}); }})()"
+            )
+        else:
+            expression = _FOCUS_PASSWORD_AUTO_JS if kind == "password" else _FOCUS_USERNAME_AUTO_JS
+        return await self._eval_bool(expression, timeout=timeout)
+
+    async def _eval_raw(self, expression: str, *, timeout: int = 5) -> Any:
         response, content = await self._fetch(
             "POST", "browser/page/evaluate",
-            limit=EVALUATE_LIMIT, timeout=timeout, json={"expression": _PASSWORD_FOCUS_JS},
+            limit=EVALUATE_LIMIT, timeout=timeout, json={"expression": expression},
         )
-        data = self._check(response, content)
+        return self._check(response, content)
+
+    async def _eval_bool(self, expression: str, *, timeout: int = 5) -> bool:
+        data = await self._eval_raw(expression, timeout=timeout)
         if data is True:
             return True
         if isinstance(data, dict):
             return data.get("result") is True or data.get("value") is True
         return False
+
+    async def _eval_dict(self, expression: str, *, timeout: int = 5) -> dict[str, Any] | None:
+        data = await self._eval_raw(expression, timeout=timeout)
+        if isinstance(data, dict):
+            if "href" in data or "hasValue" in data or "sameTarget" in data:
+                return data
+            inner = data.get("result") if "result" in data else data.get("value")
+            if isinstance(inner, dict):
+                return inner
+        return None
+
+    async def verify_login_field(
+        self, kind: str, *, stamp: bool = False, timeout: int = 5,
+    ) -> dict[str, Any] | None:
+        """Atomically inspect window.location.href, document.hasFocus(), top-level activeElement, and form action."""
+        if kind not in ("username", "password"):
+            raise ValueError("kind must be username or password")
+        type_ok = (
+            "type === 'password'"
+            if kind == "password"
+            else "type !== 'password' && type !== 'hidden'"
+        )
+        stamp_js = "if (fieldOk) { window.__domLoginTarget = el; }" if stamp else ""
+        expression = (
+            "(() => {"
+            " const el = document.activeElement;"
+            " const tag = el ? String(el.tagName || '').toUpperCase() : '';"
+            " const type = el ? String(el.type || '').toLowerCase() : '';"
+            f" const fieldOk = Boolean(el && tag === 'INPUT' && !el.disabled && !el.readOnly && el.isConnected && ({type_ok}));"
+            " let formAction = null;"
+            " if (fieldOk && el.form) {"
+            "   const raw = Element.prototype.getAttribute.call(el.form, 'action');"
+            "   if (raw && raw.trim()) {"
+            "     try { formAction = new URL(raw.trim(), window.location.href).href; }"
+            "     catch { formAction = 'invalid:'; }"
+            "   } else { formAction = window.location.href; }"
+            " }"
+            f" {stamp_js}"
+            " return { href: String(window.location.href || ''), hasFocus: Boolean(document.hasFocus()),"
+            " topLevel: window === window.top, fieldOk: fieldOk, formAction: formAction };"
+            "})()"
+        )
+        return await self._eval_dict(expression, timeout=timeout)
+
+    async def check_login_target_after_typing(self, *, timeout: int = 5) -> dict[str, Any] | None:
+        """Verify focus did not leave the stamped top-level password input mid-typing."""
+        return await self._eval_dict(_CHECK_TARGET_AFTER_TYPING_JS, timeout=timeout)
+
+    async def focus_stamped_login_target(self, *, timeout: int = 5) -> bool:
+        """Refocus the stamped password element (if still connected and non-empty) so it can be cleared over VNC."""
+        return await self._eval_bool(_FOCUS_STAMPED_TARGET_JS, timeout=timeout)
+
+    async def password_field_has_value(self, *, timeout: int = 5) -> bool:
+        """Check whether a password input still holds a value after submit (focusing it if so) and clear stamp."""
+        data = await self._eval_dict(_PASSWORD_HAS_VALUE_JS, timeout=timeout)
+        return isinstance(data, dict) and data.get("hasValue") is True
+
+    async def upload_browser_file(self, selector: str, path: str, *, timeout: int = 30) -> Any:
+        """Attach a sandbox file to a page's file input via the sandbox browser API."""
+        return await self._json("browser/page/upload", {"selector": selector, "path": path}, timeout=timeout)
 
     async def clear_clipboard(self, *, timeout: int = 5) -> None:
         """Clear X11 clipboard and primary selections inside the sandbox; raise SandboxError if the clear fails."""
