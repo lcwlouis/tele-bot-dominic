@@ -1237,6 +1237,9 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Edit sheet" }).click();
     const editor = page.getByRole("textbox", { name: "Life sheet, as text" });
     const original = await editor.inputValue();
+    // The counter leaves tags out, as the server's limit does: "- Tagged line" and a line break are 14 characters.
+    await editor.fill("- Tagged line {any} {chat -1001} {core owner 2026-11-20: why}\n");
+    await expect(page.getByText(/^14 of [\d,]+ characters, not counting tags\.$/)).toBeVisible();
     await editor.fill(original + "- Plays chess online\n");
     await page.getByRole("button", { name: "Save sheet" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Saved the sheet." })).toBeVisible();
@@ -2136,6 +2139,42 @@ test.describe("interactions under the CSP", () => {
     const tip = page.locator("[data-slot=tooltip-content]").filter({ hasText: "Edit reminder" });
     await expect(tip).toBeVisible();
     expect(await tip.evaluate((node) => getComputedStyle(node).animationName)).toBe("none");
+  });
+
+  test("turns: the owner DM's traced turn links to the standalone trace page", async ({ page }) => {
+    const problems = await watch(page);
+    await page.route("**/api/system/turns", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      data.turns = data.turns.map((turn: object) => ({ ...turn, has_trace: true }));
+      await route.fulfill({ response, json: data });
+    });
+    await page.goto("/app/system/turns");
+    await page.getByRole("button", { name: /^Replied in 1 bubble.*Your DM/ }).first().click();
+    // Talk's window holds only the newest messages, so every turn, the owner's included, opens its own trace page.
+    await expect(page.getByRole("link", { name: "Open the full trace" })).toHaveAttribute("href", /^\/app\/system\/turns\/\d+$/);
+    expect(problems).toEqual([]);
+  });
+
+  test("waiting: a Google approval card is not labelled as a desktop permission", async ({ page }) => {
+    const problems = await watch(page);
+    await page.route("**/api/waiting", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      const card = { task_id: null, self_task_id: null, site: "", created_at: "2026-11-22T20:00:00+00:00", can_allow_always: true, dashboard_only: false };
+      data.desktop_permissions = [
+        { ...card, id: 7001, action: "calendar_add", action_label: "Add a calendar event", google: true, detail: "Add: Dentist" },
+        { ...card, id: 7002, action: "visit_site", action_label: "Visit unfamiliar sites", google: false, site: "example.org", detail: "" },
+      ];
+      data.count += 2;
+      await route.fulfill({ response, json: data });
+    });
+    await page.goto("/app/waiting");
+    await expect(page.getByText("Google approval · Add a calendar event")).toBeVisible();
+    await expect(page.getByText("Google Calendar", { exact: true })).toBeVisible();
+    await expect(page.getByText("Desktop permission · Visit unfamiliar sites")).toBeVisible();
+    await expect(page.getByText("Desktop permission · Add a calendar event")).toBeHidden();
+    expect(problems).toEqual([]);
   });
 
   test("access page: masked saved logins, desktop permissions, approvals history and secret entry form", async ({ page }) => {

@@ -520,7 +520,7 @@
       <Card.Root>
         <Card.Header>
           <Card.Title class="text-base">Approvals history</Card.Title>
-          <Card.Description>Newest-first audit log of desktop permission checks and owner decisions.</Card.Description>
+          <Card.Description>Newest-first audit log of desktop and Google approval checks and owner decisions.</Card.Description>
         </Card.Header>
         <Card.Content class="grid gap-4">
           <div class="flex flex-wrap gap-3" role="group" aria-label="Filter approvals history">

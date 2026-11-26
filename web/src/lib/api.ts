@@ -484,6 +484,7 @@ export type PendingPermission = {
   self_task_id: number | null;
   action: DesktopAction;
   action_label: string;
+  google: boolean;
   site: string;
   detail: string;
   created_at: string;
@@ -496,6 +497,7 @@ export type PermissionHistoryRow = {
   self_task_id: number | null;
   action: DesktopAction;
   action_label: string;
+  google: boolean;
   site: string;
   detail: string;
   status: string;
@@ -634,7 +636,6 @@ export type Turn = {
 };
 export type TurnsData = {
   chat: string;
-  owner_chat: string;
   stages: Record<string, string>;
   visible_stages: string[];
   choices: { id: string; title: string }[];

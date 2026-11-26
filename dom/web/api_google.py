@@ -4,12 +4,13 @@ GET  /api/integrations/google             the card: credentials set or not (neve
 POST /api/integrations/google/connect     starts the OAuth flow and returns Google's consent URL; it also sets the
                                           short-lived binding cookie that ties the flow to this browser.
 GET  /api/integrations/google/callback    where Google sends the browser back. It is a top-level cross-site navigation,
-                                          so it carries no Origin and a `Sec-Fetch-Site: cross-site`, and no bearer
-                                          header, so the dashboard middleware lets this one GET path through without
-                                          an identity (behind Cloudflare Access the Access session cookie is sent and
-                                          Access itself gates it). It authenticates itself: the single-use, unexpired
-                                          `state` must match the HttpOnly binding cookie that only an authenticated
-                                          owner's connect request set. It is not a `fetch_site` guarded read.
+                                          so it carries no Origin, a `Sec-Fetch-Site: cross-site` and no bearer
+                                          header. Behind Cloudflare Access the browser sends its Access cookie, so it
+                                          needs an Access identity like any request; on a token-only dashboard the
+                                          middleware lets this one GET path through without one. Either way it
+                                          authenticates itself: the single-use, unexpired `state` must match the
+                                          HttpOnly binding cookie that only an authenticated owner's connect request
+                                          set. It is not a `fetch_site` guarded read.
 POST /api/integrations/google/disconnect  revokes the token at Google and deletes it here.
 POST /api/integrations/google/switch      turns one of the four switches on or off.
 

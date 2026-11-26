@@ -1676,7 +1676,10 @@ class Dispatcher:
             through_id=newest.id if newest is not None else None,
             thread_id=newest.thread_id if newest is not None else None,
         )
+        trimmed = window.trim_seq != self._trim_seq.get(chat_id, window.trim_seq)
         self._trim_seq[chat_id] = window.trim_seq
+        # The prompt-cache state for the tracer: the window's estimated size and whether this turn's prompt was trimmed.
+        turn_log.event("window", tokens=window.tokens, rows=len(window.rows), trimmed=trimmed, blocked=window.blocked)
         if window.blocked:
             self.request_memory_pass(chat_id)
         return window.rows
@@ -2309,7 +2312,9 @@ class Dispatcher:
         *, extra_note: str = "", attempt: TurnAttempt | None = None, skill: str | None = None,
         tool_free: bool = False,
     ) -> Actions:
-        """`tool_free` offers no tool at all, so nothing can run while the model holds the note's private facts."""
+        """`tool_free` offers no tool at all, so nothing can run while the model holds the note's private facts. It is
+        also text only: no media, sticker, GIF or place-photo note, no media-promise check, and no prose rescue (which
+        is a Jev call the owner's turn caps do not gate)."""
         app = self.app
         now = self.now().astimezone(self.presence.tz)
         minutes = max(0, (until - now).total_seconds() / 60)
@@ -2324,9 +2329,9 @@ class Dispatcher:
         )
         if world := app.world.block(app.home, scope, chat_id, window, now):  # files and a cached forecast: no waiting
             note += f"\n{world}"
-        if (studio_enabled(app.config.studio, scope, "photo") or studio_enabled(app.config.studio, scope, "video_note")) and (
-            places := app.place_photos.offer(scope, chat_id)
-        ):
+        if not tool_free and (
+            studio_enabled(app.config.studio, scope, "photo") or studio_enabled(app.config.studio, scope, "video_note")
+        ) and (places := app.place_photos.offer(scope, chat_id)):
             note += f"\n{places}"
         if any(tool.name.startswith("plugin_") for tool in tools):
             note += (
@@ -2367,9 +2372,9 @@ class Dispatcher:
                 'It goes at the top level, next to "bubbles", never inside a bubble: '
                 '{"private": true, "bubbles": [{"text": "..."}]}.'
             )
-        if not final_bot_turn and (sticker_note := app.stickers.turn_note()):
+        if not final_bot_turn and not tool_free and (sticker_note := app.stickers.turn_note()):
             note += f"\n{sticker_note}"
-        if not final_bot_turn and app.gifs is not None:
+        if not final_bot_turn and not tool_free and app.gifs is not None:
             note += f"\n{GIF_NOTE}"
         if scope == "owner_dm" and newest is not None and newest.media_json:
             inbox_name = json.loads(newest.media_json).get("desktop_inbox")
@@ -2386,7 +2391,7 @@ class Dispatcher:
         sliders, preset = await for_chat(app.home, app.store, chat_id, self.now())
         local_ready = app.studio is not None and app.studio.ready
         media_offered: set[str] = set()  # media kinds this turn's note offers
-        if not final_bot_turn and (app.studio is not None or app.cloud_studio is not None):
+        if not final_bot_turn and not tool_free and (app.studio is not None or app.cloud_studio is not None):
             config = app.config
             running_keys = app.running_chat_keys()
 
@@ -2467,9 +2472,9 @@ class Dispatcher:
         usage_mark = await app.store.last_usage_id()
         route = self._chat_route_id()
         escalation = None
-        rescue = None if self.jev is None else partial(self._rescue, chat_id, scope, window, {t.name for t in tools})
+        rescue = None if self.jev is None or tool_free else partial(self._rescue, chat_id, scope, window, {t.name for t in tools})
         # The media fields this turn offers, so a promise of media that isn't set can be put back to the model once.
-        offered_fields = None if final_bot_turn else frozenset(
+        offered_fields = None if final_bot_turn or tool_free else frozenset(
             MEDIA_FIELD_OF_KIND[kind] for kind in media_offered if kind in MEDIA_FIELD_OF_KIND)
         try:
             if attempt is None:

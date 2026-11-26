@@ -497,6 +497,7 @@ async def test_adding_an_event_waits_for_the_card_and_allow_once_does_not_stick(
     assert "calendar_add" not in {k for k, v in (await app.store.desktop_action_policies()).items() if v == "allow"}
     window = str(await app.store.get_recent_chat_window(str(OWNER), 10))
     assert "Add a calendar event approved" in window and "Added 'Dentist'" in window
+    assert "<untrusted_tool_result>" in window  # what others wrote is fenced in the DM's history, never Dom's own record
 
     # Allow once leaves the policy at Ask: the next add asks again.
     await _calendar({"action": "add", "title": "Again", "start": "2099-03-03T15:00"}, owner_ctx(app))
@@ -504,6 +505,8 @@ async def test_adding_an_event_waits_for_the_card_and_allow_once_does_not_stick(
     await tap(app, "reject")
     assert len(fake.sent("POST", "/events")) == 1  # a rejection changes nothing
     assert "was rejected; nothing changed" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+    rejected = [m.text for m in await app.store.get_recent_chat_window(str(OWNER), 10) if "was rejected" in (m.text or "")]
+    assert rejected and all("<untrusted_tool_result>" in text and "Again" in text for text in rejected)
 
 
 async def test_allow_always_applies_per_kind(setup):
@@ -546,6 +549,10 @@ async def test_the_access_page_lists_each_google_kind_and_can_decide_a_card(setu
     await _calendar({"action": "add", "title": "From the page", "start": "2099-03-02T15:00"}, owner_ctx(app))
     row = await pending(app)
     assert row["can_allow_always"] is True
+    assert row["google"] is True  # the Waiting page labels it a Google approval, not a desktop permission
+    from dom.web.api_system import restart_refusal
+
+    assert restart_refusal(app) == "An approval card is waiting for your answer. Answer it first."
     done = await client.post("/api/access/decide", headers=HEADERS, json={"id": row["id"], "decision": "once"})
     assert done.status_code == 200
     await settle(app)

@@ -51,6 +51,7 @@ class Auth:
             raise ValueError("Dashboard auth needs a valid access_team and access_aud.")
         self.issuer = f"https://{web.access_team.lower()}.cloudflareaccess.com" if web.access_team else ""
         self.audience = web.access_aud
+        self.token_only = not self.issuer  # no Cloudflare Access in front: the dev token is the only credential
         self.emails = frozenset(email.strip().lower() for email in web.access_emails)
         if "" in self.emails:
             raise ValueError("Dashboard auth: access_emails must not hold a blank entry.")

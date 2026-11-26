@@ -169,9 +169,10 @@ applies at once, with no restart. On, Dom keeps your day in view, in your DM onl
   went, what was missed, what is due tomorrow and a short check-in on anything left open. Each time is in your
   `timezone`; an empty time turns that message off. The calendar is included only while Google is connected and
   Calendar read is on ([Google](google.md)).
-- Each message is one chat-model call in Dom's voice, sent as a normal DM message. It goes out once a day, restarts
-  included, and late only within three hours of its time. A message waits while Dom is asleep (and is sent when he wakes,
-  inside that window) but not while he is merely offline: like an opener, it brings him online. It covers the day it was
+- Each message is one text-only chat-model call in Dom's voice (no tools, media, stickers or GIFs), sent as a normal DM
+  message. It goes out once a day, restarts included, and late only within three hours of its time. It is composed and
+  sent in your DM's turn, so it never overlaps one of your own turns, and it holds back if you write meanwhile. A
+  message waits while Dom is asleep (and is sent when he wakes, inside that window) but not while he is merely offline: like an opener, it brings him online. It covers the day it was
   scheduled for, even when it goes out just after midnight. With nothing worth saying Dom sends nothing and no model
   is called. The call counts as background work (the monthly cap and the area limits apply,
   not the daily cap) and shows as **Assistant** in Usage. A message held back by a cap is not retried that day.

@@ -136,6 +136,12 @@ def limit_to_chat(text: str, chat_id: int | str | None, *, owner_untagged: bool 
     )
 
 
+def file_in_chat(rel: str, text: str, chat_id: int | str | None) -> str:
+    """A note file's lines that belong in one chat other than the owner's DM, tags kept. In a place, project or goal
+    note an untagged line is the owner's, so only `{any}` and this chat's lines pass."""
+    return limit_to_chat(text, chat_id, owner_untagged=ENTITY_NOTE.fullmatch(rel) is not None)
+
+
 def for_chat(text: str, chat_id: int | str | None, *, everything: bool = False) -> str:
     """A note as one chat's prompt shows it: lines tagged to another chat dropped, tags stripped. `everything` is
     for the owner's DM, which may read every line of the public notes."""

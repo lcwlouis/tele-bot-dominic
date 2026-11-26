@@ -1537,3 +1537,130 @@ async def test_recheck_nits_wildcard_dns_secret_expiry_race_and_rotate_key_messa
     assert code == 1
     out = capsys.readouterr().out.lower()
     assert "stop" in out and "stale" in out and "ready.json" in out
+
+
+async def test_ask_on_visit_site_also_asks_when_a_click_reaches_a_new_site(make_app):
+    """Spec §5.1: a link, a form or a redirect that lands on a site the action did not name gets the same Ask card as
+    browse; a rejection closes the page. Clicking within the same site never asks."""
+    app = make_app()
+    await app.desktop_permissions.set_policy("visit_site", "ask")
+    await app.desktop_permissions.set_site_rule("docs.example.org", "visit_site", "allow")
+    navigated: list[str] = []
+    worker = await worker_for(
+        app,
+        call("click", selector_or_index="#same-site"),
+        call("click", selector_or_index="#offsite"),
+        call("finish", result="stopped"),
+        {"content": '{"bubbles":[{"text":"done"}]}'},
+    )
+    worker.sandbox.url = "https://docs.example.org/start"
+    clicks = iter(["https://docs.example.org/page2", "https://tracker.example.net/landing"])
+
+    async def click(selector_or_index):
+        worker.sandbox.url = next(clicks)
+        return {"ok": True}
+
+    async def nav(url):
+        navigated.append(url)
+        worker.sandbox.url = url
+
+    worker.sandbox.click = click
+    worker.sandbox.navigate = nav
+    await worker.enqueue(OWNER, "Read docs")
+    pending = await _wait_for_pending_perm(app)
+    assert pending["action"] == "visit_site" and pending["site"] == "tracker.example.net"
+    ok, _ = await app.desktop_permissions.decide(pending["id"], "reject", via="dashboard")
+    assert ok
+    await wait_task(worker)
+    assert navigated == ["about:blank"]  # the off-site page was closed; the same-site click asked nothing
+    assert "The page was closed" in json.dumps(app.client.requests)
+
+
+async def test_a_site_the_check_missed_is_asked_about_by_the_next_page_tool(make_app):
+    """Gate round 2: the run remembers which sites it was cleared for. A host that could not be read right after a
+    click (or a late navigation) is caught by the next page tool, and an IP literal is a site like any other."""
+    app = make_app()
+    await app.desktop_permissions.set_policy("visit_site", "ask")
+    await app.desktop_permissions.set_site_rule("docs.example.org", "visit_site", "allow")
+    worker = await worker_for(
+        app,
+        call("browse", url="https://docs.example.org/start"),
+        call("click", selector_or_index="#offsite"),
+        call("read_page"),
+        call("finish", result="stopped"),
+        {"content": '{"bubbles":[{"text":"done"}]}'},
+    )
+    reads = {"fail": False}
+
+    async def nav(url):
+        worker.sandbox.url = url
+
+    async def click(selector_or_index):
+        worker.sandbox.url = "https://203.0.113.7/landing"
+        reads["fail"] = True  # the host read right after the click fails
+        return {"ok": True}
+
+    async def current_url():
+        if reads["fail"]:
+            reads["fail"] = False
+            raise RuntimeError("tabs API did not answer")
+        return worker.sandbox.url
+
+    worker.sandbox.navigate, worker.sandbox.click, worker.sandbox.current_url = nav, click, current_url
+    await worker.enqueue(OWNER, "Read docs")
+    pending = await _wait_for_pending_perm(app)
+    assert pending["action"] == "visit_site" and pending["site"] == "203.0.113.7"
+    assert "read_page" in pending["detail"]
+    ok, _ = await app.desktop_permissions.decide(pending["id"], "reject", via="dashboard")
+    assert ok
+    await wait_task(worker)
+    assert worker.sandbox.url == "about:blank"
+
+
+async def test_a_card_answered_after_the_tools_time_limit_still_counts(make_app):
+    """The owner's answer is not working time: a card that waits longer than the tool's remaining time does not end
+    the task as "time limit reached"."""
+    app = make_app()
+    await app.desktop_permissions.set_policy("visit_site", "ask")
+    worker = await worker_for(
+        app,
+        call("browse", url="https://slow.example.org/"),
+        call("finish", result="read it"),
+        {"content": '{"bubbles":[{"text":"done"}]}'},
+        work_seconds=0.3,
+    )
+
+    async def nav(url):
+        worker.sandbox.url = url
+
+    worker.sandbox.navigate = nav
+    task_id = await worker.enqueue(OWNER, "Open it")
+    pending = await _wait_for_pending_perm(app)
+    await asyncio.sleep(0.6)  # longer than the whole work budget: only the card is waiting
+    ok, _ = await app.desktop_permissions.decide(pending["id"], "once", via="dashboard")
+    assert ok
+    await wait_task(worker)
+    row = await task_row(app, task_id)
+    assert row["status"] == "done", row
+    assert worker.sandbox.url == "https://slow.example.org/"
+
+
+async def test_where_the_owner_leaves_the_browser_after_a_handoff_is_not_asked_about(make_app):
+    """Gate round 3: the owner drove the browser during the handoff, so the site they left it on is cleared for the task."""
+    app = make_app()
+    await app.desktop_permissions.set_policy("visit_site", "ask")
+    worker = await worker_for(
+        app,
+        call("handoff", reason="Sign in"),
+        call("read_page"),
+        call("finish", result="signed in"),
+        {"content": '{"bubbles":[{"text":"done"}]}'},
+        handoff_seconds=2,
+    )
+    worker.sandbox.url = "https://login.example.org/done"
+    task_id = await worker.enqueue(OWNER, "Sign in for me")
+    row = await wait_status(app, task_id, "waiting_owner")
+    assert await worker.resume(OWNER, task_id, row["steps"])
+    await wait_task(worker)
+    assert not await app.desktop_permissions.pending_requests()
+    assert (await task_row(app, task_id))["status"] == "done"

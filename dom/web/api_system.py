@@ -228,7 +228,6 @@ async def read_turns(request: Request, chat: str = "") -> dict:
     data = await _turns(app, chat[:64])
     traced = await app.traces.store.traced(row["id"] for row in data["rows"]) if app.traces is not None else set()
     return {
-        "owner_chat": str(app.owner_id),
         "chat": data["chat"], "stages": data["stages"], "choices": [{"id": key, "title": title} for key, title in data["choices"]],
         "visible_stages": [stage for stage in data["stages"] if stage in data["visible_stages"]],
         "visits": [{
@@ -287,7 +286,7 @@ def restart_refusal(app) -> str | None:
             return "A desktop task is running. Wait for it to finish or cancel it first."
     perms = getattr(app, "desktop_permissions", None)
     if perms is not None and perms.has_pending():
-        return "A desktop permission card is waiting for your answer. Answer it first."
+        return "An approval card is waiting for your answer. Answer it first."
     if app.dispatch.escalation.pending:
         return "A model switch card is waiting for your answer. Answer it first."
     bridge = getattr(app, "t3", None)

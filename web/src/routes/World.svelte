@@ -16,7 +16,7 @@
   import * as Card from "$lib/components/ui/card";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
-  import { setMemoryTags } from "$lib/memory-tags";
+  import { setMemoryTags, visibleLength } from "$lib/memory-tags";
   import type { Destination, Tab } from "$lib/nav";
   import { toast } from "$lib/toast.svelte";
 
@@ -156,7 +156,7 @@
             class="min-h-64 w-full rounded-lg border bg-raised p-3 font-mono text-sm leading-relaxed"
           ></textarea>
           <p class="mt-2 text-sm text-muted-foreground">
-            {draft.length.toLocaleString("en-US")} of {world.sheet.limit?.toLocaleString("en-US")} characters, not counting tags.
+            {visibleLength(draft).toLocaleString("en-US")} of {world.sheet.limit?.toLocaleString("en-US")} characters, not counting tags.
           </p>
         {:else if world.sheet.content.trim()}
           <Markdown text={world.sheet.content} class="text-[0.95rem]" />

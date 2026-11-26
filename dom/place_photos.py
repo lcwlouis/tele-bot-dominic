@@ -1,7 +1,7 @@
 """Reference photos of Dom's known places, so a picture of him there looks like the place.
 
 A place is a note under `memory/places/<slug>.md`. Its photo is optional and the owner's call: the owner adds one on the
-dashboard (or approves one Dom found). The file is kept like the media Dom sends: `media/places/<slug>.jpg` under the
+dashboard. (A photo Dom finds by search and the owner approves is not built yet.) The file is kept like the media Dom sends: `media/places/<slug>.jpg` under the
 home, in private folders, written to a temporary name and moved into place, so a cancelled save leaves nothing
 half-written. The upload is decoded and saved again as a JPEG of at most 1024 px, which drops any location data the
 camera wrote into it.
@@ -139,7 +139,8 @@ class PlacePhotos:
             text = self._home.scoped(allow_private=False).read(f"memory/places/{slug}.md")
         except (OSError, ValueError):
             return False
-        return any(notes.is_bullet(line) for line in notes.limit_to_chat(text, chat_id).split("\n"))
+        rel = f"memory/places/{slug}.md"
+        return any(notes.is_bullet(line) for line in notes.file_in_chat(rel, text, chat_id).split("\n"))
 
     async def reference_for(self, place: str | None, scope: Scope, chat_id: int) -> bytes | None:
         """The photo of the place Dom named, if it is one this chat may see. A name that is not on that list gets none."""

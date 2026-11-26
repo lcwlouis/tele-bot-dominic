@@ -11,8 +11,8 @@ The chat gets its own page, **Talk** (`/app/talk`), as the second destination af
 - A conversation needs the full height of the screen, with the composer pinned to the bottom. Home is a summary page
   of cards that scrolls.
 - The page polls every second while Dom is typing. Home's cards shouldn't refresh that often.
-- The Trace toggle and the open turn live in the address (`?trace=1&turn=<id>`), so a Turn log link lands on that
-  turn's audit.
+- The Trace toggle and the open turn live in the address (`?trace=1&turn=<id>`), so a link can open Talk on that
+  turn's audit. The Turn log links every turn to its standalone trace page instead (see below).
 
 On a desktop the side panel sits to the right of the conversation. It shows Dom's profile and presence, the approvals
 waiting and what he's working on (his desktop task and own work). On a phone the panel folds into a sheet, opened from
@@ -101,7 +101,8 @@ The body (version 1):
 |---|---|
 | `arrival` | presence state and `until`, catch-up, unread count and total, the newest message's id and time, queue waits (debounce, media, lock, away) |
 | `triage` | Jev's full verdict (action, confidence, done, skill, emoji), urgency or offline verdict, skills offered |
-| `prompt` | the prompt fingerprint, its message count, the tool names offered, the scope, and the prompt-cache state (tokens measured, whether a trim happened) |
+| `window` | the prompt-cache state: the chat window's estimated tokens and rows, whether this turn's window was trimmed, and whether a trim is waiting for the memory pass |
+| `prompt` | the prompt fingerprint, its message count, the tool names offered and the scope |
 | `model_call` | kind, model, host, URL path, fallback, status, duration, input, output and cached tokens, cost, **the full request body** and **the full response JSON** (reasoning included when the provider returns it), or the error |
 | `tool` | name, raw arguments, result, whether it was refused or not offered ("image is not a tool"), duration |
 | `actions` | the final actions object the model returned |
@@ -253,5 +254,6 @@ Both are owner-dashboard GETs behind the usual auth and `fetch_site_ok` check, s
 
   Request and response bodies are folded `<details>` blocks with JSON highlighted by `$lib/highlight` and a copy
   button. Each turn has an export button.
-- **Turn log:** each turn's details get an "Open trace" link to `/app/talk?trace=1&turn=<id>` for the owner DM's
-  turns. For other chats it goes to `/app/system/turns/<id>`, a page that shows the same `TraceView` alone.
+- **Turn log:** each turn's details get an "Open the full trace" link to `/app/system/turns/<id>`, a page that shows
+  the same `TraceView` alone and works for any traced turn, the owner DM's included (Talk's own window covers only its
+  newest messages). Talk keeps its inline traces.

@@ -172,3 +172,12 @@ async def test_an_unreadable_sheet_never_fails_a_turn(make_app):
     await deliver(app, tg(GROUP, FRIEND, "hello", 1))
     assert turn_requests(app)
     assert "your world" not in json.dumps(turn_requests(app)[0]["messages"])
+
+
+def test_an_untagged_place_line_is_the_owners_and_never_reaches_another_chat(home):
+    put = home.scoped(allow_private=False)._write_regular
+    current = home.scoped(allow_private=False).read("memory/places/the-gym.md")
+    put("memory/places/the-gym.md", current.rstrip("\n") + "\n- Door code 4471, owner only\n")
+    for scope, chat in (("group", -1001), ("friend_dm", FRIEND)):
+        assert "Door code" not in sheet_block(home, scope, chat, [], THURSDAY_EVENING, THURSDAY_EVENING)
+    assert "Door code 4471" in sheet_block(home, "owner_dm", OWNER, [], THURSDAY_EVENING, THURSDAY_EVENING)

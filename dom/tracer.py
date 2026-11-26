@@ -3,10 +3,10 @@
 turn_log collects a turn's events as plain references while the turn runs. When the turn ends, `turn_log.submit`
 puts the trace into this module's bounded queue without waiting. One writer task takes it from there, in a worker
 thread: it reads the instance's secret values, parses the responses, strips media, redacts secrets, compresses, and
-stores the trace in `<home>/traces.db`. Redaction covers every value in `.env`, every configured key variable and the
-fixed credentials, in their raw, JSON-escaped and ASCII-escaped forms, plus the credential shapes in
-dom.secret_patterns. It runs on each string before any cut, again on JSON inside strings, and once more on the
-serialised text. traces.db is its own owner-only SQLite database, so trace writes never wait on, or hold up, the store's
+stores the trace in `<home>/traces.db`. Redaction covers the secret values only: every configured key variable, the
+fixed credentials and every `.env` variable whose name says it holds one (never every `.env` value), in their raw,
+JSON-escaped, URL and base64 forms, plus the credential shapes in dom.secret_patterns. It runs on each string leaf
+before any cut and on JSON inside strings, never over the serialised text, so it can't break the JSON. traces.db is its own owner-only SQLite database, so trace writes never wait on, or hold up, the store's
 lock that the reply path uses. Retention and a size cap with oldest-first eviction keep it bounded (`[tracer]` in
 config.toml). Reads unpack and serialise in a worker thread too. See
 docs/superpowers/specs/2026-11-27-dashboard-chat-and-tracer.md.

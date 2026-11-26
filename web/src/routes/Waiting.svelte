@@ -124,8 +124,8 @@
         <li>
           <Card.Root class="h-full border-signal/40">
             <Card.Header>
-              <Card.Title class="text-base">Desktop permission · {perm.action_label}</Card.Title>
-              <Card.Description class="break-words">{perm.site || "Desktop"}</Card.Description>
+              <Card.Title class="text-base">{perm.google ? "Google approval" : "Desktop permission"} · {perm.action_label}</Card.Title>
+              <Card.Description class="break-words">{perm.site || (perm.google ? (perm.action.startsWith("calendar_") ? "Google Calendar" : "Gmail") : "Desktop")}</Card.Description>
             </Card.Header>
             <Card.Content class="grid gap-3 text-sm">
               {#if perm.detail}<!-- svelte-ignore a11y_no_noninteractive_tabindex -->

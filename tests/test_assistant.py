@@ -873,3 +873,117 @@ async def test_an_owner_change_before_delivery_drops_the_message(make_app):
     app.dispatch._compose_turn = compose_then_lose_the_owner
     await app.assistant.tick(app.dispatch.now())
     assert app.bot.of("send", OWNER) == [] and app.bot.of("send", FRIEND) == []
+
+
+# ---- gate round 1 (Neon): rescue, status across midnight, text-only plans, the turn slot -----------------------------
+
+
+async def test_a_prose_reply_to_a_plan_is_not_rescued_by_jev(make_app):
+    from test_salvage import FakeJev
+
+    jev = FakeJev()
+    app = await ready(make_app, "good morning, here is your day: pay the rent today", PLAN)
+    app.dispatch.jev = jev
+    await remind(app)
+    await app.assistant.tick(app.dispatch.now())
+    assert jev.calls == []  # a Jev call the plan's spend gate would not cover never happens
+    assert len(sent(app)) == 1  # the tool-free plan was asked again and answered in JSON
+
+
+async def test_a_wrap_up_that_waited_past_midnight_is_marked_late(make_app):
+    at = datetime(2026, 1, 1, 21, 35, tzinfo=timezone.utc)  # five minutes past the 21:30 wrap-up
+    app = await ready(make_app, PLAN, morning="", evening="21:30", at=at)
+    await remind(app)
+    await app.dispatch.presence.sleep(OWNER, parse_habits(""))
+    app.dispatch.presence.sleep_until = None
+    await app.assistant.tick(app.dispatch.now())
+    assert (await last(app, "evening"))["state"] == "asleep"
+    app.dispatch.now.at = datetime(2026, 1, 2, 0, 45, tzinfo=timezone.utc)  # the three hours ended at 00:30, tomorrow
+    await app.assistant.tick(app.dispatch.now())
+    skipped = await last(app, "evening")
+    assert (skipped["day"], skipped["state"]) == ("2026-01-01", "late")
+    assert sent(app) == []
+
+
+async def test_a_plan_is_text_only_and_offers_no_media(make_app, monkeypatch):
+    from dom import dispatch as dispatch_module
+    from dom.gifs import GIF_NOTE
+
+    app = await ready(make_app, PLAN, PLAN)
+    app.gifs = object()
+    offered = []
+    real = dispatch_module.run_turn
+
+    async def spy(*args, **kwargs):
+        offered.append(kwargs.get("media_offered", "absent"))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(dispatch_module, "run_turn", spy)
+    until = app.dispatch.now() + timedelta(hours=1)
+    args = (OWNER, "owner_dm", None, None, [], until, 0, False, parse_habits(""))
+    await app.dispatch._compose_turn(*args)
+    assert GIF_NOTE in plan_request(app) and offered[-1] is not None  # an owner turn offers them
+    await app.dispatch._compose_turn(*args, tool_free=True)
+    assert GIF_NOTE not in plan_request(app) and "can send" not in plan_request(app)
+    assert offered[-1] is None  # no media-promise check, so no paid nudge
+
+
+async def test_a_plan_and_an_owner_turn_never_compose_at_once(make_app):
+    import asyncio
+
+    from dom.telegram import handlers
+    from tghelpers import drain_dispatch, tg
+
+    reply = json.dumps({"no_response": False, "react": None, "bubbles": [{"text": "hey, here"}]})
+    app = await ready(make_app, PLAN, reply, PLAN)
+    await remind(app)
+    compose = app.dispatch._compose_turn
+    events, release = [], asyncio.Event()
+
+    async def watched(*args, **kwargs):
+        who = "plan" if kwargs.get("tool_free") else "owner"
+        events.append(f"{who} compose")
+        if who == "plan":
+            await release.wait()
+        actions = await compose(*args, **kwargs)
+        events.append(f"{who} composed")
+        return actions
+
+    app.dispatch._compose_turn = watched
+    plan = asyncio.create_task(app.assistant.tick(app.dispatch.now()))
+    while not events:
+        await asyncio.sleep(0)
+    await handlers.handle_message(app, tg(OWNER, OWNER, "hello", msg_id=90))
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert events == ["plan compose"]  # the owner's turn waits for the plan's slot
+    release.set()
+    await plan
+    await drain_dispatch(app.dispatch)
+    assert events == ["plan compose", "plan composed", "owner compose", "owner composed"]
+    # The owner wrote while the plan was composed, so the plan is held, not sent over their message.
+    assert [call[2] for call in sent(app)] == ["hey, here"]
+    assert await claim(app) == "deferred" and (await last(app))["state"] == "busy"
+
+    app.dispatch._compose_turn = compose
+    app.dispatch.now.advance(minutes=10)
+    await app.assistant.tick(app.dispatch.now())
+    assert await claim(app) == "sent"  # the next tick inside the window sends it, once
+
+
+async def test_a_plan_waits_while_a_message_of_the_owners_is_still_unanswered(make_app, monkeypatch):
+    """Gate round 4: a message still in its debounce is unread. The plan must not land ahead of the reply to it."""
+    app = await ready(make_app, PLAN)
+    await remind(app)
+    real = app.store.get_unread
+
+    async def one_unread(chat_id, *args, **kwargs):
+        found = await real(chat_id, *args, **kwargs)
+        return (1, *found[1:])
+
+    monkeypatch.setattr(app.store, "get_unread", one_unread)
+    await app.assistant.tick(app.dispatch.now())
+    assert sent(app) == [] and app.script.requests == []  # no claim spent, no model call
+    monkeypatch.setattr(app.store, "get_unread", real)
+    await app.assistant.tick(app.dispatch.now())
+    assert len(sent(app)) == 1

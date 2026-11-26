@@ -11,11 +11,12 @@ block in the owner DM's turn note. Off, nothing here runs.
   goes out at most once a day, restarts and concurrent ticks included. A message is sent late only within `WINDOW` of
   its scheduled instant (resolved in the owner's timezone and compared in UTC, so DST cannot stretch it); after that
   the day is skipped.
-- Dom asleep defers the message until he is up, within the window; if he falls asleep while it is being written the
-  claim goes back to `deferred`. Offline is not a reason to wait: like an opener, the message brings him online.
+- Dom asleep defers the message until he is up, within the window; if he falls asleep, or the owner writes, while it
+  is being written the claim goes back to `deferred`. Offline is not a reason to wait: like an opener, the message brings him online.
 - Facts and the calendar are gathered for the claimed date, so a late wrap-up still covers the day it belongs to.
-- The message is one tool-free completion (no tool is offered, so none can run), and the switch and the owner target
-  are checked again immediately before delivery.
+- The message is one tool-free, text-only completion (no tool, media, sticker or GIF is offered, and no prose rescue
+  runs), composed and delivered under the owner DM's turn slot like an owner turn, and the switch, the owner target and
+  the newest chat message are checked again immediately before delivery.
 - The facts come from code (calendar only when Google is connected and Calendar read is on, reminders, goals, the
   weather and holiday line); with nothing worth saying nothing is sent and no model is called.
 - Privacy: everything here is filtered in code to the owner DM (`scope == "owner_dm"` and `chat_id == owner_id`).
@@ -53,12 +54,14 @@ OFFERED = "assistant:offered"
 LABELS = {
     "sent": "Sent",
     "asleep": "Waiting: Dom is asleep",
+    "busy": "Waiting: you wrote while it was being written",
     "blocked": "Not sent: a spend cap or the chat's approval stopped it",
     "nothing": "Nothing worth saying",
-    "late": "Skipped: Dom was not up within three hours of its time",
+    "late": "Skipped: it could not go out within three hours of its time (Dom asleep, or you were chatting)",
     "failed": "Not sent: the model or Telegram failed",
     "off": "Not sent: assistant mode was turned off while it was being written",
 }
+WAITING = ("asleep", "busy")  # the states that wait for a later tick inside the window
 KEEP_CLAIMS = timedelta(days=7)
 INSTRUCTIONS: dict[Kind, str] = {
     "morning": (
@@ -142,14 +145,22 @@ class Assistant:
         if held not in (None, "deferred"):
             return
         if now - due > WINDOW:
-            # Too late: the day is skipped. Only today's slot is worth saying so about; yesterday's is just over.
-            if day == now.astimezone(tz).date():
+            # Too late: the day is skipped. Say so for today's slot, and for an earlier day that was waiting (Dom
+            # asleep, the owner mid-conversation) when its window ended, which can be after midnight. A day nobody
+            # was waiting on is just over, and the status says nothing about it.
+            last = await self._last(kind)
+            waiting = held == "deferred" or (
+                last is not None and last.get("day") == day.isoformat() and last.get("state") in WAITING
+            )
+            if day == now.astimezone(tz).date() or waiting:
                 await self._record(kind, day, "late", now)
             return
         owner = self._owner()
         dispatch = app.dispatch
-        if dispatch.turn_running(owner) or app.locks[owner].locked():
-            return  # the owner is mid-conversation: try again on the next tick, still inside the window
+        if dispatch.turn_running(owner) or app.locks[owner].locked() or (await app.store.get_unread(owner))[0] > 0:
+            # The owner is mid-conversation, or wrote something Dom has not answered yet (still in its debounce):
+            # try again on the next tick, still inside the window, so the plan never lands ahead of that reply.
+            return
         habits = read_habits(app.home)
         state, _ = dispatch.presence.peek(await app.store.get_presence(owner), habits)
         if state == "asleep":
@@ -168,7 +179,7 @@ class Assistant:
             outcome = "blocked"
         except Exception:
             log.exception("could not send the assistant's %s message", kind)
-        if outcome == "asleep":  # he fell asleep while it was written: a later tick inside the window may send it
+        if outcome in WAITING:  # he fell asleep, or the owner wrote, while it was written: try again in the window
             await app.store.kv_swap(claim, "generating", "deferred")
         else:
             await app.store.kv_set(claim, outcome)
@@ -190,19 +201,20 @@ class Assistant:
             if len(stamp) == 10 and stamp[4] == "-" and stamp < oldest:
                 await store.kv_delete(key)
 
+    async def _last(self, kind: Kind) -> dict | None:
+        try:
+            last = json.loads(await self.app.store.kv_get(f"assistant:{kind}:last") or "null")
+        except ValueError:
+            return None
+        return last if isinstance(last, dict) else None
+
     async def _record(self, kind: Kind, day: date, state: str, now: datetime) -> None:
         """What the dashboard shows. Written only when it changes, so a message that waits does not rewrite it."""
-        key = f"assistant:{kind}:last"
         label = day.isoformat()
-        previous = await self.app.store.kv_get(key)
-        try:
-            same = previous is not None and {k: json.loads(previous).get(k) for k in ("day", "state")} == {
-                "day": label, "state": state,
-            }
-        except ValueError:
-            same = False
+        previous = await self._last(kind)
+        same = previous is not None and (previous.get("day"), previous.get("state")) == (label, state)
         if not same:
-            await self.app.store.kv_set(key, json.dumps({
+            await self.app.store.kv_set(f"assistant:{kind}:last", json.dumps({
                 "day": label, "state": state, "at": now.astimezone(timezone.utc).isoformat(),
             }))
 
@@ -220,28 +232,33 @@ class Assistant:
         habits = read_habits(app.home)
         with dispatch.protect_send() as commit:
             async with turn_log.capture(store, now, owner, "owner_dm"):
-                async with app.locks[owner]:
-                    window = await dispatch._window(owner)
-                    state, until = dispatch.presence.peek(await store.get_presence(owner), habits)
-                minutes = None  # an offline Dom comes online by texting first, as with an opener
-                if state != "online" or until is None:
-                    minutes = dispatch.presence.session_minutes(habits)
-                    until = dispatch.now() + timedelta(minutes=minutes)
-                with model_request("assistant", owner, partial(dispatch.background_allowed, owner)):
-                    await check_model_allowed()
-                    actions = await dispatch._compose_turn(
-                        owner, "owner_dm", None, None, window, until, 0, False, habits, extra_note=note,
-                        tool_free=True,
-                    )
-                # Text only, to the owner: a plan never carries media, a sticker or a private reply.
-                actions = actions.model_copy(update={
-                    "react": None, "sticker": None, "gif": None, "voice": None, "video_note": None, "image": None,
-                    "image_place": None, "outfit": None, "elsewhere": None, "private": False,
-                })
-                if actions.no_response or not actions.bubbles:
-                    turn_log.outcome(f"Nothing to say in the {kind} plan")
-                    return "nothing"
+                # The owner DM's turn slot, as an owner turn holds it from compose to delivery: a plan and an owner
+                # turn never compose at once, and `assistant:offered` is read and written by one of them at a time.
                 async with dispatch._dispatch_slot(owner, wait_media=False):
+                    if (await store.get_unread(owner))[0] > 0:
+                        return "busy"  # the owner wrote while the slot was being taken: their reply comes first
+                    latest = await store.latest_chat_message(owner)
+                    async with app.locks[owner]:
+                        window = await dispatch._window(owner)
+                        state, until = dispatch.presence.peek(await store.get_presence(owner), habits)
+                    minutes = None  # an offline Dom comes online by texting first, as with an opener
+                    if state != "online" or until is None:
+                        minutes = dispatch.presence.session_minutes(habits)
+                        until = dispatch.now() + timedelta(minutes=minutes)
+                    with model_request("assistant", owner, partial(dispatch.background_allowed, owner)):
+                        await check_model_allowed()
+                        actions = await dispatch._compose_turn(
+                            owner, "owner_dm", None, None, window, until, 0, False, habits, extra_note=note,
+                            tool_free=True,
+                        )
+                    # Text only, to the owner: a plan never carries media, a sticker or a private reply.
+                    actions = actions.model_copy(update={
+                        "react": None, "sticker": None, "gif": None, "voice": None, "video_note": None, "image": None,
+                        "image_place": None, "outfit": None, "elsewhere": None, "private": False,
+                    })
+                    if actions.no_response or not actions.bubbles:
+                        turn_log.outcome(f"Nothing to say in the {kind} plan")
+                        return "nothing"
                     # The model call took a while: check again, right before delivery, that this is still wanted.
                     if not app.config.assistant.enabled or self._owner() != owner:
                         turn_log.outcome(f"Dropped the {kind} plan: assistant mode was turned off")
@@ -249,15 +266,18 @@ class Assistant:
                     state, _ = dispatch.presence.peek(await store.get_presence(owner), habits)
                     if state == "asleep":
                         return "asleep"
+                    if await store.latest_chat_message(owner) != latest:  # the owner wrote while it was composed
+                        turn_log.outcome(f"Held the {kind} plan: the owner wrote while it was composed")
+                        return "busy"
                     if minutes is not None:
                         await dispatch.presence.go_online(owner, habits, minutes)
                     sent = await executor.perform(
                         app.bot, store, owner, None, actions, sleep=app.sleep, now=dispatch.now, before_send=commit,
                     )
-                turn_log.outcome(f"Sent the {kind} plan" if sent else f"Could not send the {kind} plan")
-                if sent:
-                    await self.delivered(owner, "owner_dm", [bubble.text for bubble in actions.bubbles])
-                return "sent" if sent else "failed"
+                    turn_log.outcome(f"Sent the {kind} plan" if sent else f"Could not send the {kind} plan")
+                    if sent:
+                        await self.delivered(owner, "owner_dm", [bubble.text for bubble in actions.bubbles])
+                    return "sent" if sent else "failed"
 
     # ---- what each message is about -------------------------------------------------------------------------------
 
