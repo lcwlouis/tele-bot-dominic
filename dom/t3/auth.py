@@ -18,6 +18,8 @@ from dom.t3.service import BASE_DIR, _package_entry
 
 TOKEN_FILE = "t3-token.json"
 REDIRECT = "http://127.0.0.1:39732/callback"
+# What the sign-in asks T3 Code for: reading projects and threads, and operating them (Dom only sends after a tap).
+SCOPES = ("orchestration:read", "orchestration:operate")
 
 
 def command(config):
@@ -46,8 +48,8 @@ def connect(base_url, token_path, cli, base_dir, *, transport=None, runner=subpr
             })
             client_id = registered["client_id"]
             pairing = cli_json(cli, [
-                "auth", "pairing", "create", "--base-dir", base_dir, "--scope", "orchestration:read",
-                "--scope", "orchestration:operate", "--ttl", "5m", "--label", "Dom", "--json",
+                "auth", "pairing", "create", "--base-dir", base_dir, *(arg for scope in SCOPES for arg in ("--scope", scope)),
+                "--ttl", "5m", "--label", "Dom", "--json",
             ], runner)
             decision, _ = request(http, base + "/oauth/mcp/decision", json={
                 "authorization": {"response_type": "code", "client_id": client_id, "redirect_uri": REDIRECT,

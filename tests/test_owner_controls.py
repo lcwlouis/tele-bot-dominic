@@ -359,7 +359,7 @@ async def test_wake_with_a_target_stays_silent(make_app):
 
 # ---- waking a chat that the spend cap has paused ---------------------------------------------
 
-PAUSED = "Dom is up in {}, but friends' chats are paused by today's spend cap"
+PAUSED = "Dom is up in {}, but friends' chats are paused by a spend cap"
 
 
 async def spend_over_the_cap(app):

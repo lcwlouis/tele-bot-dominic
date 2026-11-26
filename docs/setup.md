@@ -53,6 +53,24 @@ credentials. To disable web search, remove `[models.search]`. See the
 [configuration reference](configuration.md) for per-role fallback chains
 (`[[models.<role>.fallbacks]]` and `[models.fallback]`) and all defaults.
 
+## Where the studio runs
+
+`dom setup <home>` asks where the media studio (voice notes, round videos and photos)
+runs and writes the matching `[studio]` settings, keeping the old file as
+`config.toml.bak`. It first says once, as plain text, that zero data retention is
+recommended for every cloud model that sees your chats; the dashboard afterwards shows
+that as an info glyph, never as a warning.
+
+| Choice | What it writes |
+| --- | --- |
+| On this machine | `[studio] enabled = true` and `base_url` (default `http://127.0.0.1:8080`), with the token in `.env` as `STUDIO_TOKEN`. |
+| On a rented cloud GPU | The same, with the GPU's address and its token, both required. Reach the GPU over Tailscale, as [the studio guide](studio.md#where-the-studio-runs) says. |
+| External APIs only | The studio off (`enabled = false`, no address), the voice and photo switches on, and OpenRouter voice and photo backups using `OPENROUTER_MEDIA_API_KEY`. Add that key to `.env`. Video stays off until you choose a backup: no OpenRouter video endpoint offers zero data retention. |
+
+Skip the questions with `dom setup <home> --studio local|cloud|apis --studio-url <address>`.
+The token is only ever asked for at a hidden prompt, never as an argument. Backups you
+already configured are kept.
+
 ## Optional: GIFs
 
 Dom can send reaction GIFs when `KLIPY_API_KEY` is set in `.env`. Without it the
@@ -87,6 +105,59 @@ A new group or a stranger's DM starts pending. Dom sends an approval request to
 the owner, with the chat's Telegram ID and the first message, and stays silent in
 that chat until approved. Use the approval buttons
 or send `/pending` in the owner DM to resend pending requests.
+
+## Spend limits
+
+`daily_spend_cap_usd` (default `1.0`) is the normal daily pace and
+`monthly_spend_cap_usd` (off by default; set it, for example to `30`) a hard ceiling for the
+calendar month in `timezone`. Both cover every paid call: chat, media, search, desktop tasks, embeddings,
+summaries and studio cloud backups. Zero turns a cap off. When either is reached,
+friends' chats and background work pause, and you get one message per day or month.
+Your own DM is never paused by a cap unless `cap_owner_dm = true`; either way, what it
+spends counts toward the totals.
+
+`[area_spend_caps_usd]` sets an optional monthly limit per area: `chat` (replies, triage,
+the leak check, escalation), `media` (reading attachments, studio voice, photos and
+video), `search`, `desktop` and `memory` (the memory pass, reflection, summaries,
+embeddings). An area at its limit pauses that work until the 1st while the others
+go on. One-offs such as event days draw only on the month's unused budget and never pass the
+monthly cap or their area's limit; a cost that a provider reports late counts once it
+arrives. OpenRouter's own key limits remain a second safety net.
+
+The dashboard's Spend view reads `GET /api/spend` (today, the month so far, each area,
+the caps, what is left and a 30-day daily series by area), and `POST /api/spend/caps`
+saves the caps like any other setting: validated, written to `config.toml`, applied
+without a restart.
+
+## The leak scan
+
+`leak_scan` sets how firmly the Jev check holds back a reply or an online plugin call:
+`strict` (score 0.7), `standard` (1.2, the default and the old `leak_threshold`),
+`relaxed` (2.0) or `off`. Jev scores a message from 0 (nothing private) through 1 (a vague
+allusion) and 2 (reveals a private fact) to 3 (reveals several or sensitive facts), so
+strict holds a mere hint, standard anything beyond an allusion, and relaxed only what
+reveals a fact. `off` skips the Jev check; the local check for credentials and
+verbatim private notes in public files and plugin inputs always stays on. An older
+`leak_threshold` still works while `leak_scan` is unset and is shown as the nearest level, or
+as custom. `GET` and `POST /api/leak-scan` read and set it.
+
+## Services
+
+`GET /api/services` lists what has no other home in Settings, each with a label, a state
+(`ok`, `missing`, `error` or `off`), a one-line detail and its editable fields: the KLIPY
+key, the local studio's address and token, the desktop hosts and T3 Code (whether it is
+on, whether it is signed in, its version, what it may do, and the sign-in and audit
+commands). `POST /api/services/save` changes fields and `POST /api/services/test` makes
+one harmless real request. A secret is only ever written to `.env`; it is never returned.
+KLIPY and the studio apply at once; desktop hosts and the T3 switch are read at startup.
+
+## Menu cards
+
+The owner cards with a Close button (`/status`, `/chats`, `/preset`, `/plugins`,
+`/proposals`, `/reminders` and the like) delete themselves `menu_card_minutes` (default
+45, `0` keeps them) after they were sent. Dom records each card in its database, checks
+once a minute and at startup, so a restart forgets none. Telegram will not delete a
+message older than 48 hours, so a card that old only loses its buttons.
 
 ## Owner commands
 

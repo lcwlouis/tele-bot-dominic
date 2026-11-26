@@ -213,8 +213,9 @@ Cloudflare. Keep local bearer-token testing on loopback.
   bounded selection of headings, names, numbers and other terms from owner notes
   to the configured Jev endpoint. At or above the configured threshold Dom holds
   back the text and alerts the owner. If Jev cannot score the text, Dom may send
-  it and record that the check was unavailable. `leak_check = false` turns off
-  this additional check. The chat-scope boundary still applies. Proposed studio
+  it and record that the check was unavailable. `leak_scan` (`strict`, `standard`,
+  `relaxed` or `off`; see [the leak scan](setup.md#the-leak-scan)) sets the threshold,
+  and `off`, like `leak_check = false`, turns off this additional check. The chat-scope boundary still applies. Proposed studio
   speech and scenes go through a local credential and private-note check before
   media generation, including in the owner DM. Outside the owner DM they also go
   through the configured Jev check, so in the owner DM speech and scenes can reach

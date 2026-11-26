@@ -13,6 +13,7 @@ from random import Random
 from typing import Any, Awaitable, Callable, Collection
 from zoneinfo import ZoneInfo
 
+import httpx
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
@@ -75,6 +76,7 @@ class App:
     search_client: SearchClient | SearchRouter | None = None
     gifs: GifSearch | None = None
     studio: StudioClient | None = None
+    studio_http: httpx.AsyncClient | None = None  # the studio's client, which ignores proxy settings (cli.py)
     cloud_studio: CloudStudio | None = None
     studio_quota: StudioQuota = field(init=False)
     media_files: MediaFiles = field(init=False)  # the media Dom sent, kept on disk
@@ -438,11 +440,11 @@ async def handle_message(app: App, message: Message) -> None:
             await owner.record_event(app, f"{who} ran /pending: {await owner.pending_summary(app)}")
             return
         if command == "/status":
-            await owner.send_view(app.bot, msg.chat_id, await owner.render_status(app), sleep=app.sleep)
+            await owner.show_view(app, msg.chat_id, await owner.render_status(app))
             await owner.record_event(app, f"{who} ran /status: {await owner.status_summary(app)}")
             return
         if command == "/chats":
-            await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app), sleep=app.sleep)
+            await owner.show_view(app, msg.chat_id, await owner.render_chats(app))
             await owner.record_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
             return
         if command == "/stickers":
@@ -643,6 +645,7 @@ async def _close_card(app: App, query: CallbackQuery) -> None:
     """Close removes the whole card. Telegram refuses to delete messages older than 48 hours, so then only its buttons go."""
     if query.message is None:
         return
+    await app.store.forget_menu_card(query.message.chat.id, query.message.message_id)  # nothing left to expire
     try:
         await retry_telegram(
             lambda: app.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id),
@@ -665,7 +668,7 @@ async def _refresh_status(app: App, query: CallbackQuery) -> None:
     if query.message is None:
         return
     chat_id = query.message.chat.id
-    await owner.send_view(app.bot, chat_id, await owner.render_status(app), sleep=app.sleep)
+    await owner.show_view(app, chat_id, await owner.render_status(app))
     await owner.delete_message(app.bot, chat_id, query.message.message_id, sleep=app.sleep)
 
 

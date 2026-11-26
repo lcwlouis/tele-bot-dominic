@@ -29,6 +29,8 @@ from dom.web.auth import Auth, fetch_site_ok, request_origin, same_origin
 from dom.web.desktop import VIEWER_JSON_POSTS, VNC_PATH, VNC_SOCKET, router as desktop_router
 from dom.web.model_settings import JSON_POSTS, is_json, router as model_settings_router
 from dom.web.provider_settings import JSON_POSTS as PROVIDER_POSTS, router as provider_settings_router
+from dom.web.services_settings import JSON_POSTS as SERVICES_POSTS, router as services_settings_router
+from dom.web.spend_settings import JSON_POSTS as SPEND_POSTS, router as spend_settings_router
 from dom.web.studio_settings import JSON_POSTS as STUDIO_POSTS, router as studio_settings_router
 from dom.web.redirects import router as redirects_router
 
@@ -71,7 +73,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
         elif request.method not in ("GET", "HEAD") and not (
             request.method == "POST"
             and request.url.path in (
-                JSON_POSTS | PROVIDER_POSTS | STUDIO_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS
+                JSON_POSTS | PROVIDER_POSTS | STUDIO_POSTS | SPEND_POSTS | SERVICES_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS
                 | MEMORY_POSTS | WORK_POSTS | WAITING_POSTS | SYSTEM_POSTS | GOALS_POSTS | NOTICINGS_POSTS | MEDIA_POSTS
             )
             and is_json(request) and "Origin" in request.headers
@@ -116,6 +118,8 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.include_router(model_settings_router)
     web.include_router(provider_settings_router)
     web.include_router(studio_settings_router)
+    web.include_router(spend_settings_router)
+    web.include_router(services_settings_router)
     web.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
     return web
