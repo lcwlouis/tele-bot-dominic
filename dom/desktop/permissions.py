@@ -661,7 +661,9 @@ class DesktopPermissions:
         outcome = await self.ask(request, action, "", detail, DEFAULT, lines, APPROVAL_TIMEOUT, dashboard_only)
         if outcome not in ("allowed_once", "allowed_always"):
             said = {"expired": "timed out", "cancelled": "was cancelled"}.get(outcome, "was rejected")
-            await store.record_owner_event(f"{label} {said}; nothing changed. ({detail[:120]})")
+            # The detail names things others wrote (an invite's title, a draft's subject): fenced as untrusted, as
+            # desktop task text is, so the DM's history never reads it as Dom's own record.
+            await store.record_owner_event(f"{label} {said}; nothing changed. " + desktop_tools.untrusted(detail, limit=400))
             return
         if (problem := await guard()) is not None:  # the switch or the account changed while it waited
             await store.record_owner_event(f"{label} was approved but not run; nothing changed. {problem.removeprefix('error: ')}"[:400])
@@ -674,7 +676,7 @@ class DesktopPermissions:
         failed = result.startswith(("error", "uncertain"))
         if outcome == "allowed_always" and not failed:
             await self.app.store.set_desktop_action_policy(action, "allow", self._now())
-        await store.record_owner_event(f"{label} approved. {result}"[:400])
+        await store.record_owner_event(f"{label} approved. " + desktop_tools.untrusted(result, limit=600))
         if failed:
             try:
                 await send_notice(self.app, self.app.owner_id, f"{label}: not confirmed", [result.split(": ", 1)[-1]])

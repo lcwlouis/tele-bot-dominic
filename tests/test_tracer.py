@@ -207,7 +207,7 @@ async def test_an_owner_dm_turn_is_traced_in_full(traced):
     body = row["body"]
     assert row["turn_id"] == turn["id"] == body["turn_id"] and body["kind"] == "turn" and body["scope"] == "owner_dm"
     types = [event["type"] for event in body["events"]]
-    for expected in ("arrival", "prompt", "model_call", "actions", "delivery"):
+    for expected in ("arrival", "window", "prompt", "model_call", "actions", "delivery"):
         assert expected in types
     call = next(event for event in body["events"] if event["type"] == "model_call")
     assert call["request"]["messages"][0]["role"] == "system"

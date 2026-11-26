@@ -1065,21 +1065,40 @@ class DesktopWorker:
             await client.upload_file(path, data)
             run.screenshots[path] = hashlib.sha256(data).digest()
             return {"path": path}
+        navigates = name in ("browse", "click", "press", "fill")
+        if name == "browse":
+            before = normalize_site(url_host(args["url"]) or "")  # its target was checked above
+        elif navigates:
+            before = normalize_site(await self._browser_host(client) or "")
         result = await self._tool(client, name, args)
-        if name in ("browse", "click", "press", "fill"):
+        if navigates:
             host = await self._browser_host(client)
             if host and (canonical := normalize_site(host)):
                 if await self.app.desktop_permissions.resolve("visit_site", canonical) == "never":
-                    try:
-                        await client.navigate("about:blank")
-                    except Exception:
-                        pass
+                    await self._close_page(client)
                     await self.app.desktop_permissions.record_decision(
                         action="visit_site", site=canonical, detail="Redirected to blocked site",
                         status="blocked", decided_via="policy", task_id=run.task_id,
                     )
                     return f"Blocked: {canonical} is set to Never, so the page was closed."
+                if canonical != before:
+                    # A link, a form or a redirect reached a site the action did not name: the same Ask, Allow or
+                    # Never as opening it with browse, so Ask raises a card here too (credentials spec §5.1).
+                    has_rule = bool(await self.app.store.get_desktop_site_permission(canonical, "visit_site"))
+                    refusal = await self._check_permission(
+                        run, "visit_site", host, f"Reached {canonical} after {name}", log_auto=has_rule,
+                    )
+                    if refusal is not None:
+                        await self._close_page(client)
+                        return f"{refusal} The page was closed."
         return result
+
+    @staticmethod
+    async def _close_page(client: SandboxClient) -> None:
+        try:
+            await client.navigate("about:blank")
+        except Exception:
+            pass
 
     async def _tool(self, client: SandboxClient, name: str, args: dict) -> object:
         if name == "skill_view":

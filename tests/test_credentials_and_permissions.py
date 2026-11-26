@@ -1537,3 +1537,40 @@ async def test_recheck_nits_wildcard_dns_secret_expiry_race_and_rotate_key_messa
     assert code == 1
     out = capsys.readouterr().out.lower()
     assert "stop" in out and "stale" in out and "ready.json" in out
+
+
+async def test_ask_on_visit_site_also_asks_when_a_click_reaches_a_new_site(make_app):
+    """Spec §5.1: a link, a form or a redirect that lands on a site the action did not name gets the same Ask card as
+    browse; a rejection closes the page. Clicking within the same site never asks."""
+    app = make_app()
+    await app.desktop_permissions.set_policy("visit_site", "ask")
+    await app.desktop_permissions.set_site_rule("docs.example.org", "visit_site", "allow")
+    navigated: list[str] = []
+    worker = await worker_for(
+        app,
+        call("click", selector_or_index="#same-site"),
+        call("click", selector_or_index="#offsite"),
+        call("finish", result="stopped"),
+        {"content": '{"bubbles":[{"text":"done"}]}'},
+    )
+    worker.sandbox.url = "https://docs.example.org/start"
+    clicks = iter(["https://docs.example.org/page2", "https://tracker.example.net/landing"])
+
+    async def click(selector_or_index):
+        worker.sandbox.url = next(clicks)
+        return {"ok": True}
+
+    async def nav(url):
+        navigated.append(url)
+        worker.sandbox.url = url
+
+    worker.sandbox.click = click
+    worker.sandbox.navigate = nav
+    await worker.enqueue(OWNER, "Read docs")
+    pending = await _wait_for_pending_perm(app)
+    assert pending["action"] == "visit_site" and pending["site"] == "tracker.example.net"
+    ok, _ = await app.desktop_permissions.decide(pending["id"], "reject", via="dashboard")
+    assert ok
+    await wait_task(worker)
+    assert navigated == ["about:blank"]  # the off-site page was closed; the same-site click asked nothing
+    assert "The page was closed" in json.dumps(app.client.requests)

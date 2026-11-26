@@ -82,7 +82,7 @@ redirect, so that one `GET` path alone skips the token check. It authenticates i
 authenticated (and sets the `HttpOnly`, `Secure`, `SameSite=Lax` binding cookie for exactly one single-use `state`), and
 the callback succeeds only when the unexpired, unused `state` in the URL matches that cookie. A request without the
 cookie, with a wrong, expired or replayed `state`, or that is not a navigation (`Sec-Fetch-Mode` other than `navigate`),
-is redirected to a generic failure with no side effect at all (no setting, cookie or state is touched); every other path and every other method still needs the token. Behind
+is redirected to a generic failure (a request that is not a top-level navigation gets a plain 403) with no side effect at all (no setting, cookie or state is touched); every other path and every other method still needs the token. Behind
 Cloudflare Access the same checks apply on top of Access's own gate.
 
 ## Approvals

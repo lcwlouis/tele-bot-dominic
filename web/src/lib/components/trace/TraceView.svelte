@@ -20,10 +20,11 @@
   const calls = $derived(of(["model_call"]));
   const chatCall = $derived(calls.find((call) => call.kind === "chat" || call.kind === "escalation"));
   const prompt = $derived(of(["prompt"]));
+  const windows = $derived(of(["window"]));
   const tools = $derived(of(["tool"]));
   const checks = $derived(of(["actions", "leak_check", "look"]));
   const delivery = $derived(of(["delivery", "reaction", "studio", "studio_step"]));
-  const known = new Set(["arrival", "triage", "model_call", "prompt", "tool", "actions", "leak_check", "look", "delivery", "reaction", "studio", "studio_step"]);
+  const known = new Set(["arrival", "triage", "model_call", "prompt", "window", "tool", "actions", "leak_check", "look", "delivery", "reaction", "studio", "studio_step"]);
   const other = $derived(events.filter((event) => !known.has(event.type)));
 
   const duration = (ms: unknown) => (typeof ms !== "number" ? "—" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
@@ -118,6 +119,9 @@
 
     <section class="grid grid-cols-[minmax(0,1fr)] gap-2" aria-label="Prompt">
       {@render section("Prompt", messages.length, "The exact messages the chat model got, the tools it was offered with their schemas, and how much of it the provider had cached.")}
+      {#each windows as event, index (index)}
+        {@render line(event, "Window", `about ${num(event.tokens)} tokens · ${num(event.rows)} messages${event.trimmed ? " · trimmed this turn" : ""}${event.blocked ? " · trim waits for the memory pass" : ""}`)}
+      {/each}
       {#each prompt as event, index (index)}
         {@render line(event, "Fingerprint", `${str(event.fingerprint)} · ${num(event.messages)} messages · ${(event.tools as string[] | undefined)?.length ?? 0} tools`)}
       {/each}

@@ -101,7 +101,8 @@ The body (version 1):
 |---|---|
 | `arrival` | presence state and `until`, catch-up, unread count and total, the newest message's id and time, queue waits (debounce, media, lock, away) |
 | `triage` | Jev's full verdict (action, confidence, done, skill, emoji), urgency or offline verdict, skills offered |
-| `prompt` | the prompt fingerprint, its message count, the tool names offered, the scope, and the prompt-cache state (tokens measured, whether a trim happened) |
+| `window` | the prompt-cache state: the chat window's estimated tokens and rows, whether this turn's window was trimmed, and whether a trim is waiting for the memory pass |
+| `prompt` | the prompt fingerprint, its message count, the tool names offered and the scope |
 | `model_call` | kind, model, host, URL path, fallback, status, duration, input, output and cached tokens, cost, **the full request body** and **the full response JSON** (reasoning included when the provider returns it), or the error |
 | `tool` | name, raw arguments, result, whether it was refused or not offered ("image is not a tool"), duration |
 | `actions` | the final actions object the model returned |

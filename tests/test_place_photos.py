@@ -224,3 +224,14 @@ async def test_a_real_turn_offers_only_the_places_its_chat_may_show(make_app, cl
     await deliver(app, tg(GROUP, FRIEND, "hello", 1))
     text = json.dumps(turn_requests(app)[0]["messages"])
     assert "the-gym" in text and "the-cafe" not in text
+
+
+async def test_a_place_known_only_through_the_owners_untagged_lines_is_not_shown_elsewhere(make_app):
+    app = make_app()
+    await app.place_photos.save("mums-flat", picture())
+    put(app.home, "memory/places/mums-flat.md", "- Mum's flat, door code 4471\n")
+    photos = app.place_photos
+    assert await photos.reference_for("mums-flat", "owner_dm", OWNER) == photos.read("mums-flat")
+    for scope, chat in (("group", GROUP), ("friend_dm", FRIEND)):
+        assert await photos.reference_for("mums-flat", scope, chat) is None
+        assert "mums-flat" not in photos.offer(scope, chat)

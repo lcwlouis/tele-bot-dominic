@@ -1676,7 +1676,10 @@ class Dispatcher:
             through_id=newest.id if newest is not None else None,
             thread_id=newest.thread_id if newest is not None else None,
         )
+        trimmed = window.trim_seq != self._trim_seq.get(chat_id, window.trim_seq)
         self._trim_seq[chat_id] = window.trim_seq
+        # The prompt-cache state for the tracer: the window's estimated size and whether this turn's prompt was trimmed.
+        turn_log.event("window", tokens=window.tokens, rows=len(window.rows), trimmed=trimmed, blocked=window.blocked)
         if window.blocked:
             self.request_memory_pass(chat_id)
         return window.rows

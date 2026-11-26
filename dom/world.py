@@ -273,10 +273,10 @@ class World:
         return "\n".join(filter(None, [self.line(), self.holiday_line(), sheet_block(home, scope, chat_id, window, now, self._now())]))
 
 
-def _lines(text: str, chat_id: int, owner_dm: bool) -> list[notes.Line]:
+def _lines(rel: str, text: str, chat_id: int, owner_dm: bool) -> list[notes.Line]:
     """A note's lines as this chat may read them: the owner's DM reads all, every other chat only its own and the
-    untagged and `{any}` ones. Filtered in code, whatever the prompt says."""
-    return [notes.parse_line(raw) for raw in (text if owner_dm else notes.limit_to_chat(text, chat_id)).split("\n")]
+    `{any}` ones, plus the untagged ones except in a place note, where they are the owner's. Filtered in code."""
+    return [notes.parse_line(raw) for raw in (text if owner_dm else notes.file_in_chat(rel, text, chat_id)).split("\n")]
 
 
 def _read(home: Home, rel: str) -> str:
@@ -293,7 +293,7 @@ def sheet_block(home: Home, scope: Scope, chat_id: int, window: Sequence, now: d
     sheet, section = [], ""
     slots: list[notes.Line] = []
     choices: dict[str, None] = {}
-    for line in _lines(_read(home, WORLD), chat_id, owner_dm):
+    for line in _lines(WORLD, _read(home, WORLD), chat_id, owner_dm):
         body = line.body.strip()
         if body.startswith("#"):
             section = body.lstrip("#").strip().lower()
@@ -335,7 +335,7 @@ def _places(home: Home, slots: list[notes.Line], chat_id: int, owner_dm: bool) -
     found = []
     for slug in slugs[:PLACE_LINES]:
         facts = [
-            re.sub(r"^[-*]\s+", "", line.body.strip()) for line in _lines(_read(home, f"memory/places/{slug}.md"), chat_id, owner_dm)
+            re.sub(r"^[-*]\s+", "", line.body.strip()) for line in _lines(f"memory/places/{slug}.md", _read(home, f"memory/places/{slug}.md"), chat_id, owner_dm)
             if notes.is_bullet(line.body)
         ]
         if facts:
