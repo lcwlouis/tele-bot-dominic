@@ -3,9 +3,12 @@
 timezone = "UTC"
 window_budget_tokens = 32000  # trim a chat's window when its prompt reaches this ...
 window_keep_tokens = 20000  # ... down to about this
-daily_spend_cap_usd = 1.0  # 0 disables the cap
+daily_spend_cap_usd = 1.0  # the normal daily pace; 0 disables the cap
+monthly_spend_cap_usd = 0  # set a monthly ceiling over every paid call, such as 30; 0 means no monthly cap
+cap_owner_dm = false  # true makes your own DM obey both caps too
+menu_card_minutes = 45  # Telegram menu cards delete themselves after this long; 0 keeps them
 leak_check = true  # needs the triage (Jev) model; skipped without it
-leak_threshold = 1.2
+leak_scan = "standard"  # strict, standard, relaxed or off
 ephemeral_replies = false
 memory_self_edit = false
 

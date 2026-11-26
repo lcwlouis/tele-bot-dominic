@@ -155,7 +155,7 @@ async def _summarise(app: App, owner: int, text: str, cap: int) -> str:
     ]
     async def allowed() -> bool:
         return await app.dispatch.model_allowed(owner) and not await app.dispatch.usage.over_cap(
-            app.config, app.bot, sleep=app.sleep,
+            app.config, app.bot, sleep=app.sleep, area="memory",
         )
 
     try:
