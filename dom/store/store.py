@@ -2462,6 +2462,22 @@ class Store:
 
         await self._run(rekey)
 
+    async def people_names(self) -> dict[str, str]:
+        """Each known person's name by Telegram user ID, as the dashboard labels their notes file: the name they
+        go by, else their display name, else their handle."""
+        def select() -> dict[str, str]:
+            rows = self._conn.execute(
+                "SELECT telegram_user_id, preferred_name, display_name, current_handle FROM people_identities "
+                "WHERE telegram_user_id IS NOT NULL",
+            ).fetchall()
+            names = {}
+            for user_id, preferred, display, handle in rows:
+                if name := (preferred or display or (f"@{handle}" if handle else "")).strip():
+                    names[str(user_id)] = name
+            return names
+
+        return await self._run(select)
+
     async def person_handle(self, user_id: int) -> str:
         def select() -> str:
             row = self._conn.execute(

@@ -382,6 +382,21 @@ class Home:
 
         return names("memory/people"), names("memory/chats")
 
+    def former_files(self) -> list[str]:
+        """Every `.former.md` file beside the notes, private ones too when this Home is private-scoped."""
+        found = []
+        folders = ("memory", "memory/people", "memory/chats", "memory/places", "memory/projects", "memory/goals")
+        for folder in (*folders, *(("private",) if self.allow_private else ())):
+            try:
+                base = self._regular_path(folder)
+            except ValueError:
+                continue
+            if base.is_dir():
+                found.extend(
+                    f"{folder}/{p.name}" for p in sorted(base.glob("*.former.md")) if p.is_file() and not p.is_symlink()
+                )
+        return found
+
     def list_entity_notes(self) -> list[str]:
         """Place, project and goal notes, excluding their read-only former siblings."""
         home = self.scoped(allow_private=False)

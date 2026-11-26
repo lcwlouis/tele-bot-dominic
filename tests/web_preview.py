@@ -268,6 +268,18 @@ async def seed(app: handlers.App) -> None:
     for chat_id, title in ((OWNER, "Owner"), (CREW, "Weekend crew"), (ALEX, "Alex")):
         await store.set_chat_auth_status(chat_id, "approved", title=title)
     await store.note_pending_chat(str(-4009), "Book swap", "Riley")
+    # Groups the current bot can no longer reach (E74): one listed with its history kept, one the owner hid.
+    for chat_id, title in ((-4005, "Old book club"), (-4006, "Hiking 2025")):
+        await store.set_chat_auth_status(chat_id, "approved", title=title)
+        await store.set_chat_reachable(chat_id, False, "bot was kicked")
+        store._conn.execute("UPDATE chats SET unreachable_at = ? WHERE chat_id = ?", ((now - timedelta(days=2)).isoformat(), str(chat_id)))
+    await store.hide_chat(-4006, True)
+    # Alex, by name: the Memory page labels a person's notes by who they are, not their ID.
+    store._conn.execute(
+        "INSERT OR IGNORE INTO people_identities (person_key, telegram_user_id, current_handle, known_handles_json, "
+        "display_name, preferred_name, profile_path, updated_at) VALUES ('uid_4002', 4002, 'alex_example', '[]', 'Alex', 'Alex', "
+        "'memory/people/4002.md', ?)", (now.isoformat(),),
+    )
 
     msg_id = 1
     for day in range(1, 14):  # a fortnight of evenings for the hourly bars
@@ -291,10 +303,27 @@ async def seed(app: handlers.App) -> None:
     for chat_id, text, minutes in replies:
         await message(app, chat_id, "assistant", text, msg_id, now - timedelta(minutes=minutes))
         msg_id += 1
+    for minutes, text in ((60 * 49, "See you all at the next meeting."), (60 * 50, "Has everyone finished the book?")):
+        await message(app, -4005, "user", text, msg_id, now - timedelta(minutes=minutes), ALEX)
+        msg_id += 1
 
     app.home._write_regular("SOUL.md", SOUL)
     app.home._write_regular("memory/MEMORY.md", "# Travel notes\n\n- Check weekday times.\n- Use Central as the default station.\n")
     app.home._write_regular("memory/people/river.md", "River prefers the early train.")
+    app.home._write_regular(f"memory/people/{ALEX}.md", (
+        "# Alex\n\n- Works as a nurse (as of 2026-11) {chat -4001}\n- Prefers tea to coffee {any}\n"
+        "- Plans a trip to the coast (until 2027-04-30) {chat -4001} {core dom 2026-11-20: she talks about it all the time}\n"
+        "- Allergic to peanuts {core owner 2026-11-21}\n"
+    ))
+    app.home._write_regular(f"memory/people/{ALEX}.former.md", "- Works at the bakery (as of 2025-06) {any} [former 2026-03-01: replaced]\n")
+    app.home._write_regular("memory/JOURNAL.md", (
+        "## 2026-11-21\nMood: easy, a little sleepy\nThe crew planned Saturday's trip and Alex finally booked the train.\n"
+        "Nudge: ask Alex how the night shift went.\n\n## 2026-11-22\nMood: bright\nA slow Sunday with long walks in the owner's DM.\n"
+    ))
+    app.home._write_regular("memory/journal/2026-09.md", (
+        "# Journal 2026-09\nWeek 2026-W36: The crew started planning trips again.\nMonth 2026-09: A quiet month of plans.\n\n"
+        "## 2026-09-03\nMood: curious\nRiver asked about the early train.\n"
+    ))
     app.home._write_regular(f"memory/chats/{CREW}.md", "The crew plans a trip on Saturdays.")
     app.home.scoped(allow_private=True)._write_regular("private/USER.md", "- Likes long walks\n")
     app.home._write_regular("stickers.toml", 'sets = ["example_set_by_examplebot"]\n')
@@ -336,6 +365,10 @@ async def seed(app: handlers.App) -> None:
     await store.update_self_task(ran["id"], ("planned",), "done", result="Saturday looks clear, 14 degrees.", files=["weather.png"])
     ended = (now - timedelta(hours=3)).isoformat()  # the store stamps real time; the screenshots need a fixed day
     store._conn.execute("UPDATE desktop_tasks SET finished_at = ? WHERE id = ?", (ended, finished))
+    # The store stamps real time on enqueue too: pin both tasks to the preview's clock, so the list's order and
+    # relative times hold in every screenshot.
+    store._conn.execute("UPDATE desktop_tasks SET created_at = ? WHERE id = ?", ((now - timedelta(minutes=20)).isoformat(), waiting))
+    store._conn.execute("UPDATE desktop_tasks SET created_at = ? WHERE id = ?", ((now - timedelta(hours=3, minutes=40)).isoformat(), finished))
     # Budgets: the waiting task started with 30 steps; the finished one was extended once with Keep going.
     store._conn.execute("UPDATE desktop_tasks SET steps = 12, steps_budget = 30 WHERE id = ?", (waiting,))
     store._conn.execute("UPDATE desktop_tasks SET steps = 41, steps_budget = 30, extra_steps = 30 WHERE id = ?", (finished,))

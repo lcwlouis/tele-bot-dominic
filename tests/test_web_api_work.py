@@ -17,6 +17,7 @@ WRITES = [
     ("/api/work/desk/computer", {"action": "start"}),
     ("/api/work/desk/done", {"task_id": 1, "steps": 0}),
     ("/api/work/desk/delete", {"id": 1, "expected": "x"}),
+    ("/api/work/desk/cancel", {"id": 1}),
     ("/api/work/own/cancel", {"id": 1}),
     ("/api/work/own/delete", {"id": 1, "expected": "x"}),
     ("/api/work/skills/action", {"name": "notes", "action": "retire"}),
@@ -372,3 +373,58 @@ async def test_reminders_bulk_cancel_never_cancels_a_new_reminder_that_reused_a_
         )).json()
     assert result["ok"] is False and "has changed" in result["message"]
     assert (await app.store.get_reminder(OWNER, reused))["status"] == "active"
+
+
+async def test_desk_cancel_stops_an_active_task_once_and_refuses_without_a_desktop(make_app, browser):
+    off = make_app()
+    async with browser(off) as client:
+        assert (await client.post("/api/work/desk/cancel", headers=JSON, json={"id": 1})).status_code == 409
+    app = make_app()
+    worker = await worker_for(app, call("handoff", reason="Sign in"), {"content": "invalid"})
+    task_id = await worker.enqueue(OWNER, "Example")
+    await wait_status(app, task_id, "waiting_owner")
+    async with browser(app) as client:
+        cancelled = await client.post("/api/work/desk/cancel", headers=JSON, json={"id": task_id})
+        assert cancelled.status_code == 200 and cancelled.json()["ok"] is True
+        assert cancelled.json()["message"] == f"Cancelled desktop task #{task_id}." and cancelled.json()["task"] is None
+        assert (await app.store.get_desktop_task(OWNER, task_id))["status"] == "cancelled"
+        again = await client.post("/api/work/desk/cancel", headers=JSON, json={"id": task_id})
+        assert again.json()["ok"] is False and "had already finished" in again.json()["message"]
+        assert (await client.post("/api/work/desk/cancel", headers=JSON, json={"id": 0})).status_code == 422
+
+
+async def test_a_link_to_an_older_task_or_reminder_brings_it_with_the_page(make_app, browser):
+    """Telegram notices link to one item (?task=, ?own=, ?id=): one older than the first page still comes."""
+    app = make_app()
+    desk_ids = []
+    for index in range(22):
+        task = await app.store.enqueue_desktop_task(OWNER, f"Task {index}")
+        await app.store.update_desktop_task(task, OWNER, ("queued",), "done", result="ok")
+        desk_ids.append(task)
+    active = await app.store.enqueue_desktop_task(OWNER, "Running now")
+    now = app.dispatch.now()
+    own = await app.store.add_self_tasks(
+        [{"goal": f"Plan {index}", "why": "", "tools": [], "sites": [], "minutes": 5, "steps": 5} for index in range(22)], now, now,
+    )
+    reminders = [await app.dispatch.reminders.create(f"2030-01-{index + 1:02d}T09:00:00", f"Reminder {index}") for index in range(26)]
+    for reminder in reminders:
+        await app.dispatch.reminders.cancel(reminder)  # settled ones sort after the active ones, newest first
+    for index in range(26):
+        await app.dispatch.reminders.create(f"2031-01-{index + 1:02d}T09:00:00", f"Later {index}")
+    async with browser(app) as client:
+        plain = [row["id"] for row in (await client.get("/api/work/desk")).json()["history"]]
+        assert desk_ids[0] not in plain and len(plain) == 19  # the last 20, less the one running
+        linked = [row["id"] for row in (await client.get("/api/work/desk", params={"task": desk_ids[0]})).json()["history"]]
+        assert linked == [*plain, desk_ids[0]]
+        # The task now is the desk's own; a link to it, or to nothing, adds no row.
+        for other in (active, 99_999):
+            assert [row["id"] for row in (await client.get("/api/work/desk", params={"task": other})).json()["history"]] == plain
+        assert (await client.get("/api/work/desk", params={"task": 0})).status_code == 422
+
+        first = own[0]["id"]
+        assert first not in [t["id"] for t in (await client.get("/api/work/own")).json()["tasks"]]
+        assert first in [t["id"] for t in (await client.get("/api/work/own", params={"own": first})).json()["tasks"]]
+
+        oldest = reminders[0]
+        assert oldest not in [r["id"] for r in (await client.get("/api/work/reminders")).json()["reminders"]]
+        assert oldest in [r["id"] for r in (await client.get("/api/work/reminders", params={"id": oldest})).json()["reminders"]]

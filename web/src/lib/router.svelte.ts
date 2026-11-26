@@ -13,9 +13,11 @@ function normalise(path: string): string {
 
 export const route = new Route();
 
-export function navigate(href: string) {
+/** Go to an /app page in place. `replace` swaps the current history entry (a link that only forwards). */
+export function navigate(href: string, { replace = false }: { replace?: boolean } = {}) {
   const url = new URL(href, location.href);
-  history.pushState({}, "", url);
+  if (replace) history.replaceState({}, "", url);
+  else history.pushState({}, "", url);
   route.path = normalise(url.pathname);
   route.search = url.search;
   window.scrollTo({ top: 0 });

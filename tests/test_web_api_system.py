@@ -134,6 +134,25 @@ async def test_a_settled_proposal_is_deleted_only_with_its_stamp(make_app, brows
         assert done["ok"] is True and done["settled"] == []
 
 
+
+async def test_a_link_brings_an_older_settled_proposal_beyond_the_latest(make_app, browser):
+    app = make_app()
+    old = await app.proposals.create("memory_fact", "Old fact", {"file": "NOTES.md", "text": "old"}, "reflection")
+    await app.proposals.decide(old, False)
+    for number in range(51):
+        later = await app.proposals.create("memory_fact", f"Fact {number}", {"file": "NOTES.md", "text": str(number)}, "reflection")
+        await app.proposals.decide(later, False)
+    pending = await app.proposals.create("memory_fact", "Still open", {"file": "NOTES.md", "text": "open"}, "reflection")
+    async with browser(app) as client:
+        latest = (await client.get("/api/waiting")).json()["settled"]
+        assert len(latest) == 50 and old not in {row["id"] for row in latest}
+        linked = (await client.get(f"/api/waiting?id={old}")).json()["settled"]
+        assert len(linked) == 51 and linked[-1]["id"] == old
+        assert {row["id"] for row in (await client.get(f"/api/waiting?id={pending}")).json()["settled"]} == {row["id"] for row in latest}
+        assert len((await client.get("/api/waiting?id=999999")).json()["settled"]) == 50
+        for bad in ("0", "-1", str(2**63), "x"):
+            assert (await client.get(f"/api/waiting?id={bad}")).status_code == 422
+
 # --- plugins ------------------------------------------------------------------------------------------------------
 
 

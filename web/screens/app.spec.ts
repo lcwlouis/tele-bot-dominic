@@ -2,6 +2,8 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
+/** tests/web_preview.py's NOW: the fictional Dom's clock, which the browser's is pinned to. */
+const PREVIEW_NOW = new Date("2026-11-22T20:30:00Z");
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
 const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string; region?: string; strip?: string; peek?: boolean; long?: boolean; all?: boolean; full?: boolean }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
@@ -34,12 +36,18 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "chats", path: "/app/chats", heading: "Chats" },
   { name: "chats-personality", path: "/app/chats", heading: "Chats", click: "Personality" },
   { name: "memory", path: "/app/memory", heading: "Memory" },
+  // A person's notes by name, previewed: source tags and pins as chips, not text.
+  { name: "memory-person", path: "/app/memory?file=memory/people/4002.md", heading: "Memory" },
+  // Every core memory, who pinned it and why.
+  { name: "memory-core", path: "/app/memory", heading: "Memory", click: "Core memories" },
   // On a phone the list is its own screen and a file opens full width; on a desktop the list stays beside it.
   { name: "memory-file", path: "/app/memory", heading: "Memory", click: "MEMORY.md" },
   // A memory file rendered as markdown: headings, a list, a code span, a link and a quote.
   { name: "memory-preview", path: "/app/memory?file=SOUL.md", heading: "Memory", tab: "Preview" },
-  // Work: the desk with a handoff waiting for the owner, Dom's own tasks and skills, reminders and a brief.
-  { name: "work-desk", path: "/app/work", heading: "Desk" },
+  // Work: one task list (desktop tasks and Dom's own) under the computer with a handoff waiting for the owner, then
+  // a task opened from a link, how Dom's own work runs with his skills, reminders and a brief.
+  { name: "work-desk", path: "/app/work", heading: "Tasks" },
+  { name: "work-task", path: "/app/work?task=2", heading: "Tasks" },
   { name: "work-own", path: "/app/work/own-work", heading: "Own work" },
   { name: "work-reminders", path: "/app/work/reminders", heading: "Reminders" },
   { name: "work-briefs", path: "/app/work/briefs", heading: "Briefs" },
@@ -48,6 +56,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "system-plugin-review", path: "/app/system/plugins", heading: "Plugins", link: "Review code of trip_planner" },
   { name: "system-usage", path: "/app/system/usage", heading: "Usage" },
   { name: "system-turns", path: "/app/system/turns", heading: "Turn log" },
+  // One turn's details: timing, model calls with their cache and prompt fingerprint.
+  { name: "system-turn-detail", path: "/app/system/turns", heading: "Turn log", strip: "Replied in 2 bubbles" },
   { name: "waiting", path: "/app/waiting", heading: "Waiting for you" },
   // The phone's menu, open over a page: every destination with its tabs, and what waits for the owner.
   { name: "menu", path: "/app/work/briefs", heading: "Briefs", menu: true, phoneOnly: true },
@@ -165,6 +175,8 @@ for (const scheme of ["dark", "light"] as const) {
         test(name, async ({ page }) => {
           const problems = await watch(page);
           if (folded) await page.addInitScript(() => localStorage.setItem("dom-sidebar", "collapsed"));
+          // The preview's clock (tests/web_preview.py NOW): relative times and date groups hold in every baseline.
+          await page.clock.setFixedTime(PREVIEW_NOW);
           if (soul) await cannedSoulReply(page);
           const response = await page.goto(path);
           expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
@@ -1026,6 +1038,7 @@ test.describe("interactions under the CSP", () => {
   test("memory: a file previews as markdown, unsaved edits survive switching tabs, raw HTML stays text", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/memory?file=SOUL.md");
+    await page.getByRole("tab", { name: "Edit" }).click();
     const editor = page.getByRole("textbox", { name: "SOUL.md" });
     const original = await editor.inputValue();
     await editor.fill(original + "\n<img src=x onerror=alert(1)> [bad](javascript:alert(1)) [good](https://example.org/a)\n");
@@ -1074,6 +1087,7 @@ test.describe("interactions under the CSP", () => {
   test("memory: edit and save a file, a dirty draft asks before leaving, a waiting edit can be approved", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/memory");
+    await page.getByRole("tab", { name: "Edit" }).click();
     const editor = page.getByRole("textbox", { name: "MEMORY.md" });
     await expect(editor).toHaveValue(/Travel notes/);
     const original = await editor.inputValue();
@@ -1082,20 +1096,22 @@ test.describe("interactions under the CSP", () => {
     await save.click();
     await expect(page.getByRole("status").filter({ hasText: "Saved MEMORY.md." })).toBeVisible();
     await page.reload();
+    await page.getByRole("tab", { name: "Edit" }).click();
     await expect(page.getByRole("textbox", { name: "MEMORY.md" })).toHaveValue(/aisle seats/);
 
     // Unsaved edits ask before another file opens.
     await page.getByRole("textbox", { name: "MEMORY.md" }).fill("scratch");
-    await page.getByRole("button", { name: "river.md" }).click();
+    await page.getByRole("button", { name: "river", exact: true }).click();
     const dialog = page.getByRole("alertdialog");
     await dialog.getByRole("button", { name: "Keep editing" }).click();
     await expect(page.getByRole("textbox", { name: "MEMORY.md" })).toHaveValue("scratch");
-    await page.getByRole("button", { name: "river.md" }).click();
+    await page.getByRole("button", { name: "river", exact: true }).click();
     await dialog.getByRole("button", { name: "Discard changes" }).click();
-    await expect(page.getByRole("textbox", { name: "river.md" })).toHaveValue(/early train/);
+    await expect(page.getByRole("tabpanel")).toContainText("River prefers the early train.");
 
     // Put MEMORY.md back as it was.
     await page.getByRole("button", { name: "MEMORY.md", exact: true }).click();
+    await page.getByRole("tab", { name: "Edit" }).click();
     await page.getByRole("textbox", { name: "MEMORY.md" }).fill(original);
     await save.click();
     await expect(page.getByRole("status").filter({ hasText: "Saved MEMORY.md." })).toBeVisible();
@@ -1118,18 +1134,29 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("link", { name: "Open live viewer" })).toHaveAttribute("href", "/desktop/vnc/index.html");
     await page.getByRole("button", { name: "I'm done, resume Dom" }).click();
     await expect(page.getByRole("status").filter({ hasText: "The handoff has already ended." })).toBeVisible();
-    await page.getByRole("button", { name: "Delete desktop task 2" }).click();
+    // One list holds both kinds; a finished task's trash glyph and its details' Delete both ask first.
+    const list = page.getByRole("group", { name: "Tasks, newest first" });
+    await list.getByRole("button", { name: "Delete desktop task 2" }).click();
     await dialog.getByRole("button", { name: "Keep it" }).click();
     await expect(dialog).toBeHidden();
-    await expect(page.getByText("Look up opening hours for the library.")).toBeVisible();
+    await list.getByRole("button", { name: /^Look up opening hours for the library/ }).click();
+    const panel = page.getByRole("region", { name: "Look up opening hours for the library." });
+    await expect(panel.getByText("Result, as the web gave it (not checked)")).toBeVisible();
+    await panel.getByRole("button", { name: "Delete task" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+
+    // Dom's own work: a planned task cancels from its details, a finished one shows its screenshot.
+    await list.getByRole("button", { name: /^Read about slow-travel itineraries/ }).click();
+    await page.getByRole("region", { name: "Read about slow-travel itineraries" }).getByRole("button", { name: "Cancel task" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await list.getByRole("button", { name: "Delete own work task 2" }).click();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await list.getByRole("button", { name: /^Check the weather page for Saturday/ }).click();
+    const shot = page.getByRole("img", { name: "Screenshot weather.png from task 2" });
+    await expect(shot).toBeVisible();
+    await expect.poll(() => shot.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
 
     await page.goto("/app/work/own-work");
-    await page.getByRole("button", { name: "Cancel #1" }).click();
-    await dialog.getByRole("button", { name: "Keep it" }).click();
-    await page.getByRole("button", { name: "Delete #2" }).click();
-    await dialog.getByRole("button", { name: "Keep it" }).click();
-    await expect(page.getByRole("img", { name: "Screenshot weather.png from task 2" })).toBeVisible();
-    expect(await page.getByRole("img", { name: "Screenshot weather.png from task 2" }).evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
     await page.getByRole("button", { name: "Retire trip-notes" }).click();
     await dialog.getByRole("button", { name: "Retire skill" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Retired skill trip-notes." })).toBeVisible();
@@ -1205,10 +1232,13 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: /Delete settled proposal/ }).first().click();
     await dialog.getByRole("button", { name: "Keep it" }).click();
 
-    // The turn log filters by chat.
+    // The turn log filters by chat with the app's own picker.
     await page.goto("/app/system/turns");
-    await page.getByLabel("Chat").selectOption({ label: "Weekend crew" });
-    await expect(page.getByText("Held back: leak check")).toBeHidden();
+    await expect(page.getByRole("button", { name: /^Held back: leak check/ })).toBeVisible();
+    await page.getByRole("combobox", { name: "Chat" }).fill("Week");
+    await page.getByRole("option", { name: "Weekend crew" }).click();
+    await expect(page).toHaveURL(/\?chat=-4001$/);
+    await expect(page.getByRole("button", { name: /^Held back: leak check/ })).toBeHidden();
     expect(problems).toEqual([]);
   });
 
@@ -1220,19 +1250,22 @@ test.describe("interactions under the CSP", () => {
 
     // A turn that searched twice renders (it threw each_key_duplicate and left the log empty).
     await page.goto("/app/system/turns");
-    await expect(page.getByRole("list", { name: "Turns, newest first" }).getByRole("listitem")).not.toHaveCount(0);
-    const twice = page.getByRole("list", { name: "Turns, newest first" }).locator("details").filter({ has: page.locator("summary", { hasText: /DM · Replied in 1 bubble/ }) }).first();
-    await twice.locator("summary").click();
-    await expect(twice.getByText("Search", { exact: true })).toHaveCount(2);
+    const turns = page.getByRole("group", { name: "Turns, newest first" });
+    await expect(turns.getByRole("button")).not.toHaveCount(0);
+    await turns.getByRole("button", { name: /^Replied in 1 bubble.*Your DM/ }).click();
+    const twice = page.getByRole("region", { name: "Replied in 1 bubble in Your DM" });
+    // Both searches are tools of the turn (and one shows again among the stages).
+    await expect(twice.locator("dd").getByText("Search", { exact: true })).toHaveCount(2);
+    await expect(twice.getByText("Prompt fingerprint").first()).toBeVisible();
 
     // A chat's messages link to the turn log filtered to that chat, which reads the chat from the address.
     await page.goto("/app/chats");
     await page.getByRole("button", { name: "Messages in Weekend crew" }).click();
-    await expect(page.getByText("One line per message")).toBeVisible();
+    await expect(page.getByRole("button", { name: "About these messages" })).toBeVisible();
     await page.getByRole("link", { name: "Turn log for this chat" }).click();
     await expect(page).toHaveURL(/\/app\/system\/turns\?chat=-4001$/);
-    await expect(page.getByLabel("Chat")).toHaveValue("-4001");
-    await expect(page.getByText("Held back: leak check")).toBeHidden();
+    await expect(page.getByRole("combobox", { name: "Chat" })).toHaveValue("Weekend crew");
+    await expect(page.getByRole("button", { name: /^Held back: leak check/ })).toBeHidden();
 
     // A usage segment shows its breakdown on click and from the keyboard.
     await page.goto("/app/system/usage");
@@ -1265,6 +1298,7 @@ test.describe("interactions under the CSP", () => {
     // The import prompt is one tap away, and "Other" covers any assistant.
     await page.goto("/app/memory");
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.getByRole("button", { name: "Import memories" }).click();
     await page.getByRole("button", { name: "Copy prompt" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Prompt copied." })).toBeVisible();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("Export everything you remember about me.");
@@ -1326,6 +1360,252 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByText("Results for “plan”.")).toBeVisible();
     await page.reload();
     await expect(field).toHaveValue("plan");
+    expect(problems).toEqual([]);
+  });
+
+  test("deep links: each notice link opens or selects its item, and a gone one says so", async ({ page }) => {
+    const problems = await watch(page);
+    await page.clock.setFixedTime(PREVIEW_NOW);
+    // A desktop task: its details open beside the list.
+    await page.goto("/app/work?task=2");
+    const task = page.getByRole("region", { name: "Look up opening hours for the library." });
+    await expect(task).toBeVisible();
+    // Closing it drops the link from the address, so a reload doesn't reopen it.
+    await task.getByRole("button", { name: "Close details" }).click();
+    await expect(page).toHaveURL(/\/app\/work$/);
+    // One of Dom's own tasks, by its own link.
+    await page.goto("/app/work?own=2");
+    await expect(page.getByRole("region", { name: "Check the weather page for Saturday" })).toBeVisible();
+    // Own work's address forwards a task link to the list; on its own it is the Own work page.
+    await page.goto("/app/work/own-work?own=1");
+    await expect(page).toHaveURL(/\/app\/work\?own=1$/);
+    await expect(page.getByRole("region", { name: "Read about slow-travel itineraries" })).toBeVisible();
+    await page.goto("/app/work/own-work");
+    await expect(page.getByRole("heading", { level: 1, name: "Own work" })).toBeVisible();
+    // Gone: a quiet note, dismissed with its glyph.
+    await page.goto("/app/work?task=9999");
+    await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page.getByText("That task is gone.")).toBeHidden();
+
+    // A proposal on Waiting: its card is selected in place.
+    const waiting = await (await page.request.get("/api/waiting")).json();
+    const card = waiting.cards.find((item: { type: string }) => item.type === "proposal");
+    await page.goto(`/app/waiting?proposal=${card.id}`);
+    await expect(page.locator(`#waiting-proposal-${card.id}`)).toBeFocused();
+    await page.goto("/app/waiting?proposal=99999");
+    await expect(page.getByRole("status").filter({ hasText: "That proposal is gone." })).toBeVisible();
+
+    // A reminder, by its ID.
+    await page.goto("/app/work/reminders?id=3");
+    await expect(page.locator("#reminder-row-3")).toBeFocused();
+    await expect(page.locator("#reminder-row-3")).toContainText("Pack a charger");
+    await page.goto("/app/work/reminders?id=9999");
+    await expect(page.getByRole("status").filter({ hasText: "That reminder is gone." })).toBeVisible();
+
+    // Memory: the page itself.
+    await page.goto("/app/memory");
+    await expect(page.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("deep links: an ID no row can have says gone without asking the API, and the page still loads", async ({ page }) => {
+    const problems = await watch(page);
+    await page.clock.setFixedTime(PREVIEW_NOW);
+    const asked: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/")) asked.push(url.pathname + url.search);
+    });
+    for (const bad of ["0", "99999999999999999999", "12abc"]) {
+      await page.goto(`/app/work?task=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
+      await expect(page.getByText("Look up opening hours for the library.").first()).toBeVisible();
+      await page.goto(`/app/work?own=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
+      await page.goto(`/app/work/own-work?own=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
+      await page.goto(`/app/work/reminders?id=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That reminder is gone." })).toBeVisible();
+      await expect(page.locator("#reminder-row-3")).toContainText("Pack a charger");
+      await page.goto(`/app/waiting?proposal=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That proposal is gone." })).toBeVisible();
+      await expect(page.getByRole("list", { name: "Waiting for you" })).toBeVisible();
+    }
+    expect(asked.filter((query) => /[?&](task|own|id)=/.test(query))).toEqual([]);
+    expect(problems).toEqual([]);
+  });
+
+  test("deep links: Waiting asks for the linked proposal by ID, so a settled one older than the latest still comes", async ({ page }) => {
+    const problems = await watch(page);
+    const waiting = await (await page.request.get("/api/waiting")).json();
+    const settled = waiting.settled[0];
+    // The API answers without it unless the page names it: as if it were older than the latest 50.
+    await page.route("**/api/waiting?*", async (route) => {
+      const response = await route.fetch();
+      const named = new URL(route.request().url()).searchParams.get("id");
+      const json = await response.json();
+      await route.fulfill({ response, json: named === String(settled.id) ? json : { ...json, settled: [] } });
+    });
+    await page.goto(`/app/waiting?proposal=${settled.id}`);
+    await expect(page.locator(`#settled-${settled.id}`)).toBeFocused();
+    await expect(page.getByText("That proposal is gone.")).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("work: the refresh brings Dom's own work up to date too, and says when it can't", async ({ page }) => {
+    const problems = await watch(page);
+    await page.clock.install({ time: PREVIEW_NOW });
+    await page.goto("/app/work");
+    await expect(page.getByText("Check the weather page for Saturday").first()).toBeVisible();
+    let mode: "new" | "fail" = "new";
+    await page.route("**/api/work/own*", async (route) => {
+      if (mode === "fail") return route.fulfill({ status: 500, json: { detail: "Dom is busy" } });
+      const response = await route.fetch();
+      const json = await response.json();
+      const planned = { ...json.tasks[0], id: 77, goal: "Find a quiet café near the station", status: "planned" };
+      await route.fulfill({ response, json: { ...json, tasks: [planned, ...json.tasks] } });
+    });
+    await page.clock.runFor(4500);
+    await expect(page.getByText("Find a quiet café near the station").first()).toBeVisible();
+    mode = "fail";
+    await page.clock.runFor(4500);
+    await expect(page.getByRole("alert").filter({ hasText: "Couldn't refresh Dom's own work" })).toBeVisible();
+    await expect(page.getByText("Find a quiet café near the station").first()).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("chats: a chat Dom can't reach is checked, hidden and shown again, and forgetting asks once more for its history", async ({ page }) => {
+    const problems = await watch(page);
+    const dialog = page.getByRole("alertdialog");
+    await page.goto("/app/chats");
+    const gone = page.getByRole("list", { name: "Chats Dom can't reach" });
+    await expect(gone.getByText("Old book club")).toBeVisible();
+    // Its history stays readable.
+    await gone.getByRole("button", { name: "Messages in Old book club" }).click();
+    await expect(gone.getByText("See you all at the next meeting.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Check now" }).click();
+    await expect(page.getByRole("status").filter({ hasText: /Checked \d+ chats?/ })).toBeVisible();
+
+    // Hide moves it under Hidden; Show again brings it back.
+    await gone.getByRole("button", { name: "Hide Old book club" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Hid chat." })).toBeVisible();
+    await page.getByText("Hidden (2)").click();
+    await page.getByRole("button", { name: "Show Old book club again" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Restored chat." })).toBeVisible();
+    await expect(gone.getByText("Old book club")).toBeVisible();
+
+    // Forget asks; Keep it changes nothing.
+    await gone.getByRole("button", { name: "Forget Old book club" }).click();
+    await expect(dialog.getByText("Forget Old book club?")).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await expect(dialog).toBeHidden();
+    // "Delete history too" is a second, explicit confirm; the request says both. (Answered here, so the preview keeps it.)
+    let sent: unknown = null;
+    await page.route("**/api/chats/forget", async (route) => {
+      sent = route.request().postDataJSON();
+      await route.fulfill({ json: { message: "Forgot chat and deleted its history.", ...(await (await page.request.get("/api/chats")).json()) } });
+    });
+    await gone.getByRole("button", { name: "Forget Old book club" }).click();
+    await dialog.getByRole("checkbox", { name: "Delete history too" }).click();
+    await dialog.getByRole("button", { name: "Forget chat" }).click();
+    await expect(dialog.getByText("Delete every message from Old book club?")).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep the history" }).click();
+    expect(sent).toBeNull();
+    await gone.getByRole("button", { name: "Forget Old book club" }).click();
+    await dialog.getByRole("checkbox", { name: "Delete history too" }).click();
+    await dialog.getByRole("button", { name: "Forget chat" }).click();
+    await dialog.getByRole("button", { name: "Delete history and forget" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Forgot chat and deleted its history." })).toBeVisible();
+    expect(sent).toEqual({ chat_id: -4005, delete_history: true, confirm: true });
+    expect(problems).toEqual([]);
+  });
+
+  test("chats: Fresh start asks first, then starts the chat fresh, and Undo puts the earlier messages back", async ({ page }) => {
+    const problems = await watch(page);
+    const dialog = page.getByRole("alertdialog");
+    const chats = await (await page.request.get("/api/chats")).json();
+    const chat = chats.chats[0];
+    // Answered here, so the preview's chats keep their window for the other screens.
+    const sent: unknown[] = [];
+    await page.route("**/api/chats/fresh", async (route) => {
+      const body = route.request().postDataJSON();
+      sent.push(body);
+      const message = body.undo ? `Put the earlier messages back in ${chat.title}.` : `Started ${chat.title} fresh. Nothing was deleted.`;
+      await route.fulfill({ json: { message, ...chats } });
+    });
+    await page.goto("/app/chats");
+    await expect(page.getByRole("button", { name: `Undo the fresh start in ${chat.title}` })).toHaveCount(0);
+    // Not now changes nothing.
+    await page.getByRole("button", { name: `Fresh start in ${chat.title}` }).click();
+    await expect(dialog.getByText(`Start ${chat.title} fresh?`)).toBeVisible();
+    await expect(dialog.getByText("Earlier messages leave Dom's prompt; nothing is deleted.")).toBeVisible();
+    await dialog.getByRole("button", { name: "Not now" }).click();
+    await expect(dialog).toBeHidden();
+    expect(sent).toEqual([]);
+    // Start fresh sends the chat; the toast says so, and Undo appears for that chat.
+    await page.getByRole("button", { name: `Fresh start in ${chat.title}` }).click();
+    await dialog.getByRole("button", { name: "Start fresh" }).click();
+    await expect(page.getByRole("status").filter({ hasText: `Started ${chat.title} fresh.` })).toBeVisible();
+    expect(sent).toEqual([{ chat_id: chat.id, undo: false }]);
+    const undo = page.getByRole("button", { name: `Undo the fresh start in ${chat.title}` });
+    await undo.click();
+    await expect(page.getByRole("status").filter({ hasText: `Put the earlier messages back in ${chat.title}.` })).toBeVisible();
+    expect(sent).toEqual([{ chat_id: chat.id, undo: false }, { chat_id: chat.id, undo: true }]);
+    await expect(undo).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
+  test("memory: preview first, Edit on demand, tags as chips, core memories unpin through the save", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory?file=memory/people/4002.md");
+    // Preview by default: rendered, no editor until Edit.
+    await expect(page.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("textbox", { name: "Alex" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
+    const preview = page.getByRole("tabpanel");
+    await expect(preview.getByText("from: Weekend crew").first()).toBeVisible();
+    await expect(preview.getByText("core, pinned by you")).toBeVisible();
+    await expect(preview).not.toContainText("{chat");
+    await page.getByRole("tab", { name: "Edit" }).click();
+    await expect(page.getByRole("textbox", { name: "Alex" })).toHaveValue(/\{core owner 2026-11-21\}/);
+    await expect(page.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await page.getByRole("tab", { name: "Preview" }).click();
+    await expect(page.getByRole("textbox", { name: "Alex" })).toBeHidden();
+
+    // The journal keeps its lines apart; the archive is read-only.
+    await page.getByRole("button", { name: "Journal", exact: true }).click();
+    await expect(page.getByRole("tabpanel").locator("br")).not.toHaveCount(0);
+    await page.getByText("Archive").click();
+    await page.getByRole("button", { name: "Journal, September 2026" }).click();
+    await expect(page.getByText("Archive, read-only")).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Source" })).toBeVisible();
+    await page.getByRole("button", { name: "Alex (former)" }).click();
+    await expect(page.getByRole("tabpanel")).toContainText("Works at the bakery");
+
+    // Core memories: who pinned each, and a delete that offers to unpin instead. The save is answered here.
+    let saved: { file: string; content: string } | null = null;
+    await page.route("**/api/memory/save", async (route) => {
+      saved = route.request().postDataJSON();
+      await route.fulfill({ json: { message: "Saved Alex.", content: saved!.content, version: "v" } });
+    });
+    await page.getByRole("button", { name: "Core memories" }).click();
+    const core = page.getByRole("list", { name: "Core memories" });
+    await expect(core.getByText("Pinned by Dom")).toBeVisible();
+    await expect(core.getByText("Why: she talks about it all the time")).toBeVisible();
+    await core.getByRole("button", { name: "Delete core memory: Allergic to peanuts" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Unpin, keep the line" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Unpinned." })).toBeVisible();
+    expect(saved!.file).toBe("memory/people/4002.md");
+    expect(saved!.content).toContain("- Allergic to peanuts\n");
+    expect(saved!.content).toContain("{core dom 2026-11-20: she talks about it all the time}");
+
+    // Import sits beside Export, in a sheet.
+    await page.getByRole("button", { name: "Import memories" }).click();
+    await expect(page.getByRole("dialog", { name: "Import memories" })).toBeVisible();
+    await page.getByRole("button", { name: "Close import" }).click();
+    await expect(page.getByRole("dialog", { name: "Import memories" })).toBeHidden();
     expect(problems).toEqual([]);
   });
 

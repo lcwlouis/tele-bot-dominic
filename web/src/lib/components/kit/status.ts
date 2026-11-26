@@ -1,5 +1,7 @@
 import type { Component } from "svelte";
+import Ban from "@lucide/svelte/icons/ban";
 import CircleCheck from "@lucide/svelte/icons/circle-check";
+import Clock from "@lucide/svelte/icons/clock";
 import CircleDashed from "@lucide/svelte/icons/circle-dashed";
 import CirclePause from "@lucide/svelte/icons/circle-pause";
 import CircleX from "@lucide/svelte/icons/circle-x";
@@ -7,15 +9,17 @@ import Hourglass from "@lucide/svelte/icons/hourglass";
 import ShieldHalf from "@lucide/svelte/icons/shield-half";
 
 /** What a task, turn, message or reminder is doing. Each has a word, a glyph and a colour token. */
-export type Status = "done" | "running" | "waiting" | "failed" | "held" | "paused";
+export type Status = "done" | "running" | "queued" | "waiting" | "failed" | "held" | "paused" | "cancelled";
 
 export const STATUS: Record<Status, { label: string; icon: Component; tone: string }> = {
   done: { label: "Done", icon: CircleCheck, tone: "text-status-done" },
   running: { label: "Running", icon: CircleDashed, tone: "text-status-running" },
+  queued: { label: "Queued", icon: Clock, tone: "text-status-paused" },
   waiting: { label: "Waiting for you", icon: Hourglass, tone: "text-status-waiting" },
   failed: { label: "Failed", icon: CircleX, tone: "text-status-failed" },
   held: { label: "Held back", icon: ShieldHalf, tone: "text-status-held" },
   paused: { label: "Paused", icon: CirclePause, tone: "text-status-paused" },
+  cancelled: { label: "Cancelled", icon: Ban, tone: "text-muted-foreground" },
 };
 
 const units: [Intl.RelativeTimeFormatUnit, number][] = [
