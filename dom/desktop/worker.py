@@ -496,7 +496,7 @@ class DesktopWorker:
         except (TimeoutError, SandboxError, ValueError, ModelCallSkipped) as exc:
             error = "desktop task time limit reached" if isinstance(exc, TimeoutError) else str(exc)
             if isinstance(exc, ModelCallSkipped):
-                error = progress.paused or "paused by today's spend cap"
+                error = progress.paused or "paused by a spend cap"
             row = await store.update_desktop_task(
                 task_id, chat_id, ("running", "waiting_owner"), "failed",
                 result=progress.note or f"Stopped after {progress.steps} steps: {error}"[:500], error=error[:500],

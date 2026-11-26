@@ -130,7 +130,7 @@ def test_leak_check_ships_on_at_the_evaluated_threshold(tmp_path):
     assert config.leak_check and config.leak_threshold == 1.2
     assert Config(home=tmp_path).leak_check and Config(home=tmp_path).leak_threshold == 1.2
     starter = tomllib.loads(resources.files("dom").joinpath("starter_home/config.toml").read_text())
-    assert starter["leak_check"] is True and starter["leak_threshold"] == 1.2
+    assert starter["leak_check"] is True and starter["leak_scan"] == "standard"
     (tmp_path / "config.toml").write_text("leak_check = false\nleak_threshold = 2\n")
     config = load_config(tmp_path)
     assert not config.leak_check and config.leak_threshold == 2

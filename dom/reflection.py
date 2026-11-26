@@ -151,7 +151,7 @@ async def _ask(
         {"role": "user", "content": context},
     ]
     try:
-        with model_request("reflection", owner, partial(app.dispatch.model_allowed, owner)):
+        with model_request("reflection", owner, partial(app.dispatch.background_allowed, owner)):
             for attempt in range(2):
                 await check_model_allowed()
                 reply = await app.client.complete(request, [])
@@ -232,7 +232,7 @@ async def _model_pick(app: App, owner: int, choices: list[Preset], mood_now: str
     )
     request = [{"role": "system", "content": f"{VIBE_FRAME}\n{VIBE_FORMAT}"}, {"role": "user", "content": context}]
     try:
-        with model_request("reflection", owner, partial(app.dispatch.model_allowed, owner)):
+        with model_request("reflection", owner, partial(app.dispatch.background_allowed, owner)):
             await check_model_allowed()
             raw = (await app.client.complete(request, [])).get("content")
     except ModelCallSkipped:

@@ -69,7 +69,8 @@ MIGRATIONS: list[tuple[int, str]] = [
     (27, "0026_chat_reachability.sql"),
     (28, "0027_autoincrement_ids.sql"),
     (29, "0028_goals_noticings.sql"),
-    (30, "0029_knowledge_index.sql"),
+    (30, "0029_menu_cards.sql"),
+    (31, "0030_knowledge_index.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -2865,6 +2866,14 @@ class Store:
         ).fetchone()
         return count, cost
 
+    async def usage_cost_by_kind(self, start: str, end: str) -> dict[str, float]:
+        """Cost per kind of call in [start, end), for kinds with any spend."""
+        return await self._run(lambda: {
+            kind: cost for kind, cost in self._conn.execute(
+                "SELECT kind, TOTAL(cost_usd) FROM usage WHERE at >= ? AND at < ? GROUP BY kind", (start, end),
+            )
+        })
+
     async def usage_cost(
         self, kind: str, chat_id: int, since: str, fallback_per_1k: float = 0.0, free_hosts: tuple[str, ...] = (),
     ) -> float:
@@ -2882,6 +2891,29 @@ class Store:
             ).fetchone()[0]
 
         return await self._run(total)
+
+    # ---- menu cards -----------------------------------------------------------
+
+    async def add_menu_card(self, chat_id: int, message_id: int, sent_at: str, expires_at: str) -> None:
+        await self._run(
+            self._conn.execute,
+            "INSERT OR REPLACE INTO menu_cards (chat_id, message_id, sent_at, expires_at) VALUES (?, ?, ?, ?)",
+            (chat_id, message_id, sent_at, expires_at),
+        )
+
+    async def due_menu_cards(self, now: str, limit: int) -> list[dict[str, Any]]:
+        """The cards whose time is up, oldest first."""
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT chat_id, message_id, sent_at FROM menu_cards WHERE expires_at <= ? "
+                "ORDER BY expires_at, message_id LIMIT ?", (now, limit),
+            )
+        ])
+
+    async def forget_menu_card(self, chat_id: int, message_id: int) -> None:
+        await self._run(
+            self._conn.execute, "DELETE FROM menu_cards WHERE chat_id = ? AND message_id = ?", (chat_id, message_id),
+        )
 
     async def claim_spend_cap_notice(self, day: str) -> bool:
         return await self._run(self._claim_spend_cap_notice, day)

@@ -790,7 +790,7 @@ def test_migration_runs_on_a_copy_of_a_database_built_before_it(tmp_path):
     conn = sqlite3.connect(db_path, isolation_level=None)
     try:
         for version, filename in MIGRATIONS:
-            if filename == "0029_knowledge_index.sql":
+            if filename == "0030_knowledge_index.sql":
                 break
             conn.execute("BEGIN IMMEDIATE")
             for stmt in _split_statements((MIGRATIONS_DIR / filename).read_text(encoding="utf-8")):

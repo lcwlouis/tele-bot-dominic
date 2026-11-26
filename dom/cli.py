@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import doctor, habits, journal_archive, reflection, release, service
+from dom import doctor, habits, journal_archive, reflection, release, service, setup
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -140,6 +140,7 @@ async def run(home: Path) -> None:
                 media_describer=MediaDescriber(media, bot) if media.available else None,
                 search_client=search_client(config, http, usage), gifs=gif_search(config, http),
                 studio=StudioClient(studio, studio_token, studio_http) if studio_token else None,
+                studio_http=studio_http,
                 cloud_studio=CloudStudio(studio_http, usage),
                 draft_client=routed_client(config, "drafting", http, usage),
                 escalation_client=routed_client(config, "escalation", http, usage),
@@ -206,6 +207,10 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("home", type=Path)
         if name == "init":
             p.add_argument("--timezone", help="IANA timezone, e.g. Asia/Singapore (default: this machine's)")
+    setup_wizard = sub.add_parser("setup", help="choose where the media studio runs and write its settings")
+    setup_wizard.add_argument("home", type=Path)
+    setup_wizard.add_argument("--studio", choices=setup.STUDIO_PATHS, help="skip the question: local, cloud or apis")
+    setup_wizard.add_argument("--studio-url", default="", help="the studio's address, for local or cloud")
     imp = sub.add_parser("import-v2", help="import a V2 workspace into a home folder")
     imp.add_argument("old_workspace", type=Path)
     imp.add_argument("home", type=Path)
@@ -268,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{args.command} failed: {exc}")
             return 1
         return 0
+    if args.command == "setup":
+        return setup.run_setup(args.home, path=args.studio, base_url=args.studio_url)
     if args.command == "doctor":
         return doctor.run(args.home, online=args.online)
     if args.command == "rebuild-index":

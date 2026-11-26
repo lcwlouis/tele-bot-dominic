@@ -111,4 +111,4 @@ INSERT INTO usage SELECT * FROM usage_before_embeddings;
 DROP TABLE usage_before_embeddings;
 CREATE INDEX idx_usage_at ON usage(at);
 
-PRAGMA user_version = 30;
+PRAGMA user_version = 31;
