@@ -79,7 +79,7 @@ def _page(text: str, limit: int, part: object, how: str) -> str:
         return text
     if part is None:
         part = 1
-    elif isinstance(part, str) and part.strip().isdigit():
+    elif isinstance(part, str) and re.fullmatch(r"[0-9]{1,6}", part.strip()):
         part = int(part)
     if not isinstance(part, int) or isinstance(part, bool) or not 1 <= part <= len(pieces):
         return f"error: part must be a number from 1 to {len(pieces)}"

@@ -78,6 +78,8 @@ def test_a_long_file_reads_in_parts_cut_at_line_ends(base):
     assert own_code.read_file(base, "docs/long.md", 9).startswith("error: part must be a number from 1 to 4")
     assert own_code.read_file(base, "docs/long.md", "2") == own_code.read_file(base, "docs/long.md", 2)
     assert own_code.read_file(base, "docs/long.md", "two").startswith("error:")
+    for bad in ("²", "9" * 5000, "+2", "2.0"):
+        assert own_code.read_file(base, "docs/long.md", bad).startswith("error: part must be")
 
 
 def test_changelog_version_returns_that_release_section(base):
