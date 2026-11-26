@@ -18,7 +18,7 @@ from aiogram.types import CallbackQuery, User
 from dom.config import WebConfig, set_dotenv
 from dom.google import (
     CALENDAR_API, CALLBACK_PATH, GMAIL_API, REVOKE_URL, SCOPE_CALENDAR, SCOPE_GMAIL_COMPOSE, SCOPE_GMAIL_READ, SCOPES,
-    SWITCHES, TOKEN_URL, GoogleError, GoogleIntegration,
+    SWITCHES, TOKEN_URL, GoogleError, GoogleIntegration, GoogleSlow,
 )
 from dom.google_tools import _calendar, _gmail
 from dom.secrets import redact_secrets
@@ -237,15 +237,14 @@ async def test_callback_refuses_wrong_replayed_expired_unbound_and_unauthenticat
         return await client.get(CALLBACK_PATH, params={"state": state, "code": CODE}, headers={**auth, **cookie, **extra})
 
     state, binding = await start()
-    assert (await call("not-the-state", binding)).headers["location"].endswith("google=failed")
-    assert (await call(state, "someone-elses-binding")).headers["location"].endswith("google=failed")  # state is spent
-    assert (await call(state, binding)).headers["location"].endswith("google=failed")  # replay
+    assert (await call("not-the-state", binding)).headers["location"].endswith("google=invalid")
+    assert (await call(state, "someone-elses-binding")).headers["location"].endswith("google=invalid")  # changes nothing
     state, binding = await start()
-    assert (await call(state, None)).headers["location"].endswith("google=failed")  # no cookie
+    assert (await call(state, None)).headers["location"].endswith("google=invalid")  # no cookie
     state, binding = await start()
     now = app.google.clock()
     app.google.clock = lambda: now + 601  # past the ten minutes
-    assert (await call(state, binding)).headers["location"].endswith("google=failed")
+    assert (await call(state, binding)).headers["location"].endswith("google=invalid")
     app.google.clock = lambda: now
     state, binding = await start()
     assert (await call(state, binding, **{"Sec-Fetch-Mode": "no-cors"})).status_code == 403  # an image or fetch, not a navigation
@@ -256,7 +255,7 @@ async def test_callback_refuses_wrong_replayed_expired_unbound_and_unauthenticat
     assert (await app.google.state())["status"] == "disconnected"
     assert not fake.sent("POST", "/token")  # Google was never asked to exchange anything
     assert await app.store.get_encrypted_secret("google", "oauth") is None
-    assert "expired or was already used" in (await app.google.state())["last_error"] or "not started from this browser" in (await app.google.state())["last_error"]
+    assert (await app.google.state())["last_error"] == ""  # an invalid callback writes nothing
 
 
 async def test_connect_needs_credentials_and_public_url(setup, make_app):
@@ -774,7 +773,7 @@ async def test_b2_a_long_title_is_never_cut_on_a_card(setup):
     assert title in row["detail"]
     await tap(app, "reject")
     # Past what a card line can hold, nothing is cut quietly: it is summarised and only the dashboard can approve it.
-    huge = "Planning " + "word " * 80
+    huge = "Planning " + "word " * 38
     await _calendar({"action": "add", "title": huge, "start": "2099-03-02T15:00"}, owner_ctx(app))
     row = await pending(app)
     assert row["dashboard_only"] is True and await card_buttons(app) == ["Reject", "Review on dashboard"]
@@ -899,19 +898,18 @@ async def test_s3_the_callback_works_as_a_navigation_with_the_cookie_and_fails_w
     navigation = {"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "document"}
     params = {"state": query["state"][0], "code": CODE}
     no_cookie = await client.get(CALLBACK_PATH, params=params, headers=navigation)
-    assert no_cookie.headers["location"].endswith("google=failed") and (await app.google.state())["status"] == "disconnected"
-    # that attempt spent the state: even the right cookie cannot replay it
-    spent = await client.get(CALLBACK_PATH, params=params, headers={**navigation, "Cookie": f"dom_google_binding={binding}"})
-    assert spent.headers["location"].endswith("google=failed")
+    assert no_cookie.headers["location"].endswith("google=invalid") and (await app.google.state())["status"] == "disconnected"
     started = await client.post("/api/integrations/google/connect", headers=HEADERS, json={})
     query = parse_qs(urlsplit(started.json()["url"]).query)
     fake.challenge = query["code_challenge"][0]
     binding = started.headers["set-cookie"].split("dom_google_binding=")[1].split(";")[0]
     wrong = await client.get(CALLBACK_PATH, params={"state": "wrong", "code": CODE}, headers={**navigation, "Cookie": f"dom_google_binding={binding}"})
-    assert wrong.headers["location"].endswith("google=failed")
+    assert wrong.headers["location"].endswith("google=invalid")
     right = await client.get(CALLBACK_PATH, params={"state": query["state"][0], "code": CODE}, headers={**navigation, "Cookie": f"dom_google_binding={binding}"})
     assert right.status_code == 303 and right.headers["location"] == "/app/system?google=connected"
     assert (await app.google.state())["status"] == "connected"
+    replay = await client.get(CALLBACK_PATH, params={"state": query["state"][0], "code": CODE}, headers={**navigation, "Cookie": f"dom_google_binding={binding}"})
+    assert replay.headers["location"].endswith("google=invalid")
     # an unauthenticated visitor cannot start a flow, so cannot have a cookie that matches one
     assert (await client.post("/api/integrations/google/connect", headers={"Origin": HEADERS["Origin"]}, json={})).status_code == 403
 
@@ -1059,3 +1057,168 @@ async def test_the_tracer_never_holds_a_google_token_a_code_or_the_client_secret
     finally:
         turn_log.set_sink(None)
         writer.store.close()
+
+
+# ---- final review round ---------------------------------------------------------------------------------------------
+
+
+async def test_r1_a_request_scheduled_before_it_was_registered_cannot_survive_the_switch_going_off_and_on(setup, monkeypatch):
+    app, fake, client = await ready(setup, "calendar_write")
+    create = app.store.create_desktop_permission_request
+
+    async def slow_create(**kwargs):  # registering takes a moment, as a busy database can
+        await asyncio.sleep(0.1)
+        return await create(**kwargs)
+
+    monkeypatch.setattr(app.store, "create_desktop_permission_request", slow_create)
+    # The tool returns as soon as the card is scheduled; the switch goes off and on again before that task has run.
+    out = await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00"}, owner_ctx(app))
+    assert "Asked the owner" in out
+    await app.google.set_switch("calendar_write", False)
+    await app.google.set_switch("calendar_write", True)
+    await settle_some(app, 40)
+    assert not await app.desktop_permissions.pending_requests()  # it was cancelled, not asked about afterwards
+    assert not fake.sent("POST", "/events")
+
+
+async def settle_some(app, steps: int = 20) -> None:
+    for _ in range(steps):
+        await asyncio.sleep(0.005)
+
+
+async def test_r1_a_switch_turned_off_and_on_again_still_stops_an_older_card(setup, monkeypatch):
+    app, fake, client = await ready(setup, "calendar_write")
+    await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00"}, owner_ctx(app))
+    await pending(app)
+
+    async def nothing(actions):  # the cancel never reaches the card (a race): the epoch alone must stop it
+        return None
+
+    monkeypatch.setattr(app.google, "_cancel", nothing)
+    await app.google.set_switch("calendar_write", False)
+    await app.google.set_switch("calendar_write", True)  # on again: the switch is on, but this is not what was approved
+    await tap(app, "once")
+    assert not fake.sent("POST", "/events")
+    assert "approved but not run" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+
+
+async def test_r1_a_switch_turned_off_after_the_guard_but_before_the_write_stops_the_write(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    await app.desktop_permissions.set_policy("calendar_add", "allow")
+    gate, entered = asyncio.Event(), asyncio.Event()
+
+    async def slow_refresh(request):
+        if str(request.url) == TOKEN_URL and "grant_type=refresh_token" in request.content.decode():
+            entered.set()
+            await gate.wait()
+        return fake(request)
+
+    app.google._client = httpx.AsyncClient(transport=httpx.MockTransport(slow_refresh))
+    now = app.google.wall()
+    app.google.wall = lambda: now + 7200  # the write has to refresh the token first, after its guard passed
+    task = asyncio.create_task(_calendar({"action": "add", "title": "Late", "start": "2099-03-02T15:00"}, owner_ctx(app)))
+    await entered.wait()
+    await app.google.set_switch("calendar_write", False)
+    gate.set()
+    out = await task
+    assert out.startswith("error") and not fake.sent("POST", "/events")
+
+
+async def test_r2_every_attendee_is_stored_and_shown_even_when_there_are_hundreds(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    guests = ["guest-%03d@example.org" % n for n in range(300)]
+    fake.events = [event("big", "Town hall " + "x" * 300, "2099-03-04T10:00:00+00:00", "2099-03-04T11:00:00+00:00", guests)]
+    await _calendar({"action": "move", "event_id": "big", "start": "2099-03-04T14:00"}, owner_ctx(app))
+    row = await pending(app)
+    assert row["dashboard_only"] is True
+    assert all(guest in row["detail"] for guest in guests)  # the last ones too
+    assert "Town hall " + "x" * 300 in row["detail"]  # the title whole, not a shortened one
+    card = app.bot.of("send", OWNER)[-1][2]
+    assert guests[-1] not in card and await card_buttons(app) == ["Reject", "Review on dashboard"]
+    done = await client.post("/api/access/decide", headers=HEADERS, json={"id": row["id"], "decision": "once"})
+    assert done.status_code == 200
+    await settle(app)
+    assert len(fake.sent("PATCH", "/big")) == 1
+
+
+async def test_r2_what_cannot_be_stored_whole_is_never_put_up_for_approval(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    guests = ["guest-%05d-%s@example.org" % (n, "y" * 200) for n in range(400)]  # more than any approval holds
+    fake.events = [event("huge", "Everyone", "2099-03-04T10:00:00+00:00", "2099-03-04T11:00:00+00:00", guests)]
+    out = await _calendar({"action": "delete", "event_id": "huge"}, owner_ctx(app))
+    assert out.startswith("error") and "too many" in out and "review" in out
+    assert not await app.desktop_permissions.pending_requests() and not app.bot.of("send", OWNER)
+    # nothing is silently shortened on the way in either: an over-long title or place is refused, not cut
+    assert (await _calendar({"action": "add", "title": "t" * 201, "start": "2099-03-02T15:00"}, owner_ctx(app))).startswith("error")
+    assert (await _calendar({"action": "add", "title": "ok", "location": "p" * 121, "start": "2099-03-02T15:00"}, owner_ctx(app))).startswith("error")
+    assert not await app.desktop_permissions.pending_requests()
+
+
+async def test_r3_a_reconnect_finished_while_a_disconnect_awaits_google_is_not_erased(setup):
+    app, fake, client = await ready(setup, "calendar_read")
+    gate, entered = asyncio.Event(), asyncio.Event()
+
+    async def slow_revoke(request):
+        if str(request.url) == REVOKE_URL:
+            entered.set()
+            await gate.wait()
+        return fake(request)
+
+    app.google._client = httpx.AsyncClient(transport=httpx.MockTransport(slow_revoke))
+    old = await app.google.connection_id()
+    task = asyncio.create_task(app.google.disconnect())
+    await entered.wait()
+    await connect(app, fake, client)  # another connect completes during the revoke
+    new = await app.google.connection_id()
+    assert new and new != old
+    gate.set()
+    await task
+    assert await app.google.connection_id() == new  # the new account's token is still there
+    assert (await app.google.state())["status"] == "connected"
+
+
+async def test_r4_an_invalid_callback_changes_nothing(setup):
+    app, fake, client = setup()
+    started = await client.post("/api/integrations/google/connect", headers=HEADERS, json={})
+    query = parse_qs(urlsplit(started.json()["url"]).query)
+    fake.challenge = query["code_challenge"][0]
+    binding = started.headers["set-cookie"].split("dom_google_binding=")[1].split(";")[0]
+    cookie = {"Cookie": f"dom_google_binding={binding}"}
+    before = await app.google.state()
+    # Someone links the owner to the callback with a junk state: the owner's browser sends the cookie along.
+    junk = await client.get(CALLBACK_PATH, params={"state": "junk", "code": "x"}, headers=cookie)
+    assert junk.status_code == 303 and junk.headers["location"].startswith("/app/system?google=")
+    assert "set-cookie" not in junk.headers  # the owner's cookie is not cleared
+    assert (await app.google.state()) == before  # nor last_error or anything else written
+    # A cookie that is not the flow's, with the real state: also nothing, and the real flow still works.
+    wrong = await client.get(CALLBACK_PATH, params={"state": query["state"][0], "code": CODE}, headers={"Cookie": "dom_google_binding=other"})
+    assert "set-cookie" not in wrong.headers and (await app.google.state()) == before
+    # No cookie at all: the same.
+    bare = await client.get(CALLBACK_PATH, params={"state": "junk"})
+    assert "set-cookie" not in bare.headers and (await app.google.state()) == before
+    right = await client.get(CALLBACK_PATH, params={"state": query["state"][0], "code": CODE}, headers=cookie)
+    assert right.headers["location"] == "/app/system?google=connected"
+
+
+async def test_r5_a_refresh_in_flight_counts_against_the_foreground_deadline_once(setup):
+    app, fake, client = await ready(setup, "calendar_read")
+    gate = asyncio.Event()
+
+    async def slow_refresh(request):
+        if str(request.url) == TOKEN_URL and "grant_type=refresh_token" in request.content.decode():
+            await gate.wait()
+        return fake(request)
+
+    app.google._client = httpx.AsyncClient(transport=httpx.MockTransport(slow_refresh))
+    now = app.google.wall()
+    app.google.wall = lambda: now + 7200
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+    with app.google.budget(0.05):
+        with pytest.raises(GoogleSlow):
+            await app.google.call("GET", f"{CALENDAR_API}/calendars/primary/events")
+    assert loop.time() - before < 0.15  # not the 0.2 s or more it took when the refresh was waited for unbounded
+    gate.set()  # the refresh went on in the background and its result is kept
+    async with asyncio.timeout(2):
+        while (await app.secrets.get("google", "oauth"))["access_token"] != ACCESS2:
+            await asyncio.sleep(0.01)

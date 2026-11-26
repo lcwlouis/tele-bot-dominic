@@ -208,7 +208,8 @@
           <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-raised/40 p-3">
             <div class="min-w-0 flex-1">
               <p class="text-sm font-medium">{req.action_label}{#if req.site} · <span class="font-mono">{req.site}</span>{/if}</p>
-              {#if req.detail}<p class="text-xs break-words whitespace-pre-line text-muted-foreground">{req.detail}</p>{/if}
+              {#if req.detail}<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div role="region" aria-label={`Details of ${req.action_label}`} tabindex="0" class="max-h-48 overflow-y-auto outline-none focus-visible:ring-3 focus-visible:ring-ring/50 text-xs break-words whitespace-pre-line text-muted-foreground">{req.detail}</div>{/if}
               {#if req.dashboard_only}<p class="text-xs text-coral">Too long for the Telegram card: approve it here.</p>{/if}
             </div>
             <div class="flex flex-wrap gap-2">

@@ -53,6 +53,7 @@
     void load().then(() => {
       if (outcome === "connected") toast.show("ok", "Google connected. Turn on what Dom may use.");
       else if (outcome === "failed") toast.show("error", view?.last_error || "Connecting Google failed.");
+      else if (outcome === "invalid") toast.show("error", "That connect link was not valid or has expired. Press Connect Google again.");
     });
   });
 

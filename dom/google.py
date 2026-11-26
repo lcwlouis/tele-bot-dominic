@@ -69,6 +69,7 @@ BINDING_COOKIE = "dom_google_binding"
 SETTINGS_PATH = "/app/system"
 FOREGROUND_SECONDS = 8.0  # what a tool call inside a turn may spend on Google in all; the background has no such bound
 SLOW = "Google is slow right now. Try again in a moment."
+STALE = "Google was switched off, disconnected or connected to another account since this was asked, so nothing was done."
 UNCERTAIN = "Google did not confirm that: it may or may not have happened. Check before trying again."
 # The approval kinds whose cards a switch going off cancels.
 SWITCH_ACTIONS: dict[str, tuple[str, ...]] = {
@@ -100,6 +101,22 @@ class GoogleSlow(GoogleError):
 
 class GoogleUncertain(GoogleError):
     """A write that is not safe to repeat got no clear answer: it may or may not have happened."""
+
+
+class InvalidCallback(GoogleError):
+    """The callback is not one this server started (unknown, expired or used state, or another browser's cookie): it
+    changes nothing at all."""
+
+
+@dataclass(frozen=True)
+class Ticket:
+    """What an approval was asked under: which switch, which connection, and the epochs of both when the card was made.
+    Any change to the switch or the connection moves an epoch, so an older ticket can never be used again."""
+
+    switch: str
+    connection: str | None
+    switch_epoch: int
+    link_epoch: int
 
 
 class _InvalidGrant(Exception):
@@ -141,6 +158,8 @@ class GoogleIntegration:
         self._client = client
         self._pending: dict[str, _Pending] = {}
         self._refreshing: dict[str, asyncio.Task[str]] = {}  # by connection: one refresh each, shared by its callers
+        self._switch_epoch: dict[str, int] = {name: 0 for name in SWITCHES}  # bumped on every change of a switch
+        self._link_epoch = 0  # bumped on every connect, disconnect and revoke
         self._apply = asyncio.Lock()  # around local token and state changes only, never across a network call
         self._calls: deque[float] = deque()
         self.clock = monotonic  # tests replace these two
@@ -196,6 +215,7 @@ class GoogleIntegration:
     async def set_switch(self, switch: str, on: bool) -> dict[str, Any]:
         if switch not in SWITCHES:
             raise ValueError("unknown switch")
+        self._switch_epoch[switch] += 1  # first, with nothing awaited, so a write about to go out sees it
         async with self._apply:
             state = await self.state()
             if on and (state["status"] != "connected" or SWITCHES[switch][0] not in state["scopes"]):
@@ -257,11 +277,12 @@ class GoogleIntegration:
         """Complete the callback. The state is spent first, so a replay or a second tab finds nothing. The callback
         carries no dashboard credential (a browser redirect from Google cannot), so the single-use, unexpired state
         matching the binding cookie that only the owner's authenticated connect request set is what authenticates it."""
-        pending = self._pending.pop(_sha(state), None) if state else None
+        pending = self._pending.get(_sha(state)) if state else None
         if pending is None or pending.expires <= self.clock():
-            raise GoogleError("This connect link has expired or was already used. Start again from Settings.")
+            raise InvalidCallback("This connect link has expired or was already used. Start again from Settings.")
         if not binding or not hmac.compare_digest(pending.binding_hash, _sha(binding)):
-            raise GoogleError("This connect link was not started from this browser. Start again from Settings.")
+            raise InvalidCallback("This connect link was not started from this browser. Start again from Settings.")
+        self._pending.pop(_sha(state), None)  # valid, unexpired and this browser's: only now is it spent
         if error:
             reason = error if _ERROR_CODE.fullmatch(error) else "error"
             raise GoogleError(f"Google did not connect ({reason}).")
@@ -284,6 +305,7 @@ class GoogleIntegration:
         if not scopes:
             raise GoogleError("Google granted none of the permissions Dom asked for.")
         async with self._apply:
+            self._link_epoch += 1
             # Every connection gets its own id, so a refresh or an approval started under an earlier one can tell.
             await self.app.secrets.put(NAMESPACE, TOKEN_KEY, {
                 "refresh_token": refresh, "access_token": access, "expires_at": self.wall() + _lifetime(data),
@@ -304,10 +326,12 @@ class GoogleIntegration:
             await self._save(last_error=message[:200])
 
     async def disconnect(self) -> bool:
-        """Revoke the token at Google and delete it here. Returns whether Google confirmed the revoke."""
-        tokens = await self.app.secrets.get(NAMESPACE, TOKEN_KEY)
+        """Revoke the token at Google and delete it here. Returns whether Google confirmed the revoke. A connection
+        made while Google was being asked is a different one and is left alone."""
+        tokens = await self._tokens()
+        connection = tokens.get("connection") if tokens else None
         revoked = False
-        if isinstance(tokens, dict) and isinstance(tokens.get("refresh_token"), str):
+        if tokens is not None:
             try:
                 response = await self.http.post(REVOKE_URL, data={"token": tokens["refresh_token"]})
                 revoked = response.is_success
@@ -316,6 +340,10 @@ class GoogleIntegration:
             if not revoked:
                 log.warning("Google did not confirm the revoke; the token is deleted here anyway")
         async with self._apply:
+            current = await self._tokens()
+            if current is not None and current.get("connection") != connection:
+                return revoked  # a connect finished during the revoke: that account stays connected
+            self._link_epoch += 1
             await self.app.secrets.delete(NAMESPACE, TOKEN_KEY)
             await self._save(
                 status="disconnected", scopes=[], notified=False, last_error="", connected_at=None,
@@ -338,13 +366,23 @@ class GoogleIntegration:
         tokens = await self._tokens()
         return str(tokens.get("connection") or "") if tokens else None
 
-    async def permits(self, switch: str, connection: str | None) -> str | None:
-        """Why an action may not run now, or None: its switch is on, Google is connected and it is still the same
-        connection the action was asked under. Checked immediately before it runs."""
-        if not allows(await self.state(), switch):
-            return "error: that Google permission is switched off or Google is disconnected, so nothing was done."
-        if connection is None or await self.connection_id() != connection:
-            return "error: Google was disconnected or connected to another account since this was asked, so nothing was done."
+    async def ticket(self, switch: str) -> Ticket:
+        """What an approval asked now is bound to. The epochs are read first, with nothing awaited, so a change that
+        lands while the connection id is read can only make the ticket stale, never wrongly fresh."""
+        switch_epoch, link_epoch = self._switch_epoch[switch], self._link_epoch
+        return Ticket(switch, await self.connection_id(), switch_epoch, link_epoch)
+
+    def stale(self, ticket: Ticket) -> bool:
+        return ticket.switch_epoch != self._switch_epoch[ticket.switch] or ticket.link_epoch != self._link_epoch
+
+    async def permits(self, ticket: Ticket) -> str | None:
+        """Why an action may not run now, or None: nothing about its switch or connection moved since it was asked,
+        the switch is on and it is still the same connection. Checked right before it runs, and again right before
+        the write itself (`call(ticket=...)`)."""
+        if self.stale(ticket) or not allows(await self.state(), ticket.switch):
+            return "error: " + STALE
+        if ticket.connection is None or await self.connection_id() != ticket.connection:
+            return "error: " + STALE
         return None
 
     @contextlib.contextmanager
@@ -387,7 +425,8 @@ class GoogleIntegration:
             return access
         key = str(tokens.get("connection") or "")
         if (task := self._refreshing.get(key)) is None:  # single flight per connection: callers share one refresh
-            task = self._refreshing[key] = asyncio.create_task(self._refresh(tokens))
+            with self.budget(None):  # it carries on in the background even if the caller's own deadline passes
+                task = self._refreshing[key] = asyncio.create_task(self._refresh(tokens))
             task.add_done_callback(partial(self._refresh_done, key))
         return await asyncio.shield(task)
 
@@ -432,6 +471,7 @@ class GoogleIntegration:
             if current is None or current.get("connection") != connection:
                 return
             state = await self.state()
+            self._link_epoch += 1
             await self.app.secrets.delete(NAMESPACE, TOKEN_KEY)
             await self._save(status="needs_reconnect", notified=True, last_error="Google access expired or was revoked.")
             first = not (state["status"] == "needs_reconnect" and state["notified"])
@@ -459,27 +499,33 @@ class GoogleIntegration:
 
     async def _send(
         self, method: str, url: str, *, params: dict | None = None, body: Any = None, data: dict | None = None,
-        authorized: bool = True, idempotent: bool | None = None, connection: str | None = None,
+        authorized: bool = True, idempotent: bool | None = None, ticket: Ticket | None = None,
     ) -> httpx.Response:
         """One HTTP call, retried on 429, 5xx and network errors with backoff, and a 401 refreshes the token once.
 
         A call that is not safe to repeat (a POST without an idempotency key) is never retried after Google may have
         acted on it: that raises GoogleUncertain. Inside `budget()` the whole call, retries and backoff included,
-        stops at the deadline with GoogleSlow."""
+        stops at the deadline with GoogleSlow: the token (a refresh in flight included) and the request share that one
+        deadline. With a `ticket`, nothing is written once its switch or connection has moved."""
         if idempotent is None:
             idempotent = method != "POST"
+        connection = ticket.connection if ticket is not None else None
         deadline, refreshed = _deadline.get(), False
         for attempt in range(MAX_TRIES):
             remaining = None if deadline is None else deadline - self.clock()
             if remaining is not None and remaining <= 0:
                 raise GoogleSlow(SLOW)
             await self._throttle()
-            headers = {"Authorization": f"Bearer {await self.access_token(connection=connection)}"} if authorized else {}
+            sent = False
             try:
-                sending = self.http.request(method, url, params=params, json=body, data=data, headers=headers)
-                response = await (sending if remaining is None else asyncio.wait_for(sending, remaining))
-            except TimeoutError:  # the deadline ran out while Google had the request
-                raise (GoogleSlow(SLOW) if idempotent else GoogleUncertain(UNCERTAIN)) from None
+                async with asyncio.timeout(remaining):  # None: no deadline. One clock for the token and the request.
+                    headers = {"Authorization": f"Bearer {await self.access_token(connection=connection)}"} if authorized else {}
+                    if ticket is not None and self.stale(ticket):  # the last look, with nothing awaited before the write
+                        raise GoogleError(STALE)
+                    sent = True
+                    response = await self.http.request(method, url, params=params, json=body, data=data, headers=headers)
+            except TimeoutError:  # the deadline ran out, in a refresh still going on or while Google had the request
+                raise (GoogleUncertain(UNCERTAIN) if sent and not idempotent else GoogleSlow(SLOW)) from None
             except httpx.HTTPError as exc:
                 log.warning("Google %s %s failed (%s)", method, urlsplit(url).path, type(exc).__name__)
                 reached = not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
@@ -492,7 +538,11 @@ class GoogleIntegration:
             status = response.status_code
             if status == 401 and authorized and not refreshed:
                 refreshed = True
-                await self.access_token(force=True, connection=connection)
+                try:
+                    async with asyncio.timeout(None if deadline is None else max(deadline - self.clock(), 0.001)):
+                        await self.access_token(force=True, connection=connection)
+                except TimeoutError:
+                    raise GoogleSlow(SLOW) from None
                 continue
             if status == 429 or status >= 500:
                 log.warning("Google %s %s answered %s", method, urlsplit(url).path, status)
@@ -512,12 +562,12 @@ class GoogleIntegration:
 
     async def call(
         self, method: str, url: str, *, params: dict | None = None, body: Any = None,
-        idempotent: bool | None = None, connection: str | None = None, allow: tuple[int, ...] = (),
+        idempotent: bool | None = None, ticket: Ticket | None = None, allow: tuple[int, ...] = (),
     ) -> Any:
         """An authorized API call returning the parsed JSON (None for an empty answer, or an `allow`ed status such as
         a 409 that means "already done")."""
         response = await self._send(
-            method, url, params=params, body=body, idempotent=idempotent, connection=connection,
+            method, url, params=params, body=body, idempotent=idempotent, ticket=ticket,
         )
         if response.is_success or response.status_code in allow:
             if not response.content:

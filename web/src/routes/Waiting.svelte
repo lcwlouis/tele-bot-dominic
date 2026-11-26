@@ -128,7 +128,8 @@
               <Card.Description class="break-words">{perm.site || "Desktop"}</Card.Description>
             </Card.Header>
             <Card.Content class="grid gap-3 text-sm">
-              {#if perm.detail}<p class="text-muted-foreground break-words whitespace-pre-line">{perm.detail}</p>{/if}
+              {#if perm.detail}<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div role="region" aria-label={`Details of ${perm.action_label}`} tabindex="0" class="max-h-48 overflow-y-auto outline-none focus-visible:ring-3 focus-visible:ring-ring/50 text-muted-foreground break-words whitespace-pre-line">{perm.detail}</div>{/if}
               <div class="flex flex-wrap gap-2">
                 <Button disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "once")}>Allow once</Button>
                 {#if perm.can_allow_always !== false}

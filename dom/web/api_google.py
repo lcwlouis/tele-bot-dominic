@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict
 
-from dom.google import BINDING_COOKIE, CALLBACK_PATH, SETTINGS_PATH, GoogleError
+from dom.google import BINDING_COOKIE, CALLBACK_PATH, SETTINGS_PATH, GoogleError, InvalidCallback
 from dom.web.model_settings import _input
 from dom.web.shared import owner_app
 
@@ -77,15 +77,17 @@ async def callback(request: Request):
             state=query.get("state"), binding=request.cookies.get(BINDING_COOKIE),
             code=query.get("code"), error=query.get("error"),
         )
+    except InvalidCallback as exc:
+        # Not a flow this server started for this browser (anyone can link the owner here): change nothing at all.
+        log.warning("Google callback ignored: %s", exc)
+        return RedirectResponse(f"{SETTINGS_PATH}?google=invalid", status_code=303)
     except GoogleError as exc:
         log.warning("Google connect failed: %s", exc)
-        if request.cookies.get(BINDING_COOKIE):  # only a flow this browser began may write what the card shows
-            await app.google.record_failure(str(exc))
+        await app.google.record_failure(str(exc))
         outcome = "failed"
     except Exception:
         log.exception("Google connect failed unexpectedly")
-        if request.cookies.get(BINDING_COOKIE):
-            await app.google.record_failure("Connecting Google failed. Check Dom's log.")
+        await app.google.record_failure("Connecting Google failed. Check Dom's log.")
         outcome = "failed"
     else:
         outcome = "connected"
