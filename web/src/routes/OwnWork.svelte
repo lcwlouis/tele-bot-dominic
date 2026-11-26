@@ -26,7 +26,7 @@
   let removing = $state<Skill | null>(null);
 
   onMount(() => {
-    if (linked && /^\d+$/.test(linked)) navigate(`/app/work?own=${linked}`, { replace: true });
+    if (linked !== null) navigate(`/app/work?${new URLSearchParams({ own: linked })}`, { replace: true }); // Work checks it
     else page.load();
   });
 

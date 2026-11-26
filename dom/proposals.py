@@ -364,8 +364,14 @@ class Proposals:
     async def pending(self) -> list[dict]:
         return await self._current(await self.app.store.pending_proposals())
 
-    async def settled(self, limit: int = 50) -> list[dict]:
-        return await self._current(await self.app.store.settled_proposals(limit=limit))
+    async def settled(self, limit: int = 50, include: int | None = None) -> list[dict]:
+        """The latest settled proposals, plus the one `include` names when it is settled but older than the latest."""
+        rows = await self.app.store.settled_proposals(limit=limit)
+        if include is not None and all(row["id"] != include for row in rows):
+            row = await self.app.store.get_proposal(include)
+            if row is not None and row["status"] != "pending":
+                rows.append(row)
+        return await self._current(rows)
 
     async def delete(self, proposal_id: int, expected_created_at: str) -> tuple[bool, str]:
         app = self.app

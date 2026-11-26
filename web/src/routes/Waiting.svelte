@@ -45,7 +45,7 @@
   let settledOpen = $state(false);
   const holds = (card: WaitingCard, id: number) => card.id === id || (card.type === "import" && card.facts.some((fact) => fact.id === id));
   onMount(async () => {
-    await page.load();
+    await page.load(linked ? `?id=${linked}` : ""); // so a settled one older than the latest still comes
     if (linked === null || page.data === null) return;
     const card = page.data.cards.find((item) => holds(item, linked));
     if (card) reveal(`waiting-${card.type}-${card.id}`);

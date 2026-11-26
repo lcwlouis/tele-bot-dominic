@@ -21,6 +21,7 @@
   import * as Card from "$lib/components/ui/card";
   import Confirm from "$lib/components/work/Confirm.svelte";
   import type { Destination, Tab } from "$lib/nav";
+  import { linkedId } from "$lib/deep-link";
   import { WorkPage } from "$lib/work.svelte";
   import { deskKey, ownKey, workItems, type WorkItem } from "$lib/work-items";
 
@@ -34,9 +35,12 @@
   let container = $state(params.get("container") ?? "");
   // A link may name one task (a Telegram notice, a search hit): ?task=<id> a desktop task, ?own=<id> one Dom set
   // himself. The page asks for it by name, so an older one than the first page still comes, and opens it.
-  const linked = /^\d+$/.test(params.get("task") ?? "") ? deskKey(Number(params.get("task"))) : /^\d+$/.test(params.get("own") ?? "") ? ownKey(Number(params.get("own"))) : null;
+  // An ID no row can have (0, too large, not a number) is gone at once, without a query the API would refuse.
+  const taskId = linkedId("task", params);
+  const ownId = taskId === null ? linkedId("own", params) : null;
+  const linked = taskId ? deskKey(taskId) : ownId ? ownKey(ownId) : null;
   let selected = $state<string | null>(null);
-  let gone = $state(false);
+  let gone = $state(taskId === 0 || ownId === 0);
   let ending = $state<WorkItem | null>(null); // a cancel waiting on its confirm
   let deleting = $state<WorkItem | null>(null);
 
@@ -48,7 +52,11 @@
     return text ? `?${text}` : "";
   }
   const ownQuery = () => (linked?.startsWith("own-") ? `?own=${linked.slice(4)}` : "");
-  const refresh = () => !desk.busy && desk.load(query());
+  // Both lists refresh: an Own work task starts, finishes or appears while the page is open, too.
+  const refresh = () => {
+    if (!desk.busy) desk.load(query());
+    if (!own.busy) own.load(ownQuery());
+  };
 
   onMount(() => {
     if (linked) selected = linked; // so the first read asks for it
@@ -125,6 +133,11 @@
   {@const data = desk.data}
   {#if desk.failed}
     <p role="alert" class="mb-4 text-sm text-coral">Couldn't refresh: {desk.failed}. Showing what Dom last said.</p>
+  {/if}
+  {#if own.failed}
+    <p role="alert" class="mb-4 text-sm text-coral">
+      {own.data ? `Couldn't refresh Dom's own work: ${own.failed}. Showing what Dom last said.` : `Couldn't load Dom's own work: ${own.failed}.`}
+    </p>
   {/if}
   {#if !data.enabled}
     <p class="mb-6 flex items-center gap-2 text-meta text-muted-foreground">

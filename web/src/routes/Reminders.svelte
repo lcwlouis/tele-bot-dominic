@@ -29,7 +29,7 @@
   let bulk = $state<"cancel" | "delete" | null>(null);
 
   onMount(async () => {
-    await page.load(linked === null ? "" : `?id=${linked}`);
+    await page.load(linked ? `?id=${linked}` : "");
     if (linked === null || page.data === null) return;
     if (page.data.reminders.some((row) => row.id === linked)) reveal(`reminder-row-${linked}`);
     else gone = true;

@@ -172,7 +172,7 @@ def _proposal_label(kind: str, source: str) -> str:
     return "Plugin draft" if kind == "plugin" else kind.replace("_", " ").capitalize()
 
 
-async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
+async def _proposals(app: App, kind: str = "", source: str = "", linked: int | None = None) -> dict:
     rows = await app.proposals.pending()
     cards, imports = [], {}
     for raw in rows:
@@ -215,7 +215,7 @@ async def _proposals(app: App, kind: str = "", source: str = "") -> dict:
                 "first": gate.first_line(chat.get("first_text")),
             })
     count = len(pending_chats) + sum(len(card["facts"]) if "facts" in card else 1 for card in cards)
-    settled_rows = await app.proposals.settled()
+    settled_rows = await app.proposals.settled(include=linked)  # a link may name an older settled one
     settled = [
         _proposal_body(raw) | {"label": _proposal_label(raw["kind"], raw["source"])}
         for raw in settled_rows

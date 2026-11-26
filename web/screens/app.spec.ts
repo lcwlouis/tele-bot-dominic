@@ -1409,6 +1409,72 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("deep links: an ID no row can have says gone without asking the API, and the page still loads", async ({ page }) => {
+    const problems = await watch(page);
+    await page.clock.setFixedTime(PREVIEW_NOW);
+    const asked: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/")) asked.push(url.pathname + url.search);
+    });
+    for (const bad of ["0", "99999999999999999999", "12abc"]) {
+      await page.goto(`/app/work?task=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
+      await expect(page.getByText("Look up opening hours for the library.").first()).toBeVisible();
+      await page.goto(`/app/work?own=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
+      await page.goto(`/app/work/own-work?own=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
+      await page.goto(`/app/work/reminders?id=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That reminder is gone." })).toBeVisible();
+      await expect(page.locator("#reminder-row-3")).toContainText("Pack a charger");
+      await page.goto(`/app/waiting?proposal=${bad}`);
+      await expect(page.getByRole("status").filter({ hasText: "That proposal is gone." })).toBeVisible();
+      await expect(page.getByRole("list", { name: "Waiting for you" })).toBeVisible();
+    }
+    expect(asked.filter((query) => /[?&](task|own|id)=/.test(query))).toEqual([]);
+    expect(problems).toEqual([]);
+  });
+
+  test("deep links: Waiting asks for the linked proposal by ID, so a settled one older than the latest still comes", async ({ page }) => {
+    const problems = await watch(page);
+    const waiting = await (await page.request.get("/api/waiting")).json();
+    const settled = waiting.settled[0];
+    // The API answers without it unless the page names it: as if it were older than the latest 50.
+    await page.route("**/api/waiting?*", async (route) => {
+      const response = await route.fetch();
+      const named = new URL(route.request().url()).searchParams.get("id");
+      const json = await response.json();
+      await route.fulfill({ response, json: named === String(settled.id) ? json : { ...json, settled: [] } });
+    });
+    await page.goto(`/app/waiting?proposal=${settled.id}`);
+    await expect(page.locator(`#settled-${settled.id}`)).toBeFocused();
+    await expect(page.getByText("That proposal is gone.")).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("work: the refresh brings Dom's own work up to date too, and says when it can't", async ({ page }) => {
+    const problems = await watch(page);
+    await page.clock.install({ time: PREVIEW_NOW });
+    await page.goto("/app/work");
+    await expect(page.getByText("Check the weather page for Saturday").first()).toBeVisible();
+    let mode: "new" | "fail" = "new";
+    await page.route("**/api/work/own*", async (route) => {
+      if (mode === "fail") return route.fulfill({ status: 500, json: { detail: "Dom is busy" } });
+      const response = await route.fetch();
+      const json = await response.json();
+      const planned = { ...json.tasks[0], id: 77, goal: "Find a quiet café near the station", status: "planned" };
+      await route.fulfill({ response, json: { ...json, tasks: [planned, ...json.tasks] } });
+    });
+    await page.clock.runFor(4500);
+    await expect(page.getByText("Find a quiet café near the station").first()).toBeVisible();
+    mode = "fail";
+    await page.clock.runFor(4500);
+    await expect(page.getByRole("alert").filter({ hasText: "Couldn't refresh Dom's own work" })).toBeVisible();
+    await expect(page.getByText("Find a quiet café near the station").first()).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
   test("chats: a chat Dom can't reach is checked, hidden and shown again, and forgetting asks once more for its history", async ({ page }) => {
     const problems = await watch(page);
     const dialog = page.getByRole("alertdialog");

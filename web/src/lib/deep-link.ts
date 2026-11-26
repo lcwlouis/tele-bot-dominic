@@ -4,10 +4,19 @@ import { tick } from "svelte";
 // items are not in a strip list selects the item in place: scrolled to the middle of the screen, outlined, and
 // focused, so a keyboard or screen reader starts there.
 
-/** The numeric ID a link names in `?name=`, or null. */
-export function linkedId(name: string): number | null {
-  const value = new URLSearchParams(location.search).get(name);
-  return value !== null && /^\d+$/.test(value) ? Number(value) : null;
+/** A row ID from a link: a positive safe integer, or 0 when the text can't be one (the API would refuse it). */
+export function parseId(value: string): number {
+  const id = /^\d{1,16}$/.test(value) ? Number(value) : 0;
+  return Number.isSafeInteger(id) ? id : 0;
+}
+
+/**
+ * What a link names in `?name=`: null with no such parameter, 0 when it can't name a row (so the page says "gone"
+ * without asking the API), or the ID.
+ */
+export function linkedId(name: string, params = new URLSearchParams(location.search)): number | null {
+  const value = params.get(name);
+  return value === null ? null : parseId(value);
 }
 
 /** Bring the element with this id into view and focus it, once the page has drawn it. */
