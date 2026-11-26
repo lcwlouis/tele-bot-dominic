@@ -39,6 +39,18 @@ ACTION_NOTES = {
 }
 
 
+SCENE_LIMIT = 300  # the longest scene the studio's image endpoint and the cloud image path take
+# A video note is animated as a talking head from its still, so the still needs a face the animator can find and move:
+# a mirror selfie with the phone over the face, or a figure too small to see, gives a note whose face barely moves.
+STILL_FRAMING = "Facing the camera, face clearly visible, nothing covering it."
+
+
+def still_scene(scene: str) -> str:
+    """The prompt for a video note's still: the scene, shortened to leave room, then the framing it must keep."""
+    room = SCENE_LIMIT - len(STILL_FRAMING) - 1
+    return f"{' '.join(scene.split())[:room].rstrip()} {STILL_FRAMING}"
+
+
 # Each studio switch in config.toml, its plain name, and the kinds it turns on (the profile photo uses the local
 # studio's portrait endpoint, so only the studio serves it).
 SWITCH_LABELS = {
