@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Desktop browser permissions, saved logins, and secure secret requests.** Added an AES-256-GCM encrypted secret store (`DOM_MASTER_KEY` in `.env`, with crash-safe rotation via `dom rotate-key` or the dashboard, reusable by upcoming OAuth integrations), per-action and per-site desktop permissions (`Ask` / `Allow` / `Never` across visiting unfamiliar sites, filling saved logins, downloading, uploading, and background work) with owner-DM approval cards (`Allow once`, `Allow always`, `Reject`), zero-model/untraced VNC keystroke filling for saved logins on verified HTTPS password inputs, the owner-DM-only `request_secret` tool with a one-time `/app/secret` dashboard entry form, and the **System → Access** dashboard page for saved logins, site permissions, and approvals history.
+
 ## [0.8.4] - 2026-11-27
 
 Dom knows what happened to him: errors from his own work, what changed after an update, and the real photos, voice notes and clips people send. His memory lasts: dated facts, source-tagged lines, rolling summaries, core memories, a linked graph of people, places, projects and goals, and optional meaning search. Spend caps, service settings and leak-scan levels are set from the dashboard, and his studio gains scenes, event days, voices and portraits.

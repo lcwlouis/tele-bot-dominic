@@ -139,6 +139,8 @@ async def test_failed_upload_drops_the_files_and_the_report_says_so(make_app):
 async def test_documents_are_sent_to_owner_after_result(make_app, monkeypatch):
     app = make_app()
     app.home = Home(app.home.root / 'home')
+    # R4 defaults desktop downloads to Ask (covered in test_credentials_and_permissions.py); allow here to test delivery order.
+    await app.desktop_permissions.set_policy("download", "allow")
     worker = await worker_for(
         app, call("finish", result="Report is ready", files=["/tmp/report.txt"]),
         {"content": '{"bubbles":[{"text":"Here you go"}]}'},

@@ -836,6 +836,54 @@ OWN_CODE_TOOL = Tool(
 )
 
 
+async def _request_secret(args: dict, ctx: TurnCtx) -> str:
+    app = ctx.app
+    if app is None or not ctx.is_owner_dm():
+        return "error: request_secret is available only in the owner's DM"
+    try:
+        created = await app.secret_requests.create(
+            label=str(args.get("label") or ""),
+            reason=str(args.get("reason") or ""),
+            target=args.get("target") or "secret",
+            key=args.get("key") if isinstance(args.get("key"), str) else None,
+        )
+    except ValueError as exc:
+        return f"error: {exc}"
+    return json.dumps({
+        "request_id": created["request_id"],
+        "status": "requested",
+        "message": (
+            "Sent a secure one-time entry card to the owner. Never ask them to paste the secret in chat; "
+            "you will be notified once it is set."
+        ),
+    })
+
+
+REQUEST_SECRET_TOOL = Tool(
+    name="request_secret",
+    description=(
+        "Owner's DM only. Ask the owner to enter a secret, API key, or site login securely through a one-time "
+        "dashboard form. Never ask the owner to paste a password, token, or key into Telegram chat. "
+        "Target is 'secret' (encrypted credential store, default), 'env' (only a non-reserved .env variable "
+        "referenced by config.toml such as a model API key, studio token, or KLIPY_API_KEY), "
+        "or 'login' (a saved desktop login; pass the site hostname in key). You will only learn when it is set, never its value."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "maxLength": 80},
+            "reason": {"type": "string", "maxLength": 240},
+            "target": {"type": "string", "enum": ["secret", "env", "login"], "default": "secret"},
+            "key": {"type": "string", "maxLength": 64},
+        },
+        "required": ["label", "reason"],
+        "additionalProperties": False,
+    },
+    handler=_request_secret,
+    scopes={"owner_dm"},
+)
+
+
 async def _message_chat(args: dict, ctx: TurnCtx) -> str:
     if ctx.app is None or not ctx.is_owner_dm():
         return "Only the owner can publish messages to other chats."
@@ -909,6 +957,7 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
         OWN_CODE_TOOL,
         FIND_DEVICES_TOOL,
         TASK_MODE_TOOL,
+        REQUEST_SECRET_TOOL,
     ]
     if app.config.memory_self_edit:  # a setting, so it changes rarely; sits before the tools that come and go
         owner_only.append(PROPOSE_MEMORY_EDIT_TOOL)

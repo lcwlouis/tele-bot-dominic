@@ -280,6 +280,9 @@ def restart_refusal(app) -> str | None:
             return "A desktop task is asking for more steps. Answer its card first."
         if worker.busy():
             return "A desktop task is running. Wait for it to finish or cancel it first."
+    perms = getattr(app, "desktop_permissions", None)
+    if perms is not None and perms.has_pending():
+        return "A desktop permission card is waiting for your answer. Answer it first."
     if app.dispatch.escalation.pending:
         return "A model switch card is waiting for your answer. Answer it first."
     bridge = getattr(app, "t3", None)

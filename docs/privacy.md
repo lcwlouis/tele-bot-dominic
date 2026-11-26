@@ -4,8 +4,30 @@
 
 The instance home holds `config.toml`, the `.env` secrets, the bot's personality
 in `SOUL.md`, notes, skills and plugins. `state.db` stores chat state, searchable
-messages, jobs, usage and approvals. `transcripts/` holds per-chat JSON Lines
+messages, jobs, usage, approvals, and encrypted credentials. `transcripts/` holds per-chat JSON Lines
 records. Protect both the database and the transcripts as conversation data.
+
+Saved desktop logins, owner-provided secrets (via `request_secret`), and integration
+tokens are encrypted at rest with AES-256-GCM using `DOM_MASTER_KEY` in `.env`
+(mode `0600`, rotatable via **System → Access** while Dom runs or `dom rotate-key <home>`
+while Dom is stopped). E101 secrets and saved-login credentials are owner-only and
+unreachable from groups or friends' DMs. Dom never sends a saved password or E101 secret
+through Telegram chat, any model prompt or tool argument, any traced sandbox HTTP API
+request (`/v1/browser/page/type`, `fill`, `evaluate`), any turn log, debug trace, usage
+row, or Python log line (including `websockets` debug logging). Saved-login filling
+always submits the form and, if a password is still in a field after the submit, clears
+it over VNC; if anything fails or is cancelled after the password is typed and before the
+submit, it makes a best-effort attempt to erase it over VNC before returning (a failed
+attempt is possible, for example if the sandbox is unreachable). It aborts and alerts the
+owner DM if focus leaves the password field mid-typing, and registers the username and password in a per-run redaction set for the
+rest of that desktop task. Residual risk: once typed into Chromium inside the sandbox,
+the password is present in the browser on the matched HTTPS origin. The page checks Dom
+runs through the page's own JavaScript (focus, active field, form action) can be lied to
+by a hostile page, so the browser's tab list, which a page cannot forge, is the trust anchor
+for the site and is re-read right before each typing step. A hostile or
+compromised page on that matched origin (or a compromised sandbox container/shell
+during an owner task) could still capture the input, reveal it in an altered form or
+screenshot that verbatim redaction cannot match, or steal the resulting session cookies.
 
 General notes, habits and the public-safe journal live in `memory/`, with
 separate notes about people and chats. Owner preferences, personal notes and the

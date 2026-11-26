@@ -429,6 +429,75 @@ export type WaitingCard =
       reason?: string;
       leak_score?: number | null;
     });
+export type DesktopAction = "visit_site" | "fill_login" | "download" | "upload" | "background_work";
+export type PermissionPolicy = "ask" | "allow" | "never";
+export type SavedLogin = {
+  id: number;
+  site: string;
+  label: string;
+  username_hint: string;
+  has_username: boolean;
+  has_password: boolean;
+  match_subdomains: boolean;
+  created_at: string;
+  updated_at: string;
+};
+export type OwnerSecret = { key: string; label: string; created_at: string; updated_at: string };
+export type DesktopActionItem = {
+  id: DesktopAction;
+  label: string;
+  description: string;
+  site_scoped: boolean;
+  policy: PermissionPolicy;
+  site_allow_count: number;
+};
+export type SiteRule = { site: string; action: Exclude<DesktopAction, "background_work">; policy: PermissionPolicy; updated_at: string };
+export type PendingPermission = {
+  id: number;
+  task_id: number | null;
+  self_task_id: number | null;
+  action: DesktopAction;
+  action_label: string;
+  site: string;
+  detail: string;
+  created_at: string;
+  can_allow_always?: boolean;
+};
+export type PermissionHistoryRow = {
+  id: number;
+  task_id: number | null;
+  self_task_id: number | null;
+  action: DesktopAction;
+  action_label: string;
+  site: string;
+  detail: string;
+  status: string;
+  decided_via: string;
+  created_at: string;
+  decided_at: string | null;
+};
+export type PendingSecretRequest = {
+  id: number;
+  label: string;
+  reason: string;
+  target: "secret" | "env" | "login";
+  target_key: string;
+  created_at: string;
+  expires_at: string;
+};
+export type SecretRequestLookup = PendingSecretRequest & { overwrites_existing: boolean };
+export type AccessData = {
+  key_status: { configured: boolean; key_id: string | null; previous_present: boolean; total_entries: number; error: string };
+  logins: SavedLogin[];
+  owner_secrets: OwnerSecret[];
+  actions: DesktopActionItem[];
+  policies: Record<DesktopAction, PermissionPolicy>;
+  site_rules: SiteRule[];
+  pending_permissions: PendingPermission[];
+  history: PermissionHistoryRow[];
+  pending_secret_requests: PendingSecretRequest[];
+};
+
 export type WaitingData = {
   count: number;
   kind: string;
@@ -437,6 +506,8 @@ export type WaitingData = {
   sources: string[];
   chats: { id: number; label: string; title: string; detail: string; first: string }[];
   cards: WaitingCard[];
+  desktop_permissions?: PendingPermission[];
+  secret_requests?: PendingSecretRequest[];
   settled: { id: number; label: string; status: string; title: string; created_at: string }[];
   notices: { network: string; storage: string };
 };

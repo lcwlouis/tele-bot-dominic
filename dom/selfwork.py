@@ -184,6 +184,8 @@ class SelfWork:
         app, owner = self.app, self.app.owner_id
         if not self.active():
             return
+        if await app.desktop_permissions.resolve("background_work") == "never":
+            return
         public = app.home.scoped(allow_private=False)  # the plan is shown on the dashboard and sent to the worker
         _, soul = public.soul()
         try:
@@ -371,6 +373,35 @@ class SelfWork:
     async def _run(self, row: dict) -> None:
         app, store = self.app, self.app.store
         task_id = row["id"]
+        perms = app.desktop_permissions
+        bg_policy = await perms.resolve("background_work")
+        if bg_policy == "never":
+            await perms.record_decision(
+                action="background_work", site="", detail=row["goal"][:160],
+                status="blocked", decided_via="policy", self_task_id=task_id,
+            )
+            await self._finish(task_id, "refused", error="Background desktop work is set to Never.")
+            return
+        planned_sites = json.loads(row["sites_json"])
+        for planned_site in planned_sites:
+            if await perms.resolve("visit_site", planned_site) == "never":
+                await perms.record_decision(
+                    action="visit_site", site=planned_site, detail=row["goal"][:160],
+                    status="blocked", decided_via="policy", self_task_id=task_id,
+                )
+                await self._finish(task_id, "refused", error=f"Site {planned_site} is set to Never.")
+                return
+        if bg_policy == "ask":
+            outcome = await perms.request_approval(
+                action="background_work", site="", detail=row["goal"][:160],
+                self_task_id=task_id, container=CONTAINER,
+            )
+            if outcome not in ("allowed_once", "allowed_always"):
+                await self._finish(
+                    task_id, "cancelled" if outcome == "rejected" else "refused",
+                    error="Rejected by owner." if outcome == "rejected" else "Approval timed out.",
+                )
+                return
         fleet = app.desktop_worker
         lane, reason = await fleet.own_lane(CONTAINER) if fleet is not None else (None, "my desktop is off")
         if lane is None:
