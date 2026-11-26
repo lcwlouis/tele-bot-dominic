@@ -388,7 +388,7 @@ async def seed(app: handlers.App) -> None:
         "- Weekday lunch: noodles, a rice bowl or a sandwich at the harbour cafe {entities place:the-harbour-cafe}\n"
         "- Thursday evening: usually the climbing gym\n\n## Regular spots\n- Coffee: the corner kiosk {core owner 2026-11-20}\n"
     ))
-    await app.store.kv_set("world:last_change", json.dumps({"day": "2026-11-18", "reason": "He took up climbing and wanted a weekly slot for it."}))
+    app.home.write_file("memory/WORLD.change.json", json.dumps({"day": "2026-11-18", "reason": "He took up climbing and wanted a weekly slot for it."}))
     app.home._write_regular("memory/places/the-harbour-cafe.md", "- A small cafe on the water with blue chairs {any} {entities place:the-harbour-cafe}\n")
     app.home._write_regular("memory/places/the-bakery.md", "- The bakery downstairs, open from six {any}\n")
     await app.place_photos.save("the-harbour-cafe", _fictional_photo())

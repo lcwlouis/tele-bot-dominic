@@ -91,7 +91,8 @@ Dom's life sheet: where he lives, where he works, his routine and his regular sp
   that chat may read it, is added to the turn note.
 - **Who changes it.** The owner edits the sheet on the Memory page or the World page, and those lines are pinned like
   every hand edit. Dom changes it only through the nightly reflection, at most once a week and with a reason
-  (`world:last_change` records the day and reason; the World page shows them). His edit can never replace or remove a
+  (`memory/WORLD.change.json`, written before the sheet in one atomic step and checked and written without yielding,
+  records the day and reason, so a crash or two proposals at once can never open the week twice; the World page shows them). His edit can never replace or remove a
   pinned line or one tagged to a chat, and can't write a `{core ...}` or `{chat ...}` group.
 - **Who sees it.** The tag rules above apply as for any note: a line tagged `{chat <id>}` (by hand) shows only in that
   chat and in the owner's DM; untagged and `{any}` lines show everywhere. The block is built on every turn and sits

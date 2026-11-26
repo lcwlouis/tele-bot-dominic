@@ -67,8 +67,9 @@ v0.8.4 code backs them up with source tags (see `docs/memory-format.md`):
   answered. The nightly reflection that may change the sheet reads only group content and the lines no chat owns (never
   the owner's DM or `private/`), writes no tag, and cannot touch a pinned or chat-tagged line;
 - a place's reference photo (`media/places/`) is the owner's own picture, saved without its camera data, and goes to
-  an image model only when a photo's scene names the place, the model takes a reference, and the chat has a line about
-  that place (the owner's DM has them all);
+  an image model only when Dom names the place by its key on the image or video note (never guessed from the scene's
+  words), the model takes a reference, and the chat has a line about that place (the owner's DM has them all); the
+  turn note offers each chat only the keys it may see;
 - the journal archive (`memory/journal/`, `private/journal/`) and the "recent life" summaries made from it are
   owner-DM only, because the diary mentions people from every chat. The private archive never leaves
   the owner's scope.

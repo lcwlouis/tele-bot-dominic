@@ -6,8 +6,9 @@ home, in private folders, written to a temporary name and moved into place, so a
 half-written. The upload is decoded and saved again as a JPEG of at most 1024 px, which drops any location data the
 camera wrote into it.
 
-A photo is offered to the image model only when the model accepts a reference, and only for a chat that may know the
-place: the owner's DM, or a chat the place note has a line for (the same tag rules as every note).
+A photo is offered to the image model only when the model accepts a reference, Dom named the place by its key on the
+image or video note (never guessed from the scene's words), and the chat may know it: the owner's DM, or a chat the
+place note has a line for (the same tag rules as every note).
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from dom.models import Scope
 log = logging.getLogger("dom.place_photos")
 FOLDER = f"{MEDIA_DIR}/places"
 MAX_UPLOAD = 8 * 1024 * 1024  # bytes of the picture the owner adds
+MAX_OFFERED = 12  # place keys listed in one turn note
 SIDE = 1024  # longest side kept; a reference needs no more
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _FORMATS = {"JPEG", "PNG", "WEBP"}
@@ -111,20 +113,25 @@ class PlacePhotos:
             return False
         return True
 
-    def _reference_for(self, prompt: str, scope: Scope, chat_id: int) -> bytes | None:
-        folder = self._media.home / FOLDER
+    def places_for(self, scope: Scope, chat_id: int) -> list[str]:
+        """The keys of the places with an owner-added photo that this chat may see: all of them in the owner's DM, else
+        those whose note has a line this chat may read. Filtered here in code, so the choice offered is already safe."""
         try:
-            slugs = sorted((p.stem for p in folder.glob("*.jpg")), key=len, reverse=True)  # the longest name wins
+            keys = sorted(p.stem for p in (self._media.home / FOLDER).glob("*.jpg"))
         except OSError:
-            return None
-        text = " ".join(prompt.lower().replace("-", " ").split())
-        for slug in slugs:
-            if not SLUG.fullmatch(slug) or not re.search(rf"(?<![a-z0-9]){re.escape(slug.replace('-', ' '))}(?![a-z0-9])", text):
-                continue
-            if scope != "owner_dm" and not self._known_to(slug, chat_id):
-                continue
-            return self.read(slug)
-        return None
+            return []
+        return [key for key in keys if SLUG.fullmatch(key) and self.has(key) and (scope == "owner_dm" or self._known_to(key, chat_id))]
+
+    def offer(self, scope: Scope, chat_id: int) -> str:
+        """The turn-note line that lists the places this chat may show, or "" when there are none. The place of a picture
+        is only ever one of these keys, named by Dom in the action, never guessed from the scene's words."""
+        keys = self.places_for(scope, chat_id)[:MAX_OFFERED]
+        if not keys:
+            return ""
+        return (
+            'places with a photo you may show (set "place" on an image or video_note only when the scene really is '
+            "there, to exactly one of these keys; otherwise leave it out): " + ", ".join(keys)
+        )
 
     def _known_to(self, slug: str, chat_id: int) -> bool:
         """Whether the place's note has a line this chat may read, so a photo never names a place the chat never heard of."""
@@ -134,6 +141,9 @@ class PlacePhotos:
             return False
         return any(notes.is_bullet(line) for line in notes.limit_to_chat(text, chat_id).split("\n"))
 
-    async def reference_for(self, prompt: str, scope: Scope, chat_id: int) -> bytes | None:
-        """The reference photo of the place a picture's scene names, if the owner kept one this chat may use."""
-        return await asyncio.to_thread(self._reference_for, prompt, scope, chat_id)
+    async def reference_for(self, place: str | None, scope: Scope, chat_id: int) -> bytes | None:
+        """The photo of the place Dom named, if it is one this chat may see. A name that is not on that list gets none."""
+        if not place or not SLUG.fullmatch(place):
+            return None
+        allowed = await asyncio.to_thread(self.places_for, scope, chat_id)
+        return await asyncio.to_thread(self.read, place) if place in allowed else None

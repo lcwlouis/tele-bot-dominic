@@ -1921,7 +1921,7 @@ class Dispatcher:
     async def _screen_studio(self, chat_id: int, scope: Scope, actions: Actions, title: str) -> Actions:
         if not (actions.voice or actions.video_note or actions.image):
             return actions
-        update = {"voice": None, "video_note": None, "image": None}
+        update = {"voice": None, "video_note": None, "image": None, "image_place": None}
         if actions.private:
             # Only the owner DM hears about it: a note in a group would reveal that a private reply existed.
             if scope == "owner_dm":
@@ -1945,7 +1945,7 @@ class Dispatcher:
             if studio_enabled(config, scope, kind):
                 update["video_note"] = actions.video_note
         if studio_enabled(config, scope, "photo"):
-            update["image"] = actions.image
+            update["image"], update["image_place"] = actions.image, actions.image_place
         if (
             (actions.voice and update["voice"] is None)
             or (actions.video_note is not None and update["video_note"] is None)
@@ -2280,6 +2280,10 @@ class Dispatcher:
         )
         if world := app.world.block(app.home, scope, chat_id, window, now):  # files and a cached forecast: no waiting
             note += f"\n{world}"
+        if (studio_enabled(app.config.studio, scope, "photo") or studio_enabled(app.config.studio, scope, "video_note")) and (
+            places := app.place_photos.offer(scope, chat_id)
+        ):
+            note += f"\n{places}"
         if any(tool.name.startswith("plugin_") for tool in tools):
             note += (
                 "\nPlugin tools receive their arguments only. Pass only task inputs explicitly provided for the plugin. "

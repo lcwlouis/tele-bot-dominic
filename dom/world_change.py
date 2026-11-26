@@ -8,6 +8,7 @@ edit can never replace or remove, and lines the owner tagged to one chat are not
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import date, timedelta
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
     from dom.telegram.handlers import App
 
 log = logging.getLogger("dom.world_change")
-KEY = "world:last_change"  # JSON: {"day": "YYYY-MM-DD", "reason": str}
+MARKER = "memory/WORLD.change.json"  # JSON: {"day": "YYYY-MM-DD", "reason": str}, kept in the home beside the sheet
 INTERVAL = timedelta(days=7)
 MAX_OPS = 4
 MAX_REASON = 160
@@ -39,20 +40,26 @@ FORMAT = (
 )
 
 
+def _marker(home: Home) -> tuple[date, str] | None:
+    try:
+        data = json.loads(home.scoped(allow_private=False).read(MARKER) or "null")
+        return date.fromisoformat(data["day"]), str(data.get("reason", ""))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, PrivateAccessError):
+        return None
+
+
+def _is_due(found: tuple[date, str] | None, today: date) -> bool:
+    return found is None or today - found[0] >= INTERVAL
+
+
 async def last_change(app: App) -> tuple[date, str] | None:
     """The day of the sheet's last change and its reason, or None while it has never changed."""
-    raw = await app.store.kv_get(KEY)
-    try:
-        data = json.loads(raw) if raw else None
-        return date.fromisoformat(data["day"]), str(data.get("reason", ""))
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return None
+    return await asyncio.to_thread(_marker, app.home)
 
 
 async def due(app: App, today: date) -> bool:
     """Whether a change may apply today: the sheet has never changed, or its last change is a week old."""
-    found = await last_change(app)
-    return found is None or today - found[0] >= INTERVAL
+    return _is_due(await last_change(app), today)
 
 
 def context(home: Home) -> str:
@@ -70,23 +77,24 @@ def _reason(value: object) -> str:
     return " ".join(value.split())[:MAX_REASON] if isinstance(value, str) else ""
 
 
-async def apply(app: App, edit: object, today: date) -> bool:
-    """Apply a proposed change if it is allowed. False (and nothing written) when it is malformed, has no reason, comes
-    inside a week of the last change, or every op is refused. The gate is checked here, so it holds whoever calls."""
-    if not isinstance(edit, dict) or not isinstance(edit.get("ops"), list) or not (reason := _reason(edit.get("reason"))):
-        log.info("the proposed world change had no reason or no ops; nothing written")
-        return False
-    if not await due(app, today):
+def _write(home: Home, edit: dict, reason: str, today: date) -> bool:
+    """Check the week, claim it, then write the sheet. All of it runs without yielding to the event loop, so two
+    proposals can't both pass the check. The week is claimed first (a file moved into place, kept beside the sheet):
+    a crash or a failed write after that leaves the week spent with at most part of the change made, never a sheet
+    that changed while the week stayed open. Only when no op was applied is the old marker put back."""
+    before = _marker(home)
+    if not _is_due(before, today):
         log.info("the proposed world change came inside a week of the last one; nothing written")
         return False
-    home = app.home.scoped(allow_private=False)
+    home.write_file(MARKER, json.dumps({"day": today.isoformat(), "reason": reason}))
+    scoped = home.scoped(allow_private=False)
     applied = 0
     for op in edit["ops"][:MAX_OPS]:
         if not isinstance(op, dict) or op.get("op") not in ("add", "replace", "remove") or not isinstance(op.get("text", ""), str):
             continue
         old = op.get("old")
         try:
-            result = home.memory_write(
+            result = scoped.memory_write(
                 WORLD, op["op"], op.get("text", ""), old if isinstance(old, str) else None, source=SOURCE,
                 entities=notes.normalize_entities(op.get("entities", ())), today=today,
             )
@@ -97,9 +105,23 @@ async def apply(app: App, edit: object, today: date) -> bool:
             applied += 1
         else:
             log.info("a world sheet op was refused: %s", result.error)
-    if not applied:
+    if applied:
+        return True
+    if before is None:
+        (home.root / MARKER).unlink(missing_ok=True)
+    else:
+        home.write_file(MARKER, json.dumps({"day": before[0].isoformat(), "reason": before[1]}))
+    return False
+
+
+async def apply(app: App, edit: object, today: date) -> bool:
+    """Apply a proposed change if it is allowed. False (and nothing written) when it is malformed, has no reason, comes
+    inside a week of the last change, or every op is refused. The gate is checked here, so it holds whoever calls."""
+    if not isinstance(edit, dict) or not isinstance(edit.get("ops"), list) or not (reason := _reason(edit.get("reason"))):
+        log.info("the proposed world change had no reason or no ops; nothing written")
         return False
-    await app.store.kv_set(KEY, json.dumps({"day": today.isoformat(), "reason": reason}))
+    if not _write(app.home, edit, reason, today):
+        return False
     try:
         await app.store.record_owner_event(f"Dom changed his world sheet: {reason}")
     except Exception:

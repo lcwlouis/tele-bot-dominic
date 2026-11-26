@@ -88,24 +88,50 @@ async def test_a_bad_name_or_picture_writes_nothing(make_app):
     assert app.place_photos.read("../evil") is None and not app.place_photos.has("../evil")
 
 
-async def test_a_scene_naming_a_place_gets_its_photo_only_for_chats_that_know_it(make_app):
+async def test_only_a_named_place_a_chat_may_see_gets_its_photo(make_app):
     app = make_app()
     await app.place_photos.save("the-gym", picture())
     await app.place_photos.save("the-gym-annex", picture(color=(1, 2, 3)))
+    await app.place_photos.save("no-note", picture())
     put(app.home, "memory/places/the-gym.md", "- Climbing gym {chat -1001}\n- Open until ten {any}\n")
     put(app.home, "memory/places/the-gym-annex.md", "- A back room {chat -1001}\n")
     photos = app.place_photos
-    scene = "Dom chalking his hands at the gym, evening light"
-    assert await photos.reference_for(scene, "owner_dm", OWNER) == photos.read("the-gym")  # the owner's DM knows every place
-    assert await photos.reference_for(scene, "friend_dm", FRIEND) == photos.read("the-gym")  # it has an {any} line
-    assert await photos.reference_for(scene, "group", -1001) == photos.read("the-gym")
-    assert await photos.reference_for("at the gym annex", "owner_dm", OWNER) == photos.read("the-gym-annex")  # the longest name wins
-    annex_less = await photos.reference_for("at the gym annex", "friend_dm", FRIEND)
-    assert annex_less == photos.read("the-gym") != photos.read("the-gym-annex")  # the annex is not this chat's to know
-    assert await photos.reference_for("on a park bench", "owner_dm", OWNER) is None  # no place is named
-    assert await photos.reference_for("at the gymnasium", "owner_dm", OWNER) is None  # a word, not part of one
+    assert await photos.reference_for("the-gym", "owner_dm", OWNER) == photos.read("the-gym")  # the owner's DM knows every place
+    assert await photos.reference_for("the-gym", "friend_dm", FRIEND) == photos.read("the-gym")  # it has an {any} line
+    assert await photos.reference_for("the-gym", "group", -1001) == photos.read("the-gym")
+    assert await photos.reference_for("the-gym-annex", "owner_dm", OWNER) == photos.read("the-gym-annex")
+    assert await photos.reference_for("the-gym-annex", "friend_dm", FRIEND) is None  # not this chat's to know: refused
+    assert await photos.reference_for("no-note", "friend_dm", FRIEND) is None  # a photo with no note says nothing to a chat
+    for bad in (None, "", "nowhere", "../evil", "The Gym", "the gym"):  # no place, an unknown one, or not a key at all
+        assert await photos.reference_for(bad, "owner_dm", OWNER) is None
     put(app.home, "memory/places/the-gym.md", "- Climbing gym {chat -1001}\n")
-    assert await photos.reference_for(scene, "group", -1009) is None  # a place only another chat has lines for
+    assert await photos.reference_for("the-gym", "group", -1009) is None  # a place only another chat has lines for
+
+
+async def test_the_turn_note_lists_the_places_a_chat_may_show_by_key(make_app):
+    app = make_app()
+    await app.place_photos.save("the-gym", picture())
+    await app.place_photos.save("the-gym-annex", picture())
+    await app.place_photos.save("the-cafe", picture())
+    put(app.home, "memory/places/the-gym.md", "- Open until ten {any}\n")
+    put(app.home, "memory/places/the-gym-annex.md", "- A back room {chat -1001}\n")
+    put(app.home, "memory/places/the-cafe.md", "- Coffee {chat -1001}\n")
+    photos = app.place_photos
+    assert photos.places_for("owner_dm", OWNER) == ["the-cafe", "the-gym", "the-gym-annex"]
+    assert photos.places_for("friend_dm", FRIEND) == ["the-gym"]
+    note = photos.offer("friend_dm", FRIEND)
+    assert "the-gym" in note and "annex" not in note and "cafe" not in note
+    (app.config.home / FOLDER / "the-gym.jpg").unlink()
+    assert photos.offer("friend_dm", FRIEND) == ""  # nothing to offer, no line
+
+
+def test_a_place_that_is_not_a_key_is_dropped_not_an_error():
+    from dom.actions import Actions, VideoNote
+
+    assert Actions.model_validate({"bubbles": ["x"], "image": "a gym", "image_place": "the-gym"}).image_place == "the-gym"
+    assert Actions.model_validate({"bubbles": ["x"], "image": "a gym", "image_place": "At The Gym!"}).image_place is None
+    assert VideoNote.model_validate({"text": "hi", "scene": "a gym", "place": "the-gym"}).place == "the-gym"
+    assert VideoNote.model_validate({"text": "hi", "place": "../etc"}).place == ""
 
 
 async def test_the_cloud_photo_model_gets_the_place_as_a_second_reference(make_app, cloud_server):
@@ -144,7 +170,7 @@ async def test_a_photo_turn_in_a_known_place_sends_its_reference_to_the_cloud_mo
     from test_usage import deliver, online
     from tghelpers import tg
 
-    app = make_app(contents=(json.dumps({"bubbles": ["look"], "image": "Dom chalking up at the gym, evening"}),))
+    app = make_app(contents=(json.dumps({"bubbles": ["look"], "image": "Dom chalking up at the gym, evening", "image_place": "the-gym"}),))
     configure(app, cloud_server, images=(IMAGE,), enabled=False, default_outfit="casual")
     (app.config.home / "studio-portraits").mkdir()
     (app.config.home / "studio-portraits" / "casual.png").write_bytes(PORTRAIT)
@@ -160,3 +186,41 @@ async def test_a_photo_turn_in_a_known_place_sends_its_reference_to_the_cloud_mo
     [(_, payload)] = [call for call in cloud_server[1] if call[0] == "/api/v1/images"]
     assert len(payload["input_references"]) == 2
     assert payload["input_references"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+async def test_a_scene_that_only_mentions_a_place_sends_no_reference(make_app, cloud_server):
+    from test_usage import deliver, online
+    from tghelpers import tg
+
+    scene = "Dom at home on the sofa, thinking about the gym"  # he is not there: the name in the text is no choice
+    app = make_app(contents=(json.dumps({"bubbles": ["look"], "image": scene}),))
+    configure(app, cloud_server, images=(IMAGE,), enabled=False, default_outfit="casual")
+    (app.config.home / "studio-portraits").mkdir()
+    (app.config.home / "studio-portraits" / "casual.png").write_bytes(PORTRAIT)
+    await app.place_photos.save("the-gym", picture())
+    put(app.home, "memory/places/the-gym.md", "- Climbing gym {any}\n")
+
+    async def send_photo(chat_id, file, **kwargs):
+        return await app.bot.send_message(chat_id, "fixture photo", **kwargs)
+
+    app.bot.send_photo = send_photo
+    await online(app, OWNER)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    [(_, payload)] = [call for call in cloud_server[1] if call[0] == "/api/v1/images"]
+    assert len(payload["input_references"]) == 1  # the portrait alone
+
+
+async def test_a_real_turn_offers_only_the_places_its_chat_may_show(make_app, cloud_server):
+    from test_usage import deliver, online
+    from tghelpers import GROUP, tg, turn_requests
+
+    app = make_app()
+    configure(app, cloud_server, images=(IMAGE,))
+    await app.place_photos.save("the-gym", picture())
+    await app.place_photos.save("the-cafe", picture())
+    put(app.home, "memory/places/the-gym.md", "- Open until ten {any}\n")
+    put(app.home, "memory/places/the-cafe.md", "- Coffee {chat -1001}\n")
+    await online(app)
+    await deliver(app, tg(GROUP, FRIEND, "hello", 1))
+    text = json.dumps(turn_requests(app)[0]["messages"])
+    assert "the-gym" in text and "the-cafe" not in text

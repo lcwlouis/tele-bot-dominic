@@ -137,3 +137,54 @@ async def test_a_bad_world_edit_never_costs_the_journal_entry(make_app):
     await reflection.run(app)
     assert "the book chat got lively." in app.home.read("memory/JOURNAL.md")
     assert await world_change.last_change(app) is None
+
+
+async def test_the_week_is_kept_with_the_sheet_so_a_crash_or_a_failed_kv_write_cannot_reopen_it(make_app):
+    app = make_app()
+    put(app.home, WORLD, START)
+
+    async def broken(*_):
+        raise OSError("kv is down")
+
+    app.store.kv_set = broken
+    assert await world_change.apply(app, edit(add("Plays chess online")), DAY)  # the marker never rides on kv
+    assert (await world_change.last_change(app))[0] == DAY
+    assert not await world_change.apply(app, edit(add("Again")), DAY + timedelta(days=1))
+
+
+async def test_a_crash_between_the_steps_leaves_the_week_spent_not_open(make_app, monkeypatch):
+    from dom.home import Home
+
+    app = make_app()
+    put(app.home, WORLD, START)
+    real = Home.memory_write
+    calls = []
+
+    def crash_on_second(self, *args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            raise RuntimeError("the process died")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Home, "memory_write", crash_on_second)
+    try:
+        await world_change.apply(app, edit(add("First line"), add("Second line")), DAY)
+    except RuntimeError:
+        pass
+    assert "First line" in app.home.read(WORLD)  # the sheet did change
+    assert not await world_change.due(app, DAY + timedelta(days=1))  # so the week counts, whatever else was lost
+    assert not await world_change.apply(app, edit(add("Third line")), DAY + timedelta(days=1))
+    assert "Third line" not in app.home.read(WORLD)
+
+
+async def test_two_calls_at_once_change_the_sheet_once(make_app):
+    import asyncio
+
+    app = make_app()
+    put(app.home, WORLD, START)
+    results = await asyncio.gather(
+        world_change.apply(app, edit(add("From the first")), DAY), world_change.apply(app, edit(add("From the second")), DAY),
+    )
+    assert sorted(results) == [False, True]
+    text = app.home.read(WORLD)
+    assert ("From the first" in text) != ("From the second" in text)

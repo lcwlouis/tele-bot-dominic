@@ -811,9 +811,11 @@ async def deliver_studio(
             and await app.dispatch._approved(chat_id)
         )
 
-    async def generate(kind: Kind, text: str, *, reuse_video_voice: bool = False, scene: str = "") -> bool | None:
+    async def generate(
+        kind: Kind, text: str, *, reuse_video_voice: bool = False, scene: str = "", place: str = "",
+    ) -> bool | None:
         # None is a refused job. A failed video job may still fall back to an allowed voice note. `scene` is where a
-        # video note is filmed.
+        # video note is filmed, and `place` the key of the known place Dom named for the picture, if any.
         if not await allowed(kind):
             await _note_failure(
                 app.store, chat_id, f"studio-{kind}-policy",
@@ -893,10 +895,10 @@ async def deliver_studio(
             if not local_serves and not cloud_ready and not reuse_video_voice:
                 return False
 
-            async def place_reference(prompt: str) -> bytes | None:
-                """The owner's photo of the known place this scene names, for a chat that may know it."""
+            async def place_reference() -> bytes | None:
+                """The owner's photo of the known place Dom named for this picture, if this chat may see it."""
                 try:
-                    return await app.place_photos.reference_for(prompt, scope, chat_id)
+                    return await app.place_photos.reference_for(place, scope, chat_id)
                 except Exception:
                     log.exception("could not look up a place photo")
                     return None
@@ -915,7 +917,7 @@ async def deliver_studio(
                         ))
                 if made is None and cloud is not None and studio_providers(app.config.studio, "photo"):
                     made = await cloud.generate(
-                        app.config, "photo", prompt, actions.outfit, chat_id, cloud_allowed, await place_reference(prompt),
+                        app.config, "photo", prompt, actions.outfit, chat_id, cloud_allowed, await place_reference(),
                     )
                 if made is not None:  # counted at once: the note may still fail, and the still was made
                     await asyncio.shield(app.store.record_still(chat_id, now()))
@@ -957,7 +959,7 @@ async def deliver_studio(
                         else:
                             data = await cloud.generate(
                                 app.config, kind, text, actions.outfit, chat_id, cloud_allowed,
-                                await place_reference(text) if kind == "photo" else None,
+                                await place_reference() if kind == "photo" else None,
                             )
                     if data is not None and not reuse_video_voice and kind != "voice":
                         async def produce(prompt: str) -> bytes | None:
@@ -967,7 +969,7 @@ async def deliver_studio(
                                 note_local()
                             if made is None and cloud_ready and kind == "photo":
                                 made = await cloud.generate(
-                                    app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed, await place_reference(prompt),
+                                    app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed, await place_reference(),
                                 )
                             elif made is None and cloud_ready and not local_ready and kind in {"video_note", "special"}:
                                 made = await cloud.generate_video(
@@ -1058,13 +1060,13 @@ async def deliver_studio(
         if actions.video_note:
             video = actions.video_note
             kind = "special" if video.special else "video_note"
-            result = await generate(kind, video.text, scene=video.scene)
+            result = await generate(kind, video.text, scene=video.scene, place=video.place)
             if result is False and await allowed(kind) and (not video_voice_attempted or video_voice is not None):
                 result = await generate("voice", video.text, reuse_video_voice=video_voice_attempted)
             if not result:
                 await fallback(kind, video.text)
         if actions.image:
-            await generate("photo", actions.image)
+            await generate("photo", actions.image, place=actions.image_place or "")
     except (TelegramMigrateToChat, FloodBudgetExhausted):
         log.warning("studio delivery stopped in chat %s", chat_id)
         await _note_failure(

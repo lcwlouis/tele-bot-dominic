@@ -461,6 +461,10 @@ class Home:
             finally:
                 pending.unlink(missing_ok=True)
 
+    def write_file(self, rel: str, content: str) -> None:
+        """Write a regular file in the home as a temporary file moved into place, so a cancelled write leaves the old one."""
+        self._write_regular(rel, content)
+
     def write_sticker_sets(self, names: list[str]) -> None:
         self.scoped(allow_private=False)._write_regular("stickers.toml", f"sets = {json.dumps(names)}\n")
 
