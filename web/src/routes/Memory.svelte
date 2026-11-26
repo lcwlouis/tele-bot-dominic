@@ -153,7 +153,10 @@
     try {
       const current = await getJSON<MemoryFile>(`/api/memory/file?file=${encodeURIComponent(item.file)}`);
       const lines = current.content.split("\n");
-      const at = lines.findIndex((line) => PIN.test(line) && stripTags(line) === item.text);
+      // The exact line when the API gives it: two pinned lines can share their text and differ only in their tags.
+      const at = item.raw !== undefined
+        ? lines.indexOf(item.raw)
+        : lines.findIndex((line) => PIN.test(line) && stripTags(line) === item.text);
       if (at < 0) {
         toast.show("error", "That line has changed since the list loaded. Reload the list and try again.");
         return;

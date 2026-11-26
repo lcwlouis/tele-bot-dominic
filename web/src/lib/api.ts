@@ -282,7 +282,7 @@ export type SearchHit = {
 /** `entities` names each `kind:key` the file's `{entities ...}` groups link ("person:7" → "Robin"); older servers omit it. */
 export type MemoryFile = { file: string; label: string; readonly: boolean; limit: number | null; content: string; version: string; entities?: Record<string, string> };
 /** GET /api/memory/core: every core memory, with who pinned it ("owner" or "dom"), the day and Dom's reason. */
-export type CoreMemory = { file: string; text: string; source: string; by: "owner" | "dom"; day: string; why: string };
+export type CoreMemory = { file: string; text: string; source: string; by: "owner" | "dom"; day: string; why: string; raw?: string };
 export type CoreMemories = { cap: number; items: CoreMemory[] };
 
 /** GET /api/chats and the chat writes (dom/web/api_chats.py). Every write answers { message, ...ChatsData }. */
