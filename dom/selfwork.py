@@ -218,7 +218,7 @@ class SelfWork:
         ]
         plan = None
         try:
-            with model_request("reflection", owner, partial(app.dispatch.model_allowed, owner)):
+            with model_request("reflection", owner, partial(app.dispatch.background_allowed, owner)):
                 for attempt in range(2):
                     await check_model_allowed()
                     reply = await app.client.complete(request, [])
@@ -424,7 +424,7 @@ class SelfWork:
         except (TimeoutError, SandboxError, PlanBreach, ModelCallSkipped) as exc:
             error = "time budget reached" if isinstance(exc, TimeoutError) else str(exc)
             if isinstance(exc, ModelCallSkipped):
-                error = progress.paused or "paused by today's spend cap"
+                error = progress.paused or "paused by a spend cap"
             if "step limit" in error:
                 error = "step budget reached"
             if error == "step budget reached" and progress.wrapped:  # out of steps, but it reported what it found

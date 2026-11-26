@@ -41,6 +41,7 @@ from dom.desktop import files as desktop_files
 from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE, validate_name as validate_plugin_name
+from dom.telegram import cards
 from dom.telegram.executor import retry_telegram, send_text
 from dom.traits import AUTO, GLOBAL_PRESET_KEY, ensure_pick, load_preset, vibe
 
@@ -104,11 +105,12 @@ def _table(header: list[str], rows: list[list[str]]) -> list[str]:
     return [_row(header), "|" + "---|" * len(header), *map(_row, rows)]
 
 
-async def send_view(bot, chat_id: int, view: View, *, sleep=None) -> None:
-    """Send `view` as a rich message; if Telegram refuses rich messages, send its plain text with the same keyboard."""
+async def send_view(bot, chat_id: int, view: View, *, sleep=None):
+    """Send `view` as a rich message; if Telegram refuses rich messages, send its plain text with the same keyboard.
+    Returns the sent message."""
     kw = {"sleep": sleep} if sleep is not None else {}
     try:
-        await retry_telegram(
+        return await retry_telegram(
             lambda: bot.send_rich_message(
                 chat_id=chat_id, rich_message=InputRichMessage(markdown=view.markdown), reply_markup=view.markup,
             ),
@@ -116,7 +118,12 @@ async def send_view(bot, chat_id: int, view: View, *, sleep=None) -> None:
         )
     except TelegramBadRequest as error:
         log.warning("rich message refused, sending plain text instead: %s", error)
-        await send_text(bot, chat_id, view.plain, reply_markup=view.markup, literal=True, **kw)
+        return await send_text(bot, chat_id, view.plain, reply_markup=view.markup, literal=True, **kw)
+
+
+async def show_view(app: App, chat_id: int, view: View) -> None:
+    """Send an owner card and set it to expire."""
+    await cards.track(app, chat_id, await send_view(app.bot, chat_id, view, sleep=app.sleep))
 
 
 async def delete_message(bot, chat_id: int, message_id: int, *, sleep=None) -> None:
@@ -207,7 +214,7 @@ async def override_chat(app: App, chat_id: int, command: str, who: str) -> Prese
     if command == "/wake":
         await record_event(app, f"{who} woke Dom in {title}")
         if await app.dispatch.spend_paused(resolved):
-            return PresenceChange(f"Dom is up in {title}, but friends' chats are paused by today's spend cap", True)
+            return PresenceChange(f"Dom is up in {title}, but friends' chats are paused by a spend cap", True)
         return PresenceChange(f"Dom is up in {title}")
     await record_event(app, f"{who} sent Dom to sleep in {title}")
     return PresenceChange(f"Dom is asleep in {title}")
@@ -347,7 +354,9 @@ def _container_tag(task: dict) -> str:
 
 
 async def _send(app: App, text: str, **kw) -> None:
-    await send_text(app.bot, app.owner_id, text, sleep=app.sleep, **kw)
+    sent = await send_text(app.bot, app.owner_id, text, sleep=app.sleep, **kw)
+    if cards.is_card(kw.get("reply_markup")):
+        await cards.track(app, app.owner_id, sent)
 
 
 class _StaleSkill(Exception):

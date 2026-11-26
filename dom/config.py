@@ -13,7 +13,7 @@ import tomllib
 from collections.abc import Iterable, Iterator
 from importlib import resources
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Annotated, Literal, get_args
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -26,6 +26,19 @@ SEARCH_PROVIDERS = get_args(SearchProvider)
 
 ModelRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation"]
 MODEL_ROLES = get_args(ModelRole)
+
+# The kinds of paid work a monthly limit can cover (dom/usage.py maps each usage kind to one).
+SpendArea = Literal["chat", "media", "search", "desktop", "memory"]
+SPEND_AREAS = get_args(SpendArea)
+
+# How firmly the outbound leak check holds a message back. Jev scores a message 0-3 against four anchors: 0 nothing
+# private, 1 a vague allusion, 2 reveals a private fact, 3 reveals several or sensitive facts. A message is held when its
+# score reaches the cutoff. Standard (1.2) sits just past "a vague allusion", the cutoff before levels existed. Strict
+# (0.7) holds from a little more than "nothing private", so a hint is enough. Relaxed (2.0) holds only what reveals a
+# private fact, so allusions and innocent mentions pass.
+LeakScan = Literal["strict", "standard", "relaxed", "off"]
+LEAK_SCAN_CUTOFFS = {"strict": 0.7, "standard": 1.2, "relaxed": 2.0}
+LEAK_LEVEL_TOLERANCE = 0.1  # a legacy `leak_threshold` this close to a level's cutoff is shown as that level
 
 # The service a saved provider talks to: any OpenAI-compatible endpoint, OpenRouter, Google Gemini (direct, for media)
 # or a search service.
@@ -551,7 +564,13 @@ class Config(BaseModel):
         500, ge=10, description="Safety bound on the messages in one chat's window, for chats of very short messages: "
         "past it a trim also happens, down to 60% of it. Not the normal trigger.",
     )
-    daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap for non-owner activity and desktop tasks. Zero disables the cap.")
+    daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap, the normal pace: once today's paid calls reach it, friends' chats and background work pause until midnight in `timezone`. The owner's DM is exempt unless `cap_owner_dm` is on. Zero disables the cap.")
+    monthly_spend_cap_usd: float = Field(0.0, ge=0, allow_inf_nan=False, description="Monthly USD ceiling for the calendar month in `timezone`, over every paid call: chat, media, search, desktop tasks, embeddings, summaries and studio cloud backups. Once reached, friends' chats and background work pause until the 1st; one-offs such as event days draw only on the month's unused budget and never pass it. The owner's DM is exempt unless `cap_owner_dm` is on. Zero disables the cap.")
+    cap_owner_dm: bool = Field(False, description="Make the owner's DM obey both spend caps. Off (the default), the owner's own chat is never paused by a cap, though what it spends still counts toward them.")
+    area_spend_caps_usd: dict[SpendArea, Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(
+        default_factory=dict,
+        description="Optional monthly USD limit per area (`chat`, `media`, `search`, `desktop`, `memory`), as a `[area_spend_caps_usd]` table. An area at its limit pauses that kind of work for the rest of the month while the others go on. An area left out, or set to zero, has no limit of its own.",
+    )
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
@@ -563,7 +582,15 @@ class Config(BaseModel):
     memory_self_edit: bool = Field(False, description="Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves.")
     core_memory_cap: int = Field(30, ge=1, description="Most core memories (pinned note lines) across all of Dom's notes, the owner's pins included. Core memories never fade and the memory pass never rewrites them. At the cap Dom must unpin one of his own to pin another.")
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
-    leak_threshold: float = Field(1.2, ge=0, le=3, description="Minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call.")
+    leak_scan: LeakScan | None = Field(
+        None,
+        description="How strictly the leak check holds messages back: `strict` (0.7), `standard` (1.2) or `relaxed` (2.0) as the minimum Jev score on a 0–3 scale, or `off`, which skips the Jev check (the local check for private text and credentials in public files and plugin inputs always stays on). Unset, the legacy `leak_threshold` applies.",
+    )
+    leak_threshold: float = Field(1.2, ge=0, le=3, description="Legacy: minimum Jev score on a 0–3 scale that holds back an outbound reply or online plugin call. Used only while `leak_scan` is unset; a value near a level is shown as that level, any other as custom.")
+    menu_card_minutes: float = Field(
+        45, ge=0, le=2880, allow_inf_nan=False,
+        description="Minutes after which Telegram menu cards (`/status`, `/chats`, `/preset`, `/plugins`, `/proposals`, `/reminders`) delete themselves, checked once a minute and at startup. Telegram cannot delete a message older than 48 hours, so a card that old only loses its buttons. Zero keeps cards until closed.",
+    )
 
     @model_validator(mode="after")
     def _window_marks(self) -> Config:
@@ -673,6 +700,23 @@ class Config(BaseModel):
                     yield f"{name}.fallbacks[{index}]", provider
 
     @property
+    def leak_cutoff(self) -> float | None:
+        """The Jev score that holds a message back, or None while the Jev leak check is off."""
+        if not self.leak_check or self.leak_scan == "off":
+            return None
+        return LEAK_SCAN_CUTOFFS[self.leak_scan] if self.leak_scan else self.leak_threshold
+
+    @property
+    def leak_level(self) -> str:
+        """strict, standard, relaxed or off; `custom` for a legacy threshold that matches no level."""
+        if not self.leak_check or self.leak_scan == "off":
+            return "off"
+        if self.leak_scan:
+            return self.leak_scan
+        level, cutoff = min(LEAK_SCAN_CUTOFFS.items(), key=lambda item: abs(item[1] - self.leak_threshold))
+        return level if abs(cutoff - self.leak_threshold) <= LEAK_LEVEL_TOLERANCE else "custom"
+
+    @property
     def desktop_hosts(self) -> list[DesktopHost]:
         """The hosts Dom may use: the [[desktop.hosts]] tables, or one host made from the single-desktop keys."""
         if self.desktop_mode == "off":
@@ -719,6 +763,34 @@ def _read_dotenv(path: Path) -> dict[str, str]:
         key, _, value = line.partition("=")
         values[key.strip()] = value.strip()
     return values
+
+
+_ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
+_ENV_VALUE = re.compile(r"[\x21-\x7e]{1,512}")  # printable ASCII, no spaces: a pasted key or token
+
+
+def set_dotenv(home: Path, name: str, value: str | None) -> None:
+    """Set one secret in ``home/.env``, or drop it with None, leaving every other line as it was. The file is replaced
+    atomically and keeps its mode (0600 when new). The value is only ever written, never returned."""
+    if not _ENV_NAME.fullmatch(name):
+        raise ValueError("not a variable name")
+    if value is not None and not _ENV_VALUE.fullmatch(value):
+        raise ValueError("a secret is one run of printable characters without spaces")
+    path = home / ".env"
+    lines = path.read_text().splitlines() if path.is_file() else []
+    kept, placed = [], value is None
+    for line in lines:
+        if line.strip().partition("=")[0].strip() != name or line.lstrip().startswith("#"):
+            kept.append(line)
+        elif not placed:  # the first line for this name takes the new value, where it stood
+            kept.append(f"{name}={value}")
+            placed = True
+    if not placed:
+        kept.append(f"{name}={value}")
+    mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
+    if not path.is_file():
+        path.touch(mode=0o600)
+    _replace_file(path, "\n".join(kept) + "\n" if kept else "", mode=mode)
 
 
 def starter_config() -> dict:
