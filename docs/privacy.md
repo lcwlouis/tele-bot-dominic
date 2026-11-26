@@ -9,10 +9,20 @@ records. Protect both the database and the transcripts as conversation data.
 
 Saved desktop logins, owner-provided secrets (via `request_secret`), and integration
 tokens are encrypted at rest with AES-256-GCM using `DOM_MASTER_KEY` in `.env`
-(mode `0600`, rotatable via `dom rotate-key <home>` or **System → Access**).
-Saved-login passwords and E101 secrets never pass through Telegram chat, any model
-request, tool result, traced sandbox HTTP request, turn log, debug trace, usage row,
-or log line; they are owner-only and unreachable from groups or friends' DMs.
+(mode `0600`, rotatable via **System → Access** while Dom runs or `dom rotate-key <home>`
+while Dom is stopped). E101 secrets and saved-login credentials are owner-only and
+unreachable from groups or friends' DMs. Dom never sends a saved password or E101 secret
+through Telegram chat, any model prompt or tool argument, any traced sandbox HTTP API
+request (`/v1/browser/page/type`, `fill`, `evaluate`), any turn log, debug trace, usage
+row, or Python log line (including `websockets` debug logging). Saved-login filling
+always submits the form, clears any leftover password field value over VNC before
+returning control, aborts and alerts the owner DM if focus leaves the password field
+mid-typing, and registers the username and password in a per-run redaction set for the
+rest of that desktop task. Residual risk: once typed into Chromium inside the sandbox,
+the password is present in the browser on the matched HTTPS origin; a hostile or
+compromised page on that matched origin (or a compromised sandbox container/shell
+during an owner task) could still capture the input, reveal it in an altered form or
+screenshot that verbatim redaction cannot match, or steal the resulting session cookies.
 
 General notes, habits and the public-safe journal live in `memory/`, with
 separate notes about people and chats. Owner preferences, personal notes and the

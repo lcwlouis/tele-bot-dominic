@@ -131,7 +131,9 @@
               {#if perm.detail}<p class="text-muted-foreground break-words">{perm.detail}</p>{/if}
               <div class="flex flex-wrap gap-2">
                 <Button disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "once")}>Allow once</Button>
-                <Button variant="secondary" disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "always")}>Allow always</Button>
+                {#if perm.can_allow_always !== false}
+                  <Button variant="secondary" disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "always")}>Allow always</Button>
+                {/if}
                 <Button variant="destructive" disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "reject")}>Reject</Button>
               </div>
             </Card.Content>

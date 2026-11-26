@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+import os
 import sqlite3
 import subprocess
 import tarfile
@@ -45,6 +47,27 @@ SHUTDOWN_DRAIN_SECONDS = 10
 # launchd's KeepAlive SuccessfulExit=false both start Dom again.
 RESTART_EXIT = 75
 ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"]
+
+
+def _running_bot_pid(home: Path) -> int | None:
+    """Return the PID recorded in ``home/ready.json`` if that process is still alive, else None."""
+    path = Path(home) / release.READY
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    pid = data.get("pid") if isinstance(data, dict) else None
+    if type(pid) is not int or pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    except OSError:
+        return None
+    return pid
 
 
 def require_secret(config: Config, name: str) -> str:
@@ -293,6 +316,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rotate-key":
         from dom.secrets import SecretStore, SecretStoreError
 
+        running_pid = _running_bot_pid(args.home)
+        if running_pid is not None:
+            print(
+                f"rotate-key refused: Dom appears to be running (PID {running_pid} in {release.READY}). "
+                "Stop Dom first, or rotate the key from the dashboard (System -> Access)."
+            )
+            return 1
         store = Store(args.home, load_config(args.home).owner_id)
         try:
             new_kid, count = asyncio.run(SecretStore(store, args.home).rotate_key())

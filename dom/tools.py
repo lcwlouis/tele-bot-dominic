@@ -857,7 +857,8 @@ REQUEST_SECRET_TOOL = Tool(
     description=(
         "Owner's DM only. Ask the owner to enter a secret, API key, or site login securely through a one-time "
         "dashboard form. Never ask the owner to paste a password, token, or key into Telegram chat. "
-        "Target is 'secret' (encrypted credential store, default), 'env' (a non-reserved .env variable name in key), "
+        "Target is 'secret' (encrypted credential store, default), 'env' (only a non-reserved .env variable "
+        "referenced by config.toml such as a model API key, studio token, or KLIPY_API_KEY), "
         "or 'login' (a saved desktop login; pass the site hostname in key). You will only learn when it is set, never its value."
     ),
     schema={

@@ -16,7 +16,9 @@ import logging
 import os
 import re
 import secrets
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,8 +50,10 @@ _NAMESPACE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _KEY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 _ENV_VALUE_RE = re.compile(r"^[\x21-\x7e]{1,512}$")
+_B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+={0,2}$")
 
 SECRET_REQUEST_TTL = timedelta(minutes=15)
+SECRET_DISMISS_COOLDOWN = timedelta(minutes=10)
 MAX_PENDING_SECRET_REQUESTS = 5
 RESERVED_ENV_VARS = frozenset((
     MASTER_KEY_ENV,
@@ -57,6 +61,12 @@ RESERVED_ENV_VARS = frozenset((
     "TELEGRAM_BOT_TOKEN",
     "SANDBOX_API_KEY",
 ))
+_DANGEROUS_ENV_EXACT = frozenset((
+    "PATH", "IFS", "HOME", "SHELL", "USER", "LOGNAME", "TZ", "TMPDIR", "NO_PROXY",
+    "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+))
+_DANGEROUS_ENV_PREFIXES = ("LD_", "DYLD_", "PYTHON", "SSL_", "DOM_")
+_DANGEROUS_ENV_SUFFIXES = ("_PROXY",)
 SecretTarget = Literal["secret", "env", "login"]
 SECRET_TARGETS = ("secret", "env", "login")
 SECRET_LABEL_LIMIT = 80
@@ -86,13 +96,17 @@ def _decode_key(encoded: str, label: str = MASTER_KEY_ENV) -> bytes:
     text = encoded.strip()
     if not text:
         raise SecretStoreError(f"{label} is empty")
+    if not _B64URL_RE.fullmatch(text):
+        raise SecretStoreError(f"{label} is not valid base64url")
     try:
         padding = "=" * (-len(text) % 4)
-        raw = base64.urlsafe_b64decode((text + padding).encode("ascii"))
+        raw = base64.b64decode((text + padding).encode("ascii"), altchars=b"-_", validate=True)
     except (ValueError, UnicodeEncodeError):
         raise SecretStoreError(f"{label} is not valid base64url") from None
     if len(raw) != _KEY_BYTES:
         raise SecretStoreError(f"{label} must decode to {_KEY_BYTES} bytes")
+    if base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != text.rstrip("="):
+        raise SecretStoreError(f"{label} is not canonical base64url")
     return raw
 
 
@@ -129,8 +143,10 @@ def _decrypt(candidate_keys: list[bytes], namespace: str, key: str, envelope: st
     if len(parts) != 3 or parts[0] != _ENVELOPE_VERSION:
         raise SecretStoreError("unsupported ciphertext format")
     _, expected_kid, encoded = parts
+    if not _B64URL_RE.fullmatch(encoded):
+        raise SecretStoreError("corrupt ciphertext encoding")
     try:
-        blob = base64.urlsafe_b64decode(encoded.encode("ascii"))
+        blob = base64.b64decode(encoded.encode("ascii"), altchars=b"-_", validate=True)
     except (ValueError, UnicodeEncodeError):
         raise SecretStoreError("corrupt ciphertext encoding") from None
     if len(blob) < _NONCE_BYTES + 16:
@@ -180,8 +196,43 @@ def mask_username(username: str) -> str:
     return text[:2] + "***"
 
 
+_active_redactions: ContextVar[set[str] | None] = ContextVar("dom_active_redactions", default=None)
+
+
+@contextmanager
+def secret_redaction_scope(initial: Iterable[str] = ()) -> Iterator[set[str]]:
+    """Scope a per-run redaction set (e.g. for a desktop task) so `redact_secrets` scrubs those values everywhere."""
+    outer = _active_redactions.get()
+    scoped: set[str] = set(outer) if outer else set()
+    for item in initial:
+        if isinstance(item, str) and item:
+            scoped.add(item)
+    token = _active_redactions.set(scoped)
+    try:
+        yield scoped
+    finally:
+        scoped.clear()
+        _active_redactions.reset(token)
+
+
+def register_redaction(*values: str) -> None:
+    """Register secret values into the active per-run redaction scope, if one is active."""
+    scoped = _active_redactions.get()
+    if scoped is None:
+        return
+    for item in values:
+        if isinstance(item, str) and item:
+            scoped.add(item)
+
+
+def active_redactions() -> tuple[str, ...]:
+    """Return currently active per-run redaction values (for W2 tracers and redaction boundaries)."""
+    scoped = _active_redactions.get()
+    return tuple(scoped) if scoped else ()
+
+
 def redact_secrets(text: str, config: Config | None = None, extra: Iterable[str] = ()) -> str:
-    """Replace known `.env` secrets (including DOM_MASTER_KEY) and any extra values with `[redacted]`.
+    """Replace known `.env` secrets (including DOM_MASTER_KEY), active per-run secrets, and `extra` with `[redacted]`.
 
     Designed to be called by both W3 redaction boundaries and W2's debug tracer before writing anything to disk.
     """
@@ -197,6 +248,10 @@ def redact_secrets(text: str, config: Config | None = None, extra: Iterable[str]
             val = env.get(name) or os.environ.get(name)
             if val and len(val) >= 6:
                 values.append(val)
+    if scoped := _active_redactions.get():
+        for item in scoped:
+            if isinstance(item, str) and len(item) >= 4:
+                values.append(item)
     for item in extra:
         if isinstance(item, str) and len(item) >= 4:
             values.append(item)
@@ -238,10 +293,15 @@ class SecretStore:
         previous = _decode_key(previous_raw, PREVIOUS_KEY_ENV) if previous_raw else None
         return primary, previous
 
-    def _ensure_primary_key_sync(self) -> bytes:
-        primary, _ = self._load_keys()
+    def _ensure_primary_key_sync(self, existing_count: int = 0) -> bytes:
+        primary, previous = self._load_keys()
         if primary is not None:
             return primary
+        if existing_count > 0 or previous is not None:
+            raise SecretStoreError(
+                f"{MASTER_KEY_ENV} is missing while {existing_count} encrypted secret(s) already exist; "
+                f"restore {MASTER_KEY_ENV} in .env before writing new secrets."
+            )
         encoded = generate_master_key()
         set_dotenv(self.home, MASTER_KEY_ENV, encoded)
         return _decode_key(encoded, MASTER_KEY_ENV)
@@ -252,7 +312,8 @@ class SecretStore:
         if not isinstance(payload, (dict, str)):
             raise ValueError("secret payload must be a dict or string")
         async with self._key_lock:
-            raw_key = await asyncio.to_thread(self._ensure_primary_key_sync)
+            existing_count = await self.store.count_encrypted_secrets()
+            raw_key = await asyncio.to_thread(self._ensure_primary_key_sync, existing_count)
             kid, envelope = _encrypt(raw_key, namespace, key, payload)
             now = datetime.now(timezone.utc).isoformat()
             await self.store.put_encrypted_secret(namespace, key, kid, envelope, now)
@@ -311,13 +372,18 @@ class SecretStore:
         }
 
     async def rotate_key(self) -> tuple[str, int]:
-        """Crash-safely rotate DOM_MASTER_KEY and re-encrypt every row in encrypted_secrets.
+        """Crash- and cancellation-safely rotate DOM_MASTER_KEY and re-encrypt every row in encrypted_secrets.
 
         Protocol:
         1. Decrypt every existing row in memory with the current key(s) to ensure nothing is unreadable.
-        2. Atomically write BOTH DOM_MASTER_KEY=<new> and DOM_MASTER_KEY_PREVIOUS=<old> to `.env`.
-        3. Re-encrypt every row under `<new>` inside one SQLite transaction. (On failure, restore `.env`.)
-        4. Atomically remove DOM_MASTER_KEY_PREVIOUS from `.env`.
+        2. If DOM_MASTER_KEY_PREVIOUS is present on entry (prior interrupted rotation), finish that rotation first
+           by re-encrypting all rows under the current primary key and clearing DOM_MASTER_KEY_PREVIOUS before
+           minting a new key. If that fails, `.env` is untouched and every row remains readable.
+        3. Capture the exact `.env` values of MASTER and PREVIOUS, then atomically stage
+           DOM_MASTER_KEY=<new> and DOM_MASTER_KEY_PREVIOUS=<old> in `.env`.
+        4. Re-encrypt every row under `<new>` inside one SQLite transaction. On any failure (including
+           CancelledError / BaseException), synchronously restore the exact pre-stage `.env` values.
+        5. Atomically remove DOM_MASTER_KEY_PREVIOUS from `.env`.
         """
         async with self._key_lock:
             primary, previous = await asyncio.to_thread(self._load_keys)
@@ -330,15 +396,39 @@ class SecretStore:
                 payload = _decrypt(keys, row["namespace"], row["key"], row["ciphertext"])
                 decrypted.append((row["namespace"], row["key"], payload))
 
-            old_encoded = self._read_env_value(MASTER_KEY_ENV)
+            # Step 2: Finish any interrupted prior rotation before touching .env for a new rotation.
+            if previous is not None:
+                if primary is None:
+                    raise SecretStoreError(
+                        f"cannot finish interrupted rotation: {MASTER_KEY_ENV} is missing while {PREVIOUS_KEY_ENV} is set"
+                    )
+                if decrypted:
+                    now_finish = datetime.now(timezone.utc).isoformat()
+                    finish_reencrypted = [
+                        (ns, k, *_encrypt(primary, ns, k, payload), now_finish)
+                        for ns, k, payload in decrypted
+                    ]
+                    try:
+                        await self.store.replace_encrypted_secrets(finish_reencrypted)
+                    except Exception as exc:
+                        raise SecretStoreError(
+                            "could not finish interrupted key rotation; existing keys left unchanged"
+                        ) from exc
+                await asyncio.to_thread(set_dotenv_many, self.home, {PREVIOUS_KEY_ENV: None})
+
+            pre_env = await asyncio.to_thread(_read_dotenv, self.home / ".env")
+            pre_master_in_env = pre_env.get(MASTER_KEY_ENV)
+            pre_prev_in_env = pre_env.get(PREVIOUS_KEY_ENV)
+            old_encoded = pre_master_in_env or os.environ.get(MASTER_KEY_ENV) or None
+
             new_encoded = generate_master_key()
             new_raw = _decode_key(new_encoded, MASTER_KEY_ENV)
             new_kid = key_fingerprint(new_raw)
             now = datetime.now(timezone.utc).isoformat()
-            reencrypted = []
-            for ns, k, payload in decrypted:
-                kid, envelope = _encrypt(new_raw, ns, k, payload)
-                reencrypted.append((ns, k, kid, envelope, now))
+            reencrypted = [
+                (ns, k, *_encrypt(new_raw, ns, k, payload), now)
+                for ns, k, payload in decrypted
+            ]
 
             stage_env: dict[str, str | None] = {MASTER_KEY_ENV: new_encoded}
             if old_encoded:
@@ -346,16 +436,19 @@ class SecretStore:
             await asyncio.to_thread(set_dotenv_many, self.home, stage_env)
             try:
                 await self.store.replace_encrypted_secrets(reencrypted)
-            except Exception as exc:
+            except BaseException as exc:
                 rollback: dict[str, str | None] = {
-                    MASTER_KEY_ENV: old_encoded,
-                    PREVIOUS_KEY_ENV: None,
+                    MASTER_KEY_ENV: pre_master_in_env,
+                    PREVIOUS_KEY_ENV: pre_prev_in_env,
                 }
                 try:
-                    await asyncio.to_thread(set_dotenv_many, self.home, rollback)
+                    # Run synchronously so rollback still completes under CancelledError.
+                    set_dotenv_many(self.home, rollback)
                 except Exception:
                     log.exception("failed to restore .env after secret rotation rollback")
-                raise SecretStoreError("could not re-encrypt secrets; rolled back") from exc
+                if isinstance(exc, Exception):
+                    raise SecretStoreError("could not re-encrypt secrets; rolled back") from exc
+                raise
 
             await asyncio.to_thread(set_dotenv_many, self.home, {PREVIOUS_KEY_ENV: None})
             return new_kid, len(reencrypted)
@@ -364,11 +457,45 @@ class SecretStore:
 # ---- E101: Secure secret requests -------------------------------------------------------------------------------
 
 
+def _is_dangerous_env_name(name: str) -> bool:
+    return (
+        name in _DANGEROUS_ENV_EXACT
+        or name.startswith(_DANGEROUS_ENV_PREFIXES)
+        or name.endswith(_DANGEROUS_ENV_SUFFIXES)
+    )
+
+
 def reserved_env_vars(config: Config) -> frozenset[str]:
     names = set(RESERVED_ENV_VARS)
     if config.web.dev_token_env:
         names.add(config.web.dev_token_env)
+    if config.desktop.api_key_env:
+        names.add(config.desktop.api_key_env)
+    for host in config.desktop_hosts:
+        if host.api_key_env:
+            names.add(host.api_key_env)
     return frozenset(names)
+
+
+def requestable_env_vars(config: Config) -> frozenset[str]:
+    """Only `.env` variable names referenced by `config.toml` (model/provider/backup API keys, studio token, KLIPY),
+    excluding reserved critical keys and dangerous process/environment variables."""
+    reserved = reserved_env_vars(config)
+    return frozenset(
+        name for name in config.secret_names()
+        if _ENV_NAME_RE.fullmatch(name) and name not in reserved and not _is_dangerous_env_name(name)
+    )
+
+
+def _validate_requestable_env_key(name: str, config: Config) -> None:
+    if not name or not _ENV_NAME_RE.fullmatch(name):
+        raise ValueError("env target requires an uppercase variable name like OPENROUTER_API_KEY")
+    if name in reserved_env_vars(config) or _is_dangerous_env_name(name):
+        raise ValueError(f"{name} is a reserved variable and cannot be requested by Dom")
+    if name not in requestable_env_vars(config):
+        raise ValueError(
+            f"{name} is not referenced in config.toml; use target='secret' for general secrets."
+        )
 
 
 class SecretRequests:
@@ -403,6 +530,9 @@ class SecretRequests:
 
         now = self._now()
         await self.expire_pending()
+        latest_cancel = await app.store.latest_cancelled_secret_request()
+        if latest_cancel and latest_cancel > (now - SECRET_DISMISS_COOLDOWN).isoformat():
+            raise ValueError("The owner recently dismissed a secret request; wait before asking again.")
         pending = await app.store.pending_secret_requests(now.isoformat())
         if len(pending) >= MAX_PENDING_SECRET_REQUESTS:
             raise ValueError(
@@ -411,10 +541,7 @@ class SecretRequests:
 
         raw_key = (key or "").strip()
         if target == "env":
-            if not raw_key or not _ENV_NAME_RE.fullmatch(raw_key):
-                raise ValueError("env target requires an uppercase variable name like MY_API_KEY")
-            if raw_key in reserved_env_vars(app.config):
-                raise ValueError(f"{raw_key} is a reserved variable and cannot be requested by Dom")
+            _validate_requestable_env_key(raw_key, app.config)
             target_key = raw_key
         elif target == "login":
             from dom.desktop.permissions import normalize_site
@@ -582,39 +709,58 @@ class SecretRequests:
         target_key = row["target_key"]
         label = row["label"]
 
+        # Validate everything BEFORE claiming or writing, so invalid input never burns the one-time request.
+        effective_site = ""
+        clean_username = ""
         if target == "env":
-            if target_key in reserved_env_vars(app.config):
-                raise ValueError(f"{target_key} is a reserved variable.")
+            _validate_requestable_env_key(target_key, app.config)
             if not isinstance(value, str) or not _ENV_VALUE_RE.fullmatch(value):
                 raise ValueError("An .env value must be 1 to 512 printable ASCII characters with no spaces.")
-            claimed = await app.store.resolve_secret_request(row["id"], "submitted", now_iso)
-            if not claimed:
-                raise ValueError("This secret request has expired or was already used.")
-            await asyncio.to_thread(set_dotenv, app.home.root, target_key, value)
         elif target == "login":
+            from dom.desktop.permissions import normalize_site
+
             effective_site = (site or target_key or "").strip()
+            if normalize_site(effective_site) is None:
+                raise ValueError("Enter a public site hostname like example.org (no IPs, LAN names, or shared suffixes).")
             if not isinstance(password, str) or not password or len(password) > SECRET_VALUE_LIMIT:
-                raise ValueError("Enter a password (up to 4,096 characters).")
-            if username is not None and len(username) > 320:
+                raise ValueError(f"Enter a password (up to {SECRET_VALUE_LIMIT:,} characters).")
+            clean_username = (username or "").strip()
+            if len(clean_username) > 320:
                 raise ValueError("Username is too long.")
-            claimed = await app.store.resolve_secret_request(row["id"], "submitted", now_iso)
-            if not claimed:
-                raise ValueError("This secret request has expired or was already used.")
-            await app.desktop_permissions.save_login(
-                site=effective_site,
-                label=label,
-                username=username or "",
-                password=password,
-            )
         else:
+            _validate_namespace_and_key("owner_secret", target_key)
             if not isinstance(value, str) or not value or len(value) > SECRET_VALUE_LIMIT:
                 raise ValueError(f"Enter a secret value (1 to {SECRET_VALUE_LIMIT} characters).")
-            claimed = await app.store.resolve_secret_request(row["id"], "submitted", now_iso)
-            if not claimed:
-                raise ValueError("This secret request has expired or was already used.")
-            await app.secrets.put("owner_secret", target_key, {"value": value, "label": label})
-            await app.store.upsert_owner_secret(target_key, label, now_iso)
 
+        # Claim (`pending` -> `submitting`), write, and only mark `submitted` once the write succeeds.
+        # If writing fails for any reason, revert to `pending` so the owner can retry.
+        claimed = await app.store.claim_secret_request(row["id"])
+        if not claimed:
+            raise ValueError("This secret request has expired or was already used.")
+        try:
+            if target == "env":
+                assert isinstance(value, str)
+                await asyncio.to_thread(set_dotenv, app.home.root, target_key, value)
+            elif target == "login":
+                assert isinstance(password, str)
+                await app.desktop_permissions.save_login(
+                    site=effective_site,
+                    label=label,
+                    username=clean_username,
+                    password=password,
+                )
+            else:
+                assert isinstance(value, str)
+                await app.secrets.put("owner_secret", target_key, {"value": value, "label": label})
+                await app.store.upsert_owner_secret(target_key, label, now_iso)
+        except BaseException:
+            try:
+                await app.store.reopen_secret_request(row["id"])
+            except Exception:
+                log.exception("failed to revert secret request #%s back to pending", row["id"])
+            raise
+
+        await app.store.complete_secret_request(row["id"], "submitted", now_iso)
         await self._settle_card(row.get("card_message_id"), "✅ Secret set")
         # Dom learns ONLY that the secret is set — never its value.
         await app.store.record_owner_event(f"Owner provided secret '{label}' (status: set).")

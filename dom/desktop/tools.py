@@ -45,13 +45,12 @@ _TOOLS = {
         {"site": _STRING},
     ),
     "fill_saved_login": (
-        "Fill a saved login into the current HTTPS login page without exposing the password to the model. "
+        "Fill a saved login into the current HTTPS login page and submit it without exposing the password to the model. "
         "Requires the active browser tab to match the saved login's site and may pause for owner approval.",
         {
             "login_id": {"type": "integer", "minimum": 1},
             "username_selector": _STRING,
             "password_selector": _STRING,
-            "submit": {"type": "boolean"},
         },
     ),
     "upload_file": (
@@ -100,6 +99,9 @@ _SHARED_SUFFIXES = frozenset((
     "surge.sh", "ngrok.io", "ngrok-free.app", "trycloudflare.com", "duckdns.org", "no-ip.org", "ddns.net",
     "dyndns.org", "myshopify.com", "wixsite.com", "weebly.com", "neocities.org", "codeberg.page", "translate.goog",
     "sourceforge.io", "readthedocs.io", "pythonanywhere.com",
+    "webflow.io", "notion.site", "github.dev", "carrd.co", "framer.app", "my.id",
+    "vercel.dev", "deno.dev", "railway.app", "hf.space", "streamlit.app", "replit.dev",
+    "bitbucket.io", "pantheonsite.io", "bubbleapps.io", "wixstudio.io",
     # CentralNic and similar second levels sold to the public.
     "eu.org", "uk.com", "us.com", "eu.com", "gb.com", "gb.net", "uk.net", "de.com", "jpn.com", "cn.com", "sa.com",
     "za.com", "br.com", "ru.com", "kr.com", "qc.com", "us.org",
@@ -212,7 +214,7 @@ def under_own_roots(path: str) -> bool:
     return any(path == root or path.startswith(root + "/") for root in OWN_FILE_ROOTS)
 
 
-_OPTIONAL_ARGS = frozenset(("files", "part", "site", "username_selector", "password_selector", "submit"))
+_OPTIONAL_ARGS = frozenset(("files", "part", "site", "username_selector", "password_selector"))
 
 
 def schemas() -> list[dict]:
@@ -244,10 +246,6 @@ def arguments(function: dict) -> tuple[str, dict]:
             continue
         if key in ("part", "login_id"):
             if type(value) is int and value >= 1:
-                continue
-            raise ValueError("invalid tool arguments")
-        if key == "submit":
-            if type(value) is bool:
                 continue
             raise ValueError("invalid tool arguments")
         if not isinstance(value, str):

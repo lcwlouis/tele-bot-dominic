@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import ipaddress
 import logging
 import os
 import re
 import stat
 import tempfile
+import threading
 import tomllib
 from collections.abc import Iterable, Iterator
 from importlib import resources
@@ -889,10 +891,14 @@ def _read_dotenv(path: Path) -> dict[str, str]:
 
 _ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 _ENV_VALUE = re.compile(r"[\x21-\x7e]{1,512}")  # printable ASCII, no spaces: a pasted key or token
+_DOTENV_LOCK = threading.Lock()
 
 
 def set_dotenv_many(home: Path, updates: dict[str, str | None]) -> None:
-    """Atomically set or drop several secrets in ``home/.env`` in one file replacement (mode 0600 when new)."""
+    """Atomically set or drop several secrets in ``home/.env`` in one file replacement (mode 0600 when new).
+
+    Serialised across threads via a process-wide lock and across processes via an exclusive flock on ``home/.env.lock``.
+    """
     if not updates:
         return
     for name, value in updates.items():
@@ -901,24 +907,35 @@ def set_dotenv_many(home: Path, updates: dict[str, str | None]) -> None:
         if value is not None and not _ENV_VALUE.fullmatch(value):
             raise ValueError("a secret is one run of printable characters without spaces")
     path = home / ".env"
-    lines = path.read_text().splitlines() if path.is_file() else []
-    placed = {name: (value is None) for name, value in updates.items()}
-    kept = []
-    for line in lines:
-        key = line.strip().partition("=")[0].strip()
-        if line.lstrip().startswith("#") or key not in updates:
-            kept.append(line)
-        elif not placed[key]:
-            kept.append(f"{key}={updates[key]}")
-            placed[key] = True
-    for name, value in updates.items():
-        if not placed[name] and value is not None:
-            kept.append(f"{name}={value}")
-            placed[name] = True
-    mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
-    if not path.is_file():
-        path.touch(mode=0o600)
-    _replace_file(path, "\n".join(kept) + "\n" if kept else "", mode=mode)
+    lock_path = home / ".env.lock"
+    with _DOTENV_LOCK:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                lines = path.read_text().splitlines() if path.is_file() else []
+                placed = {name: (value is None) for name, value in updates.items()}
+                kept = []
+                for line in lines:
+                    key = line.strip().partition("=")[0].strip()
+                    if line.lstrip().startswith("#") or key not in updates:
+                        kept.append(line)
+                    elif not placed[key]:
+                        kept.append(f"{key}={updates[key]}")
+                        placed[key] = True
+                for name, value in updates.items():
+                    if not placed[name] and value is not None:
+                        kept.append(f"{name}={value}")
+                        placed[name] = True
+                mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
+                if not path.is_file():
+                    path.touch(mode=0o600)
+                _replace_file(path, "\n".join(kept) + "\n" if kept else "", mode=mode)
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def set_dotenv(home: Path, name: str, value: str | None) -> None:

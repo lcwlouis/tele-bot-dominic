@@ -461,6 +461,7 @@ export type PendingPermission = {
   site: string;
   detail: string;
   created_at: string;
+  can_allow_always?: boolean;
 };
 export type PermissionHistoryRow = {
   id: number;

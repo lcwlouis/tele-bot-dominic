@@ -1995,6 +1995,10 @@ test.describe("interactions under the CSP", () => {
     await expect(savedList.getByText("re***")).toBeVisible();
     // Plaintext password must never appear in the rendered page.
     expect(await page.content()).not.toContain("preview-only-password");
+    // Login form password field uses autocomplete="off" (not "new-password").
+    await page.getByRole("button", { name: "Add login" }).click();
+    await expect(page.locator("#login-password")).toHaveAttribute("autocomplete", "off");
+    await page.getByRole("button", { name: "Cancel" }).first().click();
     // Check accessibility on Saved logins tab.
     const axe1 = await new AxeBuilder({ page }).analyze();
     expect(axe1.violations).toEqual([]);
@@ -2037,6 +2041,11 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByText("Weather API key")).toBeVisible();
     // Fragment token must be scrubbed from the URL bar.
     expect(page.url()).not.toContain("preview-secret-token");
+    // Query-string ?t= must NOT be accepted (directs to Waiting for you fallback instead).
+    await page.goto("/app/secret?t=leaked-query-token");
+    await expect(page.getByText("Request unavailable")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open Waiting for you" })).toBeVisible();
+    expect(page.url()).not.toContain("leaked-query-token");
     const axe4 = await new AxeBuilder({ page }).analyze();
     expect(axe4.violations).toEqual([]);
     expect(problems).toEqual([]);

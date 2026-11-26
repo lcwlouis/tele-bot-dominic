@@ -263,14 +263,26 @@ and per-site rules under **System → Access** (`/app/system/access`):
 - **Background work** (default `Allow`): gates Dom's self-directed Own work tasks (`Ask` pauses before each task launches; `Never` turns planning and execution off).
 
 Saved logins are encrypted at rest in SQLite with AES-256-GCM using `DOM_MASTER_KEY`
-in `DOM_HOME/.env` (mode `0600`, auto-generated on first write, rotatable with
-`dom rotate-key <home>` or from **System → Access**). When approved, Dom verifies
-the active tab is `https://` on the saved login's site and focuses a visible
-top-level `input[type="password"]`, then types the username and password strictly
-as RFB keystrokes over `/websockify`. Passwords never enter any model prompt,
-tool result, traced sandbox HTTP request (`/v1/browser/page/type`, `fill`,
-`evaluate`), turn log, trace, usage row, or log line. Self-directed tasks never
-see or use saved logins.
+in `DOM_HOME/.env` (mode `0600`, auto-generated on first write when no encrypted rows
+exist, rotatable from **System → Access** while Dom runs or via `dom rotate-key <home>`
+while Dom is stopped — the CLI refuses if `ready.json` points to a running Dom process).
+When approved, Dom atomically verifies via `/v1/browser/page/evaluate` immediately before
+typing the username and again before typing the password that `document.hasFocus()` is
+true, the top-level `window.location.href` is `https://` (default port 443) on the saved
+login's site, the active element is the expected top-level input, and any enclosing form's
+`action` stays on the matched site. Keystrokes go strictly as RFB `KeyEvent` frames over
+`/websockify` with `websockets` frame logging silenced. Dom checks after typing that focus
+did not leave the same password input (aborting, clearing, and alerting the owner DM if
+stolen), always submits with `Enter`, clears any leftover password value over VNC if the
+field remains populated after submit, and registers the username and password in a per-run
+redaction set applied to all tool results, `read_page`/`look` text, `finish`/wrap-up
+reports, turn logs, traces, and usage rows for the rest of the task. What is guaranteed:
+Dom never places the plaintext password into model prompts, tool arguments/results, traced
+sandbox HTTP requests, turn logs, traces, usage rows, or Python logs, and self-directed
+tasks never see or use saved logins. Residual risk: a compromised or malicious page on the
+matched origin itself (or a compromised sandbox container/shell tool during an owner task)
+still sees keystrokes typed into Chromium and could transform/render them visually or steal
+session cookies after login.
 
 See [the credentials and permissions security spec](superpowers/specs/2026-11-27-credentials-and-permissions.md)
 for the full threat model, key-rotation protocol, and E101 secure secret request flow.

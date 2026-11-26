@@ -265,6 +265,30 @@ async def test_saved_login_fill_never_leaks_to_model_http_logs_or_db(make_app, m
                 "data": [{"index": 0, "url": "https://bank.example.org/login", "title": "Sign in", "is_active": True}],
             })
         if path == "/v1/browser/page/evaluate":
+            expr = json.loads(request.content)["expression"]
+            if "formAction" in expr:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "data": {
+                        "href": "https://bank.example.org/login",
+                        "hasFocus": True,
+                        "topLevel": True,
+                        "fieldOk": True,
+                        "formAction": "https://bank.example.org/login",
+                    },
+                })
+            if "sameTarget" in expr:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "data": {
+                        "href": "https://bank.example.org/login",
+                        "hasFocus": True,
+                        "topLevel": True,
+                        "sameTarget": True,
+                    },
+                })
+            if "hasValue" in expr:
+                return httpx.Response(200, json={"success": True, "data": {"hasValue": False}})
             return httpx.Response(200, json={"success": True, "data": True})
         if path == "/v1/bash/exec":
             return httpx.Response(200, json={"success": True, "data": {"exit_code": 0, "stdout": "", "stderr": ""}})
@@ -408,11 +432,14 @@ async def test_fill_saved_login_refuses_http_wrong_host_and_unfocused_password(m
         if request.url.path == "/v1/browser/tabs":
             return httpx.Response(200, json={"success": True, "data": [{"url": "https://app.example.org/login", "is_active": True}]})
         if request.url.path == "/v1/browser/page/evaluate":
-            # Focus password returns True, then is_top_level_password_focused returns hostile string "true" (not boolean True!).
+            # Focus password returns True, then verify_login_field returns hostile string "true" for fieldOk (not boolean True!).
             body = json.loads(request.content)
             if "querySelectorAll" in body["expression"]:
                 return httpx.Response(200, json={"success": True, "data": True})
-            return httpx.Response(200, json={"success": True, "data": "true"})
+            return httpx.Response(200, json={
+                "success": True,
+                "data": {"href": "https://app.example.org/login", "hasFocus": True, "topLevel": True, "fieldOk": "true", "formAction": None},
+            })
         return httpx.Response(200, json={"success": True, "data": {"exit_code": 0}})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(hostile_eval)) as http:
@@ -604,10 +631,10 @@ async def test_e101_request_secret_scope_guardrails_and_submission(make_app):
     assert "Weather API key" in window and "status: set" in window
     assert secret_canary not in window
 
-    # Target = env writes to .env; target = login saves encrypted login.
-    env_req = await app.secret_requests.create(label="Demo Key", reason="demo", target="env", key="DEMO_CUSTOM_KEY")
+    # Target = env writes to .env (config-referenced keys only); target = login saves encrypted login.
+    env_req = await app.secret_requests.create(label="KLIPY Key", reason="GIF search", target="env", key="KLIPY_API_KEY")
     await app.secret_requests.submit(request_id=env_req["request_id"], value="custom-val-123")
-    assert _read_dotenv(app.home.root / ".env")["DEMO_CUSTOM_KEY"] == "custom-val-123"
+    assert _read_dotenv(app.home.root / ".env")["KLIPY_API_KEY"] == "custom-val-123"
 
     login_req = await app.secret_requests.create(label="Forum", reason="check inbox", target="login", key="forum.example.org")
     await app.secret_requests.submit(request_id=login_req["request_id"], username="bob", password="forum-pw-99")
@@ -697,3 +724,568 @@ async def test_dashboard_access_and_secret_entry_api(make_app):
 
         # Second lookup returns 410 Gone.
         assert (await client.post("/api/secrets/request/lookup", headers=headers, json={"request_id": req["request_id"]})).status_code == 410
+
+
+# ---- 7. Security review regression tests (B1-B2, S1-S8, Nits) ---------------------------------------------------
+
+
+async def test_b1_interrupted_rotation_then_failed_rotation_preserves_secrets(make_app, monkeypatch):
+    """B1: Interrupted rotation (CancelledError or crash) followed by a failed rotation must NEVER destroy secrets."""
+    app = make_app()
+    await app.secrets.put("login", "1", {"username": "u", "password": "secret-b1"})
+    old0 = _read_dotenv(app.home.root / ".env")[MASTER_KEY_ENV]
+
+    # Case 1: CancelledError during replace_encrypted_secrets must roll back .env cleanly.
+    orig_replace = app.store.replace_encrypted_secrets
+
+    async def cancel_once(items):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(app.store, "replace_encrypted_secrets", cancel_once)
+    with pytest.raises(asyncio.CancelledError):
+        await app.secrets.rotate_key()
+    env_after_cancel = _read_dotenv(app.home.root / ".env")
+    assert env_after_cancel.get(MASTER_KEY_ENV) == old0
+    assert PREVIOUS_KEY_ENV not in env_after_cancel
+    assert await app.secrets.get("login", "1") == {"username": "u", "password": "secret-b1"}
+
+    # Case 2: Simulated crash right after staging .env (MASTER=new1, PREVIOUS=old0, DB still under old0),
+    # followed by Rotation 2 failing during replace_encrypted_secrets -> old0 rows MUST survive!
+    new1 = generate_master_key()
+    set_dotenv(app.home.root, MASTER_KEY_ENV, new1)
+    set_dotenv(app.home.root, PREVIOUS_KEY_ENV, old0)
+
+    async def fail_db(items):
+        raise RuntimeError("sqlite busy")
+
+    monkeypatch.setattr(app.store, "replace_encrypted_secrets", fail_db)
+    with pytest.raises(SecretStoreError):
+        await app.secrets.rotate_key()
+    # Secret must still decrypt!
+    assert await app.secrets.get("login", "1") == {"username": "u", "password": "secret-b1"}
+
+    # Case 3: Recovery finishes cleanly, then fail on the second replace (new1 -> new2): DB is already on new1,
+    # rollback restores MASTER=new1, and secrets still decrypt!
+    calls = 0
+
+    async def succeed_first_fail_second(items):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return await orig_replace(items)
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(app.store, "replace_encrypted_secrets", succeed_first_fail_second)
+    with pytest.raises(SecretStoreError):
+        await app.secrets.rotate_key()
+    assert await app.secrets.get("login", "1") == {"username": "u", "password": "secret-b1"}
+
+    # Case 4: Double rotation succeeds cleanly and old keys no longer decrypt.
+    monkeypatch.setattr(app.store, "replace_encrypted_secrets", orig_replace)
+    kid_a, count_a = await app.secrets.rotate_key()
+    key_a = _read_dotenv(app.home.root / ".env")[MASTER_KEY_ENV]
+    kid_b, count_b = await app.secrets.rotate_key()
+    assert count_a == 1 and count_b == 1 and kid_a != kid_b
+    assert PREVIOUS_KEY_ENV not in _read_dotenv(app.home.root / ".env")
+    assert await app.secrets.get("login", "1") == {"username": "u", "password": "secret-b1"}
+    set_dotenv(app.home.root, MASTER_KEY_ENV, key_a)
+    with pytest.raises(SecretStoreError):
+        await app.secrets.get("login", "1")
+
+
+def test_b2a_fill_saved_login_removes_submit_parameter():
+    """B2(a): submit must be removed from fill_saved_login schema so the model cannot pass submit=false."""
+    schema = next(s for s in desktop_tools.schemas() if s["function"]["name"] == "fill_saved_login")
+    assert "submit" not in schema["function"]["parameters"]["properties"]
+    with pytest.raises(ValueError):
+        desktop_tools.arguments({"name": "fill_saved_login", "arguments": json.dumps({"login_id": 1, "submit": False})})
+
+
+async def test_b2b_and_b2c_clears_leftover_password_and_redacts_per_run(make_app, monkeypatch):
+    """B2(b,c): Leftover password after submit is cleared over VNC, and username+password are redacted for the whole run."""
+    app = make_app()
+    canary_user = "redacted.alice@example.org"
+    canary_pass = "CANARY_REDACT_PASS_5511"
+    meta = await app.desktop_permissions.save_login(
+        site="vault.example.org", username=canary_user, password=canary_pass,
+    )
+    await app.desktop_permissions.set_site_rule("vault.example.org", "fill_login", "allow")
+
+    vnc_sessions: list[FakeVncSocket] = []
+
+    @asynccontextmanager
+    async def mock_vnc_connect(url, **kwargs):
+        session = FakeVncSocket()
+        vnc_sessions.append(session)
+        yield session
+
+    monkeypatch.setattr("dom.desktop.vnc_type.connect_vnc", mock_vnc_connect)
+
+    def sandbox_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/browser/tabs":
+            return httpx.Response(200, json={
+                "success": True,
+                "data": [{"url": "https://vault.example.org/login", "is_active": True}],
+            })
+        if path == "/v1/browser/page/evaluate":
+            expr = json.loads(request.content)["expression"]
+            if "hasValue" in expr:
+                # Simulate failed login: password field STILL holds a value after Enter!
+                return httpx.Response(200, json={"success": True, "data": {"hasValue": True}})
+            if "sameTarget" in expr:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "data": {"href": "https://vault.example.org/login", "hasFocus": True, "topLevel": True, "sameTarget": True},
+                })
+            if "formAction" in expr:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "data": {
+                        "href": "https://vault.example.org/login",
+                        "hasFocus": True,
+                        "topLevel": True,
+                        "fieldOk": True,
+                        "formAction": "https://vault.example.org/auth",
+                    },
+                })
+            return httpx.Response(200, json={"success": True, "data": True})
+        if path == "/v1/browser/page/markdown":
+            # Hostile page echoes the password and username back in page text!
+            return httpx.Response(200, json={
+                "success": True,
+                "data": {"markdown": f"Error for {canary_user}: invalid password {canary_pass}"},
+            })
+        if path == "/v1/browser/screenshot":
+            return httpx.Response(200, content=b"\x89PNG\r\n\x1a\nfake")
+        return httpx.Response(200, json={"success": True, "data": {"exit_code": 0}})
+
+    class FakeDescriber:
+        async def describe_desktop(self, screenshot: bytes) -> str:
+            return f"Screen shows {canary_user} and {canary_pass}"
+
+    app.media_describer = FakeDescriber()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(sandbox_handler)) as http:
+        client = SandboxClient("http://127.0.0.1:18080", "sb-k", http)
+
+        class Sbx(Sandbox):
+            async def ensure_running(self):
+                return client
+
+        worker = await worker_for(
+            app,
+            call("fill_saved_login", login_id=meta["id"]),
+            call("read_page"),
+            call("look"),
+            call("finish", result=f"Tried {canary_user} with {canary_pass}"),
+            {"content": '{"bubbles":[{"text":"Done."}]}'},
+        )
+        worker.sandbox = Sbx()
+        task_id = await worker.enqueue(OWNER, "Log in")
+        await wait_task(worker)
+
+    # B2(b): After Enter (0xFF0D), another Ctrl+A + BackSpace clear was sent over VNC!
+    all_keysyms = [item for s in vnc_sessions for item in s.typed_keysyms]
+    enter_indices = [i for i, (sym, down) in enumerate(all_keysyms) if sym == 0xFF0D and down]
+    assert enter_indices, "Enter must always be sent"
+    after_enter = all_keysyms[enter_indices[-1] + 1 :]
+    assert any(sym == 0xFF08 and down for sym, down in after_enter), "Leftover password must be cleared over VNC after submit"
+
+    # B2(c): Neither username nor password appears in model requests (read_page, look) or task result!
+    model_dump = json.dumps(app.client.requests, default=str)
+    assert canary_pass not in model_dump
+    assert canary_user not in model_dump
+    assert "[redacted]" in model_dump
+    row = await task_row(app, task_id)
+    assert canary_pass not in (row["result"] or "")
+    assert canary_user not in (row["result"] or "")
+
+    # Also verify turn_log and usage scrub active per-run redactions when recorded inside a scope.
+    from dom import turn_log
+    from dom.secrets import secret_redaction_scope
+    from dom.usage import UsageRecorder
+
+    with secret_redaction_scope([canary_user, canary_pass]):
+        async with turn_log.capture(app.store, app.dispatch.now(), OWNER, "owner_dm"):
+            turn_log.step(f"saw {canary_user} and {canary_pass}")
+            turn_log.outcome(f"done {canary_pass}")
+        await UsageRecorder(app.store).record("desktop", f"m-{canary_pass}", f"h-{canary_user}", {}, OWNER)
+    turns_rows = await app.store._run(lambda: [dict(r) for r in app.store._conn.execute("SELECT * FROM turns").fetchall()])
+    usage_rows = await app.store._run(lambda: [dict(r) for r in app.store._conn.execute("SELECT * FROM usage").fetchall()])
+    assert canary_pass not in json.dumps(turns_rows) and canary_user not in json.dumps(turns_rows)
+    assert canary_pass not in json.dumps(usage_rows) and canary_user not in json.dumps(usage_rows)
+
+
+async def test_s1_reverify_before_each_typing_step_uses_evaluate_origin_focus_and_form_action(make_app, monkeypatch):
+    """S1: Re-verify via single /page/evaluate before username AND password; refuse unfocused, wrong origin, or cross-site form action."""
+    app = make_app()
+    meta = await app.desktop_permissions.save_login(site="bank.example.org", username="alice@example.org", password="pw-s1-secret")
+    await app.desktop_permissions.set_site_rule("bank.example.org", "fill_login", "allow")
+
+    for scenario, eval_payload, expected_err in [
+        (
+            "no_focus",
+            {"href": "https://bank.example.org/login", "hasFocus": False, "topLevel": True, "fieldOk": True, "formAction": None},
+            "focus",
+        ),
+        (
+            "wrong_origin_from_eval_despite_tabs_api",
+            {"href": "https://phish.example.net/login", "hasFocus": True, "topLevel": True, "fieldOk": True, "formAction": None},
+            "https://",
+        ),
+        (
+            "cross_site_form_action",
+            {"href": "https://bank.example.org/login", "hasFocus": True, "topLevel": True, "fieldOk": True, "formAction": "https://evil.example.net/steal"},
+            "form",
+        ),
+        (
+            "downgraded_http_form_action",
+            {"href": "https://bank.example.org/login", "hasFocus": True, "topLevel": True, "fieldOk": True, "formAction": "http://bank.example.org/login"},
+            "form",
+        ),
+    ]:
+        vnc_called = False
+
+        @asynccontextmanager
+        async def mock_vnc_connect(url, **kwargs):
+            nonlocal vnc_called
+            vnc_called = True
+            yield FakeVncSocket()
+
+        monkeypatch.setattr("dom.desktop.vnc_type.connect_vnc", mock_vnc_connect)
+
+        def handler(request: httpx.Request, payload=eval_payload) -> httpx.Response:
+            if request.url.path == "/v1/browser/tabs":
+                # Tabs API still claims bank.example.org! S1 must trust evaluate's href instead.
+                return httpx.Response(200, json={"success": True, "data": [{"url": "https://bank.example.org/login", "is_active": True}]})
+            if request.url.path == "/v1/browser/page/evaluate":
+                expr = json.loads(request.content)["expression"]
+                if "formAction" in expr:
+                    return httpx.Response(200, json={"success": True, "data": payload})
+                return httpx.Response(200, json={"success": True, "data": True})
+            return httpx.Response(200, json={"success": True, "data": {"exit_code": 0}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = SandboxClient("http://127.0.0.1:18080", "k", http)
+
+            class Sbx(Sandbox):
+                async def ensure_running(self):
+                    return client
+
+            worker = await worker_for(
+                app,
+                call("fill_saved_login", login_id=meta["id"]),
+                call("finish", result=f"stopped {scenario}"),
+                {"content": '{"bubbles":[{"text":"ok"}]}'},
+            )
+            worker.sandbox = Sbx()
+            await worker.enqueue(OWNER, f"Test {scenario}")
+            await wait_task(worker)
+            assert not vnc_called, f"VNC should not have been called for scenario {scenario}"
+            assert expected_err in json.dumps(app.client.requests).lower(), f"Missing expected refusal for {scenario}"
+
+
+async def test_s2_focus_stolen_mid_typing_aborts_clears_and_alerts_owner(make_app, monkeypatch):
+    """S2: If focus leaves the password input mid-typing, do not submit, clear over VNC, and alert owner DM."""
+    app = make_app()
+    meta = await app.desktop_permissions.save_login(site="app.example.org", username="", password="pw-s2-stolen")
+    await app.desktop_permissions.set_site_rule("app.example.org", "fill_login", "allow")
+
+    vnc_sessions: list[FakeVncSocket] = []
+
+    @asynccontextmanager
+    async def mock_vnc_connect(url, **kwargs):
+        s = FakeVncSocket()
+        vnc_sessions.append(s)
+        yield s
+
+    monkeypatch.setattr("dom.desktop.vnc_type.connect_vnc", mock_vnc_connect)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/browser/tabs":
+            return httpx.Response(200, json={"success": True, "data": [{"url": "https://app.example.org/login", "is_active": True}]})
+        if request.url.path == "/v1/browser/page/evaluate":
+            expr = json.loads(request.content)["expression"]
+            if "sameTarget" in expr:
+                # Focus was stolen mid-typing!
+                return httpx.Response(200, json={
+                    "success": True,
+                    "data": {"href": "https://app.example.org/login", "hasFocus": True, "topLevel": True, "sameTarget": False},
+                })
+            if "formAction" in expr:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "data": {"href": "https://app.example.org/login", "hasFocus": True, "topLevel": True, "fieldOk": True, "formAction": None},
+                })
+            return httpx.Response(200, json={"success": True, "data": True})
+        return httpx.Response(200, json={"success": True, "data": {"exit_code": 0}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = SandboxClient("http://127.0.0.1:18080", "k", http)
+
+        class Sbx(Sandbox):
+            async def ensure_running(self):
+                return client
+
+        worker = await worker_for(
+            app,
+            call("fill_saved_login", login_id=meta["id"]),
+            call("finish", result="aborted"),
+            {"content": '{"bubbles":[{"text":"stopped"}]}'},
+        )
+        worker.sandbox = Sbx()
+        await worker.enqueue(OWNER, "Login")
+        await wait_task(worker)
+
+    # Must NOT have pressed Enter, MUST have sent a follow-up clear (BackSpace) after typing.
+    all_keysyms = [item for s in vnc_sessions for item in s.typed_keysyms]
+    assert not any(sym == 0xFF0D and down for sym, down in all_keysyms), "Must not press Enter when focus was stolen"
+    assert len(vnc_sessions) >= 2 and any(sym == 0xFF08 and down for sym, down in vnc_sessions[-1].typed_keysyms)
+    # Security alert sent to owner DM and recorded as owner event (with no password leaked).
+    dm_texts = " ".join(str(c) for c in app.bot.of("send", OWNER))
+    assert "focus" in dm_texts.lower() or "security" in dm_texts.lower()
+    assert "pw-s2-stolen" not in dm_texts
+
+
+async def test_s3_real_websockets_client_debug_logging_never_prints_password(caplog):
+    """S3: Real websockets client against local RFB server with DEBUG logging must never log password frames."""
+    from websockets.asyncio.server import serve
+    from dom.desktop.vnc_type import vnc_type_text
+
+    canary = "WS_DEBUG_CANARY_Z9q!"
+    received_keysyms: list[tuple[int, bool]] = []
+
+    async def rfb_server(ws):
+        await ws.send(b"RFB 003.008\n")
+        await ws.recv()  # client version
+        await ws.send(b"\x01\x01")  # 1 security type: None
+        await ws.recv()  # chosen security type
+        await ws.send(b"\x00\x00\x00\x00")  # OK
+        await ws.recv()  # ClientInit
+        await ws.send(b"\x00" * 20 + struct.pack("!I", 3) + b"dom")  # ServerInit
+        async for msg in ws:
+            data = msg if isinstance(msg, bytes) else msg.encode("latin-1")
+            if len(data) >= 8 and len(data) % 8 == 0 and data[0] == 4:
+                for off in range(0, len(data), 8):
+                    t, down, sym = struct.unpack("!BBxxI", data[off : off + 8])
+                    if t == 4:
+                        received_keysyms.append((sym, bool(down)))
+
+    caplog.set_level(logging.DEBUG)
+    logging.getLogger("websockets").setLevel(logging.DEBUG)
+    logging.getLogger("websockets.client").setLevel(logging.DEBUG)
+    server_logger = logging.getLogger("test.rfb_server")
+    server_logger.setLevel(logging.WARNING)
+    async with serve(rfb_server, "127.0.0.1", 0, subprotocols=["binary"], logger=server_logger) as server:
+        port = server.sockets[0].getsockname()[1]
+        caplog.clear()
+        async with httpx.AsyncClient() as http:
+            client = SandboxClient(f"http://127.0.0.1:{port}", "test-key", http)
+            await vnc_type_text(client, canary, clear=True, submit=True)
+
+    assert decode_typed_chars(received_keysyms) == canary
+    assert any(sym == 0xFF0D and down for sym, down in received_keysyms)
+    # No frame logs from websockets.client (or any websockets logger) and no password bytes/hex may appear in caplog!
+    ws_records = [r for r in caplog.records if r.name.startswith("websockets") and r.levelno < logging.WARNING]
+    assert ws_records == [], f"Unexpected websockets DEBUG/INFO logs: {[r.getMessage() for r in ws_records]}"
+    assert canary not in caplog.text
+    assert "BINARY" not in caplog.text
+
+
+async def test_s4_concurrent_dotenv_writes_and_cli_rotate_refuses_running_bot(tmp_path, make_app, capsys):
+    """S4: Concurrent .env writes never lose keys; CLI rotate-key refuses while ready.json shows a live bot PID."""
+    import concurrent.futures
+    from dom.config import set_dotenv_many
+
+    def writer(i: int) -> None:
+        for j in range(10):
+            set_dotenv_many(tmp_path, {f"KEY_{i}_{j}": f"val_{i}_{j}"})
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        futs = [pool.submit(writer, i) for i in range(6)]
+        for f in futs:
+            f.result()
+
+    env = _read_dotenv(tmp_path / ".env")
+    for i in range(6):
+        for j in range(10):
+            assert env.get(f"KEY_{i}_{j}") == f"val_{i}_{j}"
+
+    # CLI rotate-key refuses while ready.json references a live PID.
+    from dom.release import mark_ready
+
+    app = make_app()
+    await app.secrets.put("owner_secret", "k", {"value": "v"})
+    app.store.close()
+    (app.home.root / "config.toml").write_text('timezone = "UTC"\n[models.chat]\nbase_url = "http://localhost:8000/v1"\nmodel = "m"\n')
+    mark_ready(app.home.root, pid=os.getpid())
+    code = await asyncio.to_thread(cli_main, ["rotate-key", str(app.home.root)])
+    assert code == 1
+    assert "running" in capsys.readouterr().out.lower()
+
+
+async def test_s5_e101_does_not_spend_request_on_validation_or_write_failure(make_app, monkeypatch):
+    """S5: Invalid input or write failure must leave the E101 secret request pending so the owner can retry."""
+    app = make_app()
+    # 1) Login target with invalid site fails validation WITHOUT burning the request.
+    req = await app.secret_requests.create(label="Portal", reason="sign in", target="login", key="")
+    with pytest.raises(ValueError):
+        await app.secret_requests.submit(request_id=req["request_id"], site="192.0.2.1", username="u", password="pw")
+    assert await app.secret_requests.lookup(request_id=req["request_id"]) is not None
+    # Retry with valid site succeeds!
+    res = await app.secret_requests.submit(request_id=req["request_id"], site="portal.example.org", username="u", password="pw")
+    assert res["status"] == "set"
+
+    # 2) Write failure reverts the request back to pending.
+    req2 = await app.secret_requests.create(label="API", reason="need it", target="secret", key="api_s5")
+    orig_put = app.secrets.put
+
+    async def boom(*a, **kw):
+        raise SecretStoreError("simulated disk error")
+
+    monkeypatch.setattr(app.secrets, "put", boom)
+    with pytest.raises(SecretStoreError):
+        await app.secret_requests.submit(request_id=req2["request_id"], value="val-123")
+    assert await app.secret_requests.lookup(request_id=req2["request_id"]) is not None
+
+    monkeypatch.setattr(app.secrets, "put", orig_put)
+    res2 = await app.secret_requests.submit(request_id=req2["request_id"], value="val-123")
+    assert res2["status"] == "set"
+
+
+async def test_s6_bootstrap_refuses_when_encrypted_rows_exist_and_key_missing(make_app):
+    """S6: If encrypted rows exist and DOM_MASTER_KEY is missing, put() must refuse instead of minting a new key."""
+    app = make_app()
+    await app.secrets.put("owner_secret", "existing", {"value": "keep-me"})
+    set_dotenv(app.home.root, MASTER_KEY_ENV, None)
+    with pytest.raises(SecretStoreError, match="missing"):
+        await app.secrets.put("owner_secret", "new_one", {"value": "should-fail"})
+    assert MASTER_KEY_ENV not in _read_dotenv(app.home.root / ".env")
+
+
+async def test_s7_e101_env_allowlist_and_dismissal_cooldown(make_app):
+    """S7: E101 env target allows only config-referenced non-reserved names, and dismissal triggers a cooldown."""
+    clock = Clock(datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc))
+    app = make_app()
+    app.dispatch.now = clock
+
+    for bad in ("PATH", "LD_PRELOAD", "PYTHONSTARTUP", "HTTPS_PROXY", "SSL_CERT_FILE", "DOM_HOME", "DOM_MASTER_KEY", "TELEGRAM_BOT_TOKEN", "SANDBOX_API_KEY", "RANDOM_UNREFERENCED_VAR"):
+        with pytest.raises(ValueError):
+            await app.secret_requests.create(label="Bad", reason="nope", target="env", key=bad)
+
+    # Config-referenced non-reserved env names (KLIPY_API_KEY, STUDIO_TOKEN) are allowed.
+    ok_req = await app.secret_requests.create(label="KLIPY", reason="GIF search", target="env", key="KLIPY_API_KEY")
+    assert await app.secret_requests.cancel(request_id=ok_req["request_id"]) is True
+
+    # Dismissal cooldown prevents immediate re-request spam.
+    with pytest.raises(ValueError, match="wait|dismissed|cooldown"):
+        await app.secret_requests.create(label="Again", reason="spam", target="secret", key="spam_key")
+
+    # After cooldown expires, requests are allowed again.
+    clock.advance(minutes=11)
+    ok2 = await app.secret_requests.create(label="After cooldown", reason="ok now", target="secret", key="after_cd")
+    assert ok2["status"] == "requested"
+
+
+async def test_s8_visit_site_never_enforced_on_browse_redirects(make_app):
+    """S8: browse to an allowed site that redirects to a visit_site=never site must close the page."""
+    app = make_app()
+    await app.desktop_permissions.set_site_rule("evil.example.org", "visit_site", "never")
+    navigated: list[str] = []
+
+    worker = await worker_for(
+        app,
+        call("browse", url="https://good.example.org/redirect"),
+        call("finish", result="redirect blocked"),
+        {"content": '{"bubbles":[{"text":"blocked"}]}'},
+    )
+
+    async def redirecting_nav(url: str):
+        navigated.append(url)
+        if url == "https://good.example.org/redirect":
+            worker.sandbox.url = "https://evil.example.org/landing"
+        else:
+            worker.sandbox.url = url
+
+    worker.sandbox.navigate = redirecting_nav
+    await worker.enqueue(OWNER, "Open link")
+    await wait_task(worker)
+    assert "about:blank" in navigated
+    assert "evil.example.org is set to Never" in json.dumps(app.client.requests)
+
+
+async def test_nits_strict_base64_ports_psl_allow_always_and_tampered_screenshot(make_app):
+    """Nits 1-5: strict base64 key decoding, port check, extended shared suffixes, allow-always on non-site, and screenshot tamper check."""
+    from dom.secrets import _decode_key
+
+    # Nit 1: strict base64 decoding rejects garbage punctuation injected into valid key.
+    valid = generate_master_key()
+    corrupted = valid[:10] + "!!" + valid[10:]
+    with pytest.raises(SecretStoreError):
+        _decode_key(corrupted)
+
+    # Nit 2: non-443 ports must not match in host_matches_site.
+    assert host_matches_site("https://example.org:8443/login", "example.org") is False
+    assert host_matches_site("https://example.org:443/login", "example.org") is True
+
+    # Nit 3: extended shared suffixes rejected by normalize_site and match_subdomains.
+    for suffix in ("webflow.io", "notion.site", "github.dev", "carrd.co", "framer.app", "my.id"):
+        assert normalize_site(suffix) is None, f"{suffix} should be rejected"
+        assert host_matches_site(f"https://tenant.{suffix}/login", suffix, match_subdomains=True) is False
+
+    # Nit 4: Allow always on a site that normalizes to nothing must not claim Allowed always.
+    app = make_app()
+    req_id = await app.store.create_desktop_permission_request(
+        action="download", site="", detail="file.pdf", token_hash="h", created_at=app.desktop_permissions._now(),
+    )
+    ok, label = await app.desktop_permissions.decide(req_id, "always", via="dashboard")
+    assert ok
+    assert "always" not in label.lower()
+    row = await app.store.get_desktop_permission_request(req_id)
+    assert row is not None and row["status"] == "allowed_once"
+
+    # Nit 5: Overwriting a saved screenshot path with different bytes must NOT bypass the download gate,
+    # whereas an unmodified screenshot still passes when download=never.
+    await app.desktop_permissions.set_policy("download", "never")
+    original_png = b"\x89PNG\r\n\x1a\noriginal-screenshot-bytes"
+
+    async def fake_screenshot():
+        return original_png
+
+    async def fake_upload(path, data):
+        return {"success": True}
+
+    async def tampered_download(path, max_bytes=None):
+        return b"not-the-original-screenshot-secret-file"
+
+    worker = await worker_for(
+        app,
+        call("save_screenshot", name="page"),
+        call("finish", result="sending", files=["/home/gem/outbox/page.png"]),
+        call("finish", result="blocked tampered screenshot"),
+        {"content": '{"bubbles":[{"text":"ok"}]}'},
+    )
+    worker.sandbox.screenshot = fake_screenshot
+    worker.sandbox.upload_file = fake_upload
+    worker.sandbox.download_file = tampered_download
+    await worker.enqueue(OWNER, "Screenshot")
+    await wait_task(worker)
+    assert "download is set to Never" in json.dumps(app.client.requests)
+
+    # Unmodified screenshot passes even with download=never.
+    async def unmodified_download(path, max_bytes=None):
+        return original_png
+
+    worker_ok = await worker_for(
+        app,
+        call("save_screenshot", name="page"),
+        call("finish", result="here is screenshot", files=["/home/gem/outbox/page.png"]),
+        {"content": '{"bubbles":[{"text":"ok"}]}'},
+    )
+    worker_ok.sandbox.screenshot = fake_screenshot
+    worker_ok.sandbox.upload_file = fake_upload
+    worker_ok.sandbox.download_file = unmodified_download
+    tid_ok = await worker_ok.enqueue(OWNER, "Good screenshot")
+    await wait_task(worker_ok)
+    assert (await task_row(app, tid_ok))["status"] == "done"

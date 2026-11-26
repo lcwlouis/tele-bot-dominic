@@ -212,7 +212,9 @@
             </div>
             <div class="flex flex-wrap gap-2">
               <Button size="sm" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "once" })}>Allow once</Button>
-              <Button size="sm" variant="secondary" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "always" })}>Allow always</Button>
+              {#if req.can_allow_always !== false}
+                <Button size="sm" variant="secondary" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "always" })}>Allow always</Button>
+              {/if}
               <Button size="sm" variant="destructive" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "reject" })}>Reject</Button>
             </div>
           </div>
@@ -275,7 +277,7 @@
                       type={showPassword ? "text" : "password"}
                       bind:value={formPassword}
                       required={editingId === null}
-                      autocomplete="new-password"
+                      autocomplete="off"
                       spellcheck={false}
                       class="flex-1"
                     />

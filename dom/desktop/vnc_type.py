@@ -8,7 +8,11 @@ traces requests. This mirrors how the live noVNC viewer already sends manual pas
 from __future__ import annotations
 
 import asyncio
+import logging
 import struct
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import httpx
@@ -24,6 +28,50 @@ _KEY_ENTER = 0xFF0D
 _KEY_BACKSPACE = 0xFF08
 _KEY_CONTROL_L = 0xFFE3
 _KEY_A = 0x0061
+
+# Dedicated disabled logger passed to websockets.connect so DEBUG frame dumps can NEVER print keystrokes.
+_SILENT_WS_LOGGER = logging.getLogger("dom.desktop.vnc_type.silent")
+_SILENT_WS_LOGGER.disabled = True
+_SILENT_WS_LOGGER.propagate = False
+_SILENT_WS_LOGGER.setLevel(logging.CRITICAL + 1)
+
+_WS_LOG_LOCK = threading.Lock()
+_WS_LOG_DEPTH = 0
+_WS_SAVED_LEVELS: dict[str, int] = {}
+_WS_LOGGER_NAMES = (
+    "websockets",
+    "websockets.client",
+    "websockets.protocol",
+    "websockets.asyncio",
+    "websockets.asyncio.client",
+)
+
+
+@contextmanager
+def _silence_websockets_logging() -> Iterator[None]:
+    """Pin all `websockets*` loggers to WARNING or above while typing secrets over VNC."""
+    global _WS_LOG_DEPTH
+    with _WS_LOG_LOCK:
+        if _WS_LOG_DEPTH == 0:
+            names = set(_WS_LOGGER_NAMES)
+            for name in list(logging.Logger.manager.loggerDict):
+                if name == "websockets" or name.startswith("websockets."):
+                    names.add(name)
+            for name in names:
+                logger = logging.getLogger(name)
+                _WS_SAVED_LEVELS[name] = logger.level
+                if logger.level == logging.NOTSET or logger.level < logging.WARNING:
+                    logger.setLevel(logging.WARNING)
+        _WS_LOG_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _WS_LOG_LOCK:
+            _WS_LOG_DEPTH -= 1
+            if _WS_LOG_DEPTH == 0:
+                for name, prev in _WS_SAVED_LEVELS.items():
+                    logging.getLogger(name).setLevel(prev)
+                _WS_SAVED_LEVELS.clear()
 
 
 class _NoRedirectConnect(connect):
@@ -149,18 +197,20 @@ async def vnc_type_text(
     ws_url = str(url.copy_with(scheme="wss" if url.scheme == "https" else "ws"))
     frames = encode_typing_frames(text, clear=clear, submit=submit)
     try:
-        async with asyncio.timeout(timeout):
-            async with connect_vnc(
-                ws_url,
-                additional_headers=client.auth_headers(),
-                subprotocols=["binary"],
-                proxy=None,
-                open_timeout=timeout,
-                close_timeout=2,
-            ) as ws:
-                await _rfb_handshake(ws)
-                for frame in frames:
-                    await ws.send(frame)
+        with _silence_websockets_logging():
+            async with asyncio.timeout(timeout):
+                async with connect_vnc(
+                    ws_url,
+                    additional_headers=client.auth_headers(),
+                    subprotocols=["binary"],
+                    proxy=None,
+                    open_timeout=timeout,
+                    close_timeout=2,
+                    logger=_SILENT_WS_LOGGER,
+                ) as ws:
+                    await _rfb_handshake(ws)
+                    for frame in frames:
+                        await ws.send(frame)
     except SandboxError:
         raise
     except (OSError, TimeoutError, WebSocketException, ValueError, RuntimeError):

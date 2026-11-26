@@ -34,10 +34,11 @@
     const hash = window.location.hash.replace(/^#/, "");
     const hashParams = new URLSearchParams(hash);
     const searchParams = new URLSearchParams(window.location.search);
-    const rawToken = hashParams.get("t") || searchParams.get("t");
+    // Only accept the one-time token from the URL fragment (#t=...), never a query parameter (?t=...) which would
+    // hit HTTP access logs. Scrub any token from the address bar immediately.
+    const rawToken = hashParams.get("t");
     const rawId = searchParams.get("id");
-    // Scrub token from the address bar immediately so it does not linger in browser history.
-    if (rawToken) {
+    if (rawToken || searchParams.has("t")) {
       window.history.replaceState(null, "", "/app/secret");
     }
     if (rawToken) {
@@ -46,7 +47,9 @@
       requestId = Number(rawId);
     } else {
       loading = false;
-      loadError = "No secret request token was provided. Open the link from Dom's card or Waiting for you.";
+      loadError =
+        "No secret request token was found. If Cloudflare Access asked you to sign in, the one-time link fragment " +
+        "(#t=...) is dropped during sign-in — open Waiting for you to complete the pending secret request.";
       return;
     }
 
@@ -163,7 +166,7 @@
                 type={reveal ? "text" : "password"}
                 bind:value={loginPassword}
                 required
-                autocomplete="new-password"
+                autocomplete="off"
                 spellcheck={false}
                 class="flex-1"
               />

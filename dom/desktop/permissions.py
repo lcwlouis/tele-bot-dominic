@@ -90,14 +90,17 @@ def normalize_site(raw: object) -> str | None:
 
 
 def host_matches_site(url: object, site: str, *, match_subdomains: bool = False) -> bool:
-    """Strict HTTPS origin match for filling a saved login."""
+    """Strict HTTPS origin match (default port 443 only) for filling a saved login."""
     if not isinstance(url, str):
         return False
     try:
         parts = urlsplit(url)
+        port = parts.port
     except ValueError:
         return False
     if parts.scheme.lower() != "https" or not parts.hostname:
+        return False
+    if port is not None and port != 443:
         return False
     if "@" in parts.netloc or "\\" in url:
         return False
@@ -107,8 +110,12 @@ def host_matches_site(url: object, site: str, *, match_subdomains: bool = False)
         return False
     if host == canonical or host == f"www.{canonical}":
         return True
-    if match_subdomains and host.endswith("." + canonical):
-        return True
+    if match_subdomains:
+        # Never allow subdomain matching against a shared public suffix or invalid site.
+        if normalize_site(canonical) is None:
+            return False
+        if host.endswith("." + canonical):
+            return True
     return False
 
 
@@ -419,9 +426,10 @@ class DesktopPermissions:
             lines.append(detail[:80])
         buttons = [
             InlineKeyboardButton(text="Allow once", callback_data=f"dperm:once:{request_id}:{token}"),
-            InlineKeyboardButton(text="Allow always", callback_data=f"dperm:always:{request_id}:{token}"),
-            InlineKeyboardButton(text="Reject", callback_data=f"dperm:reject:{request_id}:{token}"),
         ]
+        if action == "background_work" or normalize_site(site) is not None:
+            buttons.append(InlineKeyboardButton(text="Allow always", callback_data=f"dperm:always:{request_id}:{token}"))
+        buttons.append(InlineKeyboardButton(text="Reject", callback_data=f"dperm:reject:{request_id}:{token}"))
         try:
             sent = await send_notice(
                 app, app.owner_id, title, lines,
@@ -471,21 +479,23 @@ class DesktopPermissions:
         if via == "telegram":
             if not token or not hmac.compare_digest(row["token_hash"], _hash_token(token)):
                 return False, "invalid token"
-        status = _DECISION_STATUS[decision]
+        action = row["action"]
+        site = row["site"]
+        canonical = normalize_site(site) if action in SITE_SCOPED_ACTIONS else None
+        downgraded_always = decision == "always" and action in SITE_SCOPED_ACTIONS and canonical is None
+        status = "allowed_once" if downgraded_always else _DECISION_STATUS[decision]
         now = self._now()
         updated = await self.app.store.decide_desktop_permission_request(request_id, status, via, now)
         if updated is None:
             return False, "already handled"
 
-        action = updated["action"]
-        site = updated["site"]
-        if decision == "always":
+        if decision == "always" and not downgraded_always:
             if action == "background_work":
                 await self.app.store.set_desktop_action_policy("background_work", "allow", now)
-            elif action in SITE_SCOPED_ACTIONS and (canonical := normalize_site(site)):
+            elif action in SITE_SCOPED_ACTIONS and canonical is not None:
                 await self.app.store.set_desktop_site_permission(canonical, action, "allow", now)
 
-        label = _SETTLED_LABELS[status]
+        label = "✅ Allowed once (no site rule saved)" if downgraded_always else _SETTLED_LABELS[status]
         await self._settle_card(updated.get("card_message_id"), label)
         waiter = self._waiters.get(request_id)
         if waiter is not None and not waiter[1].done():
@@ -508,6 +518,7 @@ class DesktopPermissions:
                 "site": row["site"],
                 "detail": row["detail"],
                 "created_at": row["created_at"],
+                "can_allow_always": row["action"] == "background_work" or normalize_site(row["site"]) is not None,
             }
             for row in rows
         ]

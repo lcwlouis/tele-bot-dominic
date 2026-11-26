@@ -4179,20 +4179,69 @@ class Store:
 
         return await self._run(update)
 
+    async def claim_secret_request(self, request_id: int) -> bool:
+        """Atomically transition a pending request to `submitting` while its value is being written."""
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE secret_requests SET status = 'submitting' "
+                    "WHERE id = ? AND status = 'pending'",
+                    (request_id,),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def reopen_secret_request(self, request_id: int) -> bool:
+        """Revert a `submitting` request back to `pending` if writing the secret failed."""
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE secret_requests SET status = 'pending', resolved_at = NULL "
+                    "WHERE id = ? AND status = 'submitting'",
+                    (request_id,),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def complete_secret_request(self, request_id: int, status: str, resolved_at: str) -> bool:
+        """Finalize a `submitting` request once its secret has been durably written."""
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE secret_requests SET status = ?, resolved_at = ? "
+                    "WHERE id = ? AND status = 'submitting'",
+                    (status, resolved_at, request_id),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def latest_cancelled_secret_request(self) -> str | None:
+        """Return the most recent cancellation timestamp for dismissal cooldown enforcement."""
+        def select() -> str | None:
+            row = self._conn.execute(
+                "SELECT MAX(resolved_at) FROM secret_requests WHERE status = 'cancelled' AND resolved_at IS NOT NULL",
+            ).fetchone()
+            return str(row[0]) if row is not None and row[0] else None
+
+        return await self._run(select)
+
     async def expire_secret_requests(self, now: str) -> list[dict[str, Any]]:
         def update() -> list[dict[str, Any]]:
             with self._tx() as conn:
                 rows = [
                     dict(row) for row in conn.execute(
                         "SELECT id, card_message_id FROM secret_requests "
-                        "WHERE status = 'pending' AND expires_at <= ?",
+                        "WHERE status IN ('pending', 'submitting') AND expires_at <= ?",
                         (now,),
                     ).fetchall()
                 ]
                 if rows:
                     conn.execute(
                         "UPDATE secret_requests SET status = 'expired', resolved_at = ? "
-                        "WHERE status = 'pending' AND expires_at <= ?",
+                        "WHERE status IN ('pending', 'submitting') AND expires_at <= ?",
                         (now, now),
                     )
                 return rows
