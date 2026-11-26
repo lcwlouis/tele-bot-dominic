@@ -19,7 +19,7 @@ from fastapi.responses import Response
 
 from dom import memory_import, notes, proposals, selfwork, skills, traits, turn_log
 from dom.agent import unfence
-from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
+from dom.home import WORLD, MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.proposals import soul_edit_problem
 from dom.skills import skill_diff
 from dom.telegram import gate, owner
@@ -370,6 +370,9 @@ async def _turns(app: App, chat: str = "") -> dict:
         trace = json.loads(row["trace"])
         row["steps"] = turn_log.visible_steps(trace)
         row["visits"] = turn_log.visits_in(trace)
+        # Rows from before the fast lane have no lane in their visits: they all ran in the one lane there was.
+        row["lane"] = row["visits"][-1].get("lane", "main") if row["visits"] else None
+        row["queue_wait_ms"] = sum(visit.get("wait_ms", 0) for visit in row["visits"]) if row["visits"] else None
         for visit in row["visits"]:
             visit["behind_title"] = title(str(visit["behind"])) if visit["behind"] is not None else ""
             visit["capped_title"] = title(str(visit["capped"])) if visit["capped"] is not None else ""
@@ -566,13 +569,14 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     known = {c["chat_id"]: c for c in await app.store.list_chats()}
     known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
     names = await app.store.people_names()
+    asked = await app.chat_titles.known()  # titles Telegram gave for chats this bot has no row for
     chat_notes, owner_notes = [], []
 
     def chat_label(rel: str) -> str:
         chat_id = Path(rel).name.removesuffix(".former.md").removesuffix(".md")
         if chat_id == str(app.owner_id):
             return "Your DM notes"
-        chat = known.get(chat_id, {"chat_id": chat_id, "title": ""})
+        chat = known.get(chat_id, {"chat_id": chat_id, "title": asked.get(chat_id, "")})
         if chat_id.startswith("-"):
             # A note can outlive its chat's row (a copied home, a bot that never saw the group): say it is a group.
             title = _title(chat, app.owner_id)
@@ -582,7 +586,7 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     for rel in chats:
         (owner_notes if Path(rel).stem == str(app.owner_id) else chat_notes).append((rel, chat_label(rel)))
     labels = {
-        MEMORY: "MEMORY.md", "private/USER.md": "USER.md", "private/NOTES.md": "NOTES.md",
+        MEMORY: "MEMORY.md", WORLD: "WORLD.md", "private/USER.md": "USER.md", "private/NOTES.md": "NOTES.md",
         "memory/JOURNAL.md": "Journal", "private/JOURNAL.md": "Private journal",
     }
 
@@ -602,7 +606,7 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
         *((rel, former_label(rel)) for rel in private.former_files()),
     ]
     return [
-        ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
+        ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (WORLD, "WORLD.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
         ("People", sorted(((rel, _person_label(rel, names)) for rel in people), key=lambda item: item[1].casefold())),
         ("Places, projects and goals", [
             (rel, f"{Path(rel).parent.name[:-1].title()} · {Path(rel).stem.replace('-', ' ')}") for rel in entities

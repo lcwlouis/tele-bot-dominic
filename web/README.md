@@ -33,7 +33,7 @@ CSP-sensitive changes with `npm run build` and `npm run test:screens`.
 - `src/shadcn-svelte.css`: shadcn-svelte's Tailwind variants for Bits UI state attributes.
 - `src/lib/components/kit/`: Dom's own building blocks, the baseline list pages are rebuilt from (below).
 - `src/lib/components/ui/`: shadcn-svelte components, restyled. Add more with `npx shadcn-svelte@1.8.1 add <name>`.
-- `src/lib/nav.ts`: the navigation: five destinations, their tabs, and the desktop's Workspace shortcuts.
+- `src/lib/nav.ts`: the navigation: six destinations, their tabs, and the desktop's Workspace shortcuts.
 - `src/routes/`: pages. `Gallery.svelte` is the component library (`/app/gallery`, reachable only by its address),
   with a mock Work list and Turn log on fixture data from `gallery-fixtures.ts`.
 - `screens/`: Playwright checks and screenshot baselines (phone 390 px, desktop 1280 px, dark and light).
@@ -92,6 +92,10 @@ All in `src/app.css`, for both themes; every text pair is checked for WCAG AA by
   (`/app/work?task=<id>`, `?own=<id>`); any other page selects it in place, scrolled into view, outlined and
   focused (`/app/waiting?proposal=<id>`, `/app/work/reminders?id=<id>`). The API returns a linked item older than
   its first page with that page.
+- **Traces** (`components/trace/`): `TraceView` lays out one turn's trace (dom/tracer.py) in the W2 order, and
+  `TraceLoader` fetches it. `JsonBlock` is a folded request, response or prompt part, highlighted with
+  `$lib/highlight` only once opened, with a copy button. The Talk page and the Turn log's trace page
+  (`/app/system/turns/<id>`) both use them.
 - **`AppPicker`**: the app's own combobox for a choice from a list, with a visible label and type-to-filter, in
   place of a native `<select>`.
 

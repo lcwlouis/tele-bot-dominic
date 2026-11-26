@@ -216,6 +216,18 @@ class SelfWorkConfig(BaseModel):
     max_steps: int = Field(25, ge=1, le=60, description="Largest step budget (tool calls and model turns) that one task may plan.")
 
 
+class DispatchConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    fast_lane: bool = Field(
+        True,
+        description=(
+            "Give the owner's DM a compose lane of its own, so his turns (and the turns his approval cards start) "
+            "never wait for a turn in another chat. Off, every chat's turns compose one at a time, owner first."
+        ),
+    )
+
+
 class PresenceConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -261,6 +273,24 @@ class WorldConfig(BaseModel):
     latitude: float | None = Field(None, ge=-90, le=90, allow_inf_nan=False, description="Latitude of the place, in degrees.")
     longitude: float | None = Field(None, ge=-180, le=180, allow_inf_nan=False, description="Longitude of the place, in degrees.")
 
+    country: str = Field(
+        "", max_length=2,
+        description=(
+            "Two-letter ISO country code (for example `SG`) for the public holidays in Dom's turn note. Independent of "
+            "the place. Empty, the default, turns the holidays off."
+        ),
+    )
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def _country_code(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip():
+            code = value.strip().upper()
+            if len(code) != 2 or not code.isascii() or not code.isalpha():
+                raise ValueError("[world] country is a two-letter ISO country code such as SG")
+            return code
+        return "" if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def _all_or_none(self) -> WorldConfig:
         given = [bool(self.place.strip()), self.latitude is not None, self.longitude is not None]
@@ -271,6 +301,25 @@ class WorldConfig(BaseModel):
     @property
     def configured(self) -> bool:
         return bool(self.place.strip()) and self.latitude is not None and self.longitude is not None
+
+
+class TracerConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    retention_days: int = Field(
+        7, ge=1, le=90,
+        description=(
+            "Days the debug tracer keeps each turn's full trace (prompts, model requests and responses, tool calls and "
+            "deliveries, for every chat). Older traces are deleted once a day."
+        ),
+    )
+    max_mb: int = Field(
+        256, ge=16, le=10000,
+        description=(
+            "Size cap of the trace store (`traces.db` in Dom's home), in megabytes of compressed traces. Past it the "
+            "oldest traces are deleted first."
+        ),
+    )
 
 
 class WebConfig(BaseModel):
@@ -675,18 +724,20 @@ class Config(BaseModel):
     )
     daily_spend_cap_usd: float = Field(1.0, ge=0, allow_inf_nan=False, description="Daily USD cap, the normal pace: once today's paid calls reach it, friends' and groups' chats and their background work pause until midnight in `timezone`. The owner's DM is exempt unless `cap_owner_dm` is on, and so is background work done for it (reflection, the memory pass, the look before a send, aged media), which obeys only the monthly cap and the area limits. Zero disables the cap.")
     monthly_spend_cap_usd: float = Field(0.0, ge=0, allow_inf_nan=False, description="Monthly USD ceiling for the calendar month in `timezone`, over every paid call: chat, media, search, desktop tasks, embeddings, summaries and studio cloud backups. Once reached, friends' and groups' chats and all background work, the owner's included, pause until the 1st; one-offs such as event days draw only on the month's unused budget and never pass it. The owner's own turns in the DM are exempt unless `cap_owner_dm` is on. Zero disables the cap.")
-    cap_owner_dm: bool = Field(False, description="Make the owner's DM obey both spend caps. Off (the default), the owner's own chat is never paused by a cap, though what it spends still counts toward them.")
+    cap_owner_dm: bool = Field(False, description="Make the owner's DM obey both spend caps. Off (the default), the owner's own chat is never paused by a cap, though what it spends still counts toward them. A cap is checked before each paid call and the cost counts once it returns, so calls already in flight (one per lane, the owner DM's included, plus background work) can finish past it by their own cost.")
     area_spend_caps_usd: dict[SpendArea, Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(
         default_factory=dict,
         description="Optional monthly USD limit per area (`chat`, `media`, `search`, `desktop`, `memory`), as a `[area_spend_caps_usd]` table. An area at its limit pauses that kind of work for the rest of the month while the others go on. An area left out, or set to zero, has no limit of its own.",
     )
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
+    dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
     studio: StudioConfig = Field(default_factory=StudioConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     world: WorldConfig = Field(default_factory=WorldConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    tracer: TracerConfig = Field(default_factory=TracerConfig)
     t3: T3Config = Field(default_factory=T3Config)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why.")

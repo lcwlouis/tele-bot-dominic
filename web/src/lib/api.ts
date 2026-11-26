@@ -220,18 +220,28 @@ export type StudioTier = {
   special_gap_minutes: number | null;
 };
 export type StudioLimits = Record<StudioScope, StudioTier> & { daily: number };
+/** Where one chat stands against the limits of its scope; GET /api/chats/{id}/media, and `owner` of the limits view. */
+export type MediaStanding = {
+  kinds: {
+    kind: StudioKind;
+    left: number;
+    /** This chat's items of the kind inside its rolling window. */
+    used: number;
+    per: "day" | "week";
+    on: boolean;
+    next_at: string | null;
+  }[];
+  daily_left: number;
+  /** A studio item for this chat is being made or sent now. */
+  sending: boolean;
+  /** When the gap between media ends, if it hasn't; like `now`, in Dom's time zone with its offset. */
+  next_at: string | null;
+  now: string;
+};
 export type StudioLimitsView = {
   revision: string;
   limits: StudioLimits;
-  owner: {
-    kinds: { kind: StudioKind; left: number; on: boolean; next_at: string | null }[];
-    daily_left: number;
-    /** A studio item for the owner's DM is being made or sent now. */
-    sending: boolean;
-    /** When the gap between media ends, if it hasn't; like `now`, in Dom's time zone with its offset. */
-    next_at: string | null;
-    now: string;
-  };
+  owner: MediaStanding;
 };
 
 /** GET /api/studio/event-days and POST /api/studio/event-days/cancel: days in Dom's life that raise his media limits. */
@@ -589,6 +599,10 @@ export type ModelCall = {
   user_prefix_hash: string | null;
 };
 export type Turn = {
+  id: number;
+  chat_id: string;
+  /** Whether the debug tracer has this turn's full trace (traces are kept for `tracer.retention_days`). */
+  has_trace: boolean;
   at: string;
   time: string;
   full_time: string;
@@ -601,6 +615,9 @@ export type Turn = {
   fallback: boolean;
   calls: number;
   steps: string[];
+  /** The compose lane the turn ran in, and how long it waited for its token; null when it never reached the attention loop. */
+  lane: "main" | "fast" | null;
+  queue_wait_ms: number | null;
   visits: { reason: string; behind: string; capped: string }[];
   timing: { label: string; ms: number }[];
   segments: { stage: string; label: string; x: number; ms: number }[];
@@ -609,6 +626,7 @@ export type Turn = {
 };
 export type TurnsData = {
   chat: string;
+  owner_chat: string;
   stages: Record<string, string>;
   visible_stages: string[];
   choices: { id: string; title: string }[];
@@ -772,3 +790,66 @@ export type MediaInputs = {
 /** GET /api/memory/index/estimate and /progress, POST …/confirm and …/cancel (dom/web/api_memory.py). */
 export type IndexEstimate = { items: number; rough_seconds: number; model: string; staged: boolean; rebuild: boolean };
 export type IndexProgress = { done: number; left: number; model: string; state: string; last_error: string; stale: boolean };
+
+/** GET /api/world and the writes under /api/world (dom/web/api_world.py). The sheet itself saves through /api/memory/save. */
+export type WorldPlace = { slug: string; name: string; note: string; photo: boolean };
+export type WorldData = {
+  sheet: { file: string; limit: number | null; content: string; version: string; entities: Record<string, string> };
+  last_change: { day: string; reason: string } | null;
+  interval_days: number;
+  places: WorldPlace[];
+  max_photo_mb: number;
+};
+
+/** One message in the owner DM, as the Talk page shows it. */
+export type TalkMessage = {
+  id: number;
+  msg_id: number | null;
+  mine: boolean;
+  who: string;
+  text: string;
+  at: string;
+  /** "dashboard" when the owner wrote it on the Talk page. */
+  origin: string | null;
+  edited: boolean;
+  media: { kind: string; url: string | null; description: string | null } | null;
+};
+
+/** One stored trace part (a turn, the work after it, or background work), as listed beside the messages. */
+export type TraceSummary = { id: number; turn_id: number | null; kind: string; label: string; at: string; outcome: string; size: number };
+
+export type TalkData = {
+  messages: TalkMessage[];
+  has_more: boolean;
+  typing: boolean;
+  traced: boolean;
+  turns?: TraceSummary[];
+};
+
+/** One event in a trace (dom/tracer.py); fields beyond these depend on `type`. */
+export type TraceEvent = { type: string; at: string; t_ms: number; [field: string]: unknown };
+
+export type TracePart = {
+  version: number;
+  turn_id: number | null;
+  chat_id: string;
+  scope: string;
+  kind: "turn" | "after" | "background";
+  label: string;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  outcome: string;
+  model: string;
+  fallback: boolean;
+  steps: string[];
+  visits: { reason: string; duration_ms: number; behind: string | null; capped: string | null; depth: number }[];
+  timings: { what: string; ms: number | null }[];
+  first_bubble_ms: number | null;
+  last_bubble_ms: number | null;
+  events: TraceEvent[];
+  dropped_events: number;
+  redactions: number;
+  media_stripped: number;
+  truncated: boolean;
+};

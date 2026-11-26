@@ -9,8 +9,9 @@ POST takes the settings revision and keeps dashboard/web/model_settings.py's rul
 with config.toml.bak, and a key variable never reaches a host config.toml doesn't already pair it with. Each returns
 ModelSettings (the list route returns ModelListView), and the running config takes the new chains at once.
 
-GET /api/studio/limits returns LimitsView: `[studio.limits]` as it is saved, and what is left now in the owner's DM,
-read from StudioQuota without reserving anything. POST /api/studio/limits takes LimitsSave, validated with the
+GET /api/studio/limits returns LimitsView: `[studio.limits]` as it is saved, and what is left (and used) now in the owner's DM,
+read from StudioQuota without reserving anything. `media_standing` is the same read for any chat; GET
+/api/chats/{id}/media (dom/web/api_chats.py) serves it for a friend's DM or a group. POST /api/studio/limits takes LimitsSave, validated with the
 config's own bounds, writes only the values that changed (comments and other tables stay), and returns LimitsView. A
 weekly video or image limit writes `<kind>_daily = false` when the tier's daily default is set. A per-kind gap
 (`<kind>_gap_minutes`) left empty (null) is unset, so the general `gap_minutes` applies; each kind in the view carries
@@ -24,10 +25,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from time import monotonic
 from zoneinfo import ZoneInfo
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 import tomllib
@@ -73,7 +74,7 @@ from dom.web.model_settings import (
     set_value,
     validated,
 )
-from dom.studio.policy import SWITCH, Kind, enabled
+from dom.studio.policy import SWITCH, Kind, enabled, windows
 from dom.studio.cloud import VideoUnsupported, video_models, video_plan, video_rate
 from dom.web.provider_settings import ListedModelView, ModelListView, _http
 from dom.web.shared import owner_app
@@ -184,14 +185,18 @@ class LimitsSave(BaseModel):
 class KindLeft(BaseModel):
     kind: Kind
     left: int  # counting the global daily total (raised on an event day), not the gap
+    used: int  # this chat's items of the kind inside its rolling window
+    per: Literal["day", "week"]  # that window
     on: bool  # its switch is on and something can serve it
     next_at: datetime | None  # when this kind's own gap ends, if it hasn't; in Dom's time zone
 
 
-class OwnerStanding(BaseModel):
+class MediaStanding(BaseModel):
+    """Where one chat stands against the limits of its scope: the owner's DM, a friend's DM or a group."""
+
     kinds: list[KindLeft]
     daily_left: int
-    sending: bool  # a studio item for the owner's DM is being made or sent now
+    sending: bool  # a studio item for this chat is being made or sent now
     next_at: datetime | None  # when every kind is free of its gap, if any gap is running; in Dom's time zone
     now: datetime
 
@@ -199,7 +204,7 @@ class OwnerStanding(BaseModel):
 class LimitsView(BaseModel):
     revision: str
     limits: StudioLimits
-    owner: OwnerStanding
+    owner: MediaStanding
 
 
 def _limits_saved(current: Snapshot, edit: LimitsSave) -> Snapshot:
@@ -234,17 +239,25 @@ def _written(document: tomlkit.TOMLDocument, path: tuple[str, ...]) -> bool:
     return True
 
 
-async def _limits_view(app: App, snapshot: Snapshot) -> LimitsView:
+async def media_standing(app: App, scope: str, chat_id: int) -> MediaStanding:
+    """A chat's studio standing for the dashboard, read from StudioQuota without reserving anything."""
     studio, at = app.config.studio, app.dispatch.now()
-    now = await app.studio_quota.standing(studio, "owner_dm", app.owner_id or 0, at)
+    now = await app.studio_quota.standing(studio, scope, chat_id, at)
     tz = ZoneInfo(app.config.timezone)
+    cadence = windows(getattr(studio.limits, scope))
     kinds = [
-        KindLeft(kind=kind, left=now.left[kind], on=enabled(studio, "owner_dm", kind),
-                 next_at=now.gaps[kind].astimezone(tz) if kind in now.gaps else None)
+        KindLeft(kind=kind, left=now.left[kind], used=now.used[kind], per="week" if cadence[kind][1] > timedelta(days=1) else "day",
+                 on=enabled(studio, scope, kind), next_at=now.gaps[kind].astimezone(tz) if kind in now.gaps else None)
         for kind in SWITCH
     ]
-    return LimitsView(revision=snapshot.revision, limits=snapshot.config.studio.limits, owner=OwnerStanding(
-        kinds=kinds, daily_left=now.daily_left, sending=app.studio_quota.sending(app.owner_id or 0), next_at=now.next_at and now.next_at.astimezone(tz), now=at.astimezone(tz)))
+    return MediaStanding(
+        kinds=kinds, daily_left=now.daily_left, sending=app.studio_quota.sending(chat_id),
+        next_at=now.next_at and now.next_at.astimezone(tz), now=at.astimezone(tz))
+
+
+async def _limits_view(app: App, snapshot: Snapshot) -> LimitsView:
+    owner = await media_standing(app, "owner_dm", app.owner_id or 0)
+    return LimitsView(revision=snapshot.revision, limits=snapshot.config.studio.limits, owner=owner)
 
 
 def _chain(snapshot: Snapshot, chain: StudioChain) -> list[StudioFallback]:

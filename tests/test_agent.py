@@ -556,3 +556,137 @@ async def test_media_called_as_a_tool_is_told_where_it_belongs(env, name, shape)
     result = tool_result(script.requests[1])
     assert "not a tool" in result and "final JSON answer" in result and shape in result
     assert actions.image == "a selfie at a desk"
+
+
+@pytest.mark.parametrize("text", [
+    "sending you a pic in a sec", "here's a voice note", "let me take a selfie", "I'll send you a pic",
+    "send u pic", "I'm gonna send you a voice note", "ok lemme record a quick video note",
+    "Here is a photo of my lunch", "wait ah, send u pic la", "i’ll snap you a selfie",
+    "sending a pic now", "ok, sending a pic", "I'll send a pic",
+])
+def test_a_promise_of_media_in_a_bubble_is_found(text):
+    from dom.actions import promised_media
+    assert promised_media(text)
+
+
+@pytest.mark.parametrize("text", [
+    "did you send me a pic?", "your photo was nice", "I love taking photos", "do you want me to send a voice note?",
+    "I can't send you a pic right now", "send me a pic", "I'll send you the link", "I took a pic yesterday",
+    "here's the thing about that photo", "I'll send you a pic later", "here's a video https://example.com/v",
+    "Did I send you a pic", "if you ask I'll send you a pic", "I'm not sending you a selfie",
+    "Let me take a look at your photo", "I'll take a quick look at the pic", "I'll send a pic to her",
+    "I'll send a pic to Sam", "sending the pic to them", "here's a selfie for him", "I love sending you pics",
+    'He said "sending you a pic"', "she told me she's sending you a pic", 'he goes "I\'ll send you a pic" lol',
+    "\u201csending you a pic\u201d is what the bot wrote",
+])
+def test_a_question_a_negation_or_a_mention_of_media_is_not_a_promise(text):
+    from dom.actions import promised_media
+    assert not promised_media(text)
+
+
+def test_each_promise_names_the_field_it_promises():
+    from dom.actions import promised_media
+    assert promised_media("sending you a pic. here's a voice note too") == {"image", "voice"}
+
+
+def test_a_promise_is_unkept_only_while_its_field_is_empty():
+    promise = {"bubbles": [{"text": "sending you a pic in a sec"}]}
+    assert Actions.model_validate(promise).unkept_media_promises() == {"image"}
+    assert not Actions.model_validate({**promise, "image": "a park"}).unkept_media_promises()
+
+
+PROMISED = json.dumps({"bubbles": [{"text": "sending you a pic in a sec"}]})
+KEPT = json.dumps({"bubbles": [{"text": "here you go"}], "image": "a sunny park"})
+DROPPED = json.dumps({"bubbles": [{"text": "no pic right now sorry"}]})
+
+
+async def test_a_promised_photo_is_put_back_to_the_model_once(env):
+    script = Script(reply(PROMISED), reply(KEPT))
+    actions = await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [], ctx_for(env), media_offered=frozenset({"image"}),
+    )
+    assert actions.image == "a sunny park"
+    nudge = script.requests[1]["messages"]
+    assert nudge[-2] == {"role": "assistant", "content": PROMISED}
+    assert '"image": "<scene>"' in nudge[-1]["content"] and "take the promise out" in nudge[-1]["content"]
+    assert script.requests[1].get("tools") in (None, [])
+
+
+async def test_a_promise_of_media_that_is_not_on_offer_is_told_to_drop_it(env):
+    script = Script(reply(PROMISED), reply(DROPPED))
+    actions = await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [], ctx_for(env), media_offered=frozenset(),
+    )
+    assert actions.image is None and actions.bubbles[0].text == "no pic right now sorry"
+    asked = script.requests[1]["messages"][-1]["content"]
+    assert "can't send a photo right now" in asked and '"image"' not in asked
+
+
+async def test_a_promise_that_stands_after_the_nudge_is_cut_out_never_sent(env):
+    script = Script(reply(json.dumps({"bubbles": [{"text": "one sec. sending you a pic in a sec"}, {"text": "hang on"}]})),
+                    reply(PROMISED))
+    actions = await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [], ctx_for(env), media_offered=frozenset({"image"}),
+    )
+    assert len(script.requests) == 2  # one nudge, no more
+    assert actions.bubbles[0].text == "Can't send that right now."  # the repeat had nothing else in it
+
+
+async def test_a_failed_nudge_cuts_the_promise_and_keeps_the_rest(env):
+    first = json.dumps({"bubbles": [{"text": "ok sending you a pic in a sec. you will love it"}, {"text": "sending you a pic"}]})
+    script = Script(reply(first), reply("not json at all"))
+    actions = await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [], ctx_for(env), media_offered=frozenset({"image"}),
+    )
+    assert [bubble.text for bubble in actions.bubbles] == ["you will love it"]
+
+
+async def test_a_cut_reply_with_other_output_needs_no_stand_in_line(env):
+    first = json.dumps({"bubbles": [{"text": "sending you a pic"}], "react": "👍"})
+    script = Script(reply(first), reply(first))
+    actions = await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [], ctx_for(env), media_offered=frozenset({"image"}),
+    )
+    assert actions.bubbles == [] and actions.react == "👍"
+
+
+async def test_a_nudge_that_cannot_be_asked_for_a_cap_stops_the_turn(env):
+    from dom.llm import ChatBudgetExhausted
+    from dom.usage import ModelCallSkipped
+
+    for stop in (ModelCallSkipped("capped"), ChatBudgetExhausted("chat budget")):
+        class Capped:
+            calls = 0
+
+            async def complete(self, prompt, tools):
+                Capped.calls += 1
+                if Capped.calls == 1:
+                    return {"role": "assistant", "content": PROMISED}
+                raise stop
+
+        with pytest.raises(type(stop)):
+            await run_turn(
+                Capped(), [{"role": "user", "content": "hi"}], [], ctx_for(env), media_offered=frozenset({"image"}),
+            )
+
+
+async def test_the_promise_check_is_off_without_media_offered_and_costs_nothing_when_kept(env):
+    script = Script(reply(PROMISED))
+    await run_turn(make_client(script), [{"role": "user", "content": "hi"}], [], ctx_for(env))
+    assert len(script.requests) == 1
+    script = Script(reply(KEPT))
+    await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [], ctx_for(env), media_offered=frozenset({"image"}),
+    )
+    assert len(script.requests) == 1
+
+
+async def test_a_media_promise_is_recorded_in_the_turn_log(env):
+    from dom import turn_log
+    trace = turn_log.TurnTrace()
+    with turn_log.track(trace):
+        await run_turn(
+            make_client(Script(reply(PROMISED), reply(KEPT))), [{"role": "user", "content": "hi"}], [], ctx_for(env),
+            media_offered=frozenset({"image"}),
+        )
+    assert "media promise" in trace.steps

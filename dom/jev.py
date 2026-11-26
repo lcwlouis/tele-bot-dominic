@@ -33,7 +33,7 @@ class JevClient:
         if openrouter_host(self.host):
             body["provider"] = {"zdr": True}  # the account's zero-data-retention rule holds for the classifier too
         try:
-            with turn_log.model_call(self.model, kind, messages, []) as call:
+            with turn_log.model_call(self.model, kind, messages, [], body=body, url=self.url) as call:
                 response = await self.http.post(
                     self.url,
                     json=body,

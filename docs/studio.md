@@ -14,6 +14,14 @@ note first if enabled and within quota. Generated photos are skipped when they
 cannot be sent. See [Privacy](privacy.md#what-leaves-the-host) for what Dom shares
 with the generation service and Jev.
 
+When the chat model writes a bubble that promises media ("sending you a pic",
+"here's a voice note") without setting its field, nothing is sent. Dom puts the
+reply back to the model once, to set the field or drop the promise (only to drop
+it when that media isn't on offer), and the turn log shows a `media promise`
+step. A promise still standing after that one nudge is cut out of the bubbles, never sent, and a reply left empty
+becomes "Can't send that right now." Only a direct promise to the reader counts: not a question, a negation, a
+third party ("to her"), "take a look", a link, or words in quotes.
+
 A failed, refused or limited generation leaves one short, rate-limited event in
 that chat's history; it never crosses into another chat.
 
@@ -133,6 +141,19 @@ rows and the library show it instead of `local-studio`.
 The studio service takes the still as an optional `still` field (base64 PNG, at
 most 3 MiB) on `POST /v1/video_note` and reports `"video_still": true` on
 `/v1/health`.
+
+## Reference photos of known places
+
+A place Dom knows (a note under `memory/places/`) may have one reference photo, added by the owner on the dashboard's
+World page. It is saved as `media/places/<slug>.jpg` (a JPEG of at most 1024 px, decoded and written again, so a phone's
+location data is dropped, in a private folder and moved into place atomically, like kept media) and is not counted
+against `keep_cap_mb`.
+
+When Dom's photo, or the still of a video note, is made by a cloud image backup that takes a reference
+(`supports_reference`) and its scene names a place that has a photo (the place's name as words, for example "at the
+blue door gym"), the photo goes as a second reference, with a line telling the model to keep how that place looks. A chat
+only gets a place's photo when it has a line in the place's note (the owner's DM always does). The local studio's image
+worker takes one reference, the outfit's portrait, so local photos are not changed.
 
 ## Preset outfits
 
