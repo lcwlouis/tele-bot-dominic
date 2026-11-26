@@ -9,6 +9,8 @@
   import { getJSON, type HomeData } from "$lib/api";
   import HourlyBars from "$lib/components/HourlyBars.svelte";
   import LocalClock from "$lib/components/LocalClock.svelte";
+  import ForYou from "$lib/components/home/ForYou.svelte";
+  import Goals from "$lib/components/home/Goals.svelte";
   import Orbit, { ACTIVITY_LABELS } from "$lib/components/Orbit.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
@@ -214,6 +216,9 @@
         </div>
       </Card.Content>
     </Card.Root>
+
+    {#if home.for_you}<ForYou data={home.for_you} onchange={load} />{/if}
+    <Goals />
 
     <Card.Root class="lg:col-span-2" aria-labelledby="recent-title">
       <Card.Header>

@@ -25,12 +25,15 @@
     revision,
     onsaved,
     oncancel,
+    adding = false,
   }: {
     role: SettingsRole;
     settings: ModelSettings;
     revision: string;
     onsaved: (saved: ModelSettings) => void;
     oncancel: () => void;
+    /** Open with a new slot added: the empty state's "Add backup" (or "Set up") shortcut. */
+    adding?: boolean;
   } = $props();
 
   const CUSTOM = "__custom__"; // provider names start with a letter or digit, so this never names one
@@ -47,6 +50,7 @@
 
   const search = $derived(role === "search");
   const triage = $derived(role === "triage");
+  const embedding = $derived(role === "embedding"); // an embeddings model takes no reasoning effort
   const info = $derived(ROLE_INFO[role]);
   let nextKey = 0;
   // The editor opens on the saved chain; later changes to the props (a reload) don't reset what the owner typed.
@@ -114,7 +118,7 @@
       key: nextKey++,
       source: first?.name ?? CUSTOM,
       base_url: first?.base_url ?? (search ? fresh.default_base_url : ""),
-      model: first && !search && !triage ? suggestedModel(first.base_url) : "",
+      model: first && !search && !triage && !embedding ? suggestedModel(first.base_url) : "",
       api_key_env: first ? (first.api_key_env ?? "") : search ? fresh.default_api_key_env : "",
       effort: "default",
       provider: first ? searchKind(first.kind) : "searxng",
@@ -123,6 +127,7 @@
     edited();
     queueMicrotask(() => document.getElementById(`${role}-slot-${slots.at(-1)!.key}-first`)?.focus());
   }
+  if (untrack(() => adding)) add();
 
   function pickSource(slot: Slot, name: string) {
     slot.source = name;
@@ -131,7 +136,7 @@
       slot.base_url = found.base_url;
       slot.api_key_env = found.api_key_env ?? "";
       slot.key_set = found.api_key_env ? found.key_set : null;
-      if (!search && !triage) {
+      if (!search && !triage && !embedding) {
         const model = suggestedModel(found.base_url);
         if (model) slot.model = model;
         if (isDeepSeekChat(found.base_url) && !DEEPSEEK_EFFORTS.includes(slot.effort)) slot.effort = "default";
@@ -174,7 +179,7 @@
         api_key_env,
       };
     }
-    if (triage) return { base_url: slot.base_url.trim(), model: slot.model.trim(), api_key_env };
+    if (triage || embedding) return { base_url: slot.base_url.trim(), model: slot.model.trim(), api_key_env };
     return {
       base_url: slot.base_url.trim(),
       model: slot.model.trim(),
@@ -332,7 +337,7 @@
                   </div>
                 {/if}
 
-                {#if !search && !triage}
+                {#if !search && !triage && !embedding}
                   <div class="grid gap-1.5">
                     <Label id={`${id}-effort-label`}>Reasoning effort</Label>
                     <Select.Root type="single" bind:value={slot.effort} onValueChange={edited}>

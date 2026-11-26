@@ -5,6 +5,7 @@ import MessageCircle from "@lucide/svelte/icons/message-circle";
 import PenLine from "@lucide/svelte/icons/pen-line";
 import Rocket from "@lucide/svelte/icons/rocket";
 import Scale from "@lucide/svelte/icons/scale";
+import ScanSearch from "@lucide/svelte/icons/scan-search";
 import Search from "@lucide/svelte/icons/search";
 import type { DataPolicy, ProviderKind, ProviderSetup, ProviderType, Role, SettingsRole, StudioChain } from "$lib/api";
 
@@ -27,6 +28,10 @@ export const ROLE_INFO: Record<SettingsRole, { label: string; summary: string; n
   escalation: {
     label: "Escalation", summary: "A bigger model for a task you approve.", icon: Rocket,
     note: "Used only after you approve a model switch for a task. Uses the drafting providers when unset.",
+  },
+  embedding: {
+    label: "Search by meaning", summary: "Turns notes and messages into vectors for meaning search.", icon: ScanSearch,
+    note: "An embeddings model, such as one on your home lab. A new model waits for you to confirm the reindex below before it serves searches.",
   },
   triage: {
     label: "Triage", summary: "Decides whether and when to reply.", icon: Scale,
@@ -84,8 +89,8 @@ export function useLabel(use: { role: SettingsRole | StudioChain; index: number 
   const label = ROLE_INFO[use.role as SettingsRole].label;
   return use.index === 0 ? label : `${label} ${slotLabel(use.index).toLowerCase()}`;
 }
-/** Roles that may be left unset; chat, media and drafting always have a primary. */
-export const CLEARABLE: SettingsRole[] = ["fallback", "search", "escalation"];
+/** Roles that may be left unset; chat, media and drafting always have a primary. Without embedding, meaning search is off. */
+export const CLEARABLE: SettingsRole[] = ["fallback", "search", "escalation", "embedding"];
 export const MAX_SLOTS = 6; // a primary and at most five fallbacks (MAX_FALLBACKS in model_settings.py)
 export const KEY_PATTERN = "[A-Z_][A-Z0-9_]{0,63}";
 

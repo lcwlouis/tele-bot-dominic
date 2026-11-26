@@ -41,6 +41,9 @@ from dom.web.app import serving
 from dom.web.auth import Auth
 
 SHUTDOWN_DRAIN_SECONDS = 10
+# `dom run`'s exit code after the dashboard's Restart (EX_TEMPFAIL). Non-zero, so systemd's Restart=on-failure and
+# launchd's KeepAlive SuccessfulExit=false both start Dom again.
+RESTART_EXIT = 75
 ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member", "message_reaction"]
 
 
@@ -112,7 +115,8 @@ def cmd_import(old_workspace: Path, home: Path, owner_id: int) -> int:
     return 0
 
 
-async def run(home: Path) -> None:
+async def run(home: Path) -> bool:
+    """Run Dom until it stops; True when the owner asked for a restart from the dashboard."""
     config = load_config(home)
     try:
         auth = Auth(config) if config.web.enabled else None
@@ -201,6 +205,7 @@ async def run(home: Path) -> None:
         await executor.cancel_pending_deletions()
         store.close()
         await bot.session.close()
+    return app is not None and app.restart_requested
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -344,5 +349,4 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # its request lines would put the KLIPY key in the log
-    asyncio.run(run(args.home))
-    return 0
+    return RESTART_EXIT if asyncio.run(run(args.home)) else 0

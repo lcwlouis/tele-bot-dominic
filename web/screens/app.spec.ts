@@ -33,6 +33,15 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "settings-studio-backup", path: "/app/system", heading: "Settings", click: "Add backup for video notes" },
   // The media limits editor on its own: what is left in the owner's DM and each chat type's limits.
   { name: "settings-media-limits", path: "/app/system", heading: "Settings", tab: "What Dom may do", region: "Media limits" },
+  // Services (E81): each with its state, detail, fields (secrets only as set or not set) and Test.
+  { name: "settings-services", path: "/app/system", heading: "Settings", tab: "Services" },
+  // Spend (E86): today and the month against the caps, each area, 30 days by area and the cap editor.
+  { name: "system-spend", path: "/app/system/spend", heading: "Spend" },
+  // The Library (R9): kept media as strips, one opened with its photo, task files and exports.
+  { name: "work-library", path: "/app/work/library", heading: "Library" },
+  { name: "work-library-detail", path: "/app/work/library", heading: "Library", strip: "Dom on a park bench" },
+  // Search by meaning: the toggle pressed, and what it found.
+  { name: "search-meaning", path: "/app/search?q=train&mode=meaning", heading: "Search" },
   { name: "chats", path: "/app/chats", heading: "Chats" },
   { name: "chats-personality", path: "/app/chats", heading: "Chats", click: "Personality" },
   { name: "memory", path: "/app/memory", heading: "Memory" },
@@ -806,14 +815,18 @@ test.describe("interactions under the CSP", () => {
     const limits = page.getByRole("region", { name: "Media limits" });
     // The preview sent a photo 14 minutes ago, inside the owner DM's 30-minute gap. Every studio switch is off there,
     // so the strip says so instead of when the gap ends.
-    await expect(limits.getByText("Photos: 1 (off)")).toBeVisible();
+    await expect(limits.getByRole("region", { name: "Left now in your DM" }).getByRole("listitem").filter({ hasText: "Photos" })).toHaveText(/Photos\s*1 \(off\)/);
+    // Global limits sit with Your DM: the daily total, what is left of it, and cloud media spend against its limit.
+    const global = limits.getByRole("group", { name: "Global limits" });
+    await expect(global.getByRole("spinbutton", { name: "All chats" })).toBeVisible();
+    await expect(global.getByText(/Cloud media this month: \$\d+\.\d\d of \$5\.00/)).toBeVisible();
     await expect(limits.getByText("Media is off in your DM.")).toBeVisible();
     // Special videos are for the owner's DM only.
     await expect(limits.getByLabel("Special videos")).toHaveCount(1);
     const save = limits.getByRole("button", { name: "Save media limits" });
     await expect(save).toBeDisabled();
 
-    const gap = limits.getByLabel("Gap").first();
+    const gap = limits.getByRole("spinbutton", { name: "Gap" }).first();
     await gap.fill("10081");
     await expect(limits.getByText("The gap is at most 10080 minutes", { exact: false })).toBeVisible();
     await expect(save).toBeDisabled();
@@ -1606,6 +1619,252 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("dialog", { name: "Import memories" })).toBeVisible();
     await page.getByRole("button", { name: "Close import" }).click();
     await expect(page.getByRole("dialog", { name: "Import memories" })).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("restart: the banner's button confirms, says why it was refused, then waits for a new Dom and reloads", async ({ page }) => {
+    const problems = await watch(page);
+    await page.route("**/api/models", async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...await response.json(), restart_required: true } });
+    });
+    let refuse = true;
+    const restarts: unknown[] = [];
+    await page.route("**/api/system/restart", async (route) => {
+      restarts.push(route.request().postDataJSON());
+      if (refuse) await route.fulfill({ status: 409, json: { detail: "A desktop task is running. Wait for it to finish or cancel it first." } });
+      else await route.fulfill({ json: { ok: true, message: "Restarting…", boot: "old-boot" } });
+    });
+    let polls = 0;
+    await page.route("**/api/health", async (route) => {
+      polls += 1;
+      // Down once, then the same process, then a new one: only the new one reloads the page.
+      if (polls === 1) await route.abort();
+      else await route.fulfill({ json: { ok: true, boot: polls < 3 ? "old-boot" : "new-boot", version: "v0.0.0" } });
+    });
+    await page.goto("/app/system");
+    const banner = page.getByRole("region", { name: "Restart Dom to apply" });
+    await expect(banner).toBeVisible();
+    await expect(banner).toHaveScreenshot("restart-banner-desktop-dark.png");
+
+    // Not now leaves Dom alone; the refusal shows its reason and keeps the button.
+    await banner.getByRole("button", { name: "Restart Dom" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Not now" }).click();
+    expect(restarts).toEqual([]);
+    await banner.getByRole("button", { name: "Restart Dom" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Restart", exact: true }).click();
+    await expect(banner.getByRole("alert")).toHaveText("Not restarted: A desktop task is running. Wait for it to finish or cancel it first.");
+    await expect(banner.getByRole("button", { name: "Restart Dom" })).toBeEnabled();
+    expect(polls).toBe(0);
+
+    refuse = false;
+    await page.evaluate(() => ((window as unknown as { marker: number }).marker = 1));
+    await banner.getByRole("button", { name: "Restart Dom" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Restart", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Restarting…" })).toBeVisible();
+    // The reload drops the marker the old page set.
+    await expect.poll(() => page.evaluate(() => (window as unknown as { marker?: number }).marker), { timeout: 15_000 }).toBeUndefined();
+    expect(polls).toBeGreaterThanOrEqual(3);
+    expect(restarts).toEqual([{}, {}]);
+    expect(problems).toEqual([]);
+  });
+
+  test("spend: the cap editor checks each amount, the monthly cap against the daily, and saves every cap", async ({ page }) => {
+    const problems = await watch(page);
+    const saved: Record<string, unknown>[] = [];
+    await page.route("**/api/spend/caps", async (route) => {
+      saved.push(route.request().postDataJSON());
+      await route.fulfill({ json: await (await page.request.get("/api/spend")).json() });
+    });
+    await page.goto("/app/system/spend");
+    const caps = page.getByRole("region", { name: "Caps" });
+    const save = caps.getByRole("button", { name: "Save caps" });
+    await expect(caps.getByRole("textbox", { name: "Daily cap", exact: true })).toHaveValue("1");
+    await expect(caps.getByRole("textbox", { name: "Monthly cap", exact: true })).toHaveValue("30");
+    await expect(save).toBeDisabled(); // nothing changed yet
+
+    await caps.getByRole("textbox", { name: "Monthly cap", exact: true }).fill("0.5");
+    await expect(caps.getByRole("alert")).toHaveText("The monthly cap must be at least the daily cap.");
+    await expect(caps.getByRole("textbox", { name: "Monthly cap", exact: true })).toHaveAttribute("aria-invalid", "true");
+    await expect(save).toBeDisabled();
+    await caps.getByRole("textbox", { name: "Daily cap", exact: true }).fill("two dollars");
+    await expect(caps.getByRole("alert").first()).toHaveText("Enter an amount from 0 to 100,000, or leave it empty.");
+    await caps.getByRole("textbox", { name: "Web search", exact: true }).fill("-1");
+    await expect(caps.getByRole("alert")).toHaveCount(2);
+
+    await caps.getByRole("textbox", { name: "Daily cap", exact: true }).fill("2");
+    await caps.getByRole("textbox", { name: "Monthly cap", exact: true }).fill(""); // empty: no monthly cap
+    await caps.getByRole("textbox", { name: "Web search", exact: true }).fill("1.5");
+    await caps.getByRole("switch", { name: "Caps apply to your DM too" }).click();
+    await expect(caps.getByRole("alert")).toHaveCount(0);
+    await save.click();
+    await expect.poll(() => saved.length).toBe(1);
+    expect(saved[0]).toEqual({
+      revision: expect.any(String), daily_spend_cap_usd: 2, monthly_spend_cap_usd: 0, cap_owner_dm: true,
+      area_caps: { chat: null, media: 5, search: 1.5, desktop: null, memory: null },
+    });
+    // The table carries every figure the chart shows.
+    await page.getByText("Show as a table").click();
+    await expect(page.getByRole("table", { name: "Daily spend by area, last 30 days" }).getByRole("row")).toHaveCount(31);
+    expect(problems).toEqual([]);
+  });
+
+  test("services: a secret is never shown or echoed, only set or not set, and the box empties after a save", async ({ page }) => {
+    const problems = await watch(page);
+    const view = await (await page.request.get("/api/services")).json();
+    const klipy = view.services.find((service: { id: string }) => service.id === "klipy");
+    // The API itself never carries a secret's value.
+    for (const field of klipy.fields) if (field.kind === "secret") expect(field.value).toBeNull();
+    const bodies: Record<string, unknown>[] = [];
+    await page.route("**/api/services/save", async (route) => {
+      bodies.push(route.request().postDataJSON());
+      const after = structuredClone(view);
+      after.services.find((service: { id: string }) => service.id === "klipy").fields[0].is_set = true;
+      await route.fulfill({ json: after });
+    });
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "Services" }).click();
+    const card = page.getByRole("region", { name: "GIFs (KLIPY)" });
+    await expect(card.getByText("Not set", { exact: true })).toBeVisible();
+    const box = card.getByRole("textbox", { name: "KLIPY API key", exact: true });
+    await expect(box).toHaveAttribute("type", "password");
+    await expect(box).toHaveValue("");
+    await box.fill("example-made-up-key");
+    await card.getByRole("button", { name: "Save GIFs (KLIPY)" }).click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0]).toEqual({ revision: view.revision, id: "klipy", fields: { [klipy.fields[0].name]: "example-made-up-key" } });
+    await expect(card.getByText("Set", { exact: true })).toBeVisible();
+    await expect(box).toHaveValue("");
+    expect(await page.content()).not.toContain("example-made-up-key");
+    expect(problems).toEqual([]);
+  });
+
+  test("home: For you's buttons hand a noticing to Dom or let it go, and it leaves the list", async ({ page }) => {
+    const problems = await watch(page);
+    const decided: unknown[] = [];
+    await page.route("**/api/noticings/decide", async (route) => {
+      const body = route.request().postDataJSON();
+      decided.push(body);
+      await route.fulfill({ json: { ok: true, message: body.decision === "accept" ? "Dom's on it." : "Let go.", noticing: null, noticings: [], pending_count: 0, kinds: [], statuses: [] } });
+    });
+    await page.goto("/app");
+    const forYou = page.getByRole("region", { name: "For you" }).or(page.locator('[aria-labelledby="for-you-title"]'));
+    const ids = (await (await page.request.get("/api/noticings")).json()).noticings.map((item: { id: number; title: string }) => item);
+    const train = ids.find((item: { title: string }) => item.title.startsWith("Saturday"));
+    const alex = ids.find((item: { title: string }) => item.title.startsWith("Ask Alex"));
+    await forYou.getByRole("button", { name: /^Let's do it\s*: Saturday's train/ }).click();
+    await expect(forYou.getByText("Saturday's train needs booking")).toHaveCount(0);
+    await expect(page.getByText("Dom's on it.")).toBeVisible();
+    await forYou.getByRole("button", { name: /^Not now\s*: Ask Alex/ }).click();
+    await expect(forYou.getByText("Ask Alex how the night shift went")).toHaveCount(0);
+    expect(decided).toEqual([{ id: train.id, decision: "accept" }, { id: alex.id, decision: "dismiss" }]);
+    await expect(forYou.getByText("Nothing new.", { exact: false })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("home: goals are added, edited and paused, and Done asks first", async ({ page }) => {
+    const problems = await watch(page);
+    const writes: [string, unknown][] = [];
+    const listing = await (await page.request.get("/api/goals")).json();
+    await page.route("**/api/goals/*", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      writes.push([new URL(route.request().url()).pathname, route.request().postDataJSON()]);
+      await route.fulfill({ json: { ok: true, message: "Saved.", ...listing } });
+    });
+    await page.goto("/app");
+    const goals = page.locator('[aria-labelledby="goals-title"]');
+    const walk = listing.goals.find((goal: { text: string }) => goal.text.startsWith("Walk"));
+
+    await goals.getByRole("button", { name: "Add a goal" }).click();
+    await goals.getByRole("textbox", { name: "Goal", exact: true }).fill("Read one book a month");
+    await goals.getByRole("button", { name: "Add goal" }).click();
+    await expect.poll(() => writes.length).toBe(1);
+
+    await goals.getByRole("button", { name: `Edit goal: ${walk.text}` }).click();
+    await expect(goals.getByRole("textbox", { name: "Goal", exact: true })).toHaveValue(walk.text);
+    await goals.getByRole("textbox", { name: "Goal", exact: true }).fill("Walk 9,000 steps most days");
+    await goals.getByRole("button", { name: "Save goal" }).click();
+    await expect.poll(() => writes.length).toBe(2);
+
+    await goals.getByRole("button", { name: `Pause goal: ${walk.text}` }).click();
+    await expect.poll(() => writes.length).toBe(3);
+    await goals.getByRole("button", { name: `Mark done: ${walk.text}` }).click();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog.getByText("Mark this goal done?")).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    expect(writes).toHaveLength(3);
+    await goals.getByRole("button", { name: `Mark done: ${walk.text}` }).click();
+    await dialog.getByRole("button", { name: "Mark done" }).click();
+    await expect.poll(() => writes.length).toBe(4);
+    expect(writes).toEqual([
+      ["/api/goals/create", { text: "Read one book a month", category: "", target_date: null, check_in_rhythm: "" }],
+      ["/api/goals/update", { id: walk.id, text: "Walk 9,000 steps most days", category: "health", check_in_rhythm: "every_few_days", clear_target_date: true }],
+      ["/api/goals/status", { id: walk.id, status: "paused" }],
+      ["/api/goals/status", { id: walk.id, status: "done" }],
+    ]);
+    expect(problems).toEqual([]);
+  });
+
+  test("search: Meaning asks by meaning, keyword stays the default, and the toggle searches again at once", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/search?q=train");
+    const toggle = page.getByRole("main").getByRole("button", { name: "Meaning" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    const asked = page.waitForRequest((request) => request.url().includes("/api/search?") && request.url().includes("mode=meaning"));
+    await toggle.click();
+    await asked;
+    await expect(page).toHaveURL(/\/app\/search\?q=train&mode=meaning$/);
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("banner").getByRole("button", { name: "Meaning" })).toHaveAttribute("aria-pressed", "true");
+    const keyword = page.waitForRequest((request) => /\/api\/search\?q=train$/.test(request.url()));
+    await toggle.click();
+    await keyword;
+    await expect(page).toHaveURL(/\/app\/search\?q=train$/);
+    expect(problems).toEqual([]);
+  });
+
+  test("settings: a staged embedding model reindexes only on Confirm, shows progress, and Cancel stops it", async ({ page }) => {
+    const problems = await watch(page);
+    let state: "idle" | "running" = "idle";
+    const actions: string[] = [];
+    await page.route("**/api/memory/index/estimate", (route) =>
+      route.fulfill({ json: { items: 240, rough_seconds: 132, model: "example/embed-small", staged: state === "idle", rebuild: false } }));
+    await page.route("**/api/memory/index/progress", (route) =>
+      route.fulfill({ json: { done: state === "running" ? 60 : 0, left: state === "running" ? 180 : 240, model: state === "running" ? "example/embed-small" : "", state, last_error: "", stale: false } }));
+    await page.route(/\/api\/memory\/index\/(confirm|cancel)$/, async (route) => {
+      const action = new URL(route.request().url()).pathname.split("/").pop()!;
+      actions.push(action);
+      state = action === "confirm" ? "running" : "idle";
+      await route.fulfill({ json: { ok: true } });
+    });
+    await page.goto("/app/system");
+    const index = page.getByRole("region", { name: "Meaning index" });
+    await expect(index.getByText("example/embed-small")).toBeVisible();
+    await expect(index.getByText("240 items, about 2 minutes.", { exact: false })).toBeVisible();
+    expect(actions).toEqual([]); // nothing starts until Confirm
+    await index.getByRole("button", { name: "Confirm reindex" }).click();
+    await expect(index.getByText("Running")).toBeVisible();
+    await expect(index.getByRole("progressbar", { name: "Items indexed" })).toBeVisible();
+    await index.getByRole("button", { name: "Cancel reindex" }).click();
+    await expect(index.getByText("Idle")).toBeVisible();
+    expect(actions).toEqual(["confirm", "cancel"]);
+    expect(problems).toEqual([]);
+  });
+
+  test("settings: What Dom may do narrows by search and keeps its sections", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "What Dom may do" }).click();
+    for (const name of ["Messaging", "Media", "Desktop", "Memory", "Safety"]) {
+      await expect(page.getByRole("heading", { level: 2, name, exact: true })).toBeVisible();
+    }
+    await page.getByLabel("Find a setting").fill("leak");
+    await expect(page.getByRole("heading", { level: 2, name: "Safety" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Messaging" })).toHaveCount(0);
+    await expect(page.getByRole("radio", { name: "Standard" })).toBeAttached();
+    await page.getByLabel("Find a setting").fill("nothing like this");
+    await expect(page.getByText("No setting matches")).toBeVisible();
     expect(problems).toEqual([]);
   });
 

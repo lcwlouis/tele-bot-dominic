@@ -20,6 +20,8 @@
   import PluginReview from "./routes/PluginReview.svelte";
   import Turns from "./routes/Turns.svelte";
   import Usage from "./routes/Usage.svelte";
+  import Spend from "./routes/Spend.svelte";
+  import Library from "./routes/Library.svelte";
   import Waiting from "./routes/Waiting.svelte";
   import Search from "./routes/Search.svelte";
   import Settings from "./routes/Settings.svelte";
@@ -99,6 +101,10 @@
           {#key route.path}<PluginReview destination={where.destination} tab={where.tab} name={review[0]} digest={review[1]} />{/key}
         {:else if where.tab?.id === "plugins"}
           <Plugins destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "library"}
+          <Library destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "spend"}
+          <Spend destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "usage"}
           <Usage destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "turns"}

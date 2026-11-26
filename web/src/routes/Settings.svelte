@@ -6,7 +6,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
-  import RotateCw from "@lucide/svelte/icons/rotate-cw";
+  import SearchIcon from "@lucide/svelte/icons/search";
   import Server from "@lucide/svelte/icons/server";
   import Trash from "@lucide/svelte/icons/trash";
   import { onMount } from "svelte";
@@ -27,13 +27,19 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
+  import LeakScan from "$lib/components/settings/LeakScan.svelte";
+  import MeaningIndex from "$lib/components/settings/MeaningIndex.svelte";
+  import MediaInputs from "$lib/components/settings/MediaInputs.svelte";
+  import Services from "$lib/components/settings/Services.svelte";
+  import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
+  import RestartBanner from "$lib/components/system/RestartBanner.svelte";
   import MediaLimits from "$lib/components/settings/MediaLimits.svelte";
   import { forgetLists } from "$lib/components/settings/modelLists.svelte";
   import ProviderEditor from "$lib/components/settings/ProviderEditor.svelte";
   import RoutePrivacy from "$lib/components/settings/RoutePrivacy.svelte";
   import RoleEditor from "$lib/components/settings/RoleEditor.svelte";
   import {
-    DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, TYPE_INFO, TYPES, ZDR_RECOMMENDATION, host, isDeepSeekChat, seconds, slotLabel, useLabel,
+    ACCOUNT_ZDR_NOTE, DECISION_ROLES, KIND_INFO, POLICY_INFO, ROLE_INFO, ROLES, TYPE_INFO, TYPES, ZDR_RECOMMENDATION, host, fitsRole, isDeepSeekChat, seconds, slotLabel, useLabel,
   } from "$lib/components/settings/roles";
   import StudioBackupEditor from "$lib/components/settings/StudioBackupEditor.svelte";
   import { CHAIN_INFO, CHAINS, STUDIO_PROVIDERS } from "$lib/components/settings/studio";
@@ -42,6 +48,7 @@
   import { Badge } from "$lib/components/ui/badge";
   import * as Select from "$lib/components/ui/select";
   import { Button } from "$lib/components/ui/button";
+  import { Input } from "$lib/components/ui/input";
   import * as Card from "$lib/components/ui/card";
   import { Switch } from "$lib/components/ui/switch";
   import * as Tabs from "$lib/components/ui/tabs";
@@ -59,7 +66,7 @@
   let failed = $state("");
   let section = $state("models");
   // One edit at a time across both tabs: each save takes the revision the last one returned.
-  type Editing = { role: SettingsRole } | { provider: ProviderSetup | null } | { studio: StudioChain; index: number | null };
+  type Editing = { role: SettingsRole; adding?: boolean } | { provider: ProviderSetup | null } | { studio: StudioChain; index: number | null };
   let editing = $state<Editing | null>(null);
   let reordering = $state(""); // the role whose fallback is moving up, which shows its progress
   let tests = $state<Record<string, TestResult | "running">>({});
@@ -69,6 +76,7 @@
   // One permission save at a time: each takes the revision the last one returned.
   let savingPermission = $state(false);
   let savingId = $state(""); // the switch being saved, which shows its progress
+  let servicesRestart = $state(false); // a saved service (desktop hosts, T3) waits for a restart
 
   async function load() {
     try {
@@ -252,6 +260,42 @@
     else setPermission(item, enabled);
   }
 
+  // "What Dom may do": the switches in sections, each with the panels that belong to it, narrowed by the search box.
+  type SectionId = "messaging" | "media" | "desktop" | "memory" | "safety";
+  const SECTIONS: { id: SectionId; label: string; ids: string[]; words: string }[] = [
+    { id: "messaging", label: "Messaging", ids: ["openers", "openers_friends", "openers_groups", "ephemeral_replies"], words: "" },
+    {
+      id: "media", label: "Media", ids: ["studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile"],
+      words: "media limits voice notes video photos gap per day week left spend",
+    },
+    { id: "desktop", label: "Desktop", ids: [], words: "desktop tasks steps step budget computer" },
+    { id: "memory", label: "Memory", ids: ["memory_self_edit"], words: "" },
+    { id: "safety", label: "Safety", ids: ["leak_check"], words: "leak scan level strict standard relaxed off private" },
+  ];
+  let permissionQuery = $state("");
+  const matches = (text: string, query: string) => query.split(/\s+/).every((word) => text.toLowerCase().includes(word));
+  const visibleSections = $derived.by(() => {
+    const query = permissionQuery.trim().toLowerCase();
+    const placed = new Set(SECTIONS.flatMap((group) => group.ids));
+    return SECTIONS.map((group) => {
+      // A switch the page doesn't know yet still shows, under Messaging, rather than vanishing.
+      const own = permissions.filter((item) => group.ids.includes(item.id) || (group.id === "messaging" && !placed.has(item.id)));
+      const items = query ? own.filter((item) => matches(`${group.label} ${item.label} ${item.description}`, query)) : own;
+      const extras = group.words !== "" && (!query || matches(`${group.label} ${group.words}`, query));
+      return { ...group, items, extras };
+    }).filter((group) => group.items.length || group.extras);
+  });
+
+  async function reloadPermissions() {
+    try {
+      const loaded = await getJSON<Permissions>("/api/permissions");
+      permissions = loaded.items;
+      revision = loaded.revision;
+    } catch {
+      // the switches stay as they were; the next save says if the file moved
+    }
+  }
+
   type KeyState = "none" | "set" | "missing";
   const keyState = (variable: string | null, set: boolean): KeyState => (!variable ? "none" : set ? "set" : "missing");
   const slotName = (settings: ModelSettings, view: ProviderView) =>
@@ -295,11 +339,66 @@
   {/if}
 {/snippet}
 
+{#snippet permissionRow(item: Permission)}
+  <li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-4">
+    <div class="min-w-0 flex-1 basis-60">
+      <span class="flex items-center gap-1">
+        <label for={`perm-${item.id}`} class="font-medium">{item.label}</label>
+        <InfoGlyph label={`About ${item.label}`}>{item.description}</InfoGlyph>
+      </span>
+      {#if !item.available}
+        <p id={`perm-${item.id}-hint`} class="mt-0.5 text-sm {item.enabled ? 'text-coral' : 'text-muted-foreground'}">
+          {item.enabled ? "On, but nothing can serve it: Dom sends text instead. " : ""}{item.needs}
+          {#if item.id !== "studio_profile"}
+            <button type="button" class="text-signal-strong underline underline-offset-2" onclick={() => (section = "models")}>
+              Studio cloud backups
+            </button>
+          {/if}
+        </p>
+      {/if}
+      {#if item.id === "studio_profile"}
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <span id="profile-interval-label" class="text-sm">Change at most every</span>
+          <Select.Root type="single" value={String(profileEvery)} onValueChange={(value) => saveInterval(Number(value) as ProfileInterval)}>
+            <Select.Trigger class="h-8 w-32" aria-labelledby="profile-interval-label" disabled={savingInterval}>
+              {INTERVALS.find((option) => option.days === profileEvery)?.label}
+            </Select.Trigger>
+            <Select.Content>
+              {#each INTERVALS as option (option.days)}
+                <Select.Item value={String(option.days)} label={option.label} />
+              {/each}
+            </Select.Content>
+          </Select.Root>
+          {#if savingInterval}
+            <span role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
+            </span>
+          {/if}
+        </div>
+      {/if}
+    </div>
+    <div class="flex shrink-0 items-center gap-2">
+      {#if savingId === item.id}
+        <span role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
+        </span>
+      {/if}
+      <Switch
+        id={`perm-${item.id}`}
+        aria-describedby={item.available ? undefined : `perm-${item.id}-hint`}
+        aria-busy={savingId === item.id}
+        bind:checked={() => item.enabled, (value) => flip(item, value)}
+        disabled={savingPermission || (!item.available && !item.enabled)}
+      />
+    </div>
+  </li>
+{/snippet}
+
 {#snippet roleCard(settings: ModelSettings, role: SettingsRole)}
   {@const info = ROLE_INFO[role]}
   {@const route = settings.roles[role]}
   {#if isEditingRole(role)}
-    <RoleEditor {role} {settings} {revision} onsaved={(result) => saved(result)} oncancel={() => (editing = null)} />
+    <RoleEditor {role} {settings} {revision} adding={editing !== null && "role" in editing && editing.adding} onsaved={(result) => saved(result)} oncancel={() => (editing = null)} />
   {:else}
     {@const inherited = role === "escalation" && !route.primary}
     {@const testKey = `${role}:${role === "search" ? null : 0}`}
@@ -366,16 +465,26 @@
                   {/each}
                 </ol>
               {:else}
-                <p class="mt-1.5 text-sm text-muted-foreground">
-                  {role === "chat" ? "The fallback role, if set" : role === "drafting" ? "The chat route" : "No backup"}
-                </p>
+                <div class="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <p class="text-sm text-muted-foreground">
+                    {role === "chat" ? "The fallback role, if set" : role === "drafting" ? "The chat route" : "No backup"}
+                  </p>
+                  <Button variant="ghost" size="xs" onclick={() => (editing = { role, adding: true })} disabled={busy}>
+                    <Plus data-icon="inline-start" aria-hidden="true" /> Add backup <span class="sr-only">for {info.label}</span>
+                  </Button>
+                </div>
               {/if}
             </div>
           {/if}
         {:else}
-          <p class="rounded-xl border border-dashed p-3.5 text-sm text-muted-foreground">
-            {inherited ? "Not set: uses the drafting providers." : "Not set."}
-          </p>
+          <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed p-3.5">
+            <p class="text-sm text-muted-foreground">{inherited ? "Not set: uses the drafting providers." : "Not set."}</p>
+            {#if !settings.providers.some((item) => fitsRole(item, role))}
+              <Button variant="ghost" size="xs" onclick={() => { section = "providers"; editing = { provider: null }; }} disabled={busy}>
+                <Plus data-icon="inline-start" aria-hidden="true" /> Add provider <span class="sr-only">for {info.label}</span>
+              </Button>
+            {/if}
+          </div>
         {/if}
         {#if info.note}<p class="text-xs text-muted-foreground">{info.note}</p>{/if}
         {#if reordering === role}
@@ -483,8 +592,12 @@
   </div>
 {:else}
   {@const settings = models}
-  {#if settings.restart_required}
-    <StatusNote tone="error" title="Restart Dom to apply the saved routes" detail="The running model routes differ from config.toml." class="mb-5" />
+  {#if settings.restart_required || servicesRestart}
+    <RestartBanner
+      title="Restart Dom to apply"
+      detail={settings.restart_required ? "The running model routes differ from config.toml." : "A saved service is used only after a restart."}
+      class="mb-5"
+    />
   {/if}
 
   <Tabs.Root bind:value={section}>
@@ -492,6 +605,7 @@
       <Tabs.Trigger value="models" class="flex-none px-0 py-2 data-active:text-signal-strong">Models</Tabs.Trigger>
       <Tabs.Trigger value="providers" class="flex-none px-0 py-2 data-active:text-signal-strong">Providers</Tabs.Trigger>
       <Tabs.Trigger value="permissions" class="flex-none px-0 py-2 data-active:text-signal-strong">What Dom may do</Tabs.Trigger>
+      <Tabs.Trigger value="services" class="flex-none px-0 py-2 data-active:text-signal-strong">Services</Tabs.Trigger>
     </Tabs.List>
 
     <Tabs.Content value="models">
@@ -511,6 +625,17 @@
         </div>
         <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {#each DECISION_ROLES as role (role)}{@render roleCard(settings, role)}{/each}
+        </div>
+      </section>
+      <section aria-labelledby="meaning-title" class="mb-8">
+        <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <h2 id="meaning-title" class="text-lg font-semibold">Search by meaning</h2>
+          <p class="kicker">Embeddings and inputs</p>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {@render roleCard(settings, "embedding")}
+          <div class="grid content-start gap-4 xl:col-span-2"><MeaningIndex version={settings.revision} /></div>
+          <div class="md:col-span-2 xl:col-span-3"><MediaInputs /></div>
         </div>
       </section>
       <section aria-labelledby="studio-title">
@@ -546,12 +671,11 @@
                           <span class="font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
                           <div class="min-w-0 flex-1">
                             <p class="font-mono break-all">{item.model}</p>
-                            <p class="text-xs text-muted-foreground">
+                            <p class="flex flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
                               {STUDIO_PROVIDERS[item.provider]?.label ?? item.provider}{item.provider === "gemini_tts" ? (item.paid ? " · paid key" : " · skipped until marked paid") : ` · ${POLICY_INFO[item.data_policy].label}`}
+                              {#if item.data_policy !== "zdr"}<InfoGlyph label="Zero data retention" class="size-5">{ZDR_RECOMMENDATION} {ACCOUNT_ZDR_NOTE}</InfoGlyph>{/if}
                             </p>
-                            {#if item.data_policy !== "zdr"}
-                              <p class="text-xs text-coral">{ZDR_RECOMMENDATION}</p>
-                            {/if}
+
                             {#if !item.key_set}<p class="text-coral">Add {item.api_key_env} to .env</p>{/if}
                           </div>
                         </div>
@@ -581,7 +705,14 @@
                     {/each}
                   </ol>
                 {:else}
-                  <p class="rounded-xl border border-dashed p-3.5 text-sm text-muted-foreground">No cloud backup: only the local studio.</p>
+                  <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed p-3.5">
+                    <p class="text-sm text-muted-foreground">No cloud backup: only the local studio.</p>
+                    {#if !settings.providers.some((item) => item.type === "media")}
+                      <Button variant="ghost" size="xs" onclick={() => { section = "providers"; editing = { provider: null }; }} disabled={busy}>
+                        <Plus data-icon="inline-start" aria-hidden="true" /> Add provider <span class="sr-only">for {group.label.toLowerCase()}</span>
+                      </Button>
+                    {/if}
+                  </div>
                 {/if}
                 {#if reordering === `studio-${chainName}`}
                   <p role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -603,8 +734,11 @@
 
     <Tabs.Content value="providers">
       <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <p class="max-w-prose text-sm text-muted-foreground">
-          Each provider is an address and a key variable. Key values live in <code class="font-mono">.env</code>; this page only shows whether each is set.
+        <p class="flex items-center gap-1 text-sm text-muted-foreground">
+          {settings.providers.length} {settings.providers.length === 1 ? "provider" : "providers"}
+          <InfoGlyph label="About providers">
+            Each provider is an address and a key variable. Key values live in .env; this page only shows whether each is set.
+          </InfoGlyph>
         </p>
         <Button onclick={() => (editing = { provider: null })} disabled={editing !== null} aria-describedby={editing !== null ? "provider-add-wait" : undefined}>
           <Plus data-icon="inline-start" aria-hidden="true" /> Add provider
@@ -627,8 +761,12 @@
           {#if list.length === 0}
             <StatusNote
               title={`No ${TYPE_INFO[group].heading.toLowerCase()}`}
-              detail={group === "media" ? "Add one with Add provider, then pick it for a studio backup under Models." : "Add one with Add provider, then pick it for a role under Models."}
-            />
+              detail={group === "media" ? "Add one, then pick it for a studio backup under Models." : "Add one, then pick it for a role under Models."}
+            >
+              <Button variant="secondary" size="sm" onclick={() => (editing = { provider: null })} disabled={editing !== null}>
+                <Plus data-icon="inline-start" aria-hidden="true" /> Add provider <span class="sr-only">for {TYPE_INFO[group].heading.toLowerCase()}</span>
+              </Button>
+            </StatusNote>
           {/if}
           <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {#each list as provider, n (provider.name)}{@render providerCard(settings, provider, `${group}-${n}`)}{/each}
@@ -638,71 +776,46 @@
     </Tabs.Content>
 
     <Tabs.Content value="permissions">
-      <Card.Root class="py-2">
-        <ul class="divide-y">
-          {#each permissions as item (item.id)}
-            <li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-4">
-              <div class="min-w-0 flex-1 basis-60">
-                <label for={`perm-${item.id}`} class="font-medium">{item.label}</label>
-                <p id={`perm-${item.id}-hint`} class="mt-0.5 text-sm text-muted-foreground">
-                  {item.description}
-                  {#if !item.available}
-                    <span class="mt-1 block {item.enabled ? 'text-coral' : ''}">
-                      {item.enabled ? "On, but nothing can serve it: Dom sends text instead. " : ""}{item.needs}
-                      {#if item.id !== "studio_profile"}
-                        <button type="button" class="text-signal-strong underline underline-offset-2" onclick={() => (section = "models")}>
-                          Studio cloud backups
-                        </button>
-                      {/if}
-                    </span>
-                  {/if}
-                </p>
-                {#if item.id === "studio_profile"}
-                  <div class="mt-2 flex flex-wrap items-center gap-2">
-                    <span id="profile-interval-label" class="text-sm">Change at most every</span>
-                    <Select.Root type="single" value={String(profileEvery)} onValueChange={(value) => saveInterval(Number(value) as ProfileInterval)}>
-                      <Select.Trigger class="h-8 w-32" aria-labelledby="profile-interval-label" disabled={savingInterval}>
-                        {INTERVALS.find((option) => option.days === profileEvery)?.label}
-                      </Select.Trigger>
-                      <Select.Content>
-                        {#each INTERVALS as option (option.days)}
-                          <Select.Item value={String(option.days)} label={option.label} />
-                        {/each}
-                      </Select.Content>
-                    </Select.Root>
-                    {#if savingInterval}
-                      <span role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
-                      </span>
-                    {/if}
-                  </div>
-                {/if}
-              </div>
-              <div class="flex shrink-0 items-center gap-2">
-                {#if savingId === item.id}
-                  <span role="status" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Saving…
-                  </span>
-                {/if}
-                <Switch
-                  id={`perm-${item.id}`}
-                  aria-describedby={`perm-${item.id}-hint`}
-                  aria-busy={savingId === item.id}
-                  bind:checked={() => item.enabled, (value) => flip(item, value)}
-                  disabled={savingPermission || (!item.available && !item.enabled)}
-                />
-              </div>
-            </li>
-          {/each}
-        </ul>
-      </Card.Root>
-      <p class="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-        <RotateCw class="size-3.5" aria-hidden="true" /> Each switch applies at once and is saved to config.toml.
-      </p>
-      <MediaLimits bind:revision />
-      {#if desktopSteps}
-        <DesktopSteps bind:revision budget={desktopSteps} onsaved={(result) => (desktopSteps = result.desktop_steps)} />
+      <div class="mb-5 flex flex-wrap items-center gap-2">
+        <label for="permission-search" class="sr-only">Find a setting</label>
+        <div class="relative min-w-0 flex-1 basis-64">
+          <SearchIcon class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <Input id="permission-search" type="search" bind:value={permissionQuery} placeholder="Find a setting" class="pl-9" />
+        </div>
+        <InfoGlyph label="How these settings apply">Each switch applies at once and is saved to config.toml.</InfoGlyph>
+      </div>
+      {#if visibleSections.length === 0}
+        <StatusNote title="No setting matches" detail="Try another word, such as photos, groups or leak." />
       {/if}
+      <div class="grid gap-6">
+        {#each visibleSections as group (group.id)}
+          <section aria-labelledby={`perm-section-${group.id}`}>
+            <h2 id={`perm-section-${group.id}`} class="mb-3 text-lg font-semibold">{group.label}</h2>
+            {#if group.items.length}
+              <Card.Root class="py-2">
+                <ul class="divide-y">
+                  {#each group.items as item (item.id)}{@render permissionRow(item)}{/each}
+                </ul>
+                {#if group.id === "safety" && group.extras}
+                  <div class="border-t"><LeakScan bind:revision onsaved={reloadPermissions} /></div>
+                {/if}
+              </Card.Root>
+            {:else if group.id === "safety" && group.extras}
+              <Card.Root class="py-2"><LeakScan bind:revision onsaved={reloadPermissions} /></Card.Root>
+            {/if}
+            {#if group.id === "media" && group.extras}
+              <MediaLimits bind:revision />
+            {/if}
+            {#if group.id === "desktop" && group.extras && desktopSteps}
+              <DesktopSteps bind:revision budget={desktopSteps} onsaved={(result) => (desktopSteps = result.desktop_steps)} />
+            {/if}
+          </section>
+        {/each}
+      </div>
+    </Tabs.Content>
+
+    <Tabs.Content value="services">
+      <Services bind:revision bind:restartNeeded={servicesRestart} />
     </Tabs.Content>
   </Tabs.Root>
 {/if}

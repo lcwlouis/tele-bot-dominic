@@ -3,9 +3,11 @@ import Bell from "@lucide/svelte/icons/bell";
 import FileText from "@lucide/svelte/icons/file-text";
 import Gauge from "@lucide/svelte/icons/gauge";
 import House from "@lucide/svelte/icons/house";
+import Images from "@lucide/svelte/icons/images";
 import Layers from "@lucide/svelte/icons/layers";
 import MessageCircle from "@lucide/svelte/icons/message-circle";
 import Monitor from "@lucide/svelte/icons/monitor";
+import PiggyBank from "@lucide/svelte/icons/piggy-bank";
 import NotebookText from "@lucide/svelte/icons/notebook-text";
 import Puzzle from "@lucide/svelte/icons/puzzle";
 import ScrollText from "@lucide/svelte/icons/scroll-text";
@@ -37,31 +39,33 @@ export const destinations: Destination[] = [
   },
   {
     id: "work", label: "Work", href: "/app/work", icon: Monitor,
-    blurb: "Things Dom does for you: tasks, his own work and skills, reminders and briefs.",
+    blurb: "Things Dom does for you: tasks, his own work and skills, reminders, briefs and his library.",
     tabs: [
       { id: "desk", label: "Tasks", href: "/app/work", icon: Monitor, blurb: "Desktop tasks and work Dom set himself, and the computer he works on." },
       { id: "own-work", label: "Own work", href: "/app/work/own-work", icon: Sparkles, blurb: "How Dom's own work runs, and the skills he learned." },
       { id: "reminders", label: "Reminders", href: "/app/work/reminders", icon: Bell, blurb: "What Dom will remind you of, and when." },
       { id: "briefs", label: "Briefs", href: "/app/work/briefs", icon: FileText, blurb: "The briefs Dom wrote for you." },
+      { id: "library", label: "Library", href: "/app/work/library", icon: Images, blurb: "What Dom made and kept: photos, voice and video notes, task files and exports." },
     ],
   },
   {
     id: "system", label: "System", href: "/app/system", icon: Settings,
-    blurb: "How Dom runs: models and providers, plugins, spend and the turn log.",
+    blurb: "How Dom runs: models and providers, services, plugins, spend and the turn log.",
     tabs: [
-      { id: "settings", label: "Settings", href: "/app/system", icon: Settings, blurb: "Models, providers and permissions." },
+      { id: "settings", label: "Settings", href: "/app/system", icon: Settings, blurb: "Models, providers, permissions and services." },
       { id: "plugins", label: "Plugins", href: "/app/system/plugins", icon: Puzzle, blurb: "Plugins Dom drafted, their reviews and panels." },
+      { id: "spend", label: "Spend", href: "/app/system/spend", icon: PiggyBank, blurb: "Today and this month against your caps, by area, and the caps themselves." },
       { id: "usage", label: "Usage", href: "/app/system/usage", icon: Gauge, blurb: "Spend by day, model and kind, against the daily cap." },
       { id: "turns", label: "Turn log", href: "/app/system/turns", icon: ScrollText, blurb: "Every turn: what Dom did, how long it took and which model ran." },
     ],
   },
 ];
 
-/** The desktop sidebar's "Workspace" group: shortcuts to the five utility pages (each lives in Work or System as
+/** The desktop sidebar's "Workspace" group: shortcuts to the utility pages (each lives in Work or System as
  * a tab, which is where the phone reaches them) and the component library. */
 export const workspace: { tab: Tab; home: string }[] = [
-  ...["reminders", "briefs"].map((id) => ({ tab: tabOf("work", id), home: "Work" })),
-  ...["plugins", "usage", "turns"].map((id) => ({ tab: tabOf("system", id), home: "System" })),
+  ...["reminders", "briefs", "library"].map((id) => ({ tab: tabOf("work", id), home: "Work" })),
+  ...["plugins", "spend", "usage", "turns"].map((id) => ({ tab: tabOf("system", id), home: "System" })),
 ];
 
 // Everything waiting for the owner's yes or no: reached from Home's card and Chats' pending link, not from the navigation.
@@ -69,6 +73,13 @@ export const waiting = { label: "Waiting for you", href: "/app/waiting", blurb: 
 
 // The search box's results, reached from the top row and the phone menu: not a destination.
 export const search = { label: "Search", href: "/app/search", blurb: "One search over chats, memory, briefs, reminders, tasks, skills and plugins." };
+
+/** The search page's address for a query, with `mode=meaning` when the owner asks for meaning instead of keywords. */
+export function searchHref(text: string, meaning: boolean): string {
+  const query = text.trim();
+  if (!query) return search.href;
+  return `${search.href}?q=${encodeURIComponent(query)}${meaning ? "&mode=meaning" : ""}`;
+}
 
 // A design reference, reachable only by its address: not in the navigation.
 export const gallery = { label: "Component library", href: "/app/gallery", icon: Layers };

@@ -1,4 +1,5 @@
-"""JSON API for System's pages: plugins and their review, plugin panels, usage and the turn log.
+"""JSON API for System's pages: plugins and their review, plugin panels, usage and the turn log, plus the health
+check and the dashboard's Restart.
 
 Every read and check lives in dom/web/shared.py: the registry reviews and decides a plugin by name and
 digest, "I've read this code" is recorded only by its own POST, a delete needs the plugin's hash, and a panel is run
@@ -9,6 +10,11 @@ needs the dashboard's auth, a same-origin Origin and a JSON body.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import signal
+import uuid
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -25,8 +31,11 @@ router = APIRouter()
 PREFIX = "/api/system"
 JSON_POSTS = {
     f"{PREFIX}/plugins/reviewed", f"{PREFIX}/plugins/decide", f"{PREFIX}/plugins/review-again", f"{PREFIX}/plugins/delete",
-    f"{PREFIX}/plugins/panel",
+    f"{PREFIX}/plugins/panel", f"{PREFIX}/restart",
 }
+log = logging.getLogger("dom.web")
+BOOT_ID = uuid.uuid4().hex  # new in every process, so the page can tell a restarted Dom from the one it asked
+RESTART_DELAY = 0.5  # seconds: the answer reaches the page before the shutdown starts
 MODEL_CALL_KEYS = (
     "kind", "model", "host", "fallback", "duration_ms", "status", "input_tokens", "output_tokens", "cached_tokens",
     "gap_ms", "between_tokens", "system_hash", "tools_hash", "user_hash", "user_prefix_hash",
@@ -243,3 +252,58 @@ async def read_turns(request: Request, chat: str = "") -> dict:
             "model_calls": [{key: call.get(key) for key in MODEL_CALL_KEYS} for call in row["model_calls"]],
         } for row in data["rows"]],
     }
+
+
+class Nothing(Strict):
+    pass
+
+
+@router.get("/api/health")
+async def health(request: Request) -> dict:
+    """Owner only: Dom is up, which process answered (`boot`) and its version. The Restart button polls it."""
+    from dom.web.api import running_version
+
+    owner_app(request)
+    return {"ok": True, "boot": BOOT_ID, "version": running_version()}
+
+
+def restart_refusal(app) -> str | None:
+    """Why a restart now would lose something the owner is in the middle of, or None. In-memory state only: a
+    desktop task, its log-in handoff or step budget card, and the model switch and T3 send cards are all lost on exit;
+    waiting proposals live in the database and survive."""
+    fleet = app.desktop_worker
+    for lane in list(getattr(fleet, "lanes", {}).values()) if fleet is not None else []:
+        worker = lane.worker
+        if worker.in_handoff():
+            return "A desktop task is waiting for you to log in. Finish or cancel it first."
+        if getattr(worker, "_budget_ask", None) is not None:
+            return "A desktop task is asking for more steps. Answer its card first."
+        if worker.busy():
+            return "A desktop task is running. Wait for it to finish or cancel it first."
+    if app.dispatch.escalation.pending:
+        return "A model switch card is waiting for your answer. Answer it first."
+    bridge = getattr(app, "t3", None)
+    if bridge is not None and getattr(bridge, "pending", None):
+        return "A T3 Code message is waiting for you to confirm it. Confirm or cancel it first."
+    return None
+
+
+@router.post(PREFIX + "/restart")
+async def restart(request: Request) -> dict:
+    """Stop Dom gracefully and exit with RESTART_EXIT; the service manager starts it again. Refused (409, with the
+    reason) while something in memory would be lost."""
+    app = owner_app(request)
+    await _input(request, Nothing)
+    if app.restart_requested:
+        return {"ok": True, "message": "Dom is already restarting.", "boot": BOOT_ID}
+    if (reason := restart_refusal(app)) is not None:
+        raise HTTPException(409, reason)
+    app.restart_requested = True
+    try:
+        await app.store.record_owner_event("The owner restarted Dom from the dashboard.")
+    except Exception:
+        log.warning("could not record the dashboard restart", exc_info=True)
+    log.info("restart requested from the dashboard")
+    # SIGTERM is the same graceful stop the service manager sends: polling drains, then `dom run` exits 75.
+    asyncio.get_running_loop().call_later(RESTART_DELAY, os.kill, os.getpid(), signal.SIGTERM)
+    return {"ok": True, "message": "Restarting…", "boot": BOOT_ID}

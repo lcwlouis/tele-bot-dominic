@@ -6,10 +6,12 @@
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
   import { Input } from "$lib/components/ui/input";
-  import { search } from "$lib/nav";
+  import { search, searchHref } from "$lib/nav";
+  import MeaningToggle from "$lib/components/shell/MeaningToggle.svelte";
   import { navigate, route } from "$lib/router.svelte";
 
   const query = $derived((new URLSearchParams(route.search).get("q") ?? "").trim());
+  const meaning = $derived(new URLSearchParams(route.search).get("mode") === "meaning");
   let value = $state("");
   let data = $state<SearchData | null>(null);
   let failed = $state("");
@@ -22,14 +24,14 @@
   function submit(event: SubmitEvent) {
     event.preventDefault();
     const text = value.trim();
-    navigate(text ? `${search.href}?q=${encodeURIComponent(text)}` : search.href);
+    navigate(searchHref(text, meaning));
   }
 
-  async function load(text: string, signal: AbortSignal) {
+  async function load(text: string, byMeaning: boolean, signal: AbortSignal) {
     loading = true;
     failed = "";
     try {
-      data = await getJSON<SearchData>(`/api/search?q=${encodeURIComponent(text)}`, signal);
+      data = await getJSON<SearchData>(`/api/search?q=${encodeURIComponent(text)}${byMeaning ? "&mode=meaning" : ""}`, signal);
     } catch (error) {
       if (signal.aborted) return;
       failed = error instanceof Error ? error.message : "Unknown error";
@@ -40,6 +42,7 @@
 
   $effect(() => {
     const text = query;
+    const byMeaning = meaning;
     if (!text) {
       data = null;
       failed = "";
@@ -47,7 +50,7 @@
       return;
     }
     const controller = new AbortController();
-    load(text, controller.signal);
+    load(text, byMeaning, controller.signal);
     return () => controller.abort();
   });
 </script>
@@ -57,19 +60,25 @@
 <form role="search" onsubmit={submit} class="mb-4 flex gap-2">
   <label for="search-page-query" class="sr-only">Search Dom</label>
   <Input id="search-page-query" type="search" bind:value maxlength={200} placeholder="Search chats, memory, work…" class="min-w-0 flex-1" />
+  <MeaningToggle pressed={meaning} onclick={() => navigate(value.trim() ? searchHref(value, !meaning) : `${search.href}${meaning ? "" : "?mode=meaning"}`)} />
   <Button type="submit">Search</Button>
 </form>
 
 <p class="mb-5 text-sm text-muted-foreground" aria-live="polite">
-  {#if !query}Type a few words above to look through Dom.{:else if loading}Searching for “{query}”…{:else if data}Results for “{data.query}”.{/if}
+  {#if !query}Type a few words above to look through Dom.{:else if loading}Searching for “{query}”…{:else if data}{meaning ? "Closest in meaning to" : "Results for"} “{data.query}”.{/if}
 </p>
 
 {#if failed}
   <StatusNote tone="error" title="Couldn't search" detail={`Dom's dashboard answered: ${failed}.`}>
-    <Button variant="outline" onclick={() => load(query, new AbortController().signal)}>Try again</Button>
+    <Button variant="outline" onclick={() => load(query, meaning, new AbortController().signal)}>Try again</Button>
   </StatusNote>
 {:else if query && data && !loading && data.groups.length === 0}
-  <StatusNote title="Nothing found" detail="Try fewer or different words. Every word you type has to appear in the same item." />
+  <StatusNote
+    title="Nothing found"
+    detail={meaning
+      ? "Nothing close in meaning. If the meaning index isn't set up yet, try Keyword search."
+      : "Try fewer or different words, or search by meaning. Every word you type has to appear in the same item."}
+  />
 {:else if data && query}
   <div class="grid gap-5">
     {#each data.groups as group (group.kind)}

@@ -57,6 +57,11 @@ CONFIG = """\
 timezone = "UTC"
 leak_check = false
 memory_self_edit = true
+desktop_mode = "local"
+monthly_spend_cap_usd = 30.0
+
+[area_spend_caps_usd]
+media = 5.0
 
 [models.chat]
 base_url = "http://homelab:8000/v1"
@@ -288,11 +293,21 @@ async def seed(app: handlers.App) -> None:
                 at = (now - timedelta(days=day)).replace(hour=hour, minute=10)
                 await message(app, CREW, "user", "Fictional chatter", msg_id, at, sender)
                 msg_id += 1
-    # Studio media in the owner's DM: a voice note this morning and a photo a few minutes ago, inside the gap.
-    for kind, minutes in (("voice", 600), ("photo", 14)):
+    # Studio media in the owner's DM: a voice note this morning and a photo a few minutes ago, inside the gap. Both
+    # are kept on disk, so the Library lists them; a photo in the crew's chat was removed past the cap.
+    for chat_id, kind, minutes, scene, keep in (
+        (OWNER, "voice", 600, "Good morning, the train is at nine.", True),
+        (CREW, "photo", 60 * 26, "Dom at the harbour at dusk.", False),
+        (OWNER, "photo", 14, "Dom on a park bench with a paper cup of tea.", True),
+    ):
+        at = now - timedelta(minutes=minutes)
+        data = screenshot() if kind == "photo" else b"OggS" + bytes(60)
+        media = {"kind": kind, "scene": scene, "file_id": f"preview-{msg_id}"}
+        if keep:
+            media.update(await app.media_files.keep(chat_id, msg_id, kind, data, at))
         await app.store.record_new_message(StoredMessage(
-            chat_id=str(OWNER), role="assistant", text="", msg_id=msg_id, is_bot=True, media_json=json.dumps({"kind": kind}),
-            created_at=(now - timedelta(minutes=minutes)).isoformat(), visibility_scope=app.store.visibility_for(OWNER),
+            chat_id=str(chat_id), role="assistant", text="", msg_id=msg_id, is_bot=True, media_json=json.dumps(media),
+            created_at=at.isoformat(), visibility_scope=app.store.visibility_for(chat_id),
         ))
         msg_id += 1
     replies = (
@@ -469,6 +484,21 @@ async def seed_system(app: handlers.App) -> None:
     )
     old = await app.proposals.create("soul_edit", "Mention tea", {"old": "Dom likes quiet evenings.", "new": "Dom likes quiet evenings and tea."}, "reflection", notify=False)
     await app.proposals.decide(old, False)
+
+    # Goals and noticings (R6, R7): two goals under way, one paused, and two things Dom noticed overnight.
+    walk = await app.goals.create("Walk 8,000 steps most days", category="health", check_in_rhythm="every_few_days")
+    await app.goals.create("Book the coast trip with Alex", category="relationships", target_date="2026-12-20", check_in_rhythm="weekly")
+    guitar = await app.goals.create("Practise guitar twice a week", category="interests", check_in_rhythm="weekly")
+    await app.goals.set_status(guitar["id"], "paused")
+    await app.goals.add_progress(walk["id"], "Three good days this week.")
+    await store.create_noticings(now.date().isoformat(), [
+        {"kind": "followup", "title": "Ask Alex how the night shift went", "body": "She mentioned a double shift on Friday.",
+         "action_kind": "chat", "action_payload_json": "{}", "source_kind": "owner_dm", "source_chat_id": None,
+         "source_msg_id": None, "source_label": "your DM"},
+        {"kind": "deadline", "title": "Saturday's train needs booking", "body": "Fares go up on Thursday.",
+         "action_kind": "reminder", "action_payload_json": "{}", "source_kind": "memory", "source_chat_id": None,
+         "source_msg_id": None, "source_label": "Dom's notes"},
+    ], now.isoformat())
 
     for day in range(1, 29):  # a month of spend, with the odd fallback
         at = (now - timedelta(days=day)).replace(hour=14).isoformat()
