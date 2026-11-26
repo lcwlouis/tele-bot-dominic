@@ -381,9 +381,10 @@ class SecretStore:
            minting a new key. If that fails, `.env` is untouched and every row remains readable.
         3. Capture the exact `.env` values of MASTER and PREVIOUS, then atomically stage
            DOM_MASTER_KEY=<new> and DOM_MASTER_KEY_PREVIOUS=<old> in `.env`.
-        4. Re-encrypt every row under `<new>` inside one SQLite transaction. On any failure (including
-           CancelledError / BaseException), synchronously restore the exact pre-stage `.env` values.
-        5. Atomically remove DOM_MASTER_KEY_PREVIOUS from `.env`.
+        4. Re-encrypt every row under `<new>` inside one SQLite transaction, run as its own task. A cancel does not
+           interrupt it (its worker thread cannot be stopped): we wait for the real outcome. On failure the exact
+           pre-stage `.env` values are restored; on commit the new key stays.
+        5. Atomically remove DOM_MASTER_KEY_PREVIOUS from `.env`, then re-raise any cancel that arrived.
         """
         async with self._key_lock:
             primary, previous = await asyncio.to_thread(self._load_keys)
@@ -434,23 +435,36 @@ class SecretStore:
             if old_encoded:
                 stage_env[PREVIOUS_KEY_ENV] = old_encoded
             await asyncio.to_thread(set_dotenv_many, self.home, stage_env)
-            try:
-                await self.store.replace_encrypted_secrets(reencrypted)
-            except BaseException as exc:
+            # The re-encrypt runs in a worker thread that cancelling this await cannot stop, so it runs as its own
+            # task and we always wait for its real outcome before deciding which key `.env` must hold.
+            write = asyncio.ensure_future(self.store.replace_encrypted_secrets(reencrypted))
+            cancelled: asyncio.CancelledError | None = None
+            while not write.done():
+                try:
+                    await asyncio.wait({write})
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+            failure: BaseException | None = (
+                asyncio.CancelledError() if write.cancelled() else write.exception()
+            )
+            # Synchronous so the `.env` fix-up still completes if another cancel arrives.
+            if failure is not None:
                 rollback: dict[str, str | None] = {
                     MASTER_KEY_ENV: pre_master_in_env,
                     PREVIOUS_KEY_ENV: pre_prev_in_env,
                 }
                 try:
-                    # Run synchronously so rollback still completes under CancelledError.
                     set_dotenv_many(self.home, rollback)
                 except Exception:
                     log.exception("failed to restore .env after secret rotation rollback")
-                if isinstance(exc, Exception):
-                    raise SecretStoreError("could not re-encrypt secrets; rolled back") from exc
-                raise
-
-            await asyncio.to_thread(set_dotenv_many, self.home, {PREVIOUS_KEY_ENV: None})
+                if cancelled is not None:
+                    raise cancelled
+                if isinstance(failure, Exception):
+                    raise SecretStoreError("could not re-encrypt secrets; rolled back") from failure
+                raise failure
+            set_dotenv_many(self.home, {PREVIOUS_KEY_ENV: None})
+            if cancelled is not None:
+                raise cancelled
             return new_kid, len(reencrypted)
 
 
@@ -760,7 +774,8 @@ class SecretRequests:
                 log.exception("failed to revert secret request #%s back to pending", row["id"])
             raise
 
-        await app.store.complete_secret_request(row["id"], "submitted", now_iso)
+        if not await app.store.complete_secret_request(row["id"], "submitted", now_iso):
+            log.warning("secret request #%s was set but its row could not be marked submitted", row["id"])
         await self._settle_card(row.get("card_message_id"), "✅ Secret set")
         # Dom learns ONLY that the secret is set — never its value.
         await app.store.record_owner_event(f"Owner provided secret '{label}' (status: set).")

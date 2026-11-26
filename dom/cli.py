@@ -320,7 +320,8 @@ def main(argv: list[str] | None = None) -> int:
         if running_pid is not None:
             print(
                 f"rotate-key refused: Dom appears to be running (PID {running_pid} in {release.READY}). "
-                "Stop Dom first, or rotate the key from the dashboard (System -> Access)."
+                "Stop Dom first, then run this again, or rotate the key from the dashboard (System -> Access). "
+                f"If Dom is not actually running, {release.READY} is stale: delete {Path(args.home) / release.READY} and retry."
             )
             return 1
         store = Store(args.home, load_config(args.home).owner_id)

@@ -15,11 +15,16 @@ unreachable from groups or friends' DMs. Dom never sends a saved password or E10
 through Telegram chat, any model prompt or tool argument, any traced sandbox HTTP API
 request (`/v1/browser/page/type`, `fill`, `evaluate`), any turn log, debug trace, usage
 row, or Python log line (including `websockets` debug logging). Saved-login filling
-always submits the form, clears any leftover password field value over VNC before
-returning control, aborts and alerts the owner DM if focus leaves the password field
-mid-typing, and registers the username and password in a per-run redaction set for the
+always submits the form and, if a password is still in a field after the submit, clears
+it over VNC; if anything fails or is cancelled after the password is typed and before the
+submit, it makes a best-effort attempt to erase it over VNC before returning (a failed
+attempt is possible, for example if the sandbox is unreachable). It aborts and alerts the
+owner DM if focus leaves the password field mid-typing, and registers the username and password in a per-run redaction set for the
 rest of that desktop task. Residual risk: once typed into Chromium inside the sandbox,
-the password is present in the browser on the matched HTTPS origin; a hostile or
+the password is present in the browser on the matched HTTPS origin. The page checks Dom
+runs through the page's own JavaScript (focus, active field, form action) can be lied to
+by a hostile page, so the browser's tab list, which a page cannot forge, is the trust anchor
+for the site and is re-read right before each typing step. A hostile or
 compromised page on that matched origin (or a compromised sandbox container/shell
 during an owner task) could still capture the input, reveal it in an altered form or
 screenshot that verbatim redaction cannot match, or steal the resulting session cookies.

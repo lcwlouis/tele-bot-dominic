@@ -265,21 +265,29 @@ and per-site rules under **System → Access** (`/app/system/access`):
 Saved logins are encrypted at rest in SQLite with AES-256-GCM using `DOM_MASTER_KEY`
 in `DOM_HOME/.env` (mode `0600`, auto-generated on first write when no encrypted rows
 exist, rotatable from **System → Access** while Dom runs or via `dom rotate-key <home>`
-while Dom is stopped — the CLI refuses if `ready.json` points to a running Dom process).
-When approved, Dom atomically verifies via `/v1/browser/page/evaluate` immediately before
-typing the username and again before typing the password that `document.hasFocus()` is
+while Dom is stopped — the CLI refuses if `ready.json` points to a running Dom process; stop Dom, or delete
+a stale `ready.json` if Dom is not running).
+When approved, Dom re-reads the active tab's URL from the sandbox browser's tab list
+immediately before typing the username and again before the password, and requires it to
+be `https://` on the saved site and to name the same host as the page's own report. The tab
+list is the trust anchor: a page's JavaScript can forge anything `/v1/browser/page/evaluate`
+returns. As a second layer, Dom verifies via `/v1/browser/page/evaluate` at the same two
+points that `document.hasFocus()` is
 true, the top-level `window.location.href` is `https://` (default port 443) on the saved
 login's site, the active element is the expected top-level input, and any enclosing form's
 `action` stays on the matched site. Keystrokes go strictly as RFB `KeyEvent` frames over
 `/websockify` with `websockets` frame logging silenced. Dom checks after typing that focus
 did not leave the same password input (aborting, clearing, and alerting the owner DM if
 stolen), always submits with `Enter`, clears any leftover password value over VNC if the
-field remains populated after submit, and registers the username and password in a per-run
+field remains populated after submit, makes a best-effort attempt to erase the typed
+password over VNC if a check fails or the task is cancelled after typing and before the
+submit (it cannot if the sandbox is unreachable), and registers the username and password in a per-run
 redaction set applied to all tool results, `read_page`/`look` text, `finish`/wrap-up
 reports, turn logs, traces, and usage rows for the rest of the task. What is guaranteed:
 Dom never places the plaintext password into model prompts, tool arguments/results, traced
 sandbox HTTP requests, turn logs, traces, usage rows, or Python logs, and self-directed
-tasks never see or use saved logins. Residual risk: a compromised or malicious page on the
+tasks never see or use saved logins. Residual risk: a malicious page script can lie about focus and field state to the
+second-layer check (the tab list still pins the origin), and a compromised or malicious page on the
 matched origin itself (or a compromised sandbox container/shell tool during an owner task)
 still sees keystrokes typed into Chromium and could transform/render them visually or steal
 session cookies after login.

@@ -87,6 +87,9 @@ _SITE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a
 _PRIVATE_SUFFIXES = (
     ".local", ".lan", ".home", ".internal", ".intranet", ".corp", ".arpa", ".localhost", ".test", ".invalid",
 )
+# Wildcard-DNS services: any `<anything>.nip.io` resolves to an address the caller picks (often 127.0.0.1 or a LAN
+# host), so they get the same refusal as an IP literal or a `.local` name.
+_WILDCARD_DNS = ("nip.io", "sslip.io", "xip.io", "lvh.me", "localtest.me", "traefik.me")
 # Public suffixes a planned site may not be, because unrelated owners share them (a plan naming one would allow
 # every tenant). A small built-in list rather than a Public Suffix List dependency: a plan names a few sites, and
 # anything missed here still faces the LAN guard. Country second levels (co.uk, com.au, ne.jp...) are matched by
@@ -133,6 +136,8 @@ def site(value: object) -> str | None:
         return None
     host = value.strip().lower().removeprefix("www.").rstrip(".")
     if not _SITE.fullmatch(host) or host.endswith(_PRIVATE_SUFFIXES):
+        return None
+    if any(host == name or host.endswith("." + name) for name in _WILDCARD_DNS):
         return None
     if host in _SHARED_SUFFIXES or _CC_SECOND_LEVEL.fullmatch(host) or _SHARED_PATTERNS.fullmatch(host):
         return None

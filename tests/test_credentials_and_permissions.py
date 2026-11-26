@@ -1289,3 +1289,251 @@ async def test_nits_strict_base64_ports_psl_allow_always_and_tampered_screenshot
     tid_ok = await worker_ok.enqueue(OWNER, "Good screenshot")
     await wait_task(worker_ok)
     assert (await task_row(app, tid_ok))["status"] == "done"
+
+
+# ---- 8. Re-check regression tests (real-thread B1, NEW-1, S1 tabs anchor, Nits) --------------------------------
+
+
+async def test_b1_real_slow_thread_cancel_during_db_write_preserves_secrets(make_app, monkeypatch):
+    """B1: Real cancel while the SQLite worker thread is mid-commit must never lose secrets."""
+    import threading
+
+    app = make_app()
+    await app.secrets.put("login", "1", {"username": "u", "password": "secret-real-thread"})
+    old0 = _read_dotenv(app.home.root / ".env")[MASTER_KEY_ENV]
+
+    # Case 1: Cancelled while worker thread is blocked, then worker thread commits under new key.
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def slow_commit_replace(items):
+        def update_all() -> None:
+            entered.set()
+            assert release.wait(5), "test timed out waiting to release worker thread"
+            with app.store._tx() as conn:
+                for namespace, key, key_id, ciphertext, updated_at in items:
+                    conn.execute(
+                        "UPDATE encrypted_secrets SET key_id = ?, ciphertext = ?, updated_at = ? "
+                        "WHERE namespace = ? AND key = ?",
+                        (key_id, ciphertext, updated_at, namespace, key),
+                    )
+
+        await app.store._run(update_all)
+
+    monkeypatch.setattr(app.store, "replace_encrypted_secrets", slow_commit_replace)
+    rot_task = asyncio.create_task(app.secrets.rotate_key())
+    await asyncio.to_thread(entered.wait, 5)
+    assert entered.is_set()
+    rot_task.cancel()
+    await asyncio.sleep(0.05)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await rot_task
+
+    env_after = _read_dotenv(app.home.root / ".env")
+    assert env_after.get(MASTER_KEY_ENV) != old0, "committed new key must be kept"
+    assert PREVIOUS_KEY_ENV not in env_after
+    assert await app.secrets.get("login", "1") == {"username": "u", "password": "secret-real-thread"}
+
+    # Case 2: Cancelled while worker thread is blocked, then worker thread fails and SQLite rolls back.
+    key1 = env_after[MASTER_KEY_ENV]
+    entered2 = threading.Event()
+    release2 = threading.Event()
+
+    async def slow_fail_replace(items):
+        def update_all() -> None:
+            entered2.set()
+            assert release2.wait(5)
+            with app.store._tx():
+                raise RuntimeError("sqlite I/O error mid-commit")
+
+        await app.store._run(update_all)
+
+    monkeypatch.setattr(app.store, "replace_encrypted_secrets", slow_fail_replace)
+    rot_task2 = asyncio.create_task(app.secrets.rotate_key())
+    await asyncio.to_thread(entered2.wait, 5)
+    rot_task2.cancel()
+    await asyncio.sleep(0.05)
+    release2.set()
+    with pytest.raises(asyncio.CancelledError):
+        await rot_task2
+
+    env_after2 = _read_dotenv(app.home.root / ".env")
+    assert env_after2.get(MASTER_KEY_ENV) == key1, "failed DB write after cancel must restore previous key"
+    assert PREVIOUS_KEY_ENV not in env_after2
+    assert await app.secrets.get("login", "1") == {"username": "u", "password": "secret-real-thread"}
+
+
+async def test_new1_password_cleared_on_error_and_cancel_after_typing(make_app, monkeypatch):
+    """NEW-1: If an error (SandboxError) or CancelledError hits after password typing and before submit, clear over VNC."""
+    app = make_app()
+    meta = await app.desktop_permissions.save_login(site="app.example.org", username="", password="pw-new1-clearme")
+    await app.desktop_permissions.set_site_rule("app.example.org", "fill_login", "allow")
+
+    for mode in ("sandbox_error", "cancelled"):
+        vnc_sessions: list[FakeVncSocket] = []
+
+        @asynccontextmanager
+        async def mock_vnc_connect(url, **kwargs):
+            s = FakeVncSocket()
+            vnc_sessions.append(s)
+            yield s
+
+        monkeypatch.setattr("dom.desktop.vnc_type.connect_vnc", mock_vnc_connect)
+
+        def handler(request: httpx.Request, m=mode) -> httpx.Response:
+            if request.url.path == "/v1/browser/tabs":
+                return httpx.Response(200, json={"success": True, "data": [{"url": "https://app.example.org/login", "is_active": True}]})
+            if request.url.path == "/v1/browser/page/evaluate":
+                expr = json.loads(request.content)["expression"]
+                if "sameTarget" in expr:
+                    if m == "sandbox_error":
+                        return httpx.Response(500, json={"success": False, "message": "evaluate crashed"})
+                    return httpx.Response(200, json={
+                        "success": True,
+                        "data": {"href": "https://app.example.org/login", "hasFocus": True, "topLevel": True, "sameTarget": True},
+                    })
+                if "formAction" in expr:
+                    return httpx.Response(200, json={
+                        "success": True,
+                        "data": {"href": "https://app.example.org/login", "hasFocus": True, "topLevel": True, "fieldOk": True, "formAction": None},
+                    })
+                return httpx.Response(200, json={"success": True, "data": True})
+            return httpx.Response(200, json={"success": True, "data": {"exit_code": 0}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = SandboxClient("http://127.0.0.1:18080", "k", http)
+            typed_and_waiting = asyncio.Event()
+            if mode == "cancelled":
+                async def hang_after_typing(*a, **kw):
+                    typed_and_waiting.set()
+                    await asyncio.Event().wait()
+
+                monkeypatch.setattr(client, "check_login_target_after_typing", hang_after_typing)
+
+            class Sbx(Sandbox):
+                async def ensure_running(self):
+                    return client
+
+            worker = await worker_for(
+                app,
+                call("fill_saved_login", login_id=meta["id"]),
+                call("finish", result="done"),
+                {"content": '{"bubbles":[{"text":"ok"}]}'},
+            )
+            worker.sandbox = Sbx()
+            await worker.enqueue(OWNER, f"Login {mode}")
+            if mode == "cancelled":
+                # A real cancel while the password sits typed in the field, before submit.
+                await asyncio.wait_for(typed_and_waiting.wait(), 2)
+                worker._job.cancel()
+                await asyncio.gather(worker._job, return_exceptions=True)
+            else:
+                await wait_task(worker)
+
+        assert len(vnc_sessions) >= 2, f"Expected cleanup VNC session on {mode}, got {len(vnc_sessions)}"
+        assert any(sym == 0xFF08 and down for sym, down in vnc_sessions[-1].typed_keysyms), f"Missing BackSpace clear on {mode}"
+        assert not any(sym == 0xFF0D and down for s in vnc_sessions for sym, down in s.typed_keysyms), f"Must not submit on {mode}"
+
+
+async def test_s1_tabs_api_origin_rechecked_after_approval_defeats_spoofed_evaluate(make_app, monkeypatch):
+    """S1: Delayed navigation during approval + spoofed /page/evaluate must be blocked by re-reading tabs API."""
+    app = make_app()
+    meta = await app.desktop_permissions.save_login(site="bank.example.org", username="alice@example.org", password="pw-s1-tabs")
+    # Leave fill_login on Ask so the approval wait happens!
+
+    vnc_called = False
+
+    @asynccontextmanager
+    async def mock_vnc_connect(url, **kwargs):
+        nonlocal vnc_called
+        vnc_called = True
+        yield FakeVncSocket()
+
+    monkeypatch.setattr("dom.desktop.vnc_type.connect_vnc", mock_vnc_connect)
+
+    tab_url = ["https://bank.example.org/login"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/browser/tabs":
+            return httpx.Response(200, json={"success": True, "data": [{"url": tab_url[0], "is_active": True}]})
+        if request.url.path == "/v1/browser/page/evaluate":
+            expr = json.loads(request.content)["expression"]
+            # Hostile page on evil.example.net spoofs evaluate to claim bank.example.org!
+            if "formAction" in expr:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "data": {
+                        "href": "https://bank.example.org/login",
+                        "hasFocus": True,
+                        "topLevel": True,
+                        "fieldOk": True,
+                        "formAction": "https://bank.example.org/login",
+                    },
+                })
+            return httpx.Response(200, json={"success": True, "data": True})
+        return httpx.Response(200, json={"success": True, "data": {"exit_code": 0}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = SandboxClient("http://127.0.0.1:18080", "k", http)
+
+        class Sbx(Sandbox):
+            async def ensure_running(self):
+                return client
+
+        worker = await worker_for(
+            app,
+            call("fill_saved_login", login_id=meta["id"]),
+            call("finish", result="aborted after redirect"),
+            {"content": '{"bubbles":[{"text":"stopped"}]}'},
+        )
+        worker.sandbox = Sbx()
+        await worker.enqueue(OWNER, "Log into bank")
+        pending = await _wait_for_pending_perm(app)
+        # While waiting for approval, the tab navigates to an attacker origin!
+        tab_url[0] = "https://evil.example.net/phish"
+        await app.desktop_permissions.decide(pending["id"], "once", via="dashboard")
+        await wait_task(worker)
+
+    assert not vnc_called, "Must not type anything when tabs API shows tab left bank.example.org during approval"
+
+
+async def test_recheck_nits_wildcard_dns_secret_expiry_race_and_rotate_key_message(make_app, monkeypatch, capsys):
+    """Re-check nits: wildcard-DNS/loopback suffixes, secret expiry race mid-write, and rotate-key stale ready.json hint."""
+    # Nit A: Wildcard-DNS and loopback suffixes (bare and subdomains) must be rejected by normalize_site.
+    for bad in (
+        "nip.io", "127.0.0.1.nip.io", "sslip.io", "192-168-1-1.sslip.io",
+        "xip.io", "10.0.0.1.xip.io", "lvh.me", "app.lvh.me", "localtest.me", "sub.localtest.me",
+    ):
+        assert normalize_site(bad) is None, f"{bad} should be rejected by normalize_site"
+
+    # Nit B: If a secret request crosses its expiry timestamp while writing, it must still end as 'submitted', never 'expired'.
+    clock = Clock(datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc))
+    app = make_app()
+    app.dispatch.now = clock
+    req = await app.secret_requests.create(label="Race Key", reason="test", target="secret", key="race_key")
+    orig_put = app.secrets.put
+
+    async def slow_put_crossing_expiry(ns, k, payload):
+        # Advance clock past TTL and run expire_pending() mid-write!
+        clock.advance(seconds=int(SECRET_REQUEST_TTL.total_seconds()) + 5)
+        await app.secret_requests.expire_pending()
+        return await orig_put(ns, k, payload)
+
+    monkeypatch.setattr(app.secrets, "put", slow_put_crossing_expiry)
+    res = await app.secret_requests.submit(request_id=req["request_id"], value="secret-saved-mid-expiry")
+    assert res["status"] == "set"
+    assert await app.secrets.get("owner_secret", "race_key") == {"value": "secret-saved-mid-expiry", "label": "Race Key"}
+    row = await app.store.get_secret_request(req["request_id"])
+    assert row is not None and row["status"] == "submitted", f"Expected submitted, got {row}"
+
+    # Nit C: dom rotate-key refusal message explains how to proceed (stop bot OR delete stale ready.json).
+    from dom.release import mark_ready
+
+    app.store.close()
+    (app.home.root / "config.toml").write_text('timezone = "UTC"\n[models.chat]\nbase_url = "http://localhost:8000/v1"\nmodel = "m"\n')
+    mark_ready(app.home.root, pid=os.getpid())
+    code = await asyncio.to_thread(cli_main, ["rotate-key", str(app.home.root)])
+    assert code == 1
+    out = capsys.readouterr().out.lower()
+    assert "stop" in out and "stale" in out and "ready.json" in out

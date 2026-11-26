@@ -17,6 +17,7 @@ from datetime import datetime
 from functools import partial
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -874,6 +875,38 @@ class DesktopWorker:
             return f"Blocked: the login form action leaves https://{site}."
         return None
 
+    async def _check_tab_origin(
+        self, client: SandboxClient, state: dict | None, site: str, *, match_subdomains: bool,
+    ) -> str | None:
+        """S1 trust anchor: the browser tabs API is the one origin source a page's own JavaScript cannot forge
+        (/page/evaluate runs in the page's realm). Re-read it immediately before typing, require the saved site, and
+        require the page's own claim to name the same host."""
+        tab = await self._browser_url(client)
+        if not host_matches_site(tab, site, match_subdomains=match_subdomains):
+            return f"Blocked: the active browser tab is no longer an https:// page on {site}."
+        claimed = state.get("href") if isinstance(state, dict) else None
+        try:
+            same = urlsplit(tab).hostname == urlsplit(claimed).hostname
+        except (ValueError, TypeError, AttributeError):
+            same = False
+        if not same:
+            return "Blocked: the page's reported address does not match the browser tab."
+        return None
+
+    @staticmethod
+    async def _clear_login_field(client: SandboxClient) -> None:
+        """Best-effort: erase whatever sits in the focused field, then in the stamped password field (focus may
+        have been stolen). Never raises a sandbox error."""
+        try:
+            await vnc_type_text(client, "", clear=True, submit=False)
+        except SandboxError:
+            pass
+        try:
+            if await client.focus_stamped_login_target():
+                await vnc_type_text(client, "", clear=True, submit=False)
+        except SandboxError:
+            pass
+
     async def _fill_saved_login(self, run: Run, client: SandboxClient, args: dict) -> str:
         """Fill a saved login into the active HTTPS page strictly over VNC keystrokes (zero model/HTTP exposure)."""
         perms = self.app.desktop_permissions
@@ -901,6 +934,7 @@ class DesktopWorker:
         if password:
             run.redactions.add(password)
         register_redaction(username, password)
+        exposed = False
         try:
             if username:
                 focused_user = await client.focus_login_field("username", args.get("username_selector"))
@@ -908,6 +942,8 @@ class DesktopWorker:
                     # S1: Single atomic /page/evaluate right before typing username (origin from eval, not tabs API).
                     user_state = await client.verify_login_field("username")
                     if err := self._validate_login_eval(user_state, "username", site, match_subdomains=match_subdomains):
+                        return err
+                    if err := await self._check_tab_origin(client, user_state, site, match_subdomains=match_subdomains):
                         return err
                     await vnc_type_text(client, username, clear=True, submit=False)
             focused_pass = await client.focus_login_field("password", args.get("password_selector"))
@@ -917,7 +953,12 @@ class DesktopWorker:
             pass_state = await client.verify_login_field("password", stamp=True)
             if err := self._validate_login_eval(pass_state, "password", site, match_subdomains=match_subdomains):
                 return err
+            if err := await self._check_tab_origin(client, pass_state, site, match_subdomains=match_subdomains):
+                return err
             # Type password WITHOUT Enter first so we can verify focus wasn't stolen mid-typing (S2).
+            # From the first keystroke until the form is submitted (or cleared below) it is exposed: the
+            # `finally` clears it on every other exit, including errors and cancellation.
+            exposed = True
             await vnc_type_text(client, password, clear=True, submit=False)
             post = await client.check_login_target_after_typing()
             post_ok = (
@@ -930,15 +971,8 @@ class DesktopWorker:
             if not post_ok:
                 # S2: Focus was stolen mid-typing! Do NOT submit; clear active input + original target over VNC,
                 # and alert the owner DM with a security event.
-                try:
-                    await vnc_type_text(client, "", clear=True, submit=False)
-                except SandboxError:
-                    pass
-                try:
-                    if await client.focus_stamped_login_target():
-                        await vnc_type_text(client, "", clear=True, submit=False)
-                except SandboxError:
-                    pass
+                await self._clear_login_field(client)
+                exposed = False
                 await perms.record_decision(
                     action="fill_login",
                     site=site,
@@ -960,6 +994,7 @@ class DesktopWorker:
                 return "Blocked: focus left the password field while typing; cleared input and aborted."
             # B2(a): Always submit — the model cannot leave the password sitting in the field.
             await vnc_type_text(client, "", clear=False, submit=True)
+            exposed = False
             # B2(b): If a password field still holds a value after submit (e.g. failed login), clear it over VNC.
             try:
                 if await client.password_field_has_value():
@@ -971,6 +1006,13 @@ class DesktopWorker:
         except SandboxError:
             return "Could not type the saved login into the browser."
         finally:
+            if exposed:
+                # Any exit after typing the password and before submitting (a failed check, timeout, cancel):
+                # the model must not be able to reveal it, so erase it over VNC first. Best effort.
+                try:
+                    await self._clear_login_field(client)
+                except Exception:
+                    log.warning("could not clear the password field after an aborted saved-login fill")
             username = ""
             password = ""
         return f"Filled saved login #{login_id} for {site}."

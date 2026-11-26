@@ -4206,12 +4206,13 @@ class Store:
         return await self._run(update)
 
     async def complete_secret_request(self, request_id: int, status: str, resolved_at: str) -> bool:
-        """Finalize a `submitting` request once its secret has been durably written."""
+        """Finalize a request once its secret has been durably written. A request that crossed its expiry mid-write
+        (`expired`) is finalized too: the secret exists, so the row must not claim otherwise."""
         def update() -> bool:
             with self._tx() as conn:
                 cur = conn.execute(
                     "UPDATE secret_requests SET status = ?, resolved_at = ? "
-                    "WHERE id = ? AND status = 'submitting'",
+                    "WHERE id = ? AND status IN ('submitting', 'expired')",
                     (status, resolved_at, request_id),
                 )
                 return cur.rowcount == 1
