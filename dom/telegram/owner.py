@@ -69,6 +69,7 @@ OWNER_COMMANDS = [
     BotCommand(command="t3", description="View T3 sign-in, machines and audit history"),
     BotCommand(command="tasks", description="List, cancel and delete desktop tasks"),
     BotCommand(command="ownwork", description="List, cancel and delete self-directed tasks"),
+    BotCommand(command="assistant", description="Assistant mode: /assistant on, off or status"),
     BotCommand(command="stickers", description="Add or remove a sticker set"),
     BotCommand(command="import", description="Bring memories from another assistant"),
     BotCommand(command="export", description="Get a zip of everything Dom remembers"),
@@ -419,6 +420,36 @@ async def show_tasks(app: App) -> None:
         app, "\n".join(lines) or "No desktop tasks yet.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
     )
+
+
+async def assistant_command(app: App, args: list[str]) -> str:
+    """`/assistant on|off|status`: the reply. The switch is saved to config.toml and applies at once."""
+    from fastapi import HTTPException
+
+    from dom.web.assistant_settings import set_enabled
+
+    word = args[0].lower() if len(args) == 1 else "status"
+    if word in ("on", "off"):
+        try:
+            await set_enabled(app, word == "on")
+        except HTTPException:
+            return "I couldn't save that: check config.toml and its permissions."
+        await record_event(app, f"Assistant mode turned {word} with /assistant")
+        if word == "off":
+            return "Assistant mode is off. I'm back to being just your friend."
+        return "Assistant mode is on. I'll keep your day in view, here in our DM only."
+    if word != "status":
+        return "Use /assistant on, /assistant off or /assistant status."
+    view = await app.assistant.view()
+    lines = [f"Assistant mode is {'on' if view['enabled'] else 'off'}."]
+    for message in view["messages"]:
+        name = "Morning plan" if message["id"] == "morning" else "Evening wrap-up"
+        last = message["last"]
+        lines.append(
+            f"{name}: {'at ' + message['time'] if message['time'] else 'off'}"
+            + (f" · last {last['day']}: {last['label'].lower()}" if last else "")
+        )
+    return "\n".join(lines)
 
 
 async def show_own_work(app: App) -> None:

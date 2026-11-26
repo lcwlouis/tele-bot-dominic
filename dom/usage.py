@@ -29,13 +29,13 @@ if TYPE_CHECKING:
     from dom.store import Store
 
 Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation",
-               "studio_voice", "studio_image", "studio_video", "embedding"]
+               "studio_voice", "studio_image", "studio_video", "embedding", "assistant"]
 log = logging.getLogger("dom.usage")
 
 # Which monthly area a kind of paid call is counted under. Everything counts toward the monthly cap whatever its area;
 # an unlisted kind counts as chat. Embeddings and summaries belong to memory.
 AREA_OF_KIND: dict[str, SpendArea] = {
-    "chat": "chat", "triage": "chat", "guard": "chat", "escalation": "chat",
+    "chat": "chat", "triage": "chat", "guard": "chat", "escalation": "chat", "assistant": "chat",
     "media": "media", "studio_voice": "media", "studio_image": "media", "studio_video": "media",
     "search": "search", "desktop": "desktop",
     "memory": "memory", "reflection": "memory", "embedding": "memory",

@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from dom.web.api import router as api_router
 from dom.web.api_access import JSON_POSTS as ACCESS_POSTS, router as access_router
 from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
+from dom.web.assistant_settings import JSON_POSTS as ASSISTANT_POSTS, router as assistant_router
 from dom.web.api_google import JSON_POSTS as GOOGLE_POSTS, router as google_router
 from dom.web.api_goals import JSON_POSTS as GOALS_POSTS, router as goals_router
 from dom.web.api_media import GUARDED_PREFIX as MEDIA_GET_PREFIX, JSON_POSTS as MEDIA_POSTS, router as media_router
@@ -84,7 +85,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
             and request.url.path in (
                 JSON_POSTS | PROVIDER_POSTS | STUDIO_POSTS | SPEND_POSTS | SERVICES_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS
                 | MEMORY_POSTS | WORK_POSTS | WAITING_POSTS | SYSTEM_POSTS | GOALS_POSTS | NOTICINGS_POSTS | MEDIA_POSTS
-                | WORLD_POSTS | TALK_POSTS | ACCESS_POSTS | GOOGLE_POSTS
+                | WORLD_POSTS | TALK_POSTS | ACCESS_POSTS | GOOGLE_POSTS | ASSISTANT_POSTS
             )
             and is_json(request) and "Origin" in request.headers
             and same_origin(request, identity)
@@ -133,6 +134,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.include_router(provider_settings_router)
     web.include_router(studio_settings_router)
     web.include_router(spend_settings_router)
+    web.include_router(assistant_router)
     web.include_router(services_settings_router)
     web.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 

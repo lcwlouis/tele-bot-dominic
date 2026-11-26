@@ -201,6 +201,37 @@ class OpenersConfig(BaseModel):
     max_per_day: int = Field(2, ge=0, description="Maximum number of openers per chat per day in the configured timezone.")
 
 
+PLAN_TIME = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
+
+
+class AssistantConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(
+        False,
+        description=(
+            "Assistant mode, owner DM only: Dom keeps your day in view with a morning plan, an evening wrap-up and "
+            "check-ins on reminders and goals. Off, he is the friend he is. It never reaches groups or friends' DMs. "
+            "Switch it with `/assistant on`, `/assistant off` and `/assistant status` in your DM, or in Settings → What Dom may do."
+        ),
+    )
+    morning: str = Field(
+        "08:00",
+        description="Local time (24-hour `HH:MM`, in `timezone`) of the morning plan. Empty turns the morning plan off.",
+    )
+    evening: str = Field(
+        "21:30",
+        description="Local time (24-hour `HH:MM`, in `timezone`) of the evening wrap-up. Empty turns the wrap-up off.",
+    )
+
+    @field_validator("morning", "evening")
+    @classmethod
+    def _a_time_or_nothing(cls, value: str) -> str:
+        if value and not PLAN_TIME.fullmatch(value):
+            raise ValueError("a time of day such as 08:00, or empty to turn it off")
+        return value
+
+
 class SelfWorkConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -730,6 +761,7 @@ class Config(BaseModel):
         description="Optional monthly USD limit per area (`chat`, `media`, `search`, `desktop`, `memory`), as a `[area_spend_caps_usd]` table. An area at its limit pauses that kind of work for the rest of the month while the others go on. An area left out, or set to zero, has no limit of its own.",
     )
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
+    assistant: AssistantConfig = Field(default_factory=AssistantConfig)
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)

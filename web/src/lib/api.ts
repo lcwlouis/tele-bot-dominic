@@ -193,6 +193,13 @@ export type Permission = {
   available: boolean;
   needs: string | null;
 };
+/** GET/POST /api/assistant (dom/web/assistant_settings.py): assistant mode's schedule and each message's last outcome. */
+export type AssistantMessage = {
+  id: "morning" | "evening";
+  time: string; // "HH:MM" in the owner's timezone, empty when that message is off
+  last: { day: string; at: string; state: string; label: string } | null;
+};
+export type AssistantView = { revision: string; timezone: string; enabled: boolean; messages: AssistantMessage[] };
 export type ProfileInterval = 1 | 7 | 14 | 30;
 export type Permissions = {
   revision: string;

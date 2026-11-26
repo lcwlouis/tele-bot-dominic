@@ -31,7 +31,7 @@ MAX_PANELS = 5
 RESERVED_COMMANDS = frozenset({
     "start", "help", "settings", "claim", "desktop", "update", "status", "wake", "sleep", "pending", "chats",
     "preset", "proposals", "plugins", "reminders", "skills", "ownwork", "t3", "tasks", "stickers", "import", "export",
-    "cancel", "stop", "studio", "fresh",
+    "cancel", "stop", "studio", "fresh", "assistant",
 })
 
 

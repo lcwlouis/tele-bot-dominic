@@ -63,6 +63,11 @@ groups = false  # allow openers in approved groups
 friends = false  # allow openers in approved friends' DMs
 max_per_day = 2  # per chat
 
+[assistant]
+enabled = false  # set true for assistant mode: Dom keeps your day in view, in your DM only (also /assistant on|off)
+morning = "08:00"  # local time of the morning plan; empty turns it off
+evening = "21:30"  # local time of the evening wrap-up; empty turns it off
+
 [self_work]
 enabled = true  # Dom plans up to three small tasks of his own at night; they run only in a local desktop behind a verified LAN guard
 delay_hours = 3  # announced in your DM and on the dashboard this long before any of them may start; cancel any there

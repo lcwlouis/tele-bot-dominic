@@ -159,6 +159,26 @@ cards, in the owner DM only. Create a Web-application OAuth client with the redi
 then press **Connect Google** in Settings → Services. See [Google Calendar and Gmail](google.md) for the scopes, the
 switches and the callback behind Cloudflare Access.
 
+## Assistant mode
+
+Off by default. Turn it on with `/assistant on` in the owner DM or in Settings → What Dom may do → Assistant; it
+applies at once, with no restart. On, Dom keeps your day in view, in your DM only:
+
+- A **morning plan** (`[assistant] morning`, default `08:00`) with today's calendar, the reminders due today, your
+  active goals, the weather and any holiday, and an **evening wrap-up** (`evening`, default `21:30`) with how the day
+  went, what was missed, what is due tomorrow and a short check-in on anything left open. Each time is in your
+  `timezone`; an empty time turns that message off. The calendar is included only while Google is connected and
+  Calendar read is on ([Google](google.md)).
+- Each message is one chat-model call in Dom's voice, sent as a normal DM message. It goes out once a day, restarts
+  included, and late only within three hours of its time. It waits while Dom is asleep. With nothing worth saying Dom
+  sends nothing and no model is called. The call counts as background work (the monthly cap and the area limits apply,
+  not the daily cap) and shows as **Assistant** in Usage. A message held back by a cap is not retried that day.
+- **Follow-through:** in your DM Dom is also shown reminders due within a day or overdue and goals with no update for
+  a week, and may check in on them when it fits, never twice about the same thing in a day.
+
+Settings shows both times and, for each message, when it was last sent or why not. Off, Dom is the friend he is today.
+Nothing from assistant mode reaches groups or friends' DMs. Booking appointments is not part of it yet.
+
 ## Menu cards
 
 The owner cards with a Close button (`/status`, `/chats`, `/preset`, `/plugins`,
@@ -182,6 +202,7 @@ Send these in the owner DM. Telegram's command menu lists them after a claim.
 | `/proposals` | Shows pending changes for review. Use `/proposals settled` to list settled cards or `/proposals delete <id>` to archive and delete one. |
 | `/reminders` | Lists, cancels and deletes reminders. Use `/reminders all` to include finished or cancelled ones, or `/reminders delete <id>`. |
 | `/skills` | Lists, retires, restores and deletes skills (`/skills retire <name>`, `/skills restore <name>`, `/skills delete <name>`). |
+| `/assistant` | Turns assistant mode on or off (`/assistant on`, `/assistant off`) or shows the mode, both times and when each message was last sent (`/assistant status`). |
 | `/stickers` | Adds and removes sticker sets, by short name or share link. |
 | `/import` | Starts an owner-reviewed memory import. |
 | `/export` | Sends a zip of everything Dom remembers: `SOUL.md`, `memory/`, `private/`, skills and presets. Never `.env`, `state.db` or backups; use `dom backup` for a full copy. |

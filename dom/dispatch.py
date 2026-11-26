@@ -752,6 +752,7 @@ class Dispatcher:
         self._spawn(self.app.chat_titles.refresh())  # a few Telegram asks, likewise on their own
         await self.jobs.tick()
         await self.openers.maybe(self.now())
+        await self.app.assistant.tick(self.now())
         if self._closing:
             return
         try:
@@ -2354,6 +2355,8 @@ class Dispatcher:
                 note += f"\n{goals_block}"
             if agenda_block := await app.google.turn_note(scope, chat_id):
                 note += f"\n{agenda_block}"
+            if assistant_block := await app.assistant.turn_note(scope, chat_id):
+                note += f"\n{assistant_block}"
         if self._ephemeral_recipient(scope, newest) is not None:
             note += (
                 '\nThe latest message is from the owner. For an assistant-like answer to that message, '

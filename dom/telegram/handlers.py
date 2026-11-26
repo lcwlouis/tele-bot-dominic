@@ -49,6 +49,7 @@ from dom.plugins.registry import PluginRegistry
 from dom.plugins import surfaces
 from dom.plugins.runner import PluginRunner
 from dom.gifs import GifSearch
+from dom.assistant import Assistant
 from dom.goals import Goals
 from dom.noticings import Noticings
 from dom.studio.client import StudioClient
@@ -111,6 +112,7 @@ class App:
     plugin_runner: PluginRunner = field(init=False)
     self_work: SelfWork = field(init=False)
     goals: Goals = field(init=False)
+    assistant: Assistant = field(init=False)
     noticings: Noticings = field(init=False)
     secrets: SecretStore = field(init=False)
     secret_requests: SecretRequests = field(init=False)
@@ -155,6 +157,7 @@ class App:
         )
         self.self_work = SelfWork(self)
         self.goals = Goals(self)
+        self.assistant = Assistant(self)
         self.noticings = Noticings(self)
         self.secrets = SecretStore(self.store, self.home.root)
         self.secret_requests = SecretRequests(self)
@@ -463,6 +466,10 @@ async def handle_message(app: App, message: Message) -> None:
             else:
                 await owner.show_skills(app)
                 await owner.record_event(app, f"{_person(msg.sender_name)} ran /skills")
+        return
+    if command == "/assistant":
+        if owner_dm:
+            await _send(app, msg.chat_id, await owner.assistant_command(app, msg.text.split()[1:]))
         return
     if command == "/ownwork":
         if owner_dm:

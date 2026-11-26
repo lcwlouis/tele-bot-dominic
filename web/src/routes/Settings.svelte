@@ -26,6 +26,7 @@
   } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
+  import AssistantCard from "$lib/components/settings/AssistantCard.svelte";
   import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
   import LeakScan from "$lib/components/settings/LeakScan.svelte";
   import MeaningIndex from "$lib/components/settings/MeaningIndex.svelte";
@@ -263,9 +264,13 @@
   }
 
   // "What Dom may do": the switches in sections, each with the panels that belong to it, narrowed by the search box.
-  type SectionId = "messaging" | "media" | "desktop" | "memory" | "safety";
+  type SectionId = "messaging" | "assistant" | "media" | "desktop" | "memory" | "safety";
   const SECTIONS: { id: SectionId; label: string; ids: string[]; words: string }[] = [
     { id: "messaging", label: "Messaging", ids: ["openers", "openers_friends", "openers_groups", "ephemeral_replies"], words: "" },
+    {
+      id: "assistant", label: "Assistant", ids: ["assistant"],
+      words: "assistant mode morning plan evening wrap-up schedule time reminders goals calendar day",
+    },
     {
       id: "media", label: "Media", ids: ["studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile"],
       words: "media limits voice notes video photos gap per day week left spend event days special trip birthday",
@@ -808,6 +813,9 @@
             {#if group.id === "media" && group.extras}
               <MediaLimits bind:revision />
               <EventDays />
+            {/if}
+            {#if group.id === "assistant" && group.extras}
+              <AssistantCard bind:revision enabled={permissions.find((item) => item.id === "assistant")?.enabled ?? false} />
             {/if}
             {#if group.id === "desktop" && group.extras && desktopSteps}
               <DesktopSteps bind:revision budget={desktopSteps} onsaved={(result) => (desktopSteps = result.desktop_steps)} />
