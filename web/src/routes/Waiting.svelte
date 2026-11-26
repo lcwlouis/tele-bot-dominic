@@ -4,6 +4,8 @@
   import type { WaitingData, WaitingCard } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
+  import GoneNote from "$lib/components/kit/GoneNote.svelte";
+  import { LINKED, linkedId, reveal } from "$lib/deep-link";
   import DiffLines from "$lib/components/memory/DiffLines.svelte";
   import Notices from "$lib/components/system/Notices.svelte";
   import TrialNote from "$lib/components/system/TrialNote.svelte";
@@ -13,6 +15,7 @@
   import { Checkbox } from "$lib/components/ui/checkbox";
   import { Label } from "$lib/components/ui/label";
   import Confirm from "$lib/components/work/Confirm.svelte";
+  import { cn } from "$lib/utils";
   import { WorkPage } from "$lib/work.svelte";
 
   // Everything that needs the owner's yes or no: strangers' chats, imports, soul and memory edits, skills, plugin
@@ -35,7 +38,22 @@
   let rejecting = $state<number | null>(null);
   let deleting = $state<WaitingData["settled"][number] | null>(null);
 
-  onMount(() => page.load());
+  // A link may name one proposal (?proposal=<id>, from a Telegram notice): select its card in place, or its line
+  // under Settled once decided. An import's card answers for each of its facts.
+  const linked = linkedId("proposal");
+  let gone = $state(false);
+  let settledOpen = $state(false);
+  const holds = (card: WaitingCard, id: number) => card.id === id || (card.type === "import" && card.facts.some((fact) => fact.id === id));
+  onMount(async () => {
+    await page.load();
+    if (linked === null || page.data === null) return;
+    const card = page.data.cards.find((item) => holds(item, linked));
+    if (card) reveal(`waiting-${card.type}-${card.id}`);
+    else if (page.data.settled.some((row) => row.id === linked)) {
+      settledOpen = true;
+      reveal(`settled-${linked}`);
+    } else gone = true;
+  });
 
   const filter = () => ({ kind, source });
   const reload = () => page.load(`?${new URLSearchParams({ kind, source })}`);
@@ -44,6 +62,8 @@
 </script>
 
 <PageHeader kicker="Home" title="Waiting for you" subtitle="Everything Dom won't do until you say so." />
+
+{#if gone}<GoneNote text="That proposal is gone. It may have been deleted." ondismiss={() => (gone = false)} />{/if}
 
 {#if page.data === null && page.failed}
   <StatusNote tone="error" title="Couldn't load what's waiting" detail={`Dom's dashboard answered: ${page.failed}.`}>
@@ -98,7 +118,7 @@
       {/each}
 
       {#each data.cards as card (card.type + card.id)}
-        <li>
+        <li id={`waiting-${card.type}-${card.id}`} tabindex="-1" class={linked !== null && holds(card, linked) ? LINKED : "rounded-xl outline-none"}>
           <Card.Root class="h-full">
             {#if card.type === "import"}
               {@const ids = chosen(card)}
@@ -170,11 +190,11 @@
   {/if}
 
   {#if data.settled.length}
-    <details class="mt-8 rounded-xl border bg-surface px-4 py-3">
+    <details class="mt-8 rounded-xl border bg-surface px-4 py-3" bind:open={settledOpen}>
       <summary class="cursor-pointer font-medium">Settled ({data.settled.length})</summary>
       <ul class="mt-3 grid gap-2" aria-label="Settled proposals">
         {#each data.settled as row (row.id)}
-          <li class="flex flex-wrap items-center gap-x-3 gap-y-2 border-t pt-2 first:border-t-0 first:pt-0">
+          <li id={`settled-${row.id}`} tabindex="-1" class={cn("flex flex-wrap items-center gap-x-3 gap-y-2 border-t pt-2 outline-none first:border-t-0 first:pt-0", row.id === linked && "rounded-md ring-2 ring-signal/70")}>
             <div class="min-w-0 flex-1">
               <p class="flex flex-wrap items-center gap-2 text-sm font-medium">{row.label} <Badge variant={row.status === "approved" ? "secondary" : "outline"}>{row.status}</Badge></p>
               <p class="text-sm break-words text-muted-foreground"><span class="font-mono">#{row.id}</span> {row.title}</p>

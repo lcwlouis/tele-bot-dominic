@@ -190,8 +190,11 @@ firewall rules above cover all of them, and Dom runs the LAN probe before **ever
 container start, not once. Containers on that bridge can reach each other (not your
 LAN); each has its own random API key.
 
-**Dashboard.** The Desk page (Work, then Desk) lists every container with its host, state and
-task, and each host's container limit. `/app/work?container=<name>` shows one; the live viewer
+**Dashboard.** The Tasks page (Work, then Tasks) lists every container with its host, state and
+task, and each host's container limit, above one newest-first list of desktop tasks and Dom's own
+work. Open a task for its steps, its result (marked as unchecked web text), files and screenshots, and to
+cancel or delete it. `/app/work?task=<id>` opens one desktop task and `/app/work?own=<id>` one of
+Dom's own. `/app/work?container=<name>` shows one container; the live viewer
 and the Open Desktop button in a handoff message carry the name. Handoff and report messages, `/tasks` and `/status` name
 a non-default container, and screenshot files are prefixed with it.
 
@@ -232,7 +235,7 @@ Set `[web].public_url` in `config.toml` to the HTTPS base URL of the
 authenticated dashboard. Dom uses it for the Open Desktop button in the owner's
 handoff message (it adds `?container=<name>` for a container other than `default`).
 That link opens the full-page live viewer (`/desktop/vnc/index.html`) directly; its
-back link returns to the Desk page, whose Open live viewer button opens it again. The viewer shows the live browser host, handoff countdown,
+back link returns to the Tasks page, whose Open live viewer button opens it again. The viewer shows the live browser host, handoff countdown,
 Done button, local zoom and pan, one-finger scroll mode, a remote key bar,
 explicit Copy/Paste buttons, fullscreen, and Phone mode (`800x600` via the
 sandbox API, automatically restored to `1280x1024` server-side at Done, cancel,
@@ -260,14 +263,14 @@ Set `enabled = false` to turn it off; see
 [Configuration](configuration.md#self-directed-work) for the delay and budget limits.
 
 **You see the plan first.** Dom sends one message to your DM listing the tasks, each
-with a Cancel button, and the dashboard's **Own work** page (and the home view,
-while anything is planned or running) shows the same plan with Cancel buttons. A
+with a Cancel button, and the dashboard's task list (Work, then Tasks; and the home view,
+while anything is planned or running) shows the same plan, each task with Cancel in its details. A
 task starts no sooner than `delay_hours` after the announcement, and only while Dom
 is awake and idle: your DM is not asleep, no chat is online or mid-reply, and no
 desktop task is running. A task that has not started within a day expires, and the
-next night's plan replaces any leftovers. Results, with any screenshots, appear on
-the Own work page; your DM gets one short summary. Finished tasks (and their
-saved screenshots) can be deleted from the Own work page or with `/ownwork`
+next night's plan replaces any leftovers. Results, with any screenshots, appear in
+the task list; your DM gets one short summary. Finished tasks (and their
+saved screenshots) can be deleted from the task list or with `/ownwork`
 after moving them into the deletion archive; planned or running tasks must be
 cancelled first. A task that runs out of steps
 gets one last call to report what it found; with a report it ends as done, marked
@@ -284,7 +287,7 @@ anyone else.
   are wiped before Dom's next self-directed task; use another container for those.
 - Containers share the desktop bridge, so a self-directed task starts only while
   every other local container is stopped, and no other container may start while it
-  runs (cancel it on the Own work page to free the desktop).
+  runs (cancel it in the task list to free the desktop).
 - The worker gets only the desktop tools the plan named, from the browser tools,
   `read_file`, `write_file` and `finish`. There is no shell and no Python: those run
   as the same user, with the same files and screen as the browser, so they could

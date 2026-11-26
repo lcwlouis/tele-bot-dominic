@@ -5,6 +5,8 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
+  import GoneNote from "$lib/components/kit/GoneNote.svelte";
+  import { LINKED, linkedId, reveal } from "$lib/deep-link";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
@@ -16,13 +18,22 @@
   let { destination, tab }: { destination: Destination; tab: Tab } = $props();
 
   const page = new WorkPage<RemindersData>("/api/work/reminders");
+  // A link may name one reminder (?id=<id>, from a Telegram notice or a search hit): the page asks for it by name,
+  // so an older one than the list holds still comes, then selects it in place.
+  const linked = linkedId("id");
+  let gone = $state(false);
   let cancelling = $state<Reminder | null>(null);
   let deleting = $state<Reminder | null>(null);
   // Bulk: the selected ids, and which action waits on its one confirm.
   let selected = $state<number[]>([]);
   let bulk = $state<"cancel" | "delete" | null>(null);
 
-  onMount(() => page.load());
+  onMount(async () => {
+    await page.load(linked === null ? "" : `?id=${linked}`);
+    if (linked === null || page.data === null) return;
+    if (page.data.reminders.some((row) => row.id === linked)) reveal(`reminder-row-${linked}`);
+    else gone = true;
+  });
 
   const tone = (row: Reminder) => (row.status === "active" ? (row.undeliverable ? "destructive" : "secondary") : "outline");
   const label = (row: Reminder) => (row.status !== "active" ? row.status : row.undeliverable ? "undeliverable" : "active");
@@ -47,6 +58,8 @@
 
 <PageHeader kicker={destination.label} title={tab.label} subtitle={tab.blurb} />
 <PageTabs {destination} {tab} />
+
+{#if gone}<GoneNote text="That reminder is gone. It may have been deleted." ondismiss={() => (gone = false)} />{/if}
 
 {#if page.data === null && page.failed}
   <StatusNote tone="error" title="Couldn't load reminders" detail={`Dom's dashboard answered: ${page.failed}.`}>
@@ -83,7 +96,7 @@
   </div>
   <ul class="grid gap-3" aria-label="Reminders">
     {#each rows as row (row.id)}
-      <li>
+      <li id={`reminder-row-${row.id}`} tabindex="-1" class={row.id === linked ? LINKED : "rounded-xl outline-none"}>
         <Card.Root class={selected.includes(row.id) ? "border-signal/45" : ""}>
           <Card.Content class="flex flex-wrap items-center gap-x-4 gap-y-3">
             <Checkbox

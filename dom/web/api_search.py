@@ -22,6 +22,10 @@ PAGES = {
 def _href(hit: global_search.Hit) -> str:
     if hit.kind == "memory":
         return f"{PAGES['memory']}?file={quote(hit.ref, safe='')}"
+    if hit.kind == "task":  # the Work page opens the task's details
+        return f"{PAGES['task']}?task={quote(hit.ref, safe='')}"
+    if hit.kind == "reminder":
+        return f"{PAGES['reminder']}?id={quote(hit.ref, safe='')}"
     return PAGES[hit.kind]
 
 

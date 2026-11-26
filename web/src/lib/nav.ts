@@ -37,10 +37,10 @@ export const destinations: Destination[] = [
   },
   {
     id: "work", label: "Work", href: "/app/work", icon: Monitor,
-    blurb: "Things Dom does for you: desktop tasks, his own work, reminders and briefs.",
+    blurb: "Things Dom does for you: tasks, his own work and skills, reminders and briefs.",
     tabs: [
-      { id: "desk", label: "Desk", href: "/app/work", icon: Monitor, blurb: "The desktop Dom works on, and handoffs to you." },
-      { id: "own-work", label: "Own work", href: "/app/work/own-work", icon: Sparkles, blurb: "Work Dom set himself, and his skills." },
+      { id: "desk", label: "Tasks", href: "/app/work", icon: Monitor, blurb: "Desktop tasks and work Dom set himself, and the computer he works on." },
+      { id: "own-work", label: "Own work", href: "/app/work/own-work", icon: Sparkles, blurb: "How Dom's own work runs, and the skills he learned." },
       { id: "reminders", label: "Reminders", href: "/app/work/reminders", icon: Bell, blurb: "What Dom will remind you of, and when." },
       { id: "briefs", label: "Briefs", href: "/app/work/briefs", icon: FileText, blurb: "The briefs Dom wrote for you." },
     ],

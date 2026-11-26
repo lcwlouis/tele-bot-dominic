@@ -42,6 +42,15 @@ Dom pins and unpins his own in the background memory pass, which runs after his 
 `core_memory_cap` (default 30, the owner's pins included). The owner deletes a core memory by deleting its line or
 its `{core ...}` group in the file; `GET /api/memory/core` lists them all as `{"cap": n, "items": [{file, text, source, by, day, why}]}`.
 
+## On the Memory page
+
+Files open as a preview first; Edit shows the source. The preview hides every metadata group and shows it as a small
+chip instead: `from: <chat name>` for `{chat <id>}`, `shareable` for `{any}`, and `core, pinned by you` or `core,
+pinned by Dom` for a pin. A journal keeps each line on its own. People's notes are listed by the person's name, and
+the journal archive and every former file sit read-only under a folded Archive group. Core memories lists every pin
+with who made it, the day and Dom's reason; deleting one offers to unpin it (the line stays, without its `{core ...}`
+group) or to delete the line, saved like any other edit on the page.
+
 ## Former files
 
 When the memory pass replaces or removes a line, or a line expires, the old line is appended to `<file>.former.md`
