@@ -3,13 +3,22 @@ import { expect, test, type Page } from "@playwright/test";
 import { PREVIEW_PORT as PORT } from "./preview";
 
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
-const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string; region?: string }[] = [
+const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string; region?: string; strip?: string; peek?: boolean; long?: boolean; all?: boolean; full?: boolean }[] = [
   // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
   // The desktop sidebar folded to its rail of icons; the page takes back the room.
   { name: "sidebar-folded", path: "/app/work/reminders", heading: "Reminders", folded: true, desktopOnly: true },
-  { name: "gallery", path: "/app/gallery", heading: "Component library" },
+  // The gallery, captured as a full page: its Work list is a pane on a desktop and ten strips with See all on a phone.
+  { name: "gallery", path: "/app/gallery", heading: "Component library", full: true },
+  // The strip list with one strip's details open: beside the list's pane on a desktop, in a bottom sheet on a phone.
+  { name: "gallery-strip-detail", path: "/app/gallery", heading: "Component library", strip: "Sign in to the library site", full: true },
+  // A phone's See all: the whole Work list as its own screen, with its filter bar and count.
+  { name: "gallery-see-all", path: "/app/gallery", heading: "Component library", all: true, phoneOnly: true },
+  // Deep in the long Work list (its pane, or the phone's full view): a date group stuck to the top, back to top below.
+  { name: "gallery-long", path: "/app/gallery", heading: "Component library", long: true },
+  // The folded rail opened for a look by a resting mouse: over the page, which keeps its width.
+  { name: "sidebar-peek", path: "/app/work/reminders", heading: "Reminders", folded: true, peek: true, desktopOnly: true },
   { name: "settings-models", path: "/app/system", heading: "Settings" },
   { name: "settings-providers", path: "/app/system", heading: "Settings", tab: "Providers" },
   { name: "settings-permissions", path: "/app/system", heading: "Settings", tab: "What Dom may do" },
@@ -67,6 +76,27 @@ async function watch(page: Page) {
     });
   });
   return problems;
+}
+
+/** The gallery's long Work list (the whole list, not the phone's preview). */
+const workPane = (page: Page) => page.locator('[data-pane]:has([aria-label="Tasks, newest first"])');
+const workCount = (page: Page) => workPane(page).locator("[data-count]");
+
+/** Scroll the long Work list by `screens` of what scrolls it, or to its end: its pane on a desktop, the full view
+ *  on a phone, or the page when it shows the whole list. */
+async function scrollWork(page: Page, screens?: number) {
+  await workPane(page).evaluate((pane, screens) => {
+    const view = pane.closest<HTMLElement>("[role=dialog]");
+    const scroller = view ?? (getComputedStyle(pane).overflowY === "auto" ? pane : null);
+    if (scroller) {
+      const from = view ? pane.offsetTop : 0;
+      scroller.scrollTop = screens === undefined ? scroller.scrollHeight : from + screens * scroller.clientHeight;
+    } else {
+      // The page: to the list's end (not the page's, which would jump past the list's end unseen), or down it.
+      const box = pane.getBoundingClientRect();
+      scrollTo(0, scrollY + (screens === undefined ? box.bottom - innerHeight : box.top + screens * innerHeight));
+    }
+  }, screens);
 }
 
 /** Answer the soul conversation with a fixed reply and the seeded soul edit, so the screens change no state. */
@@ -129,7 +159,7 @@ for (const scheme of ["dark", "light"] as const) {
         expect(problems).toEqual([]);
       });
 
-      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly, desktopOnly, folded, soul, region } of pages) {
+      for (const { name, path, heading, tab, click, fill, link, menu, phoneOnly, desktopOnly, folded, soul, region, strip, peek, long, all, full } of pages) {
         if (phoneOnly && device !== "phone") continue;
         if (desktopOnly && device !== "desktop") continue;
         test(name, async ({ page }) => {
@@ -145,6 +175,7 @@ for (const scheme of ["dark", "light"] as const) {
           }
           if (tab) await page.getByRole("tab", { name: tab }).click();
           if (click) await page.getByRole("button", { name: click, exact: true }).first().click();
+          if (strip) await page.getByRole("button", { name: new RegExp(`^${strip}`) }).click();
           if (soul) {
             await page.getByRole("textbox", { name: "Message to Dom" }).fill(soul);
             await page.keyboard.press("Enter");
@@ -161,11 +192,30 @@ for (const scheme of ["dark", "light"] as const) {
           if (menu) {
             await page.getByRole("button", { name: /^Menu/ }).click();
             await expect(page.getByRole("dialog")).toBeVisible();
-          } else {
+          } else if (all || long) {
+            // Desktop: the list's column at the top of the screen. Phone: See all opens the full view.
+            if (device === "desktop") await workPane(page).evaluate((pane) => pane.parentElement!.scrollIntoView());
+            else {
+              await page.getByRole("button", { name: "See all (400)" }).click();
+              await expect(page.getByRole("dialog", { name: "Tasks" })).toBeVisible();
+            }
+            if (long) {
+              // The end brings exactly one more page; then 2.2 screens down, back to top shows.
+              await scrollWork(page);
+              await expect(workCount(page)).toHaveText("Showing 100 of 400");
+              await scrollWork(page, 2.2);
+              await expect(page.getByRole("button", { name: "Back to the top of the list" })).toBeVisible();
+            }
+          } else if (!full) {
             // Grow the viewport to the whole page, so the desktop sidebar sits where a person sees it instead of
             // where a full-page capture would stitch it.
             const height = await page.evaluate(() => document.documentElement.scrollHeight);
             await page.setViewportSize({ width: viewport.width, height: Math.max(viewport.height, height) });
+          }
+          if (strip && device === "phone") await expect(page.getByRole("dialog")).toBeVisible();
+          if (peek) {
+            await page.locator("#sidebar-nav").hover({ position: { x: 20, y: 200 } });
+            await expect(page.locator("aside[data-peek]")).toBeVisible();
           }
           if (region) {
             // One part of the page, captured on its own.
@@ -174,7 +224,8 @@ for (const scheme of ["dark", "light"] as const) {
             return;
           }
           // Dom's local clock ticks each second, so it is masked.
-          await expect(page).toHaveScreenshot(`${name}-${device}-${scheme}.png`, { mask: [page.locator("[data-clock]")] });
+          // A page with a list pane is captured whole rather than grown: a taller viewport would only grow the pane.
+          await expect(page).toHaveScreenshot(`${name}-${device}-${scheme}.png`, { mask: [page.locator("[data-clock]")], fullPage: full });
           const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
           expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
           expect(problems).toEqual([]);
@@ -186,6 +237,408 @@ for (const scheme of ["dark", "light"] as const) {
 
 test.describe("interactions under the CSP", () => {
   test.use({ viewport: viewports.desktop, colorScheme: "dark" });
+
+  test("strip list: a strip opens its details beside the list, Esc closes back to the strip, trash works", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const list = page.getByRole("group", { name: "Tasks, newest first" });
+    const strip = list.getByRole("button", { name: /^Sign in to the library site/ });
+    await expect(strip).toHaveAccessibleName(/^Sign in to the library site so I can renew the books ?, Waiting for you/);
+    await strip.focus();
+    await page.keyboard.press("Enter");
+    await expect(strip).toHaveAttribute("aria-expanded", "true");
+    const panel = page.getByRole("region", { name: "Sign in to the library site so I can renew the books" });
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole("heading", { level: 2 })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(strip).toBeFocused();
+    // Space opens it too; the close glyph has a tooltip and puts focus back.
+    await page.keyboard.press(" ");
+    await panel.getByRole("button", { name: "Close details" }).hover();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Close details" })).toBeVisible();
+    await panel.getByRole("button", { name: "Close details" }).click();
+    await expect(strip).toBeFocused();
+    // A trailing trash glyph removes the strip, and the total counts one fewer.
+    await list.getByRole("button", { name: 'Move "Tidy the photo folder by year" to the trash' }).click();
+    await expect(list.getByRole("button", { name: /^Tidy the photo folder/ })).toHaveCount(0);
+    await expect(workCount(page)).toHaveText("Showing 49 of 399");
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list: date groups head the strips and stick to the top as they scroll", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const list = page.getByRole("group", { name: "Tasks, newest first" });
+    await expect(list.getByRole("heading", { level: 4 })).toHaveText(["Today", "Yesterday", "This week", "This month"]);
+    // Each day's strips are a list named by its heading.
+    await expect(list.getByRole("list", { name: "Today" }).getByRole("listitem")).toHaveCount(3);
+    await expect(list.getByRole("list", { name: "Yesterday" }).getByRole("listitem")).toHaveCount(1);
+    // Scrolled into "This month", its heading sits at the top of the pane with strips passing under it.
+    const month = list.getByRole("heading", { name: "This month" });
+    const pane = workPane(page);
+    await pane.scrollIntoViewIfNeeded();
+    await scrollWork(page, 1);
+    await expect.poll(async () => Math.abs((await month.boundingBox())!.y - (await pane.boundingBox())!.y)).toBeLessThanOrEqual(1);
+    // Older pages bring the months by name.
+    await expect
+      .poll(async () => {
+        await scrollWork(page);
+        return list.getByRole("heading", { name: "October" }).count();
+      })
+      .toBe(1);
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list: the filter bar narrows by text and status, Esc clears it before closing details", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const list = page.getByRole("group", { name: "Tasks, newest first" });
+    const count = workCount(page);
+    await expect(count).toHaveText("Showing 50 of 400");
+    const strips = list.locator("[data-strip]");
+    /** Every strip shown matches, and the count says how many of those loaded. (A narrow filter leaves the end of
+     *  the list in view, so further pages load as they would on a scroll.) */
+    async function onlyMatches(match: RegExp) {
+      await expect(count).toHaveText(/^\d+ of \d+ loaded match$/);
+      // Read the count and the strips together: further pages may still be arriving.
+      await expect
+        .poll(() =>
+          page.evaluate((source) => {
+            const pane = document.querySelector('[data-pane]:has([aria-label="Tasks, newest first"])')!;
+            const names = [...pane.querySelectorAll("[data-strip]")].map((node) => node.textContent ?? "");
+            const said = Number(pane.querySelector("[data-count]")!.textContent!.split(" ")[0]);
+            return said === names.length && names.length > 0 && names.every((name) => new RegExp(source).test(name));
+          }, match.source),
+        )
+        .toBe(true);
+    }
+    // Open a strip, then filter: Esc in the filter empties it and leaves the details open.
+    await list.getByRole("button", { name: /^Compare three standing desks/ }).click();
+    const filter = page.getByRole("searchbox", { name: "Filter tasks" });
+    await filter.fill("kettle");
+    await expect(strips.first()).toHaveText(/kettle/);
+    await onlyMatches(/kettle/);
+    await filter.press("Escape");
+    await expect(filter).toHaveValue("");
+    await expect(page.getByRole("region", { name: "Compare three standing desks under $400" })).toBeVisible();
+    await expect(count).toHaveText(/^Showing \d+ of 400$/);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("region", { name: "Compare three standing desks under $400" })).toBeHidden();
+    // Status chips are toggles, and more than one can be on.
+    const chips = page.getByRole("group", { name: "Status" }).first();
+    await chips.getByRole("button", { name: "Failed" }).click();
+    await expect(chips.getByRole("button", { name: "Failed" })).toHaveAttribute("aria-pressed", "true");
+    await onlyMatches(/, Failed/);
+    await chips.getByRole("button", { name: "Paused" }).click();
+    await expect(list.getByRole("button", { name: /, Paused/ }).first()).toBeAttached();
+    await onlyMatches(/, (Failed|Paused)/);
+    await filter.fill("nothing like this");
+    await expect(page.getByText("Nothing loaded matches this filter.")).toBeVisible();
+
+    // The Turn log hands its filter to the caller, which searches on the "server"; the chat picker sits in its bar.
+    const turns = page.getByRole("group", { name: "Turns, newest first" });
+    await page.getByRole("searchbox", { name: "Search turns" }).fill("laugh");
+    await expect(turns.getByRole("listitem")).toHaveCount(1);
+    await expect(page.locator('[data-pane]:has([aria-label="Turns, newest first"]) [data-count]')).toHaveText("1 loaded");
+    await page.getByRole("searchbox", { name: "Search turns" }).fill("");
+    await page.getByRole("group", { name: "Status" }).last().getByRole("button", { name: "Held back" }).click();
+    await expect(turns.getByRole("listitem")).toHaveCount(1);
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list: back to top appears two screens down, returns to the start and focuses it", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const top = page.getByRole("button", { name: "Back to the top of the list" });
+    const pane = workPane(page);
+    await pane.scrollIntoViewIfNeeded();
+    await expect(top).toHaveCount(0);
+    await scrollWork(page);
+    await expect(workCount(page)).toHaveText("Showing 100 of 400");
+    await scrollWork(page, 2.5);
+    await expect(top).toBeVisible();
+    await top.click();
+    const first = page.getByRole("group", { name: "Tasks, newest first" }).getByRole("button", { name: /^Compare three standing desks/ });
+    await expect(first).toBeFocused();
+    await expect.poll(() => pane.evaluate((node) => node.scrollTop)).toBe(0);
+    await expect(top).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list: past 200 strips, off-screen ones skip rendering while the open strip and focus survive", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const list = page.getByRole("group", { name: "Tasks, newest first" });
+    const strip = list.getByRole("button", { name: /^Sign in to the library site/ });
+    await strip.click();
+    const panel = page.getByRole("region", { name: "Sign in to the library site so I can renew the books" });
+    await expect(panel).toBeVisible();
+    // Scroll on until every page is in: 400 strips.
+    const count = workCount(page);
+    await expect
+      .poll(
+        async () => {
+          await scrollWork(page);
+          return count.textContent();
+        },
+        { timeout: 20_000 },
+      )
+      .toBe("Showing 400 of 400");
+    await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+    // Off screen, a strip is skipped by layout and paint but stays in the page; the open one is still open.
+    expect(await list.locator("li").first().evaluate((node) => getComputedStyle(node).contentVisibility)).toBe("auto");
+    await expect(strip).toHaveAttribute("aria-expanded", "true");
+    await expect(panel).toBeVisible();
+    // The sticky panel followed the scroll; Esc closes it and focus returns to the strip far above.
+    await panel.getByRole("heading", { level: 2 }).focus();
+    await page.keyboard.press("Escape");
+    await expect(strip).toBeFocused();
+    await expect.poll(async () => (await strip.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list: a failing page stops the loading and offers to try again", async ({ page }) => {
+    const problems = await watch(page);
+    const failures: string[] = [];
+    page.on("console", (message) => message.text().startsWith("Loading more failed") && failures.push(message.text()));
+    await page.goto("/app/gallery");
+    await page.getByRole("switch", { name: "Pages fail" }).click();
+    await scrollWork(page);
+    const retry = page.getByRole("button", { name: "Couldn't load more. Try again" });
+    await expect(retry).toBeVisible();
+    // The end stays in view, yet the list asked once and stopped.
+    await page.waitForTimeout(1000);
+    expect(failures).toHaveLength(1);
+    await page.getByRole("switch", { name: "Pages fail" }).click();
+    await retry.click();
+    await expect(workCount(page)).toHaveText(/^Showing (100|150) of 400$/);
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list on a desktop: the long list is a pane that fills the screen and scrolls inside, keys included", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const pane = workPane(page);
+    await pane.scrollIntoViewIfNeeded();
+    const height = await page.evaluate(() => document.documentElement.scrollHeight);
+    // The pane fits the screen and scrolls itself; loading more pages never makes the page longer.
+    expect(await pane.evaluate((node) => getComputedStyle(node).overflowY)).toBe("auto");
+    const box = (await pane.boundingBox())!;
+    expect(box.height).toBeGreaterThan(700);
+    expect(box.height).toBeLessThanOrEqual(900);
+    await scrollWork(page);
+    await expect(workCount(page)).toHaveText("Showing 100 of 400");
+    expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(height);
+    // Keys scroll the pane when focus is inside it, and leave the page where it is.
+    await scrollWork(page, 0);
+    const first = page.getByRole("group", { name: "Tasks, newest first" }).getByRole("button", { name: /^Compare three standing desks/ });
+    await first.focus();
+    const pageY = await page.evaluate(() => scrollY);
+    await page.keyboard.press("PageDown");
+    await expect.poll(() => pane.evaluate((node) => node.scrollTop)).toBeGreaterThan(300);
+    // End reaches the end (where the next page then starts loading).
+    const end = await pane.evaluate((node) => node.scrollHeight - node.clientHeight);
+    await page.keyboard.press("End");
+    await expect.poll(() => pane.evaluate((node) => node.scrollTop)).toBeGreaterThanOrEqual(end - 2);
+    await page.keyboard.press("Home");
+    await expect.poll(() => pane.evaluate((node) => node.scrollTop)).toBe(0);
+    expect(await page.evaluate(() => scrollY)).toBe(pageY);
+    // The details beside it fill the same height and scroll on their own.
+    await first.click();
+    const panel = page.getByRole("region", { name: "Compare three standing desks under $400" });
+    await expect(panel).toBeVisible();
+    // (The narrower list may wrap its filter bar; the pane then shortens to keep both on the screen.)
+    const bottom = async (node: typeof pane) => Math.round(await node.evaluate((element) => element.getBoundingClientRect().bottom));
+    await expect.poll(async () => (await bottom(panel)) - (await bottom(pane))).toBe(0);
+    // Filter bar and pane together still fit the screen, less a margin.
+    expect(await pane.evaluate((element) => Math.round(element.parentElement!.getBoundingClientRect().height))).toBeLessThanOrEqual(900 - 32);
+    // A short list (the Turn log) opts out and stays page length.
+    expect(await page.locator('[data-pane]:has([aria-label="Turns, newest first"])').evaluate((node) => getComputedStyle(node).overflowY)).toBe("visible");
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list on a phone: ten strips and See all, so what is below stays in reach", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const preview = page.locator("[data-preview]");
+    await expect(preview.locator("[data-strip]")).toHaveCount(10);
+    // The next section starts within a screen of the list's start: no scrolling through the list to reach it.
+    const [listTop, nextTop] = [(await preview.boundingBox())!.y, (await page.getByRole("heading", { name: "Mock Turn log" }).boundingBox())!.y];
+    expect(nextTop - listTop).toBeLessThan(viewports.phone.height);
+    // A strip in the preview opens the bottom sheet, as anywhere on a phone.
+    await preview.getByRole("button", { name: /^Sign in to the library site/ }).click();
+    const sheet = page.getByRole("dialog", { name: "Sign in to the library site so I can renew the books" });
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+
+    // See all: the whole list as its own screen, the page under it left where it was.
+    const seeAll = page.getByRole("button", { name: "See all (400)" });
+    await seeAll.hover();
+    const pageY = await page.evaluate(() => scrollY);
+    expect(pageY).toBeGreaterThan(0);
+    await seeAll.click();
+    const view = page.getByRole("dialog", { name: "Tasks" });
+    await expect(view).toBeVisible();
+    await expect(view.getByRole("heading", { name: "Tasks" })).toBeFocused();
+    await expect(workCount(page)).toHaveText("Showing 50 of 400");
+    await expect(view.getByRole("searchbox", { name: "Filter tasks" })).toBeVisible();
+    // It scrolls as a page would: loading, group headers under its header, back to top.
+    await scrollWork(page);
+    await expect(workCount(page)).toHaveText("Showing 100 of 400");
+    const header = (await view.getByRole("button", { name: "Back", exact: true }).boundingBox())!;
+    await scrollWork(page, 1);
+    const month = view.getByRole("heading", { name: "This month" });
+    await expect.poll(async () => Math.round((await month.boundingBox())!.y)).toBe(56);
+    expect(header.y).toBeLessThan(56);
+    // A strip here opens the bottom sheet over the full view; Esc closes it back to that strip.
+    const strip = view.getByRole("button", { name: /^Book a table for four/ }).first();
+    await strip.click();
+    await expect(page.getByRole("dialog", { name: "Book a table for four on Friday" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Book a table for four on Friday" })).toBeHidden();
+    await expect(view).toBeVisible();
+    await expect(strip).toBeFocused();
+    await scrollWork(page, 2.5);
+    const top = view.getByRole("button", { name: "Back to the top of the list" });
+    await expect(top).toBeVisible();
+    await top.click();
+    await expect.poll(() => view.evaluate((node) => node.scrollTop)).toBe(0);
+    await expect(view.getByRole("button", { name: /^Compare three standing desks/ })).toBeFocused();
+    // Back returns to the page where it was, with focus on See all; so does the back gesture.
+    await view.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(view).toBeHidden();
+    await expect(page).toHaveURL(/\/app\/gallery$/);
+    await expect(seeAll).toBeFocused();
+    expect(await page.evaluate(() => scrollY)).toBe(pageY);
+    await seeAll.click();
+    await expect(view).toBeVisible();
+    await page.goBack();
+    await expect(view).toBeHidden();
+    await expect(page).toHaveURL(/\/app\/gallery$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Component library" })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list on a phone: a page that is only the list shows it whole, and the page scrolls", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    await page.getByRole("switch", { name: "Whole list on the page" }).click();
+    await expect(page.locator("[data-preview]")).toHaveCount(0);
+    expect(await workPane(page).evaluate((node) => getComputedStyle(node).overflowY)).toBe("visible");
+    const height = await page.evaluate(() => document.documentElement.scrollHeight);
+    await scrollWork(page);
+    await expect(workCount(page)).toHaveText("Showing 100 of 400");
+    expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeGreaterThan(height);
+    // Group headers stick to the top of the screen; back to top returns to the list's start.
+    await scrollWork(page, 2.5);
+    await expect.poll(async () => Math.round((await page.getByRole("heading", { name: "This month" }).boundingBox())!.y)).toBe(0);
+    await page.getByRole("button", { name: "Back to the top of the list" }).click();
+    await expect(page.getByRole("group", { name: "Tasks, newest first" }).getByRole("button", { name: /^Compare three standing desks/ })).toBeFocused();
+    expect(problems).toEqual([]);
+  });
+
+  test("strip list on a phone: details open in a bottom sheet that closes on Esc, back to the strip", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const strip = page.getByRole("group", { name: "Turns, newest first" }).getByRole("button", { name: /^Held back: the reply mentioned/ });
+    await strip.click();
+    const sheet = page.getByRole("dialog", { name: "Held back: the reply mentioned your DM" });
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByText("example/chat-large")).toBeVisible();
+    // It slides up to sit on the bottom edge.
+    await expect.poll(async () => Math.round(await sheet.evaluate((node) => node.getBoundingClientRect().bottom))).toBe(viewports.phone.height);
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+    await expect(strip).toBeFocused();
+    expect(problems).toEqual([]);
+  });
+
+  test("icon buttons: the tooltip shows on focus without repeating the name, and a click still closes it", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const edit = page.getByRole("button", { name: "Edit reminder" });
+    await edit.focus();
+    const tip = page.locator("[data-slot=tooltip-content]").filter({ hasText: "Edit reminder" });
+    await expect(tip).toBeVisible();
+    // The tooltip only repeats the name, so it is not also the description.
+    await expect(edit).not.toHaveAttribute("aria-describedby");
+    // The tooltip's own click handler still runs beside the button's: a click closes it.
+    await edit.hover();
+    await expect(tip).toBeVisible();
+    await edit.click();
+    await expect(tip).toBeHidden();
+    // The sidebar's logo button: its tooltip adds only the key, so it isn't a description either, and its click
+    // closes the "Collapse" tooltip as it folds.
+    const fold = page.getByRole("button", { name: "Collapse sidebar" });
+    await fold.hover();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Collapse sidebar" })).toBeVisible();
+    await expect(fold).not.toHaveAttribute("aria-describedby");
+    await fold.click();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Collapse sidebar" })).toHaveCount(0);
+    await page.mouse.move(900, 600);
+    await page.getByRole("button", { name: "Expand sidebar" }).click();
+    expect(problems).toEqual([]);
+  });
+
+  test("info glyph: a click pins it, a click elsewhere or Esc closes it", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const info = page.getByRole("button", { name: "About the leak check" });
+    const text = page.getByText("Before a reply goes out, a second model reads it").first();
+    await info.click();
+    await expect(info).toHaveAttribute("aria-expanded", "true");
+    await expect(text).toBeVisible();
+    await page.mouse.move(5, 890);
+    await expect(text).toBeVisible();
+    await info.click();
+    await expect(info).toHaveAttribute("aria-expanded", "false");
+    // Pinned, a click anywhere else closes it; so does Esc.
+    await info.click();
+    await page.getByRole("heading", { name: "Component library" }).click();
+    await expect(info).toHaveAttribute("aria-expanded", "false");
+    await expect(text).toBeHidden();
+    await info.click();
+    await expect(text).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(info).toHaveAttribute("aria-expanded", "false");
+    await expect(text).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("picker: filters, Esc restores the chosen label, and picking the chosen option keeps it", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/gallery");
+    const picker = page.getByRole("combobox", { name: "Chat" });
+    await expect(picker).toHaveValue("All chats");
+    await picker.click();
+    await picker.fill("book");
+    await expect(page.getByRole("option")).toHaveCount(1);
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(picker).toHaveValue("Book club");
+    const turns = page.getByRole("group", { name: "Turns, newest first" });
+    await expect(turns.getByRole("listitem")).toHaveCount(2);
+    // A half-typed filter left with Esc goes back to the chosen label.
+    await picker.click();
+    await picker.fill("we");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("listbox")).toBeHidden();
+    await expect(picker).toHaveValue("Book club");
+    // Picking the chosen option again keeps it.
+    await picker.click();
+    await page.getByRole("option", { name: /Book club/ }).click();
+    await expect(picker).toHaveValue("Book club");
+    await expect(turns.getByRole("listitem")).toHaveCount(2);
+    await picker.click();
+    await page.getByRole("option", { name: /All chats/ }).click();
+    await expect(turns.getByRole("listitem")).toHaveCount(6);
+    expect(problems).toEqual([]);
+  });
 
   test("Home shows the active provider budget notice", async ({ page }) => {
     const line = "OpenRouter's workspace budget ($0.50) is used up. Resets 25 Nov at 08:00 (Asia/Singapore).";
@@ -234,9 +687,10 @@ test.describe("interactions under the CSP", () => {
   test("select, dialog and tooltip open without CSP violations", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/gallery");
-    await page.getByRole("combobox").click();
+    const provider = page.getByRole("combobox", { name: "Provider" });
+    await provider.click();
     await page.getByRole("option", { name: "OpenRouter" }).click();
-    await expect(page.getByRole("combobox")).toHaveText(/OpenRouter/);
+    await expect(provider).toHaveText(/OpenRouter/);
     await page.getByRole("button", { name: "Delete reminders…" }).click();
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toBeVisible();
@@ -521,9 +975,34 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("heading", { name: "Control surface" })).toHaveClass(/sr-only/); // hidden, still named for screen readers
     const reminders = page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Reminders, in Work" });
     await expect(reminders).toHaveAttribute("aria-current", "page");
-    await expect.poll(async () => (await main.boundingBox())!.x).toBeLessThan(wide); // the page takes the room back
-    await reminders.hover();
+    // The page takes the room back: wait for the columns to settle.
+    let folded = -1;
+    await expect
+      .poll(async () => {
+        const x = (await main.boundingBox())!.x;
+        const settled = x === folded && x < wide;
+        folded = x;
+        return settled;
+      })
+      .toBe(true);
+    // Keyboard focus on a rail icon shows its label as a tooltip.
+    await page.mouse.move(900, 600);
+    await reminders.focus();
     await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Reminders" })).toBeVisible();
+    // A resting mouse opens the rail for a look, over the page: the page keeps its width and the labels show.
+    await reminders.hover();
+    await expect(page.locator("aside[data-peek]")).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Main" }).getByText("Control surface")).toBeVisible();
+    expect(Math.round((await main.boundingBox())!.x)).toBe(Math.round(folded));
+    // The logo spot is the fold button: on a peek it pins the sidebar open.
+    await page.getByRole("button", { name: "Expand sidebar" }).click();
+    await expect(page.getByRole("button", { name: "Collapse sidebar" })).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("aside[data-peek]")).toHaveCount(0);
+    await expect.poll(async () => Math.round((await main.boundingBox())!.x)).toBe(Math.round(wide));
+    await page.mouse.move(900, 600);
+    await page.getByRole("button", { name: "Collapse sidebar" }).click();
+    await page.mouse.move(900, 600);
+    await expect(page.locator("aside[data-peek]")).toHaveCount(0);
     await page.reload();
     await expect(page.getByRole("button", { name: "Expand sidebar" })).toBeVisible();
     // "[" folds and unfolds, except while a text field has the key.
@@ -872,6 +1351,15 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Switch to the light theme" }).click();
     await page.reload();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  });
+
+  test("tooltips don't animate under reduced motion", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/app/gallery");
+    await page.getByRole("button", { name: "Edit reminder" }).focus();
+    const tip = page.locator("[data-slot=tooltip-content]").filter({ hasText: "Edit reminder" });
+    await expect(tip).toBeVisible();
+    expect(await tip.evaluate((node) => getComputedStyle(node).animationName)).toBe("none");
   });
 
   test("the orbit is still under reduced motion", async ({ page }) => {
