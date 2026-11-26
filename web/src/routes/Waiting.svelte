@@ -128,7 +128,7 @@
               <Card.Description class="break-words">{perm.site || "Desktop"}</Card.Description>
             </Card.Header>
             <Card.Content class="grid gap-3 text-sm">
-              {#if perm.detail}<p class="text-muted-foreground break-words">{perm.detail}</p>{/if}
+              {#if perm.detail}<p class="text-muted-foreground break-words whitespace-pre-line">{perm.detail}</p>{/if}
               <div class="flex flex-wrap gap-2">
                 <Button disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "once")}>Allow once</Button>
                 {#if perm.can_allow_always !== false}

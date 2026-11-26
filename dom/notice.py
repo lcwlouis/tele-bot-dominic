@@ -70,11 +70,12 @@ def link_button(config, path: str | None, label: str = DETAILS_LABEL) -> InlineK
 
 def compose(
     lead: str, details: Sequence[str] = (), *, tag: str | None = None, bullets: bool = False,
+    max_lines: int | None = None, line_limit: int = DETAIL_LIMIT,
 ) -> tuple[str, list[MessageEntity]]:
     """The notice text with its bold lead and italic tag as entities (UTF-16 offsets, as Telegram counts)."""
     lead = shorten(lead, LEAD_LIMIT)
-    lines = [shorten(item, DETAIL_LIMIT) for item in details if item and item.strip()]
-    lines = [f"• {line}" for line in lines[:MAX_BULLETS]] if bullets else lines[:MAX_DETAILS]
+    lines = [shorten(item, line_limit) for item in details if item and item.strip()]
+    lines = [f"• {line}" for line in lines[:max_lines or MAX_BULLETS]] if bullets else lines[:max_lines or MAX_DETAILS]
     text = "\n".join([lead, *lines])
     entities = [MessageEntity(type="bold", offset=0, length=utf16_len(lead))]
     if tag := shorten(tag or "", DETAIL_LIMIT):
@@ -96,12 +97,15 @@ def markup(
 async def send_notice_to(
     bot, config, chat_id: int, lead: str, details: Sequence[str] = (), *, path: str | None = None,
     label: str = DETAILS_LABEL, tag: str | None = None, bullets: bool = False,
-    buttons: Sequence[InlineKeyboardButton] = (), **options,
+    buttons: Sequence[InlineKeyboardButton] = (), max_lines: int | None = None, line_limit: int = DETAIL_LIMIT,
+    **options,
 ):
     """Send one notice. Without a public dashboard address it is the same short text with no link."""
     from dom.telegram.executor import send_chunk  # imported here: the executor's own imports reach modules that send notices
 
-    text, entities = compose(lead, details, tag=tag, bullets=bullets)
+    text, entities = compose(
+        lead, details, tag=tag, bullets=bullets, max_lines=max_lines, line_limit=line_limit,
+    )
     options.setdefault("link_preview_options", LinkPreviewOptions(is_disabled=True))
     return await send_chunk(
         bot, chat_id, (text, entities), reply_markup=markup(config, path, label=label, buttons=buttons), **options,

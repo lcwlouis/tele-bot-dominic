@@ -8,7 +8,7 @@ import hmac
 import logging
 import secrets
 from datetime import datetime, timezone
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
@@ -42,6 +42,10 @@ SITE_SCOPED_ACTIONS: frozenset[str] = frozenset(("visit_site", "fill_login", "do
 GOOGLE_ACTIONS: frozenset[str] = frozenset(("calendar_add", "calendar_move", "calendar_delete", "gmail_draft"))
 GLOBAL_ACTIONS: frozenset[str] = frozenset(("background_work", *GOOGLE_ACTIONS))
 APPROVAL_TIMEOUT = 900.0
+CARD_LINES = 8  # lines on a Google approval card; the card never cuts a material detail, it goes dashboard-only instead
+CARD_LINE_LIMIT = 200
+DETAIL_LIMIT = 240
+GOOGLE_DETAIL_LIMIT = 4000  # a Google request keeps its full details, which the dashboard shows
 
 DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "visit_site": "allow",
@@ -104,6 +108,7 @@ _SETTLED_LABELS = {
     "allowed_always": "✅ Allowed always",
     "rejected": "❌ Rejected",
     "expired": "Expired",
+    "cancelled": "Cancelled",
 }
 
 
@@ -154,6 +159,10 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _detail_limit(action: str) -> int:
+    return GOOGLE_DETAIL_LIMIT if action in GOOGLE_ACTIONS else DETAIL_LIMIT
+
+
 class DesktopPermissions:
     """R4 permission engine + R5 saved-login manager + E100 owner-DM approval cards."""
 
@@ -161,6 +170,8 @@ class DesktopPermissions:
         self.app = app
         # request_id -> (token_hash, asyncio.Future[str])
         self._waiters: dict[int, tuple[str, asyncio.Future[str]]] = {}
+        # Requests whose card could not show every material detail: only the dashboard may approve them.
+        self._dashboard_only: set[int] = set()
 
     def _now(self) -> str:
         return self.app.dispatch.now().astimezone(timezone.utc).isoformat()
@@ -373,7 +384,7 @@ class DesktopPermissions:
         return await self.app.store.record_desktop_permission_event(
             action=action,
             site=site,
-            detail=detail[:240],
+            detail=detail[:_detail_limit(action)],
             status=status,
             decided_via=decided_via,
             at=self._now(),
@@ -392,10 +403,11 @@ class DesktopPermissions:
         container: str = DEFAULT,
         timeout_seconds: float = APPROVAL_TIMEOUT,
         lines: Sequence[str] = (),
+        dashboard_only: bool = False,
     ) -> str:
         """Send an owner-DM approval card (Reject / Allow once / Allow always) and wait for the decision.
 
-        Returns one of: 'allowed_once', 'allowed_always', 'rejected', 'expired'.
+        Returns one of: 'allowed_once', 'allowed_always', 'rejected', 'expired', 'cancelled'.
         """
         app = self.app
         if app.owner_id is None:
@@ -409,7 +421,7 @@ class DesktopPermissions:
         request_id = await app.store.create_desktop_permission_request(
             action=action,
             site=site,
-            detail=detail[:240],
+            detail=detail[:_detail_limit(action)],
             token_hash=token_hash,
             created_at=self._now(),
             task_id=task_id,
@@ -418,24 +430,38 @@ class DesktopPermissions:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[str] = loop.create_future()
         self._waiters[request_id] = (token_hash, future)
+        if dashboard_only:
+            self._dashboard_only.add(request_id)
         try:
-            sent = await self._send_card(request_id, action, site, detail, token, container, lines)
+            sent = await self._send_card(request_id, action, site, detail, token, container, lines, dashboard_only)
             if not sent:
                 row = await app.store.decide_desktop_permission_request(request_id, "expired", "timeout", self._now())
                 if row:
                     await self._settle_card(row.get("card_message_id"), "Expired")
                 return "expired"
-            async with asyncio.timeout(timeout_seconds):
-                return await future
-        except (TimeoutError, asyncio.CancelledError) as exc:
+            # The shield keeps a timeout from cancelling the future: a decision committed just before it still counts.
+            return await asyncio.wait_for(asyncio.shield(future), timeout_seconds)
+        except TimeoutError:
+            return await self._expire_or_committed(request_id)
+        except asyncio.CancelledError:
             row = await app.store.decide_desktop_permission_request(request_id, "expired", "timeout", self._now())
             if row:
                 await self._settle_card(row.get("card_message_id"), "Expired")
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            return "expired"
+            raise
         finally:
             self._waiters.pop(request_id, None)
+            self._dashboard_only.discard(request_id)
+
+    async def _expire_or_committed(self, request_id: int) -> str:
+        """The wait ran out: expire the request, unless a decision committed first, which then stands and runs."""
+        app = self.app
+        row = await app.store.decide_desktop_permission_request(request_id, "expired", "timeout", self._now())
+        if row:
+            await self._settle_card(row.get("card_message_id"), "Expired")
+            return "expired"
+        committed = await app.store.get_desktop_permission_request(request_id)
+        status = committed["status"] if committed else "expired"
+        return status if status in ("allowed_once", "allowed_always", "rejected", "cancelled") else "expired"
 
     async def _send_card(
         self,
@@ -446,6 +472,7 @@ class DesktopPermissions:
         token: str,
         container: str,
         lines: Sequence[str] = (),
+        dashboard_only: bool = False,
     ) -> bool:
         app = self.app
         assert app.owner_id is not None
@@ -458,11 +485,11 @@ class DesktopPermissions:
                 shown.append(f"Site: {site}")
             if detail:
                 shown.append(detail[:80])
-        buttons = [
-            InlineKeyboardButton(text="Allow once", callback_data=f"dperm:once:{request_id}:{token}"),
-        ]
-        if action in GLOBAL_ACTIONS or normalize_site(site) is not None:
-            buttons.append(InlineKeyboardButton(text="Allow always", callback_data=f"dperm:always:{request_id}:{token}"))
+        buttons = []
+        if not dashboard_only:  # a card that cannot show everything can only be rejected here
+            buttons.append(InlineKeyboardButton(text="Allow once", callback_data=f"dperm:once:{request_id}:{token}"))
+            if action in GLOBAL_ACTIONS or normalize_site(site) is not None:
+                buttons.append(InlineKeyboardButton(text="Allow always", callback_data=f"dperm:always:{request_id}:{token}"))
         buttons.append(InlineKeyboardButton(text="Reject", callback_data=f"dperm:reject:{request_id}:{token}"))
         try:
             sent = await send_notice(
@@ -471,6 +498,7 @@ class DesktopPermissions:
                 tag="Google approval" if action in GOOGLE_ACTIONS else "desktop permission",
                 bullets=bool(lines),
                 buttons=buttons,
+                **({"max_lines": CARD_LINES, "line_limit": CARD_LINE_LIMIT} if lines else {}),
             )
             if isinstance(message_id := getattr(sent, "message_id", None), int):
                 await app.store.set_desktop_permission_card(request_id, message_id)
@@ -516,6 +544,17 @@ class DesktopPermissions:
                 return False, "invalid token"
         action = row["action"]
         site = row["site"]
+        waiter = self._waiters.get(request_id)
+        if decision != "reject":
+            if via == "telegram" and request_id in self._dashboard_only:
+                return False, "approve this one on the dashboard"
+            if action in GOOGLE_ACTIONS and (waiter is None or waiter[1].done()):
+                # Nothing is waiting to run it (Dom restarted, or the wait ran out): an approval that cannot run is
+                # never recorded, and no Allow always is saved for it.
+                expired = await self.app.store.decide_desktop_permission_request(request_id, "expired", "timeout", self._now())
+                if expired:
+                    await self._settle_card(expired.get("card_message_id"), "Expired")
+                return False, "expired"
         canonical = normalize_site(site) if action in SITE_SCOPED_ACTIONS else None
         downgraded_always = decision == "always" and action in SITE_SCOPED_ACTIONS and canonical is None
         status = "allowed_once" if downgraded_always else _DECISION_STATUS[decision]
@@ -523,8 +562,14 @@ class DesktopPermissions:
         updated = await self.app.store.decide_desktop_permission_request(request_id, status, via, now)
         if updated is None:
             return False, "already handled"
+        # The decision is committed: wake whatever waits on it now, before any further network work, so a timeout in
+        # between can never drop a committed approval.
+        waiter = self._waiters.get(request_id)
+        if waiter is not None and not waiter[1].done():
+            waiter[1].set_result(status)
 
-        if decision == "always" and not downgraded_always:
+        # A Google action saves its Allow always itself, once it has actually run.
+        if decision == "always" and not downgraded_always and action not in GOOGLE_ACTIONS:
             if action in GLOBAL_ACTIONS:
                 await self.app.store.set_desktop_action_policy(action, "allow", now)
             elif action in SITE_SCOPED_ACTIONS and canonical is not None:
@@ -532,9 +577,6 @@ class DesktopPermissions:
 
         label = "✅ Allowed once (no site rule saved)" if downgraded_always else _SETTLED_LABELS[status]
         await self._settle_card(updated.get("card_message_id"), label)
-        waiter = self._waiters.get(request_id)
-        if waiter is not None and not waiter[1].done():
-            waiter[1].set_result(status)
         target_desc = f" on {site}" if site else ""
         await self.app.store.record_owner_event(
             f"Desktop permission #{request_id} ({action}{target_desc}): {status.replace('_', ' ')} via {via}"
@@ -547,50 +589,82 @@ class DesktopPermissions:
         *,
         detail: str,
         lines: Sequence[str],
-        perform: Callable[[], Awaitable[str]],
+        perform: Callable[[bool], Awaitable[str]],
+        guard: Callable[[], Awaitable[str | None]],
+        dashboard_only: bool = False,
     ) -> str:
         """Run an owner-DM tool action under its policy and return what the tool tells the model.
 
-        Allow runs `perform` now. Never refuses. Ask sends the approval card and returns at once: the wait for the tap
-        happens in the background, so the reply never blocks on the owner. On approval `perform` runs and the outcome
-        is written to the owner's DM history, where Dom sees it on his next turn; a refusal, expiry or failure is
-        written there too, so nothing is lost silently."""
+        `perform(background)` does the work; `guard()` says why it may no longer run (a switch turned off, Google
+        disconnected or connected to another account), and is checked immediately before it. Allow runs it now.
+        Never refuses. Ask sends the approval card and returns at once: the wait for the tap happens in the
+        background, so the reply never blocks on the owner. On approval it runs and the outcome is written to the
+        owner's DM history, where Dom sees it on his next turn; a refusal, expiry, cancellation or failure is written
+        there too, so nothing is lost silently."""
         label = ACTION_META[action]["label"]
         policy = await self.resolve(action)
         if policy == "never":
             await self.record_decision(action=action, site="", detail=detail, status="blocked", decided_via="policy")
             return f"error: {label} is set to Never in the dashboard."
         if policy == "allow":
+            if (problem := await guard()) is not None:
+                return problem
             await self.record_decision(action=action, site="", detail=detail, status="auto_allowed", decided_via="policy")
-            return await perform()
+            return await perform(False)
         if self.app.owner_id is None:
             return "error: there is no owner to ask."
-        self.app.dispatch._spawn(self._ask_then_perform(action, detail, lines, perform))
+        self.app.dispatch._spawn(self._ask_then_perform(action, detail, lines, perform, guard, dashboard_only))
         return (
             f"Asked the owner to approve: {label.lower()}. Nothing has happened yet. "
             "You will see the outcome in the chat history; do not repeat the request."
         )
 
     async def _ask_then_perform(
-        self, action: DesktopAction, detail: str, lines: Sequence[str], perform: Callable[[], Awaitable[str]],
+        self, action: DesktopAction, detail: str, lines: Sequence[str],
+        perform: Callable[[bool], Awaitable[str]], guard: Callable[[], Awaitable[str | None]], dashboard_only: bool,
     ) -> None:
         store, label = self.app.store, ACTION_META[action]["label"]
-        outcome = await self.request_approval(action=action, site="", detail=detail, lines=lines)
+        outcome = await self.request_approval(
+            action=action, site="", detail=detail, lines=lines, dashboard_only=dashboard_only,
+        )
         if outcome not in ("allowed_once", "allowed_always"):
-            said = "timed out" if outcome == "expired" else "was rejected"
+            said = {"expired": "timed out", "cancelled": "was cancelled"}.get(outcome, "was rejected")
             await store.record_owner_event(f"{label} {said}; nothing changed. ({detail[:120]})")
             return
+        if (problem := await guard()) is not None:  # the switch or the account changed while it waited
+            await store.record_owner_event(f"{label} was approved but not run; nothing changed. {problem.removeprefix('error: ')}"[:400])
+            return
         try:
-            result = await perform()
+            result = await perform(True)
         except Exception:
             log.exception("approved %s failed", action)
             result = "error: it failed unexpectedly"
+        failed = result.startswith(("error", "uncertain"))
+        if outcome == "allowed_always" and not failed:
+            await self.app.store.set_desktop_action_policy(action, "allow", self._now())
         await store.record_owner_event(f"{label} approved. {result}"[:400])
-        if result.startswith("error"):
+        if failed:
             try:
-                await send_notice(self.app, self.app.owner_id, f"{label} failed", [result.removeprefix("error: ")])
+                await send_notice(self.app, self.app.owner_id, f"{label}: not confirmed", [result.split(": ", 1)[-1]])
             except Exception:
                 log.warning("could not tell the owner that %s failed", action)
+
+    async def cancel_pending(self, actions: Iterable[str]) -> int:
+        """Cancel the waiting requests of these actions (their switch went off, or the account changed): the waiter is
+        woken first, then the card says Cancelled."""
+        wanted, count = set(actions), 0
+        for row in await self.app.store.pending_desktop_permission_requests():
+            if row["action"] not in wanted:
+                continue
+            done = await self.app.store.decide_desktop_permission_request(row["id"], "cancelled", "policy", self._now())
+            if done is None:
+                continue
+            count += 1
+            waiter = self._waiters.get(row["id"])
+            if waiter is not None and not waiter[1].done():
+                waiter[1].set_result("cancelled")
+            await self._settle_card(done.get("card_message_id"), "Cancelled")
+        return count
 
     async def pending_requests(self) -> list[dict[str, Any]]:
         rows = await self.app.store.pending_desktop_permission_requests()
@@ -605,6 +679,7 @@ class DesktopPermissions:
                 "detail": row["detail"],
                 "created_at": row["created_at"],
                 "can_allow_always": row["action"] in GLOBAL_ACTIONS or normalize_site(row["site"]) is not None,
+                "dashboard_only": row["id"] in self._dashboard_only,
             }
             for row in rows
         ]
