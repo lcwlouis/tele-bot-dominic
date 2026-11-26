@@ -129,6 +129,22 @@ async def test_search_finds_a_word_in_each_kind_and_previews_other_chats(make_ap
     assert len(chats[str(FRIEND)].text) <= global_search.PREVIEW
 
 
+async def test_keyword_search_merges_graph_hits_without_dropping_exact_hits(make_app):
+    app = make_app()
+    await fill(app)
+    app.home._write_regular("memory/projects/release.md", f"- Project uses {WORD} {{any}}")
+    await app.knowledge.refresh()
+
+    found = await global_search.search_all(
+        app.store, app.home, WORD, mode="keyword", knowledge=app.knowledge,
+    )
+
+    assert {hit.ref for hit in found["chat"]} == {str(OWNER), str(FRIEND), str(GROUP)}
+    assert {hit.ref for hit in found["memory"]} == {
+        "memory/MEMORY.md", "memory/projects/release.md", "private/USER.md",
+    }
+
+
 async def test_a_blank_query_finds_nothing(make_app):
     app = make_app()
     await fill(app)

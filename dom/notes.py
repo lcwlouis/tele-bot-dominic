@@ -26,9 +26,14 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
-_META = r"\{(?:any|chat -?\d+|core (?:owner|dom) \d{4}-\d{2}-\d{2}(?::[^{}\n]*)?)\}"
+ENTITY_KINDS = ("person", "place", "project", "goal")
+_ENTITY_KEY = r"[a-z0-9][a-z0-9-]{0,63}"
+_ENTITY = rf"(?:person:\d+|(?:place|project|goal):{_ENTITY_KEY})"
+_ENTITY_META = rf"\{{entities ({_ENTITY}(?:\|{_ENTITY})*)\}}"
+_META = rf"(?:\{{(?:any|chat -?\d+|core (?:owner|dom) \d{{4}}-\d{{2}}-\d{{2}}(?::[^{{}}\n]*)?)\}}|{_ENTITY_META})"
 _ANY_META = re.compile(rf"[ \t]*{_META}")
 _ONE_META = re.compile(r"\{(any|chat -?\d+|core (owner|dom) (\d{4}-\d{2}-\d{2})(?::([^{}\n]*))?)\}")
+_ONE_ENTITY_META = re.compile(_ENTITY_META)
 _UNTIL = re.compile(r"\(until (\d{4})-(\d{2})-(\d{2})\)")
 _BULLET = re.compile(r"^[ \t]*[-*][ \t]+")
 _BULLET_MARK = re.compile(r"^[ \t]*[-*](?:[ \t]+|$)")
@@ -48,6 +53,7 @@ class Line:
     body: str  # the line without its trailing metadata
     source: str | None = None  # "any", a chat id as text, or None when untagged
     core: Core | None = None
+    entities: tuple[str, ...] = ()  # compact kind:key references, in stable order
 
 
 def parse_line(line: str) -> Line:
@@ -60,7 +66,10 @@ def parse_line(line: str) -> Line:
             core = Core(part.group(2), part.group(3), (part.group(4) or "").strip())
         else:
             source = ANY if text == ANY else text.split(" ", 1)[1]
-    return Line(_ANY_META.sub("", line).rstrip(), source, core)
+    entities = tuple(dict.fromkeys(
+        entity for group in _ONE_ENTITY_META.finditer(line) for entity in group.group(1).split("|")
+    ))
+    return Line(_ANY_META.sub("", line).rstrip(), source, core, entities)
 
 
 def strip_meta(text: str) -> str:
@@ -77,10 +86,23 @@ def format_line(line: Line) -> str:
     out = line.body
     if line.source is not None:
         out += " {any}" if line.source == ANY else f" {{chat {line.source}}}"
+    if line.entities:
+        out += f" {{entities {'|'.join(normalize_entities(line.entities))}}}"
     if line.core is not None:
         why = f": {_clean_why(line.core.why)}" if line.core.why else ""
         out += f" {{core {line.core.by} {line.core.day}{why}}}"
     return out
+
+
+def normalize_entities(values: object) -> tuple[str, ...]:
+    """Validated, de-duplicated ``kind:key`` references. Invalid model output is ignored, never written."""
+    if not isinstance(values, (list, tuple)):
+        return ()
+    found = []
+    for value in values:
+        if isinstance(value, str) and re.fullmatch(_ENTITY, value.strip().lower()):
+            found.append(value.strip().lower())
+    return tuple(dict.fromkeys(found))
 
 
 def _clean_why(why: str) -> str:

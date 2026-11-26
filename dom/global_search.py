@@ -16,6 +16,7 @@ from datetime import date, datetime, timezone
 
 from dom import briefs, notes, skills
 from dom.home import Home, _split_journal
+from dom.knowledge import KnowledgeIndex
 from dom.store import Store
 from dom.store.store import recency_weight
 
@@ -63,7 +64,9 @@ def snippet(text: str, tokens: list[str]) -> str:
 
 def _memory_paths(home: Path) -> list[str]:
     found = ["SOUL.md"]
-    for folder in ("memory", "memory/people", "memory/chats", "private"):
+    for folder in (
+        "memory", "memory/people", "memory/chats", "memory/places", "memory/projects", "memory/goals", "private",
+    ):
         base = home / folder
         if base.is_dir() and not base.is_symlink():
             found.extend(f"{folder}/{p.name}" for p in sorted(base.glob("*.md")) if p.is_file() and not p.is_symlink())
@@ -123,7 +126,10 @@ def _search_files(home: Home, tokens: list[str]) -> tuple[list[Hit], list[Hit], 
     return [*_search_memory(home, tokens), *_search_archive(home.scoped(allow_private=True), tokens, keep_days)], found_briefs, found_skills
 
 
-async def search_all(store: Store, home: Home, query: str, chat_titles: dict[str, str] | None = None) -> dict[str, list[Hit]]:
+async def search_all(
+    store: Store, home: Home, query: str, chat_titles: dict[str, str] | None = None, *,
+    mode: str = "keyword", knowledge: KnowledgeIndex | None = None,
+) -> dict[str, list[Hit]]:
     """Hits by kind (every kind present, maybe empty), at most PER_KIND each. Owner-only: callers check that first."""
     query = " ".join(query.split())[:MAX_QUERY]
     tokens = _tokens(query)
@@ -144,7 +150,32 @@ async def search_all(store: Store, home: Home, query: str, chat_titles: dict[str
         ))
 
     memory, found_briefs, found_skills = await asyncio.to_thread(_search_files, home, tokens)
-    result["memory"], result["brief"], result["skill"] = memory, found_briefs, found_skills
+    result["memory"] = memory
+
+    if knowledge is not None:
+        indexed = await knowledge.search(query, requester_chat_id=owner, owner=True, mode=mode, limit=PER_KIND * 2)
+        if mode != "keyword":
+            result["chat"], result["memory"] = [], []
+        seen_chat = {(hit.ref, hit.text, hit.at) for hit in result["chat"]}
+        seen_memory = {(hit.ref, hit.text, hit.at) for hit in result["memory"]}
+        for hit in indexed:
+            if hit.file:
+                item = Hit("memory", hit.file, one_line(hit.text, SNIPPET), hit.file, hit.at)
+                key = (item.ref, item.text, item.at)
+                if key not in seen_memory:
+                    result["memory"].append(item)
+                    seen_memory.add(key)
+            elif hit.source_chat is not None:
+                mine = hit.source_chat == str(owner)
+                item = Hit(
+                    "chat", "Your DM" if mine else titles.get(hit.source_chat, hit.source_chat),
+                    hit.text if mine else one_line(hit.text, PREVIEW), hit.source_chat, hit.at, full=mine,
+                )
+                key = (item.ref, item.text, item.at)
+                if key not in seen_chat:
+                    result["chat"].append(item)
+                    seen_chat.add(key)
+    result["brief"], result["skill"] = found_briefs, found_skills
 
     result["reminder"] = [
         Hit("reminder", one_line(row["text"], 80), row["text"], str(row["id"]), row["due_at"])

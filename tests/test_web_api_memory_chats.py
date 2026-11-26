@@ -35,6 +35,8 @@ WRITES = [
     ("/api/memory/import", {"service": "claude", "filename": "a.md", "data": ""}),
     ("/api/memory/import-review", {"id": 1, "decision": "all"}),
     ("/api/memory/proposal", {"id": 1, "decision": "approve"}),
+    ("/api/memory/index/confirm", {}),
+    ("/api/memory/index/cancel", {}),
     (f"/api/chats/action", {"chat_id": GROUP, "action": "sleep"}),
     ("/api/chats/preset", {"chat_id": "all", "preset": ""}),
     ("/api/chats/traits", {"chat_id": GROUP, "traits": {"humor": 0.7}}),
@@ -55,7 +57,10 @@ async def test_every_write_needs_auth_a_same_origin_json_request(make_app, brows
         assert (await client.post(path, content="{}", headers={"Origin": ORIGIN, "Content-Type": "text/plain"})).status_code == 403
 
 
-@pytest.mark.parametrize("path", ["/api/memory", "/api/memory/file?file=SOUL.md", "/api/chats"])
+@pytest.mark.parametrize("path", [
+    "/api/memory", "/api/memory/file?file=SOUL.md", "/api/memory/index/estimate",
+    "/api/memory/index/progress", "/api/chats",
+])
 async def test_reads_need_the_dashboard_auth(make_app, browser, path):
     async with browser(make_app()) as client:
         assert (await client.get(path, headers={"Authorization": ""})).status_code == 403
@@ -67,12 +72,14 @@ async def test_memory_lists_files_and_keeps_private_ones_in_their_own_section(ma
     private = app.home.scoped(allow_private=True)
     private._write_regular("private/USER.md", "Owner only")
     app.home._write_regular(f"memory/chats/{FRIEND}.md", "Friend note")
+    app.home._write_regular("memory/projects/dom.md", "- Release project {any} {entities project:dom}")
     await app.store.set_chat_auth_status(FRIEND, "approved", title="Reader")
     (app.home.root / "memory" / "chats" / "alias.md").symlink_to(app.home.root / "private" / "USER.md")
     async with browser(app) as client:
         index = (await client.get("/api/memory")).json()
         sections = {section["heading"]: [(f["path"], f["label"]) for f in section["files"]] for section in index["sections"]}
         assert ("memory/MEMORY.md", "MEMORY.md") in sections["Shared memory"]
+        assert ("memory/projects/dom.md", "Project · dom") in sections["Places, projects and goals"]
         assert any("Reader" in label for _, label in sections["Chats"])
         assert ("private/USER.md", "USER.md") in sections["Only in your DM"]
         assert all(not path.startswith("private/") for heading, files in sections.items() if heading != "Only in your DM" for path, _ in files)
