@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
@@ -45,7 +46,7 @@ APPROVAL_TIMEOUT = 900.0
 CARD_LINES = 8  # lines on a Google approval card; the card never cuts a material detail, it goes dashboard-only instead
 CARD_LINE_LIMIT = 200
 DETAIL_LIMIT = 240
-GOOGLE_DETAIL_LIMIT = 4000  # a Google request keeps its full details, which the dashboard shows
+GOOGLE_DETAIL_LIMIT = 60_000  # a Google request keeps its complete details; past this it is not asked at all
 
 DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "visit_site": "allow",
@@ -157,6 +158,13 @@ def host_matches_site(url: object, site: str, *, match_subdomains: bool = False)
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class _Request:
+    id: int
+    token: str
+    future: asyncio.Future[str]
 
 
 def _detail_limit(action: str) -> int:
@@ -392,6 +400,27 @@ class DesktopPermissions:
             self_task_id=self_task_id,
         )
 
+    async def open_request(
+        self, *, action: DesktopAction, site: str, detail: str, task_id: int | None = None,
+        self_task_id: int | None = None, dashboard_only: bool = False,
+    ) -> _Request:
+        """Register an approval request: its row, its waiter and its dashboard-only flag. Nothing is sent yet. Callers
+        that act later register first, so a cancel can never miss a request that is only scheduled."""
+        limit = _detail_limit(action)
+        if action in GOOGLE_ACTIONS and len(detail) > limit:
+            raise ValueError("too many attendees or recipients to review here, so nothing was asked.")
+        token = secrets.token_hex(10)
+        token_hash = _hash_token(token)
+        request_id = await self.app.store.create_desktop_permission_request(
+            action=action, site=site, detail=detail[:limit], token_hash=token_hash, created_at=self._now(),
+            task_id=task_id, self_task_id=self_task_id,
+        )
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._waiters[request_id] = (token_hash, future)
+        if dashboard_only:
+            self._dashboard_only.add(request_id)
+        return _Request(request_id, token, future)
+
     async def request_approval(
         self,
         *,
@@ -416,31 +445,32 @@ class DesktopPermissions:
                 task_id=task_id, self_task_id=self_task_id,
             )
             return "rejected"
-        token = secrets.token_hex(10)
-        token_hash = _hash_token(token)
-        request_id = await app.store.create_desktop_permission_request(
-            action=action,
-            site=site,
-            detail=detail[:_detail_limit(action)],
-            token_hash=token_hash,
-            created_at=self._now(),
-            task_id=task_id,
-            self_task_id=self_task_id,
+        request = await self.open_request(
+            action=action, site=site, detail=detail, task_id=task_id, self_task_id=self_task_id,
+            dashboard_only=dashboard_only,
         )
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
-        self._waiters[request_id] = (token_hash, future)
-        if dashboard_only:
-            self._dashboard_only.add(request_id)
+        return await self.ask(request, action, site, detail, container, lines, timeout_seconds, dashboard_only)
+
+    async def ask(
+        self, request: _Request, action: DesktopAction, site: str, detail: str, container: str,
+        lines: Sequence[str], timeout_seconds: float, dashboard_only: bool,
+    ) -> str:
+        """Send the card of a registered request and wait for its decision."""
+        app, request_id = self.app, request.id
         try:
-            sent = await self._send_card(request_id, action, site, detail, token, container, lines, dashboard_only)
+            if request.future.done():  # cancelled between registering and here: no card for a request that is over
+                return request.future.result()
+            sent = await self._send_card(request_id, action, site, detail, request.token, container, lines, dashboard_only)
             if not sent:
                 row = await app.store.decide_desktop_permission_request(request_id, "expired", "timeout", self._now())
                 if row:
                     await self._settle_card(row.get("card_message_id"), "Expired")
                 return "expired"
+            if (current := await app.store.get_desktop_permission_request(request_id)) and current["status"] != "pending":
+                # decided (cancelled) while the card was going out: settle the card that just arrived
+                await self._settle_card(current.get("card_message_id"), _SETTLED_LABELS.get(current["status"], "Cancelled"))
             # The shield keeps a timeout from cancelling the future: a decision committed just before it still counts.
-            return await asyncio.wait_for(asyncio.shield(future), timeout_seconds)
+            return await asyncio.wait_for(asyncio.shield(request.future), timeout_seconds)
         except TimeoutError:
             return await self._expire_or_committed(request_id)
         except asyncio.CancelledError:
@@ -613,20 +643,22 @@ class DesktopPermissions:
             return await perform(False)
         if self.app.owner_id is None:
             return "error: there is no owner to ask."
-        self.app.dispatch._spawn(self._ask_then_perform(action, detail, lines, perform, guard, dashboard_only))
+        try:  # registered here, before anything is scheduled, so a cancel or a switch change always sees it
+            request = await self.open_request(action=action, site="", detail=detail, dashboard_only=dashboard_only)
+        except ValueError as exc:
+            return f"error: {exc}"
+        self.app.dispatch._spawn(self._ask_then_perform(request, action, detail, lines, perform, guard, dashboard_only))
         return (
             f"Asked the owner to approve: {label.lower()}. Nothing has happened yet. "
             "You will see the outcome in the chat history; do not repeat the request."
         )
 
     async def _ask_then_perform(
-        self, action: DesktopAction, detail: str, lines: Sequence[str],
+        self, request: _Request, action: DesktopAction, detail: str, lines: Sequence[str],
         perform: Callable[[bool], Awaitable[str]], guard: Callable[[], Awaitable[str | None]], dashboard_only: bool,
     ) -> None:
         store, label = self.app.store, ACTION_META[action]["label"]
-        outcome = await self.request_approval(
-            action=action, site="", detail=detail, lines=lines, dashboard_only=dashboard_only,
-        )
+        outcome = await self.ask(request, action, "", detail, DEFAULT, lines, APPROVAL_TIMEOUT, dashboard_only)
         if outcome not in ("allowed_once", "allowed_always"):
             said = {"expired": "timed out", "cancelled": "was cancelled"}.get(outcome, "was rejected")
             await store.record_owner_event(f"{label} {said}; nothing changed. ({detail[:120]})")

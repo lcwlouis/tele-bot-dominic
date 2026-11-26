@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from dom.desktop.tools import untrusted
 from dom.desktop.permissions import CARD_LINE_LIMIT, CARD_LINES
 from dom.google import (
-    CALENDAR_API, FOREGROUND_SECONDS, GMAIL_API, GoogleError, GoogleIntegration, GoogleSlow, GoogleUncertain, allows,
+    CALENDAR_API, FOREGROUND_SECONDS, GMAIL_API, GoogleError, GoogleIntegration, GoogleSlow, GoogleUncertain, Ticket, allows,
 )
 from dom.models import Scope
 from dom.notice import shorten
@@ -107,7 +107,7 @@ def _reduce(event: dict, zone: ZoneInfo, now: datetime) -> dict[str, Any] | None
         return None
     attendees = [a.get("email") for a in event.get("attendees") or [] if isinstance(a, dict) and a.get("email") and not a.get("self")]
     return {
-        "id": event.get("id"), "title": shorten(event.get("summary") or "(no title)", 120), "when": _span(start, end, all_day, now),
+        "id": event.get("id"), "title": " ".join(str(event.get("summary") or "(no title)").split()), "when": _span(start, end, all_day, now),
         "start": start, "end": end, "all_day": all_day, "location": shorten(event.get("location") or "", 80),
         "attendees": [str(a) for a in attendees], "attendee_count": len(attendees),
         "busy": event.get("transparency") != "transparent" and event.get("status") != "cancelled",
@@ -116,7 +116,7 @@ def _reduce(event: dict, zone: ZoneInfo, now: datetime) -> dict[str, Any] | None
 
 def _line(item: dict) -> str:
     shown = [shorten(a, 60) for a in item["attendees"][:6]]
-    parts = [f"{item['when']} {item['title']}"]
+    parts = [f"{item['when']} {shorten(item['title'], 120)}"]
     if item["location"]:
         parts.append(f"@ {item['location']}")
     if item["attendee_count"]:
@@ -201,15 +201,15 @@ class Card:
 async def _govern(g: GoogleIntegration, action: str, switch: str, card: Card, perform) -> str:
     """The approval path every Google change takes: the policy, a card the owner can see in full, and a guard that
     rechecks the switch and the connection immediately before it runs."""
-    connection = await g.connection_id()
+    ticket = await g.ticket(switch)
 
     async def run(background: bool) -> str:
         with g.budget(None if background else FOREGROUND_SECONDS):
-            return await perform(connection)
+            return await perform(ticket)
 
     return await g.app.desktop_permissions.run_governed(
         action, detail=card.detail(), lines=card.telegram(), dashboard_only=not card.fits(),
-        perform=run, guard=lambda: g.permits(switch, connection),
+        perform=run, guard=lambda: g.permits(ticket),
     )
 
 
@@ -293,9 +293,11 @@ async def _read_calendar(g: GoogleIntegration, args: dict, zone: ZoneInfo, actio
 
 
 async def _add_event(g: GoogleIntegration, args: dict, zone: ZoneInfo) -> str:
-    title = shorten(str(args.get("title") or ""), 200)
+    title = " ".join(str(args.get("title") or "").split())  # what the card shows is exactly what is created
     if not title:
         raise ValueError("title is required.")
+    if len(title) > 200:
+        raise ValueError("title is too long: 200 characters at most.")
     start = parse_when(args.get("start"), zone, field="start")
     if args.get("end"):
         end = parse_when(args["end"], zone, field="end")
@@ -304,7 +306,9 @@ async def _add_event(g: GoogleIntegration, args: dict, zone: ZoneInfo) -> str:
     if type(start) is not type(end) or _as_dt(end, zone) <= _as_dt(start, zone):
         raise ValueError("end must be after start, and both a date or both a date and time.")
     attendees = _attendee_emails(args.get("attendees"))
-    location = shorten(str(args.get("location") or ""), 120)
+    location = " ".join(str(args.get("location") or "").split())
+    if len(location) > 120:
+        raise ValueError("location is too long: 120 characters at most.")
     shown = _span(_as_dt(start, zone), _as_dt(end, zone), not isinstance(start, datetime), datetime.now(zone), tz=zone.key)
     lines = [f"Add: {title}", f"When: {shown}", "With: " + (", ".join(attendees) if attendees else "no attendees")]
     if location:
@@ -312,17 +316,17 @@ async def _add_event(g: GoogleIntegration, args: dict, zone: ZoneInfo) -> str:
     event_id = secrets.token_hex(16)  # base32hex-safe; a repeat of the same insert finds it already there, not a second one
     path = f"{CALENDAR_API}/calendars/primary/events"
 
-    async def perform(connection: str | None) -> str:
+    async def perform(ticket: Ticket) -> str:
         body: dict[str, Any] = {"id": event_id, "summary": title, "start": _google_time(start), "end": _google_time(end)}
         if location:
             body["location"] = location
         if attendees:
             body["attendees"] = [{"email": email} for email in attendees]
         try:
-            await g.call("POST", path, params={"sendUpdates": "none"}, body=body, idempotent=True, connection=connection, allow=(409,))
+            await g.call("POST", path, params={"sendUpdates": "none"}, body=body, idempotent=True, ticket=ticket, allow=(409,))
         except GoogleError as exc:
             try:  # the answer may have been lost after the event was made
-                await g.call("GET", f"{path}/{event_id}", connection=connection)
+                await g.call("GET", f"{path}/{event_id}", ticket=ticket)
             except GoogleError:
                 return _outcome(exc, "the calendar")
         return f"Added '{title}' ({shown}) to the calendar [id {event_id}]."
@@ -346,11 +350,11 @@ async def _move_event(g: GoogleIntegration, args: dict, event_id: str, item: dic
         "With: " + (", ".join(item["attendees"]) if item["attendees"] else "no attendees"),
     ]
 
-    async def perform(connection: str | None) -> str:
+    async def perform(ticket: Ticket) -> str:
         try:
             await g.call(
                 "PATCH", f"{CALENDAR_API}/calendars/primary/events/{event_id}", params={"sendUpdates": "none"},
-                body={"start": _google_time(start), "end": _google_time(end)}, connection=connection,
+                body={"start": _google_time(start), "end": _google_time(end)}, ticket=ticket,
             )
         except GoogleError as exc:
             return _outcome(exc, "the calendar")
@@ -366,11 +370,11 @@ async def _delete_event(g: GoogleIntegration, event_id: str, item: dict) -> str:
         "With: " + (", ".join(item["attendees"]) if item["attendees"] else "no attendees"),
     ]
 
-    async def perform(connection: str | None) -> str:
+    async def perform(ticket: Ticket) -> str:
         try:
             await g.call(
                 "DELETE", f"{CALENDAR_API}/calendars/primary/events/{event_id}", params={"sendUpdates": "none"},
-                connection=connection, allow=(410,),  # already gone is what was asked
+                ticket=ticket, allow=(410,),  # already gone is what was asked
             )
         except GoogleError as exc:
             return _outcome(exc, "the calendar")
@@ -493,9 +497,9 @@ async def _draft_mail(g: GoogleIntegration, args: dict) -> str:
     cut = f"{preview[:PREVIEW_CHARS]}…" if len(preview) > PREVIEW_CHARS else preview
     lines = ["To: " + ", ".join(addresses), f"Subject: {subject}"]
 
-    async def perform(connection: str | None) -> str:
+    async def perform(ticket: Ticket) -> str:
         try:
-            created = await g.call("POST", f"{GMAIL_API}/users/me/drafts", body={"message": {"raw": raw}}, connection=connection)
+            created = await g.call("POST", f"{GMAIL_API}/users/me/drafts", body={"message": {"raw": raw}}, ticket=ticket)
         except GoogleError as exc:
             # A POST that got no clear answer is never repeated: Google may already have made the draft.
             return _outcome(exc, "Gmail's Drafts folder")

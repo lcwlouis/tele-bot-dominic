@@ -82,7 +82,7 @@ redirect, so that one `GET` path alone skips the token check. It authenticates i
 authenticated (and sets the `HttpOnly`, `Secure`, `SameSite=Lax` binding cookie for exactly one single-use `state`), and
 the callback succeeds only when the unexpired, unused `state` in the URL matches that cookie. A request without the
 cookie, with a wrong, expired or replayed `state`, or that is not a navigation (`Sec-Fetch-Mode` other than `navigate`),
-is refused and changes nothing; every other path and every other method still needs the token. Behind
+is redirected to a generic failure with no side effect at all (no setting, cookie or state is touched); every other path and every other method still needs the token. Behind
 Cloudflare Access the same checks apply on top of Access's own gate.
 
 ## Approvals
@@ -95,8 +95,15 @@ action runs in the background after the tap and its outcome is written to the DM
   anything (say, ten long addresses), the card only summarises ("10 recipients, too long to list here") and has just
   **Reject** and a link: only the dashboard's **Waiting for you** or **System → Access** view, which shows the complete
   details, can approve it.
-- **Before it runs,** Dom checks again that the switch is still on and that Google is still the same connection that
-  was asked. Turning a switch off, disconnecting, or connecting a different account cancels the waiting cards ("Cancelled").
+- **Before it runs,** Dom checks again that nothing moved since the card was made: each switch and the connection
+  carry a counter, so a switch turned off and on again, a disconnect or a different account makes the older card
+  stale. The request is registered before anything is scheduled, so a cancel always finds it; the check is repeated
+  right before the write itself. Turning a switch off, disconnecting, or connecting another account cancels the
+  waiting cards ("Cancelled").
+- **Nothing is cut:** every attendee or recipient, the whole title or subject and the times are stored with the
+  request and shown, scrollable, on the dashboard. A title over 200 characters or a place over 120 is refused instead
+  of shortened, and an approval whose details are too large to store whole (hundreds of long addresses) is not created
+  ("too many attendees or recipients to review").
 - **A tap that lands as the wait runs out still counts:** a committed approval always runs or is reported as failed.
   Allow always is saved only after the action ran.
 - **Writes are not repeated blindly.** A calendar insert carries its own event id, so a retry cannot make a second
