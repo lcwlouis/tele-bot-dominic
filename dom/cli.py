@@ -156,7 +156,7 @@ async def run(home: Path) -> None:
             # Self-directed work is planned in the same nightly window, after the reflection (the daydream).
             app.dispatch.jobs.register("self-work", reflection.due, app.self_work.plan)
             app.dispatch.jobs.register("memory-upkeep", journal_archive.due, partial(journal_archive.run, app))
-            app.dispatch._spawn(app.knowledge.run_pending())
+            app.dispatch._spawn(app.knowledge.run_background())
             dispatcher = Dispatcher()
             dispatcher.include_router(build_router(app))
             if config.owner_id is not None:

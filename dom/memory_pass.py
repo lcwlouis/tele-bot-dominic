@@ -58,6 +58,7 @@ GROUP_FILE_PURPOSE = {
     "MEMORY.md": "Dom's own life and general facts; never other people's private matters",
     "people": "only what this person would say in any chat",
     "chats": "this group's own notes: group-specific or personal matters",
+    "entities": "a place, project or goal this group may share: only facts this group would say anywhere it is asked",
 }
 FORMAT_NOTE = (
     'Reply with ONLY a JSON object: {"ops": [{"file": <file name>, "op": "add" | "replace" | "remove" | "pin" | "unpin", '
@@ -195,9 +196,9 @@ class MemoryPass:
                 applied += done
                 summary = summary or summary_again
         await store.advance_memory_cursor(chat_id, max(m.msg_id for m in messages if m.msg_id is not None))
-        # Graph refresh and embeddings stay in this already-background pass, after the note writes and outside
-        # the chat lock. A provider outage pauses indexing; it never delays a reply.
-        await app.knowledge.run_pending()
+        # The graph refresh and embeddings run beside this pass, never inside it: a first-time backlog can take long,
+        # and a provider outage or database error only pauses the index.
+        app.dispatch._spawn(app.knowledge.run_background())
 
         if scope == "owner_dm" and applied and summary:
             await self._tell_owner(summary)
@@ -224,9 +225,18 @@ class MemoryPass:
                 m.sender_user_id for m in messages
                 if m.role == "user" and not m.is_bot and m.sender_user_id is not None
             )
-            entity_notes = [rel.removeprefix("memory/") for rel in self.app.home.list_entity_notes()]
+            entity_notes = [
+                rel.removeprefix("memory/") for rel in self.app.home.list_entity_notes()
+                if self._visible_lines(rel, chat_id)
+            ]
             names = ["MEMORY.md", *(f"people/{uid}.md" for uid in people), f"chats/{chat_id}.md", *entity_notes]
         return {name: rel for name in names if (rel := memory_target(name, scope, chat_id)[0]) is not None}
+
+    def _visible_lines(self, rel: str, chat_id: int) -> bool:
+        """Whether this chat may see a line of the note. A file with none is not offered, so its name never reaches
+        a chat that has no line in it."""
+        text = notes.limit_to_chat(self._read(self.app.home.scoped(allow_private=False), rel), chat_id)
+        return any(notes.is_bullet(raw) for raw in text.splitlines())
 
     @staticmethod
     def _read(home, rel: str) -> str:
@@ -256,7 +266,14 @@ class MemoryPass:
         """In a group pass, each note's role, so the model sees where each kind of fact belongs."""
         if scope != "group":
             return ""
-        kind = "MEMORY.md" if rel == "memory/MEMORY.md" else "people" if rel.startswith("memory/people/") else "chats"
+        if rel == "memory/MEMORY.md":
+            kind = "MEMORY.md"
+        elif rel.startswith("memory/people/"):
+            kind = "people"
+        elif rel.startswith("memory/chats/"):
+            kind = "chats"
+        else:
+            kind = "entities"
         return f' purpose="{GROUP_FILE_PURPOSE[kind]}"'
 
     def _apply(self, home, scope: Scope, chat_id: int, offered: dict[str, str], ops: list) -> tuple[int, list[_Refused]]:
@@ -287,9 +304,11 @@ class MemoryPass:
         if rel is None:
             return error
         if file not in offered:
-            if scope != "group" or _ENTITY_FILE.fullmatch(file) is None:
+            # A group may start or add to an entity note it was not shown (its name or lines belong to other chats), but
+            # never replace, remove or pin a line it cannot see.
+            if scope != "group" or _ENTITY_FILE.fullmatch(file) is None or kind != "add":
                 return f"{file} was not offered"
-            offered[file] = rel  # a new entity note is created only when this pass first writes it
+            offered[file] = rel
         entities = notes.normalize_entities(op.get("entities", ()))
         try:
             if kind == "pin":

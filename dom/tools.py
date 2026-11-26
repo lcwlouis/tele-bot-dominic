@@ -95,24 +95,30 @@ async def _search(args: dict, ctx: TurnCtx) -> str:
             ensure_ascii=False,
         )
     limit = args.get("limit", 10)
+    limit = limit if isinstance(limit, int) else 10
+    people = [*ctx.participant_ids, *([ctx.sender_id] if ctx.sender_id is not None else [])]
+    indexed = []
     if ctx.app is not None:
-        hits = await ctx.app.knowledge.search(
-            query, requester_chat_id=ctx.chat_id, owner=False, mode=mode,
-            limit=limit if isinstance(limit, int) else 10,
+        indexed = await ctx.app.knowledge.search(
+            query, requester_chat_id=ctx.chat_id, owner=False, mode=mode, limit=limit, participants=people,
         )
-        if hits or mode != "keyword":
-            return json.dumps([
-                {"text": hit.text, "file": hit.file, "at": hit.at, "entities": hit.entities}
-                for hit in hits
-            ], ensure_ascii=False)
-    hits = await ctx.store.search_chat_history(
-        query, str(ctx.chat_id), limit if isinstance(limit, int) else 10,
-        keep_days=await asyncio.to_thread(ctx.home.scoped(allow_private=False).core_days),
-    )
-    return json.dumps(
-        [{k: h[k] for k in ("chat_id", "msg_id", "sender_name", "text", "created_at")} for h in hits],
-        ensure_ascii=False,
-    )
+    recent: list[dict] = []
+    if mode != "entity":
+        # The index lags the newest messages, and the history search keeps what the index does not: sender names,
+        # the pinned-day recency rule and chat-migration aliases. Both answer; the same message appears once.
+        recent = await ctx.store.search_chat_history(
+            query, str(ctx.chat_id), limit,
+            keep_days=await asyncio.to_thread(ctx.home.scoped(allow_private=False).core_days),
+        )
+    found = [{k: h[k] for k in ("chat_id", "msg_id", "sender_name", "text", "created_at")} for h in recent]
+    seen = {" ".join(row["text"].split()) for row in found}
+    for hit in indexed:
+        key = " ".join(hit.text.split())
+        if hit.file == "" and key in seen:
+            continue
+        seen.add(key)
+        found.append({"text": hit.text, "file": hit.file, "at": hit.at, "entities": hit.entities})
+    return json.dumps(found, ensure_ascii=False)
 
 
 SEARCH_TOOL = Tool(

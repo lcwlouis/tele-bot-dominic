@@ -42,10 +42,15 @@ People keep their existing numeric files. When the background memory pass first 
 goal, it may create `memory/places/<slug>.md`, `memory/projects/<slug>.md` or `memory/goals/<slug>.md`. Each fact line
 records every entity it is about; entities on the same line are linked. The source chat tag remains the privacy
 boundary, so a group or friend's DM can retrieve only its own lines and `{any}` lines, while the owner DM can retrieve
-all public lines.
+all public lines. Two rules close the gaps a tag cannot: an untagged line in `memory/chats/<id>.md` belongs to that chat
+alone, and another chat sees a person's note only when that person is in the chat, the same reach as the notes prompt.
+The filter is SQL in code on every mode (keyword, meaning, entity) and on `related`, never prompt text.
 
 SQLite is a rebuildable index, not the source of truth. It records each fact's file, line, source chat, dates, entities
-and links, and indexes messages for retrieval. `dom rebuild-index HOME` rebuilds it from Markdown and message history.
+and links, and indexes messages for retrieval. Messages are read incrementally past a cursor; an edit or delete drops
+the message's facts in the same transaction, and a rare chunked sweep catches removals from any other path. A vector
+belongs to a line's text, so a line that survives an edit of its file is never embedded again. `dom rebuild-index HOME`
+rebuilds it from Markdown and message history.
 Search mode `keyword` is the fast default; `meaning` blends BM25, embeddings and the same recency weighting; `entity`
 returns everything visible about an entity and the entities linked on those facts. Entity and core groups are stripped
 before a model sees a note.

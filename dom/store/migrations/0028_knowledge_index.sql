@@ -18,9 +18,12 @@ CREATE TABLE knowledge_facts (
     valid_from TEXT NOT NULL DEFAULT '',
     valid_until TEXT NOT NULL DEFAULT '',
     pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),
-    content_hash TEXT NOT NULL
+    content_hash TEXT NOT NULL,
+    message_id INTEGER  -- messages.id for a message fact, NULL for a note line
 );
 CREATE INDEX idx_knowledge_facts_file ON knowledge_facts(file);
+CREATE INDEX idx_knowledge_facts_hash ON knowledge_facts(content_hash);
+CREATE INDEX idx_knowledge_facts_message ON knowledge_facts(message_id);
 CREATE INDEX idx_knowledge_facts_scope ON knowledge_facts(private, source_chat);
 
 CREATE VIRTUAL TABLE knowledge_facts_fts USING fts5(text, content='knowledge_facts', content_rowid='id');
@@ -51,16 +54,28 @@ CREATE TABLE knowledge_fact_entities (
 );
 CREATE INDEX idx_knowledge_fact_entities_entity ON knowledge_fact_entities(entity_id, fact_id);
 
+-- Vectors belong to a text (its hash), not to a fact row, so a line that survives an edit of its file keeps its
+-- vector and is never embedded twice.
 CREATE TABLE knowledge_vectors (
-    fact_id INTEGER NOT NULL REFERENCES knowledge_facts(id) ON DELETE CASCADE,
     model_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
     model_id TEXT NOT NULL,
     dimensions INTEGER NOT NULL,
     vector BLOB NOT NULL,
-    content_hash TEXT NOT NULL,
-    PRIMARY KEY(fact_id, model_key)
+    PRIMARY KEY(model_key, content_hash)
 );
-CREATE INDEX idx_knowledge_vectors_model ON knowledge_vectors(model_key, model_id);
+
+-- Where the incremental message sync stopped, and the messages edited since it read them.
+CREATE TABLE knowledge_sync (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    last_message_id INTEGER NOT NULL DEFAULT 0,
+    sweep_after_fact_id INTEGER NOT NULL DEFAULT 0,
+    swept_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO knowledge_sync(id) VALUES (1);
+CREATE TABLE knowledge_dirty_messages (
+    message_id INTEGER PRIMARY KEY
+);
 
 CREATE TABLE embedding_indexes (
     model_key TEXT PRIMARY KEY,
@@ -73,7 +88,6 @@ CREATE TABLE embedding_indexes (
     probe_dimensions INTEGER,
     stale INTEGER NOT NULL DEFAULT 0 CHECK(stale IN (0, 1)),
     active INTEGER NOT NULL DEFAULT 0 CHECK(active IN (0, 1)),
-    cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0, 1)),
     updated_at TEXT NOT NULL
 );
 
