@@ -134,7 +134,7 @@ async def test_one_task_and_cancel_from_owner_dm(make_app):
     assert (await task_row(app, task_id))["status"] == "running"
     await handle_callback(app, query(OWNER, OWNER))
     assert (await task_row(app, task_id))["status"] == "cancelled"
-    assert any("cancelled" in text for _, _, text, _ in app.bot.of("send", OWNER))
+    assert any(text.startswith("Cancelled: ") for _, _, text, _ in app.bot.of("send", OWNER))
 
 
 async def test_worker_prompt_uses_only_brief_and_capped_untrusted_results(make_app):
@@ -270,7 +270,7 @@ async def test_plain_fallback_is_truncated_without_previews_and_not_stored_as_a_
     await wait_task(worker)
     await asyncio.sleep(0.05)
     sent = app.bot.of("send", OWNER)[-1]
-    assert len(sent[2]) == 3000 and sent[2].startswith(f"Desktop task #{task_id} finished. https://example.org/x")
+    assert sent[2] == "Done: Example\nhttps://example.org/x…"  # one short line, cut at a word boundary
     assert sent[3]["link_preview_options"].is_disabled is True
     window = await app.store.get_recent_chat_window(str(OWNER), 20)
     assert all("example.org" not in (row.text or "") for row in window)
@@ -340,8 +340,8 @@ async def test_handoff_names_the_login_host_and_keeps_secrets_out(make_app):
         while not app.bot.of("send", OWNER):
             await asyncio.sleep(0.001)
     text = app.bot.of("send", OWNER)[0][2]
-    assert text.startswith("Dom needs you to log in (browser was on login.example.org at 12:00): Sign in")
-    assert "Logins you make here are kept for later tasks." in text
+    assert text.startswith("Log-in needed\nSign in\nBrowser was on login.example.org at 12:00.")
+    assert [b.text for b in app.bot.of("send", OWNER)[0][3]["reply_markup"].inline_keyboard[0]] == ["Open Desktop", "Done"]
     assert "SECRET" not in text and "8443" not in text
     assert app.bot.of("send", OWNER)[0][3]["link_preview_options"].is_disabled is True
     assert worker.handoff_host == "login.example.org"
@@ -361,7 +361,7 @@ async def test_handoff_without_a_browser_url_still_asks(make_app):
     worker.sandbox = app.sandbox = Broken()
     await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
-    assert app.bot.of("send", OWNER)[0][2].startswith("Dom needs you to log in (browser was on an unknown site at 12:00): Sign in")
+    assert app.bot.of("send", OWNER)[0][2].startswith("Log-in needed\nSign in\nBrowser was on an unknown site at 12:00.")
 
 
 async def test_daily_spend_cap_pauses_a_desktop_task_before_any_worker_call(make_app):
@@ -375,7 +375,7 @@ async def test_daily_spend_cap_pauses_a_desktop_task_before_any_worker_call(make
     assert row["error"] == "paused by a spend cap"
     assert row["result"] == "Stopped after 0 steps: paused by a spend cap"
     assert app.client.requests == []  # no worker call and no report call
-    assert app.bot.of("send", OWNER)[-1][2] == f"Desktop task #{task_id} failed. Stopped after 0 steps: paused by a spend cap"
+    assert app.bot.of("send", OWNER)[-1][2] == "Stopped: Example\npaused by a spend cap\nStopped after 0 steps: paused by a spend cap"
     assert app.bot.of("send", OWNER)[-1][3]["link_preview_options"].is_disabled is True
     window = await app.store.get_recent_chat_window(OWNER)
     assert any(
@@ -401,7 +401,7 @@ async def test_task_cost_ceiling_stops_the_task_and_ignores_earlier_tasks(make_a
     assert row["error"] == "task cost cap of $0.50 reached"
     assert row["result"] == "Stopped after 1 steps: task cost cap of $0.50 reached"
     assert len(app.client.requests) == 1  # the worker call only: the report is skipped at the ceiling
-    assert "Stopped after 1 steps" in app.bot.of("send", OWNER)[-1][2]
+    assert "task cost cap of $0.50 reached" in app.bot.of("send", OWNER)[-1][2]
 
 
 async def test_report_runs_below_the_ceiling_and_counts_toward_it(make_app):
@@ -438,7 +438,7 @@ async def test_the_report_is_skipped_when_the_task_ceiling_was_reached_by_the_fi
     await wait_task(worker)
     assert (await task_row(app, task_id))["status"] == "done"
     assert len(app.client.requests) == 1
-    assert app.bot.of("send", OWNER)[-1][2] == f"Desktop task #{task_id} finished. Done"
+    assert app.bot.of("send", OWNER)[-1][2] == "Done: Example\nDone"
 
 
 async def test_a_provider_that_omits_cost_is_estimated_from_tokens_for_the_ceiling_only(make_app):
@@ -543,7 +543,7 @@ async def test_handoff_time_is_shown_in_local_time(make_app):
     app = make_app()
     app.dispatch.presence.tz = ZoneInfo("Asia/Singapore")
     await app.dispatch.desktop_handoff(1, 2, OWNER, "Sign in", "example.org", datetime(2026, 1, 1, 6, 5, tzinfo=timezone.utc))
-    assert app.bot.of("send", OWNER)[0][2].startswith("Dom needs you to log in (browser was on example.org at 14:05): Sign in")
+    assert app.bot.of("send", OWNER)[0][2].startswith("Log-in needed\nSign in\nBrowser was on example.org at 14:05.")
 
 
 async def test_save_screenshot_puts_a_png_where_finish_can_send_it(make_app):

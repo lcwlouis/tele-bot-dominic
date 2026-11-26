@@ -1158,7 +1158,7 @@ async def test_giving_up_in_the_owners_dm_tells_him(setup_dispatch):
         await deliver(app, msg_id, chat_id=OWNER, sender=OWNER)
     assert (await app.store.get_unread(OWNER))[0] == 0
     assert len(sends) == 4  # three failed turns, then the notice
-    assert "I couldn't answer your last messages: my turns kept failing (RuntimeError)" in app.bot.of("send", OWNER)[-1][2]
+    assert "Couldn't answer your last messages\nmy turns kept failing (RuntimeError)." in app.bot.of("send", OWNER)[-1][2]
 
 
 async def test_other_bad_requests_are_retried_like_any_failure(setup_dispatch):

@@ -236,7 +236,7 @@ class WebConfig(BaseModel):
     access_aud: str = Field("", description="Cloudflare Access application audience tag.")
     access_emails: list[str] = Field([], description="Optional allowlist for the Access assertion's email claim.")
     dev_token_env: str = Field("", description="Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings.")
-    public_url: str = Field("", description="HTTPS dashboard base URL for links in desktop handoff messages.")
+    public_url: str = Field("", description="HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages.")
 
 
 HOST_NAME = r"^[a-z0-9][a-z0-9-]{0,23}$"

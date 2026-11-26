@@ -260,14 +260,16 @@ tools it will use, the sites it will open, and a time and step budget. Every tas
 Set `enabled = false` to turn it off; see
 [Configuration](configuration.md#self-directed-work) for the delay and budget limits.
 
-**You see the plan first.** Dom sends one message to your DM listing the tasks, each
-with a Cancel button, and the dashboard's **Own work** page (and the home view,
-while anything is planned or running) shows the same plan with Cancel buttons. A
+**You see the plan first.** Dom sends a short notice to your DM ("Tomorrow's own work: 3
+things", one bullet per task, and a Review on dashboard button when `[web].public_url`
+is set). The reasons, tools, sites and budgets are on the dashboard's **Own work**
+page (and the home view, while anything is planned or running), where each task is
+cancelled; `/ownwork` lists and cancels them in Telegram too. A
 task starts no sooner than `delay_hours` after the announcement, and only while Dom
 is awake and idle: your DM is not asleep, no chat is online or mid-reply, and no
 desktop task is running. A task that has not started within a day expires, and the
 next night's plan replaces any leftovers. Results, with any screenshots, appear on
-the Own work page; your DM gets one short summary. Finished tasks (and their
+the Own work page; your DM gets one short notice ("Done: <task>" or "Stopped: <task>", the first sentence of the result tagged as an unchecked web summary, and a link). Finished tasks (and their
 saved screenshots) can be deleted from the Own work page or with `/ownwork`
 after moving them into the deletion archive; planned or running tasks must be
 cancelled first. A task that runs out of steps

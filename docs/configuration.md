@@ -263,7 +263,7 @@ See [Self-directed work](desktop.md#self-directed-work) for the network guard it
 | `web.access_aud` | `""` | Cloudflare Access application audience tag. |
 | `web.access_emails` | `[]` | Optional allowlist for the Access assertion's email claim. |
 | `web.dev_token_env` | `""` | Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings. |
-| `web.public_url` | `""` | HTTPS dashboard base URL for links in desktop handoff messages. |
+| `web.public_url` | `""` | HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages. |
 
 ## T3 Code
 

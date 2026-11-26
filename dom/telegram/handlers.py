@@ -940,7 +940,7 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
         row = next((row for row in await app.proposals.pending() if row["id"] == proposal_id), None)
         await _toast(app, query, None if row else "already handled")
         if row:
-            await app.proposals.send(row)
+            await app.proposals.send(row, full=True)
             await owner.record_event(app, f"Viewed proposal #{proposal_id}")
         else:
             await _settle_button(app, query, "already handled")
