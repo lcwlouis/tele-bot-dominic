@@ -1643,3 +1643,24 @@ async def test_a_card_answered_after_the_tools_time_limit_still_counts(make_app)
     row = await task_row(app, task_id)
     assert row["status"] == "done", row
     assert worker.sandbox.url == "https://slow.example.org/"
+
+
+async def test_where_the_owner_leaves_the_browser_after_a_handoff_is_not_asked_about(make_app):
+    """Gate round 3: the owner drove the browser during the handoff, so the site they left it on is cleared for the task."""
+    app = make_app()
+    await app.desktop_permissions.set_policy("visit_site", "ask")
+    worker = await worker_for(
+        app,
+        call("handoff", reason="Sign in"),
+        call("read_page"),
+        call("finish", result="signed in"),
+        {"content": '{"bubbles":[{"text":"done"}]}'},
+        handoff_seconds=2,
+    )
+    worker.sandbox.url = "https://login.example.org/done"
+    task_id = await worker.enqueue(OWNER, "Sign in for me")
+    row = await wait_status(app, task_id, "waiting_owner")
+    assert await worker.resume(OWNER, task_id, row["steps"])
+    await wait_task(worker)
+    assert not await app.desktop_permissions.pending_requests()
+    assert (await task_row(app, task_id))["status"] == "done"

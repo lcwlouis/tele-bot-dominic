@@ -756,6 +756,9 @@ class DesktopWorker:
                                 before = clock()
                                 await self._wait_for_owner(run.task_id, run.chat_id, steps, reason, host, observed)
                                 run.deadline += clock() - before
+                                # Where the owner left the browser is the owner's choice: the task is cleared for it.
+                                if landed := await self._browser_host(client):
+                                    run.sites.add(normalize_site(landed) or landed)
                                 result = "Owner confirmed the handoff is done."
                         messages.append({
                             "role": "tool", "tool_call_id": str(call.get("id") or ""),
