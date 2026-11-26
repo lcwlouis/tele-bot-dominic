@@ -47,8 +47,11 @@ def _today(app) -> date:
     return app.dispatch.now().astimezone(ZoneInfo(app.config.timezone)).date()
 router = APIRouter()
 PREFIX = "/api/memory"
-GUARDED_GETS = {f"{PREFIX}/export"}  # reads that build a download and leave a record: same-site browsers only
-JSON_POSTS = {f"{PREFIX}/save", f"{PREFIX}/soul", f"{PREFIX}/import", f"{PREFIX}/import-review", f"{PREFIX}/proposal"}
+GUARDED_GETS = {f"{PREFIX}/export", f"{PREFIX}/index/estimate", f"{PREFIX}/index/progress"}
+JSON_POSTS = {
+    f"{PREFIX}/save", f"{PREFIX}/soul", f"{PREFIX}/import", f"{PREFIX}/import-review", f"{PREFIX}/proposal",
+    f"{PREFIX}/index/confirm", f"{PREFIX}/index/cancel",
+}
 MAX_SAVE = 1024 * 1024 + 4096  # a 1 MB file with JSON around it
 MAX_IMPORT = memory_import.MAX_DOCUMENT_BYTES * 4 // 3 + 4096  # the document as base64 with JSON around it
 EDIT_KINDS = ("soul_edit", "memory_edit")  # imports are decided in batches, through /import-review
@@ -88,6 +91,10 @@ class ImportReview(Strict):
 class ProposalDecision(Strict):
     id: int = Field(gt=0, lt=2**63)
     decision: Literal["approve", "reject"]
+
+
+class IndexAction(Strict):
+    pass
 
 
 async def _waiting(app) -> dict:
@@ -132,6 +139,36 @@ async def core_memories(request: Request) -> dict:
     app = owner_app(request)
     items = await asyncio.to_thread(app.home.scoped(allow_private=True).core_memories)
     return {"cap": app.config.core_memory_cap, "items": items}
+
+
+@router.get(PREFIX + "/index/estimate")
+async def index_estimate(request: Request) -> dict:
+    """A staged model never starts work until the owner calls /confirm."""
+    return await owner_app(request).knowledge.estimate()
+
+
+@router.get(PREFIX + "/index/progress")
+async def index_progress(request: Request) -> dict:
+    return await owner_app(request).knowledge.progress()
+
+
+@router.post(PREFIX + "/index/confirm")
+async def index_confirm(request: Request) -> dict:
+    app = owner_app(request)
+    await _input(request, IndexAction, 1024)
+    estimate = await app.knowledge.estimate()
+    if not estimate["staged"]:
+        raise HTTPException(409, "No embedding model change is staged.")
+    app.dispatch._spawn(app.knowledge.reindex())
+    return {"started": True, **estimate}
+
+
+@router.post(PREFIX + "/index/cancel")
+async def index_cancel(request: Request) -> dict:
+    app = owner_app(request)
+    await _input(request, IndexAction, 1024)
+    await app.knowledge.cancel()
+    return {"cancelled": True, **await app.knowledge.progress()}
 
 
 @router.get(PREFIX + "/file")
