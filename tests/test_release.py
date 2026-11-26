@@ -97,8 +97,8 @@ def test_installed_notes_gives_dom_every_bullets_lead_and_first_sentence_of_the_
     from dom import own_code
 
     root = Path(__file__).resolve().parents[1]
-    _, section = next(  # the newest section with changes: the release in progress, or the one just tagged
-        item for item in own_code.changelog_sections((root / "CHANGELOG.md").read_text()) if "\n- " in item[1])
+    _, section = next(  # a large real release section: v0.8.4, the one this digest was built for
+        item for item in own_code.changelog_sections((root / "CHANGELOG.md").read_text()) if item[0].startswith("[0.8.4]"))
     (tmp_path / "CHANGELOG.md").write_text("## [0.8.4] - 2026-11-27\n" + section.split("\n", 1)[1])
     digest = release.installed_notes("v0.8.4", tmp_path)
     leads = re.findall(r"^- (\*\*.+?\*\*)", section, re.MULTILINE)
