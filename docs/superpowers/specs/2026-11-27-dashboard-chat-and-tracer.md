@@ -184,33 +184,49 @@ A deleted Telegram message stays in traces until retention removes it, which is 
 
 ## Redaction
 
-Redaction happens in the encoder, in the writer's worker thread, before anything reaches the disk:
+Redaction happens in the encoder, in the writer's worker thread, before anything reaches the disk.
 
-1. **Which values:** every value in `.env`, plus every key variable `config.toml` names (`*_env`, including
-   `api_key_env` and the dashboard's `dev_token_env`) and the fixed credentials (the bot token among them), read from
-   `.env` or the process environment. Values shorter than 4 characters are skipped, so common words aren't mangled.
-   The values are read at each write in the worker thread, never on the event loop.
-2. **Which forms:** each value is redacted raw, JSON-escaped (`"` and `\`), and with non-ASCII as `\uXXXX`. Longer
-   forms go first, so a value inside another is never left half-redacted.
-3. **Where:**
-   - on every string, before any cut, so a cut never leaves half a secret behind;
-   - inside any string that holds JSON (a tool's raw arguments), which is parsed and cleaned, so other escapes such
-     as an ASCII character written as `\u0041` can't hide a value;
-   - once more on the serialised text.
-4. **Shapes:** `API_KEY`, `BEARER_TOKEN` and `TELEGRAM_BOT_TOKEN` from `dom/secret_patterns.py` catch a key Dom read
-   from a page or a tool result.
-5. **Media:** a base64 `data:` URL, or any base64-only string of 4 kB or more, becomes
+1. **Which values are secrets.**
+   - The values of every key variable `config.toml` references, from `.env` or the process environment. That covers
+     each `*_env` setting (`api_key_env`, `dev_token_env`, the studio's and desktop's tokens) and the fixed credentials
+     (the bot token among them).
+   - Any `.env` variable whose name contains KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, AUTH, CREDENTIAL, COOKIE or
+     SESSION, such as `GOOGLE_CLIENT_SECRET`.
+   - Never every `.env` value: a time zone or a port isn't a secret.
+   - A value of 8 characters or more is redacted wherever it appears. A shorter one is redacted only as a whole token,
+     never inside a word.
+2. **Encoded forms of each long value:**
+   - raw, JSON-escaped, and every character as `\uXXXX`;
+   - URL-encoded (`quote` and `quote_plus`);
+   - base64, standard and URL-safe, padded and unpadded, at all three byte alignments. Each aligned encoding drops
+     its partial edge characters, so a secret inside `base64("user:" + secret)` is still caught.
+3. **By shape, whatever the value.** The whole value of an `Authorization`, `Proxy-Authorization`, `Cookie` or
+   `Set-Cookie` field is redacted, as a header line in text or as a JSON key. So are `Basic <b64>` and `Bearer <x>`
+   anywhere, and the key shapes in `dom/secret_patterns.py`.
+4. **String leaves only.** Redaction runs on JSON string leaves, including strings that parse as JSON, recursively.
+   It never runs over the serialised JSON, so it can't break the structure. Keys stay as they are, except for the
+   credential fields above.
+5. **Metadata stays clean.** A trace's chat id, turn id, kind, label and times come from the trace's own metadata,
+   are stored in their own columns and are never redacted. Forget, aliases and pruning use only those columns.
+6. **Media:** a base64 `data:` URL, or any base64-only string of 4 kB or more, becomes
    `[media image/jpeg, 341 kB, sha256 1a2b3c4d]`.
-6. **Headers:** request headers are never captured.
+7. **Headers:** request headers are never captured.
 
 `redactions` counts the replacements.
+
+**Residual risk:** a secret split across two separate strings (for example two tool arguments, or two chunks of a
+streamed text) is not caught, because each string is checked on its own.
 
 ## Forgetting a chat
 
 Forgetting a chat with its history deletes its traces under every id it had (a group that became a supergroup), as
 `store.chat_id_aliases` resolves them before the forget. It also drops its queued traces and refuses any trace of
 it that started before the forget and is still being encoded. A trace that starts after the forget (the chat came
-back) is kept. If the deletion fails, the owner gets an error that says so, not a plain success.
+back) is kept.
+
+If the tracer didn't open at start, `traces.db` is opened directly for the deletion. If the deletion still fails, the
+owner gets an error that says the traces weren't deleted, an owner event is recorded, and the chat and its ids are
+saved in `traces.forget-pending.json`. That deletion is applied the next time the tracer opens.
 
 ## Export
 

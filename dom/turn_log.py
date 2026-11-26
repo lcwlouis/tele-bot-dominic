@@ -94,6 +94,7 @@ class TurnTrace:
     parent: TurnTrace | None = None  # for an `after` part: the turn it belongs to, whose row id is read when written
     turn_id: int | None = None  # for an `after` part started outside its turn: that turn's row
     children: list[TurnTrace] = field(default_factory=list)  # `after` parts that finished before this turn was saved
+    replaced_by: TurnTrace | None = None  # a restarted attempt: the trace that absorbed it, which its children join
 
     def add_timing(self, what: str, elapsed_ms: int) -> None:
         self.timings.append(f"{what}@{elapsed_ms}")
@@ -111,6 +112,7 @@ class TurnTrace:
         self.events[:0] = other.events
         self.dropped_events += other.dropped_events
         self.started = min(self.started, other.started)
+        other.replaced_by = self  # a child of it still running finds this trace when it finishes
         for child in other.children:  # work a restarted attempt spawned belongs to the turn that replaced it
             child.parent = self
         self.children.extend(other.children)
@@ -134,6 +136,9 @@ def submit(trace: TurnTrace) -> None:
         return
     trace.sealed = True
     parent = trace.parent
+    while parent is not None and parent.replaced_by is not None:
+        parent = parent.replaced_by
+    trace.parent = parent
     if parent is not None and parent.row_id is None and not parent.sealed:
         parent.children.append(trace)
         return

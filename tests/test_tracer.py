@@ -2,12 +2,14 @@
 the reply path, and the dashboard's Talk and trace routes."""
 
 import asyncio
+import base64
 import json
 import os
 import sqlite3
 import stat
 import threading
 import time
+import urllib.parse
 import zlib
 from datetime import datetime, timedelta, timezone
 
@@ -448,33 +450,59 @@ def _escaped(text: str) -> str:
     return "".join(f"\\u{ord(char):04x}" for char in text)
 
 
-async def test_every_env_value_is_redacted_through_the_writer_the_store_and_the_export(make_app, browser, monkeypatch):
+async def test_secret_values_are_redacted_in_every_encoding_through_the_writer_the_store_and_the_export(
+    make_app, browser, monkeypatch,
+):
     app = make_app()
     weird, accented, short = 'pa"ss\\wd-9', "pässwörd-42", "zq7k"
     token = ":".join(("7" * 9, "B" * 35))
     (app.store.home / ".env").write_text(
-        f"WEIRD_VALUE={weird}\nACCENTED=\"{accented}\"\nSHORT_ONE={short}\nTELEGRAM_BOT_TOKEN={token}\nTINY=ab\n"
+        f"DB_PASSWORD={weird}\nMAIL_SECRET=\"{accented}\"\nPIN_PASS={short}\nTELEGRAM_BOT_TOKEN={token}\n"
+        "TZ=Asia/Tokyo-not-a-secret\nPORT=8080\n"
     )
-    monkeypatch.setenv("JEV_API_KEY", "only-in-the-environment-77")
+    monkeypatch.setenv("JEV_API_KEY", "only-in-the-environment-77")  # a fixed credential, not in .env
     writer = tracer.open_writer(app.store.home, lambda: app.config)
     app.traces = writer
+    basic = base64.b64encode(f"user:{weird}".encode()).decode()
     trace = turn_log.TurnTrace(chat_id=OWNER, scope="owner_dm")
     trace.add_event("tool", {
-        "name": "read_file",
+        "name": "fetch",
         "arguments": json.dumps({"path": weird, "also": accented}),  # JSON-escaped forms
-        "result": f"x{short}y {token} only-in-the-environment-77",
-        "raw": '{"q": "' + _escaped(accented) + '", "w": "' + _escaped(weird) + '"}',  # \uXXXX forms
-        "tiny": "ab stays: too short to redact",
+        "raw": '{"q": "' + _escaped(accented) + '", "w": "' + _escaped(weird) + '"}',  # \\uXXXX forms
+        "url": "https://example.org/?p=" + urllib.parse.quote(weird, safe="") + "&q=" + urllib.parse.quote_plus(accented),
+        "encoded": base64.urlsafe_b64encode(("prefix-" + accented).encode()).decode(),
+        "headers": f"Authorization: Basic {basic}\nCookie: sid=abc123; theme=dark\nX-Other: kept",
+        "json_headers": {"Set-Cookie": "sid=zzz; HttpOnly", "Proxy-Authorization": "Digest whatever"},
+        "result": f"x{short}y stays, but {short} alone goes; {token} only-in-the-environment-77",
+        "plain": "Asia/Tokyo-not-a-secret and 8080 stay",
     })
     await writer.write(trace)
-    stored = "".join(json.dumps(row["body"], ensure_ascii=False) for row in rows(writer))
+    [row] = rows(writer)
+    stored = json.dumps(row["body"], ensure_ascii=False)
     async with browser(app) as client:
         exported = (await client.get("/api/traces/export", headers=SAME_SITE)).text
     for text in (stored, exported):
-        for secret in (weird, accented, short, token, "only-in-the-environment-77"):
-            for form in {secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=True)[1:-1], _escaped(secret)}:
+        for secret in (weird, accented, token, "only-in-the-environment-77", "sid=abc123", "sid=zzz", "Digest whatever", basic):
+            for form in tracer.secret_forms(secret) | {secret, _escaped(secret)}:
                 assert form not in text, form
-        assert "ab stays" in text
+        assert f"x{short}y stays" in text and f" {short} alone" not in text
+        assert "Asia/Tokyo-not-a-secret and 8080 stay" in text and "X-Other: kept" in text
+    writer.store.close()
+
+
+async def test_redaction_never_touches_metadata_or_json_structure(make_app):
+    app = make_app()
+    (app.store.home / ".env").write_text("SHORT_TOKEN=1234\nODD_SECRET=duration_ms\n")
+    writer = tracer.open_writer(app.store.home, lambda: app.config)
+    trace = turn_log.TurnTrace(chat_id=123456, scope="friend_dm")
+    trace.add_event("note", {"text": "the key duration_ms is a secret here, and so is 1234"})
+    await writer.write(trace)
+    [row] = rows(writer)
+    assert row["chat_id"] == "123456" and row["body"]["chat_id"] == "123456"
+    assert "duration_ms" in row["body"] and isinstance(row["body"]["duration_ms"], int)  # keys are never rewritten
+    assert row["body"]["events"][0]["text"] == "the key [redacted] is a secret here, and so is [redacted]"
+    assert await writer.forget([123456]) == 1
+    assert rows(writer) == []
     writer.store.close()
 
 
@@ -522,7 +550,7 @@ async def test_a_failed_trace_deletion_is_reported_not_a_plain_success(traced, b
         response = await client.post(
             "/api/chats/forget", json={"chat_id": GROUP, "delete_history": True, "confirm": True}, headers=JSON,
         )
-    assert response.status_code == 500 and "debug traces could not be deleted" in response.json()["detail"]
+    assert response.status_code == 500 and "debug traces were not deleted" in response.json()["detail"]
 
 
 async def test_the_trace_files_are_owner_only(tmp_path):
@@ -568,3 +596,69 @@ async def test_talk_polls_traces_with_their_own_cursor(traced, browser):
         assert [part["turn_id"] for part in polled["turns"]] == [5]
         again = (await client.get(f"/api/talk?trace=1&after=0&trace_after={polled['turns'][0]['id']}", headers=SAME_SITE)).json()
         assert again["turns"] == []
+
+
+async def test_forget_without_a_running_tracer_still_deletes_the_stored_traces(make_app, browser):
+    app = make_app()  # no writer: the tracer failed to open at start
+    store = TraceStore(app.store.home / "traces.db")
+    store.insert(*_part(datetime.now(timezone.utc), chat=str(GROUP), turn_id=3), max_bytes=10**9)
+    store.close()
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    await app.store.set_chat_reachable(GROUP, False, "kicked")
+    async with browser(app) as client:
+        response = await client.post(
+            "/api/chats/forget", json={"chat_id": GROUP, "delete_history": True, "confirm": True}, headers=JSON,
+        )
+    assert response.status_code == 200, response.text
+    store = TraceStore(app.store.home / "traces.db")
+    assert await store.traced([3]) == set()
+    store.close()
+
+
+async def test_a_forget_that_cannot_open_the_traces_saves_the_deletion_for_the_next_start(make_app, browser, monkeypatch):
+    app = make_app()
+    store = TraceStore(app.store.home / "traces.db")
+    store.insert(*_part(datetime.now(timezone.utc), chat=str(GROUP), turn_id=3), max_bytes=10**9)
+    store.insert(*_part(datetime.now(timezone.utc), chat=str(OWNER), turn_id=4), max_bytes=10**9)
+    store.close()
+    await app.store.set_chat_auth_status(GROUP, "approved")
+    await app.store.set_chat_reachable(GROUP, False, "kicked")
+
+    def locked(path):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(tracer, "TraceStore", locked)
+    async with browser(app) as client:
+        response = await client.post(
+            "/api/chats/forget", json={"chat_id": GROUP, "delete_history": True, "confirm": True}, headers=JSON,
+        )
+    assert response.status_code == 500 and "were not deleted" in response.json()["detail"]
+    assert json.loads((app.store.home / tracer.PENDING_FORGET).read_text()) == [str(GROUP)]
+    monkeypatch.undo()
+
+    writer = tracer.open_writer(app.store.home, lambda: app.config)  # the next start
+    assert await tracer.apply_pending_forget(writer, app.store.home) == 1
+    assert await writer.store.traced([3, 4]) == {4}
+    assert not (app.store.home / tracer.PENDING_FORGET).exists()
+    writer.store.close()
+
+
+def test_a_child_still_running_when_its_turn_is_replaced_joins_the_replacing_turn():
+    handed = []
+    turn_log.set_sink(handed.append)
+    try:
+        first = turn_log.TurnTrace(chat_id=OWNER, scope="owner_dm")
+        with turn_log.track(first):  # the studio job starts under the first attempt
+            child = turn_log.TurnTrace(kind="after", label="studio", chat_id=OWNER, scope="owner_dm", parent=first)
+        first.superseded = True
+        second = turn_log.TurnTrace(chat_id=OWNER, scope="owner_dm")
+        second.absorb(first)  # a newer message restarts the turn while the job still runs
+        child.add_event("studio", {"requested": {"image": "a park"}})
+        turn_log.submit(child)  # the job finishes after the restart, before the new turn is saved
+        second.row_id = 77
+        second.add_event("note", {"text": "turn"})
+        turn_log.submit(second)
+    finally:
+        turn_log.set_sink(None)
+    assert [trace.label for trace in handed] == ["turn", "studio"]
+    assert tracer.encode(handed[1], [])["turn_id"] == 77

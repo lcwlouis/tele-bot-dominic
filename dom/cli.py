@@ -181,10 +181,15 @@ async def run(home: Path) -> bool:
                 try:
                     app.traces = tracer.open_writer(home, lambda: app.config)
                     app.traces.start()
-                    await app.traces.prune()
                 except Exception:  # the tracer is a debugging aid: Dom runs without it rather than not at all
                     logging.getLogger("dom").warning("could not open the trace store; turns are not traced", exc_info=True)
                     app.traces = None
+                if app.traces is not None:
+                    try:  # a forget that could not delete its traces left them for now
+                        await tracer.apply_pending_forget(app.traces, home)
+                        await app.traces.prune()
+                    except Exception:
+                        logging.getLogger("dom").warning("could not tidy the trace store at start", exc_info=True)
                 app.dispatch.start()
                 app.dispatch._spawn(check_reachability(app))
                 if app.cloud_studio is not None:

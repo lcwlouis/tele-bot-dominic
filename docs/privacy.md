@@ -158,17 +158,19 @@ full, which is the one place the dashboard shows another chat's text beyond a on
   `dom backup` leaves it out.
 - **How long:** `tracer.retention_days` (7 by default). The store is capped at `tracer.max_mb` (256 MB by default), and
   the oldest traces are deleted first.
-- **Redaction:** secrets are redacted before anything is written. That covers:
-  - every value in `.env`;
-  - every key variable `config.toml` names, the Telegram bot token and the other fixed credentials, also when they
-    come only from the environment;
-  - any string shaped like an API key, a bearer token or a bot token.
+- **Redaction:** secrets are redacted before anything is written. They are:
+  - the values of every key variable `config.toml` names, the Telegram bot token and the other fixed credentials,
+    also when they come only from the environment;
+  - any `.env` variable whose name says it holds a credential (KEY, TOKEN, SECRET, PASSWORD, AUTH, COOKIE, SESSION…).
 
-  Values are matched raw and in their JSON-escaped forms. Request headers are never recorded. Media inside requests
-  is replaced by a placeholder with its type, size and hash.
+  Each value is matched raw, JSON-escaped, URL-encoded and base64-encoded; a value shorter than 8 characters is
+  matched only as a whole word. Any `Authorization`, `Cookie` or `Set-Cookie` value, `Basic` or `Bearer` credential,
+  and API key or bot token shape is redacted whatever its value. Request headers are never recorded. Media inside
+  requests is replaced by a placeholder with its type, size and hash.
+- **Residual risk:** a secret split across two separate strings, such as two tool arguments, is not caught.
 - **Who sees it:** only the owner, on the dashboard. The trace reads and exports are same-site only.
 - **Deletion:** forgetting a chat with its history deletes its traces, under every id it had, including ones still
-  waiting to be written. A message deleted in Telegram stays in older traces until retention removes it.
+  waiting to be written. If that fails, the dashboard says so and Dom deletes them at the next start. A message deleted in Telegram stays in older traces until retention removes it.
 
 ## Chat scopes
 

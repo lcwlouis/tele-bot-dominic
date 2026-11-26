@@ -265,6 +265,32 @@ for (const scheme of ["dark", "light"] as const) {
 test.describe("interactions under the CSP", () => {
   test.use({ viewport: viewports.desktop, colorScheme: "dark" });
 
+  test("talk: work after a turn that is written later appears in the open trace", async ({ page }) => {
+    const problems = await watch(page);
+    let late = false; // set once a poll has brought the studio job's part
+    await page.route("**/api/talk?after=*", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (new URL(route.request().url()).searchParams.get("trace") === "1") {
+        late = true;
+        data.turns = [...(data.turns ?? []), { id: 99999, turn_id: 900, kind: "after", label: "studio", at: "2026-11-22T20:24:30+00:00", outcome: "", size: 1 }];
+      }
+      await route.fulfill({ response, json: data });
+    });
+    await page.route("**/api/traces/turn/900", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (late) data.parts.push({ ...data.parts[0], kind: "after", label: "studio", events: [] });
+      await route.fulfill({ response, json: data });
+    });
+    await page.goto("/app/talk?trace=1&turn=900");
+    await expect(page.getByRole("region", { name: "Delivery" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "After the turn" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "After the turn" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("region", { name: "After the turn" })).toContainText("Studio");
+    expect(problems).toEqual([]);
+  });
+
   test("strip list: a strip opens its details beside the list, Esc closes back to the strip, trash works", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/gallery");

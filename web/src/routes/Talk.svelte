@@ -50,6 +50,9 @@
   const lastId = () => (messages.length ? messages[messages.length - 1].id : 0);
   // Traces have their own cursor: a long turn, or a slow writer, finishes after the messages it answered.
   const lastTrace = () => Math.max(0, ...turns.keys());
+  // The ids of every stored part of one turn (the turn, then its after parts as they arrive).
+  const partsOf = (turnId: number) =>
+    [...turns.values()].filter((part) => part.turn_id === turnId).map((part) => part.id).sort((a, b) => a - b).join(",");
   // Every request this page makes stops when it goes away, so no poll outlives it.
   const abort = new AbortController();
   let disposed = false;
@@ -359,7 +362,8 @@
                     </summary>
                     <div class="border-t px-3 py-3">
                       {#if turn.kind === "turn" && turn.turn_id !== null}
-                        <TraceLoader turnId={turn.turn_id} />
+                        <!-- Keyed on the turn's parts, so work after the turn that arrives later loads in. -->
+                        {#key partsOf(turn.turn_id)}<TraceLoader turnId={turn.turn_id} />{/key}
                       {:else}
                         <TraceLoader partId={turn.id} />
                       {/if}

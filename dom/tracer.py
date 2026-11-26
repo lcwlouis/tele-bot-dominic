@@ -15,6 +15,7 @@ docs/superpowers/specs/2026-11-27-dashboard-chat-and-tracer.md.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -23,6 +24,7 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.parse
 import zlib
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -33,7 +35,9 @@ from typing import Any
 from pydantic import BaseModel
 
 from dom import turn_log
-from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
+from dom.secret_patterns import (
+    API_KEY, BASIC_AUTH, BEARER_TOKEN, CREDENTIAL_FIELD, CREDENTIAL_FIELDS, SECRET_NAME, TELEGRAM_BOT_TOKEN,
+)
 
 log = logging.getLogger("dom.tracer")
 
@@ -42,7 +46,7 @@ QUEUE_SIZE = 32  # traces waiting to be written; past this a trace is dropped (a
 MAX_TRACE_BYTES = 8_000_000  # one trace, compressed; past it long strings are cut, then bodies dropped, then a stub
 CUT_CHARS = 65_536  # a string kept in full is at most this long once a trace is over MAX_TRACE_BYTES
 MEDIA_MIN_CHARS = 4096  # a base64 string this long or longer is media, kept as a placeholder
-MIN_SECRET_CHARS = 4  # shorter values are not redacted: they would mangle ordinary words
+MIN_SECRET_CHARS = 8  # shorter secret values are redacted only as a whole token, never inside a word
 EXPORT_LIMIT = 500  # parts in one range export
 EXPORT_MAX_BYTES = 64_000_000  # serialised bytes in one range export; past it the export stops and says so
 SUMMARY_LIMIT = 200
@@ -73,13 +77,17 @@ CREATE INDEX IF NOT EXISTS idx_traces_at ON traces(at);
 # --- secrets ------------------------------------------------------------------------------------------------------
 
 
-def _forms(secret: str) -> set[str]:
-    """A secret as it may appear in text: raw, JSON-escaped, and JSON-escaped with non-ASCII as \\uXXXX."""
-    return {secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=True)[1:-1]}
+@dataclass(frozen=True)
+class Secrets:
+    """The instance's secret values: `long` ones (MIN_SECRET_CHARS and up) are redacted wherever they appear, in every
+    encoding below; `short` ones only as a whole token, never inside a word."""
+
+    long: tuple[str, ...] = ()
+    short: tuple[str, ...] = ()
 
 
-def _dotenv_values(path: Path) -> set[str]:
-    values: set[str] = set()
+def _env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
@@ -88,54 +96,102 @@ def _dotenv_values(path: Path) -> set[str]:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        value = line.partition("=")[2].strip()
-        values.add(value)
+        name, _, value = line.partition("=")
+        name, value = name.strip().removeprefix("export ").strip(), value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            values.add(value[1:-1])
+            value = value[1:-1]
+        values[name] = value
     return values
 
 
-def instance_secrets(config: Any) -> tuple[str, ...]:
-    """Every value the instance holds as a secret: all of `.env`, every key variable config.toml names (`*_env`,
-    including `api_key_env` and the dashboard's `dev_token_env`) and the fixed credentials (the bot token among them)
-    from `.env` or the process environment. Longest first, so a value inside another is never left half-redacted.
-    Reads files: call it off the event loop."""
-    values = _dotenv_values(Path(config.home) / ".env")
-    for name in config.secret_names():
-        if value := os.environ.get(name):
-            values.add(value)
-    return tuple(sorted({value for value in values if len(value) >= MIN_SECRET_CHARS}, key=len, reverse=True))
+def instance_secrets(config: Any) -> Secrets:
+    """The values of every key variable config.toml names (each `*_env`: `api_key_env`, `dev_token_env`, the studio's
+    and the desktop's tokens) and the fixed credentials such as the bot token, plus every `.env` variable whose name says
+    it holds a credential (KEY, TOKEN, SECRET, PASSWORD, AUTH, COOKIE, SESSION…), from `.env` or the environment. Never
+    every `.env` value: a time zone or a port is not a secret. Reads files: call it off the event loop."""
+    env = _env_file(Path(config.home) / ".env")
+    names = set(config.secret_names()) | {name for name in env if SECRET_NAME.search(name)}
+    values = {value for name in names if (value := env.get(name) or os.environ.get(name))}
+    by_length = sorted(values, key=len, reverse=True)
+    return Secrets(
+        long=tuple(value for value in by_length if len(value) >= MIN_SECRET_CHARS),
+        short=tuple(value for value in by_length if len(value) < MIN_SECRET_CHARS),
+    )
+
+
+def _base64_forms(secret: bytes) -> set[str]:
+    """The secret's base64 wherever it sits in an encoded string: at each of the three byte alignments, standard and
+    URL-safe, without the edge characters that also carry the neighbouring bytes."""
+    forms = set()
+    for offset in range(3):
+        encoded = base64.b64encode(b"\0" * offset + secret).decode().rstrip("=")
+        start = (0, 2, 3)[offset]
+        end = (offset + len(secret)) * 8 // 6
+        core = encoded[start:end]
+        if len(core) >= MIN_SECRET_CHARS:
+            forms.add(core)
+            forms.add(core.replace("+", "-").replace("/", "_"))
+    full = base64.b64encode(secret).decode()
+    forms |= {full, full.rstrip("="), base64.urlsafe_b64encode(secret).decode(), base64.urlsafe_b64encode(secret).decode().rstrip("=")}
+    return forms
+
+
+def secret_forms(secret: str) -> set[str]:
+    """A long secret as it may appear in text: raw, JSON-escaped, every character as \\uXXXX, URL-encoded and base64."""
+    forms = {
+        secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=True)[1:-1],
+        "".join(f"\\u{ord(char):04x}" for char in secret),
+        urllib.parse.quote(secret, safe=""), urllib.parse.quote_plus(secret), urllib.parse.quote(secret),
+    }
+    forms |= _base64_forms(secret.encode())
+    return {form for form in forms if len(form) >= MIN_SECRET_CHARS}
 
 
 # --- encoding -----------------------------------------------------------------------------------------------------
 
 
+EVENT_META = ("type", "at", "t_ms", "started_at")  # an event's own fields, never redacted
+
+
 @dataclass
 class _Cleaner:
-    """One pass over a trace's values: media becomes a placeholder, secrets become [redacted], and with `cut` long
-    strings are shortened. Every string is redacted before it is cut, so a cut never leaves half a secret behind, and
-    a string holding JSON (a tool's raw arguments) is parsed and cleaned too, so escapes can't hide a secret."""
+    """One pass over a trace's content, string leaves only: media becomes a placeholder, secrets become [redacted], and
+    with `cut` long strings are shortened. A string that is JSON (a tool's raw arguments) is parsed and its leaves
+    cleaned, recursively, so escapes can't hide a value. Keys stay as they are, but the whole value of a credential
+    field (Authorization, Cookie…) is redacted. Each string is redacted before it is cut, so a cut never leaves half
+    a secret behind. Serialised JSON is never rewritten, so redaction can't break its structure."""
 
-    secrets: tuple[str, ...]
+    secrets: Secrets
     cut: int | None = None
     redactions: int = 0
     media: int = 0
     truncated: bool = False
-    forms: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        self.forms = tuple(sorted({form for secret in self.secrets for form in _forms(secret)}, key=len, reverse=True))
+        self._forms = tuple(sorted({form for secret in self.secrets.long for form in secret_forms(secret)}, key=len, reverse=True))
+        self._short = [
+            re.compile(rf"(?<![A-Za-z0-9]){re.escape(secret)}(?![A-Za-z0-9])") for secret in self.secrets.short
+        ]
+
+    def _sub(self, pattern: re.Pattern, replace: Any, text: str) -> str:
+        text, count = pattern.subn(replace, text)
+        self.redactions += count
+        return text
 
     def redact(self, text: str) -> str:
-        for form in self.forms:
+        for form in self._forms:
             if form in text:
                 self.redactions += text.count(form)
                 text = text.replace(form, REDACTED)
+        for pattern in self._short:
+            text = self._sub(pattern, REDACTED, text)
+        text = self._sub(CREDENTIAL_FIELD, lambda match: match.group(1) + match.group(2) + (
+            f'"{REDACTED}"' if match.group(3).startswith('"') else REDACTED
+        ), text)
+        for pattern in (BEARER_TOKEN, BASIC_AUTH):
+            text = self._sub(pattern, lambda match: match.group(0).replace(match.group(1), REDACTED), text)
         for pattern in (API_KEY, TELEGRAM_BOT_TOKEN):
-            text, count = pattern.subn(REDACTED, text)
-            self.redactions += count
-        text, count = BEARER_TOKEN.subn(lambda match: match.group(0).replace(match.group(1), REDACTED), text)
-        self.redactions += count
+            text = self._sub(pattern, REDACTED, text)
         return text
 
     def string(self, text: str) -> str:
@@ -151,8 +207,10 @@ class _Cleaner:
             except ValueError:
                 parsed = None
             if isinstance(parsed, (dict, list)):
-                text = json.dumps(self.clean(parsed), ensure_ascii=False)
-        text = self.redact(text)
+                return self._cut(json.dumps(self.clean(parsed), ensure_ascii=False))
+        return self._cut(self.redact(text))
+
+    def _cut(self, text: str) -> str:
         if self.cut is not None and len(text) > self.cut:
             self.truncated = True
             text = f"{text[:self.cut]}… [cut {len(text) - self.cut} characters]"
@@ -176,7 +234,15 @@ class _Cleaner:
         if value is None or isinstance(value, (bool, int, float)):
             return value
         if isinstance(value, dict):
-            return {self.string(str(key)): self.clean(item) for key, item in value.items()}
+            cleaned = {}
+            for key, item in value.items():
+                key = str(key)
+                if key.lower() in CREDENTIAL_FIELDS and item not in (None, ""):
+                    self.redactions += 1
+                    cleaned[key] = REDACTED
+                else:
+                    cleaned[key] = self.clean(item)
+            return cleaned
         if isinstance(value, (list, tuple, set, frozenset)):
             return [self.clean(item) for item in value]
         if isinstance(value, BaseModel):
@@ -188,6 +254,11 @@ class _Cleaner:
         if isinstance(value, bytes):
             return f"[{len(value)} bytes]"
         return self.string(str(value))
+
+    def event(self, event: dict) -> dict:
+        """An event's content cleaned; its type and times kept exactly."""
+        cleaned = self.clean({key: value for key, value in event.items() if key not in EVENT_META})
+        return {**{key: event[key] for key in EVENT_META if key in event}, **cleaned}
 
 
 def _iso(stamp: float) -> str:
@@ -244,60 +315,69 @@ def turn_id_of(trace: turn_log.TurnTrace) -> int | None:
     return trace.turn_id or (trace.parent.row_id if trace.parent is not None else None)
 
 
+def meta_of(trace: turn_log.TurnTrace) -> dict:
+    """What identifies and indexes a trace (its chat, turn, kind and times), from the trace's own metadata. It is
+    stored in its own columns and never passes through redaction, so forget, aliases and pruning always find it."""
+    started = trace.started
+    ended = max([started, *(item.get("at", started) for item in trace.events)])
+    turn_id = turn_id_of(trace)
+    return {
+        "version": VERSION, "turn_id": turn_id, "chat_id": str(trace.chat_id) if trace.chat_id is not None else "",
+        "scope": trace.scope, "kind": trace.kind if trace.kind == "turn" or turn_id is not None else "background",
+        "label": trace.label, "started_at": _iso(started), "ended_at": _iso(ended),
+        "duration_ms": round((ended - started) * 1000),
+        "first_bubble_ms": trace.first_bubble_ms, "last_bubble_ms": trace.last_bubble_ms,
+        "dropped_events": trace.dropped_events,
+    }
+
+
 def encode(
-    trace: turn_log.TurnTrace, secrets: Iterable[str], *, cut: int | None = None, drop_bodies: bool = False,
+    trace: turn_log.TurnTrace, secrets: Secrets | Iterable[str], *, cut: int | None = None, drop_bodies: bool = False,
     stub: bool = False,
 ) -> dict:
-    """The trace as the JSON body stored, cleaned (media out, secrets redacted). Runs in a worker thread. A `stub`
-    keeps only each event's type and time: the last resort for a trace still over the cap without its bodies."""
+    """The trace as the JSON body stored: its metadata as it is, its content cleaned (media out, secrets redacted).
+    Runs in a worker thread. A `stub` keeps only each event's type and time: the last resort for a trace still over
+    the cap without its bodies."""
+    if not isinstance(secrets, Secrets):
+        values = sorted(set(secrets), key=len, reverse=True)
+        secrets = Secrets(tuple(v for v in values if len(v) >= MIN_SECRET_CHARS), tuple(v for v in values if 0 < len(v) < MIN_SECRET_CHARS))
+    meta = meta_of(trace)
     started = trace.started
-    events = sorted(trace.events, key=lambda item: item.get("at", started))
-    ended = max([started, *(item.get("at", started) for item in events)])
-    turn_id = turn_id_of(trace)
-    kind = trace.kind if trace.kind == "turn" or turn_id is not None else "background"
-    encoded = [_event(item, started, drop_bodies) for item in events]
+    events = [_event(item, started, drop_bodies) for item in sorted(trace.events, key=lambda item: item.get("at", started))]
+    cleaner = _Cleaner(secrets, cut=CUT_CHARS if stub else cut)
     if stub:
-        encoded = [{key: event[key] for key in ("type", "at", "t_ms")} for event in encoded]
-    body = {
-        "version": VERSION, "turn_id": turn_id, "chat_id": str(trace.chat_id) if trace.chat_id is not None else "",
-        "scope": trace.scope, "kind": kind, "label": trace.label,
-        "started_at": _iso(started), "ended_at": _iso(ended), "duration_ms": round((ended - started) * 1000),
+        cleaned_events = [{key: event[key] for key in ("type", "at", "t_ms")} for event in events]
+    else:
+        cleaned_events = [cleaner.event(event) for event in events]
+    content = cleaner.clean({
         "outcome": trace.outcome, "model": trace.model, "fallback": trace.fallback,
         "steps": turn_log.visible_steps(trace.steps)[:200], "visits": turn_log.visits_in(trace.steps)[:50],
         "timings": [_parse_timing(item) for item in trace.timings][:200],
-        "first_bubble_ms": trace.first_bubble_ms, "last_bubble_ms": trace.last_bubble_ms,
-        "events": encoded,
-        "dropped_events": trace.dropped_events,
+    })
+    return {
+        **meta, **content, "events": cleaned_events,
+        "redactions": cleaner.redactions, "media_stripped": cleaner.media,
+        "truncated": cleaner.truncated or drop_bodies or stub,
     }
-    cleaner = _Cleaner(tuple(secrets), cut=CUT_CHARS if stub else cut)
-    cleaned = cleaner.clean(body)
-    cleaned.update(redactions=cleaner.redactions, media_stripped=cleaner.media,
-                   truncated=cleaner.truncated or drop_bodies or stub)
-    return cleaned
 
 
-def _serialise(body: dict, secrets: tuple[str, ...]) -> bytes:
-    """The body as compressed JSON, with one more redaction pass over the serialised text itself."""
-    cleaner = _Cleaner(secrets)
-    text = cleaner.redact(json.dumps(body, ensure_ascii=False))
-    if cleaner.redactions:
-        body["redactions"] += cleaner.redactions
-        text = cleaner.redact(json.dumps(body, ensure_ascii=False))
-    return zlib.compress(text.encode(), 6)
+def _serialise(body: dict) -> bytes:
+    return zlib.compress(json.dumps(body, ensure_ascii=False).encode(), 6)
 
 
-def pack(trace: turn_log.TurnTrace, secrets: Iterable[str]) -> tuple[dict, bytes]:
+def pack(trace: turn_log.TurnTrace, secrets: Secrets | Iterable[str]) -> tuple[dict, bytes]:
     """Encode and compress, shrinking a trace past MAX_TRACE_BYTES: cut long strings, then drop the bodies, then keep
-    a stub of event types and times. The stub has at most turn_log.MAX_EVENTS short events, so it always fits."""
-    secrets = tuple(secrets)
+    a stub of event types and times, then the outline alone."""
+    if not isinstance(secrets, Secrets):
+        secrets = tuple(secrets)
     for options in ({}, {"cut": CUT_CHARS}, {"cut": CUT_CHARS, "drop_bodies": True}, {"drop_bodies": True, "stub": True}):
         body = encode(trace, secrets, **options)
-        blob = _serialise(body, secrets)
+        blob = _serialise(body)
         if len(blob) <= MAX_TRACE_BYTES:
             return body, blob
     log.warning("a trace for chat %s is over the cap even as a stub; storing its outline only", trace.chat_id)
     body = {**body, "events": [], "steps": [], "timings": [], "visits": [], "truncated": True}
-    return body, _serialise(body, secrets)
+    return body, _serialise(body)
 
 
 def unpack(blob: bytes) -> dict:
@@ -572,7 +652,7 @@ class TraceWriter:
             return None
 
         def work() -> int | None:
-            body, blob = pack(trace, tuple(self.secrets()))
+            body, blob = pack(trace, self.secrets())
             return self.store.insert(body, blob, cap, started=trace.started)
 
         trace_id = await asyncio.to_thread(work)
@@ -597,6 +677,49 @@ class TraceWriter:
         days, cap = self.settings()
         await self.store.prune(self.now() - timedelta(days=days))
         await self.store.evict(cap)
+
+
+PENDING_FORGET = "traces.forget-pending.json"  # chats whose traces must go, saved when deleting them failed
+
+
+def save_pending_forget(home: Path, chat_ids: Iterable[int | str]) -> None:
+    """Remember chats whose traces could not be deleted, so the next start deletes them. Written atomically."""
+    path = Path(home) / PENDING_FORGET
+    try:
+        pending = set(json.loads(path.read_text()))
+    except (FileNotFoundError, ValueError):
+        pending = set()
+    pending |= {str(chat_id) for chat_id in chat_ids}
+    temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    fd = os.open(temp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, FILE_MODE)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(sorted(pending), handle)
+    os.replace(temp, path)
+
+
+async def forget_stored(home: Path, chat_ids: Iterable[int | str]) -> int:
+    """Delete a chat's traces when the writer is not running (the tracer failed to open): open traces.db directly."""
+    path = Path(home) / "traces.db"
+    if not path.exists():
+        return 0
+    store = await asyncio.to_thread(TraceStore, path)
+    try:
+        return await store.delete_chats(chat_ids)
+    finally:
+        await asyncio.to_thread(store.close)
+
+
+async def apply_pending_forget(writer: TraceWriter, home: Path) -> int:
+    """Delete the traces a failed forget left behind; called when the tracer opens."""
+    path = Path(home) / PENDING_FORGET
+    try:
+        chat_ids = json.loads(await asyncio.to_thread(path.read_text))
+    except FileNotFoundError:
+        return 0
+    deleted = await writer.forget(chat_ids)
+    path.unlink(missing_ok=True)
+    log.info("deleted %d traces of %d forgotten chats that an earlier forget left behind", deleted, len(chat_ids))
+    return deleted
 
 
 def open_writer(home: Path, config: Callable[[], Any]) -> TraceWriter:
