@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Literal
 import httpx
 from zoneinfo import ZoneInfo
 
+from dom import provenance
 from dom.config import SPEND_AREAS, SpendArea
 
 if TYPE_CHECKING:
@@ -207,11 +208,14 @@ class UsageRecorder:
         try:
             data = usage if isinstance(usage, dict) else {}
             input_tokens, output_tokens, _ = token_counts(data)
-            return await self.store.record_usage(
+            row = await self.store.record_usage(
                 self.now().astimezone(timezone.utc).isoformat(), kind, model, host, chat_id,
                 input_tokens or 0, output_tokens or 0,
                 _cost(data.get("cost")), int(fallback),
             )
+            if kind.startswith("studio_"):  # a media job in progress links the row, so its cost can be read back
+                provenance.note(kind, model, host, row)
+            return row
         except Exception:
             log.exception("could not record %s usage; the model call is unaffected", kind)
             return None

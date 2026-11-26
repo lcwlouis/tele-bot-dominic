@@ -646,6 +646,28 @@ export type MediaFile = {
   bytes: number | null;
   stored: boolean;
   url: string;
+  still_url: string | null;
+  /** Where it came from, from its linked usage rows; null for media made before 0.8.4. */
+  made: MediaMade | null;
+};
+/** One generation: the cost adds up every linked call, so a cost reported late appears (`pending` until then). */
+export type MediaPart = {
+  source: "local" | "cloud";
+  model: string;
+  host: string | null;
+  cost: number;
+  pending: boolean;
+  /** Every call behind it was the local studio, so it cost nothing. */
+  free: boolean;
+  redo: { cost: number; pending: boolean; kept: "first" | "second" } | null;
+};
+export type MediaMade = MediaPart & {
+  outfit: string | null;
+  preset: string | null;
+  seconds: number | null;
+  duration: number | null;
+  voice: MediaPart | null;
+  still: MediaPart | null;
 };
 export type MediaFiles = { files: MediaFile[]; next: string | null };
 export type MediaUsage = { files: number; bytes: number; cap_bytes: number };

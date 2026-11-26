@@ -5,7 +5,7 @@
   import Mic from "@lucide/svelte/icons/mic";
   import Video from "@lucide/svelte/icons/video";
   import { onMount } from "svelte";
-  import { getJSON, type BriefsData, type MediaFile, type MediaFiles, type MediaUsage, type OwnData } from "$lib/api";
+  import { getJSON, type BriefsData, type MediaFile, type MediaFiles, type MediaPart, type MediaUsage, type OwnData } from "$lib/api";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import StripList from "$lib/components/kit/StripList.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
@@ -71,6 +71,12 @@
     if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
     return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
   }
+  const money = (cost: number) => `$${cost.toFixed(cost < 0.1 ? 3 : 2)}`;
+  // What a generation cost: free when the local studio made it; a cost not reported yet (OpenRouter can be late) says so.
+  const spend = (part: Pick<MediaPart, "cost" | "pending" | "free">) =>
+    part.free ? "local, free" : part.pending ? (part.cost > 0 ? `${money(part.cost)} so far, more pending` : "cost pending") : money(part.cost);
+  const source = (part: MediaPart) => (part.source === "local" ? "Local studio" : `Cloud backup${part.host ? ` · ${part.host}` : ""}`);
+  const lasted = (seconds: number) => (seconds < 60 ? `${seconds.toFixed(1)} s` : `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`);
   const when = (at: string) => new Date(at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
   const taskFiles = $derived((own?.tasks ?? []).filter((task) => task.files.length));
 </script>
@@ -153,6 +159,34 @@
             <dt class="text-muted-foreground">Sent</dt><dd>{when(file.at)}</dd>
             {#if file.bytes}<dt class="text-muted-foreground">Size</dt><dd class="font-mono">{size(file.bytes)}</dd>{/if}
           </dl>
+          {#if file.made}
+            {@const made = file.made}
+            <dl aria-label="How it was made" class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 border-t pt-3 text-body">
+              <dt class="text-muted-foreground">Made by</dt><dd>{source(made)}</dd>
+              <dt class="text-muted-foreground">Model</dt><dd class="font-mono break-all">{made.model}</dd>
+              {#if made.outfit}<dt class="text-muted-foreground">Outfit</dt><dd>{made.outfit}</dd>{/if}
+              {#if made.preset}<dt class="text-muted-foreground">Preset</dt><dd>{made.preset}</dd>{/if}
+              {#if made.duration}<dt class="text-muted-foreground">Length</dt><dd>{lasted(made.duration)}</dd>{/if}
+              {#if made.seconds}<dt class="text-muted-foreground">Took</dt><dd>{lasted(made.seconds)}</dd>{/if}
+              {#if made.redo}
+                <dt class="text-muted-foreground">Redone</dt>
+                <dd>Once, after looking; the {made.redo.kept} try was sent · {spend({ ...made.redo, free: made.free })}</dd>
+              {/if}
+              {#if made.voice}
+                <dt class="text-muted-foreground">Voice</dt>
+                <dd><span class="font-mono break-all">{made.voice.model}</span> · {source(made.voice)} · {spend(made.voice)}</dd>
+              {/if}
+              {#if made.still}
+                <dt class="text-muted-foreground">Still</dt>
+                <dd>
+                  <span class="font-mono break-all">{made.still.model}</span> · {source(made.still)} · {spend(made.still)}
+                  {#if made.still.redo} · redone, the {made.still.redo.kept} try was used{/if}
+                  {#if file.still_url}· <a href={file.still_url} target="_blank" rel="noopener" class="font-medium text-signal-strong underline underline-offset-2">open</a>{/if}
+                </dd>
+              {/if}
+              <dt class="text-muted-foreground">Cost</dt><dd class="font-medium">{spend(made)}</dd>
+            </dl>
+          {/if}
           {#if !file.stored}
             <p class="text-sm text-muted-foreground">No longer on disk: it opens from Telegram.</p>
           {/if}

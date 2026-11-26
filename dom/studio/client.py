@@ -50,6 +50,12 @@ class StudioClient:
             return "busy"
         return "on" if self.ready else "away"
 
+    def model_for(self, worker: str) -> str:
+        """The model a studio worker ("voice", "image", "video" or "special") runs, when the studio's health says."""
+        models = (self.health or {}).get("models")
+        model = models.get(worker) if isinstance(models, dict) else None
+        return model if isinstance(model, str) and model else "local-studio"
+
     async def _request(self, path: str, timeout: float, *, payload: dict | None = None,
                        mime: str = "application/json") -> bytes | None:
         if self._clock() < self._away_until:

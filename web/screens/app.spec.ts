@@ -287,6 +287,23 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("library: an item's details say where it came from, the model, and what it cost", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/work/library");
+    await expect(page.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();
+    const list = page.getByRole("group", { name: "Media Dom sent, newest first" });
+    for (const [scene, expected] of [
+      ["Dom on a park bench", ["Cloud backup · openrouter.ai", "bytedance-seed/seedream-5-5", "casual", "Cosy", "Once, after looking; the second try was sent · $0.043", "$0.086"]],
+      ["Dom at the harbour at dusk", ["cost pending", "harbour", "Wistful"]],
+      ["Good morning, the train is at nine", ["Local studio", "Higgs TTS", "4.2 s", "local, free"]],
+    ] as const) {
+      await list.getByRole("button", { name: new RegExp(scene) }).click();
+      const made = page.locator("dl[aria-label='How it was made']");
+      for (const text of expected) await expect(made).toContainText(text);
+    }
+    expect(problems).toEqual([]);
+  });
+
   test("strip list: date groups head the strips and stick to the top as they scroll", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/gallery");

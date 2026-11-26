@@ -259,6 +259,23 @@ async def message(app, chat_id, role, text, msg_id, at, sender=None):
     ))
 
 
+
+async def preview_provenance(store, kind, at, chat_id):
+    """Where a fictional kept item came from: the studio's voice, a cloud photo that was redone, one still unpriced."""
+    def step(part, usage_kind, model, host, row, redo=False):
+        return {"part": part, "kind": usage_kind, "model": model, "host": host, "usage_id": row, **({"redo": True} if redo else {})}
+
+    if kind == "voice":
+        return {"steps": [step("item", "studio_voice", "Higgs TTS", "local", None)], "preset": "Cosy", "seconds": 6.4, "duration": 4.2}
+    model = "bytedance-seed/seedream-5-5"
+    first = await store.record_usage(at.isoformat(), "studio_image", model, "openrouter.ai", chat_id, 0, 0, 0.043 if chat_id == OWNER else 0.0, 1)
+    steps = [step("item", "studio_image", model, "openrouter.ai", first)]
+    if chat_id != OWNER:  # its cost has not been reported yet
+        return {"steps": steps, "outfit": "harbour", "preset": "Wistful", "seconds": 11.0}
+    second = await store.record_usage(at.isoformat(), "studio_image", model, "openrouter.ai", chat_id, 0, 0, 0.043, 1)
+    steps.append(step("item", "studio_image", model, "openrouter.ai", second, redo=True))
+    return {"steps": steps, "kept_redo": ["item"], "outfit": "casual", "preset": "Cosy", "seconds": 18.5}
+
 async def seed(app: handlers.App) -> None:
     store, now = app.store, NOW
     app.home.write_habits_line(datetime(2026, 1, 1, 23, 30).time(), datetime(2026, 1, 1, 7, 30).time())
@@ -303,6 +320,7 @@ async def seed(app: handlers.App) -> None:
         at = now - timedelta(minutes=minutes)
         data = screenshot() if kind == "photo" else b"OggS" + bytes(60)
         media = {"kind": kind, "scene": scene, "file_id": f"preview-{msg_id}"}
+        media["made"] = await preview_provenance(app.store, kind, at, chat_id)
         if keep:
             media.update(await app.media_files.keep(chat_id, msg_id, kind, data, at))
         await app.store.record_new_message(StoredMessage(

@@ -3004,6 +3004,20 @@ class Store:
             (cost_usd, input_tokens, output_tokens, usage_id),
         )
 
+    async def usage_costs(self, ids: list[int]) -> dict[int, float]:
+        """The current cost of each usage row that still exists. A cost reported late shows as soon as it is set."""
+        return await self._run(self._usage_costs, ids)
+
+    def _usage_costs(self, ids: list[int]) -> dict[int, float]:
+        found: dict[int, float] = {}
+        for start in range(0, len(ids), 500):  # SQLite's variable limit
+            chunk = ids[start:start + 500]
+            for row in self._conn.execute(
+                f"SELECT id, cost_usd FROM usage WHERE id IN ({','.join('?' * len(chunk))})", chunk,
+            ):
+                found[row["id"]] = row["cost_usd"]
+        return found
+
     async def delete_usage(self, usage_id: int) -> None:
         """Remove a reserved usage row when a request failed before being accepted."""
         await self._run(self._conn.execute, "DELETE FROM usage WHERE id = ?", (usage_id,))

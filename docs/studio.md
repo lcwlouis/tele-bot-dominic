@@ -122,6 +122,14 @@ already spent. The still is kept beside the video in the home's `media/` folder
 as `<message id>-still.png` (kept and cleaned up with the video, counted with it
 against `keep_cap_mb`) and shown in the library.
 
+**Provenance.** Each kept item records where it came from: the local studio or a cloud backup (provider host and
+model id), the outfit and preset, generation time, duration, whether the look before sending redid it (and which try
+was sent), its voice and still, and the usage-row ids of its paid calls. The Library page (Work → Library) shows it in
+an item's details, and `GET /api/media/files` returns it as `made`. Cost is read from those rows each time, so it is
+`local, free` for the studio, and `cost pending` until a late-reported cost lands. A studio worker can name its model
+for this with `model = "…"` under `[workers.<name>]`; the studio then lists it in its health reply, and local usage
+rows and the library show it instead of `local-studio`.
+
 The studio service takes the still as an optional `still` field (base64 PNG, at
 most 3 MiB) on `POST /v1/video_note` and reports `"video_still": true` on
 `/v1/health`.

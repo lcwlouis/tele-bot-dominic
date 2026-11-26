@@ -24,7 +24,7 @@ from aiogram.types import (
 )
 from pydantic import ValidationError
 
-from dom import turn_log
+from dom import provenance, turn_log
 from dom.actions import TELEGRAM_TEXT_LIMIT, Actions, Bubble, SendFile, utf16_len
 from dom.gifs import GifSearch
 from dom.media_files import file_id_of
@@ -33,6 +33,7 @@ from dom.store import Store
 from dom.studio import look
 from dom.studio.cloud import png_still, providers as studio_providers
 from dom.studio.policy import Kind, enabled
+from dom.traits import for_chat as chat_traits
 from dom.stickers import resolve_sticker, sticker_fallback
 from dom.telegram.format import TextChunk, format_delivery, format_text, with_entities
 
@@ -740,6 +741,10 @@ async def _send_media(
     return sent.message_id
 
 
+LOCAL_USAGE = {"voice": "studio_voice", "photo": "studio_image", "video_note": "studio_video", "special": "studio_video"}
+LOCAL_WORKER = {"voice": "voice", "photo": "image", "video_note": "video", "special": "special"}
+
+
 async def _studio_indicator(bot, chat_id: int, thread_id: int | None, action: str) -> None:
     while True:
         try:
@@ -771,11 +776,13 @@ async def _look_before_send(
         if fix is None:
             return data
         turn_log.step("looked: regenerating")
-        again = await produce(fix)
+        with provenance.redoing():
+            again = await produce(fix)
         if again is None:
             return data
         second = again if kind == "photo" else await look.first_frame(again)
         if second is not None and await look.second_is_better(app, chat_id, scene, shown, second):
+            provenance.kept_redo()
             return again
         return data
     except Exception as exc:
@@ -795,6 +802,7 @@ async def deliver_studio(
     budget = FloodBudget()
     video_voice: bytes | None = None
     video_voice_attempted = False
+    video_voice_steps: list[dict] = []
 
     async def allowed(kind: Kind) -> bool:
         return (
@@ -841,6 +849,9 @@ async def deliver_studio(
             else:
                 action, filename, send = "record_video_note", "video.mp4", app.bot.send_video_note
 
+            def note_local() -> None:
+                provenance.note(LOCAL_USAGE[kind], client.model_for(LOCAL_WORKER[kind]), provenance.LOCAL_HOST, None)
+
             def start(prompt: str):
                 """The local studio's request for `prompt`, or None when it can't make this kind."""
                 if kind == "voice":
@@ -865,13 +876,17 @@ async def deliver_studio(
                 nonlocal video_voice, video_voice_attempted
                 video_voice_attempted = True
                 if client is not None and client.ready:
-                    video_voice = await client.voice(text)
-                    if video_voice is not None:
-                        await asyncio.shield(app.dispatch.usage.record(
-                            "studio_voice", "local-studio", "local", {}, chat_id,
-                        ))
+                    with provenance.part(provenance.VOICE):
+                        video_voice = await client.voice(text)
+                        if video_voice is not None:
+                            await asyncio.shield(app.dispatch.usage.record(
+                                "studio_voice", client.model_for("voice"), provenance.LOCAL_HOST, {}, chat_id,
+                            ))
                 if video_voice is None and cloud is not None:
-                    video_voice = await cloud.generate(app.config, "voice", text, None, chat_id, cloud_allowed)
+                    with provenance.part(provenance.VOICE):
+                        video_voice = await cloud.generate(app.config, "voice", text, None, chat_id, cloud_allowed)
+                if (trace := provenance.current()) is not None:  # a voice note sent after a failed video reuses these
+                    video_voice_steps[:] = [step for step in trace.steps if step["part"] == provenance.VOICE]
                 return video_voice
 
             local_serves = local_ready and not (kind == "voice" and reuse_video_voice)
@@ -888,7 +903,7 @@ async def deliver_studio(
                     made = await client.image(prompt, actions.outfit)
                     if made is not None:
                         await asyncio.shield(app.dispatch.usage.record(
-                            "studio_image", "local-studio", "local", {}, chat_id,
+                            "studio_image", client.model_for("image"), provenance.LOCAL_HOST, {}, chat_id,
                         ))
                 if made is None and cloud is not None and studio_providers(app.config.studio, "photo"):
                     made = await cloud.generate(app.config, "photo", prompt, actions.outfit, chat_id, cloud_allowed)
@@ -896,95 +911,117 @@ async def deliver_studio(
                     await asyncio.shield(app.store.record_still(chat_id, now()))
                 return made
 
-            indicator = asyncio.create_task(_studio_indicator(app.bot, chat_id, thread_id, action))
-            try:
-                if kind in {"video_note", "special"} and not reuse_video_voice and app.config.studio.video_scenes:
-                    # A fresh still of Dom in a scene that fits the moment, looked at before it is animated (cheaper
-                    # than looking at the video). If it can't be made, the note animates the outfit's portrait.
-                    scene_text = scene or f"Dom filmed in a selfie video, somewhere that suits what he says: {text}"
-                    try:
-                        picture = await make_still(scene_text)
-                        if picture is not None:
-                            picture = await _look_before_send(
-                                app, scope, chat_id, "photo", scene_text, picture, make_still, local_ready,
-                            )
-                            still = await asyncio.to_thread(png_still, picture)
-                    except Exception as error:
-                        log.warning("could not make a still for a video note (%s)", type(error).__name__)
-                    if still is None:
-                        log.info("video note: no fresh still, using the outfit's portrait")
-                request = start(text)
-                data = video_voice if reuse_video_voice else (await request if request is not None else None)
-                if data is None and cloud_ready and not reuse_video_voice:
-                    if kind in {"video_note", "special"}:
-                        data = await cloud.generate_video(
-                            app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice, still,
-                        )
-                    else:
-                        data = await cloud.generate(app.config, kind, text, actions.outfit, chat_id, cloud_allowed)
-                if data is not None and not reuse_video_voice and kind != "voice":
-                    async def produce(prompt: str) -> bytes | None:
-                        again = start(prompt)
-                        made = await again if again is not None else None
-                        if made is None and cloud_ready and kind == "photo":
-                            made = await cloud.generate(app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed)
-                        elif made is None and cloud_ready and not local_ready and kind in {"video_note", "special"}:
-                            made = await cloud.generate_video(
+            began = monotonic()
+            # The reused voice of a video that failed is the voice that video had (the studio steps behind it).
+            with provenance.tracing(
+                [{**step, "part": provenance.ITEM} for step in video_voice_steps] if reuse_video_voice else None,
+            ) as trace:
+                indicator = asyncio.create_task(_studio_indicator(app.bot, chat_id, thread_id, action))
+                try:
+                    if kind in {"video_note", "special"} and not reuse_video_voice and app.config.studio.video_scenes:
+                        # A fresh still of Dom in a scene that fits the moment, looked at before it is animated (cheaper
+                        # than looking at the video). If it can't be made, the note animates the outfit's portrait.
+                        scene_text = scene or f"Dom filmed in a selfie video, somewhere that suits what he says: {text}"
+                        try:
+                            with provenance.part(provenance.STILL):
+                                picture = await make_still(scene_text)
+                                if picture is not None:
+                                    picture = await _look_before_send(
+                                        app, scope, chat_id, "photo", scene_text, picture, make_still, local_ready,
+                                    )
+                            if picture is not None:
+                                still = await asyncio.to_thread(png_still, picture)
+                        except Exception as error:
+                            log.warning("could not make a still for a video note (%s)", type(error).__name__)
+                        if still is None:
+                            log.info("video note: no fresh still, using the outfit's portrait")
+                    request = start(text)
+                    data = video_voice if reuse_video_voice else (await request if request is not None else None)
+                    if data is not None and request is not None and not reuse_video_voice:
+                        note_local()
+                    if data is None and cloud_ready and not reuse_video_voice:
+                        if kind in {"video_note", "special"}:
+                            data = await cloud.generate_video(
                                 app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice, still,
                             )
-                        return made
+                        else:
+                            data = await cloud.generate(app.config, kind, text, actions.outfit, chat_id, cloud_allowed)
+                    if data is not None and not reuse_video_voice and kind != "voice":
+                        async def produce(prompt: str) -> bytes | None:
+                            again = start(prompt)
+                            made = await again if again is not None else None
+                            if made is not None and again is not None:
+                                note_local()
+                            if made is None and cloud_ready and kind == "photo":
+                                made = await cloud.generate(app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed)
+                            elif made is None and cloud_ready and not local_ready and kind in {"video_note", "special"}:
+                                made = await cloud.generate_video(
+                                    app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice, still,
+                                )
+                            return made
 
-                    if still is None:  # a note filmed from a still was checked as that still, before animating
-                        data = await _look_before_send(app, scope, chat_id, kind, text, data, produce, local_ready)
-            finally:
-                indicator.cancel()
-                await asyncio.gather(indicator, return_exceptions=True)
-            if data is None:
-                reason = "the spend cap stopped the provider call" if cloud_refused else "generation failed"
-                await _note_failure(
-                    app.store, chat_id, f"studio-{kind}-generation",
-                    f"The requested {kind.replace('_', ' ')} was not made because {reason}.", thread_id=thread_id,
-                )
-                return False
-            if not await allowed(kind):
-                await _note_failure(
-                    app.store, chat_id, f"studio-{kind}-policy",
-                    f"The generated {kind.replace('_', ' ')} was held because media stopped being allowed before send.",
-                    thread_id=thread_id,
-                )
-                return None
-            if kind == "photo" and data.startswith(b"\xff\xd8\xff"):
-                filename = "photo.jpg"
-            message_kind = "video_note" if kind == "special" else kind
-            key = "scene" if kind == "photo" else "text"
-            media = {"kind": message_kind, key: text}
-            if kind == "special":
-                media["special"] = True
-            if kind in {"video_note", "special"} and scene:
-                media["filmed_in"] = scene  # (a photo's own `scene` is what the library shows as its text)
-            if still is not None:
-                media["still"] = True  # the picture it was filmed from also counts toward the studio-wide total
-            async def keep(sent) -> dict:
-                at = now()
-                fields: dict = {"sent_at": at.isoformat()}
-                if file_id := file_id_of(sent, message_kind):
-                    fields["file_id"] = file_id
-                return {**fields, **await app.media_files.keep(chat_id, sent.message_id, message_kind, data, at, still)}
+                        if still is None:  # a note filmed from a still was checked as that still, before animating
+                            data = await _look_before_send(app, scope, chat_id, kind, text, data, produce, local_ready)
+                finally:
+                    indicator.cancel()
+                    await asyncio.gather(indicator, return_exceptions=True)
+                took = monotonic() - began
+                if data is None:
+                    reason = "the spend cap stopped the provider call" if cloud_refused else "generation failed"
+                    await _note_failure(
+                        app.store, chat_id, f"studio-{kind}-generation",
+                        f"The requested {kind.replace('_', ' ')} was not made because {reason}.", thread_id=thread_id,
+                    )
+                    return False
+                if not await allowed(kind):
+                    await _note_failure(
+                        app.store, chat_id, f"studio-{kind}-policy",
+                        f"The generated {kind.replace('_', ' ')} was held because media stopped being allowed before send.",
+                        thread_id=thread_id,
+                    )
+                    return None
+                if kind == "photo" and data.startswith(b"\xff\xd8\xff"):
+                    filename = "photo.jpg"
+                message_kind = "video_note" if kind == "special" else kind
+                key = "scene" if kind == "photo" else "text"
+                media = {"kind": message_kind, key: text}
+                if kind == "special":
+                    media["special"] = True
+                if kind in {"video_note", "special"} and scene:
+                    media["filmed_in"] = scene  # (a photo's own `scene` is what the library shows as its text)
+                if still is not None:
+                    media["still"] = True  # the picture it was filmed from also counts toward the studio-wide total
+                async def keep(sent) -> dict:
+                    at = now()
+                    fields: dict = {"sent_at": at.isoformat()}
+                    if file_id := file_id_of(sent, message_kind):
+                        fields["file_id"] = file_id
+                    kept = await app.media_files.keep(chat_id, sent.message_id, message_kind, data, at, still)
+                    try:
+                        _, preset = await chat_traits(app.home, app.store, chat_id, at)
+                    except Exception:
+                        log.warning("could not read the preset for media provenance", exc_info=True)
+                        preset = None
+                    made = trace.made(
+                        outfit=actions.outfit, preset=preset.name if preset is not None else None, seconds=took,
+                        duration=provenance.seconds_of(message_kind, data),
+                    )
+                    return {**fields, **kept, "made": made}
 
-            with app.dispatch.protect_send() as commit:
-                commit()
-                delivered = await _send_media(
-                    lambda: send(chat_id, BufferedInputFile(data, filename=filename), message_thread_id=thread_id),
-                    app.store, chat_id, message_kind, media, now, on_sent, thread_id=thread_id,
-                    sleep=app.sleep, budget=budget, trigger_msg_id=trigger_msg_id, history_text=f"[{message_kind}] {text}",
-                    keep=keep,
-                )
-            if delivered is not None:
-                try:
-                    await app.media_files.evict()
-                except Exception:
-                    log.warning("could not trim the kept media", exc_info=True)
-            return delivered is not None
+                with app.dispatch.protect_send() as commit:
+                    commit()
+                    delivered = await _send_media(
+                        lambda: send(chat_id, BufferedInputFile(data, filename=filename), message_thread_id=thread_id),
+                        app.store, chat_id, message_kind, media, now, on_sent, thread_id=thread_id,
+                        sleep=app.sleep, budget=budget, trigger_msg_id=trigger_msg_id, history_text=f"[{message_kind}] {text}",
+                        keep=keep,
+                    )
+                if delivered is not None:
+                    try:
+                        await app.media_files.evict()
+                    except Exception:
+                        log.warning("could not trim the kept media", exc_info=True)
+                return delivered is not None
 
     async def fallback(kind: Kind, text: str) -> None:
         # Media Dom wrote out as text and that couldn't be made is not re-sent as text: it was never meant as a message.
