@@ -97,6 +97,7 @@ def test_owner_commands():
         ("chats", "Every group and DM Dom knows about"),
         ("studio", "Check media generation status"),
         ("preset", "Change Dom's persona in a chat"),
+        ("fresh", "Start this chat's window from now (/fresh undo to put it back)"),
         ("proposals", "Review pending or delete settled proposals"),
         ("plugins", "List, disable and delete plugins"),
         ("skills", "List, retire, restore and delete skills"),
