@@ -753,19 +753,21 @@ async def _look_before_send(
     app: App, scope: str, chat_id: int, kind: str, scene: str, data: bytes,
     produce: Callable[[str], Awaitable[bytes | None]], local_ready: bool,
 ) -> bytes:
-    """Check a generated photo (or a local video note's first frame) against its scene and, if it doesn't match,
-    regenerate once with the adjusted scene and keep the better of the two. The regeneration shares the item's media
-    reservation, so it cannot pass the limits, and any cloud call it makes is recorded and capped like the first.
-    Anything that goes wrong sends the original."""
+    """Check a generated photo (or a video note's first frame) against its scene and, if it doesn't match,
+    regenerate once with the adjusted scene and keep the better of the two. A cloud video note can't take a new scene
+    and costs real money to repeat, so it is redone, with the same inputs, only when its frame is clearly wrong. The
+    regeneration shares the item's media reservation, so it cannot pass the limits, and any cloud call it makes is
+    recorded and capped like the first. Anything that goes wrong sends the original."""
     if kind == "voice" or not await look.can_look(app, scope):
-        return data
-    if kind != "photo" and not local_ready:  # a cloud video can't take a new scene, and costs real money to repeat
         return data
     try:
         shown = data if kind == "photo" else await look.first_frame(data)
         if shown is None:
             return data
-        fix = await look.fix_for(app, chat_id, scene, shown)
+        if kind != "photo" and not local_ready:
+            fix = scene if await look.clearly_wrong(app, chat_id, scene, shown) else None
+        else:
+            fix = await look.fix_for(app, chat_id, scene, shown)
         if fix is None:
             return data
         turn_log.step("looked: regenerating")
@@ -889,6 +891,10 @@ async def deliver_studio(
                         made = await again if again is not None else None
                         if made is None and cloud_ready and kind == "photo":
                             made = await cloud.generate(app.config, kind, prompt, actions.outfit, chat_id, cloud_allowed)
+                        elif made is None and cloud_ready and not local_ready and kind in {"video_note", "special"}:
+                            made = await cloud.generate_video(
+                                app.config, kind, actions.outfit, chat_id, cloud_allowed, make_video_voice,
+                            )
                         return made
 
                     data = await _look_before_send(app, scope, chat_id, kind, text, data, produce, local_ready)

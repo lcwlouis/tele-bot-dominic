@@ -499,8 +499,8 @@ class StudioConfig(BaseModel):
     )
     look_owner_dm: bool = Field(
         True, description="In the owner's DM, Dom looks at a generated photo (or a video note's first frame, when ffmpeg "
-        "is installed) before sending it, and regenerates it once if it does not match the scene. Needs a chat model "
-        "that accepts images.",
+        "is installed) before sending it, and regenerates it once if it does not match the scene. A cloud video "
+        "note is redone only when its first frame is clearly wrong. Needs a chat model that accepts images.",
     )
     look_friend_dm: bool = Field(False, description="The same look before sending, in friends' DMs.")
     look_group: bool = Field(False, description="The same look before sending, in groups.")

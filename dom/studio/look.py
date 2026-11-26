@@ -31,6 +31,13 @@ CHECK_PROMPT = (
     '{{"match": true or false, "fix": "if it does not match, the scene rewritten in one or two sentences so '
     'a new picture would get it right; otherwise an empty string"}}'
 )
+CLOUD_VIDEO_PROMPT = (
+    "You are checking the first frame of a video note before it is sent. The scene that was asked for:\n{scene}\n\n"
+    "A redo costs real money, so say it is clearly wrong ONLY for a serious fault: the wrong person, a broken or "
+    "garbled frame, or a wildly wrong setting. Small differences in detail, framing, light or expression do not "
+    "count. Answer with ONLY a JSON object: "
+    '{{"clearly_wrong": true or false}}'
+)
 COMPARE_PROMPT = (
     "You are choosing between two pictures. The scene that was asked for:\n{scene}\n\n"
     "Picture A comes first and picture B second. Which one shows the scene better? "
@@ -103,6 +110,17 @@ async def fix_for(app: App, chat_id: int, scene: str, image: bytes) -> str | Non
         return None
     fix = verdict.get("fix")
     return fix.strip()[:600] if verdict.get("match") is False and isinstance(fix, str) and fix.strip() else None
+
+
+async def clearly_wrong(app: App, chat_id: int, scene: str, frame: bytes) -> bool:
+    """Whether a cloud video note's first frame is clearly wrong for its scene. A redo costs money, so a minor
+    mismatch, an unclear answer or a failed check all mean no."""
+    try:
+        verdict = await _ask(app, chat_id, CLOUD_VIDEO_PROMPT.format(scene=scene), [frame])
+    except Exception as exc:
+        log.info("could not look at a video note's first frame in chat %s (%s)", chat_id, type(exc).__name__)
+        return False
+    return verdict.get("clearly_wrong") is True
 
 
 async def second_is_better(app: App, chat_id: int, scene: str, first: bytes, second: bytes) -> bool:

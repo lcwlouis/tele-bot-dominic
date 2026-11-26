@@ -89,9 +89,11 @@ to a description from the media model; the Turn log says `media described` or
 triage model, which can't see.
 
 What changes for descriptions: a photo Dom saw himself is no longer described
-when it arrives, so the memory pass and the model window see its `<media>` tag
-without text (his own reply is what records what he made of it), and the media
-model's usage is much smaller. Global search and the dashboard never showed
+when it arrives, and the media model's usage is much smaller. It is described
+later only where text is needed: just before the memory pass reads its batch
+(under the spend cap, never on the reply path), when catch-up reads media that
+did not fit the per-prompt limits, and when the file can't be downloaded for the
+turn (if that fails too, its `<media>` tag says it couldn't be loaded). Global search and the dashboard never showed
 descriptions, so nothing changes there.
 
 **What he keeps.** Each photo, voice note and video note Dom sends is saved
@@ -103,15 +105,19 @@ reach another chat's prompt. The dashboard's owner-only API lists and serves
 them (`/api/media/files`, `/api/media/usage`). Total size is capped by
 `studio.keep_cap_mb` (default 2048): past it the oldest files are removed, and
 their messages keep the `file_id`, so Telegram can still provide them. The
-folder is left out of `dom backup`. Dom's other chats and friends can't see this
+folder is left out of `dom backup`. At startup, files no message records (a
+crash between saving and recording) are removed, so the cap matches the disk. Dom's other chats and friends can't see this
 folder or its listing.
 
 **Looking before sending.** In the owner DM (and, if you turn on
 `studio.look_friend_dm` or `look_group`, there too), when the chat model takes
-images, Dom checks a generated photo, or a local video note's first frame
+images, Dom checks a generated photo, or a video note's first frame
 (needs `ffmpeg`), against its scene in one short call, and regenerates once with
 the adjusted scene if it doesn't match. The better of the two is sent; it never
-loops. The calls are counted under media usage and respect the spend cap.
+loops. A cloud video note, which can't take a new scene and costs money to
+repeat, is redone once with the same inputs, and only when its frame is
+clearly wrong (the wrong person, a broken frame, a wildly wrong setting). The
+calls, redo included, are counted under media usage and respect the spend cap.
 
 ## Search and export
 

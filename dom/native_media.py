@@ -203,12 +203,27 @@ class NativeMedia:
 
     # --- picking the media for one prompt ---
 
-    async def attach(self, messages: list[dict], chat_id: int, window: list[StoredMessage]) -> None:
-        """Put this turn's media on the prompt's user message. Everything comes from this chat's own window, so
-        nothing from another chat can reach the prompt."""
+    async def undescribed(self, pending: list[tuple[int, dict]]) -> list[tuple[int, dict]]:
+        """The (msg_id, media) among `pending`, oldest first, that need a description: what the chat model can't take,
+        and what would not fit its per-prompt limits, since only the newest items go to it as they are."""
+        accepted = await self.accepted()
+        left = {kind: count for kind, count in self._limits().items() if kind in accepted}
+        need = []
+        for msg_id, media in reversed(pending):  # newest first, as attach() picks
+            modality = MODALITY_OF.get(media.get("kind"))
+            if modality is not None and left.get(modality, 0) > 0 and await self.takes(media):
+                left[modality] -= 1
+            else:
+                need.append((msg_id, media))
+        return need[::-1]
+
+    async def prepare(self, chat_id: int, window: list[StoredMessage]) -> tuple[list[Attachment], dict[int, str]]:
+        """This turn's media for the prompt's user message, and a note for each attachment that could not be loaded
+        (its description, or that it couldn't be loaded) to show in its `<media>` tag. Everything comes from this
+        chat's own window, so nothing from another chat can reach the prompt."""
         accepted = await self.accepted()
         if not accepted:
-            return
+            return [], {}
         left = {kind: count for kind, count in self._limits().items() if kind in accepted}
         last_reply = max((i for i, row in enumerate(window) if row.role == "assistant"), default=-1)
         picks: dict[int, tuple[StoredMessage, dict, str, bool]] = {}
@@ -232,6 +247,7 @@ class NativeMedia:
                     picks[index] = (row, media, modality, True)
                 break
         attachments: list[Attachment] = []
+        notes: dict[int, str] = {}
         for index in sorted(picks):
             row, media, modality, own = picks[index]
             if own:
@@ -244,7 +260,9 @@ class NativeMedia:
                 describe = partial(_text, text)
             else:
                 found = await self._incoming_bytes(chat_id, row.msg_id, media)
-                if found is None:
+                if found is None:  # no bytes, and nothing was described on arrival: say what we can instead
+                    kind = str(media["kind"]).replace("_", " ")
+                    notes[row.msg_id] = await self._describe_now(chat_id, row.msg_id, media) or f"({kind} couldn't be loaded)"
                     continue
                 mime, data = found
                 who = row.sender_name or "someone"
@@ -252,9 +270,11 @@ class NativeMedia:
                 describe = partial(self._describe_now, chat_id, row.msg_id, media)
             attachments.append(Attachment(modality, mime, data, ref, describe))
         if attachments:
-            messages[-1]["attachments"] = attachments
             counts = {kind: sum(1 for a in attachments if a["modality"] == kind) for kind in MODALITIES}
             turn_log.step("sees " + ", ".join(f"{n} {kind}" for kind, n in counts.items() if n))
+        if notes:
+            turn_log.step("media not loaded")
+        return attachments, notes
 
 
 async def _text(value: str | None) -> str | None:

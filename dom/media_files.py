@@ -116,6 +116,26 @@ class MediaFiles:
             "cap_bytes": self.cap_bytes,
         }
 
+    async def reconcile(self) -> int:
+        """Remove files no message records (the process died between saving and recording) and half-written temp
+        files, so the cap, which counts recorded files, is also the disk's real use. Run it at startup, before
+        anything is being saved. Returns how many went."""
+        known = {str(row["media"]["file"]) for row in await self.store.kept_media()}
+        root = self.home / MEDIA_DIR
+
+        def sweep() -> int:
+            removed = 0
+            for path in root.glob("*/*/*"):
+                if path.is_file() and path.relative_to(self.home).as_posix() not in known:
+                    path.unlink(missing_ok=True)
+                    removed += 1
+            return removed
+
+        removed = await asyncio.to_thread(sweep)
+        if removed:
+            log.info("removed %d kept media files no message records", removed)
+        return removed
+
     async def evict(self) -> int:
         """Remove the oldest files until the total fits the cap; return how many went. The messages keep their
         file_id (and scene or speech text), and lose the path."""

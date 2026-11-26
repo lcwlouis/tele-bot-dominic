@@ -242,10 +242,12 @@ def _xml_attr(value: str) -> str:
 
 def format_chat_window_xml(
     chat_id: str, messages: list[StoredMessage], tz: tzinfo | None = None, *, owner_id: int | None = None,
+    media_notes: dict[int, str] | None = None,
 ) -> str:
     """Render messages as ``<chat_window>`` XML. ``previous_seen_text`` is shown only when
     Dom actually saw the original before it was edited. With ``tz``, times are local. With ``owner_id``, the
-    owner's own messages carry ``owner="true"``, so Dom knows him in a group without his private profile."""
+    owner's own messages carry ``owner="true"``, so Dom knows him in a group without his private profile.
+    ``media_notes`` (msg id to text) fills the ``<media>`` tag of a message that has no description yet."""
     attr = _xml_attr
     out = [f"<chat_window chat_id={attr(str(chat_id))}>"]
     for m in messages:
@@ -271,6 +273,8 @@ def format_chat_window_xml(
         if isinstance(kind, str) and kind:
             emoji, description = media.get("emoji"), media.get("description")
             emoji_attr = f" emoji={attr(emoji)}" if isinstance(emoji, str) and emoji else ""
+            if not isinstance(description, str) and media_notes:
+                description = media_notes.get(m.msg_id)
             description = escape(description) if isinstance(description, str) else ""
             body += f"<media kind={attr(kind)}{emoji_attr}>{description}</media>"
         if m.is_edited and m.original_seen_before_edit and m.previous_seen_text is not None:
@@ -1764,9 +1768,12 @@ class Store:
         ).fetchall()
         return [_row_to_message(r) for r in reversed(rows)]
 
-    def format_chat_window_xml(self, chat_id: int | str, messages: list[StoredMessage], tz: tzinfo | None = None) -> str:
+    def format_chat_window_xml(
+        self, chat_id: int | str, messages: list[StoredMessage], tz: tzinfo | None = None,
+        media_notes: dict[int, str] | None = None,
+    ) -> str:
         owner = None if self._is_owner_chat(chat_id) else self.owner_id  # in his DM every message is his
-        return format_chat_window_xml(str(chat_id), messages, tz, owner_id=owner)
+        return format_chat_window_xml(str(chat_id), messages, tz, owner_id=owner, media_notes=media_notes)
 
     async def reflection_messages(self, start: datetime, end: datetime, *, private: bool) -> str:
         return await self._run(self._reflection_messages, start.isoformat(), end.isoformat(), private)

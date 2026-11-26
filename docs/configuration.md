@@ -155,7 +155,7 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | `studio.profile_photo_every_days` | `14` | Days between profile photo changes at most: 1, 7, 14 or 30. The first change after the switch is turned on may happen at once, and the photo changes only when the outfit has. |
 | `studio.default_outfit` | `""` | Wardrobe ID to use when the active preset has no outfit list. |
 | `studio.keep_cap_mb` | `2048` | Disk space, in MB, for the photos, voice notes and video notes Dom has sent, kept under the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). Past it the oldest files are removed; Telegram's file_id stays on the message so Telegram can still provide them. Zero keeps nothing. |
-| `studio.look_owner_dm` | `true` | In the owner's DM, Dom looks at a generated photo (or a video note's first frame, when ffmpeg is installed) before sending it, and regenerates it once if it does not match the scene. Needs a chat model that accepts images. |
+| `studio.look_owner_dm` | `true` | In the owner's DM, Dom looks at a generated photo (or a video note's first frame, when ffmpeg is installed) before sending it, and regenerates it once if it does not match the scene. A cloud video note is redone only when its first frame is clearly wrong. Needs a chat model that accepts images. |
 | `studio.look_friend_dm` | `false` | The same look before sending, in friends' DMs. |
 | `studio.look_group` | `false` | The same look before sending, in groups. |
 | `studio.voice_fallbacks` | `[]` | Ordered cloud backups for voice notes. |

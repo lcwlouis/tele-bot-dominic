@@ -26,6 +26,7 @@ from dom.telegram.handlers import handle_message
 from dom.telegram.owner import fresh_start
 from test_media import FakeDownload, FakeMediaClient, photo_message
 from test_studio import connect, studio_server  # noqa: F401  (the studio fixture)
+from test_studio_cloud import cloud_server  # noqa: F401  (the cloud fixture)
 from test_usage import deliver, online
 from tghelpers import FINAL, FRIEND, GROUP, OWNER, ModelScript, drain_dispatch, no_sleep, tg, turn_requests
 
@@ -313,6 +314,76 @@ async def test_catch_up_describes_only_what_the_model_cant_see(make_app):
     assert json.loads((await app.store.get_message(GROUP, 1)).media_json)["description"] is None
 
 
+async def unread_photos(app, ids):
+    for msg_id in ids:
+        await app.store.record_new_message(StoredMessage(
+            chat_id=str(GROUP), msg_id=msg_id, sender_user_id=FRIEND, sender_name="Fran", is_bot=False,
+            visibility_scope=app.store.visibility_for(GROUP), text="", created_at="2026-01-01T12:00:00+00:00",
+            media_json=json.dumps({"kind": "photo", "file_id": f"p{msg_id}", "file_size": 5, "description": None}),
+        ))
+
+
+async def test_catch_up_describes_the_photos_that_wont_fit_the_native_limits(make_app):
+    app, bot, describer = await seeing_app(make_app)
+    app.dispatch._media_budget = lambda chat_id: True
+    await unread_photos(app, (1, 2, 3))  # the model takes the newest two photos; the oldest would reach catch-up empty
+    await app.dispatch._describe_unread_media(GROUP)
+    assert len(describer.calls) == 1
+    assert json.loads((await app.store.get_message(GROUP, 1)).media_json)["description"]
+    for msg_id in (2, 3):
+        assert json.loads((await app.store.get_message(GROUP, msg_id)).media_json)["description"] is None
+
+
+async def test_the_memory_pass_gets_descriptions_for_media_in_its_batch_only(make_app):
+    app, bot, describer = await seeing_app(make_app)
+    app.dispatch._media_budget = lambda chat_id: True
+    await unread_photos(app, (1,))
+    await app.store.advance_memory_cursor(GROUP, 1)  # the first photo is already past the cursor
+    await unread_photos(app, (2,))
+    await app.dispatch._memory_pass(GROUP)
+    assert len(describer.calls) == 1  # photo 2 only: it is the one the pass reads
+    assert json.loads((await app.store.get_message(GROUP, 2)).media_json)["description"]
+    assert json.loads((await app.store.get_message(GROUP, 1)).media_json)["description"] is None
+    asked = [r for r in app.script.requests if "tools" not in r][-1]
+    assert "A fox &amp; a crescent moon." in json.dumps(asked["messages"])
+
+
+async def test_the_memory_pass_describes_nothing_over_the_spend_cap(make_app):
+    app, bot, describer = await seeing_app(make_app)
+    app.dispatch._media_budget = lambda chat_id: True
+    app.dispatch.model_allowed = lambda chat_id: asyncio.sleep(0, False)
+    await unread_photos(app, (1,))
+    await app.dispatch._memory_pass(GROUP)
+    assert not describer.calls
+
+
+async def test_a_photo_that_cannot_be_loaded_is_described_instead(make_app):
+    app, bot, describer = await seeing_app(make_app)
+
+    async def broken(file_id):
+        raise OSError("down")
+
+    app.bot.download = broken
+    describing = MediaDescriber(describer, SimpleNamespace(download=FakeDownload().download))  # the media route still can
+    app.media_describer = describing
+    await deliver(app, photo_message(caption="look"))
+    content = turn_requests(app)[0]["messages"][1]["content"]
+    assert isinstance(content, str) and "A fox &amp; a crescent moon." in content and "couldn't be loaded" not in content
+
+
+async def test_when_nothing_can_load_or_describe_a_photo_the_window_says_so(make_app):
+    app, bot, describer = await seeing_app(make_app)
+
+    async def broken(file_id):
+        raise OSError("down")
+
+    app.bot.download = broken
+    app.media_describer = MediaDescriber(FakeMediaClient(error=RuntimeError("no")), SimpleNamespace(download=broken))
+    await deliver(app, photo_message(caption="look"))
+    content = turn_requests(app)[0]["messages"][1]["content"]
+    assert isinstance(content, str) and '<media kind="photo">(photo couldn\'t be loaded)</media>' in content
+
+
 # --- kept media ---------------------------------------------------------------------------------------------------------
 
 def sent(kind, file_id="F1"):
@@ -347,6 +418,21 @@ async def test_a_kept_file_is_atomic_private_and_read_only_through_its_own_chat(
     assert await files.read(FRIEND, fields["file"]) is None  # another chat can't read it
     assert await files.read(OWNER, f"media/{OWNER}/../../config.toml") is None
     assert await files.read(OWNER, "memory/MEMORY.md") is None
+
+
+async def test_files_no_message_records_are_removed_at_startup(make_app, tmp_path):
+    app = make_app()
+    at = datetime(2026, 3, 9, tzinfo=timezone.utc)
+    kept = await app.media_files.keep(OWNER, 1, "photo", PNG, at)
+    await assistant_media(app, OWNER, 1, {"kind": "photo", "scene": "x", **kept})
+    orphan = await app.media_files.keep(OWNER, 2, "photo", PNG, at)  # saved, then the process died before the row
+    stray = tmp_path / "media" / str(OWNER) / "2026-03" / ".part-abc"
+    stray.write_bytes(b"half")
+    assert await app.media_files.reconcile() == 2
+    assert (tmp_path / kept["file"]).exists()
+    assert not (tmp_path / orphan["file"]).exists() and not stray.exists()
+    assert (await app.media_files.usage())["files"] == 1
+    assert await app.media_files.reconcile() == 0
 
 
 async def test_a_failed_save_leaves_no_half_written_file(make_app, tmp_path, monkeypatch):
@@ -487,6 +573,67 @@ async def test_a_local_video_notes_first_frame_is_checked_and_redone_once(make_a
     posts = [body for path, body in studio_server[2] if path == "/v1/video_note"]
     assert [post["text"] for post in posts] == ["waving hello", "waving hello, facing the camera"]
     assert len(app.bot.of("video_note")) == 1
+
+
+async def cloud_video_app(make_app, cloud_server, *replies):
+    from test_studio_cloud import configure
+    from test_studio_video import VIDEO, VOICE
+
+    app = make_app(contents=(json.dumps({"bubbles": ["hey"], "video_note": {"text": "waving hello"}}), *replies))
+    configure(app, cloud_server, voice=(VOICE,), video_fallbacks=(VIDEO,), enabled=False)
+    made = []
+
+    async def generate_video(config, kind, outfit, chat_id, allowed, make_voice):
+        made.append(kind)
+        return b"cloud video %d" % len(made)
+
+    app.cloud_studio.generate_video = generate_video
+
+    async def send_video_note(chat_id, file, **kwargs):
+        app.bot.calls.append(("video_note", chat_id))
+        return await app.bot.send_message(chat_id, "fixture video note", **kwargs)
+
+    app.bot.send_video_note = send_video_note
+    see(app, ("text", "image"))
+    await online(app, OWNER)
+    return app, made
+
+
+@pytest.fixture
+def frames(monkeypatch):
+    from dom.studio import look
+
+    async def frame(video):
+        return b"\xff\xd8\xffframe"
+
+    monkeypatch.setattr(look, "first_frame", frame)
+
+
+@pytest.mark.parametrize("verdict", ['{"clearly_wrong": false}', '{"clearly_wrong": false, "why": "the hair is a little different"}'])
+async def test_a_cloud_video_note_that_passes_or_is_only_slightly_off_is_not_redone(make_app, cloud_server, frames, verdict):
+    app, made = await cloud_video_app(make_app, cloud_server, verdict)
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert made == ["video_note"]  # one video, one check, no second try
+    assert len(app.script.requests) == 2 and len(app.bot.of("video_note")) == 1
+    assert "clearly" in json.dumps(app.script.requests[1])  # the strict question, not the photo's
+
+
+async def test_a_clearly_wrong_cloud_video_note_is_redone_once(make_app, cloud_server, frames):
+    app, made = await cloud_video_app(
+        make_app, cloud_server, '{"clearly_wrong": true}', '{"better": "B"}', '{"clearly_wrong": true}',
+    )
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert made == ["video_note", "video_note"]  # one redo, however the checks answer
+    assert len(app.script.requests) == 3 and len(app.bot.of("video_note")) == 1  # turn, check, compare
+    _, usage = await app.store.studio_usage(OWNER, app.dispatch.now())
+    assert [kind for kind, _ in usage] == ["video_note"]  # still one item against the media limits
+
+
+async def test_a_cloud_video_note_is_not_checked_where_the_setting_is_off(make_app, cloud_server, frames):
+    app, made = await cloud_video_app(make_app, cloud_server)
+    app.config = app.config.model_copy(update={"studio": app.config.studio.model_copy(update={"look_owner_dm": False})})
+    await deliver(app, tg(chat_id=OWNER, sender=OWNER))
+    assert made == ["video_note"] and len(app.script.requests) == 1
 
 
 async def test_without_ffmpeg_a_video_note_is_sent_unchecked(monkeypatch):
