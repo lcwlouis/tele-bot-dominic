@@ -546,15 +546,20 @@ class Dispatcher:
 
     async def _describe(
         self, chat_id: int, msg_id: int, media: dict, request: AsyncContextManager[None],
-    ) -> None:
+    ) -> bool:
+        """Describe one file. False only when the chat's description budget was used up and nothing was tried, so a
+        caller that can wait may try again once the window resets."""
         describer = self.app.media_describer
-        if describer is None or not self._media_budget(chat_id):
-            return
+        if describer is None:
+            return True
+        if not self._media_budget(chat_id):
+            return False
         try:
             description = await describer.describe(media, request=request)
             await self.app.store.set_media_description(chat_id, msg_id, description)
         except Exception:
             log.exception("could not record media description in chat %s", chat_id)
+        return True
 
     async def _note_failure(
         self, chat_id: int, category: str, text: str, *, thread_id: int | None = None,

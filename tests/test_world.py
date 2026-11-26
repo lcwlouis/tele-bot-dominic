@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -175,4 +176,49 @@ async def test_no_line_when_the_weather_is_unavailable(make_app):
     await app.world.refresh()
     await deliver(app, tg(msg_id=1, text="hi"))
     assert "Weather in" not in json.dumps(turn_requests(app)[0]["messages"])
+    await http.aclose()
+
+
+async def test_no_lock_is_held_while_the_request_is_out():
+    """A slow forecast must not block anything: the cache and the line stay readable, and a second refresh while the
+    first is in flight neither queues behind it nor sends a second request."""
+    release, started = asyncio.Event(), asyncio.Event()
+
+    async def slow(request):
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json=FORECAST)
+
+    clock = Clock()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(slow))
+    world = World(lambda: SINGAPORE, lambda: http, clock)
+    first = asyncio.create_task(world.refresh())
+    await started.wait()
+    assert world.line() == ""  # readable (and empty) with the request still out
+    await asyncio.wait_for(world.refresh(), 1)  # returns at once instead of waiting for the first
+    assert not hasattr(world, "_lock")
+    release.set()
+    await first
+    assert "31°C" in world.line()
+    await http.aclose()
+
+
+async def test_a_cancelled_fetch_does_not_block_the_next_one():
+    started = asyncio.Event()
+
+    async def hang(request):
+        started.set()
+        await asyncio.sleep(3600)
+
+    clock = Clock()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(hang))
+    world = World(lambda: SINGAPORE, lambda: http, clock)
+    task = asyncio.create_task(world.refresh())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    world._http = lambda: httpx.AsyncClient(transport=httpx.MockTransport(Sky()))
+    await world.refresh()
+    assert "31°C" in world.line()
     await http.aclose()

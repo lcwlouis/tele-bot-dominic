@@ -917,3 +917,32 @@ async def test_the_search_tool_tells_dom_how_strong_each_meaning_match_is(make_a
         group = json.loads(await SEARCH_TOOL.handler({"query": "holiday", "mode": "meaning"}, friend_ctx))
     assert [hit["match"] for hit in owner if hit["kind"] == "memory"] == ["strong match"]
     assert all(hit["match"] == "strong match" for hit in group if "file" in hit)
+
+
+async def test_a_meaning_only_hit_is_never_strong_however_similar(make_app):
+    app = make_app()
+    app.home._write_regular("memory/places/japan.md", "- Zen: no shared word {any}")
+    table = {"holiday": [1.0, 0.0], "Zen": [1.0, 0.0]}  # identical meaning, nothing in common but the meaning
+    async with httpx.AsyncClient(transport=httpx.MockTransport(shaped_vectors(table))) as http:
+        index = KnowledgeIndex(app.store, app.home, embedding_router(app, http), allowed=allowed, chat_id=OWNER)
+        await index.run_pending()
+        hits = await index.search("holiday", requester_chat_id=OWNER, owner=True, mode="meaning")
+    assert [hit.text for hit in hits] == ["- Zen: no shared word"]
+    assert hits[0].score >= 0.5 and hits[0].match == "good"  # strong needs the words as well
+
+
+async def test_group_meaning_search_ranks_recent_and_indexed_hits_together_keeping_the_label(make_app):
+    app = make_app()
+    await add_message(app, 1, "Japan holiday booked")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(vectors([]))) as http:
+        app.knowledge = KnowledgeIndex(
+            app.store, app.home, embedding_router(app, http), allowed=allowed, chat_id=OWNER, config=app.config.knowledge,
+        )
+        await app.knowledge.run_pending()
+        await add_message(app, 2, "holiday news just now")  # newer than the index: no score
+        ctx = tool_ctx(app, GROUP, "group", FRIEND, participants=(FRIEND,))
+        hits = await tool_search(app, ctx, "holiday", "meaning")
+    assert [hit["text"] for hit in hits] == ["Japan holiday booked", "holiday news just now"]
+    indexed, recent = hits
+    assert indexed["match"] == "strong match" and indexed["score"] > 0 and "msg_id" in indexed  # not lost as a duplicate
+    assert "match" not in recent and "score" not in recent

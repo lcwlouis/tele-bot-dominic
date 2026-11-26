@@ -303,10 +303,15 @@ class NativeMedia:
             self.d._spawn(self._describe_aged(chat_id, todo))
 
     async def _describe_aged(self, chat_id: int, todo: list[tuple[int, dict]]) -> None:
-        for msg_id, media in todo:
+        for index, (msg_id, media) in enumerate(todo):
             try:
-                if await self.takes(media):  # what the model can't take was described on arrival, or tried then
-                    await self.d._describe(chat_id, msg_id, media, self.d._media_request(chat_id))
+                # what the model can't take was described on arrival, or tried then
+                if await self.takes(media) and not await self.d._describe(
+                    chat_id, msg_id, media, self.d._media_request(chat_id),
+                ):
+                    for left_over, _ in todo[index:]:  # the budget is used up: offer these again on a later turn
+                        self._aged.pop((chat_id, left_over), None)
+                    return
             except Exception:
                 log.warning("could not describe aged media in chat %s", chat_id, exc_info=True)
 

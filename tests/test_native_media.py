@@ -875,3 +875,20 @@ def test_a_backup_leaves_out_the_media_folder(tmp_path):
     names = tarfile.open(archive).getnames()
     assert any(name.endswith("memory/MEMORY.md") for name in names)
     assert not any("media" in name.split("/") for name in names)
+
+
+async def test_aged_media_refused_by_the_budget_is_described_once_it_resets(make_app):
+    app, bot, describer = await seeing_app(make_app)
+    dispatch = app.dispatch
+    refused = [True]
+    real = dispatch._media_budget
+    dispatch._media_budget = lambda chat_id: False if refused[0] else real(chat_id)
+    await deliver(app, photo_message(caption="look"))
+    assert not describer.calls  # the burst used the budget up: nothing described, nothing lost
+    refused[0] = False  # the window reset
+    await deliver(app, tg(msg_id=2, text="and now?"))
+    assert len(describer.calls) == 1
+    stored = (await app.store.get_recent_chat_window(GROUP))[0]
+    assert json.loads(stored.media_json)["description"] == "A fox & a crescent moon."
+    await deliver(app, tg(msg_id=3, text="again"))
+    assert len(describer.calls) == 1  # described, so not offered a third time

@@ -7,7 +7,6 @@ is quiet: with no fresh data there is no line.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -67,7 +66,7 @@ class World:
         self._for: tuple[str, float | None, float | None] | None = None  # the place the cached line is about
         self._fetched_at: datetime | None = None
         self._retry_at: datetime | None = None
-        self._lock = asyncio.Lock()
+        self._fetching = False  # a fetch is under way; the check and the mark have no await between them
 
     def line(self) -> str:
         """The weather line for the turn note, or "" when no place is set or nothing fresh is cached. Never waits."""
@@ -81,13 +80,14 @@ class World:
         """Fetch the forecast if the cache is due. Called from the background tick, never from a reply."""
         config = self._config()
         now = self._now()
-        if not config.configured or self._lock.locked():
+        if not config.configured or self._fetching:
             return
         if self._for == _key(config) and self._fetched_at is not None and now - self._fetched_at < REFRESH:
             return
         if self._retry_at is not None and now < self._retry_at:
             return
-        async with self._lock:
+        self._fetching = True  # held only as this flag: the request below runs with no lock
+        try:
             try:
                 response = await self._http().get(
                     FORECAST_URL, timeout=TIMEOUT,
@@ -106,3 +106,5 @@ class World:
                 self._retry_at = now + RETRY
                 return
             self._line, self._for, self._fetched_at, self._retry_at = line, _key(config), now, None
+        finally:
+            self._fetching = False
