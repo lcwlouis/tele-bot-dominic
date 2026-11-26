@@ -478,7 +478,7 @@ class Dispatcher:
                     continue
                 if row.role == "user" and not row.is_bot and row.msg_id is not None and isinstance(media, dict) \
                         and media.get("kind") and media.get("description") is None:
-                    await self._describe(chat_id, row.msg_id, media, self._media_request(chat_id))
+                    await self._describe(chat_id, row.msg_id, media, self._media_request(chat_id, background=True))
         except Exception:
             log.exception("could not describe media for the memory pass in chat %s", chat_id)
 
@@ -539,8 +539,11 @@ class Dispatcher:
             yield
 
     @asynccontextmanager
-    async def _media_request(self, chat_id: int) -> AsyncIterator[None]:
-        with model_request("media", chat_id, partial(self.model_allowed, chat_id)):
+    async def _media_request(self, chat_id: int, *, background: bool = False) -> AsyncIterator[None]:
+        """A media model call for a chat. Work Dom does on his own (aged media, the memory pass, the look before a send)
+        passes `background`, so the owner DM's daily-cap exemption does not reach it."""
+        allowed = self.background_allowed if background else self.model_allowed
+        with model_request("media", chat_id, partial(allowed, chat_id)):
             await check_model_allowed()
             yield
 
@@ -1725,7 +1728,8 @@ class Dispatcher:
         )
         if line and owner_id is not None:
             try:
-                await executor.send_text(app.bot, owner_id, line, sleep=app.sleep, literal=True)
+                first, *rest = notice.sentences(line, 3, 200)  # what ran out, then what to do and when it resets
+                await notice.send_notice(app, owner_id, first, rest, path="/app/system/spend")
             except Exception as exc:
                 log.warning("could not send the provider budget notice (%s)", type(exc).__name__)
 

@@ -207,7 +207,7 @@ class MemoryPass:
     async def _ask(self, chat_id: int, request: list[dict]) -> str | None:
         """One model request, unless the chat has stopped being approved since the pass began."""
         try:
-            with model_request("memory", chat_id, partial(self.app.dispatch.model_allowed, chat_id)):
+            with model_request("memory", chat_id, partial(self.app.dispatch.background_allowed, chat_id)):
                 await check_model_allowed()
                 message = await self.app.client.complete(request, [])
         except ModelCallSkipped:

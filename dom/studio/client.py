@@ -127,7 +127,7 @@ class StudioClient:
         payload = {"text": text, "special": special}
         if outfit is not None:
             payload["outfit"] = outfit
-        if still is not None:
+        if still is not None and self.takes_still:  # an older studio refuses the field, so it is never sent to one
             payload["still"] = base64.b64encode(still).decode("ascii")
         timeout = self.config.timeouts.special if special else self.config.timeouts.video_notes
         return await self._request("video_note", timeout, payload=payload, mime="video/mp4")

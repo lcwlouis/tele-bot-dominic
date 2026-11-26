@@ -130,14 +130,16 @@ async def test_cap_blocks_group_turn_triage_media_and_memory_but_not_owner(make_
     assert (await app.store.get_unread(OWNER))[0] == 0
     assert await app.store.get_memory_cursor(GROUP) == 0
     notice, = [call for call in app.bot.of("send", OWNER) if call[2].startswith("Daily spend cap")]
-    expected = (
+    assert notice[2] == (
+        "Daily spend cap reached: $1.25 of $1.00\nFriends' and groups' chats pause until midnight.\n"
+        "Change daily_spend_cap_usd in Settings or config.toml."
+    )
+    assert [entity.type for entity in notice[3]["entities"]] == ["bold"]
+    events = [m for m in await app.store.get_recent_chat_window(OWNER) if m.role == "event"]
+    assert [m.text for m in events] == [  # the owner event keeps its fuller wording
         "Daily spend cap of $1.00 reached ($1.25 spent). Friends' chats are paused until midnight. "
         "Change `daily_spend_cap_usd` in config.toml."
-    )
-    assert notice[2] == expected.replace("`", "")
-    assert [entity.type for entity in notice[3]["entities"]] == ["code"]
-    events = [m for m in await app.store.get_recent_chat_window(OWNER) if m.role == "event"]
-    assert [m.text for m in events] == [expected]
+    ]
 
 
 async def test_cap_stops_before_second_chat_completion_in_a_turn(make_app):

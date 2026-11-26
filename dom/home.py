@@ -434,7 +434,7 @@ class Home:
                 home._write_regular(f"memory/chats/{new_id}.md", notes.retag(old_path.read_text(encoding="utf-8"), old_id, new_id))
                 moved = True
             # Lines other notes tagged to the old chat id now belong to the new one, whether or not it had chat notes.
-            for rel in home.list_memory_notes()[0]:
+            for rel in (*home.list_memory_notes()[0], *home.list_entity_notes()):
                 text = home.read_memory_file(rel)
                 if (retagged := notes.retag(text, old_id, new_id)) != text:
                     home._write_regular(rel, retagged)

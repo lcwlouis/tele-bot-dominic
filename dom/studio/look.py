@@ -91,7 +91,7 @@ async def _ask(app: App, chat_id: int, prompt: str, images: list[bytes]) -> dict
         Attachment("image", _mime(image), image, f"picture {'AB'[index]}") for index, image in enumerate(images)
     ]}
     async with asyncio.timeout(LOOK_SECONDS):
-        async with app.dispatch._media_request(chat_id):
+        async with app.dispatch._media_request(chat_id, background=True):
             reply = await app.client.complete([message], [], once=True)
     return _json(reply.get("content"))
 

@@ -84,7 +84,9 @@ class Tool:
 
 async def _search(args: dict, ctx: TurnCtx) -> str:
     """The owner's DM searches everything Dom holds (dom/global_search.py). Anywhere else the scope is fixed in code to
-    this chat's own history: memory files, other chats and private notes cannot surface, whatever the model asks."""
+    this chat's own history plus the note lines of the knowledge index that this chat may see: MEMORY.md lines, this
+    chat's own note, the notes of people present, and place, project and goal lines tagged for this chat or `{any}`.
+    Private notes and other chats' lines cannot surface, whatever the model asks."""
     query = str(args.get("query", ""))
     mode = args.get("mode", "keyword")
     mode = mode if mode in ("keyword", "meaning", "entity") else "keyword"
@@ -135,8 +137,10 @@ SEARCH_TOOL = Tool(
     name="search",
     description=(
         "Full-text search of older messages beyond the chat window, to recall what was said earlier. "
-        "Searches this chat only; in the owner's DM it searches everything you hold: every chat, memory files, "
-        "briefs, reminders, desktop tasks, skills and plugins. Keyword is the fast default; use meaning when exact "
+        "In a group or a friend's DM it searches this chat's history and the note lines this chat may see (MEMORY.md, "
+        "this chat's own note, notes on the people here, and place, project and goal lines tagged for this chat or "
+        "any chat), never private notes or other chats; in the owner's DM it searches everything you hold: every "
+        "chat, memory files, briefs, reminders, desktop tasks, skills and plugins. Keyword is the fast default; use meaning when exact "
         "words miss, or entity to retrieve facts and linked people, places, projects and goals."
     ),
     schema={

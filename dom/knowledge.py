@@ -39,6 +39,8 @@ STRONG_SCORE, GOOD_SCORE = 0.5, 0.3
 _AS_OF = re.compile(r"\(as of (\d{4}-\d{2})(?:-\d{2})?\)")
 _UNTIL = re.compile(r"\(until (\d{4}-\d{2}-\d{2})\)")
 _CHAT_NOTE = re.compile(r"memory/chats/(-?\d+)\.md")
+_ENTITY_NOTE = re.compile(r"memory/(?:places|projects|goals)/[a-z0-9-]+\.md")
+_INDEX_RULES = "2"  # bump when what a line's tags mean changes, so every note file is read again
 _PRIVATE_SCOPES = ("owner_private", "admin_private")
 # A message fact counts only while its message is live: deletions that skip the store hooks still hide it.
 _LIVE = "(k.message_id IS NULL OR EXISTS (SELECT 1 FROM messages m WHERE m.id = k.message_id AND m.is_deleted = 0))"
@@ -174,7 +176,7 @@ class KnowledgeIndex:
                     text = self.home.scoped(rel.startswith("private/")).read(rel)
                 except (OSError, ValueError, PermissionError):
                     continue
-                fingerprint = _hash(text)
+                fingerprint = _hash(f"{_INDEX_RULES}\n{text}")
                 if full or known.get(rel) != fingerprint:
                     facts = self._facts(rel, text)
                     await self.store._run(self._replace_file, rel, fingerprint, facts)
@@ -212,15 +214,18 @@ class KnowledgeIndex:
             if inferred := _file_entity(rel):
                 entities.append(inferred)
             source_chat = None if line.source in (None, notes.ANY) else line.source
-            if line.source is None and chat_note is not None:
-                source_chat = chat_note.group(1)  # an untagged line in a chat's note belongs to that chat alone
+            private = int(rel.startswith("private/"))
+            if chat_note is not None:
+                source_chat = chat_note.group(1)  # a chat's note belongs to that chat alone, whatever a line's tag says
+            elif line.source is None and _ENTITY_NOTE.fullmatch(rel):
+                private = 1  # an untagged line in a place, project or goal note is the owner's; {any} shares it
             if source_chat is not None:
                 entities.append(f"chat:{source_chat}")
             valid_from = (_AS_OF.search(body).group(1) if _AS_OF.search(body) else "")
             valid_until = (_UNTIL.search(body).group(1) if _UNTIL.search(body) else "")
             found.append({
                 "source_key": f"note:{rel}:{number}", "file": rel, "line_number": number,
-                "text": body, "source_chat": source_chat, "private": int(rel.startswith("private/")),
+                "text": body, "source_chat": source_chat, "private": private,
                 "at": valid_from, "valid_from": valid_from, "valid_until": valid_until,
                 "pinned": int(line.core is not None), "content_hash": _hash(body),
                 "entities": tuple(dict.fromkeys(entities)),
