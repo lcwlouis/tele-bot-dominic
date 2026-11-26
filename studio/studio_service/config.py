@@ -33,6 +33,8 @@ class Desktop(Settings):
 class WorkerConfig(Settings):
     command: Annotated[list[str], Field(min_length=1)]
     cwd: Path | None = None
+    # Shown in Dom's library as the model that made a file, for example "FLUX.2 klein". Optional.
+    model: str = ""
 
 
 class Workers(Settings):

@@ -16,11 +16,14 @@ portrait = "/path/to/private/portrait.png"
 turnaround = "/path/to/private/turnaround.png"
 # description = "what the outfit looks like, for `python -m studio_service.portraits generate`"
 
+# Each worker may set `model = "…"`, the name Dom's library shows for what made a file.
 [workers.voice]
+model = "Higgs TTS"
 cwd = "/path/to/runtime/bin"
 command = ["/path/to/runtime/bin/DomHiggs", "/path/to/higgs-snapshot", "/path/to/reference.wav", "/path/to/transcript.txt"]
 
 [workers.image]
+model = "FLUX.2 klein"
 command = ["/path/to/runtime/image/bin/python", "/path/to/studio/workers/image_worker.py", "/path/to/klein-snapshot"]
 
 [workers.video]

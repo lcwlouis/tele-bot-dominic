@@ -248,3 +248,18 @@ def test_every_configured_secret_is_screened_out_of_public_text(make_app, monkey
     with pytest.raises(ValueError, match="credential"):
         check_local_private_text(config, app.home, ["Use fake-secret-value-123 here."])
     check_local_private_text(config, app.home, ["Nothing secret here."])
+
+
+def test_headings_dates_and_two_word_lines_are_not_private_text(tmp_path):
+    # Live on Dominic Dev (2026-11-26): an owner-DM photo was held as "private" because its scene shared a word or a
+    # date with a heading ("Background") or a journal date. Only real note lines of a few words count.
+    from dom import guard
+
+    root = tmp_path
+    (root / "private" / "journal").mkdir(parents=True)
+    (root / "private" / "NOTES.md").write_text("# Notes\n\n## Background\n- Watches costs.\n- Studied CS and felt the field was male-dominated.\n")
+    (root / "private" / "journal" / "RECENT.md").write_text("Through 2026-11-22\nWeeks:\n## 2026-11-25\n")
+    config, home = Config(home=root), Home(root)
+    guard.check_local_private_text(config, home, ["a sunrise run with the city in the background on 2026-11-25, watches costs."])
+    with pytest.raises(ValueError, match="private notes"):
+        guard.check_local_private_text(config, home, ["he studied cs and felt the field was male-dominated."])
