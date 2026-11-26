@@ -592,15 +592,21 @@ def fake_pass(monkeypatch):
     return FakePass
 
 
-async def spin():
+async def spin(until=None):
+    """Let background tasks run. With `until`, wait (up to about a second) for it to hold: a pass now first looks
+    for media to describe, which takes a thread hop, so a fixed number of yields is not enough on a slow runner."""
     for _ in range(10):
         await asyncio.sleep(0)
+    for _ in range(100 if until is not None else 0):
+        if until():
+            return
+        await asyncio.sleep(0.01)
 
 
 async def test_one_pass_per_chat_at_a_time(make_app, fake_pass):
     app = make_app()
     app.dispatch.request_memory_pass(GROUP)
-    await spin()
+    await spin(until=lambda: fake_pass.started)
     app.dispatch.request_memory_pass(GROUP)
     await spin()
     assert fake_pass.started == [GROUP]
@@ -646,7 +652,7 @@ async def test_only_one_pass_runs_at_a_time_across_chats(make_app, fake_pass):
     app = make_app()
     app.dispatch.request_memory_pass(GROUP)
     app.dispatch.request_memory_pass(OTHER)
-    await spin()
+    await spin(until=lambda: fake_pass.started)
     assert fake_pass.started == [GROUP]
     fake_pass.gate.set()
     await drain_dispatch(app.dispatch)

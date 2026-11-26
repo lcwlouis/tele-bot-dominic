@@ -33,6 +33,7 @@ from dom.jev import JevClient
 from dom.knowledge import KnowledgeIndex
 from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.media import MediaDescriber
+from dom.media_files import MediaFiles
 from dom.memory_import import MemoryImport
 from dom.models import IncomingMessage, StoredMessage
 from dom.presence import Presence
@@ -80,6 +81,7 @@ class App:
     studio_http: httpx.AsyncClient | None = None  # the studio's client, which ignores proxy settings (cli.py)
     cloud_studio: CloudStudio | None = None
     studio_quota: StudioQuota = field(init=False)
+    media_files: MediaFiles = field(init=False)  # the media Dom sent, kept on disk
     draft_client: ChatClient | FallbackClient | None = None
     escalation_client: FallbackClient | None = None
     embedding_client: EmbeddingRouter | None = None
@@ -103,6 +105,7 @@ class App:
             return datetime.now(timezone.utc)
 
         self.studio_quota = StudioQuota(self.store)
+        self.media_files = MediaFiles(self.home.root, self.store, lambda: self.config.studio.keep_cap_mb * 1_000_000)
         self.plugin_runner = PluginRunner(home=self.home.root, store=self.store)
         self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self), runner=self.plugin_runner)
         self.proposals = Proposals(self)
@@ -246,7 +249,7 @@ def _command_name(text: str, username: str) -> str | None:
 
 async def _record(app: App, msg: IncomingMessage, *, describe_media: bool = False, notify: bool = False) -> None:
     new_media = (
-        describe_media and app.media_describer is not None and msg.media is not None
+        describe_media and msg.media is not None
         and not await app.store.has_message(msg.chat_id, msg.msg_id)
     )
     await app.store.resolve_person(msg.sender_id, msg.sender_handle, msg.sender_name)
@@ -486,6 +489,11 @@ async def handle_message(app: App, message: Message) -> None:
             return
         if command == "/preset":
             await owner.show_presets(app)
+            return
+        if command == "/fresh":
+            undo = msg.text.split()[1:2] == ["undo"]
+            reply = await owner.fresh_start(app, msg.chat_id, who, undo=undo)
+            await _send(app, msg.chat_id, reply or "unknown chat")
             return
         if command == "/update":
             await owner.offer_update(app)

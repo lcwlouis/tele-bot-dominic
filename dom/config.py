@@ -127,6 +127,13 @@ class ProviderEndpoint(BaseModel):
     provider: SearchProvider | None = Field(
         None, description="Search provider for models.search: searxng, openrouter, deepseek or tavily.",
     )
+    input: tuple[Literal["text", "image", "audio", "video"], ...] | None = Field(
+        None, description="What this model accepts as input, for example [\"text\", \"image\"]. Omit it to use the "
+        "provider's model list (OpenRouter lists each model's input types) or, for other OpenAI-compatible servers, a "
+        "one-off test with a tiny generated image. Dom sends a photo, voice note or video to the model itself only when "
+        "this says the model takes it; with nothing known the model is treated as text-only. Set it to override what "
+        "the list or the test found.",
+    )
 
     @model_validator(mode="after")
     def _direct_deepseek_effort(self) -> ProviderEndpoint:
@@ -500,6 +507,18 @@ class StudioConfig(BaseModel):
     )
     default_outfit: str = Field("", pattern=r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?$",
                                description="Wardrobe ID to use when the active preset has no outfit list.")
+    keep_cap_mb: int = Field(
+        2048, ge=0, description="Disk space, in MB, for the photos, voice notes and video notes Dom has sent, kept under "
+        "the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). Past it the oldest files are removed; "
+        "Telegram's file_id stays on the message so Telegram can still provide them. Zero keeps nothing.",
+    )
+    look_owner_dm: bool = Field(
+        True, description="In the owner's DM, Dom looks at a generated photo (or a video note's first frame, when ffmpeg "
+        "is installed) before sending it, and regenerates it once if it does not match the scene. A cloud video "
+        "note is redone only when its first frame is clearly wrong. Needs a chat model that accepts images.",
+    )
+    look_friend_dm: bool = Field(False, description="The same look before sending, in friends' DMs.")
+    look_group: bool = Field(False, description="The same look before sending, in groups.")
     limits: StudioLimits = Field(default_factory=StudioLimits)
     timeouts: StudioTimeouts = Field(default_factory=StudioTimeouts)
 
@@ -583,6 +602,22 @@ class Config(BaseModel):
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why.")
     memory_self_edit: bool = Field(False, description="Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves.")
     core_memory_cap: int = Field(30, ge=1, description="Most core memories (pinned note lines) across all of Dom's notes, the owner's pins included. Core memories never fade and the memory pass never rewrites them. At the cap Dom must unpin one of his own to pin another.")
+    media_input_images: int = Field(
+        2, ge=0, le=8, description="Most images (photos, stickers) Dom is shown as the real picture in one prompt, newest "
+        "first, when his chat model accepts images. Older media stays as its tag in the window. Zero turns image input off.",
+    )
+    media_input_audio: int = Field(
+        1, ge=0, le=4, description="Most voice notes or audio files Dom hears as the real recording in one prompt. "
+        "Zero turns audio input off.",
+    )
+    media_input_video: int = Field(
+        1, ge=0, le=2, description="Most videos Dom is shown as the real clip in one prompt, for chat models that accept "
+        "video. Zero turns video input off.",
+    )
+    media_input_max_mb: float = Field(
+        6, gt=0, le=20, allow_inf_nan=False, description="Largest attachment, in MB, that is sent to the chat model itself; "
+        "a bigger one is described by the media model instead.",
+    )
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_scan: LeakScan | None = Field(
         None,

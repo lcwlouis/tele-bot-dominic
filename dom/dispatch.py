@@ -36,8 +36,10 @@ from dom.capabilities import describe
 from dom.jev import JevClient, JevUnavailable
 from dom.jobs import DailyJobs
 from dom.llm import ChatBudgetExhausted
+from dom.memory_pass import BATCH_SIZE as MEMORY_BATCH_SIZE
 from dom.memory_pass import MemoryPass
 from dom.models import IncomingMessage, Scope, StoredMessage
+from dom.native_media import NativeMedia
 from dom.openers import Openers
 from dom.provider_budget import ProviderBudgetNotices
 from dom.studio.cloud import providers as studio_providers
@@ -206,6 +208,7 @@ class Dispatcher:
         self.cross_chat = CrossChat(self)
         self.sleep, self.now = sleep, now
         self.usage = Usage(app.store, now)
+        self.native = NativeMedia(self)
         self.provider_budget = ProviderBudgetNotices(app.store)
         self.jobs = DailyJobs(app, now)
         self.jobs.register("proposal-expiry", lambda local, habits: True, app.proposals.expire)
@@ -317,6 +320,7 @@ class Dispatcher:
                     return  # the bot-only depth, deduplication and cooldown checks run first
             if msg.media:
                 await self._wait_media(chat_id)  # judge the description, not "[photo]"; text pays nothing
+                await self._describe_for_triage(arrival, msg)  # triage can't see, whatever the chat model takes
             rows = await store.get_window_from(
                 chat_id, None, TRIAGE_WINDOW * 2, through_id=newest.id, thread_id=msg.thread_id, filter_thread=True,
             )
@@ -451,6 +455,7 @@ class Dispatcher:
         try:
             await self._wait_for_turns(chat_id)
             async with self._memory_slot:
+                await self._describe_memory_media(chat_id)
                 ran = await MemoryPass(self.app).run(chat_id)
         except Exception:
             log.exception("memory pass failed in chat %s", chat_id)
@@ -459,6 +464,22 @@ class Dispatcher:
                 if ran:
                     self._memory_last[chat_id] = self.now()
                 del self._memory_running[chat_id]
+
+    async def _describe_memory_media(self, chat_id: int) -> None:
+        """The memory pass reads text only, so media the chat model took as it was still needs a description before the
+        pass reads it. Only what is in the pass's batch, under the media budget and the spend cap, off the reply path."""
+        try:
+            batch = await self.app.store.get_memory_batch(chat_id, MEMORY_BATCH_SIZE)
+            for row in batch:
+                try:
+                    media = json.loads(row.media_json) if row.media_json else None
+                except ValueError:
+                    continue
+                if row.role == "user" and not row.is_bot and row.msg_id is not None and isinstance(media, dict) \
+                        and media.get("kind") and media.get("description") is None:
+                    await self._describe(chat_id, row.msg_id, media, self._media_request(chat_id))
+        except Exception:
+            log.exception("could not describe media for the memory pass in chat %s", chat_id)
 
     def _debounce_pending(self, chat_id: int) -> bool:
         """A debounce older than its cap is overdue, not pending: it must not hold off other dispatches."""
@@ -486,7 +507,10 @@ class Dispatcher:
             if not await self.presence.is_online(msg.chat_id, self._habits()):
                 return
             with turn_log.track(trace):
-                await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
+                if await self.native.takes(msg.media):  # the reply model gets the real thing: no description, no model call
+                    await self.native.prefetch(msg.chat_id, msg.msg_id, msg.media)
+                else:
+                    await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
         except Exception:
             log.exception("could not check presence before describing media in chat %s", msg.chat_id)
         finally:
@@ -552,6 +576,18 @@ class Dispatcher:
         times.append(now)
         return True
 
+    async def _describe_for_triage(self, arrival: Arrival, msg: IncomingMessage) -> None:
+        """The triage model reads text only, so media the chat model takes as it is still needs a description when
+        triage is about to judge it."""
+        try:
+            row = await self.app.store.get_message(msg.chat_id, msg.msg_id)
+            if row is None or json.loads(row.media_json or "{}").get("description") is not None:
+                return
+            with turn_log.track(arrival.trace):
+                await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
+        except Exception:
+            log.exception("could not describe media for triage in chat %s", msg.chat_id)
+
     async def _describe_unread_media(self, chat_id: int) -> None:
         """Describe what arrived while Dom was away, within the same media wait budget."""
         active = self._active.get(chat_id)
@@ -562,6 +598,7 @@ class Dispatcher:
                 thread_id=active.thread_id if active is not None else None,
                 filter_thread=active is not None,
             )
+            pending = await self.native.undescribed(pending)  # what the model can't take, or won't fit its limits
             if pending:
                 with turn_log.timed("media_wait"):
                     for msg_id, media in pending:
@@ -2226,6 +2263,7 @@ class Dispatcher:
         title = live.chat_title if live else ""
         where = f'chat "{title}"' if title else ("a group" if scope == "group" else "a direct message")
         tools = await enabled_tools(app, scope)
+        await self.native.accepted()  # so the capability note below knows what his chat model takes as it is
         note = (
             f"It is {now:%A %Y-%m-%d %H:%M} ({app.config.timezone}). You are in {where} ({scope}).\n"
             f"state: online\n"
@@ -2339,10 +2377,18 @@ class Dispatcher:
                 note += f"\n{FACT_INSTRUCTION}"
             if elsewhere := self.attention.elsewhere(chat_id, scope, self.now()):
                 note += f"\n{elsewhere}"
+        try:
+            attachments, media_notes = await self.native.prepare(chat_id, window)
+        except Exception:
+            log.exception("could not attach media to the prompt in chat %s", chat_id)
+            attachments, media_notes = [], {}
         messages = build_messages(
-            app.home, scope, chat_id, participants, app.store.format_chat_window_xml(chat_id, window, self.presence.tz), note,
+            app.home, scope, chat_id, participants,
+            app.store.format_chat_window_xml(chat_id, window, self.presence.tz, media_notes), note,
             sliders=sliders, preset=preset, memory_text=snap.memory_text, notes_blocks=snap.notes_blocks,
         )
+        if attachments:
+            messages[-1]["attachments"] = attachments
         ctx = TurnCtx(
             scope, chat_id, sender_id, app.home, app.store, app.owner_id, self.presence, habits,
             model_allowed=partial(self.turn_allowed, chat_id, scope), reminders=self.reminders,

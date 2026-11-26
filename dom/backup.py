@@ -22,6 +22,8 @@ def _home_files(tar: tarfile.TarFile, home: Path, folder: Path, destination: Pat
             continue
         if folder == destination and ARCHIVE_NAME.fullmatch(name):
             continue
+        if folder == home and name == "media":  # the media Dom sent: large, and Telegram keeps each file's copy
+            continue
         arcname = path.relative_to(home).as_posix()
         try:
             info = tar.gettarinfo(arcname=arcname, name=str(path))
