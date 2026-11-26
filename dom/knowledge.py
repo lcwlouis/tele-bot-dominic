@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from dom import notes
+from dom.config import KnowledgeConfig
 from dom.embedding import EmbeddingProvider, EmbeddingRouter
 from dom.home import Home
 from dom.store import Store
@@ -31,6 +32,10 @@ PROBE_TEXT = "Dom remembers a quiet afternoon and the promise attached to it."
 PROBE_DRIFT = 0.08
 MAX_RESULTS = 30
 KEYWORD_WEIGHT, MEANING_WEIGHT = 0.45, 0.55
+# What a score means, for the label Dom and the dashboard show. A blended score tops out at 1 for a hit that matches
+# the words and the meaning, and "strong" needs both signals; a hit found by meaning alone peaks at MEANING_WEIGHT,
+# so "good" is its normal best.
+STRONG_SCORE, GOOD_SCORE = 0.5, 0.3
 _AS_OF = re.compile(r"\(as of (\d{4}-\d{2})(?:-\d{2})?\)")
 _UNTIL = re.compile(r"\(until (\d{4}-\d{2}-\d{2})\)")
 _CHAT_NOTE = re.compile(r"memory/chats/(-?\d+)\.md")
@@ -48,6 +53,16 @@ class KnowledgeHit:
     entities: tuple[str, ...]
     score: float = 0.0
     message_id: int | None = None  # the messages row a message fact came from; None for note lines
+    both: bool = False  # found by the words and by the meaning, which "strong" requires
+
+    @property
+    def match(self) -> str:
+        """How far to trust the hit: strong, good or weak (see STRONG_SCORE)."""
+        return match_label(self.score, self.both)
+
+
+def match_label(score: float, both: bool = True) -> str:
+    return "strong" if score >= STRONG_SCORE and both else "good" if score >= GOOD_SCORE else "weak"
 
 
 def _hash(text: str) -> str:
@@ -108,8 +123,10 @@ class KnowledgeIndex:
         *,
         allowed: Callable[[], Awaitable[bool]] | None = None,
         chat_id: int | None = None,
+        config: KnowledgeConfig | None = None,
     ) -> None:
         self.store = store
+        self.config = config or KnowledgeConfig()
         self.home = home
         self.allowed = allowed or _allowed
         self.chat_id = chat_id
@@ -373,15 +390,21 @@ class KnowledgeIndex:
             return []
         chat, people = str(requester_chat_id), tuple(participants)
         if mode == "entity":
-            return await self.store._run(self._entity_search, query, chat, owner, people, limit)
+            hits = await self.store._run(self._entity_search, query, chat, owner, people, limit)
+            return self._by_score(hits)
         keyword = await self.store._run(self._keyword_rows, query, chat, owner, people, MAX_RESULTS)
         if mode != "meaning" or self.router is None:
-            return self._hits(keyword[:limit])
+            return self._by_score(self._hits(keyword))[:limit]
         semantic = await self._meaning_rows(query, chat, owner, people, _requester(requester_chat_id, self.chat_id))
         if not semantic:
             log.info("meaning search fell back to keywords")
-            return self._hits(keyword[:limit])
+            return self._by_score(self._hits(keyword))[:limit]
         return self._blend(keyword, semantic, limit)
+
+    @staticmethod
+    def _by_score(hits: list[KnowledgeHit]) -> list[KnowledgeHit]:
+        """Best first, strictly by score; hits of equal score keep the order they came in."""
+        return sorted(hits, key=lambda hit: hit.score, reverse=True)
 
     async def _meaning_rows(
         self, query: str, chat_id: str, owner: bool, people: tuple[int, ...], requester: int | None,
@@ -477,7 +500,8 @@ class KnowledgeIndex:
         except sqlite3.OperationalError:
             log.warning("vector query failed; meaning search uses keywords", exc_info=True)
             return []
-        return [{**self._row(row), "score": max(0.0, 1.0 - float(row["distance"]))} for row in rows]
+        similar = [{**self._row(row), "score": max(0.0, 1.0 - float(row["distance"]))} for row in rows]
+        return [row for row in similar if row["score"] >= self.config.min_similarity]
 
     def _entity_search(
         self, query: str, chat_id: str, owner: bool, people: tuple[int, ...], limit: int,
@@ -543,6 +567,8 @@ class KnowledgeIndex:
     ) -> list[KnowledgeHit]:
         by_id: dict[int, dict[str, Any]] = {}
         scores: dict[int, float] = {}
+        by_words = {row["id"] for row in keyword}
+        by_meaning = {row["id"] for row in semantic}
         for row in keyword:
             by_id[row["id"]] = row
             scores[row["id"]] = scores.get(row["id"], 0.0) + KEYWORD_WEIGHT * row["score"]
@@ -560,10 +586,12 @@ class KnowledgeIndex:
                 scores[fact_id] *= recency_weight((now - made).total_seconds() / 86400)
             except ValueError:
                 pass
-        ranked = sorted(by_id, key=lambda fact_id: scores[fact_id], reverse=True)[:limit]
+        kept = [fact_id for fact_id in by_id if scores[fact_id] >= self.config.min_score]
+        ranked = sorted(kept, key=lambda fact_id: scores[fact_id], reverse=True)[:limit]
         return [KnowledgeHit(
             by_id[fact_id]["text"], by_id[fact_id]["file"], by_id[fact_id]["source_chat"],
-            by_id[fact_id]["at"], by_id[fact_id]["entities"], scores[fact_id],
+            by_id[fact_id]["at"], by_id[fact_id]["entities"], scores[fact_id], by_id[fact_id].get("message_id"),
+            fact_id in by_words and fact_id in by_meaning,
         ) for fact_id in ranked]
 
     # ---- embedding lifecycle ---------------------------------------------

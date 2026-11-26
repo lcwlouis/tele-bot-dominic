@@ -167,9 +167,14 @@ Cloudflare. Keep local bearer-token testing on loopback.
   skill. Dom screens it for instance credentials and verbatim private notes
   before sending it to the drafting endpoint, or to the chat route if no
   drafting provider can answer.
+- **Open-Meteo** (only when `[world]` is set) receives the configured latitude and longitude, in a plain HTTPS request
+  about every 45 minutes, to answer with the current weather and the day's forecast for Dom's turn note. No key,
+  place name, chat or personal text is sent.
 - **Chat model providers** also receive the real photos, voice notes and clips
   of the newest turn (and Dom's own latest generated media) when the chat model
   takes that type of input. See [Media Dom sees and sends](#media-dom-sees-and-sends).
+  Once Dom has answered and that media is no longer attached, the media provider describes it once in the background
+  (under the spend cap), so a later turn still knows what a photo showed.
 - **Media provider** receives supported attachments for transcription or
   description (only when the chat model can't take that type, or for the
   triage model, which reads text only), screenshots when the desktop worker requests a description, and

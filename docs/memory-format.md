@@ -51,9 +51,17 @@ and links, and indexes messages for retrieval. Messages are read incrementally p
 the message's facts in the same transaction, and a rare chunked sweep catches removals from any other path. A vector
 belongs to a line's text, so a line that survives an edit of its file is never embedded again. `dom rebuild-index HOME`
 rebuilds it from Markdown and message history.
-Search mode `keyword` is the fast default; `meaning` blends BM25, embeddings and the same recency weighting; `entity`
-returns everything visible about an entity and the entities linked on those facts. Entity and core groups are stripped
+Search mode `keyword` is the fast default; `meaning` blends BM25, embeddings and the same recency weighting, drops hits
+under `knowledge.min_similarity` and `knowledge.min_score`, and labels each hit strong, good or weak; every mode sorts
+strictly by score; `entity` returns everything visible about an entity and the entities linked on those facts. Entity and core groups are stripped
 before a model sees a note.
+
+The dashboard's `GET /api/memory/file` and `POST /api/memory/save` return the raw file text in `content` (groups
+included, for the editor) and `entities`, a map from each `kind:key` a line links to the name to show (a person's name,
+else `Person <id>`; a place, project or goal as its key with dashes read as spaces). The exact group syntax a
+preview parser matches is `{entities REF(|REF)*}`, where `REF` is `person:<digits>` or `(place|project|goal):<key>` with
+`<key>` made of lowercase letters, digits and dashes (1 to 64 characters, starting with a letter or digit). A group may
+stand anywhere in the line, with the space before it hidden along with it.
 
 ## Core memories
 

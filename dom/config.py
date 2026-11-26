@@ -226,6 +226,51 @@ class PresenceConfig(BaseModel):
     )
 
 
+class KnowledgeConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    min_similarity: float = Field(
+        0.35, ge=0, le=1, allow_inf_nan=False,
+        description=(
+            "Meaning search drops a hit whose embedding cosine similarity to the query is below this. 0.35 suits "
+            "qwen3-vl-embedding-2b, where unrelated short texts score about 0.1 to 0.3 and related ones 0.45 and up; "
+            "another embedding model may sit on a different scale. Zero keeps every hit."
+        ),
+    )
+    min_score: float = Field(
+        0.15, ge=0, le=1, allow_inf_nan=False,
+        description=(
+            "Meaning search drops a blended hit (keyword relevance and similarity, weighted by recency) scoring "
+            "below this. The best possible score is 1; a hit found by meaning alone peaks at 0.55."
+        ),
+    )
+
+
+class WorldConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    place: str = Field(
+        "", max_length=60,
+        description=(
+            "The owner's place, as Dom should name it in the weather line of his turn note (for example `Singapore`). "
+            "Empty, the default, turns the line off."
+        ),
+    )
+    latitude: float | None = Field(None, ge=-90, le=90, allow_inf_nan=False, description="Latitude of the place, in degrees.")
+    longitude: float | None = Field(None, ge=-180, le=180, allow_inf_nan=False, description="Longitude of the place, in degrees.")
+
+    @model_validator(mode="after")
+    def _all_or_none(self) -> WorldConfig:
+        given = [bool(self.place.strip()), self.latitude is not None, self.longitude is not None]
+        if any(given) and not all(given):
+            raise ValueError("[world] needs place, latitude and longitude together, or none of them")
+        return self
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.place.strip()) and self.latitude is not None and self.longitude is not None
+
+
 class WebConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -634,6 +679,8 @@ class Config(BaseModel):
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
     studio: StudioConfig = Field(default_factory=StudioConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    world: WorldConfig = Field(default_factory=WorldConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     t3: T3Config = Field(default_factory=T3Config)
     update: UpdateConfig = Field(default_factory=UpdateConfig)

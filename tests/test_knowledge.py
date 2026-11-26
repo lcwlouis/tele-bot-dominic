@@ -825,3 +825,124 @@ async def test_two_messages_with_the_same_text_both_stay_in_group_search(make_ap
     ctx = tool_ctx(app, GROUP, "group", FRIEND, participants=(FRIEND,))
     texts = [hit["text"] for hit in await tool_search(app, ctx, "Japan")]
     assert texts.count("Japan again tonight") == 2
+
+
+def shaped_vectors(table):
+    """An embedding endpoint where each text's vector is the one in `table` whose key it contains (the query is
+    "holiday"); anything else is orthogonal to it."""
+    def respond(request):
+        data = []
+        for index, text in enumerate(json.loads(request.content)["input"]):
+            vector = next((v for key, v in table.items() if key in text), [0.0, 1.0])
+            data.append({"index": index, "embedding": vector})
+        return httpx.Response(200, json={"data": data, "usage": {"prompt_tokens": 1, "total_tokens": 1, "cost": 0.0}})
+    return respond
+
+
+async def test_meaning_search_drops_weak_hits_sorts_by_score_and_labels_them(make_app):
+    app = make_app()
+    app.home._write_regular(
+        "memory/places/japan.md",
+        "- Weak: a faint link {any}\n- Other: nothing alike {any}\n- Good: a nearby thing {any}\n"
+        "- Best: the holiday itself {any}",
+    )
+    table = {
+        "holiday": [1.0, 0.0], "Best": [1.0, 0.0], "Good": [0.8, 0.6], "Weak": [0.4, 0.917], "Other": [0.1, 0.995],
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(shaped_vectors(table))) as http:
+        index = KnowledgeIndex(app.store, app.home, embedding_router(app, http), allowed=allowed, chat_id=OWNER)
+        await index.run_pending()
+        hits = await index.search("holiday", requester_chat_id=OWNER, owner=True, mode="meaning")
+        strict = KnowledgeIndex(
+            app.store, app.home, embedding_router(app, http), allowed=allowed, chat_id=OWNER,
+            config=app.config.knowledge.model_copy(update={"min_similarity": 0.7, "min_score": 0.5}),
+        )
+        careful = await strict.search("holiday", requester_chat_id=OWNER, owner=True, mode="meaning")
+    assert [hit.text for hit in hits] == ["- Best: the holiday itself", "- Good: a nearby thing", "- Weak: a faint link"]
+    assert [hit.score for hit in hits] == sorted((hit.score for hit in hits), reverse=True)
+    assert [hit.match for hit in hits] == ["strong", "good", "weak"]  # strong takes the words and the meaning
+    assert hits[0].score > hits[1].score > hits[2].score
+    assert [hit.text for hit in careful] == ["- Best: the holiday itself"]  # the stricter config drops the rest
+
+
+async def test_every_search_mode_sorts_strictly_by_score(make_app):
+    app = make_app()
+    app.home._write_regular(
+        "memory/places/japan.md",
+        "- Kyoto once\n- Kyoto Kyoto Kyoto temple and Kyoto gardens\n- Kyoto twice {entities place:japan}",
+    )
+    await app.knowledge.refresh()
+    for mode in ("keyword", "entity"):
+        hits = await app.knowledge.search("Kyoto" if mode == "keyword" else "japan", requester_chat_id=OWNER,
+                                          owner=True, mode=mode)
+        scores = [hit.score for hit in hits]
+        assert hits and scores == sorted(scores, reverse=True)
+
+
+async def test_search_tool_and_global_search_show_the_match_label(make_app):
+    app = make_app()
+    app.home._write_regular("memory/places/japan.md", "- Japan holiday {any} {entities place:japan}\n- Dull {any}")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(vectors([]))) as http:
+        app.knowledge = KnowledgeIndex(
+            app.store, app.home, embedding_router(app, http), allowed=allowed, chat_id=OWNER,
+            config=app.config.knowledge,
+        )
+        await app.knowledge.run_pending()
+        found = await global_search.search_all(
+            app.store, app.home, "holiday", mode="meaning", knowledge=app.knowledge)
+        keyword = await global_search.search_all(app.store, app.home, "holiday", knowledge=app.knowledge)
+    hit = found["memory"][0]
+    assert hit.text == "- Japan holiday" and hit.score is not None and hit.match in {"strong", "good", "weak"}
+    assert [h.text for h in found["memory"]] == ["- Japan holiday"]  # the dull line is under the similarity cutoff
+    assert all(h.score is None and not h.match for h in keyword["memory"])
+
+
+async def test_the_search_tool_tells_dom_how_strong_each_meaning_match_is(make_app):
+    from dom.tools import SEARCH_TOOL, TurnCtx
+
+    app = make_app()
+    app.home._write_regular("memory/places/japan.md", "- Japan holiday {any} {entities place:japan}\n- Dull {any}")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(vectors([]))) as http:
+        app.knowledge = KnowledgeIndex(
+            app.store, app.home, embedding_router(app, http), allowed=allowed, chat_id=OWNER, config=app.config.knowledge,
+        )
+        await app.knowledge.run_pending()
+        ctx = TurnCtx(
+            scope="owner_dm", chat_id=OWNER, sender_id=OWNER, home=app.home, store=app.store, owner_id=OWNER, app=app,
+        )
+        owner = json.loads(await SEARCH_TOOL.handler({"query": "holiday", "mode": "meaning"}, ctx))
+        friend_ctx = TurnCtx(
+            scope="group", chat_id=GROUP, sender_id=FRIEND, home=app.home, store=app.store, owner_id=OWNER, app=app,
+        )
+        group = json.loads(await SEARCH_TOOL.handler({"query": "holiday", "mode": "meaning"}, friend_ctx))
+    assert [hit["match"] for hit in owner if hit["kind"] == "memory"] == ["strong match"]
+    assert all(hit["match"] == "strong match" for hit in group if "file" in hit)
+
+
+async def test_a_meaning_only_hit_is_never_strong_however_similar(make_app):
+    app = make_app()
+    app.home._write_regular("memory/places/japan.md", "- Zen: no shared word {any}")
+    table = {"holiday": [1.0, 0.0], "Zen": [1.0, 0.0]}  # identical meaning, nothing in common but the meaning
+    async with httpx.AsyncClient(transport=httpx.MockTransport(shaped_vectors(table))) as http:
+        index = KnowledgeIndex(app.store, app.home, embedding_router(app, http), allowed=allowed, chat_id=OWNER)
+        await index.run_pending()
+        hits = await index.search("holiday", requester_chat_id=OWNER, owner=True, mode="meaning")
+    assert [hit.text for hit in hits] == ["- Zen: no shared word"]
+    assert hits[0].score >= 0.5 and hits[0].match == "good"  # strong needs the words as well
+
+
+async def test_group_meaning_search_ranks_recent_and_indexed_hits_together_keeping_the_label(make_app):
+    app = make_app()
+    await add_message(app, 1, "Japan holiday booked")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(vectors([]))) as http:
+        app.knowledge = KnowledgeIndex(
+            app.store, app.home, embedding_router(app, http), allowed=allowed, chat_id=OWNER, config=app.config.knowledge,
+        )
+        await app.knowledge.run_pending()
+        await add_message(app, 2, "holiday news just now")  # newer than the index: no score
+        ctx = tool_ctx(app, GROUP, "group", FRIEND, participants=(FRIEND,))
+        hits = await tool_search(app, ctx, "holiday", "meaning")
+    assert [hit["text"] for hit in hits] == ["Japan holiday booked", "holiday news just now"]
+    indexed, recent = hits
+    assert indexed["match"] == "strong match" and indexed["score"] > 0 and "msg_id" in indexed  # not lost as a duplicate
+    assert "match" not in recent and "score" not in recent

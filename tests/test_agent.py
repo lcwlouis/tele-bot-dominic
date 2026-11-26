@@ -542,3 +542,17 @@ def test_the_prompt_fingerprint_moves_only_when_a_part_in_front_of_the_window_ch
     moved = prompt_fingerprint(prompt("new notes", [1, 2]), tools)
     assert moved.split()[2] != before.split()[2] and moved.split()[:2] == before.split()[:2]
     assert prompt_fingerprint(prompt("notes", [1, 2]), [{"name": "b"}]).split()[0] != before.split()[0]
+
+
+@pytest.mark.parametrize(
+    ("name", "shape"),
+    [("image", '"image": "<scene>"'), ("Selfie", '"image": "<scene>"'), ("send_photo", '"image": "<scene>"'),
+     ("voice", '"voice": "<spoken text>"'), ("video_note", '"video_note": {')],
+)
+async def test_media_called_as_a_tool_is_told_where_it_belongs(env, name, shape):
+    final = {**FINAL, "image": "a selfie at a desk"}
+    script = Script(reply(tool_calls=[call(name, {"scene": "a desk"})]), reply(content=json.dumps(final)))
+    actions = await run_turn(make_client(script), [], core_tools(), ctx_for(env))
+    result = tool_result(script.requests[1])
+    assert "not a tool" in result and "final JSON answer" in result and shape in result
+    assert actions.image == "a selfie at a desk"

@@ -36,6 +36,7 @@ from dom.web.shared import (
     _memory_sections,
     _proposals,
     decide_import_batch,
+    entity_labels,
     owner_app,
     soul_chat,
     run_memory_import,
@@ -184,7 +185,7 @@ async def index_cancel(request: Request) -> dict:
 @router.get(PREFIX + "/file")
 async def read_file(request: Request, file: str) -> dict:
     file_ = await _memory_file(owner_app(request), file)
-    return {key: file_[key] for key in ("file", "label", "readonly", "limit", "content", "version")}
+    return {key: file_[key] for key in ("file", "label", "readonly", "limit", "content", "version", "entities")}
 
 
 @router.post(PREFIX + "/save")
@@ -206,7 +207,8 @@ async def save_file(request: Request) -> dict:
     if not result.ok:
         raise HTTPException(422 if result.over_limit else 409, result.error)
     await owner.record_event(app, f"Saved {update.file} in the dashboard")
-    return {"message": f"Saved {listed['label']}.", "content": result.content, "version": content_version(result.content)}
+    return {"message": f"Saved {listed['label']}.", "content": result.content, "version": content_version(result.content),
+            "entities": await entity_labels(app, result.content)}
 
 
 @router.post(PREFIX + "/soul")

@@ -36,6 +36,8 @@ class Hit:
     ref: str  # chat id, file path, filename, name or id: what the page opens
     at: str = ""
     full: bool = True  # False: a one-line preview of another chat's message
+    score: float | None = None  # a meaning-search hit's blended score, best 1 (None where there is no such score)
+    match: str = ""  # that score as a label: strong, good or weak
 
 
 def one_line(text: str, limit: int) -> str:
@@ -159,8 +161,10 @@ async def search_all(
         seen_chat = {(hit.ref, hit.text, hit.at) for hit in result["chat"]}
         seen_memory = {(hit.ref, hit.text, hit.at) for hit in result["memory"]}
         for hit in indexed:
+            # Only a meaning search's blended score means the same from one search to the next.
+            scored = {"score": round(hit.score, 3), "match": hit.match} if mode == "meaning" else {}
             if hit.file:
-                item = Hit("memory", hit.file, one_line(hit.text, SNIPPET), hit.file, hit.at)
+                item = Hit("memory", hit.file, one_line(hit.text, SNIPPET), hit.file, hit.at, **scored)
                 key = (item.ref, item.text, item.at)
                 if key not in seen_memory:
                     result["memory"].append(item)
@@ -169,7 +173,7 @@ async def search_all(
                 mine = hit.source_chat == str(owner)
                 item = Hit(
                     "chat", "Your DM" if mine else titles.get(hit.source_chat, hit.source_chat),
-                    hit.text if mine else one_line(hit.text, PREVIEW), hit.source_chat, hit.at, full=mine,
+                    hit.text if mine else one_line(hit.text, PREVIEW), hit.source_chat, hit.at, full=mine, **scored,
                 )
                 key = (item.ref, item.text, item.at)
                 if key not in seen_chat:

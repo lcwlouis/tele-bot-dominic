@@ -21,8 +21,9 @@ Kind = Literal["voice", "video_note", "photo", "special"]
 SWITCH = {"voice": "voice", "video_note": "video_notes", "photo": "images", "special": "special"}
 STUDIO_NOTE = (
     "Most replies stay text. Use these sparingly when they add something. Never speak private details aloud, "
-    "describe the machinery behind these actions, or use media in a private reply. Media goes out only through "
-    "these fields: writing [photo] or similar in a bubble sends nothing."
+    "describe the machinery behind these actions, or use media in a private reply. These are fields of your final "
+    "JSON answer, next to \"bubbles\": they are not tools, so never call a tool named image, photo, voice or "
+    "video_note. Writing [photo] or similar in a bubble sends nothing."
 )
 UNAVAILABLE_NOTE = (
     "You can't send voice notes, video notes or photos right now. Never write one out as text or promise one; "

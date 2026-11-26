@@ -546,15 +546,20 @@ class Dispatcher:
 
     async def _describe(
         self, chat_id: int, msg_id: int, media: dict, request: AsyncContextManager[None],
-    ) -> None:
+    ) -> bool:
+        """Describe one file. False only when the chat's description budget was used up and nothing was tried, so a
+        caller that can wait may try again once the window resets."""
         describer = self.app.media_describer
-        if describer is None or not self._media_budget(chat_id):
-            return
+        if describer is None:
+            return True
+        if not self._media_budget(chat_id):
+            return False
         try:
             description = await describer.describe(media, request=request)
             await self.app.store.set_media_description(chat_id, msg_id, description)
         except Exception:
             log.exception("could not record media description in chat %s", chat_id)
+        return True
 
     async def _note_failure(
         self, chat_id: int, category: str, text: str, *, thread_id: int | None = None,
@@ -684,6 +689,7 @@ class Dispatcher:
     async def _run(self) -> None:
         self._spawn(self._run_reminders())
         self._spawn(self._sweep_cards())  # cards that expired while Dom was down
+        self._spawn(self.app.world.refresh())
         while True:
             await self.sleep(TICK_SECONDS)
             self.cross_chat.start()
@@ -722,6 +728,7 @@ class Dispatcher:
             await owner.refresh_menu(self.app)
         await self._sweep_cards()
         await self.app.stickers.refresh()
+        self._spawn(self.app.world.refresh())  # its own fetch, so a slow answer never holds up the jobs below
         await self.jobs.tick()
         await self.openers.maybe(self.now())
         if self._closing:
@@ -1839,6 +1846,8 @@ class Dispatcher:
             )
             if sent.reaction_result is False:
                 self._reactions_off.add(chat_id)
+            if sent:  # Dom has answered, so media he saw as it was won't be attached again: describe it for later turns
+                self.native.describe_aged(chat_id, window)
             if sent.flood_limited:
                 log.warning("reply in chat %s hit Telegram flood-wait budget (%d sent)", chat_id, len(sent))
                 turn_log.outcome(
@@ -2269,6 +2278,8 @@ class Dispatcher:
             f"state: online\n"
             f"messages that arrived while away: {away_count}\n{describe(app, scope, tools)}"
         )
+        if weather := app.world.line():  # cached by a background fetch: nothing here waits on the network
+            note += f"\n{weather}"
         if any(tool.name.startswith("plugin_") for tool in tools):
             note += (
                 "\nPlugin tools receive their arguments only. Pass only task inputs explicitly provided for the plugin. "
