@@ -93,7 +93,10 @@ async def _search(args: dict, ctx: TurnCtx) -> str:
             ctx.store, ctx.home, query, mode=mode, knowledge=ctx.app.knowledge if ctx.app else None,
         )
         return json.dumps(
-            [{"kind": h.kind, "title": h.title, "text": h.text, "at": h.at} for hits in found.values() for h in hits],
+            [
+                {"kind": h.kind, "title": h.title, "text": h.text, "at": h.at, **({"match": f"{h.match} match"} if h.match else {})}
+                for hits in found.values() for h in hits
+            ],
             ensure_ascii=False,
         )
     limit = args.get("limit", 10)
@@ -117,7 +120,10 @@ async def _search(args: dict, ctx: TurnCtx) -> str:
     for hit in indexed:
         if hit.message_id is not None and hit.message_id in seen:
             continue
-        found.append({"text": hit.text, "file": hit.file, "at": hit.at, "entities": hit.entities})
+        found.append({
+            "text": hit.text, "file": hit.file, "at": hit.at, "entities": hit.entities,
+            **({"match": f"{hit.match} match"} if mode == "meaning" else {}),
+        })
     return json.dumps(found, ensure_ascii=False)
 
 

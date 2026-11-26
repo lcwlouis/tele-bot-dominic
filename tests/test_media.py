@@ -170,6 +170,21 @@ def test_window_renders_media():
     assert "hidden-file-id" not in rendered
 
 
+def test_media_dom_sent_says_so_and_a_users_is_told_by_its_sender():
+    mine = StoredMessage(
+        chat_id=str(GROUP), msg_id=2, role="assistant", is_bot=True, text="", visibility_scope=f"chat:{GROUP}",
+        media_json=json.dumps({"kind": "photo", "scene": "my desk"}), created_at="2026-01-01T12:00:00Z",
+    )
+    theirs = StoredMessage(
+        chat_id=str(GROUP), msg_id=1, role="user", sender_user_id=7, sender_name="Louis", sender_handle="@lou",
+        text="", visibility_scope=f"chat:{GROUP}", media_json=json.dumps({"kind": "photo"}),
+        created_at="2026-01-01T12:00:00Z",
+    )
+    first, second = ET.fromstring(format_chat_window_xml(str(GROUP), [theirs, mine])).findall("./msg")
+    assert first.attrib["name"] == "Louis" and first.attrib["from"] == "@lou" and "by" not in first.find("media").attrib
+    assert second.find("media").attrib == {"kind": "photo", "by": "you"}
+
+
 async def test_voice_uses_input_audio_part():
     bot, client = FakeDownload(), FakeMediaClient()
     voice = Voice(file_id="fake-voice", file_unique_id="voice-unique", duration=2, mime_type="audio/ogg")

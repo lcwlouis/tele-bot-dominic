@@ -236,17 +236,39 @@ async def seeing_app(make_app, inputs=SEEING, *, contents=(), chat=GROUP):
     return app, bot, describer
 
 
-async def test_a_photo_goes_to_the_model_itself_with_no_description_call(make_app):
+async def test_a_photo_goes_to_the_model_itself_and_is_described_only_once_he_has_answered(make_app):
     app, bot, describer = await seeing_app(make_app)
     await deliver(app, photo_message(caption="look"))
-    assert not describer.calls  # nothing was described
-    stored = (await app.store.get_recent_chat_window(GROUP))[0]
-    assert json.loads(stored.media_json)["description"] is None
-    assert bot.downloads == ["large"]  # downloaded once, on arrival
+    assert bot.downloads[0] == "large"  # downloaded once, on arrival
     content = turn_requests(app)[0]["messages"][1]["content"]
-    assert isinstance(content, list)
+    assert isinstance(content, list)  # the first turn saw the real photo, with nothing described in its tag
     assert content[0]["type"] == "text" and "<media kind=\"photo\"></media>" in content[0]["text"]
     assert content[-1]["image_url"]["url"] == "data:image/jpeg;base64," + base64.b64encode(b"fake attachment").decode()
+    assert len(describer.calls) == 1  # after the reply: the photo is no longer attached, so it is described for later
+    stored = (await app.store.get_recent_chat_window(GROUP))[0]
+    assert json.loads(stored.media_json)["description"] == "A fox & a crescent moon."
+    await deliver(app, tg(msg_id=2, text="what was that photo?"))
+    later = turn_requests(app)[1]["messages"][1]["content"]
+    assert isinstance(later, str) and "A fox &amp; a crescent moon." in later  # a later turn knows what it showed
+    assert len(describer.calls) == 1  # once, not on every turn
+
+
+async def test_a_photo_still_attached_is_not_described(make_app):
+    app, bot, describer = await seeing_app(make_app, contents=[json.dumps({"no_response": True})])
+    await deliver(app, photo_message(caption="look"))
+    assert not describer.calls  # Dom said nothing, so the photo is still the newest unanswered media: attached again
+    await deliver(app, tg(msg_id=2, text="hello?"))
+    assert not describer.calls or json.loads(
+        (await app.store.get_recent_chat_window(GROUP))[0].media_json)["description"]
+
+
+async def test_aged_media_is_not_described_over_the_spend_cap_or_for_the_wrong_kind(make_app):
+    app, bot, describer = await seeing_app(make_app)
+    app.dispatch.model_allowed = lambda chat_id: asyncio.sleep(0, False)
+    await deliver(app, photo_message(caption="look"))
+    assert not describer.calls
+    stored = (await app.store.get_recent_chat_window(GROUP))[0]
+    assert json.loads(stored.media_json)["description"] is None
 
 
 async def test_a_text_only_route_still_gets_the_media_models_description(make_app):
@@ -285,7 +307,7 @@ async def test_media_over_the_size_limit_is_described_instead(make_app):
 
 
 async def test_triage_gets_a_description_even_when_the_chat_model_sees(make_app):
-    app, bot, describer = await seeing_app(make_app)
+    app, bot, describer = await seeing_app(make_app, contents=[json.dumps({"no_response": True})])
     message = tg(msg_id=1, text=None, photo=[PhotoSize(file_id="large", file_unique_id="u", width=2, height=2, file_size=10)])
     await handle_message(app, message)
     await drain_dispatch(app.dispatch)

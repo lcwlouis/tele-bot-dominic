@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
-from dom import memory_import, proposals, selfwork, skills, traits, turn_log
+from dom import memory_import, notes, proposals, selfwork, skills, traits, turn_log
 from dom.agent import unfence
 from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.proposals import soul_edit_problem
@@ -611,6 +611,20 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     ]
 
 
+async def entity_labels(app: App, content: str) -> dict[str, str]:
+    """The name to show for each entity a file's lines link through `{entities kind:key|...}` (docs/memory-format.md),
+    by its `kind:key` reference: a person by their name (else "Person <id>"), a place, project or goal by its key.
+    The preview shows a link as a chip and hides the group; the raw text, groups included, stays in `content`."""
+    refs = dict.fromkeys(ref for line in content.split("\n") for ref in notes.parse_line(line).entities)
+    if not refs:
+        return {}
+    names = await app.store.people_names()
+    return {
+        ref: _person_label(f"memory/people/{ref[7:]}.md", names) if ref.startswith("person:") else ref.partition(":")[2].replace("-", " ")
+        for ref in refs
+    }
+
+
 async def _memory_file(app: App, file: str) -> dict:
     """One listed memory file and its text. Only listed files open, and a private one opens only in the private scope."""
     sections = await _memory_sections(app)
@@ -626,7 +640,7 @@ async def _memory_file(app: App, file: str) -> dict:
     return {
         "sections": sections, "file": file, "label": labels[file], "readonly": file == HABITS or file in archived,
         "limit": MAX_SOUL if file == SOUL else limit_for(file),
-        "content": content, "version": content_version(content),
+        "content": content, "version": content_version(content), "entities": await entity_labels(app, content),
     }
 
 

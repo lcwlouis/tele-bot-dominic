@@ -31,6 +31,7 @@ from dom.t3.tools import Bridge
 from dom.home import Home
 from dom.jev import JevClient
 from dom.knowledge import KnowledgeIndex
+from dom.world import World
 from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.media import MediaDescriber
 from dom.media_files import MediaFiles
@@ -92,6 +93,7 @@ class App:
     escalation_client: FallbackClient | None = None
     embedding_client: EmbeddingRouter | None = None
     knowledge: KnowledgeIndex = field(init=False)
+    world: World = field(init=False)  # the weather line in the turn note, fetched in the background
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
@@ -131,8 +133,10 @@ class App:
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
         async def embedding_allowed() -> bool:
             return not await self.dispatch.usage.over_cap(self.config, self.bot, sleep=self.sleep)
+        self.world = World(lambda: self.config.world, lambda: self._primary_client().http, lambda: self.dispatch.now())
         self.knowledge = KnowledgeIndex(
             self.store, self.home, self.embedding_client, allowed=embedding_allowed, chat_id=self.owner_id,
+            config=self.config.knowledge,
         )
         self.self_work = SelfWork(self)
         self.goals = Goals(self)
@@ -141,6 +145,9 @@ class App:
             self.desktop_worker = DesktopFleet(self)
         if self.cloud_studio is not None and self.cloud_studio.running_chat_keys is None:
             self.cloud_studio.running_chat_keys = self.running_chat_keys
+
+    def _primary_client(self) -> ChatClient:
+        return self.client.primary if isinstance(self.client, FallbackClient) else self.client
 
     def running_chat_keys(self) -> frozenset[str]:
         """Every API key currently held in memory by running chat, triage, media, drafting, escalation or search
@@ -182,7 +189,7 @@ class App:
         # model_copy skips validation, and this mix of saved routes and running studio settings was never validated
         # as a whole: re-check the key rules so a chat route and a live studio backup can't end up sharing a key.
         config.check_key_rules()
-        current = self.client.primary if isinstance(self.client, FallbackClient) else self.client
+        current = self._primary_client()
         chat, media, draft, escalation = (routed_client(config, role, current.http, current.usage)
                                           for role in ("chat", "media", "drafting", "escalation"))
         search = routed_search_client(config, current.http, current.usage)

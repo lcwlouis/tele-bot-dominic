@@ -31,6 +31,7 @@ log = logging.getLogger("dom.native_media")
 KEPT_BYTES = 4  # incoming files held in memory between arrival and the turn
 RETRY_LEARNING_SECONDS = 1800  # before an endpoint whose capabilities could not be learned is tried again
 LOAD_SECONDS = 15  # for one attachment's download before the turn goes ahead without it
+AGED_TRIED = 200  # attachments remembered as already offered for a late description, so a failed one isn't retried
 
 
 def _media(row: StoredMessage) -> dict:
@@ -49,6 +50,7 @@ class NativeMedia:
         self._learning: dict[tuple, float] = {}
         self.last: frozenset[str] = frozenset()  # what the chat route took the last time it was asked
         self._unknown: list[ChatClient] = []  # providers whose input types nothing has told yet
+        self._aged: OrderedDict[tuple[int, int], None] = OrderedDict()
 
     # --- what the chat route takes ---
 
@@ -275,6 +277,38 @@ class NativeMedia:
         if notes:
             turn_log.step("media not loaded")
         return attachments, notes
+
+
+    # --- a description once the media is no longer attached ---
+
+    def describe_aged(self, chat_id: int, window: list[StoredMessage]) -> None:
+        """Dom has answered, so media he saw as it was in this window is not attached again. Give each such file the
+        description a later prompt shows in its `<media>` tag (otherwise the tag stays empty and he forgets what it
+        showed). Only media his model takes as it is: anything else was described when it arrived. Runs in the
+        background under the media budget and spend cap, once per file. Only the chat's own window is read, so
+        nothing crosses chats."""
+        todo = []
+        for row in window:
+            media = _media(row)
+            key = (chat_id, row.msg_id)
+            if (row.role != "user" or row.is_bot or row.msg_id is None or row.is_deleted or key in self._aged
+                    or media.get("kind") not in MODALITY_OF or media.get("kind") == "sticker"
+                    or media.get("description") is not None):
+                continue
+            self._aged[key] = None
+            todo.append((row.msg_id, media))
+        while len(self._aged) > AGED_TRIED:
+            self._aged.popitem(last=False)
+        if todo:
+            self.d._spawn(self._describe_aged(chat_id, todo))
+
+    async def _describe_aged(self, chat_id: int, todo: list[tuple[int, dict]]) -> None:
+        for msg_id, media in todo:
+            try:
+                if await self.takes(media):  # what the model can't take was described on arrival, or tried then
+                    await self.d._describe(chat_id, msg_id, media, self.d._media_request(chat_id))
+            except Exception:
+                log.warning("could not describe aged media in chat %s", chat_id, exc_info=True)
 
 
 async def _text(value: str | None) -> str | None:
