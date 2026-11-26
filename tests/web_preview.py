@@ -150,6 +150,22 @@ class Computer:
         pass
 
 
+def _fictional_photo() -> bytes:
+    """A made-up picture of a place: sky above, water below, a blue chair. No real photo is ever in the preview."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (480, 360), (190, 215, 235))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 200, 480, 360), fill=(70, 120, 160))
+    draw.rectangle((150, 150, 210, 230), fill=(30, 70, 180))
+    draw.rectangle((270, 150, 330, 230), fill=(30, 70, 180))
+    out = io.BytesIO()
+    image.save(out, "PNG")
+    return out.getvalue()
+
+
 def screenshot() -> bytes:
     """A small plain PNG standing in for a screenshot Dom took."""
     width, height = 320, 200
@@ -367,6 +383,16 @@ async def seed(app: handlers.App) -> None:
         "## 2026-09-03\nMood: curious\nRiver asked about the early train.\n"
     ))
     app.home._write_regular(f"memory/chats/{CREW}.md", "The crew plans a trip on Saturdays.")
+    app.home._write_regular("memory/WORLD.md", (
+        "# Dom's world\n\n## Home and work\n- Lives in a small flat above a bakery {entities place:the-bakery}\n"
+        "- Draws picture books from a desk by the window\n\n## Routine\n"
+        "- Weekday lunch: noodles, a rice bowl or a sandwich at the harbour cafe {entities place:the-harbour-cafe}\n"
+        "- Thursday evening: usually the climbing gym\n\n## Regular spots\n- Coffee: the corner kiosk {core owner 2026-11-20}\n"
+    ))
+    app.home.write_file("memory/WORLD.change.json", json.dumps({"day": "2026-11-18", "reason": "He took up climbing and wanted a weekly slot for it."}))
+    app.home._write_regular("memory/places/the-harbour-cafe.md", "- A small cafe on the water with blue chairs {any} {entities place:the-harbour-cafe}\n")
+    app.home._write_regular("memory/places/the-bakery.md", "- The bakery downstairs, open from six {any}\n")
+    await app.place_photos.save("the-harbour-cafe", _fictional_photo())
     app.home.scoped(allow_private=True)._write_regular("private/USER.md", "- Likes long walks\n")
     app.home._write_regular("stickers.toml", 'sets = ["example_set_by_examplebot"]\n')
     await app.proposals.create(

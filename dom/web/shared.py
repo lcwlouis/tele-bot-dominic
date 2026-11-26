@@ -19,7 +19,7 @@ from fastapi.responses import Response
 
 from dom import memory_import, notes, proposals, selfwork, skills, traits, turn_log
 from dom.agent import unfence
-from dom.home import MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
+from dom.home import WORLD, MAX_SOUL, MAX_SOUL_EDIT, content_version, limit_for
 from dom.proposals import soul_edit_problem
 from dom.skills import skill_diff
 from dom.telegram import gate, owner
@@ -582,7 +582,7 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     for rel in chats:
         (owner_notes if Path(rel).stem == str(app.owner_id) else chat_notes).append((rel, chat_label(rel)))
     labels = {
-        MEMORY: "MEMORY.md", "private/USER.md": "USER.md", "private/NOTES.md": "NOTES.md",
+        MEMORY: "MEMORY.md", WORLD: "WORLD.md", "private/USER.md": "USER.md", "private/NOTES.md": "NOTES.md",
         "memory/JOURNAL.md": "Journal", "private/JOURNAL.md": "Private journal",
     }
 
@@ -602,7 +602,7 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
         *((rel, former_label(rel)) for rel in private.former_files()),
     ]
     return [
-        ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
+        ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (WORLD, "WORLD.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
         ("People", sorted(((rel, _person_label(rel, names)) for rel in people), key=lambda item: item[1].casefold())),
         ("Places, projects and goals", [
             (rel, f"{Path(rel).parent.name[:-1].title()} · {Path(rel).stem.replace('-', ' ')}") for rel in entities

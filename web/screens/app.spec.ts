@@ -49,6 +49,8 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "memory-person", path: "/app/memory?file=memory/people/4002.md", heading: "Memory" },
   // Every core memory, who pinned it and why.
   { name: "memory-core", path: "/app/memory", heading: "Memory", click: "Core memories" },
+  // Dom's world: the life sheet with when and why he last changed it, and the places with a reference photo.
+  { name: "memory-world", path: "/app/memory/world", heading: "World" },
   // On a phone the list is its own screen and a file opens full width; on a desktop the list stays beside it.
   { name: "memory-file", path: "/app/memory", heading: "Memory", click: "MEMORY.md" },
   // A memory file rendered as markdown: headings, a list, a code span, a link and a quote.
@@ -1220,6 +1222,47 @@ test.describe("interactions under the CSP", () => {
     await page.getByRole("button", { name: "Reject all" }).click();
     await dialog.getByRole("button", { name: "Keep them" }).click();
     await expect(dialog).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("world: the sheet edits and saves, a place is added, a photo is set and removed", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory/world");
+    await expect(page.getByRole("heading", { name: "World", level: 1 })).toBeVisible();
+    await expect(page.getByText("Dom last changed it on 18 November 2026: He took up climbing")).toBeVisible();
+    await expect(page.getByRole("img", { name: "Reference photo of the harbour cafe" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Edit sheet" }).click();
+    const editor = page.getByRole("textbox", { name: "Life sheet, as text" });
+    const original = await editor.inputValue();
+    await editor.fill(original + "- Plays chess online\n");
+    await page.getByRole("button", { name: "Save sheet" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved the sheet." })).toBeVisible();
+    await expect(page.getByText("Plays chess online")).toBeVisible();
+    await page.getByRole("button", { name: "Edit sheet" }).click();
+    await page.getByRole("textbox", { name: "Life sheet, as text" }).fill(original);
+    await page.getByRole("button", { name: "Save sheet" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved the sheet." })).toBeVisible();
+
+    // Adding a place is answered from a canned world, so the preview keeps its places for the other screens.
+    await page.route("**/api/world/place", async (route) => {
+      const world = await (await page.request.get("/api/world")).json();
+      world.places.push({ slug: "the-blue-door-gym", name: "the blue door gym", note: "Small climbing gym, open late", photo: false });
+      await route.fulfill({ json: world });
+    });
+    await page.getByLabel("Place name").fill("The Blue-Door Gym");
+    await page.getByLabel("One line about it").fill("Small climbing gym, open late");
+    await page.getByRole("button", { name: "Add place" }).click();
+    await expect(page.getByRole("heading", { name: "the blue door gym" })).toBeVisible();
+    await page.unroute("**/api/world/place");
+
+    // A photo goes onto a place that has none, then comes off again.
+    const photo = await page.request.get("/api/world/places/the-harbour-cafe/photo");
+    const picture = await photo.body();
+    await page.getByLabel("Add the photo of the bakery").setInputFiles({ name: "bakery.jpg", mimeType: "image/jpeg", buffer: picture });
+    await expect(page.getByRole("img", { name: "Reference photo of the bakery" })).toBeVisible();
+    await page.getByRole("button", { name: "Remove the photo of the bakery" }).click();
+    await expect(page.getByRole("img", { name: "Reference photo of the bakery" })).toBeHidden();
     expect(problems).toEqual([]);
   });
 

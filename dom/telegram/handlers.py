@@ -34,6 +34,7 @@ from dom.t3.tools import Bridge
 from dom.home import Home
 from dom.jev import JevClient
 from dom.knowledge import KnowledgeIndex
+from dom.place_photos import PlacePhotos
 from dom.world import World
 from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.media import MediaDescriber
@@ -96,7 +97,8 @@ class App:
     escalation_client: FallbackClient | None = None
     embedding_client: EmbeddingRouter | None = None
     knowledge: KnowledgeIndex = field(init=False)
-    world: World = field(init=False)  # the weather line in the turn note, fetched in the background
+    world: World = field(init=False)  # the weather line and life sheet in the turn note; the forecast is fetched in the background
+    place_photos: PlacePhotos = field(init=False)  # the owner's reference photos of Dom's known places
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
@@ -122,6 +124,7 @@ class App:
         self.event_days = EventDays(self.store, lambda: self.config, lambda: self.dispatch.usage)
         self.studio_quota = StudioQuota(self.store, self.event_days)
         self.media_files = MediaFiles(self.home.root, self.store, lambda: self.config.studio.keep_cap_mb * 1_000_000)
+        self.place_photos = PlacePhotos(self.home, self.media_files)
         self.plugin_runner = PluginRunner(home=self.home.root, store=self.store)
         self.plugins = PluginRegistry(self.home, self.store, on_change=lambda: owner.refresh_menu(self), runner=self.plugin_runner)
         self.proposals = Proposals(self)

@@ -270,6 +270,8 @@ Results are sorted strictly by score. Each meaning hit carries its score and a c
 
 Set all three or none. With a place, every turn note carries one short line after the chat window, such as `Weather in Singapore now: 31°C (feels like 38°C), partly cloudy, humid. Today 25–33°C, 70% chance of rain.` It comes from [Open-Meteo](https://open-meteo.com/) (no key), fetched in the background about every 45 minutes and cached, so no reply waits on it. Only the coordinates leave the host (see [Privacy](privacy.md)). When the weather can't be fetched, or the cached line is over three hours old, the line is left out. The turn note also always gives the local date, the day of the week and the time in `timezone`. Changes apply at the next start.
 
+The same block carries Dom's life sheet (`memory/WORLD.md`: home, work, routine, regular spots), the routine slot for the current weekday and part of the day, what the notes a chat may read say about that slot's places, and a variety hint when Dom has just said one of his usual options in this chat. The sheet works without `[world]`; only the weather line needs the place. See [Memory formats](memory-format.md) for the format and who can change it, and the dashboard's Memory → World page to edit it.
+
 ## Presence
 
 | Key | Default | Meaning |

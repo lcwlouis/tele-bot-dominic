@@ -21,6 +21,7 @@ from dom import notes
 # Character limits, keyed by path pattern relative to the home.
 LIMITS: dict[str, int] = {
     "memory/MEMORY.md": 2200,
+    "memory/WORLD.md": 2400,
     "memory/HABITS.md": 1000,
     "memory/people/*.md": 1000,
     "memory/chats/*.md": 1000,
@@ -30,6 +31,7 @@ LIMITS: dict[str, int] = {
     "private/USER.md": 1375,
     "private/NOTES.md": 2200,
 }
+WORLD = "memory/WORLD.md"  # Dom's life sheet: owned by Dom, hand edits by the owner are pinned (docs/memory-format.md)
 MAX_SOUL = 6000  # characters in SOUL.md after an approved edit
 MAX_SOUL_EDIT = 2000  # characters in the old or the new text of one soul edit
 # Writable through memory_write but not size-bounded (never loaded into chat prompts).
@@ -41,7 +43,7 @@ _ARCHIVE_FILE = re.compile(r"^(?:memory|private)/journal/(?:\d{4}-\d{2}|\d{4}|RE
 _TAGGED = ("memory/people/*.md", "memory/chats/*.md", "memory/places/*.md", "memory/projects/*.md", "memory/goals/*.md")
 # Note files the owner's hand edits pin.
 _NOTE_FILES = (
-    "memory/MEMORY.md", "memory/people/*.md", "memory/chats/*.md", "memory/places/*.md",
+    "memory/MEMORY.md", "memory/WORLD.md", "memory/people/*.md", "memory/chats/*.md", "memory/places/*.md",
     "memory/projects/*.md", "memory/goals/*.md", "private/USER.md", "private/NOTES.md",
 )
 _MEMORY_WRITE_LOCK = Lock()
@@ -250,7 +252,7 @@ class Home:
     def _note_rels(self) -> list[str]:
         """Every note file this Home can read, MEMORY.md first."""
         people, chats = self.list_memory_notes()
-        rels = ["memory/MEMORY.md", *people, *chats, *self.list_entity_notes()]
+        rels = ["memory/MEMORY.md", WORLD, *people, *chats, *self.list_entity_notes()]
         return rels + (["private/USER.md", "private/NOTES.md"] if self.allow_private else [])
 
     def core_memories(self) -> list[dict[str, str]]:
@@ -458,6 +460,10 @@ class Home:
                 pending.replace(path)
             finally:
                 pending.unlink(missing_ok=True)
+
+    def write_file(self, rel: str, content: str) -> None:
+        """Write a regular file in the home as a temporary file moved into place, so a cancelled write leaves the old one."""
+        self._write_regular(rel, content)
 
     def write_sticker_sets(self, names: list[str]) -> None:
         self.scoped(allow_private=False)._write_regular("stickers.toml", f"sets = {json.dumps(names)}\n")

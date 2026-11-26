@@ -15,6 +15,7 @@
   import Desk from "./routes/Desk.svelte";
   import Home from "./routes/Home.svelte";
   import Memory from "./routes/Memory.svelte";
+  import World from "./routes/World.svelte";
   import OwnWork from "./routes/OwnWork.svelte";
   import Reminders from "./routes/Reminders.svelte";
   import Plugins from "./routes/Plugins.svelte";
@@ -96,8 +97,10 @@
           <Talk />
         {:else if where.destination.id === "chats"}
           <Chats destination={where.destination} />
+        {:else if where.tab?.id === "world"}
+          <World destination={where.destination} tab={where.tab} />
         {:else if where.destination.id === "memory"}
-          <Memory destination={where.destination} />
+          <Memory destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "settings"}
           <Settings destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "access"}

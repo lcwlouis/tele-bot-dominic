@@ -2,6 +2,7 @@ import type { Component } from "svelte";
 import Bell from "@lucide/svelte/icons/bell";
 import FileText from "@lucide/svelte/icons/file-text";
 import Gauge from "@lucide/svelte/icons/gauge";
+import Globe from "@lucide/svelte/icons/globe";
 import House from "@lucide/svelte/icons/house";
 import Images from "@lucide/svelte/icons/images";
 import KeyRound from "@lucide/svelte/icons/key-round";
@@ -42,6 +43,10 @@ export const destinations: Destination[] = [
   {
     id: "memory", label: "Memory", href: "/app/memory", icon: NotebookText,
     blurb: "What Dom remembers, his soul file and memory imports.",
+    tabs: [
+      { id: "notes", label: "Notes", href: "/app/memory", icon: NotebookText, blurb: "What Dom remembers, his soul file and memory imports." },
+      { id: "world", label: "World", href: "/app/memory/world", icon: Globe, blurb: "Dom's own life: where he lives and works, his routine and the places he goes." },
+    ],
   },
   {
     id: "work", label: "Work", href: "/app/work", icon: Monitor,
