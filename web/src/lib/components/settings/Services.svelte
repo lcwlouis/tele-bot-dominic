@@ -5,6 +5,7 @@
   import StatusNote from "$lib/components/StatusNote.svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
+  import GoogleCard from "./GoogleCard.svelte";
   import ServiceCard from "./ServiceCard.svelte";
 
   // Settings → Services (E81): what has no other home. `restartNeeded` tells the page to show its Restart banner when
@@ -67,5 +68,8 @@
         </Card.Content>
       </Card.Root>
     {/each}
+    <Card.Root class="py-5">
+      <Card.Content><GoogleCard /></Card.Content>
+    </Card.Root>
   </div>
 {/if}

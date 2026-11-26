@@ -95,7 +95,7 @@ Public API of `dom.secrets.SecretStore`:
 Namespaces:
 - `"login"` — W3 saved login secrets (key = `str(login_id)`, payload = `{"username": ..., "password": ...}`). Non-secret metadata (`id`, `site`, `label`, `username_masked`, `match_subdomains`, timestamps) lives in `saved_logins`.
 - `"owner_secret"` — W3 E101 secrets stored in the credential store (key = slug, payload = `{"value": ..., "label": ...}`). Non-secret metadata lives in `owner_secrets`.
-- `"google_oauth"` — W4 Google Calendar & Gmail OAuth tokens (reuses `SecretStore` directly with zero schema changes).
+- `"google"` — W4 Google Calendar & Gmail OAuth tokens (key `oauth`: refresh token, access token and its expiry), reusing `SecretStore` directly with zero schema changes. The Google desktop-permission kinds (`calendar_add`, `calendar_move`, `calendar_delete`, `gmail_draft`) are global actions in the same permission engine and approval cards as §5.
 
 ---
 

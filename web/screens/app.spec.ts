@@ -1875,6 +1875,49 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("google: the card shows credentials only as set or not set, and each switch is its own request", async ({ page }) => {
+    const problems = await watch(page);
+    const start = await (await page.request.get("/api/integrations/google")).json();
+    // Fresh preview: nothing configured and nothing connected, and the API never carries a credential value.
+    expect(start).toMatchObject({ client_id_set: false, client_secret_set: false, status: "disconnected" });
+    expect(JSON.stringify(start)).not.toMatch(/GOCSPX|ya29|1\/\//);
+    const connected = {
+      ...start, client_id_set: true, client_secret_set: true, redirect_uri: "https://dom.example.org/api/integrations/google/callback",
+      status: "connected", connected_at: "2026-11-27T10:00:00+00:00",
+      switches: [
+        { id: "calendar_read", label: "Calendar: read events", on: false, granted: true },
+        { id: "calendar_write", label: "Calendar: add, move and delete events (each needs your approval)", on: false, granted: true },
+        { id: "gmail_read", label: "Gmail: search and read mail", on: false, granted: false },
+        { id: "gmail_drafts", label: "Gmail: save drafts (each needs your approval; Dom never sends)", on: false, granted: true },
+      ],
+    };
+    const bodies: Record<string, unknown>[] = [];
+    await page.route("**/api/integrations/google", (route) => route.fulfill({ json: connected }));
+    await page.route("**/api/integrations/google/switch", async (route) => {
+      const body = route.request().postDataJSON();
+      bodies.push(body);
+      connected.switches = connected.switches.map((item) => (item.id === body.id ? { ...item, on: body.on } : item));
+      await route.fulfill({ json: connected });
+    });
+    await page.goto("/app/system?google=connected");
+    // Google's redirect opens Services, says it worked and leaves the address clean.
+    await expect(page.getByRole("tab", { name: "Services", selected: true })).toBeVisible();
+    await expect(page.getByText("Google connected. Turn on what Dom may use.")).toBeVisible();
+    await expect.poll(() => page.url()).not.toContain("google=");
+    const card = page.getByRole("region", { name: "Google Calendar and Gmail" });
+    await expect(card.getByText("Client ID: set")).toBeVisible();
+    await expect(card.getByText("Client secret: set")).toBeVisible();
+    await expect(card.getByText("https://dom.example.org/api/integrations/google/callback")).toBeVisible();
+    // A permission Google did not grant is locked.
+    await expect(card.getByRole("switch", { name: "Gmail: search and read mail" })).toBeDisabled();
+    await card.getByRole("switch", { name: "Calendar: read events" }).click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0]).toEqual({ id: "calendar_read", on: true });
+    await expect(card.getByRole("switch", { name: "Calendar: read events" })).toBeChecked();
+    await expect(card.getByRole("button", { name: "Disconnect Google" })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
   test("home: For you's buttons hand a noticing to Dom or let it go, and it leaves the list", async ({ page }) => {
     const problems = await watch(page);
     const decided: unknown[] = [];

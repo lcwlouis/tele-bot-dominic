@@ -332,7 +332,7 @@ class WebConfig(BaseModel):
     access_aud: str = Field("", description="Cloudflare Access application audience tag.")
     access_emails: list[str] = Field([], description="Optional allowlist for the Access assertion's email claim.")
     dev_token_env: str = Field("", description="Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings.")
-    public_url: str = Field("", description="HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages.")
+    public_url: str = Field("", description="HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages, and the base of the Google OAuth redirect URI (`/api/integrations/google/callback`).")
 
 
 HOST_NAME = r"^[a-z0-9][a-z0-9-]{0,23}$"
@@ -490,7 +490,10 @@ class UpdateConfig(BaseModel):
         return url
 
 
-KNOWN_SECRETS = ("TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY", "DOM_MASTER_KEY", "DOM_MASTER_KEY_PREVIOUS")
+KNOWN_SECRETS = (
+    "TELEGRAM_BOT_TOKEN", "JEV_API_KEY", "KLIPY_API_KEY", "DOM_MASTER_KEY", "DOM_MASTER_KEY_PREVIOUS",
+    "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+)
 
 
 OUTFIT_NAME = r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"

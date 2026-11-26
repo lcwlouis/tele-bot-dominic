@@ -200,15 +200,17 @@
   {#if data.pending_permissions.length > 0}
     <Card.Root class="mb-5 border-signal/50">
       <Card.Header>
-        <Card.Title class="text-base">Pending desktop approvals ({data.pending_permissions.length})</Card.Title>
-        <Card.Description>Dom paused a desktop task waiting for your decision.</Card.Description>
+        <Card.Title class="text-base">Pending approvals ({data.pending_permissions.length})</Card.Title>
+        <Card.Description>Dom is waiting for your decision: a desktop task, or a Google Calendar or Gmail change.</Card.Description>
       </Card.Header>
       <Card.Content class="grid gap-3">
         {#each data.pending_permissions as req (req.id)}
           <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-raised/40 p-3">
             <div class="min-w-0 flex-1">
               <p class="text-sm font-medium">{req.action_label}{#if req.site} · <span class="font-mono">{req.site}</span>{/if}</p>
-              {#if req.detail}<p class="text-xs break-words text-muted-foreground">{req.detail}</p>{/if}
+              {#if req.detail}<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div role="region" aria-label={`Details of ${req.action_label}`} tabindex="0" class="max-h-48 overflow-y-auto outline-none focus-visible:ring-3 focus-visible:ring-ring/50 text-xs break-words whitespace-pre-line text-muted-foreground">{req.detail}</div>{/if}
+              {#if req.dashboard_only}<p class="text-xs text-coral">Too long for the Telegram card: approve it here.</p>{/if}
             </div>
             <div class="flex flex-wrap gap-2">
               <Button size="sm" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "once" })}>Allow once</Button>
@@ -398,8 +400,8 @@
     <Tabs.Content value="permissions" class="grid gap-5">
       <Card.Root>
         <Card.Header>
-          <Card.Title class="text-base">Default desktop action policies</Card.Title>
-          <Card.Description>Choose Ask, Allow, or Never for each desktop action. Per-site rules below override these defaults.</Card.Description>
+          <Card.Title class="text-base">Default action policies</Card.Title>
+          <Card.Description>Choose Ask, Allow, or Never for each action, including each kind of Google Calendar and Gmail change. Per-site rules below override these defaults.</Card.Description>
         </Card.Header>
         <Card.Content class="grid gap-3">
           {#each data.actions as item (item.id)}

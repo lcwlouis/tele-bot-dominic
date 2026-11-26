@@ -28,6 +28,7 @@ from dom.tracer import TraceWriter
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
 from dom.desktop.permissions import DesktopPermissions
+from dom.google import GoogleIntegration
 from dom.secrets import SecretRequests, SecretStore
 from dom.embedding import EmbeddingRouter, routed_embedding_client
 from dom.t3.tools import Bridge
@@ -114,6 +115,7 @@ class App:
     secrets: SecretStore = field(init=False)
     secret_requests: SecretRequests = field(init=False)
     desktop_permissions: DesktopPermissions = field(init=False)
+    google: GoogleIntegration = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
     menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
     traces: TraceWriter | None = None  # the debug tracer (dom.tracer), opened by `dom run`
@@ -157,6 +159,7 @@ class App:
         self.secrets = SecretStore(self.store, self.home.root)
         self.secret_requests = SecretRequests(self)
         self.desktop_permissions = DesktopPermissions(self)
+        self.google = GoogleIntegration(self)
         if self.config.desktop_hosts:
             self.desktop_worker = DesktopFleet(self)
         if self.cloud_studio is not None and self.cloud_studio.running_chat_keys is None:

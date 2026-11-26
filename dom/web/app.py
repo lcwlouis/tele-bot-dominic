@@ -18,6 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from dom.web.api import router as api_router
 from dom.web.api_access import JSON_POSTS as ACCESS_POSTS, router as access_router
 from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
+from dom.google import CALLBACK_PATH
+from dom.web.api_google import JSON_POSTS as GOOGLE_POSTS, router as google_router
 from dom.web.api_goals import JSON_POSTS as GOALS_POSTS, router as goals_router
 from dom.web.api_media import GUARDED_PREFIX as MEDIA_GET_PREFIX, JSON_POSTS as MEDIA_POSTS, router as media_router
 from dom.web.api_world import GUARDED_PREFIX as WORLD_GET_PREFIX, JSON_POSTS as WORLD_POSTS, router as world_router
@@ -71,8 +73,13 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     @web.middleware("http")
     async def protect(request: Request, call_next):
         identity = await auth.authenticate(request)
-        if identity is None:
+        if identity is None and not (request.method == "GET" and request.url.path == CALLBACK_PATH):
             response = PlainTextResponse("Forbidden", status_code=403)
+        elif identity is None:
+            # Google's browser redirect carries no dashboard credential, so this one GET path alone skips the check.
+            # It authenticates itself: the single-use, unexpired state must match the HttpOnly cookie that only an
+            # authenticated owner's connect request set (dom/google.py, dom/web/api_google.py).
+            response = await call_next(request)
         elif (
             request.url.path in MEMORY_GETS | SEARCH_GETS | TALK_GETS
             or request.url.path.startswith((MEDIA_GET_PREFIX, TRACE_GET_PREFIX, WORLD_GET_PREFIX))
@@ -83,7 +90,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
             and request.url.path in (
                 JSON_POSTS | PROVIDER_POSTS | STUDIO_POSTS | SPEND_POSTS | SERVICES_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS
                 | MEMORY_POSTS | WORK_POSTS | WAITING_POSTS | SYSTEM_POSTS | GOALS_POSTS | NOTICINGS_POSTS | MEDIA_POSTS
-                | WORLD_POSTS | TALK_POSTS | ACCESS_POSTS
+                | WORLD_POSTS | TALK_POSTS | ACCESS_POSTS | GOOGLE_POSTS
             )
             and is_json(request) and "Origin" in request.headers
             and same_origin(request, identity)
@@ -115,6 +122,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.include_router(redirects_router)
     web.include_router(api_router)
     web.include_router(access_router)
+    web.include_router(google_router)
     web.include_router(chats_router)
     web.include_router(memory_router)
     web.include_router(media_router)
