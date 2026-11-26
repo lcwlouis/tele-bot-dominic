@@ -735,6 +735,7 @@ class Dispatcher:
         await self._sweep_cards()
         await self.app.stickers.refresh()
         self._spawn(self.app.world.refresh())  # its own fetch, so a slow answer never holds up the jobs below
+        self._spawn(self.app.chat_titles.refresh())  # a few Telegram asks, likewise on their own
         await self.jobs.tick()
         await self.openers.maybe(self.now())
         if self._closing:

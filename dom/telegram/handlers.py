@@ -33,6 +33,7 @@ from dom.t3.tools import Bridge
 from dom.home import Home
 from dom.jev import JevClient
 from dom.knowledge import KnowledgeIndex
+from dom.chat_titles import ChatTitles
 from dom.world import World
 from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.media import MediaDescriber
@@ -138,6 +139,7 @@ class App:
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
         async def embedding_allowed() -> bool:
             return not await self.dispatch.usage.over_cap(self.config, self.bot, sleep=self.sleep)
+        self.chat_titles = ChatTitles(self)
         self.world = World(lambda: self.config.world, lambda: self._primary_client().http, lambda: self.dispatch.now())
         self.knowledge = KnowledgeIndex(
             self.store, self.home, self.embedding_client, allowed=embedding_allowed, chat_id=self.owner_id,
