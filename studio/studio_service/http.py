@@ -138,6 +138,7 @@ def create_app(studio, sources, token):
             "queue_depth": len(studio.pending),
             "version": VERSION,
             "video_still": True,
+            "models": {name: model for name in studio.workers if (model := getattr(studio.config.workers, name).model)},
         })
 
     async def portrait(request):

@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 
+from dom import provenance
 from dom.media_files import MIME
 from dom.web.model_settings import _input
 from dom.web.shared import _title, owner_app
@@ -31,7 +32,7 @@ class Nothing(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-def _item(row: dict, titles: dict[str, str]) -> dict[str, Any]:
+def _item(row: dict, titles: dict[str, str], costs: dict[int, float]) -> dict[str, Any]:
     media = row["media"]
     chat_id = row["chat_id"]
     return {
@@ -41,6 +42,8 @@ def _item(row: dict, titles: dict[str, str]) -> dict[str, Any]:
         "url": f"/api/media/files/{chat_id}/{row['msg_id']}",
         # a video note keeps the still it was filmed from beside it
         "still_url": f"/api/media/files/{chat_id}/{row['msg_id']}?still=true" if media.get("still_file") else None,
+        # where it came from and what it cost, from the usage rows linked when it was made (None for older media)
+        "made": provenance.describe(media.get("made"), costs),
     }
 
 
@@ -62,8 +65,9 @@ async def list_files(
     rows = await app.store.media_library(chat_id=chat_id, limit=PAGE + 1, before=cursor)
     titles = {row["chat_id"]: _title(row, app.owner_id) for row in await app.store.list_approved_chats()}
     page = rows[:PAGE]
+    costs = await app.store.usage_costs([i for row in page for i in provenance.usage_ids(row["media"].get("made"))])
     return {
-        "files": [_item(row, titles) for row in page],
+        "files": [_item(row, titles, costs) for row in page],
         "next": f"{page[-1]['created_at']}|{page[-1]['id']}" if len(rows) > PAGE else None,
     }
 

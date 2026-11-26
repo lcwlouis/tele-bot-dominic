@@ -21,6 +21,7 @@ from time import monotonic
 import httpx
 from PIL import Image, ImageOps
 
+from dom import provenance
 from dom.config import DEFAULT_VOICE, Config, StudioFallback, routing_preferences
 from dom.studio.client import MAX_MEDIA_BYTES
 from dom.studio.policy import Kind, backups as providers
@@ -648,6 +649,7 @@ class CloudStudio:
                         self._track_reconcile(self._reconcile(base, headers, job_id, row))
                     elif row is not None:
                         await asyncio.shield(self.usage.store.delete_usage(row))
+                        provenance.discard(row)
 
     async def _persist_job(self, provider: StudioFallback, job_id: str, row: int, estimate: float) -> None:
         await self.usage.store.kv_set(VIDEO_JOB + job_id, json.dumps({

@@ -702,6 +702,6 @@ def test_escalation_usage_upgrade_preserves_existing_costs(tmp_path):
         conn.execute("INSERT INTO usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", initial)
     assert migrate_database(db) == TARGET_VERSION
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT * FROM usage").fetchall() == [initial]
-        conn.execute("INSERT INTO usage VALUES (72, 't', 'escalation', 'bigger', 'example.test', 111, 9, 4, 0.2, 0)")
+        assert conn.execute("SELECT id, at, kind, model, endpoint_host, chat_id, input_tokens, output_tokens, cost_usd, fallback FROM usage").fetchall() == [initial]
+        conn.execute("INSERT INTO usage (id, at, kind, model, endpoint_host, chat_id, input_tokens, output_tokens, cost_usd, fallback) VALUES (72, 't', 'escalation', 'bigger', 'example.test', 111, 9, 4, 0.2, 0)")
         assert conn.execute("SELECT TOTAL(cost_usd) FROM usage").fetchone() == (0.7,)

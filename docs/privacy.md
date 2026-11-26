@@ -109,6 +109,12 @@ folder is left out of `dom backup`. At startup, files no message records (a
 crash between saving and recording) are removed, so the cap matches the disk. Dom's other chats and friends can't see this
 folder or its listing.
 
+**Where each item came from.** The message's media record also notes how it was made: the local studio or a cloud
+backup (host and model id), the outfit and preset, how long it took, the length of a voice or video note, whether
+the look before sending redid it, the scene still behind a video note, and the ids of the usage rows of the paid
+calls. No dollar amount is stored: the library adds up those rows when it is read, so a cost OpenRouter reports late
+appears then. It is owner-only like the files, and never reaches a prompt.
+
 **Looking before sending.** In the owner DM (and, if you turn on
 `studio.look_friend_dm` or `look_group`, there too), when the chat model takes
 images, Dom checks a generated photo, or a video note's first frame

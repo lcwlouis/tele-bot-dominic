@@ -72,6 +72,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (30, "0029_menu_cards.sql"),
     (31, "0030_knowledge_index.sql"),
     (32, "0031_event_days.sql"),
+    (33, "0032_usage_settled.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -2999,10 +3000,25 @@ class Store:
         """Set the reported cost and any token counts that arrived after the call."""
         await self._run(
             self._conn.execute,
-            "UPDATE usage SET cost_usd = ?, input_tokens = COALESCE(?, input_tokens), "
+            "UPDATE usage SET cost_usd = ?, settled = 1, input_tokens = COALESCE(?, input_tokens), "
             "output_tokens = COALESCE(?, output_tokens) WHERE id = ?",
             (cost_usd, input_tokens, output_tokens, usage_id),
         )
+
+    async def usage_costs(self, ids: list[int]) -> dict[int, float | None]:
+        """The current cost of each usage row that still exists; None while it is still waiting for its cost (0 and
+        never set). A cost reported late, even $0, shows as soon as it is set."""
+        return await self._run(self._usage_costs, ids)
+
+    def _usage_costs(self, ids: list[int]) -> dict[int, float | None]:
+        found: dict[int, float | None] = {}
+        for start in range(0, len(ids), 500):  # SQLite's variable limit
+            chunk = ids[start:start + 500]
+            for row in self._conn.execute(
+                f"SELECT id, cost_usd, settled FROM usage WHERE id IN ({','.join('?' * len(chunk))})", chunk,
+            ):
+                found[row["id"]] = row["cost_usd"] if row["cost_usd"] > 0 or row["settled"] else None
+        return found
 
     async def delete_usage(self, usage_id: int) -> None:
         """Remove a reserved usage row when a request failed before being accepted."""

@@ -610,7 +610,7 @@ def test_the_event_days_table_arrives_with_a_migration(tmp_path):
     with sqlite3.connect(path) as db:
         assert {row[1] for row in db.execute("PRAGMA table_info(event_days)")} == {
             "id", "day", "title", "multiplier", "declared_at", "cancelled_at"}
-    assert MIGRATIONS[-1][1] == "0031_event_days.sql"
+    assert (32, "0031_event_days.sql") in MIGRATIONS
 
 
 async def test_two_declarations_at_once_cannot_both_take_the_weekly_allowance(make_app):
