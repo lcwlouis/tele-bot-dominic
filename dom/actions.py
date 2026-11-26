@@ -83,6 +83,55 @@ def fake_media(text: str) -> bool:
     return bool(_FAKE_MEDIA.search(text))
 
 
+# A bubble that promises media ("sending you a pic", "here's a voice note", "let me take a selfie") when the media
+# field is empty. A deterministic list, English with a little Singlish ("send u pic"), kept narrow on purpose: a missed
+# promise costs one unkept sentence, a wrong hit costs a model call and a changed reply. Only a first-person present or
+# near future statement counts, never a question, a negation, a deferral or a bubble with a link.
+_MEDIA_NOUN = {
+    "image": r"selfies?|pics?|pix|pictures?|photos?|images?",
+    "voice": r"voice\s*(?:notes?|messages?|msgs?|memos?|clips?)|vns?|audio\s+(?:notes?|messages?)",
+    "video_note": r"(?:video|vid)\s*(?:notes?|messages?|msgs?|clips?)|videos?|vids?",
+}
+_NOUN = "|".join(f"(?P<{kind}>{pattern})" for kind, pattern in _MEDIA_NOUN.items())
+_DETERMINER = r"(?:(?:a|an|one|the|my|your|another|some|quick|little)\s+){0,3}"
+_PROMISE = re.compile(
+    rf"\b(?:"
+    # "I'll send / let me take / I'm gonna record ... a pic"
+    rf"(?:i'll|ill|i\s+will|i'm\s+going\s+to|i\s+am\s+going\s+to|i'm\s+gonna|im\s+gonna|gonna|imma|i'ma|let\s+me|lemme)\s+"
+    rf"(?:just\s+|quickly\s+|go\s+(?:and\s+)?)?(?:send|snap|take|record|shoot|share|show|make|grab)\b[^,;]{{0,30}}?"
+    # "sending you a pic", "I'm taking a selfie", "send u pic"
+    rf"|(?:i'm|im|i\s+am)\s+(?:just\s+)?(?:sending|snapping|taking|recording|attaching)\b[^,;]{{0,30}}?"
+    rf"|sending\s+(?:you|u|ya|over)\b[^,;]{{0,30}}?"
+    rf"|(?:send|snap)\s+(?:u|you|ya)\s+{_DETERMINER}"
+    # "here's a selfie", "here is the pic"
+    rf"|here(?:'s|\s+is|\s+are)\s+{_DETERMINER}(?:\w+\s+){{0,2}}"
+    rf")\b(?:{_NOUN})\b",
+    re.IGNORECASE,
+)
+_NOT_A_PROMISE = re.compile(
+    r"n't\b|\b(?:not|never|cannot|cant|wont|if|unless|maybe|someday|tomorrow|tonight|later|next\s+time|once|"
+    r"did|do|does|can|could|would|will|should|have|has|are|is|was|were|why|what|how|when|where|who)\b|https?://",
+    re.IGNORECASE,
+)
+_SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
+
+
+def promised_media(text: str) -> set[str]:
+    """The media fields ("image", "voice", "video_note") a bubble's text promises to send."""
+    kinds: set[str] = set()
+    for sentence in _SENTENCE.findall(text.replace("’", "'")):
+        if sentence.rstrip().endswith("?"):
+            continue
+        # A leading question word or a negation or deferral anywhere in the sentence rules it out, except "here is/are"
+        # and "I will", which are the promise itself.
+        scrubbed = re.sub(r"\b(?:here\s+(?:is|are)|i\s+will|i\s+am\s+going\s+to|i\s+am)\b", "", sentence, flags=re.IGNORECASE)
+        if _NOT_A_PROMISE.search(scrubbed):
+            continue
+        for match in _PROMISE.finditer(sentence):
+            kinds.update(kind for kind in _MEDIA_NOUN if match.group(kind))
+    return kinds
+
+
 class Actions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -154,6 +203,13 @@ class Actions(BaseModel):
         actions = handler(data)
         actions._inferred = inferred
         return actions
+
+    def unkept_media_promises(self) -> set[str]:
+        """The media fields a bubble promises while that field is empty, so the promise has nothing behind it."""
+        promised: set[str] = set()
+        for bubble in self.bubbles:
+            promised |= promised_media(bubble.text)
+        return {field for field in promised if not getattr(self, field)}
 
     def without_inferred_media(self) -> Actions:
         """These actions without the media field inferred from a bubble."""

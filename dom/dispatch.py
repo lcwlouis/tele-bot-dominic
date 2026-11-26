@@ -101,6 +101,8 @@ SPEND_CAP_LINE = "gotta head off for the rest of the day, catch you later!"
 SPEND_CAP_LINE_KEY = "spend_cap_line:"
 # What the turn note calls each studio kind; both video kinds are round videos to Dom.
 MEDIA_LABELS = {"voice": "voice notes", "video_note": "round videos", "special": "round videos", "photo": "photos"}
+# The final-answer field each studio kind is sent through.
+MEDIA_FIELD_OF_KIND = {"photo": "image", "voice": "voice", "video_note": "video_note", "special": "video_note"}
 
 
 @dataclass
@@ -2423,14 +2425,20 @@ class Dispatcher:
         route = self._chat_route_id()
         escalation = None
         rescue = None if self.jev is None else partial(self._rescue, chat_id, scope, window, {t.name for t in tools})
+        # The media fields this turn offers, so a promise of media that isn't set can be put back to the model once.
+        offered_fields = None if final_bot_turn else frozenset(
+            MEDIA_FIELD_OF_KIND[kind] for kind in media_offered if kind in MEDIA_FIELD_OF_KIND)
         try:
             if attempt is None:
-                actions = await run_turn(app.client, messages, tools, ctx, rescue=rescue)
+                actions = await run_turn(
+                    app.client, messages, tools, ctx, rescue=rescue, media_offered=offered_fields,
+                )
             elif (retry := attempt.escalation_retry) is not None:
                 with model_request("escalation", chat_id, partial(self.turn_allowed, chat_id, scope)):
                     try:
                         actions = await run_turn(
                             retry.provider, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool,
+                            media_offered=offered_fields,
                         )
                     except MODEL_FAILURES as exc:
                         raise NoFinalAnswer(type(exc).__name__) from exc
@@ -2439,6 +2447,7 @@ class Dispatcher:
                     try:
                         actions = await run_turn(
                             app.client, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool, escalation=escalation,
+                            media_offered=offered_fields,
                         )
                     except NoFinalAnswer:
                         if escalation is None or newest is None or not escalation.prepare_retry(

@@ -6,6 +6,7 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Promised media is nudged, never faked.** When a bubble says "sending you a pic" or "here's a voice note" and the matching `image`, `voice` or `video_note` field is empty, Dom's reply goes back to the model once to set the field or drop the promise (when that media isn't on offer, only to drop it). A fixed phrase list finds the promise, in English with a little Singlish and never in a question, a negation or a bubble with a link, and the turn log records a `media promise` step.
 - **Desktop browser permissions, saved logins, and secure secret requests.** Added an AES-256-GCM encrypted secret store (`DOM_MASTER_KEY` in `.env`, with crash-safe rotation via `dom rotate-key` or the dashboard, reusable by upcoming OAuth integrations), per-action and per-site desktop permissions (`Ask` / `Allow` / `Never` across visiting unfamiliar sites, filling saved logins, downloading, uploading, and background work) with owner-DM approval cards (`Allow once`, `Allow always`, `Reject`), zero-model/untraced VNC keystroke filling for saved logins on verified HTTPS password inputs, the owner-DM-only `request_secret` tool with a one-time `/app/secret` dashboard entry form, and the **System → Access** dashboard page for saved logins, site permissions, and approvals history.
 
 ## [0.8.4] - 2026-11-27

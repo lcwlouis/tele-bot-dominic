@@ -14,6 +14,12 @@ note first if enabled and within quota. Generated photos are skipped when they
 cannot be sent. See [Privacy](privacy.md#what-leaves-the-host) for what Dom shares
 with the generation service and Jev.
 
+When the chat model writes a bubble that promises media ("sending you a pic",
+"here's a voice note") without setting its field, nothing is sent. Dom puts the
+reply back to the model once, to set the field or drop the promise (only to drop
+it when that media isn't on offer), and the turn log shows a `media promise`
+step. A promise is never sent as media on its own.
+
 A failed, refused or limited generation leaves one short, rate-limited event in
 that chat's history; it never crosses into another chat.
 

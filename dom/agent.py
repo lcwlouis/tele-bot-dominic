@@ -46,6 +46,7 @@ MEDIA_FIELD_SHAPES = {
     "voice": '"voice": "<spoken text>"',
     "video_note": '"video_note": {"text": "<spoken text>", "scene": "<where you are>"}',
 }
+MEDIA_NAMES = {"image": "photo", "voice": "voice note", "video_note": "video note"}
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 Rescue = Callable[[str | None], Awaitable[Salvaged | None]]  # plain prose in, bubbles out (dom.salvage), or None
 ToolRunner = Callable[[dict, dict[str, Tool], TurnCtx], Awaitable[str]]
@@ -183,6 +184,19 @@ async def execute_tool_call(call: dict, offered: dict[str, Tool], ctx: TurnCtx) 
     return result
 
 
+def media_promise_request(unkept: set[str], media_offered: frozenset[str]) -> str:
+    """What the model is told when a bubble promises media that its fields do not carry."""
+    now = sorted(unkept & media_offered)
+    never = sorted(unkept - media_offered)
+    parts = ["Your reply promises media that it does not carry, so nothing would be sent."]
+    if now:
+        shapes = " or ".join(MEDIA_FIELD_SHAPES[field] for field in now)
+        parts.append(f"To send the {' and '.join(MEDIA_NAMES[f] for f in now)}, add {shapes} to your answer; otherwise take the promise out of your bubbles.")
+    if never:
+        parts.append(f"You can't send a {' or '.join(MEDIA_NAMES[f] for f in never)} right now, so take that promise out of your bubbles.")
+    return " ".join(parts) + " Do not call tools. Answer again with ONLY the JSON object described in the instructions, and nothing else."
+
+
 async def run_turn(
     client: ChatClient | FallbackClient,
     messages: list[dict],
@@ -192,8 +206,12 @@ async def run_turn(
     rescue: Rescue | None = None,
     run_tool: ToolRunner = execute_tool_call,
     escalation: EscalationTurn | None = None,
+    media_offered: frozenset[str] | None = None,
 ) -> Actions:
     """Run one turn. Dom never sends raw model text: only valid actions leave this function.
+
+    With `media_offered` (the media fields this turn's note offers; None skips the check), a bubble that promises
+    media its field does not carry is put back to the model once, to set the field or drop the promise.
 
     A reply that is not valid actions (or a turn that runs out of steps) is asked again once without
     tools, then put to the fallback model; if that fails too, NoFinalAnswer is raised so the caller can
@@ -218,6 +236,26 @@ async def run_turn(
         log.info("turn chat=%s scope=%s calls=%d [%s]", ctx.chat_id, ctx.scope, len(trace), " ".join(trace))
         return actions
 
+    async def settle(actions: Actions, reply: dict | None) -> Actions:
+        """The actions, after one nudge when a bubble promises media that was never set."""
+        unkept = actions.unkept_media_promises() if media_offered is not None and not actions.no_response else set()
+        if not unkept:
+            return succeed(actions)
+        trace.append("media promise")
+        turn_log.step("media promise")
+        log.info("media promised in chat %s without its field: %s", ctx.chat_id, ", ".join(sorted(unkept)))
+        nudge = [*messages, {"role": "assistant", "content": (reply or {}).get("content") or ""},
+                 {"role": "user", "content": media_promise_request(unkept, media_offered or frozenset())}]
+        try:
+            fixed = _final(await complete(nudge, []))
+        except Exception as exc:  # the promise is a lesser fault than losing the reply: send the first answer
+            log.warning("media promise nudge failed in chat %s (%s)", ctx.chat_id, type(exc).__name__)
+            fixed = None
+        if fixed is None:
+            turn_log.step("media promise kept")
+            return succeed(actions)
+        return succeed(fixed)
+
     for _ in range(max_steps):
         reply = await complete(messages, schemas)
         calls = reply.get("tool_calls")
@@ -236,7 +274,7 @@ async def run_turn(
             messages.append({"role": "user", "content": TOOLS_DONE})
             continue
         if not calls and (actions := parse_actions(reply.get("content"))) is not None:
-            return succeed(actions)
+            return await settle(actions, reply)
         if not calls and rescue is not None and (saved := await rescue(reply.get("content"))) is not None:
             trace.append("salvaged")
             turn_log.step("salvaged")
@@ -244,7 +282,7 @@ async def run_turn(
                 "salvaged prose reply in chat %s: %d bubbles, jev confidence %.2f",
                 ctx.chat_id, len(saved.actions.bubbles), saved.confidence,
             )
-            return succeed(saved.actions)
+            return await settle(saved.actions, reply)
         trace.append("malformed")
         if escalation is not None:
             escalation.failed()
@@ -264,7 +302,7 @@ async def run_turn(
     request = f"{CORRECTION} What was wrong: {malformed_shape(reply)}." if reply is not None else FINAL_REQUEST
     retry = await complete([*messages, {"role": "user", "content": request}], [])
     if (actions := _final(retry)) is not None:
-        return succeed(actions)
+        return await settle(actions, retry)
     trace.append("malformed")
     if escalation is not None:
         escalation.failed()
@@ -284,7 +322,7 @@ async def run_turn(
         else:
             if (actions := _final(reply)) is not None:
                 trace.append("fallback")
-                return succeed(actions)
+                return await settle(actions, reply)
             trace.append("fallback:malformed")
             log.info("malformed fallback reply in chat %s: %s", ctx.chat_id, malformed_shape(reply))
     log.warning(
