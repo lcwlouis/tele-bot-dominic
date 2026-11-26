@@ -431,8 +431,12 @@ async def test_executor_schedules_delete_after(store):
     ids = await executor.perform(
         bot, store, GROUP, 9, Actions(bubbles=[Bubble(text="oops", delete_after=5), Bubble(text="keep")]), sleep=sleep,
     )
-    for _ in range(10):
-        await asyncio.sleep(0)
+    # The scheduled deletion runs in the background and records it through a thread: wait for it rather than
+    # counting event-loop yields, which a slow runner outlasts.
+    for _ in range(100):
+        if bot.of("delete") and [m.text for m in await store.get_recent_chat_window(GROUP)] == ["keep"]:
+            break
+        await asyncio.sleep(0.01)
     assert bot.of("delete") == [("delete", GROUP, ids[0])]
     assert 5 in sleeps
     assert [m.text for m in await store.get_recent_chat_window(GROUP)] == ["keep"]

@@ -57,9 +57,11 @@ class TurnCtx:
     participant_ids: tuple[int, ...] = ()
 
     def is_owner_dm(self) -> bool:
+        # A turn whose newest message is Dom's own bubble or an event has no sender. The owner's DM is a private chat
+        # with only the owner in it, so that turn is still the owner's.
         return (
             self.app is not None and self.owner_id is not None and self.scope == "owner_dm"
-            and self.sender_id == self.chat_id == self.owner_id == self.app.owner_id
+            and self.chat_id == self.owner_id == self.app.owner_id and self.sender_id in (None, self.owner_id)
         )
 
 
