@@ -158,10 +158,13 @@ def notes(layout: Layout, tag: str) -> str:
 _BULLET = re.compile(r"-\s+(\*\*.+?\*\*)?\s*(.*)")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=\S)")
 DIGEST_SENTENCE = 160
-DIGEST_CLOSING = "This is each change in short. Read the full section with your own_code tool (action changelog)."
+DIGEST_CLOSING = (
+    'This is each change in short. Read the full section with your own_code tool (action changelog, version "{version}"); '
+    "a long section comes in parts."
+)
 
 
-def _digest(section: str) -> str:
+def _digest(section: str, version: str) -> str:
     """Every bullet of a changelog section as its bold lead and first sentence, headings kept, never cut mid-bullet.
     Dom reads this once after an update; the whole text stays one `own_code` call away. Text with no bullets is kept as is."""
     lines, bullets = [], 0
@@ -180,10 +183,11 @@ def _digest(section: str) -> str:
         lines.append("- " + " ".join(part for part in (lead, first) if part))
     if not bullets:
         return section
-    while len("\n".join([*lines, "", DIGEST_CLOSING])) > HISTORY_NOTES_LIMIT:  # whole bullets only, from the end
+    closing = DIGEST_CLOSING.format(version=version)
+    while len("\n".join([*lines, "", closing])) > HISTORY_NOTES_LIMIT:  # whole bullets only, from the end
         last = max(index for index, line in enumerate(lines) if line.startswith("- "))
         del lines[last]
-    return "\n".join([*lines, "", DIGEST_CLOSING])
+    return "\n".join([*lines, "", closing])
 
 
 def installed_notes(tag: str, base: Path | None = None) -> str:
@@ -197,7 +201,7 @@ def installed_notes(tag: str, base: Path | None = None) -> str:
         text = ""
     for title, section in own_code.changelog_sections(text):
         if title.startswith(f"[{version}]"):
-            digest = _digest(section.strip())
+            digest = _digest(section.strip(), version)
             return digest if len(digest) <= HISTORY_NOTES_LIMIT else digest[:HISTORY_NOTES_LIMIT].rstrip() + "\n[…]"
     return f"## [{version}]\n\nNo changelog section was installed."
 

@@ -39,8 +39,8 @@ STRONG_SCORE, GOOD_SCORE = 0.5, 0.3
 _AS_OF = re.compile(r"\(as of (\d{4}-\d{2})(?:-\d{2})?\)")
 _UNTIL = re.compile(r"\(until (\d{4}-\d{2}-\d{2})\)")
 _CHAT_NOTE = re.compile(r"memory/chats/(-?\d+)\.md")
-_ENTITY_NOTE = re.compile(r"memory/(?:places|projects|goals)/[a-z0-9-]+\.md")
-_INDEX_RULES = "2"  # bump when what a line's tags mean changes, so every note file is read again
+_ENTITY_NOTE = notes.ENTITY_NOTE
+_INDEX_RULES = "3"  # bump when what a line's tags mean changes, so every note file is read again
 _PRIVATE_SCOPES = ("owner_private", "admin_private")
 # A message fact counts only while its message is live: deletions that skip the store hooks still hide it.
 _LIVE = "(k.message_id IS NULL OR EXISTS (SELECT 1 FROM messages m WHERE m.id = k.message_id AND m.is_deleted = 0))"
@@ -446,9 +446,9 @@ class KnowledgeIndex:
 
     def _scope(self, owner: bool, chat_id: str, people: tuple[int, ...]) -> tuple[str, list[Any]]:
         """The SQL that keeps a requester to the lines it may see, enforced here and never by the prompt. The owner's
-        DM sees every public and private line. Anyone else gets no private line, no line tagged to another chat
-        (messages and untagged lines of another chat's note carry that chat), and a person's note only for people
-        in the chat, the same reach as the notes prompt."""
+        DM sees every public and private line. Anyone else gets no private line (an untagged line of a place, project
+        or goal note is indexed as private), no line of another chat (messages and every line of a chat's note carry
+        that chat), and a person's note only for people in the chat, the same reach as the notes prompt."""
         if owner:
             return _LIVE, []
         aliases = sorted(self.store._chat_id_aliases(chat_id))

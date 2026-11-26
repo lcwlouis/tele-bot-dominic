@@ -57,6 +57,36 @@ def _truncate(text: str, limit: int) -> str:
     return f"{text[:limit]}\n[truncated: showing {limit} of {len(text)} characters]"
 
 
+def _pieces(text: str, limit: int) -> list[str]:
+    """The text cut into pieces of at most `limit` characters, at line ends where a line allows it."""
+    pieces, current = [], ""
+    for line in text.splitlines(keepends=True):
+        while len(line) > limit:  # a line longer than a piece is cut where the piece ends
+            room = limit - len(current)
+            pieces.append(current + line[:room])
+            current, line = "", line[room:]
+        if len(current) + len(line) > limit:
+            pieces.append(current)
+            current = ""
+        current += line
+    return [*pieces, current] if current or not pieces else pieces
+
+
+def _page(text: str, limit: int, part: object, how: str) -> str:
+    """One part (from 1) of a text too long to return whole, with where it stands and how to ask for the next."""
+    pieces = _pieces(text, limit)
+    if len(pieces) == 1:
+        return text
+    number = part if isinstance(part, int) and not isinstance(part, bool) else 1
+    if not 1 <= number <= len(pieces):
+        return f"error: part must be 1 to {len(pieces)}"
+    start = sum(len(piece) for piece in pieces[:number - 1])
+    end = start + len(pieces[number - 1])
+    footer = f"[truncated: part {number} of {len(pieces)}, characters {start + 1}-{end} of {len(text)}"
+    footer += f"; {how} with part {number + 1} for the rest]" if number < len(pieces) else "]"
+    return f"{pieces[number - 1].rstrip(chr(10))}\n{footer}"
+
+
 def _resolve(base: Path, rel: object) -> Path | str:
     """The file for a relative path, or an error message."""
     if not isinstance(rel, str) or not rel or "\x00" in rel:
@@ -85,12 +115,12 @@ def list_files(base: Path, prefix: str = "") -> str:
     return _truncate("\n".join(lines), READ_LIMIT) if lines else "no files"
 
 
-def read_file(base: Path, rel: object) -> str:
+def read_file(base: Path, rel: object, part: object = 1) -> str:
     path = _resolve(base, rel)
     if isinstance(path, str):
         return path
     try:
-        return _truncate(_text(path), READ_LIMIT)
+        return _page(_text(path), READ_LIMIT, part, "read again")
     except (OSError, ValueError):
         return f"error: {rel} is not a readable text file"
 
@@ -129,10 +159,18 @@ def changelog_sections(text: str) -> list[tuple[str, str]]:
     return [(chunk.splitlines()[0][3:].strip(), chunk.rstrip() + "\n") for chunk in chunks if chunk.startswith("## ")]
 
 
-def changelog(base: Path) -> str:
+def changelog(base: Path, version: object = None, part: object = 1) -> str:
+    """The newest sections that fit, or with `version` (such as 0.8.4) that release's whole section, in parts when
+    it is long."""
     sections = _sections(base)
     if not sections:
         return "no changelog"
+    if isinstance(version, str) and version.strip():
+        wanted = version.strip().removeprefix("v")
+        for title, section in sections:
+            if title.startswith(f"[{wanted}]"):
+                return _page(section, READ_LIMIT, part, "ask again")
+        return f"error: no changelog section for {wanted}"
     text = ""
     for _, section in sections:
         if len(text) + len(section) > CHANGELOG_LIMIT:

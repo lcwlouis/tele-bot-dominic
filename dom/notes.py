@@ -39,6 +39,8 @@ _BULLET = re.compile(r"^[ \t]*[-*][ \t]+")
 _BULLET_MARK = re.compile(r"^[ \t]*[-*](?:[ \t]+|$)")
 
 ANY = "any"
+# Place, project and goal notes: an untagged line in one is the owner's, and only `{any}` shares it with other chats.
+ENTITY_NOTE = re.compile(r"memory/(?:places|projects|goals)/[^/]+\.md")
 
 
 @dataclass(frozen=True)
@@ -123,12 +125,14 @@ def visible_len(text: str) -> int:
     return len(strip_tags(text))
 
 
-def limit_to_chat(text: str, chat_id: int | str | None) -> str:
+def limit_to_chat(text: str, chat_id: int | str | None, *, owner_untagged: bool = False) -> str:
     """The lines of a note that belong in one chat, tags kept: untagged, `{any}`, or tagged to that chat.
-    `chat_id=None` is the shared context (MEMORY.md), where no chat-tagged line belongs."""
+    `chat_id=None` is the shared context (MEMORY.md), where no chat-tagged line belongs. `owner_untagged` is for a
+    place, project or goal note read outside the owner's DM: its untagged lines are the owner's and are left out."""
+    shared = (ANY,) if owner_untagged else (None, ANY)
     return "\n".join(
         raw for raw in text.split("\n")
-        if (source := parse_line(raw).source) in (None, ANY) or source == str(chat_id)
+        if (source := parse_line(raw).source) in shared or source == str(chat_id)
     )
 
 

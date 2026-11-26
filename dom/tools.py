@@ -798,13 +798,13 @@ async def _own_code(args: dict, ctx: TurnCtx) -> str:
     if not ctx.is_owner_dm():
         return "error: own_code is available only in the owner's DM"
     base, action = own_code.installed_base(), args.get("action")
-    path, query = args.get("path"), args.get("query")
+    path, query, part = args.get("path"), args.get("query"), args.get("part", 1)
     if action == "changelog":
-        run = (own_code.changelog, base)
+        run = (own_code.changelog, base, args.get("version"), part)
     elif action == "list":
         run = (own_code.list_files, base, path if isinstance(path, str) else "")
     elif action == "read":
-        run = (own_code.read_file, base, path)
+        run = (own_code.read_file, base, path, part)
     elif action == "search":
         run = (own_code.search, base, query, path if isinstance(path, str) else "")
     else:
@@ -815,9 +815,10 @@ async def _own_code(args: dict, ctx: TurnCtx) -> str:
 OWN_CODE_TOOL = Tool(
     name="own_code",
     description=(
-        "Read your own source code, docs and changelog (read-only). Actions: changelog (latest releases); "
-        "list (files with sizes; optional path narrows to a folder); read (one file by relative path such as "
-        "dom/tools.py or docs/privacy.md); search (case-insensitive text search, optional path folder)."
+        "Read your own source code, docs and changelog (read-only). Actions: changelog (latest releases, or one "
+        "release's whole section with version such as 0.8.4); list (files with sizes; optional path narrows to a "
+        "folder); read (one file by relative path such as dom/tools.py or docs/privacy.md); search (case-insensitive "
+        "text search, optional path folder). A long read or section comes in parts: ask again with part 2 and on."
     ),
     schema={
         "type": "object",
@@ -825,6 +826,8 @@ OWN_CODE_TOOL = Tool(
             "action": {"type": "string", "enum": ["changelog", "list", "read", "search"]},
             "path": {"type": "string"},
             "query": {"type": "string"},
+            "version": {"type": "string"},
+            "part": {"type": "integer", "minimum": 1},
         },
         "required": ["action"],
     },

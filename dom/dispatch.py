@@ -541,7 +541,7 @@ class Dispatcher:
     @asynccontextmanager
     async def _media_request(self, chat_id: int, *, background: bool = False) -> AsyncIterator[None]:
         """A media model call for a chat. Work Dom does on his own (aged media, the memory pass, the look before a send)
-        passes `background`, so the owner DM's daily-cap exemption does not reach it."""
+        passes `background`, so the monthly cap and area limits apply to it even in the owner DM; the daily cap does not."""
         allowed = self.background_allowed if background else self.model_allowed
         with model_request("media", chat_id, partial(allowed, chat_id)):
             await check_model_allowed()
@@ -1729,7 +1729,7 @@ class Dispatcher:
         if line and owner_id is not None:
             try:
                 first, *rest = notice.sentences(line, 3, 200)  # what ran out, then what to do and when it resets
-                await notice.send_notice(app, owner_id, first, rest, path="/app/system/spend")
+                await notice.send_notice(app, owner_id, first, rest, path="/app")  # Home shows the provider budget
             except Exception as exc:
                 log.warning("could not send the provider budget notice (%s)", type(exc).__name__)
 
