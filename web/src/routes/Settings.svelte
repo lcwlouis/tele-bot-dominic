@@ -65,7 +65,8 @@
   // One revision for the whole page: both GETs hash the same config.toml, and every save moves it.
   let revision = $state("");
   let failed = $state("");
-  let section = $state("models");
+  // Google sends the owner back here with ?google=connected or ?google=failed: open the tab that shows it.
+  let section = $state(new URLSearchParams(location.search).has("google") ? "services" : "models");
   // One edit at a time across both tabs: each save takes the revision the last one returned.
   type Editing = { role: SettingsRole; adding?: boolean } | { provider: ProviderSetup | null } | { studio: StudioChain; index: number | null };
   let editing = $state<Editing | null>(null);

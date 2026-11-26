@@ -111,6 +111,8 @@ Init creates the tables below. Omitted triage, media and drafting tables use the
 
 `KLIPY_API_KEY` turns on GIF sending. Without it Dom does not offer the `gif` action. See [GIFs](gifs.md).
 
+`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` hold the Google OAuth client for Calendar and Gmail. They are read from `.env` only; the dashboard shows each as set or not set. Connecting also needs `web.public_url`, because the redirect URI is `<web.public_url>/api/integrations/google/callback`. See [Google Calendar and Gmail](google.md).
+
 ## Desktop
 
 | Key | Default | Meaning |
@@ -298,7 +300,7 @@ See [Self-directed work](desktop.md#self-directed-work) for the network guard it
 | `web.access_aud` | `""` | Cloudflare Access application audience tag. |
 | `web.access_emails` | `[]` | Optional allowlist for the Access assertion's email claim. |
 | `web.dev_token_env` | `""` | Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings. |
-| `web.public_url` | `""` | HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages. |
+| `web.public_url` | `""` | HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages, and the base of the Google OAuth redirect URI (`/api/integrations/google/callback`). |
 
 ## T3 Code
 

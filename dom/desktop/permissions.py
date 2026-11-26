@@ -8,6 +8,7 @@ import hmac
 import logging
 import secrets
 from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
@@ -24,13 +25,23 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-DesktopAction = Literal["visit_site", "fill_login", "download", "upload", "background_work"]
+DesktopAction = Literal[
+    "visit_site", "fill_login", "download", "upload", "background_work",
+    "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+]
 PermissionPolicy = Literal["ask", "allow", "never"]
 ApprovalDecision = Literal["once", "always", "reject"]
 
-ACTIONS: tuple[DesktopAction, ...] = ("visit_site", "fill_login", "download", "upload", "background_work")
+ACTIONS: tuple[DesktopAction, ...] = (
+    "visit_site", "fill_login", "download", "upload", "background_work",
+    "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+)
 POLICIES: tuple[PermissionPolicy, ...] = ("ask", "allow", "never")
 SITE_SCOPED_ACTIONS: frozenset[str] = frozenset(("visit_site", "fill_login", "download", "upload"))
+# Actions with one global policy, so Allow always flips that policy. The Google ones (W4) are owner-DM tool calls.
+GOOGLE_ACTIONS: frozenset[str] = frozenset(("calendar_add", "calendar_move", "calendar_delete", "gmail_draft"))
+GLOBAL_ACTIONS: frozenset[str] = frozenset(("background_work", *GOOGLE_ACTIONS))
+APPROVAL_TIMEOUT = 900.0
 
 DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "visit_site": "allow",
@@ -38,6 +49,10 @@ DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "download": "ask",
     "upload": "ask",
     "background_work": "allow",
+    "calendar_add": "ask",
+    "calendar_move": "ask",
+    "calendar_delete": "ask",
+    "gmail_draft": "ask",
 }
 
 ACTION_META: dict[DesktopAction, dict[str, str]] = {
@@ -60,6 +75,22 @@ ACTION_META: dict[DesktopAction, dict[str, str]] = {
     "background_work": {
         "label": "Background work",
         "description": "Dom's self-directed desktop research tasks (Own work). Ask requires your tap before each task starts.",
+    },
+    "calendar_add": {
+        "label": "Add a calendar event",
+        "description": "Dom adds an event to your Google Calendar. The card shows the title, time and attendees.",
+    },
+    "calendar_move": {
+        "label": "Move a calendar event",
+        "description": "Dom changes the time of an event on your Google Calendar. The card shows the old and new time.",
+    },
+    "calendar_delete": {
+        "label": "Delete a calendar event",
+        "description": "Dom deletes an event from your Google Calendar. The card shows what will be removed.",
+    },
+    "gmail_draft": {
+        "label": "Save a Gmail draft",
+        "description": "Dom saves a draft in Gmail. The card shows the recipients, subject and the start of the text. Dom never sends mail.",
     },
 }
 
@@ -359,7 +390,8 @@ class DesktopPermissions:
         task_id: int | None = None,
         self_task_id: int | None = None,
         container: str = DEFAULT,
-        timeout_seconds: float = 900.0,
+        timeout_seconds: float = APPROVAL_TIMEOUT,
+        lines: Sequence[str] = (),
     ) -> str:
         """Send an owner-DM approval card (Reject / Allow once / Allow always) and wait for the decision.
 
@@ -387,7 +419,7 @@ class DesktopPermissions:
         future: asyncio.Future[str] = loop.create_future()
         self._waiters[request_id] = (token_hash, future)
         try:
-            sent = await self._send_card(request_id, action, site, detail, token, container)
+            sent = await self._send_card(request_id, action, site, detail, token, container, lines)
             if not sent:
                 row = await app.store.decide_desktop_permission_request(request_id, "expired", "timeout", self._now())
                 if row:
@@ -413,28 +445,31 @@ class DesktopPermissions:
         detail: str,
         token: str,
         container: str,
+        lines: Sequence[str] = (),
     ) -> bool:
         app = self.app
         assert app.owner_id is not None
         meta = ACTION_META[action]
         where = "" if container == DEFAULT else f" ({container})"
         title = f"{meta['label']}{where}"
-        lines = []
-        if site:
-            lines.append(f"Site: {site}")
-        if detail:
-            lines.append(detail[:80])
+        shown = list(lines)
+        if not shown:
+            if site:
+                shown.append(f"Site: {site}")
+            if detail:
+                shown.append(detail[:80])
         buttons = [
             InlineKeyboardButton(text="Allow once", callback_data=f"dperm:once:{request_id}:{token}"),
         ]
-        if action == "background_work" or normalize_site(site) is not None:
+        if action in GLOBAL_ACTIONS or normalize_site(site) is not None:
             buttons.append(InlineKeyboardButton(text="Allow always", callback_data=f"dperm:always:{request_id}:{token}"))
         buttons.append(InlineKeyboardButton(text="Reject", callback_data=f"dperm:reject:{request_id}:{token}"))
         try:
             sent = await send_notice(
-                app, app.owner_id, title, lines,
+                app, app.owner_id, title, shown,
                 path="/app/waiting", label=REVIEW_LABEL,
-                tag="desktop permission",
+                tag="Google approval" if action in GOOGLE_ACTIONS else "desktop permission",
+                bullets=bool(lines),
                 buttons=buttons,
             )
             if isinstance(message_id := getattr(sent, "message_id", None), int):
@@ -490,8 +525,8 @@ class DesktopPermissions:
             return False, "already handled"
 
         if decision == "always" and not downgraded_always:
-            if action == "background_work":
-                await self.app.store.set_desktop_action_policy("background_work", "allow", now)
+            if action in GLOBAL_ACTIONS:
+                await self.app.store.set_desktop_action_policy(action, "allow", now)
             elif action in SITE_SCOPED_ACTIONS and canonical is not None:
                 await self.app.store.set_desktop_site_permission(canonical, action, "allow", now)
 
@@ -506,6 +541,57 @@ class DesktopPermissions:
         )
         return True, label
 
+    async def run_governed(
+        self,
+        action: DesktopAction,
+        *,
+        detail: str,
+        lines: Sequence[str],
+        perform: Callable[[], Awaitable[str]],
+    ) -> str:
+        """Run an owner-DM tool action under its policy and return what the tool tells the model.
+
+        Allow runs `perform` now. Never refuses. Ask sends the approval card and returns at once: the wait for the tap
+        happens in the background, so the reply never blocks on the owner. On approval `perform` runs and the outcome
+        is written to the owner's DM history, where Dom sees it on his next turn; a refusal, expiry or failure is
+        written there too, so nothing is lost silently."""
+        label = ACTION_META[action]["label"]
+        policy = await self.resolve(action)
+        if policy == "never":
+            await self.record_decision(action=action, site="", detail=detail, status="blocked", decided_via="policy")
+            return f"error: {label} is set to Never in the dashboard."
+        if policy == "allow":
+            await self.record_decision(action=action, site="", detail=detail, status="auto_allowed", decided_via="policy")
+            return await perform()
+        if self.app.owner_id is None:
+            return "error: there is no owner to ask."
+        self.app.dispatch._spawn(self._ask_then_perform(action, detail, lines, perform))
+        return (
+            f"Asked the owner to approve: {label.lower()}. Nothing has happened yet. "
+            "You will see the outcome in the chat history; do not repeat the request."
+        )
+
+    async def _ask_then_perform(
+        self, action: DesktopAction, detail: str, lines: Sequence[str], perform: Callable[[], Awaitable[str]],
+    ) -> None:
+        store, label = self.app.store, ACTION_META[action]["label"]
+        outcome = await self.request_approval(action=action, site="", detail=detail, lines=lines)
+        if outcome not in ("allowed_once", "allowed_always"):
+            said = "timed out" if outcome == "expired" else "was rejected"
+            await store.record_owner_event(f"{label} {said}; nothing changed. ({detail[:120]})")
+            return
+        try:
+            result = await perform()
+        except Exception:
+            log.exception("approved %s failed", action)
+            result = "error: it failed unexpectedly"
+        await store.record_owner_event(f"{label} approved. {result}"[:400])
+        if result.startswith("error"):
+            try:
+                await send_notice(self.app, self.app.owner_id, f"{label} failed", [result.removeprefix("error: ")])
+            except Exception:
+                log.warning("could not tell the owner that %s failed", action)
+
     async def pending_requests(self) -> list[dict[str, Any]]:
         rows = await self.app.store.pending_desktop_permission_requests()
         return [
@@ -518,7 +604,7 @@ class DesktopPermissions:
                 "site": row["site"],
                 "detail": row["detail"],
                 "created_at": row["created_at"],
-                "can_allow_always": row["action"] == "background_work" or normalize_site(row["site"]) is not None,
+                "can_allow_always": row["action"] in GLOBAL_ACTIONS or normalize_site(row["site"]) is not None,
             }
             for row in rows
         ]

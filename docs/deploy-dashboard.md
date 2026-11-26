@@ -84,6 +84,13 @@ belongs to that container, so use the bridge setup in that case.
 - In the bridge setup, check from a LAN device that the host's dashboard
   listener is unreachable.
 
+## Google's OAuth callback
+
+Connecting Google (see [Google Calendar and Gmail](google.md)) sends the browser back to
+`<web.public_url>/api/integrations/google/callback`. That is a top-level navigation, so the browser sends its Access
+session cookie and the callback authenticates like any dashboard request: do not add an Access bypass for it. Allow
+that exact URI in the Google OAuth client. A bearer-token dashboard cannot finish the callback from a browser.
+
 ## Local testing with a bearer token
 
 For a local check without Access, set `enabled = true`, use

@@ -429,7 +429,16 @@ export type WaitingCard =
       reason?: string;
       leak_score?: number | null;
     });
-export type DesktopAction = "visit_site" | "fill_login" | "download" | "upload" | "background_work";
+export type DesktopAction =
+  | "visit_site"
+  | "fill_login"
+  | "download"
+  | "upload"
+  | "background_work"
+  | "calendar_add"
+  | "calendar_move"
+  | "calendar_delete"
+  | "gmail_draft";
 export type PermissionPolicy = "ask" | "allow" | "never";
 export type SavedLogin = {
   id: number;
@@ -451,7 +460,7 @@ export type DesktopActionItem = {
   policy: PermissionPolicy;
   site_allow_count: number;
 };
-export type SiteRule = { site: string; action: Exclude<DesktopAction, "background_work">; policy: PermissionPolicy; updated_at: string };
+export type SiteRule = { site: string; action: "visit_site" | "fill_login" | "download" | "upload"; policy: PermissionPolicy; updated_at: string };
 export type PendingPermission = {
   id: number;
   task_id: number | null;
@@ -671,6 +680,19 @@ export type Service = {
 };
 export type ServicesView = { revision: string; services: Service[]; notices: { id: string; glyph: "info"; text: string }[] };
 export type ServiceTestResult = { ok: boolean; detail: string; latency_ms: number };
+
+/** GET /api/integrations/google and its writes (dom/web/api_google.py). The client id and secret are only ever set or
+ * not set; the tokens never leave Dom. */
+export type GoogleSwitch = { id: "calendar_read" | "calendar_write" | "gmail_read" | "gmail_drafts"; label: string; on: boolean; granted: boolean };
+export type GoogleView = {
+  client_id_set: boolean;
+  client_secret_set: boolean;
+  redirect_uri: string | null;
+  status: "disconnected" | "connected" | "needs_reconnect";
+  connected_at: string | null;
+  last_error: string;
+  switches: GoogleSwitch[];
+};
 
 /** GET /api/goals and its writes (dom/web/api_goals.py). Every write answers { ok, message, ...GoalsData }. */
 export type GoalStatus = "active" | "paused" | "done" | "dropped";

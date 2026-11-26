@@ -224,6 +224,7 @@ async def run(home: Path) -> bool:
                     if app.desktop_worker is not None:
                         await app.desktop_worker.close()
                     await app.dispatch.close()
+                    await app.google.close()
     finally:
         if app is not None and app.desktop_worker is not None:
             await app.desktop_worker.close()

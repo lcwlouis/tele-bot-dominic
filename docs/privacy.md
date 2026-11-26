@@ -382,6 +382,33 @@ beyond the models listed above.
   anything targeting another chat through an approval card; **Not now**
   dismisses the item and feeds Dom's preference history for future nights.
 
+## Google Calendar and Gmail
+
+Optional, owner-only, and off until the owner connects Google and turns a switch on (see
+[Google Calendar and Gmail](google.md)).
+
+- **Where tokens live.** The OAuth refresh and access tokens are encrypted in `state.db` with the same AES-256-GCM key
+  as the other secrets (`DOM_MASTER_KEY` in `.env`, namespace `google`). The OAuth client id and secret are in `.env`.
+  No token, code or client secret is written to any log, trace, turn log, usage row or prompt, and a database copy
+  without `.env` is unreadable. A full backup holds both, like it does for `.env` today. Disconnect revokes the token
+  at Google and deletes it here.
+- **Who can reach it.** The `calendar` and `gmail` tools are offered only in the owner's DM, only for the switches
+  that are on and the scopes Google granted, and each handler checks the owner DM and the switch again in code. The
+  "today and tomorrow" block in the turn note is added only for the owner DM. A group or a friend's DM never gets the
+  tools, the block or any result.
+- **What goes to which model.** Event titles, times and attendees, and the mail Dom reads (headers, snippets, a
+  capped text body, attachment names), are tool results in the owner DM, so they go to the chat model route that
+  serves that turn, and to its fallbacks, under the same `zdr` routing and provider rules as the rest of the owner
+  DM (see [OpenRouter data policies](#openrouter-data-policies)). Dom's tool results never include attachments' contents, tokens or
+  raw headers beyond From, To, Cc, Date and Subject. Nothing from Google is sent to the media, search, drafting or
+  embedding models, to Telegram except what Dom writes in the owner DM, or to any other service. Mail and event
+  text is written by other people and is fenced as untrusted data in every result; it is never an instruction.
+- **Memory.** The owner DM's memory pass writes only the owner-private notes (`private/USER.md` and
+  `private/NOTES.md`) and the nightly reflection keeps the owner DM in its private journal, so what Dom says about mail
+  or events in the owner DM cannot reach notes that groups or friends read. Dom's tool descriptions also tell him not to copy mail into notes or other chats.
+- **Drafts and events.** Adding, moving or deleting an event and saving a draft each need an approval card unless the
+  owner chose Allow always for that kind. Dom has no way to send mail.
+
 ## Plugins and desktop
 
 A plugin tool receives the arguments Dom passes to it. A plugin slash command

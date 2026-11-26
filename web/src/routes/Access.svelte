@@ -200,8 +200,8 @@
   {#if data.pending_permissions.length > 0}
     <Card.Root class="mb-5 border-signal/50">
       <Card.Header>
-        <Card.Title class="text-base">Pending desktop approvals ({data.pending_permissions.length})</Card.Title>
-        <Card.Description>Dom paused a desktop task waiting for your decision.</Card.Description>
+        <Card.Title class="text-base">Pending approvals ({data.pending_permissions.length})</Card.Title>
+        <Card.Description>Dom is waiting for your decision: a desktop task, or a Google Calendar or Gmail change.</Card.Description>
       </Card.Header>
       <Card.Content class="grid gap-3">
         {#each data.pending_permissions as req (req.id)}
@@ -398,8 +398,8 @@
     <Tabs.Content value="permissions" class="grid gap-5">
       <Card.Root>
         <Card.Header>
-          <Card.Title class="text-base">Default desktop action policies</Card.Title>
-          <Card.Description>Choose Ask, Allow, or Never for each desktop action. Per-site rules below override these defaults.</Card.Description>
+          <Card.Title class="text-base">Default action policies</Card.Title>
+          <Card.Description>Choose Ask, Allow, or Never for each action, including each kind of Google Calendar and Gmail change. Per-site rules below override these defaults.</Card.Description>
         </Card.Header>
         <Card.Content class="grid gap-3">
           {#each data.actions as item (item.id)}
