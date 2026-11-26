@@ -126,8 +126,10 @@ shortened to keep the whole prompt within 300 characters), which rules out a
 mirror selfie with the phone over the face. The local studio's FlashHead worker
 then crops each still to the face with head and shoulders around it (2.5 times
 the face's width) before animating, so the mouth and eyes fill enough of the
-frame to move while the scene still shows behind him. A still with no face found
-is animated whole.
+frame to move while the scene still shows behind him. A still with no face, or
+with several (the crop could land on someone else), is animated whole. Special
+notes use their own worker and are not cropped. `prepare-workers.sh` fetches the
+face detector's files, pinned and checked, so a render never downloads them.
 
 **What it costs.** The still is made inside the video note's reservation, so one
 note can never be refused for lack of a photo allowance, and a refused note makes
