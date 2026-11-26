@@ -205,6 +205,9 @@ Cloudflare. Keep local bearer-token testing on loopback.
 - **Open-Meteo** (only when `[world]` is set) receives the configured latitude and longitude, in a plain HTTPS request
   about every 45 minutes, to answer with the current weather and the day's forecast for Dom's turn note. No key,
   place name, chat or personal text is sent.
+- **Nager.Date** (only when `[world] country` is set) receives the configured country code and the year, in a plain
+  HTTPS request about once a day, to answer with the public holidays for Dom's turn note. No key, place, chat or
+  personal text is sent.
 - **Chat model providers** also receive the real photos, voice notes and clips
   of the newest turn (and Dom's own latest generated media) when the chat model
   takes that type of input. See [Media Dom sees and sends](#media-dom-sees-and-sends).

@@ -261,6 +261,24 @@ class WorldConfig(BaseModel):
     latitude: float | None = Field(None, ge=-90, le=90, allow_inf_nan=False, description="Latitude of the place, in degrees.")
     longitude: float | None = Field(None, ge=-180, le=180, allow_inf_nan=False, description="Longitude of the place, in degrees.")
 
+    country: str = Field(
+        "", max_length=2,
+        description=(
+            "Two-letter ISO country code (for example `SG`) for the public holidays in Dom's turn note. Independent of "
+            "the place. Empty, the default, turns the holidays off."
+        ),
+    )
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def _country_code(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip():
+            code = value.strip().upper()
+            if len(code) != 2 or not code.isascii() or not code.isalpha():
+                raise ValueError("[world] country is a two-letter ISO country code such as SG")
+            return code
+        return "" if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def _all_or_none(self) -> WorldConfig:
         given = [bool(self.place.strip()), self.latitude is not None, self.longitude is not None]

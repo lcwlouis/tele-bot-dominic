@@ -2287,8 +2287,9 @@ class Dispatcher:
             f"state: online\n"
             f"messages that arrived while away: {away_count}\n{describe(app, scope, tools)}"
         )
-        if weather := app.world.line():  # cached by a background fetch: nothing here waits on the network
-            note += f"\n{weather}"
+        for world_line in (app.world.line(), app.world.holiday_line()):  # cached by background fetches: nothing waits
+            if world_line:
+                note += f"\n{world_line}"
         if any(tool.name.startswith("plugin_") for tool in tools):
             note += (
                 "\nPlugin tools receive their arguments only. Pass only task inputs explicitly provided for the plugin. "

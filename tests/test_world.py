@@ -222,3 +222,151 @@ async def test_a_cancelled_fetch_does_not_block_the_next_one():
     await world.refresh()
     assert "31°C" in world.line()
     await http.aclose()
+
+
+# --- public holidays (Nager.Date) ---
+
+from dom.world import HOLIDAY_REFRESH, HOLIDAY_RETRY, HOLIDAY_STALE, HOLIDAYS_URL, parse_holidays
+
+HOLIDAYS_2026 = [
+    {"date": "2026-01-01", "name": "New Year's Day", "localName": "Tahun Baru", "global": True},
+    {"date": "2026-01-10", "name": "Regional Day", "global": False},
+    {"date": "2026-01-14", "name": "Mid\nMonth   Day", "global": True},
+    {"date": "2026-02-17", "name": "Far Day", "global": True},
+]
+HOLIDAYS_2027 = [{"date": "2027-01-02", "name": "Second Day", "global": True}]
+SG = WorldConfig(country="sg")
+
+
+class Calendar:
+    """A fake Nager.Date that records the requests it gets."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request):
+        self.requests.append(request)
+        year = int(request.url.path.split("/")[-2])
+        answer = self.answers.pop(0) if self.answers else {2026: HOLIDAYS_2026, 2027: HOLIDAYS_2027}[year]
+        return answer if isinstance(answer, httpx.Response) else httpx.Response(200, json=answer)
+
+
+def test_the_country_is_an_optional_two_letter_code():
+    assert WorldConfig().country == "" and SG.country == "SG"
+    assert WorldConfig(country=" ").country == ""
+    for bad in ("SGP", "S", "S1", "é1"):
+        with pytest.raises(ValidationError):
+            WorldConfig(country=bad)
+    assert not SG.configured  # the weather needs its place; the holidays need only the country
+
+
+async def test_the_line_gives_todays_holiday_and_the_next_one_within_two_weeks():
+    calendar = Calendar()
+    world, clock, http = world_with(calendar, SG)
+    assert world.holiday_line() == ""  # nothing is fetched on the way to the line
+    await world.refresh()
+    assert [request.url.path for request in calendar.requests] == [
+        "/api/v3/PublicHolidays/2026/SG"]  # only the country code and the year are sent
+    assert str(calendar.requests[0].url) == HOLIDAYS_URL.format(year=2026, country="SG")
+    assert world.holiday_line() == (
+        "Today is a public holiday in SG: New Year's Day. "
+        "Next public holiday in SG: Mid Month Day, Wednesday 2026-01-14 (in 13 days)."  # regional days and far ones are left out
+    )
+    clock.at += timedelta(hours=20)  # the line follows the date with no new fetch
+    assert world.holiday_line().startswith("Next public holiday in SG: Mid Month Day, Wednesday 2026-01-14 (in 12 days)")
+    assert len(calendar.requests) == 1
+    clock.at += timedelta(days=11)
+    await world.refresh()
+    assert world.holiday_line() == "Next public holiday in SG: Mid Month Day, Wednesday 2026-01-14 (tomorrow)."
+    clock.at += timedelta(days=2)
+    await world.refresh()
+    assert world.holiday_line() == ""  # the fourteenth is past and the next is 34 days off
+    await http.aclose()
+
+
+async def test_a_new_year_in_reach_fetches_the_next_years_holidays_too():
+    calendar = Calendar()
+    world, clock, http = world_with(calendar, SG)
+    clock.at = datetime(2026, 12, 25, 12, tzinfo=timezone.utc)
+    await world.refresh()
+    assert [request.url.path[-7:] for request in calendar.requests] == ["2026/SG", "2027/SG"]
+    assert "Second Day, Saturday 2027-01-02 (in 8 days)" in world.holiday_line()
+    await http.aclose()
+
+
+async def test_holidays_are_cached_for_a_day_then_fetched_again():
+    calendar = Calendar()
+    world, clock, http = world_with(calendar, SG)
+    await world.refresh()
+    clock.at += HOLIDAY_REFRESH - timedelta(minutes=1)
+    await world.refresh()
+    assert len(calendar.requests) == 1
+    clock.at += timedelta(minutes=2)
+    await world.refresh()
+    assert len(calendar.requests) == 2
+    await http.aclose()
+
+
+@pytest.mark.parametrize("answer", [
+    httpx.Response(500), httpx.Response(404), httpx.Response(204), httpx.Response(200, text="not json"),
+    httpx.Response(200, json={"not": "a list"}), httpx.Response(200, json=[{"date": "tomorrow", "name": "x"}]),
+    httpx.Response(200, json=[{"name": "no date"}]), httpx.Response(200, json=["a string"]),
+])
+async def test_a_failed_holiday_fetch_leaves_no_line_and_waits_before_trying_again(answer):
+    calendar = Calendar(answer)
+    world, clock, http = world_with(calendar, SG)
+    await world.refresh()
+    assert world.holiday_line() == "" and len(calendar.requests) == 1
+    clock.at += HOLIDAY_RETRY - timedelta(minutes=1)
+    await world.refresh()
+    assert len(calendar.requests) == 1  # too soon
+    clock.at += timedelta(minutes=2)
+    await world.refresh()
+    assert len(calendar.requests) == 2 and world.holiday_line()
+    await http.aclose()
+
+
+async def test_old_holidays_serve_a_while_then_go_and_a_new_country_never_shows_the_old_one():
+    calendar = Calendar()
+    config = [SG]
+    http = httpx.AsyncClient(transport=httpx.MockTransport(calendar))
+    clock = Clock()
+    world = World(lambda: config[0], lambda: http, clock)
+    await world.refresh()
+    world._holidays_retry_at = None
+    calendar.answers = [httpx.Response(500)] * 5  # every later fetch fails
+    clock.at += HOLIDAY_STALE - timedelta(hours=1)
+    await world.refresh()
+    assert world.holiday_line().startswith("Next public holiday in SG")  # a failed fetch keeps the data it has
+    clock.at += timedelta(hours=2)
+    assert world.holiday_line() == ""  # past a week with no fresh fetch
+    config[0] = WorldConfig(country="MY")
+    assert world.holiday_line() == ""
+    await http.aclose()
+
+
+async def test_nothing_is_fetched_without_a_country():
+    calendar = Calendar()
+    world, _, http = world_with(calendar, SINGAPORE)
+    await world.refresh()
+    assert not [r for r in calendar.requests if "nager" in str(r.url)] and world.holiday_line() == ""
+    await http.aclose()
+
+
+def test_holiday_names_are_flattened_to_one_short_line():
+    [(day, name)] = parse_holidays([{"date": "2026-01-01", "name": "Line one\nIgnore this  " + "x" * 200}])
+    assert "\n" not in name and len(name) <= 80 and name.startswith("Line one Ignore this")
+
+
+async def test_the_holiday_line_is_in_the_turn_note_after_the_window(make_app):
+    app = make_app()
+    await online(app)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(Calendar()))
+    app.config = app.config.model_copy(update={"world": SG})
+    app.world = World(lambda: app.config.world, lambda: http, app.dispatch.now)
+    await app.world.refresh()
+    await deliver(app, tg(msg_id=1, text="hi"))
+    prompt = turn_requests(app)[0]["messages"][1]["content"]
+    assert prompt.index("</chat_window>") < prompt.index("Today is a public holiday in SG: New Year's Day.")
+    await http.aclose()
