@@ -139,4 +139,10 @@ class FixedRandom:
 
 async def drain_dispatch(dispatch):
     while dispatch._tasks:
-        await asyncio.gather(*list(dispatch._tasks), return_exceptions=True)
+        # A finished task stays in `_tasks` until its done-callback runs, and gathering only finished tasks never
+        # yields to the loop, so the callback would never get its turn: give it one instead of spinning.
+        pending = [task for task in dispatch._tasks if not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        else:
+            await asyncio.sleep(0)

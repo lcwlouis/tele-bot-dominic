@@ -1464,7 +1464,7 @@ async def test_provider_budget_notice_is_owner_only_deduplicated_and_visible_in_
         assert "OpenRouter's workspace budget ($0.50)" in line
         assert f"Resets {reset.astimezone(tz):%d %b at %H:%M}" in line
         home = await dashboard.get("/api/home")
-        assert home.json()["provider_budget"] == line
+        assert home.json()["provider_budget"] == line.replace("\n", " ")
         await deliver(app, 4, chat_id=OWNER, sender=OWNER, text="/status")
         assert "workspace budget" in app.bot.of("send", OWNER)[-1][2]
         clock.at = reset + timedelta(minutes=1)

@@ -459,3 +459,35 @@ def test_unknown_config_keys_reads_providers_by_its_table_name():
         "api_key_env": "OPENROUTER_API_KEY", "colour": "blue",
     }}}
     assert _unknown_config_keys(raw) == ["providers.Router.colour"]
+
+
+def test_online_probes_an_embedding_model_with_an_embeddings_request_not_a_chat_one(home, monkeypatch, capsys):
+    path = home / "config.toml"
+    path.write_text(path.read_text() + """
+[models.embedding]
+base_url = "http://localhost:8001/v1"
+model = "test-embed"
+""")
+    embedding_calls = []
+
+    def handler(request):
+        if request.url.port == 8001:
+            embedding_calls.append((request.url.path, json.loads(request.content)))
+            if request.url.path.endswith("/embeddings"):
+                return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1, 0.2]}]})
+            return httpx.Response(404)
+        if request.url.host == "api.telegram.org":
+            ok = request.url.path.endswith("/getMe")
+            return httpx.Response(200, json={"ok": True, "result": {"is_bot": True} if ok else []})
+        if request.url.path.endswith("/decisions"):
+            return httpx.Response(200, json={"answers": {"check": {"type": "choice", "choice": "yes"}}})
+        if request.url.path.endswith("/key"):
+            return httpx.Response(200, json={"data": {"limit_remaining": 3.25}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    mock_http(monkeypatch, handler)
+    main(["doctor", str(home), "--online"])
+    out = capsys.readouterr().out
+    assert "ok models.embedding:" in out
+    [(route, body)] = embedding_calls
+    assert route.endswith("/embeddings") and body["model"] == "test-embed" and body["input"] == ["Health check."]

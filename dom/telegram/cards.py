@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom.telegram.executor import retry_telegram
 
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 CLOSE_DATA = "card:close"
+CLOSE_BUTTON = InlineKeyboardButton(text="✕ Close", callback_data=CLOSE_DATA)
 DELETE_LIMIT = timedelta(hours=48)  # Telegram deletes no message older than this
 SWEEP_BATCH = 20  # cards handled per sweep, so a long outage never floods Telegram; the rest wait for the next one
 

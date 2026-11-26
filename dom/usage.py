@@ -321,7 +321,7 @@ class Usage(UsageRecorder):
             return False
         tz = ZoneInfo(config.timezone)
         day_start, day_end = self._day_bounds(tz)
-        tripped: list[tuple[str, str]] = []  # (notice key, text)
+        tripped: list[tuple[str, str, str, list[str]]] = []  # (notice key, owner event, notice lead, notice lines)
         if daily:
             _, spent = await self.store.usage_totals(
                 day_start.astimezone(timezone.utc).isoformat(), day_end.astimezone(timezone.utc).isoformat(),
@@ -330,7 +330,10 @@ class Usage(UsageRecorder):
                 tripped.append((day_start.date().isoformat(), (
                     f"Daily spend cap of ${daily:.2f} reached (${spent:.2f} spent). Friends' chats are paused until "
                     "midnight. Change `daily_spend_cap_usd` in config.toml."
-                )))
+                ), f"Daily spend cap reached: ${spent:.2f} of ${daily:.2f}", [
+                    "Friends' and groups' chats pause until midnight.",
+                    "Change daily_spend_cap_usd in Settings or config.toml.",
+                ]))
         if monthly or area_cap:
             by_area = await self.month_by_area(tz)
             month = day_start.strftime("%Y-%m")
@@ -338,28 +341,34 @@ class Usage(UsageRecorder):
                 tripped.append((f"month:{month}", (
                     f"Monthly spend cap of ${monthly:.2f} reached (${total:.2f} spent this month). Friends' chats are "
                     "paused until the 1st. Change `monthly_spend_cap_usd` in config.toml or in Settings."
-                )))
+                ), f"Monthly spend cap reached: ${total:.2f} of ${monthly:.2f}", [
+                    "Friends' chats and background work pause until the 1st.",
+                    "Change monthly_spend_cap_usd in Settings or config.toml.",
+                ]))
             if area_cap and _reached(spent := by_area[area], area_cap):
                 tripped.append((f"month:{month}:{area}", (
                     f"The monthly {area} limit of ${area_cap:.2f} is reached (${spent:.2f} spent this month). "
                     f"Work in that area is paused until the 1st. Change `area_spend_caps_usd` in config.toml or in Settings."
-                )))
+                ), f"Monthly {area} limit reached: ${spent:.2f} of ${area_cap:.2f}", [
+                    f"{area.capitalize()} work pauses until the 1st.",
+                    "Change area_spend_caps_usd in Settings or config.toml.",
+                ]))
         if not tripped:
             return False
 
         owner_id = self.store.owner_id
         if owner_id is not None:
-            for key, text in tripped:
+            for key, event, lead, lines in tripped:
                 if not await self.store.claim_spend_cap_notice(key):
                     continue
 
-                async def notify(text: str = text) -> None:
+                async def notify(event: str = event, lead: str = lead, lines: list[str] = lines) -> None:
                     try:
-                        from dom.telegram.executor import FloodBudget, send_text
+                        from dom.notice import send_notice_to
 
-                        await self.store.record_owner_event(text)
+                        await self.store.record_owner_event(event)
                         kw = {"sleep": sleep} if sleep is not None else {}
-                        await send_text(bot, owner_id, text, budget=FloodBudget(), **kw)
+                        await send_notice_to(bot, config, owner_id, lead, lines, path=SPEND_PAGE, **kw)
                     except Exception:
                         log.exception("could not send or record the owner's spend cap notice")
 
@@ -368,6 +377,9 @@ class Usage(UsageRecorder):
                 else:
                     spawn_notice(notify())
         return True
+
+
+SPEND_PAGE = "/app/system/spend"  # where the dashboard shows the caps, for the notice's link
 
 
 def _reached(spent: float, cap: float) -> bool:

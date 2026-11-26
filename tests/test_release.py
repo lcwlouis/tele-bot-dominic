@@ -91,6 +91,45 @@ def test_installed_notes_reads_the_full_release_section_and_bounds_it(tmp_path):
     assert len(bounded) <= release.HISTORY_NOTES_LIMIT + 4 and bounded.endswith("[…]")
 
 
+def test_installed_notes_gives_dom_every_bullets_lead_and_first_sentence_of_the_real_changelog(tmp_path):
+    import re
+
+    from dom import own_code
+
+    root = Path(__file__).resolve().parents[1]
+    _, section = next(  # the newest section with changes: the release in progress, or the one just tagged
+        item for item in own_code.changelog_sections((root / "CHANGELOG.md").read_text()) if "\n- " in item[1])
+    (tmp_path / "CHANGELOG.md").write_text("## [0.8.4] - 2026-11-27\n" + section.split("\n", 1)[1])
+    digest = release.installed_notes("v0.8.4", tmp_path)
+    leads = re.findall(r"^- (\*\*.+?\*\*)", section, re.MULTILINE)
+    assert len(leads) > 40 and all(lead in digest for lead in leads)
+    assert len(section) > release.HISTORY_NOTES_LIMIT > len(digest) + 2000  # the digest fits well under the limit
+    assert digest.endswith('your own_code tool (action changelog, version "0.8.4"); a long section comes in parts.')
+    # Every part of the section is reachable through the tool the digest names.
+    parts, number = [], 1
+    while True:
+        text = own_code.changelog(tmp_path, "0.8.4", number)
+        assert not text.startswith("error")
+        body, _, footer = text.rpartition("\n[truncated: ")
+        parts.append(body if footer else text)
+        if not footer or "for the rest]" not in footer:
+            break
+        number += 1
+    assert number > 1 and "\n".join(parts).replace("\n", "") == (
+        "## [0.8.4] - 2026-11-27\n" + section.split("\n", 1)[1]).rstrip("\n").replace("\n", "")
+    assert all(line.endswith(("…", ".", "`", ")", "!", "?", "\"")) or not line.startswith("- ") for line in digest.splitlines())
+
+
+def test_a_digest_that_would_pass_the_limit_drops_whole_bullets_from_the_end(tmp_path, monkeypatch):
+    monkeypatch.setattr(release, "HISTORY_NOTES_LIMIT", 400)
+    bullets = "\n".join(f"- **Change {n}.** " + "Words go here. " * 6 for n in range(20))
+    (tmp_path / "CHANGELOG.md").write_text(f"## [0.8.4] - 2026-11-27\n\n{bullets}\n")
+    digest = release.installed_notes("v0.8.4", tmp_path)
+    kept = [line for line in digest.splitlines() if line.startswith("- ")]
+    assert 0 < len(kept) < 20 and len(digest) <= 400
+    assert kept == [f"- **Change {n}.** Words go here." for n in range(len(kept))]  # none cut halfway
+
+
 def test_repo_url_must_be_https_or_file():
     from dom.config import UpdateConfig
 

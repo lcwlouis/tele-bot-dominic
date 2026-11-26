@@ -719,6 +719,38 @@ async def test_a_group_pass_may_only_add_to_an_entity_file_it_was_not_offered(ma
     assert "Hidden launch" in app.home.read("memory/projects/secret.md")
 
 
+
+async def test_a_group_pass_never_sees_or_changes_the_owners_untagged_entity_lines(make_app):
+    app = make_app()
+    app.home._write_regular(
+        "memory/places/cafe.md", f"- Owner's own note on the cafe\n- Shared hours {{any}}\n- Group's table {{chat {GROUP}}}")
+    app.home._write_regular("memory/places/My_Cafe.md", "- Hand-made file, owner only")
+    messages = [StoredMessage(
+        chat_id=str(GROUP), msg_id=1, sender_user_id=FRIEND, role="user", text="hi",
+        visibility_scope=f"chat:{GROUP}", created_at="2026-11-26T01:00:00+00:00",
+    )]
+    pass_ = MemoryPass(app)
+    offered = pass_._offered("group", GROUP, messages)
+    assert "places/cafe.md" in offered and "places/My_Cafe.md" not in offered
+    shown = "\n".join(pass_._files(app.home, offered, "group", GROUP))
+    assert "Shared hours" in shown and "Group's table" in shown and "Owner's own note" not in shown
+    refused: list = []
+    problem = pass_._write(
+        app.home, "group", GROUP, offered,
+        {"file": "places/cafe.md", "op": "remove", "old": "- Owner's own note on the cafe"}, refused,
+    )
+    assert problem is not None and "another chat" in problem
+    assert "Owner's own note" in app.home.read("memory/places/cafe.md")
+
+
+async def test_an_untagged_line_in_any_entity_file_name_is_the_owners_in_search(make_app):
+    app = make_app()
+    app.home._write_regular("memory/places/My_Cafe.md", "- Hand-made cafe file")
+    await app.knowledge.refresh(full=True)
+    group = await app.knowledge.search("cafe", requester_chat_id=GROUP, mode="keyword")
+    owner = await app.knowledge.search("cafe", requester_chat_id=OWNER, owner=True, mode="keyword")
+    assert not group and owner
+
 # ---- nits ------------------------------------------------------------------------------------------------
 
 async def test_query_embedding_is_attributed_to_the_requesting_chat(make_app):

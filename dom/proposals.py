@@ -87,7 +87,7 @@ def plugin_review_path(body: dict) -> str:
 
 
 def review_button(app: App, body: dict) -> InlineKeyboardButton | None:
-    return link_button(app, plugin_review_path(body), REVIEW_LABEL)
+    return link_button(app.config, plugin_review_path(body), REVIEW_LABEL)
 
 
 def summary(row: dict) -> str:
@@ -283,7 +283,7 @@ class Proposals:
         in Telegram), or no dashboard address, sends the whole card with its Approve and Reject buttons."""
         app = self.app
         path = plugin_review_path(json.loads(row["body_json"])) if row["kind"] == "plugin" else f"/app/waiting?proposal={row['id']}"
-        if not full and link_button(app, path):
+        if not full and link_button(app.config, path):
             sent = await send_notice(
                 app, app.owner_id, f"Proposal #{row['id']}: {row['title']}", [PROPOSAL_KINDS.get(row["kind"], row["kind"])],
                 path=path, label=REVIEW_LABEL, disable_notification=True,
