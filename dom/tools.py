@@ -283,6 +283,41 @@ GOALS_TOOL = Tool(
 )
 
 
+async def _declare_event_day(args: dict, ctx: TurnCtx) -> str:
+    app = ctx.app
+    if app is None or not ctx.is_owner_dm():
+        return "error: event days are available only in the owner's DM"
+    multiplier = args.get("multiplier")
+    if multiplier is not None and (isinstance(multiplier, bool) or not isinstance(multiplier, (int, float))):
+        return "error: multiplier must be a number"
+    return await app.event_days.declare(
+        str(args.get("title") or ""), app.dispatch.now(), args.get("day") or None, multiplier,
+    )
+
+
+EVENT_DAY_TOOL = Tool(
+    name="declare_event_day",
+    description=(
+        "Owner's DM only. Declare a special day in your own life (a trip, a concert, your birthday) so you can send "
+        "more voice notes, videos and photos that day than usual. The owner sets the ceiling and how many a week are "
+        "allowed, and can cancel one; extra items also only use what is left of the month's budget. Use it rarely, "
+        "for a day that really is an occasion, not to get around a limit. day is a date like 2026-12-24 (today when "
+        "left out; up to two weeks ahead)."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "maxLength": 80},
+            "day": {"type": "string", "description": "YYYY-MM-DD, today or up to two weeks ahead"},
+            "multiplier": {"type": "number", "description": "how much to raise the limits, up to the owner's ceiling"},
+        },
+        "required": ["title"],
+    },
+    handler=_declare_event_day,
+    scopes={"owner_dm"},
+)
+
+
 def _web_search_tool(client: SearchClient | SearchRouter) -> Tool:
     calls = 0
 
@@ -858,6 +893,10 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     ]
     if app.config.memory_self_edit:  # a setting, so it changes rarely; sits before the tools that come and go
         owner_only.append(PROPOSE_MEMORY_EDIT_TOOL)
+    if app.config.studio.event_day_max_multiplier > 1 and any(
+        getattr(app.config.studio, switch) for switch in ("voice", "video_notes", "images", "special")
+    ):
+        owner_only.append(EVENT_DAY_TOOL)
     if app.desktop_worker is not None and app.desktop_worker.available():
         owner_only.append(START_DESKTOP_TASK)
     if app.t3 is not None and app.t3.available():

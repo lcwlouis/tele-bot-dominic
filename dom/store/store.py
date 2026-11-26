@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 from xml.sax.saxutils import escape, quoteattr
@@ -71,6 +71,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (29, "0028_goals_noticings.sql"),
     (30, "0029_menu_cards.sql"),
     (31, "0030_knowledge_index.sql"),
+    (32, "0031_event_days.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1916,8 +1917,10 @@ class Store:
         def read() -> tuple[int, list[tuple[str, datetime]]]:
             kinds = """role = 'assistant' AND json_valid(media_json)
                        AND json_extract(media_json, '$.kind') IN ('voice', 'video_note', 'photo')"""
+            # A video note's fresh still also cost the studio an image, delivered note or not: stills count on their own.
             total = self._conn.execute(
-                f"SELECT count(*) FROM messages WHERE created_at > ? AND {kinds}", (day,),
+                f"SELECT (SELECT count(*) FROM messages WHERE created_at > ? AND {kinds}) "
+                "+ (SELECT count(*) FROM studio_stills WHERE created_at > ?)", (day, day),
             ).fetchone()[0]
             rows = self._conn.execute(
                 f"SELECT media_json, created_at FROM messages WHERE chat_id = ? AND created_at > ? AND {kinds}",
@@ -1931,6 +1934,59 @@ class Store:
             return total, result
 
         return await self._run(read)
+
+    async def record_still(self, chat_id: int, now: datetime) -> None:
+        """A fresh still was made for a video note; it counts toward the daily total whether or not the note is sent."""
+        def write() -> None:
+            with self._tx() as conn:
+                conn.execute("INSERT INTO studio_stills (chat_id, created_at) VALUES (?, ?)", (str(chat_id), now.isoformat()))
+
+        await self._run(write)
+
+    async def declare_event_day(
+        self, day: str, title: str, multiplier: float, now: datetime, per_week: int,
+    ) -> tuple[int | None, str]:
+        """Record an event day unless the weekly allowance is used up or the day is already one; returns (id, reason).
+        `day` is an ISO date in the owner's time zone. A cancelled day doesn't count toward the allowance."""
+        def write() -> tuple[int | None, str]:
+            with self._tx() as conn:
+                first = date.fromisoformat(day)
+                near = conn.execute(
+                    "SELECT day FROM event_days WHERE cancelled_at IS NULL AND day > ? AND day < ?",
+                    ((first - timedelta(days=7)).isoformat(), (first + timedelta(days=7)).isoformat()),
+                ).fetchall()
+                if any(row["day"] == day for row in near):
+                    return None, "that day is already an event day"
+                if len(near) >= per_week:
+                    return None, "the weekly allowance of event days is used up"
+                cursor = conn.execute(
+                    "INSERT INTO event_days (day, title, multiplier, declared_at) VALUES (?, ?, ?, ?)",
+                    (day, title, multiplier, now.isoformat()),
+                )
+                return cursor.lastrowid, ""
+
+        return await self._run(write)
+
+    async def event_days(self, since: str, *, cancelled: bool = True) -> list[dict[str, Any]]:
+        """Event days from the ISO date `since` on, soonest first."""
+        def read() -> list[dict[str, Any]]:
+            rows = self._conn.execute(
+                "SELECT id, day, title, multiplier, declared_at, cancelled_at FROM event_days WHERE day >= ? "
+                + ("" if cancelled else "AND cancelled_at IS NULL ") + "ORDER BY day, id", (since,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+        return await self._run(read)
+
+    async def cancel_event_day(self, event_id: int, now: datetime) -> bool:
+        def write() -> bool:
+            with self._tx() as conn:
+                return conn.execute(
+                    "UPDATE event_days SET cancelled_at = ? WHERE id = ? AND cancelled_at IS NULL",
+                    (now.isoformat(), event_id),
+                ).rowcount == 1
+
+        return await self._run(write)
 
     async def kv_get(self, key: str) -> str | None:
         return await self._run(self._kv_get, key)

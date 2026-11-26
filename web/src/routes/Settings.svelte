@@ -27,6 +27,7 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
+  import EventDays from "$lib/components/settings/EventDays.svelte";
   import MediaLimits from "$lib/components/settings/MediaLimits.svelte";
   import { forgetLists } from "$lib/components/settings/modelLists.svelte";
   import ProviderEditor from "$lib/components/settings/ProviderEditor.svelte";
@@ -700,6 +701,7 @@
         <RotateCw class="size-3.5" aria-hidden="true" /> Each switch applies at once and is saved to config.toml.
       </p>
       <MediaLimits bind:revision />
+      <EventDays />
       {#if desktopSteps}
         <DesktopSteps bind:revision budget={desktopSteps} onsaved={(result) => (desktopSteps = result.desktop_steps)} />
       {/if}

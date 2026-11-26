@@ -166,6 +166,9 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | `studio.look_owner_dm` | `true` | In the owner's DM, Dom looks at a generated photo (or a video note's first frame, when ffmpeg is installed) before sending it, and regenerates it once if it does not match the scene. A cloud video note is redone only when its first frame is clearly wrong. Needs a chat model that accepts images. |
 | `studio.look_friend_dm` | `false` | The same look before sending, in friends' DMs. |
 | `studio.look_group` | `false` | The same look before sending, in groups. |
+| `studio.video_scenes` | `true` | Start each video note from a fresh still of Dom in a scene that fits the moment, made by the image model with the outfit's approved portrait as the identity reference, instead of animating the portrait itself. The still counts toward the studio-wide daily total and its cost (when a cloud image backup makes it) is recorded and capped like any photo; it does not use the chat's photo allowance. If the still can't be made, the note uses the portrait. |
+| `studio.event_day_max_multiplier` | `2` | The most Dom can raise his own media limits on a special day in his life (a trip, a concert, his birthday): every per-chat limit and the studio-wide daily total are multiplied by up to this. Each item beyond the normal limit must also fit the month's unused budget under `monthly_spend_cap_usd`. Zero turns event days off. |
+| `studio.event_days_per_week` | `1` | Most event days Dom may declare within any rolling week (a cancelled one doesn't count). |
 | `studio.voice_fallbacks` | `[]` | Ordered cloud backups for voice notes. |
 | `studio.image_fallbacks` | `[]` | Ordered cloud backups for photos. |
 | `studio.video_fallbacks` | `[]` | Ordered cloud backups for everyday and special round video notes (openrouter_video). |
@@ -180,6 +183,7 @@ Add one `[[studio.voice_fallbacks]]`, `[[studio.image_fallbacks]]`, or `[[studio
 | `studio.<kind>_fallbacks[].model` | Required | Provider model ID. |
 | `studio.<kind>_fallbacks[].api_key_env` | Required | Secret variable paired with the provider's fixed HTTPS origin. |
 | `studio.<kind>_fallbacks[].paid` | `false` | Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. Gemini reports tokens, not a price, so its calls are recorded at no cost and do not count toward daily_spend_cap_usd; only OpenRouter-reported costs do. |
+| `studio.<kind>_fallbacks[].voice` | Unset | Voice backups only: the provider's voice name, such as a Gemini TTS voice (`Achird` when unset). A direct Gemini backup, and an OpenRouter Google model, accept only Gemini's prebuilt voice names. |
 | `studio.<kind>_fallbacks[].supports_reference` | `true` | For OpenRouter photo models that accept an image reference. |
 | `studio.<kind>_fallbacks[].allow_without_reference` | `false` | Allow cloud photos when an approved reference cannot be sent. |
 | `studio.<kind>_fallbacks[].data_policy` | `"zdr"` | OpenRouter data policy for this media backup: zdr (zero data retention, the default), no_training (providers that may keep but never train on the data) or any. Ignored by direct Gemini. OpenRouter video keeps its output for download, so a video backup needs no_training or any. |
@@ -197,21 +201,33 @@ Video fallbacks support `heygen/heygen-avatar-6-turbo` and `heygen/heygen-avatar
 | `studio.limits.owner_dm.image_daily` | `2` | Images per rolling 24 hours when set. false uses the weekly limit. |
 | `studio.limits.owner_dm.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
 | `studio.limits.owner_dm.special_daily` | `1` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
-| `studio.limits.owner_dm.gap_minutes` | `30` | Minimum minutes between generation deliveries in a chat. |
+| `studio.limits.owner_dm.gap_minutes` | `30` | Minimum minutes between generation deliveries in a chat. It applies to every kind that has no gap of its own below. |
+| `studio.limits.owner_dm.voice_gap_minutes` | Unset | Minimum minutes between voice notes in a chat, counted from the last voice note only. Unset: the general gap applies. |
+| `studio.limits.owner_dm.video_gap_minutes` | Unset | Minimum minutes between round video notes in a chat, counted from the last one only. Unset: the general gap applies. |
+| `studio.limits.owner_dm.image_gap_minutes` | Unset | Minimum minutes between photos in a chat, counted from the last photo only. Unset: the general gap applies. |
+| `studio.limits.owner_dm.special_gap_minutes` | Unset | Minimum minutes between special video notes in a chat, counted from the last one only. Unset: the general gap applies. |
 | `studio.limits.friend_dm.voice_daily` | `1` | Voice notes per rolling 24 hours. |
 | `studio.limits.friend_dm.video_weekly` | `2` | Round video notes per rolling week when the daily limit is unset. |
 | `studio.limits.friend_dm.video_daily` | Unset | Round video notes per rolling 24 hours when set. false uses the weekly limit. |
 | `studio.limits.friend_dm.image_daily` | `1` | Images per rolling 24 hours when set. false uses the weekly limit. |
 | `studio.limits.friend_dm.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
 | `studio.limits.friend_dm.special_daily` | `0` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
-| `studio.limits.friend_dm.gap_minutes` | `180` | Minimum minutes between generation deliveries in a chat. |
+| `studio.limits.friend_dm.gap_minutes` | `180` | Minimum minutes between generation deliveries in a chat. It applies to every kind that has no gap of its own below. |
+| `studio.limits.friend_dm.voice_gap_minutes` | Unset | Minimum minutes between voice notes in a chat, counted from the last voice note only. Unset: the general gap applies. |
+| `studio.limits.friend_dm.video_gap_minutes` | Unset | Minimum minutes between round video notes in a chat, counted from the last one only. Unset: the general gap applies. |
+| `studio.limits.friend_dm.image_gap_minutes` | Unset | Minimum minutes between photos in a chat, counted from the last photo only. Unset: the general gap applies. |
+| `studio.limits.friend_dm.special_gap_minutes` | Unset | Minimum minutes between special video notes in a chat, counted from the last one only. Unset: the general gap applies. |
 | `studio.limits.group.voice_daily` | `1` | Voice notes per rolling 24 hours. |
 | `studio.limits.group.video_weekly` | `1` | Round video notes per rolling week when the daily limit is unset. |
 | `studio.limits.group.video_daily` | Unset | Round video notes per rolling 24 hours when set. false uses the weekly limit. |
 | `studio.limits.group.image_daily` | Unset | Images per rolling 24 hours when set. false uses the weekly limit. |
 | `studio.limits.group.image_weekly` | `1` | Images per rolling week when the daily limit is unset. |
 | `studio.limits.group.special_daily` | `0` | Special video notes per rolling 24 hours. Only the owner DM can use them. |
-| `studio.limits.group.gap_minutes` | `360` | Minimum minutes between generation deliveries in a chat. |
+| `studio.limits.group.gap_minutes` | `360` | Minimum minutes between generation deliveries in a chat. It applies to every kind that has no gap of its own below. |
+| `studio.limits.group.voice_gap_minutes` | Unset | Minimum minutes between voice notes in a chat, counted from the last voice note only. Unset: the general gap applies. |
+| `studio.limits.group.video_gap_minutes` | Unset | Minimum minutes between round video notes in a chat, counted from the last one only. Unset: the general gap applies. |
+| `studio.limits.group.image_gap_minutes` | Unset | Minimum minutes between photos in a chat, counted from the last photo only. Unset: the general gap applies. |
+| `studio.limits.group.special_gap_minutes` | Unset | Minimum minutes between special video notes in a chat, counted from the last one only. Unset: the general gap applies. |
 
 ### Studio timeouts
 

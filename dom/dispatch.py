@@ -1946,7 +1946,8 @@ class Dispatcher:
                 chat_id, "studio-policy", "Requested media was not sent because that kind is disabled in this chat.",
             )
         speech = update["video_note"].text if update["video_note"] else None
-        texts = [item for item in (update["voice"], speech, update["image"]) if item]
+        scene = update["video_note"].scene if update["video_note"] else None  # a still is made from it: screened too
+        texts = [item for item in (update["voice"], speech, scene, update["image"]) if item]
         if texts:
             if actions.outfit and (update["image"] or update["video_note"]):
                 texts.append(actions.outfit)
@@ -2354,7 +2355,14 @@ class Dispatcher:
                 if sendable := [label for kind, label in MEDIA_LABELS.items() if kind in media_offered]:
                     note += f"\ncan send: {', '.join(dict.fromkeys(sendable))}"
                 # Without a note, Dom sees his past media in the window and may imitate it in text: say it's not now.
-                note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset)) or STUDIO_UNAVAILABLE}"
+                event = await app.event_days.today(self.now()) if remaining else None
+                event_note = ""
+                if event:  # the title was declared in the owner DM: only that chat hears it, the rest a generic line
+                    what = f" you declared ({event['title']})" if scope == "owner_dm" else ""
+                    event_note = (
+                        f"Today is an event day{what}: your media limits are raised, so a few more than usual are fine."
+                    )
+                note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset), event_note) or STUDIO_UNAVAILABLE}"
         if attempt is not None:
             attempt.assistant = preset is not None and preset.name == ASSISTANT
         if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:

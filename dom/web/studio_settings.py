@@ -12,7 +12,12 @@ ModelSettings (the list route returns ModelListView), and the running config tak
 GET /api/studio/limits returns LimitsView: `[studio.limits]` as it is saved, and what is left now in the owner's DM,
 read from StudioQuota without reserving anything. POST /api/studio/limits takes LimitsSave, validated with the
 config's own bounds, writes only the values that changed (comments and other tables stay), and returns LimitsView. A
-weekly video or image limit writes `<kind>_daily = false` when the tier's daily default is set.
+weekly video or image limit writes `<kind>_daily = false` when the tier's daily default is set. A per-kind gap
+(`<kind>_gap_minutes`) left empty (null) is unset, so the general `gap_minutes` applies; each kind in the view carries
+when its own gap ends.
+
+GET /api/studio/event-days lists Dom's event days (from a week ago on) with the owner's ceiling and weekly allowance;
+POST /api/studio/event-days/cancel takes {"id"} and cancels one at once (404 when it is unknown or already cancelled).
 """
 
 from __future__ import annotations
@@ -79,7 +84,11 @@ if TYPE_CHECKING:
 router = APIRouter()
 PREFIX = "/api/studio"
 LIMITS_PATH = PREFIX + "/limits"
-JSON_POSTS = {f"{PREFIX}/save", f"{PREFIX}/remove", f"{PREFIX}/move", f"{PREFIX}/test", f"{PREFIX}/models", LIMITS_PATH}
+EVENTS_PATH = PREFIX + "/event-days"
+JSON_POSTS = {
+    f"{PREFIX}/save", f"{PREFIX}/remove", f"{PREFIX}/move", f"{PREFIX}/test", f"{PREFIX}/models", LIMITS_PATH,
+    EVENTS_PATH + "/cancel",
+}
 SCOPES = ("owner_dm", "friend_dm", "group")
 TEST_TIMEOUT = 8
 # OpenRouter lists each output kind's models separately; every list is public.
@@ -174,15 +183,16 @@ class LimitsSave(BaseModel):
 
 class KindLeft(BaseModel):
     kind: Kind
-    left: int  # counting the global daily total, not the gap
+    left: int  # counting the global daily total (raised on an event day), not the gap
     on: bool  # its switch is on and something can serve it
+    next_at: datetime | None  # when this kind's own gap ends, if it hasn't; in Dom's time zone
 
 
 class OwnerStanding(BaseModel):
     kinds: list[KindLeft]
     daily_left: int
     sending: bool  # a studio item for the owner's DM is being made or sent now
-    next_at: datetime | None  # when the gap between media ends, if it hasn't; in Dom's time zone, as `now` is
+    next_at: datetime | None  # when every kind is free of its gap, if any gap is running; in Dom's time zone
     now: datetime
 
 
@@ -228,7 +238,11 @@ async def _limits_view(app: App, snapshot: Snapshot) -> LimitsView:
     studio, at = app.config.studio, app.dispatch.now()
     now = await app.studio_quota.standing(studio, "owner_dm", app.owner_id or 0, at)
     tz = ZoneInfo(app.config.timezone)
-    kinds = [KindLeft(kind=kind, left=now.left[kind], on=enabled(studio, "owner_dm", kind)) for kind in SWITCH]
+    kinds = [
+        KindLeft(kind=kind, left=now.left[kind], on=enabled(studio, "owner_dm", kind),
+                 next_at=now.gaps[kind].astimezone(tz) if kind in now.gaps else None)
+        for kind in SWITCH
+    ]
     return LimitsView(revision=snapshot.revision, limits=snapshot.config.studio.limits, owner=OwnerStanding(
         kinds=kinds, daily_left=now.daily_left, sending=app.studio_quota.sending(app.owner_id or 0), next_at=now.next_at and now.next_at.astimezone(tz), now=at.astimezone(tz)))
 
@@ -495,6 +509,52 @@ async def backup_models(request: Request) -> ModelListView:
         listable=True, fetched_at=listed.fetched_at,
         models=[ListedModelView(id=item.id, name=item.name, reasoning=None, efforts=[]) for item in listed.models],
     )
+
+
+class EventDayView(BaseModel):
+    id: int
+    day: str  # a date in Dom's time zone
+    title: str
+    multiplier: float  # as declared; the ceiling below still caps it
+    cancelled: bool
+    active: bool  # today, and not cancelled
+
+
+class EventDaysView(BaseModel):
+    events: list[EventDayView]  # from a week ago on
+    ceiling: float  # `studio.event_day_max_multiplier`; 1 or less means event days are off
+    per_week: int
+
+
+class EventDayCancel(BaseModel):
+    model_config = STRICT
+    id: int = Field(ge=1)
+
+
+async def _event_days_view(app: App) -> EventDaysView:
+    rows = await app.event_days.listing(app.dispatch.now())
+    return EventDaysView(
+        events=[EventDayView(
+            id=row["id"], day=row["day"], title=row["title"], multiplier=row["multiplier"],
+            cancelled=row["cancelled_at"] is not None, active=row["active"],
+        ) for row in rows],
+        ceiling=app.config.studio.event_day_max_multiplier, per_week=app.config.studio.event_days_per_week,
+    )
+
+
+@router.get(EVENTS_PATH)
+async def read_event_days(request: Request) -> EventDaysView:
+    return await _event_days_view(owner_app(request))
+
+
+@router.post(EVENTS_PATH + "/cancel")
+async def cancel_event_day(request: Request) -> EventDaysView:
+    """Cancel an event day: its limits go back to normal at once. A day already past or cancelled is a 404."""
+    app = owner_app(request)
+    edit = await _input(request, EventDayCancel)
+    if not await app.store.cancel_event_day(edit.id, app.dispatch.now()):
+        raise HTTPException(404, "No such event day, or it is already cancelled.")
+    return await _event_days_view(app)
 
 
 @router.get(LIMITS_PATH)

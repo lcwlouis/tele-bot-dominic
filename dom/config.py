@@ -407,9 +407,13 @@ class StudioTier(BaseModel):
     image_daily: int | None = Field(None, ge=0, description="Images per rolling 24 hours when set. false uses the weekly limit.")
     image_weekly: int = Field(1, ge=0, description="Images per rolling week when the daily limit is unset.")
     special_daily: int = Field(0, ge=0, description="Special video notes per rolling 24 hours. Only the owner DM can use them.")
-    gap_minutes: int = Field(360, ge=0, le=10080, description="Minimum minutes between generation deliveries in a chat.")
+    gap_minutes: int = Field(360, ge=0, le=10080, description="Minimum minutes between generation deliveries in a chat. It applies to every kind that has no gap of its own below.")
+    voice_gap_minutes: int | None = Field(None, ge=0, le=10080, description="Minimum minutes between voice notes in a chat, counted from the last voice note only. Unset: the general gap applies.")
+    video_gap_minutes: int | None = Field(None, ge=0, le=10080, description="Minimum minutes between round video notes in a chat, counted from the last one only. Unset: the general gap applies.")
+    image_gap_minutes: int | None = Field(None, ge=0, le=10080, description="Minimum minutes between photos in a chat, counted from the last photo only. Unset: the general gap applies.")
+    special_gap_minutes: int | None = Field(None, ge=0, le=10080, description="Minimum minutes between special video notes in a chat, counted from the last one only. Unset: the general gap applies.")
 
-    @field_validator("video_daily", "image_daily", mode="before")
+    @field_validator("video_daily", "image_daily", "voice_gap_minutes", "video_gap_minutes", "image_gap_minutes", "special_gap_minutes", mode="before")
     @classmethod
     def _weekly(cls, value):
         # TOML has no null, so false unsets a daily limit whose default is set, and the weekly limit applies.
@@ -446,6 +450,14 @@ class StudioTimeouts(BaseModel):
     portrait: float = Field(10, gt=0, allow_inf_nan=False, description="Wardrobe portrait request deadline in seconds.")
 
 
+# Gemini TTS's prebuilt voices (https://ai.google.dev/gemini-api/docs/speech-generation#voices). A direct Gemini backup, and
+# OpenRouter's Google speech models, take only these; other OpenRouter speech models name their own voices.
+GEMINI_VOICES = frozenset((
+    "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede", "Callirrhoe", "Autonoe", "Enceladus",
+    "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam",
+    "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
+))
+DEFAULT_VOICE = "Achird"
 StudioProvider = Literal["openrouter_image", "openrouter_tts", "gemini_tts", "openrouter_video"]
 STUDIO_PROVIDERS = get_args(StudioProvider)
 
@@ -457,6 +469,11 @@ class StudioFallback(BaseModel):
     model: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$", description="Provider model ID.")
     api_key_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", description="Secret variable paired with the provider's fixed HTTPS origin.")
     paid: bool = Field(False, description="Owner confirms this direct Gemini key uses Paid Services. Required for Gemini. Gemini reports tokens, not a price, so its calls are recorded at no cost and do not count toward daily_spend_cap_usd; only OpenRouter-reported costs do.")
+    voice: str | None = Field(
+        None, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+        description="Voice backups only: the provider's voice name, such as a Gemini TTS voice (`Achird` when unset). "
+        "A direct Gemini backup, and an OpenRouter Google model, accept only Gemini's prebuilt voice names.",
+    )
     supports_reference: bool = Field(True, description="For OpenRouter photo models that accept an image reference.")
     allow_without_reference: bool = Field(False, description="Allow cloud photos when an approved reference cannot be sent.")
     data_policy: DataPolicy = Field(
@@ -482,6 +499,11 @@ class StudioFallback(BaseModel):
                 "OpenRouter video keeps each video for download, so no video endpoint offers zero data retention. "
                 "Set data_policy to no_training or any for a video backup."
             )
+        if self.voice is not None:
+            if self.provider not in ("openrouter_tts", "gemini_tts"):
+                raise ValueError("Only a voice backup takes a voice")
+            if (self.provider == "gemini_tts" or self.model.startswith("google/")) and self.voice not in GEMINI_VOICES:
+                raise ValueError(f"{self.voice} is not a Gemini voice; use one of: {', '.join(sorted(GEMINI_VOICES))}")
         return self
 
 
@@ -519,6 +541,22 @@ class StudioConfig(BaseModel):
     )
     look_friend_dm: bool = Field(False, description="The same look before sending, in friends' DMs.")
     look_group: bool = Field(False, description="The same look before sending, in groups.")
+    video_scenes: bool = Field(
+        True, description="Start each video note from a fresh still of Dom in a scene that fits the moment, made by the "
+        "image model with the outfit's approved portrait as the identity reference, instead of animating the portrait "
+        "itself. The still counts toward the studio-wide daily total and its cost (when a cloud image backup makes it) "
+        "is recorded and capped like any photo; it does not use the chat's photo allowance. If the still can't be made, "
+        "the note uses the portrait.",
+    )
+    event_day_max_multiplier: float = Field(
+        2, ge=0, le=10, allow_inf_nan=False, description="The most Dom can raise his own media limits on a special day "
+        "in his life (a trip, a concert, his birthday): every per-chat limit and the studio-wide daily total are "
+        "multiplied by up to this. Each item beyond the normal limit must also fit the month's unused budget under "
+        "`monthly_spend_cap_usd`. Zero turns event days off.",
+    )
+    event_days_per_week: int = Field(
+        1, ge=0, le=7, description="Most event days Dom may declare within any rolling week (a cancelled one doesn't count).",
+    )
     limits: StudioLimits = Field(default_factory=StudioLimits)
     timeouts: StudioTimeouts = Field(default_factory=StudioTimeouts)
 

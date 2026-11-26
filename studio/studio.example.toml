@@ -14,6 +14,7 @@ min_free_memory_mb = 0
 [outfits.default]
 portrait = "/path/to/private/portrait.png"
 turnaround = "/path/to/private/turnaround.png"
+# description = "what the outfit looks like, for `python -m studio_service.portraits generate`"
 
 [workers.voice]
 cwd = "/path/to/runtime/bin"

@@ -167,6 +167,8 @@ export type StudioBackup = {
   model: string;
   api_key_env: string;
   paid: boolean;
+  /** A voice backup's provider voice name; null uses the default. */
+  voice: string | null;
   supports_reference: boolean;
   allow_without_reference: boolean;
   data_policy: DataPolicy;
@@ -209,13 +211,18 @@ export type StudioTier = {
   image_weekly: number;
   special_daily: number;
   gap_minutes: number;
+  /** A gap of the kind's own; null uses `gap_minutes`. */
+  voice_gap_minutes: number | null;
+  video_gap_minutes: number | null;
+  image_gap_minutes: number | null;
+  special_gap_minutes: number | null;
 };
 export type StudioLimits = Record<StudioScope, StudioTier> & { daily: number };
 export type StudioLimitsView = {
   revision: string;
   limits: StudioLimits;
   owner: {
-    kinds: { kind: StudioKind; left: number; on: boolean }[];
+    kinds: { kind: StudioKind; left: number; on: boolean; next_at: string | null }[];
     daily_left: number;
     /** A studio item for the owner's DM is being made or sent now. */
     sending: boolean;
@@ -224,6 +231,19 @@ export type StudioLimitsView = {
     now: string;
   };
 };
+
+/** GET /api/studio/event-days and POST /api/studio/event-days/cancel: days in Dom's life that raise his media limits. */
+export type StudioEventDay = {
+  id: number;
+  /** A date in Dom's time zone. */
+  day: string;
+  title: string;
+  multiplier: number;
+  cancelled: boolean;
+  /** Today, and not cancelled. */
+  active: boolean;
+};
+export type StudioEventDays = { events: StudioEventDay[]; ceiling: number; per_week: number };
 
 /** GET /api/memory, GET /api/memory/file and the memory writes (dom/web/api_memory.py). */
 export type MemoryImportCard = { id: number; service: string; facts: { id: number; text: string }[] };

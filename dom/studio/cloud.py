@@ -21,7 +21,7 @@ from time import monotonic
 import httpx
 from PIL import Image, ImageOps
 
-from dom.config import Config, StudioFallback, routing_preferences
+from dom.config import DEFAULT_VOICE, Config, StudioFallback, routing_preferences
 from dom.studio.client import MAX_MEDIA_BYTES
 from dom.studio.policy import Kind, backups as providers
 from dom.usage import ModelCallSkipped, UsageRecorder, check_model_allowed, model_request, response_usage, token_counts
@@ -171,6 +171,23 @@ def _portrait(home: Path, outfit: str | None) -> bytes | None:
     except OSError:
         return None
     return data if len(PNG) < len(data) <= MAX_PORTRAIT_BYTES and data.startswith(PNG) else None
+
+
+STILL_SIDE = 768  # a still for a video note is small: the avatar and the studio's renderer work at that size
+MAX_STILL_BYTES = 3 * 1024 * 1024
+
+
+def png_still(data: bytes) -> bytes | None:
+    """A generated photo as the PNG a video note is filmed from (at most 768 px), or None when it can't be read."""
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            image.thumbnail((STILL_SIDE, STILL_SIDE), Image.Resampling.LANCZOS)
+            out = io.BytesIO()
+            image.save(out, "PNG")
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return None
+    return out.getvalue() if len(out.getvalue()) <= MAX_STILL_BYTES else None
 
 
 def speech_pcm(data: bytes) -> bytes:
@@ -471,7 +488,7 @@ class CloudStudio:
             timeout = config.studio.timeouts.images
         elif provider.provider == "openrouter_tts":
             path = "/audio/speech"
-            payload.update(input=text, voice="Achird", response_format="pcm")
+            payload.update(input=text, voice=provider.voice or DEFAULT_VOICE, response_format="pcm")
             mime, maximum = "audio/pcm", MAX_AUDIO_BYTES
         else:
             path = f"/models/{provider.model}:generateContent"
@@ -480,7 +497,7 @@ class CloudStudio:
                 "contents": [{"parts": [{"text": text}]}],
                 "generationConfig": {
                     "responseModalities": ["AUDIO"],
-                    "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Achird"}}},
+                    "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": provider.voice or DEFAULT_VOICE}}},
                 },
             }
 
@@ -539,13 +556,16 @@ class CloudStudio:
     async def generate_video(
         self, config: Config, kind: Kind, outfit: str | None, chat_id: int,
         allowed: Callable[[], Awaitable[bool]], make_voice: Callable[[], Awaitable[bytes | None]],
+        still: bytes | None = None,
     ) -> bytes | None:
+        """A round video note from the voice `make_voice` returns. `still` (a PNG) is the picture the avatar is filmed
+        from; without it the outfit's approved portrait is used."""
         timeout = config.studio.timeouts.special if kind == "special" else config.studio.timeouts.video_notes
         try:
             async with asyncio.timeout(timeout):
                 with model_request("studio_video", chat_id, allowed):
                     await check_model_allowed()
-                portrait = await asyncio.to_thread(_portrait, config.home, outfit)
+                portrait = still or await asyncio.to_thread(_portrait, config.home, outfit)
                 if portrait is None:
                     return None
                 references = None
