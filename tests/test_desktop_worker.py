@@ -372,10 +372,10 @@ async def test_daily_spend_cap_pauses_a_desktop_task_before_any_worker_call(make
     await wait_task(worker)
     row = await task_row(app, task_id)
     assert row["status"] == "failed"
-    assert row["error"] == "paused by today's spend cap"
-    assert row["result"] == "Stopped after 0 steps: paused by today's spend cap"
+    assert row["error"] == "paused by a spend cap"
+    assert row["result"] == "Stopped after 0 steps: paused by a spend cap"
     assert app.client.requests == []  # no worker call and no report call
-    assert app.bot.of("send", OWNER)[-1][2] == f"Desktop task #{task_id} failed. Stopped after 0 steps: paused by today's spend cap"
+    assert app.bot.of("send", OWNER)[-1][2] == f"Desktop task #{task_id} failed. Stopped after 0 steps: paused by a spend cap"
     assert app.bot.of("send", OWNER)[-1][3]["link_preview_options"].is_disabled is True
     window = await app.store.get_recent_chat_window(OWNER)
     assert any(
@@ -534,7 +534,7 @@ async def test_a_skipped_model_call_reports_the_spend_cap(make_app):
     task_id = await worker.enqueue(OWNER, "Example")
     await wait_task(worker)
     row = await task_row(app, task_id)
-    assert row["status"] == "failed" and row["error"] == "paused by today's spend cap"
+    assert row["status"] == "failed" and row["error"] == "paused by a spend cap"
 
 
 async def test_handoff_time_is_shown_in_local_time(make_app):

@@ -61,6 +61,8 @@ MIGRATIONS: list[tuple[int, str]] = [
     (26, "0025_studio_usage.sql"),
     (27, "0026_chat_reachability.sql"),
     (28, "0027_autoincrement_ids.sql"),
+    (29, "0028_goals_noticings.sql"),
+    (30, "0029_menu_cards.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -2753,6 +2755,7 @@ class Store:
                 if not stamp_matches(row["created_at"], expected_created_at):
                     return "stale"
                 conn.execute("DELETE FROM reminders WHERE chat_id = ? AND id = ?", (str(chat_id), reminder_id))
+                conn.execute("DELETE FROM goal_reminders WHERE reminder_id = ?", (reminder_id,))
                 conn.execute("DELETE FROM kv WHERE key = ?", (kv_key,))
                 self._insert_owner_event(conn, event_text, event_at)
             self._append_owner_event_transcript(event_text, event_at)
@@ -2823,6 +2826,14 @@ class Store:
         ).fetchone()
         return count, cost
 
+    async def usage_cost_by_kind(self, start: str, end: str) -> dict[str, float]:
+        """Cost per kind of call in [start, end), for kinds with any spend."""
+        return await self._run(lambda: {
+            kind: cost for kind, cost in self._conn.execute(
+                "SELECT kind, TOTAL(cost_usd) FROM usage WHERE at >= ? AND at < ? GROUP BY kind", (start, end),
+            )
+        })
+
     async def usage_cost(
         self, kind: str, chat_id: int, since: str, fallback_per_1k: float = 0.0, free_hosts: tuple[str, ...] = (),
     ) -> float:
@@ -2840,6 +2851,29 @@ class Store:
             ).fetchone()[0]
 
         return await self._run(total)
+
+    # ---- menu cards -----------------------------------------------------------
+
+    async def add_menu_card(self, chat_id: int, message_id: int, sent_at: str, expires_at: str) -> None:
+        await self._run(
+            self._conn.execute,
+            "INSERT OR REPLACE INTO menu_cards (chat_id, message_id, sent_at, expires_at) VALUES (?, ?, ?, ?)",
+            (chat_id, message_id, sent_at, expires_at),
+        )
+
+    async def due_menu_cards(self, now: str, limit: int) -> list[dict[str, Any]]:
+        """The cards whose time is up, oldest first."""
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT chat_id, message_id, sent_at FROM menu_cards WHERE expires_at <= ? "
+                "ORDER BY expires_at, message_id LIMIT ?", (now, limit),
+            )
+        ])
+
+    async def forget_menu_card(self, chat_id: int, message_id: int) -> None:
+        await self._run(
+            self._conn.execute, "DELETE FROM menu_cards WHERE chat_id = ? AND message_id = ?", (chat_id, message_id),
+        )
 
     async def claim_spend_cap_notice(self, day: str) -> bool:
         return await self._run(self._claim_spend_cap_notice, day)
@@ -3038,3 +3072,438 @@ class Store:
             preferred_name=row["preferred_name"] or "",
             profile_path=row["profile_path"],
         )
+
+    # ---- goals (R6, owner-only) -------------------------------------------
+
+    def _hydrate_goal(self, conn: sqlite3.Connection, row: sqlite3.Row, *, history_limit: int = 20) -> dict[str, Any]:
+        goal = dict(row)
+        gid = goal["id"]
+        goal["history"] = [
+            dict(h) for h in conn.execute(
+                "SELECT * FROM goal_history WHERE goal_id = ? ORDER BY id DESC LIMIT ?",
+                (gid, history_limit),
+            )
+        ]
+        owner = str(self.owner_id) if self.owner_id is not None else ""
+        goal["reminders"] = [
+            dict(r) for r in conn.execute(
+                "SELECT r.id, r.text, r.due_at, r.importance, r.repeat, r.status, gr.created_at AS linked_at "
+                "FROM goal_reminders gr JOIN reminders r ON r.id = gr.reminder_id "
+                "WHERE gr.goal_id = ? AND r.chat_id = ? ORDER BY r.due_at ASC, r.id ASC",
+                (gid, owner),
+            )
+        ]
+        return goal
+
+    async def create_goal(
+        self,
+        text: str,
+        category: str,
+        target_date: str | None,
+        check_in_rhythm: str,
+        at: str,
+        limit: int,
+        *,
+        source: str = "owner",
+    ) -> dict[str, Any] | None:
+        def insert() -> dict[str, Any] | None:
+            with self._tx() as conn:
+                active = conn.execute("SELECT COUNT(*) FROM goals WHERE status = 'active'").fetchone()[0]
+                if active >= limit:
+                    return None
+                cur = conn.execute(
+                    "INSERT INTO goals (text, category, target_date, check_in_rhythm, status, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'active', ?, ?)",
+                    (text, category, target_date, check_in_rhythm, at, at),
+                )
+                gid = cur.lastrowid
+                conn.execute(
+                    "INSERT INTO goal_history (goal_id, kind, to_status, note, source, created_at) "
+                    "VALUES (?, 'created', 'active', ?, ?, ?)",
+                    (gid, text[:300], source, at),
+                )
+                row = conn.execute("SELECT * FROM goals WHERE id = ?", (gid,)).fetchone()
+                return self._hydrate_goal(conn, row)
+
+        return await self._run(insert)
+
+    async def get_goal(self, goal_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+            return self._hydrate_goal(self._conn, row, history_limit=50) if row is not None else None
+
+        return await self._run(select)
+
+    async def list_goals(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        def select() -> list[dict[str, Any]]:
+            if status is not None:
+                rows = self._conn.execute(
+                    "SELECT * FROM goals WHERE status = ? ORDER BY updated_at DESC, id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM goals "
+                    "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, "
+                    "updated_at DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [self._hydrate_goal(self._conn, row, history_limit=10) for row in rows]
+
+        return await self._run(select)
+
+    async def active_goals(self, limit: int = 50) -> list[dict[str, Any]]:
+        return await self.list_goals(status="active", limit=limit)
+
+    async def update_goal(
+        self,
+        goal_id: int,
+        *,
+        text: str,
+        category: str,
+        target_date: str | None,
+        check_in_rhythm: str,
+        at: str,
+        source: str = "owner",
+    ) -> dict[str, Any] | None:
+        def update() -> dict[str, Any] | None:
+            with self._tx() as conn:
+                old = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                if old is None:
+                    return None
+                conn.execute(
+                    "UPDATE goals SET text = ?, category = ?, target_date = ?, check_in_rhythm = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (text, category, target_date, check_in_rhythm, at, goal_id),
+                )
+                conn.execute(
+                    "INSERT INTO goal_history (goal_id, kind, note, source, created_at) "
+                    "VALUES (?, 'edited', ?, ?, ?)",
+                    (goal_id, text[:300], source, at),
+                )
+                row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                return self._hydrate_goal(conn, row)
+
+        return await self._run(update)
+
+    async def set_goal_status(
+        self,
+        goal_id: int,
+        status: str,
+        note: str,
+        at: str,
+        limit: int,
+        *,
+        source: str = "owner",
+    ) -> dict[str, Any] | str:
+        def update() -> dict[str, Any] | str:
+            with self._tx() as conn:
+                old = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                if old is None:
+                    return "not_found"
+                if status == "active" and old["status"] != "active":
+                    active = conn.execute("SELECT COUNT(*) FROM goals WHERE status = 'active'").fetchone()[0]
+                    if active >= limit:
+                        return "limit"
+                closed_at = at if status in ("done", "dropped") else None
+                conn.execute(
+                    "UPDATE goals SET status = ?, updated_at = ?, closed_at = ? WHERE id = ?",
+                    (status, at, closed_at, goal_id),
+                )
+                conn.execute(
+                    "INSERT INTO goal_history (goal_id, kind, from_status, to_status, note, source, created_at) "
+                    "VALUES (?, 'status', ?, ?, ?, ?, ?)",
+                    (goal_id, old["status"], status, note, source, at),
+                )
+                row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                return self._hydrate_goal(conn, row)
+
+        return await self._run(update)
+
+    async def add_goal_progress(
+        self, goal_id: int, note: str, at: str, *, source: str = "owner",
+    ) -> dict[str, Any] | None:
+        def update() -> dict[str, Any] | None:
+            with self._tx() as conn:
+                old = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                if old is None:
+                    return None
+                conn.execute(
+                    "UPDATE goals SET progress_note = ?, updated_at = ? WHERE id = ?",
+                    (note, at, goal_id),
+                )
+                conn.execute(
+                    "INSERT INTO goal_history (goal_id, kind, note, source, created_at) "
+                    "VALUES (?, 'progress', ?, ?, ?)",
+                    (goal_id, note, source, at),
+                )
+                row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                return self._hydrate_goal(conn, row)
+
+        return await self._run(update)
+
+    async def mark_goal_checkin(self, goal_id: int, at: str, note: str = "") -> bool:
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE goals SET last_checkin_at = ?, updated_at = ? WHERE id = ? AND status = 'active'",
+                    (at, at, goal_id),
+                )
+                if cur.rowcount != 1:
+                    return False
+                conn.execute(
+                    "INSERT INTO goal_history (goal_id, kind, note, source, created_at) "
+                    "VALUES (?, 'checkin', ?, 'opener', ?)",
+                    (goal_id, note, at),
+                )
+                return True
+
+        return await self._run(update)
+
+    async def link_goal_reminder(
+        self, owner_id: int, goal_id: int, reminder_id: int, at: str, *, source: str = "owner",
+    ) -> str:
+        def link() -> str:
+            with self._tx() as conn:
+                if conn.execute("SELECT 1 FROM goals WHERE id = ?", (goal_id,)).fetchone() is None:
+                    return "goal_not_found"
+                if conn.execute(
+                    "SELECT 1 FROM reminders WHERE id = ? AND chat_id = ?", (reminder_id, str(owner_id)),
+                ).fetchone() is None:
+                    return "reminder_not_found"
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO goal_reminders (goal_id, reminder_id, created_at) VALUES (?, ?, ?)",
+                    (goal_id, reminder_id, at),
+                )
+                if cur.rowcount == 1:
+                    conn.execute("UPDATE goals SET updated_at = ? WHERE id = ?", (at, goal_id))
+                    conn.execute(
+                        "INSERT INTO goal_history (goal_id, kind, note, source, created_at) "
+                        "VALUES (?, 'reminder_linked', ?, ?, ?)",
+                        (goal_id, f"reminder #{reminder_id}", source, at),
+                    )
+                return "linked"
+
+        return await self._run(link)
+
+    async def unlink_goal_reminder(
+        self, goal_id: int, reminder_id: int, at: str, *, source: str = "owner",
+    ) -> bool:
+        def unlink() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "DELETE FROM goal_reminders WHERE goal_id = ? AND reminder_id = ?", (goal_id, reminder_id),
+                )
+                if cur.rowcount != 1:
+                    return False
+                conn.execute("UPDATE goals SET updated_at = ? WHERE id = ?", (at, goal_id))
+                conn.execute(
+                    "INSERT INTO goal_history (goal_id, kind, note, source, created_at) "
+                    "VALUES (?, 'reminder_unlinked', ?, ?, ?)",
+                    (goal_id, f"reminder #{reminder_id}", source, at),
+                )
+                return True
+
+        return await self._run(unlink)
+
+    async def delete_goal(
+        self, goal_id: int, expected_created_at: str, event_text: str, event_at: str,
+    ) -> str:
+        def delete() -> str:
+            with self._tx() as conn:
+                row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                if row is None:
+                    return "not_found"
+                if not stamp_matches(row["created_at"], expected_created_at):
+                    return "stale"
+                conn.execute("DELETE FROM goal_reminders WHERE goal_id = ?", (goal_id,))
+                conn.execute("DELETE FROM goal_history WHERE goal_id = ?", (goal_id,))
+                conn.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+                self._insert_owner_event(conn, event_text, event_at)
+            self._append_owner_event_transcript(event_text, event_at)
+            return "deleted"
+
+        return await self._run(delete)
+
+    # ---- noticings (R7, owner-only) ---------------------------------------
+
+    async def noticing_messages_since(
+        self, start: datetime, end: datetime,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return (owner_dm_messages, approved_group_messages) in (start, end]. Friends' DMs are never read."""
+        def select() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            if self.owner_id is None:
+                return [], []
+            owner = str(self.owner_id)
+            start_s, end_s = start.isoformat(), end.isoformat()
+            bounds = (
+                "m.is_deleted = 0 AND julianday(m.created_at) > julianday(?) "
+                "AND julianday(m.created_at) <= julianday(?)"
+            )
+            owner_rows = [
+                dict(r) for r in self._conn.execute(
+                    "SELECT m.id, m.chat_id, m.msg_id, m.role, m.text, m.created_at "
+                    f"FROM messages m WHERE {bounds} AND m.chat_id = ? "
+                    "AND m.role IN ('user', 'assistant') "
+                    "ORDER BY julianday(m.created_at) DESC, m.id DESC LIMIT 40",
+                    (start_s, end_s, owner),
+                )
+            ]
+            group_rows = [
+                dict(r) for r in self._conn.execute(
+                    "SELECT m.id, m.chat_id, m.msg_id, m.role, m.sender_user_id, m.text, m.created_at, "
+                    "COALESCE(NULLIF(c.title, ''), m.chat_id) AS title "
+                    f"FROM messages m JOIN chats c ON c.chat_id = m.chat_id WHERE {bounds} "
+                    "AND CAST(m.chat_id AS INTEGER) < 0 AND c.authorization_status = 'approved' "
+                    "AND m.role IN ('user', 'assistant') "
+                    f"AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL} "
+                    "ORDER BY julianday(m.created_at) DESC, m.id DESC LIMIT 30",
+                    (start_s, end_s),
+                )
+            ]
+            return owner_rows, group_rows
+
+        return await self._run(select)
+
+    async def create_noticings(
+        self, day: str, items: list[dict[str, Any]], at: str, *, daily_cap: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Insert up to `daily_cap` noticings for `day` atomically."""
+        def insert() -> list[dict[str, Any]]:
+            if not items or daily_cap <= 0:
+                return []
+            created: list[dict[str, Any]] = []
+            with self._tx() as conn:
+                existing = conn.execute("SELECT COUNT(*) FROM noticings WHERE day = ?", (day,)).fetchone()[0]
+                room = max(0, daily_cap - existing)
+                for item in items[:room]:
+                    cur = conn.execute(
+                        "INSERT INTO noticings ("
+                        "day, kind, title, body, action_kind, action_payload_json, "
+                        "source_kind, source_chat_id, source_msg_id, source_label, status, created_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                        (
+                            day, item["kind"], item["title"], item["body"],
+                            item["action_kind"], item["action_payload_json"],
+                            item["source_kind"], item["source_chat_id"], item["source_msg_id"],
+                            item["source_label"], at,
+                        ),
+                    )
+                    row = conn.execute("SELECT * FROM noticings WHERE id = ?", (cur.lastrowid,)).fetchone()
+                    created.append(dict(row))
+            return created
+
+        return await self._run(insert)
+
+    async def get_noticing(self, noticing_id: int) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM noticings WHERE id = ?", (noticing_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def list_noticings(
+        self, *, status: str | None = None, kind: str | None = None, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        def select() -> list[dict[str, Any]]:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if status is not None:
+                clauses.append("status = ?")
+                params.append(status)
+            if kind is not None:
+                clauses.append("kind = ?")
+                params.append(kind)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(limit)
+            return [
+                dict(row) for row in self._conn.execute(
+                    f"SELECT * FROM noticings {where} "
+                    "ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, id DESC LIMIT ?",
+                    params,
+                )
+            ]
+
+        return await self._run(select)
+
+    async def pending_noticings(self, limit: int = 20) -> list[dict[str, Any]]:
+        return await self.list_noticings(status="pending", limit=limit)
+
+    async def dismissed_noticings(self, limit: int = 15) -> list[dict[str, Any]]:
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT * FROM noticings WHERE status = 'dismissed' ORDER BY decided_at DESC, id DESC LIMIT ?",
+                (limit,),
+            )
+        ])
+
+    async def next_unsent_noticing(self, since_day: str) -> dict[str, Any] | None:
+        def select() -> dict[str, Any] | None:
+            row = self._conn.execute(
+                "SELECT * FROM noticings WHERE status = 'pending' AND sent_as_opener_at IS NULL "
+                "AND day >= ? ORDER BY id DESC LIMIT 1", (since_day,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(select)
+
+    async def noticing_opener_sent_on(self, start_iso: str, end_iso: str) -> bool:
+        return await self._run(lambda: self._conn.execute(
+            "SELECT 1 FROM noticings WHERE sent_as_opener_at IS NOT NULL "
+            "AND julianday(sent_as_opener_at) >= julianday(?) AND julianday(sent_as_opener_at) < julianday(?) "
+            "LIMIT 1",
+            (start_iso, end_iso),
+        ).fetchone() is not None)
+
+    async def mark_noticing_opener_sent(self, noticing_id: int, sent_at: str, msg_id: int) -> bool:
+        def update() -> bool:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE noticings SET sent_as_opener_at = ?, opener_msg_id = ? "
+                    "WHERE id = ? AND status = 'pending' AND sent_as_opener_at IS NULL",
+                    (sent_at, msg_id, noticing_id),
+                )
+                return cur.rowcount == 1
+
+        return await self._run(update)
+
+    async def decide_noticing(
+        self, noticing_id: int, status: str, outcome: str, decided_at: str,
+    ) -> dict[str, Any] | None:
+        def update() -> dict[str, Any] | None:
+            with self._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE noticings SET status = ?, outcome = ?, decided_at = ? "
+                    "WHERE id = ? AND status = 'pending'",
+                    (status, outcome, decided_at, noticing_id),
+                )
+                if cur.rowcount != 1:
+                    return None
+                row = conn.execute("SELECT * FROM noticings WHERE id = ?", (noticing_id,)).fetchone()
+                return dict(row) if row is not None else None
+
+        return await self._run(update)
+
+    async def update_noticing_outcome(self, noticing_id: int, outcome: str) -> None:
+        await self._run(
+            self._conn.execute,
+            "UPDATE noticings SET outcome = ? WHERE id = ?",
+            (outcome, noticing_id),
+        )
+
+    async def delete_noticing(
+        self, noticing_id: int, expected_created_at: str, event_text: str, event_at: str,
+    ) -> str:
+        def delete() -> str:
+            with self._tx() as conn:
+                row = conn.execute("SELECT * FROM noticings WHERE id = ?", (noticing_id,)).fetchone()
+                if row is None:
+                    return "not_found"
+                if not stamp_matches(row["created_at"], expected_created_at):
+                    return "stale"
+                conn.execute("DELETE FROM noticings WHERE id = ?", (noticing_id,))
+                self._insert_owner_event(conn, event_text, event_at)
+            self._append_owner_event_transcript(event_text, event_at)
+            return "deleted"
+
+        return await self._run(delete)

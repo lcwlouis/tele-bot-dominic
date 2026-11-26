@@ -21,6 +21,10 @@
   const own = {
     onclick: () => (pinned ? unpin() : (pinned = open = true)),
     onblur: unpin,
+    // Esc on the focused glyph closes it too: the tooltip's own Esc listener attaches a moment after it opens.
+    onkeydown: (event: KeyboardEvent) => {
+      if (event.key === "Escape" && (pinned || open)) unpin();
+    },
   };
 </script>
 

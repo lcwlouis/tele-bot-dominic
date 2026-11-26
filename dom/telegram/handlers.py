@@ -13,6 +13,7 @@ from random import Random
 from typing import Any, Awaitable, Callable, Collection
 from zoneinfo import ZoneInfo
 
+import httpx
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
@@ -38,6 +39,8 @@ from dom.plugins.registry import PluginRegistry
 from dom.plugins import surfaces
 from dom.plugins.runner import PluginRunner
 from dom.gifs import GifSearch
+from dom.goals import Goals
+from dom.noticings import Noticings
 from dom.studio.client import StudioClient
 from dom.studio.cloud import CloudStudio
 from dom.studio.policy import StudioQuota
@@ -72,6 +75,7 @@ class App:
     search_client: SearchClient | SearchRouter | None = None
     gifs: GifSearch | None = None
     studio: StudioClient | None = None
+    studio_http: httpx.AsyncClient | None = None  # the studio's client, which ignores proxy settings (cli.py)
     cloud_studio: CloudStudio | None = None
     studio_quota: StudioQuota = field(init=False)
     draft_client: ChatClient | FallbackClient | None = None
@@ -85,6 +89,8 @@ class App:
     plugins: PluginRegistry = field(init=False)
     plugin_runner: PluginRunner = field(init=False)
     self_work: SelfWork = field(init=False)
+    goals: Goals = field(init=False)
+    noticings: Noticings = field(init=False)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
     menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
 
@@ -110,6 +116,8 @@ class App:
             self.t3 = Bridge(self)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
         self.self_work = SelfWork(self)
+        self.goals = Goals(self)
+        self.noticings = Noticings(self)
         if self.config.desktop_hosts:
             self.desktop_worker = DesktopFleet(self)
         if self.cloud_studio is not None and self.cloud_studio.running_chat_keys is None:
@@ -429,11 +437,11 @@ async def handle_message(app: App, message: Message) -> None:
             await owner.record_event(app, f"{who} ran /pending: {await owner.pending_summary(app)}")
             return
         if command == "/status":
-            await owner.send_view(app.bot, msg.chat_id, await owner.render_status(app), sleep=app.sleep)
+            await owner.show_view(app, msg.chat_id, await owner.render_status(app))
             await owner.record_event(app, f"{who} ran /status: {await owner.status_summary(app)}")
             return
         if command == "/chats":
-            await owner.send_view(app.bot, msg.chat_id, await owner.render_chats(app), sleep=app.sleep)
+            await owner.show_view(app, msg.chat_id, await owner.render_chats(app))
             await owner.record_event(app, f"{who} ran /chats: {await owner.chats_summary(app)}")
             return
         if command == "/stickers":
@@ -629,6 +637,7 @@ async def _close_card(app: App, query: CallbackQuery) -> None:
     """Close removes the whole card. Telegram refuses to delete messages older than 48 hours, so then only its buttons go."""
     if query.message is None:
         return
+    await app.store.forget_menu_card(query.message.chat.id, query.message.message_id)  # nothing left to expire
     try:
         await retry_telegram(
             lambda: app.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id),
@@ -651,7 +660,7 @@ async def _refresh_status(app: App, query: CallbackQuery) -> None:
     if query.message is None:
         return
     chat_id = query.message.chat.id
-    await owner.send_view(app.bot, chat_id, await owner.render_status(app), sleep=app.sleep)
+    await owner.show_view(app, chat_id, await owner.render_status(app))
     await owner.delete_message(app.bot, chat_id, query.message.message_id, sleep=app.sleep)
 
 
@@ -996,6 +1005,23 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
             elif decision == "delno":
                 await _toast(app, query, "Cancelled")
                 await _settle_confirm(app, query, "Cancelled")
+        return
+    if action == "notice":
+        if (
+            query.from_user.is_bot or query.message is None
+            or query.message.chat.id != owner_id or query.message.chat.type != "private"
+        ):
+            return
+        decision, _, raw_id = raw_chat_id.partition(":")
+        item_id = _item_id(raw_id)
+        if item_id is not None and decision in ("do", "no"):
+            accept = decision == "do"
+            ok, message, _ = await app.noticings.decide(item_id, accept=accept, settle_telegram=False)
+            await _toast(app, query, message if ok else "already handled")
+            if ok:
+                await _settle_confirm(app, query, "✅ Let's do it" if accept else "Not now")
+            else:
+                await _settle_confirm(app, query, "Already handled")
         return
     if action == "own":
         if (

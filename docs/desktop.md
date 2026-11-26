@@ -215,8 +215,9 @@ limits count the bytes on the wire and a compressed bomb cannot inflate past the
 
 ## Spend
 
-Worker model calls count toward `daily_spend_cap_usd`. When the cap is reached, a
-running task stops with "paused by today's spend cap". `[desktop] task_cost_cap_usd`
+Worker model calls count toward `daily_spend_cap_usd`, `monthly_spend_cap_usd` and the
+`desktop` limit in `[area_spend_caps_usd]`. When any of them is reached, a
+running task stops with "paused by a spend cap". `[desktop] task_cost_cap_usd`
 (default `0.5`, `0` turns it off) stops a single task once its calls cost that much.
 
 The model call that writes the report to you is one more call of the task. It is

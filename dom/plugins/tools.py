@@ -68,7 +68,7 @@ def _argument_texts(value: object) -> list[str]:
 
 async def _held_by_leak_check(app: App, ctx: TurnCtx, plugin: Plugin, args: dict) -> bool:
     """Arguments to an online plugin leave the machine, so they get the check outgoing messages get."""
-    if not plugin.manifest.network or app.jev is None or not app.config.leak_check:
+    if not plugin.manifest.network or app.jev is None or app.config.leak_cutoff is None:
         return False
     text = "\n".join(_argument_texts(args))
 
@@ -81,7 +81,8 @@ async def _held_by_leak_check(app: App, ctx: TurnCtx, plugin: Plugin, args: dict
     if score is None:
         log.warning("leak check unavailable for plugin %s; running", plugin.manifest.name)
         return False
-    if score < app.config.leak_threshold:
+    cutoff = app.config.leak_cutoff
+    if cutoff is None or score < cutoff:
         return False
     await guard.notify_held(
         app, f"Held back a call to plugin {plugin.manifest.name} that looked like it leaked private info\n\n{text}",

@@ -155,8 +155,9 @@ Cloudflare. Keep local bearer-token testing on loopback.
   bounded selection of headings, names, numbers and other terms from owner notes
   to the configured Jev endpoint. At or above the configured threshold Dom holds
   back the text and alerts the owner. If Jev cannot score the text, Dom may send
-  it and record that the check was unavailable. `leak_check = false` turns off
-  this additional check. The chat-scope boundary still applies. Proposed studio
+  it and record that the check was unavailable. `leak_scan` (`strict`, `standard`,
+  `relaxed` or `off`; see [the leak scan](setup.md#the-leak-scan)) sets the threshold,
+  and `off`, like `leak_check = false`, turns off this additional check. The chat-scope boundary still applies. Proposed studio
   speech and scenes go through a local credential and private-note check before
   media generation, including in the owner DM. Outside the owner DM they also go
   through the configured Jev check, so in the owner DM speech and scenes can reach
@@ -267,6 +268,19 @@ beyond the models listed above.
   prompt only, and so to the chat model when the owner DM is answered. Other chats learn only that Dom "was just in another conversation",
   never where or what. Nothing from the owner DM or private notes becomes such
   a note.
+- **Goals and noticings.** Personal goals and nightly noticings (including Own
+  work ideas) are strictly owner-only: they exist only in the owner DM and the
+  owner dashboard APIs (`/api/goals`, `/api/noticings`, and Home's `for_you`
+  summary). Code filters the `goals` tool, turn-note context and opener
+  check-ins so nothing about goals or noticings ever reaches groups or friends'
+  DMs. Nightly noticings run in at most one small reflection call under the
+  daily spend cap, reading only owner-DM messages, approved-group context,
+  goals, Own work and R13-filtered notes (never friends' DMs or unapproved
+  chats). Any group reference is restricted in code to a one-line paraphrase
+  with no verbatim group text, handles or raw R13 tags. Tapping **Let's do it**
+  acts through existing tools, reminders or Own work, and always routes
+  anything targeting another chat through an approval card; **Not now**
+  dismisses the item and feeds Dom's preference history for future nights.
 
 ## Plugins and desktop
 

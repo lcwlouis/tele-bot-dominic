@@ -54,6 +54,7 @@ from dom.config import (
     StudioChain,
     StudioFallback,
     _replace_file,
+    set_dotenv,
     validate_config,
 )
 from dom import model_lists
@@ -1052,6 +1053,41 @@ async def update_desktop_steps(request: Request) -> Permissions:
     update = await _input(request, DesktopStepsUpdate)
     saved = await _save_now(app, update.revision, DESKTOP_STEPS, update.max_steps)
     return await asyncio.to_thread(_permissions, saved)
+
+
+async def save_values(
+    app: App, revision: str, changes: dict[tuple[str, ...], bool | int | float | str | None],
+    live: Callable[[Config], dict], failure: str, env: dict[str, str | None] | None = None,
+    prepare: Callable[[tomlkit.TOMLDocument, dict], dict] | None = None,
+) -> Snapshot:
+    """Write config.toml values (and `env` secrets to .env, once the new config has validated) and hand the running
+    config only what this save owns, so a disk-only edit elsewhere is not applied with it. One config write at a time,
+    off the loop; a cancelled request still finishes the swap."""
+
+    def write() -> Snapshot:
+        current = _snapshot(app.config.home)
+        _check_revision(current, revision)
+        document = tomlkit.parse(current.text)
+        plain = prepare(document, changes) if prepare is not None else changes  # `prepare` takes the paths it owns
+        for path, value in plain.items():
+            set_value(document, path, value)
+        text = tomlkit.dumps(document)
+        saved = Snapshot(validate_config(current.config.home, tomllib.loads(text)), text)
+        for name, value in (env or {}).items():
+            set_dotenv(current.config.home, name, value)
+        _write(current, saved)
+        return saved
+
+    async def run() -> Snapshot:
+        async with _CONFIG_WRITE:
+            try:
+                saved = await asyncio.to_thread(write)
+            except (OSError, ValueError):
+                raise HTTPException(409, failure) from None
+            app.config = app.config.model_copy(update=live(saved.config))
+            return saved
+
+    return await asyncio.shield(asyncio.ensure_future(run()))
 
 
 def _save_setting(
