@@ -572,7 +572,11 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
         if chat_id == str(app.owner_id):
             return "Your DM notes"
         chat = known.get(chat_id, {"chat_id": chat_id, "title": ""})
-        return _title(chat, app.owner_id) if chat_id.startswith("-") else f"Friend DM \u00b7 {_title(chat, app.owner_id)}"
+        if chat_id.startswith("-"):
+            # A note can outlive its chat's row (a copied home, a bot that never saw the group): say it is a group.
+            title = _title(chat, app.owner_id)
+            return f"Group {chat_id}" if title == chat_id else title
+        return f"Friend DM \u00b7 {_title(chat, app.owner_id)}"
 
     for rel in chats:
         (owner_notes if Path(rel).stem == str(app.owner_id) else chat_notes).append((rel, chat_label(rel)))

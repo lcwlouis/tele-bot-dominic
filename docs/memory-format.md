@@ -66,9 +66,10 @@ its `{core ...}` group in the file; `GET /api/memory/core` lists them all as `{"
 ## On the Memory page
 
 Files open as a preview first; Edit shows the source. The preview hides every metadata group and shows it as a small
-chip instead: `from: <chat name>` for `{chat <id>}`, `shareable` for `{any}`, and `core, pinned by you` or `core,
-pinned by Dom` for a pin. A journal keeps each line on its own. People's notes are listed by the person's name, and
-the journal archive and every former file sit read-only under a folded Archive group. Core memories lists every pin
+chip instead: `from: <chat name>` for `{chat <id>}`, `shareable` for `{any}`, `core, pinned by you` or `core,
+pinned by Dom` for a pin, and one `about: <name>` chip per entity in `{entities ...}` (a person by name, a place,
+project or goal by its slug in words). A journal keeps each line on its own. People's notes are listed by the person's name, chat notes by the chat's title (`Group <id>` when
+this bot has never seen the chat), and the journal archive and every former file sit read-only under a folded Archive group. Core memories lists every pin
 with who made it, the day and Dom's reason; deleting one offers to unpin it (the line stays, without its `{core ...}`
 group) or to delete the line, saved like any other edit on the page.
 

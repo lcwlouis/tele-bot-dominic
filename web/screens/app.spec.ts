@@ -40,7 +40,7 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   // The Library (R9): kept media as strips, one opened with its photo, task files and exports.
   { name: "work-library", path: "/app/work/library", heading: "Library" },
   { name: "work-library-detail", path: "/app/work/library", heading: "Library", strip: "Dom on a park bench" },
-  // Search by meaning: the toggle pressed, and what it found.
+  // Search by meaning: the mode switch in the field set to Meaning, and what it found.
   { name: "search-meaning", path: "/app/search?q=train&mode=meaning", heading: "Search" },
   { name: "chats", path: "/app/chats", heading: "Chats" },
   { name: "chats-personality", path: "/app/chats", heading: "Chats", click: "Personality" },
@@ -1077,6 +1077,38 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("memory: entity tags read as chips, and an open file stays in view beside a long list", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory?file=memory/people/4002.md");
+    const preview = page.getByRole("tabpanel");
+    await expect(preview.getByText("about: Alex", { exact: true })).toBeVisible();
+    await expect(preview.getByText("about: the coast", { exact: true })).toBeVisible();
+    await expect(preview).not.toContainText("{entities");
+    // The file API's `entities` map names them when it is sent.
+    await page.route("**/api/memory/file?*", async (route) => {
+      const json = await (await route.fetch()).json();
+      await route.fulfill({ json: { ...json, entities: { "person:4002": "Alex Example", "place:the-coast": "The coast" } } });
+    });
+    await page.reload();
+    await expect(page.getByRole("tabpanel").getByText("about: Alex Example", { exact: true })).toBeVisible();
+    await expect(page.getByRole("tabpanel").getByText("about: The coast", { exact: true })).toBeVisible();
+    await page.unroute("**/api/memory/file?*");
+    // Desktop: the list and the open file are each bound to the viewport and scroll on their own.
+    const list = page.getByRole("navigation", { name: "Memory files" });
+    const bound = await list.evaluate((node) => ({ overflow: getComputedStyle(node).overflowY, height: node.getBoundingClientRect().height }));
+    expect(bound.overflow).toBe("auto");
+    expect(bound.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+    // Phone: the list is a page of its own; a file opened from far down it comes into view at the top.
+    await page.setViewportSize(viewports.phone);
+    await page.goto("/app/memory");
+    const last = page.getByRole("navigation", { name: "Memory files" }).getByRole("button").last();
+    await last.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => scrollY)).toBeGreaterThan(0);
+    await last.click();
+    await expect(page.getByRole("button", { name: "Files", exact: true })).toBeInViewport();
+    expect(problems).toEqual([]);
+  });
+
   test("memory: the soul conversation files Dom's edit, which is rejected in place", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/memory");
@@ -1810,21 +1842,52 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
-  test("search: Meaning asks by meaning, keyword stays the default, and the toggle searches again at once", async ({ page }) => {
+  test("search: the mode sits in the field, words stay the default, a new mode searches again and is remembered", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/search?q=train");
-    const toggle = page.getByRole("main").getByRole("button", { name: "Meaning" });
-    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    const modes = page.getByRole("main").getByRole("group", { name: "Search mode" });
+    const words = modes.getByRole("button", { name: "Search by words" });
+    const meaning = modes.getByRole("button", { name: "Search by meaning" });
+    await expect(words).toHaveAttribute("aria-pressed", "true");
+    await expect(meaning).toHaveAttribute("aria-pressed", "false");
     const asked = page.waitForRequest((request) => request.url().includes("/api/search?") && request.url().includes("mode=meaning"));
-    await toggle.click();
+    await meaning.click();
     await asked;
     await expect(page).toHaveURL(/\/app\/search\?q=train&mode=meaning$/);
-    await expect(toggle).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByRole("banner").getByRole("button", { name: "Meaning" })).toHaveAttribute("aria-pressed", "true");
+    await expect(meaning).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("banner").getByRole("button", { name: "Search by meaning" })).toHaveAttribute("aria-pressed", "true");
+    // The choice is remembered: the top box starts in meaning on another page, until words is picked again.
+    await page.goto("/app/work/reminders");
+    await expect(page.getByRole("banner").getByRole("button", { name: "Search by meaning" })).toHaveAttribute("aria-pressed", "true");
+    await page.goto("/app/search?q=train&mode=meaning");
     const keyword = page.waitForRequest((request) => /\/api\/search\?q=train$/.test(request.url()));
-    await toggle.click();
+    await page.getByRole("main").getByRole("button", { name: "Search by words" }).click();
     await keyword;
     await expect(page).toHaveURL(/\/app\/search\?q=train$/);
+    expect(problems).toEqual([]);
+  });
+
+  test("search: hits sort by score, show their strength quietly, and work without scores", async ({ page }) => {
+    const problems = await watch(page);
+    const hit = (title: string, extra: Record<string, unknown> = {}) => ({ title, text: `${title} text`, href: "/app/memory", at: "", full: true, ...extra });
+    await page.route("**/api/search?*", (route) =>
+      route.fulfill({
+        json: {
+          query: "train",
+          mode: "meaning",
+          groups: [
+            { kind: "memory", label: "Memory", hits: [hit("Weak one", { score: 0.38, match: "weak" }), hit("Strong one", { score: 0.81, match: "strong" })] },
+            { kind: "messages", label: "Messages", hits: [hit("Best overall", { score: 0.9, match: "strong" }), hit("No score")] },
+          ],
+        },
+      }));
+    await page.goto("/app/search?q=train&mode=meaning");
+    await expect(page.locator("section[aria-labelledby^='search-'] [data-slot='card-title']")).toHaveText(["Messages", "Memory"]);
+    const memory = page.getByRole("region", { name: "Memory" }).getByRole("link");
+    await expect(memory.first()).toContainText("Strong one");
+    await expect(memory.first()).toContainText("strong match");
+    await expect(memory.nth(1)).toContainText("weak match");
+    await expect(page.getByRole("region", { name: "Messages" }).getByRole("link").nth(1)).not.toContainText("match");
     expect(problems).toEqual([]);
   });
 

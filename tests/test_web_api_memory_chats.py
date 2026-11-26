@@ -510,3 +510,15 @@ async def test_unpinning_a_core_memory_on_the_page_keeps_the_line_unpinned(make_
         assert saved.status_code == 200
         assert app.home.read(rel).splitlines()[0] == "- Allergic to peanuts"
         assert [item["by"] for item in (await client.get("/api/memory/core")).json()["items"]] == ["dom"]
+
+
+async def test_memory_names_chat_notes_by_title_and_unknown_groups_as_groups(make_app, browser):
+    app = make_app()
+    app.home._write_regular(f"memory/chats/{GROUP}.md", "- Plans a hike {any}")
+    app.home._write_regular("memory/chats/-100999.md", "- A note from a group this bot never saw {any}")
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Weekend crew")
+    async with browser(app) as client:
+        index = (await client.get("/api/memory")).json()
+        chats = {f["path"]: f["label"] for s in index["sections"] if s["heading"] == "Chats" for f in s["files"]}
+        assert chats[f"memory/chats/{GROUP}.md"] == "Weekend crew"
+        assert chats["memory/chats/-100999.md"] == "Group -100999"

@@ -266,9 +266,21 @@ export type MemoryIndex = MemoryWaiting & {
 export type SearchData = {
   query: string;
   mode?: "keyword" | "meaning" | "entity";
-  groups: { kind: string; label: string; hits: { title: string; text: string; href: string; at: string; full: boolean }[] }[];
+  groups: { kind: string; label: string; hits: SearchHit[] }[];
 };
-export type MemoryFile = { file: string; label: string; readonly: boolean; limit: number | null; content: string; version: string };
+/** One hit. A meaning search adds `score` (higher is closer) and `match`, a coarse "strong", "good" or "weak";
+ * keyword hits and older servers send neither. */
+export type SearchHit = {
+  title: string;
+  text: string;
+  href: string;
+  at: string;
+  full: boolean;
+  score?: number | null;
+  match?: string | null;
+};
+/** `entities` names each `kind:key` the file's `{entities ...}` groups link ("person:7" → "Robin"); older servers omit it. */
+export type MemoryFile = { file: string; label: string; readonly: boolean; limit: number | null; content: string; version: string; entities?: Record<string, string> };
 /** GET /api/memory/core: every core memory, with who pinned it ("owner" or "dom"), the day and Dom's reason. */
 export type CoreMemory = { file: string; text: string; source: string; by: "owner" | "dom"; day: string; why: string };
 export type CoreMemories = { cap: number; items: CoreMemory[] };

@@ -327,7 +327,7 @@ async def seed(app: handlers.App) -> None:
     app.home._write_regular("memory/people/river.md", "River prefers the early train.")
     app.home._write_regular(f"memory/people/{ALEX}.md", (
         "# Alex\n\n- Works as a nurse (as of 2026-11) {chat -4001}\n- Prefers tea to coffee {any}\n"
-        "- Plans a trip to the coast (until 2027-04-30) {chat -4001} {core dom 2026-11-20: she talks about it all the time}\n"
+        "- Plans a trip to the coast (until 2027-04-30) {chat -4001} {entities person:4002|place:the-coast} {core dom 2026-11-20: she talks about it all the time}\n"
         "- Allergic to peanuts {core owner 2026-11-21}\n"
     ))
     app.home._write_regular(f"memory/people/{ALEX}.former.md", "- Works at the bakery (as of 2025-06) {any} [former 2026-03-01: replaced]\n")

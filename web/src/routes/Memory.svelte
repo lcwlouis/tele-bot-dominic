@@ -16,7 +16,7 @@
   import PenLine from "@lucide/svelte/icons/pen-line";
   import Upload from "@lucide/svelte/icons/upload";
   import X from "@lucide/svelte/icons/x";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { getJSON, send, ApiError, type CoreMemories, type CoreMemory, type MemoryFile, type MemoryIndex, type MemoryWaiting } from "$lib/api";
   import IconButton from "$lib/components/kit/IconButton.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
@@ -84,9 +84,19 @@
     if (index) index = { ...index, imports: result.imports, edits: result.edits };
   }
 
+  // The open file's pane. On a phone the list hides once a file opens, so the pane is brought to the top of the view
+  // instead of staying wherever the list had scrolled to.
+  let pane = $state<HTMLElement | null>(null);
+  async function reveal() {
+    await tick();
+    if (!pane || matchMedia("(min-width: 1024px)").matches) return;
+    if (pane.getBoundingClientRect().top < 0) pane.scrollIntoView({ block: "start", behavior: "instant" });
+  }
+
   async function openFile(path: string) {
     open = path;
     talking = false;
+    reveal();
     file = null;
     fileError = "";
     saveError = "";
@@ -101,8 +111,17 @@
 
   // A journal keeps every line break: its mood, entry and nudges sit on lines of their own.
   const journal = (path: string) => /(^|\/)JOURNAL\.md$|(^|\/)journal\//.test(path);
-  // Source tags read as the chat's name in the preview's chips.
-  setMemoryTags(() => index?.chat_names ?? {});
+  // Source tags read as the chat's name in the preview's chips, and `{entities person:7}` as the name the file API
+  // gives (`file.entities`), else the person's name from the People list.
+  const people = $derived(
+    Object.fromEntries(
+      (index?.sections.flatMap((section) => section.files) ?? []).flatMap((item) => {
+        const id = /^memory\/people\/(\d+)\.md$/.exec(item.path)?.[1];
+        return id ? [[`person:${id}`, item.label]] : [];
+      }),
+    ),
+  );
+  setMemoryTags(() => ({ chats: index?.chat_names ?? {}, entities: { ...people, ...(file?.entities ?? {}) } }));
   const archived = $derived(new Set(index?.sections.filter((section) => section.archive).flatMap((section) => section.files.map((item) => item.path)) ?? []));
   const labelOf = (path: string) => index?.sections.flatMap((section) => section.files).find((item) => item.path === path)?.label ?? path;
 
@@ -115,6 +134,7 @@
   async function openCore() {
     open = CORE;
     talking = false;
+    reveal();
     file = null;
     fileError = "";
     coreError = "";
@@ -165,12 +185,12 @@
     saving = true;
     saveError = "";
     try {
-      const result = await send<{ message: string; content: string; version: string }>(
+      const result = await send<{ message: string; content: string; version: string; entities?: Record<string, string> }>(
         "/api/memory/save",
         { file: file.file, version: file.version, content: draft },
         { quiet: true },
       );
-      file = { ...file, content: result.content, version: result.version };
+      file = { ...file, content: result.content, version: result.version, entities: result.entities ?? file.entities };
       draft = result.content;
       toast.show("ok", result.message);
     } catch (error) {
@@ -350,7 +370,12 @@
   {:else}
   <div class="grid items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
     <!-- On a phone the file list is a screen of its own, and a file opens full width with a way back. -->
-    <nav aria-label="Memory files" class={cn("rounded-xl border bg-surface p-3", open !== null && "max-lg:hidden")}>
+    <!-- On a wide screen the list and the open file each fit the viewport and scroll on their own, so a file deep in
+         the list opens beside it without scrolling back up. -->
+    <nav
+      aria-label="Memory files"
+      class={cn("rounded-xl border bg-surface p-3 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto lg:overscroll-contain", open !== null && "max-lg:hidden")}
+    >
       <ul class="grid gap-0.5 pb-1">
         <li>
           <button
@@ -406,7 +431,10 @@
       {/each}
     </nav>
 
-    <div class={cn("min-w-0", open === null && "max-lg:hidden")}>
+    <div
+      bind:this={pane}
+      class={cn("min-w-0 scroll-mt-4 lg:sticky lg:top-4 lg:flex lg:max-h-[calc(100dvh-2rem)] lg:flex-col lg:*:min-h-0", open === null && "max-lg:hidden")}
+    >
       {#if open === CORE}
         <Card.Root aria-labelledby="core-title">
           <Card.Header>
@@ -422,7 +450,7 @@
               {#if core}<span class="ml-auto text-meta text-muted-foreground tabular-nums">{core.items.length} of {core.cap}</span>{/if}
             </div>
           </Card.Header>
-          <Card.Content>
+          <Card.Content class="lg:overflow-y-auto">
             {#if coreError}
               <StatusNote tone="error" title="Couldn't load core memories" detail={coreError}>
                 <Button variant="secondary" onclick={openCore}>Retry</Button>
@@ -485,7 +513,7 @@
             </div>
             <p class="font-mono text-caption text-muted-foreground">{file.file}</p>
           </Card.Header>
-          <Card.Content class="grid gap-3">
+          <Card.Content class="grid gap-3 lg:overflow-y-auto">
             <Tabs.Root bind:value={view}>
               <Tabs.List class="mb-1 w-fit">
                 <Tabs.Trigger value="preview" class="px-3"><Eye aria-hidden="true" /> Preview</Tabs.Trigger>
