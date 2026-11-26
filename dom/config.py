@@ -24,8 +24,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 SearchProvider = Literal["searxng", "openrouter", "deepseek", "tavily"]
 SEARCH_PROVIDERS = get_args(SearchProvider)
 
-ModelRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation"]
-MODEL_ROLES = get_args(ModelRole)
+ModelRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation", "embedding"]
+# Roles edited by the current Settings UI. W5 adds the embedding controls; config and the owner reindex APIs land now.
+MODEL_ROLES = ("chat", "fallback", "media", "drafting", "search", "escalation")
+MODEL_ROUTE_ROLES = get_args(ModelRole)
 
 # The kinds of paid work a monthly limit can cover (dom/usage.py maps each usage kind to one).
 SpendArea = Literal["chat", "media", "search", "desktop", "memory"]
@@ -114,7 +116,7 @@ class ProviderEndpoint(BaseModel):
     base_url: str = Field(description="Provider API base URL, including its API version path.")
     model: str = Field(
         "",
-        description="Provider model ID. Required for chat, fallback, media, drafting, escalation, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily.",
+        description="Provider model ID. Required for chat, fallback, media, drafting, escalation, embedding, triage and OpenRouter web search; leave empty for SearXNG, DeepSeek web search and Tavily.",
     )
     api_key_env: str | None = Field(None, description="Secret variable name. Leave unset for a compatible endpoint without authentication.")
     reasoning_effort: str | None = Field(
@@ -234,7 +236,7 @@ class WebConfig(BaseModel):
     access_aud: str = Field("", description="Cloudflare Access application audience tag.")
     access_emails: list[str] = Field([], description="Optional allowlist for the Access assertion's email claim.")
     dev_token_env: str = Field("", description="Variable holding a local dashboard bearer token, at least 32 characters. Mutually exclusive with Access settings.")
-    public_url: str = Field("", description="HTTPS dashboard base URL for links in desktop handoff messages.")
+    public_url: str = Field("", description="HTTPS dashboard base URL for links in Dom's notices and desktop handoff messages.")
 
 
 HOST_NAME = r"^[a-z0-9][a-z0-9-]{0,23}$"
@@ -636,8 +638,8 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def _fallbacks_only_on_roles(self) -> Config:
         for name, endpoint in self.models.items():
-            if endpoint.fallbacks and name not in MODEL_ROLES:
-                raise ValueError(f"models.{name} cannot have fallbacks; supported roles: {', '.join(MODEL_ROLES)}")
+            if endpoint.fallbacks and name not in MODEL_ROUTE_ROLES:
+                raise ValueError(f"models.{name} cannot have fallbacks; supported roles: {', '.join(MODEL_ROUTE_ROLES)}")
             endpoints = (endpoint, *endpoint.fallbacks)
             if name != "search":
                 for item in endpoints:
@@ -730,7 +732,7 @@ class Config(BaseModel):
     def model_endpoints(self) -> Iterator[tuple[str, ProviderEndpoint]]:
         for name, endpoint in self.models.items():
             yield name, endpoint
-            if name in MODEL_ROLES:
+            if name in MODEL_ROUTE_ROLES:
                 for index, provider in enumerate(endpoint.fallbacks):
                     yield f"{name}.fallbacks[{index}]", provider
 

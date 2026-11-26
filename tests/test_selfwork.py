@@ -215,7 +215,7 @@ def test_plan_validation_keeps_only_safe_well_formed_tasks():
     assert parse_plan({"tasks": "nope"}, 20, 25) is None
 
 
-async def test_plan_announces_tasks_in_the_owner_dm_with_cancel_buttons(make_app):
+async def test_plan_announces_tasks_in_the_owner_dm_as_a_short_notice_without_cancel_buttons(make_app):
     app = self_app(make_app, plan_reply(TASK, NOTES), delay_hours=3)
     await app.self_work.plan()
     rows = sorted(await app.store.self_tasks(), key=lambda row: row["id"])
@@ -226,10 +226,11 @@ async def test_plan_announces_tasks_in_the_owner_dm_with_cancel_buttons(make_app
     sends = app.bot.of("send", OWNER)
     assert len(sends) == 1 and not app.bot.of("send", FRIEND)
     _, _, text, kwargs = sends[0]
-    assert text.startswith("Got curious tonight.")
-    assert "en.wikipedia.org" in text and "up to 10 min and 10 steps" in text
-    buttons = [row[0].callback_data for row in kwargs["reply_markup"].inline_keyboard]
-    assert buttons == [f"own:cancel:{row['id']}" for row in rows]
+    assert text.startswith("Tomorrow's own work: 2 things\n")
+    assert [line for line in text.splitlines() if line.startswith("•")] == [f"• #{row['id']} {row['goal']}" for row in rows]
+    assert "Uses:" not in text and "Budget:" not in text and "Cancel #" not in text and len(text) < 400
+    assert kwargs["entities"][0].type == "bold" and kwargs["entities"][0].length == len("Tomorrow's own work: 2 things")
+    assert kwargs.get("reply_markup") is None  # no public_url: no link, and never a Cancel button per task
     request = app.client.requests[0][0]
     assert "<soul>" in request[1]["content"] and "Never plan logins" in request[0]["content"]
 
@@ -365,8 +366,8 @@ async def test_a_finished_task_keeps_screenshots_for_the_dashboard_and_sends_one
     assert app.box.resets == 1 and app.box.stops >= 1  # a fresh profile, and the container stopped after
     sends = [call for call in app.bot.calls if call[0] == "send"]
     assert len(sends) == 1 and sends[0][1] == OWNER
-    assert sends[0][2].startswith(f"Finished my own task #{row['id']}") and len(sends[0][2]) < 500
-    assert "The full result and screenshots are on the dashboard." in sends[0][2]
+    assert sends[0][2].startswith(f"Done: {row['goal']}"[:60]) and len(sends[0][2]) < 300
+    assert sends[0][2].endswith("web summary, unchecked")
     messages, schemas, _ = app.client.requests[0]
     assert messages[0]["content"] == OWN_SYSTEM_PROMPT
     assert "en.wikipedia.org" in messages[1]["content"]
@@ -441,7 +442,7 @@ async def test_step_and_time_budgets_stop_the_task(make_app, over):
     stopped = await status(app, row["id"])
     assert stopped["status"] == "failed"
     assert stopped["error"] == ("step budget reached" if over == "steps" else "time budget reached")
-    assert app.bot.of("send", OWNER)[-1][2].startswith(f"Stopped my own task #{row['id']}")
+    assert app.bot.of("send", OWNER)[-1][2].startswith("Stopped: ")
     if over == "steps":  # two steps, then a wrap-up that may only call finish: the third read_page never runs
         assert len(app.client.requests) == 3
         assert [schema["function"]["name"] for schema in app.client.requests[2][1]] == ["finish"]
@@ -467,7 +468,7 @@ async def test_an_unverified_guard_refuses_the_task_and_tells_the_owner(make_app
     assert refused["status"] == "refused" and reason in refused["error"]
     assert app.client.requests == [] and app.box.navigated == []  # no model call, no page
     [send] = app.bot.of("send", OWNER)
-    assert send[2].startswith(f"I didn't start my own task #{row['id']}") and reason in send[2]
+    assert send[2].startswith("Didn't start: ") and "network guard not verified" in send[2] and "Nothing ran." in send[2]
     record = json.loads(await app.store.kv_get(GUARD_KEY))
     assert record["ok"] is False and reason in record["detail"]
 
@@ -676,7 +677,7 @@ async def test_a_plan_that_could_not_be_announced_never_runs(make_app):
     assert app.box.resets == 0 and len(app.client.requests) == 1
 
 
-async def test_tasks_wait_for_their_announcement_and_a_long_plan_fits_one_message(make_app):
+async def test_tasks_wait_for_their_announcement_and_a_long_plan_stays_a_short_notice(make_app):
     long_sites = [f"{'a' * 63}.{'b' * 63}.{'c' * 60}{n}.org" for n in range(4)]
     tasks = [{**TASK, "goal": "g" * 200, "why": "w" * 300, "sites": long_sites, "tools": list(selfwork.desktop_tools.OWN)}] * 3
     app = self_app(make_app, plan_reply(*tasks, announcement="a" * 500))
@@ -689,8 +690,7 @@ async def test_tasks_wait_for_their_announcement_and_a_long_plan_fits_one_messag
     app.bot.send_message = capture
     await app.self_work.plan()
     [(text, before)] = sent
-    assert len(text) <= 4096
-    assert all(text.count(site) == 3 for site in long_sites)  # every site in full, for every task
+    assert len(text) < 400 and "…" in text and not any(site in text for site in long_sites)  # the detail is on the dashboard
     assert before == [selfwork.UNANNOUNCED.isoformat()] * 3  # not runnable while the DM is in flight
     now = app.dispatch.now()
     assert {row["not_before"] for row in await app.store.self_tasks()} == {(now + timedelta(hours=3)).isoformat()}
@@ -731,7 +731,7 @@ async def test_the_dm_summary_is_labelled_and_carries_no_links(make_app):
     await run_next(app)
     [send] = app.bot.of("send", OWNER)
     text = send[2]
-    assert "Summary of web content (not checked by me, links removed)" in text and "Anemones live there." in text
+    assert text.endswith("web summary, unchecked") and "Anemones live there." in text
     assert not any(part in text for part in ("evil.example", "tricky.org", "click-here.net", "http"))
     assert (await status(app, row["id"]))["result"] == result  # the dashboard keeps the full result
 
@@ -817,7 +817,7 @@ async def test_out_of_steps_with_a_report_ends_done_as_partial_with_its_files(ma
     assert done["error"] == selfwork.PARTIAL
     assert json.loads(done["files_json"]) == [f"{CONTAINER}-pools.png"]
     [summary] = [c[2] for c in app.bot.calls if c[0] == "send"]
-    assert summary.startswith(f"Finished part of my own task #{row['id']}")
+    assert summary.startswith("Partly done: ")
     assert "ran out of steps" in summary and "Tide pools hold anemones." in summary
 
 

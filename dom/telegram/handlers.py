@@ -26,9 +26,11 @@ from dom.deletion import STALE_MESSAGE, hash_matches, stamp_matches, stamp_token
 from dom.dispatch import Dispatcher
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
+from dom.embedding import EmbeddingRouter, routed_embedding_client
 from dom.t3.tools import Bridge
 from dom.home import Home
 from dom.jev import JevClient
+from dom.knowledge import KnowledgeIndex
 from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.media import MediaDescriber
 from dom.media_files import MediaFiles
@@ -82,6 +84,8 @@ class App:
     media_files: MediaFiles = field(init=False)  # the media Dom sent, kept on disk
     draft_client: ChatClient | FallbackClient | None = None
     escalation_client: FallbackClient | None = None
+    embedding_client: EmbeddingRouter | None = None
+    knowledge: KnowledgeIndex = field(init=False)
     desktop_worker: DesktopFleet | None = field(init=False, default=None)  # every desktop container's worker
     t3: Bridge | None = field(init=False, default=None)
     dispatch: Dispatcher = field(init=False)
@@ -118,6 +122,11 @@ class App:
         if self.config.t3.enabled:
             self.t3 = Bridge(self)
         self.dispatch = Dispatcher(self, presence, self.jev, self.sleep, now)
+        async def embedding_allowed() -> bool:
+            return not await self.dispatch.usage.over_cap(self.config, self.bot, sleep=self.sleep)
+        self.knowledge = KnowledgeIndex(
+            self.store, self.home, self.embedding_client, allowed=embedding_allowed, chat_id=self.owner_id,
+        )
         self.self_work = SelfWork(self)
         self.goals = Goals(self)
         self.noticings = Noticings(self)
@@ -170,7 +179,8 @@ class App:
         chat, media, draft, escalation = (routed_client(config, role, current.http, current.usage)
                                           for role in ("chat", "media", "drafting", "escalation"))
         search = routed_search_client(config, current.http, current.usage)
-        return ModelRoutes(config, chat, media, draft, escalation, search, self._triage_client(config))
+        embedding = routed_embedding_client(config, current.http, current.usage)
+        return ModelRoutes(config, chat, media, draft, escalation, search, embedding, self._triage_client(config))
 
     def use_model_routes(self, routes: ModelRoutes) -> None:
         """Swap in routes built by model_routes for new calls. In-flight calls keep theirs."""
@@ -186,6 +196,8 @@ class App:
             self.media_describer = None
         self.jev = self.dispatch.jev = routes.jev
         self.search_client = routes.search
+        if self.knowledge.stage(routes.embedding):
+            log.info("embedding model staged; confirm reindex before it serves searches")
         self.config, self.client, self.draft_client = routes.config, routes.chat, routes.draft
         self.escalation_client = routes.escalation
 
@@ -215,6 +227,7 @@ class ModelRoutes:
     draft: FallbackClient
     escalation: FallbackClient
     search: SearchRouter | None
+    embedding: EmbeddingRouter | None
     jev: JevClient | None
 
 
@@ -927,7 +940,7 @@ async def _handle_proposal(app: App, query: CallbackQuery, data: str) -> None:
         row = next((row for row in await app.proposals.pending() if row["id"] == proposal_id), None)
         await _toast(app, query, None if row else "already handled")
         if row:
-            await app.proposals.send(row)
+            await app.proposals.send(row, full=True)
             await owner.record_event(app, f"Viewed proposal #{proposal_id}")
         else:
             await _settle_button(app, query, "already handled")

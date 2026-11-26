@@ -24,6 +24,9 @@ LIMITS: dict[str, int] = {
     "memory/HABITS.md": 1000,
     "memory/people/*.md": 1000,
     "memory/chats/*.md": 1000,
+    "memory/places/*.md": 1400,
+    "memory/projects/*.md": 1400,
+    "memory/goals/*.md": 1400,
     "private/USER.md": 1375,
     "private/NOTES.md": 2200,
 }
@@ -35,9 +38,12 @@ JOURNAL_LIVE = 30  # entries kept in JOURNAL.md; older ones move to the monthly 
 ARCHIVE_DIRS = {False: "memory/journal", True: "private/journal"}
 _ARCHIVE_FILE = re.compile(r"^(?:memory|private)/journal/(?:\d{4}-\d{2}|\d{4}|RECENT)\.md$")
 # Note files whose lines carry source tags (a source chat, or `any`).
-_TAGGED = ("memory/people/*.md", "memory/chats/*.md")
+_TAGGED = ("memory/people/*.md", "memory/chats/*.md", "memory/places/*.md", "memory/projects/*.md", "memory/goals/*.md")
 # Note files the owner's hand edits pin.
-_NOTE_FILES = ("memory/MEMORY.md", "memory/people/*.md", "memory/chats/*.md", "private/USER.md", "private/NOTES.md")
+_NOTE_FILES = (
+    "memory/MEMORY.md", "memory/people/*.md", "memory/chats/*.md", "memory/places/*.md",
+    "memory/projects/*.md", "memory/goals/*.md", "private/USER.md", "private/NOTES.md",
+)
 _MEMORY_WRITE_LOCK = Lock()
 _JOURNAL_HEADING = re.compile(r"^## \d{4}-\d{2}-\d{2}[ \t\r]*$", re.MULTILINE)
 
@@ -104,13 +110,14 @@ class Home:
         old: str | None = None,
         *,
         source: str | None = None,
+        entities: tuple[str, ...] = (),
         today: date | None = None,
     ) -> WriteResult:
         """`source` marks a write that came from the memory pass: the chat the facts came from. Such a write cannot
         pin a line (core marks in its text are dropped) and its lines get that chat's source tag unless it says `{any}`."""
         # Proposal decisions run in the store worker. Serialize their edits with memory passes.
         with _MEMORY_WRITE_LOCK:
-            return self._memory_write(rel, op, text, old, source, today or date.today())
+            return self._memory_write(rel, op, text, old, source, entities, today or date.today())
 
     def _memory_write(
         self,
@@ -119,6 +126,7 @@ class Home:
         text: str,
         old: str | None,
         source: str | None,
+        entities: tuple[str, ...],
         today: date,
     ) -> WriteResult:
         try:
@@ -134,7 +142,7 @@ class Home:
         former: list[tuple[str, str]] = []
 
         if op == "add":
-            line = self._shaped(rel, f"- {text}", source)
+            line = self._shaped(rel, f"- {text}", source, entities)
             if not text.strip() or any(notes.blank_body(part) for part in line.splitlines()):
                 return WriteResult(False, current, "add needs `text`")
             new = f"{current.rstrip(chr(10))}\n{line}" if current.strip() else line
@@ -159,7 +167,7 @@ class Home:
                 before, after = current[line_start:start], current[end:len(current) if line_end == -1 else line_end]
                 if source is not None:  # the new line's tag comes from `text` alone, never from what the old line carried
                     before, after = notes.strip_meta(before), notes.strip_meta(after)
-                replaced = [self._shaped(rel, line, source) for line in (before + text + after).split("\n")]
+                replaced = [self._shaped(rel, line, source, entities) for line in (before + text + after).split("\n")]
                 if any(line.strip() and notes.blank_body(line) for line in replaced):
                     return WriteResult(False, current, "replace needs `text`")
                 lines[first:last + 1] = replaced
@@ -175,7 +183,7 @@ class Home:
         return self._save_memory_text(rel, current, new, limit, former, today)
 
     @staticmethod
-    def _shaped(rel: str, text: str, source: str | None) -> str:
+    def _shaped(rel: str, text: str, source: str | None, entities: tuple[str, ...] = ()) -> str:
         """Text the memory pass wrote, as the file keeps it: no core marks, and no source tag except in the people and
         chat notes, where each line is tagged with the chat it came from (or `{any}` when the pass says it is general)."""
         if source is None:
@@ -188,7 +196,8 @@ class Home:
                 continue
             line = notes.parse_line(raw)
             tag = (notes.ANY if line.source == notes.ANY else source) if tagged else None
-            out.append(notes.format_line(notes.Line(line.body, tag)))
+            refs = notes.normalize_entities((*line.entities, *entities))
+            out.append(notes.format_line(notes.Line(line.body, tag, entities=refs)))
         return "\n".join(out)
 
     def _save_memory_text(
@@ -241,7 +250,7 @@ class Home:
     def _note_rels(self) -> list[str]:
         """Every note file this Home can read, MEMORY.md first."""
         people, chats = self.list_memory_notes()
-        rels = ["memory/MEMORY.md", *people, *chats]
+        rels = ["memory/MEMORY.md", *people, *chats, *self.list_entity_notes()]
         return rels + (["private/USER.md", "private/NOTES.md"] if self.allow_private else [])
 
     def core_memories(self) -> list[dict[str, str]]:
@@ -270,7 +279,7 @@ class Home:
                 return WriteResult(False, current, "that line is already a core memory")
             if len(self.scoped(True).core_memories()) >= cap:
                 return WriteResult(False, current, f"core memories are full ({cap}); unpin one of your own first")
-            lines[index] = notes.format_line(notes.Line(line.body, line.source, notes.Core("dom", today.isoformat(), why)))
+            lines[index] = notes.format_line(notes.Line(line.body, line.source, notes.Core("dom", today.isoformat(), why), line.entities))
             return self._save_memory_text(rel, current, "\n".join(lines), limit_for(rel))
 
     def unpin_line(self, rel: str, old: str, source: str | None = None) -> WriteResult:
@@ -287,7 +296,7 @@ class Home:
                 return WriteResult(False, current, "that line is not a core memory")
             if line.core.by != "dom":
                 return WriteResult(False, current, "the owner pinned that line; only the owner can unpin it")
-            lines[index] = notes.format_line(notes.Line(line.body, line.source))
+            lines[index] = notes.format_line(notes.Line(line.body, line.source, entities=line.entities))
             return self._save_memory_text(rel, current, "\n".join(lines), limit_for(rel))
 
     def _unique_line(self, rel: str, old: str) -> tuple[str, list[str], int] | WriteResult:
@@ -376,7 +385,8 @@ class Home:
     def former_files(self) -> list[str]:
         """Every `.former.md` file beside the notes, private ones too when this Home is private-scoped."""
         found = []
-        for folder in ("memory", "memory/people", "memory/chats", *(("private",) if self.allow_private else ())):
+        folders = ("memory", "memory/people", "memory/chats", "memory/places", "memory/projects", "memory/goals")
+        for folder in (*folders, *(("private",) if self.allow_private else ())):
             try:
                 base = self._regular_path(folder)
             except ValueError:
@@ -385,6 +395,21 @@ class Home:
                 found.extend(
                     f"{folder}/{p.name}" for p in sorted(base.glob("*.former.md")) if p.is_file() and not p.is_symlink()
                 )
+        return found
+
+    def list_entity_notes(self) -> list[str]:
+        """Place, project and goal notes, excluding their read-only former siblings."""
+        home = self.scoped(allow_private=False)
+        found = []
+        for directory in ("memory/places", "memory/projects", "memory/goals"):
+            try:
+                folder = home._regular_path(directory)
+                found.extend(
+                    f"{directory}/{p.name}" for p in sorted(folder.glob("*.md"))
+                    if p.is_file() and not p.is_symlink() and not notes.is_former(p.name)
+                )
+            except (OSError, ValueError):
+                continue
         return found
 
     def read_memory_file(self, rel: str) -> str:
@@ -543,7 +568,7 @@ def _pin_hand_edits(current: str, text: str, today: date) -> str:
             out.append(raw)
             continue
         line = notes.parse_line(raw)
-        out.append(notes.format_line(notes.Line(line.body, line.source, notes.Core("owner", today.isoformat()))))
+        out.append(notes.format_line(notes.Line(line.body, line.source, notes.Core("owner", today.isoformat()), line.entities)))
     return "\n".join(out)
 
 

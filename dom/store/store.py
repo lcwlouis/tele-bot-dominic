@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -29,6 +30,12 @@ from dom.models import (
     StoredMessage,
 )
 
+try:
+    import sqlite_vec
+except ImportError:  # meaning search then falls back to keywords
+    sqlite_vec = None
+
+log = logging.getLogger("dom.store")
 T = TypeVar("T")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -63,6 +70,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (28, "0027_autoincrement_ids.sql"),
     (29, "0028_goals_noticings.sql"),
     (30, "0029_menu_cards.sql"),
+    (31, "0030_knowledge_index.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -340,6 +348,7 @@ class Store:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self.vec_ok = self._load_vec()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -350,6 +359,48 @@ class Store:
                 "WHERE chat_id = ? AND authorization_status = 'pending_approval'",
                 (str(owner_id),),
             )
+
+    def _load_vec(self) -> bool:
+        """Load sqlite-vec for meaning search. A build without extension support or the wheel must never keep the bot
+        from starting: the index then serves keywords only."""
+        try:
+            if sqlite_vec is None:
+                raise ImportError("sqlite-vec is not installed")
+            self._conn.enable_load_extension(True)
+            try:
+                sqlite_vec.load(self._conn)
+            finally:
+                self._conn.enable_load_extension(False)
+            return True
+        except (ImportError, AttributeError, sqlite3.Error, OSError) as exc:
+            log.warning("sqlite-vec did not load (%s); meaning search will use keywords", exc)
+            return False
+
+    @staticmethod
+    def drop_knowledge_messages(conn: sqlite3.Connection, where: str, params: tuple, *, redo: bool = False) -> None:
+        """Take message facts out of the search index in the transaction that edits or removes their messages.
+        `redo` queues the messages for the next index refresh (an edit); a removal leaves nothing to redo."""
+        ids = [row[0] for row in conn.execute(
+            f"SELECT id FROM messages WHERE {where}", params,
+        )]
+        for chunk in range(0, len(ids), 500):
+            marks = ",".join("?" * len(ids[chunk:chunk + 500]))
+            conn.execute(f"DELETE FROM knowledge_facts WHERE message_id IN ({marks})", ids[chunk:chunk + 500])
+            if redo:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO knowledge_dirty_messages(message_id) VALUES (?)",
+                    [(i,) for i in ids[chunk:chunk + 500]],
+                )
+            else:
+                conn.execute(f"DELETE FROM knowledge_dirty_messages WHERE message_id IN ({marks})", ids[chunk:chunk + 500])
+        Store.prune_knowledge_entities(conn)
+
+    @staticmethod
+    def prune_knowledge_entities(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "DELETE FROM knowledge_entities WHERE NOT EXISTS "
+            "(SELECT 1 FROM knowledge_fact_entities WHERE entity_id = knowledge_entities.id)"
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -790,6 +841,7 @@ class Store:
             conn.execute("DELETE FROM chat_topic_reads WHERE chat_id = ?", (chat_id,))
             if delete_history:
                 marks = ",".join("?" * len(aliases))
+                self.drop_knowledge_messages(conn, f"chat_id IN ({marks})", tuple(aliases))
                 conn.execute(f"DELETE FROM messages WHERE chat_id IN ({marks})", aliases)
                 conn.execute(
                     f"DELETE FROM chat_migrations WHERE old_chat_id IN ({marks}) OR new_chat_id IN ({marks})",
@@ -1396,6 +1448,7 @@ class Store:
                 """,
                 (new_text, int(seen_before), previous, _now(), row["id"]),
             )
+            self.drop_knowledge_messages(conn, "id = ?", (row["id"],), redo=True)
             updated = conn.execute(
                 f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE id = ?", (row["id"],)
             ).fetchone()
@@ -1428,6 +1481,9 @@ class Store:
                 return 0
             now = _now()
             hit_marks = ",".join("?" * len(hit))
+            self.drop_knowledge_messages(
+                conn, f"chat_id = ? AND is_deleted = 0 AND msg_id IN ({hit_marks})", (chat_id, *hit),
+            )
             cur = conn.execute(
                 f"UPDATE messages SET is_deleted = 1, deleted_at = ?, updated_at = ? "
                 f"WHERE chat_id = ? AND is_deleted = 0 AND msg_id IN ({hit_marks})",

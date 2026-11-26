@@ -561,6 +561,7 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     """The memory files the dashboard lists, by section: (path, label). Private files sit only under "Only in your
     DM". People read as their names, chats as their titles. The archive (journal months, former files) comes last."""
     people, chats = app.home.list_memory_notes()
+    entities = app.home.list_entity_notes()
     known = {c["chat_id"]: c for c in await app.store.list_chats()}
     known.update({c["chat_id"]: c for c in await app.store.list_approved_chats()})
     names = await app.store.people_names()
@@ -598,6 +599,9 @@ async def _memory_sections(app: App) -> list[tuple[str, list[tuple[str, str]]]]:
     return [
         ("Shared memory", [(SOUL, SOUL), (MEMORY, "MEMORY.md"), (HABITS, "HABITS.md"), ("memory/JOURNAL.md", "Journal")]),
         ("People", sorted(((rel, _person_label(rel, names)) for rel in people), key=lambda item: item[1].casefold())),
+        ("Places, projects and goals", [
+            (rel, f"{Path(rel).parent.name[:-1].title()} · {Path(rel).stem.replace('-', ' ')}") for rel in entities
+        ]),
         ("Chats", chat_notes),
         ("Only in your DM", [
             ("private/USER.md", "USER.md"), ("private/NOTES.md", "NOTES.md"),

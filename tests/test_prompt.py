@@ -189,3 +189,11 @@ def test_self_inspect_description_says_the_same():
 
     assert "answer in your own words like a person would" in SELF_INSPECT_TOOL.description
     assert "give exact numbers or internal names only when asked for them" in SELF_INSPECT_TOOL.description
+
+
+def test_the_frame_lets_dom_use_telegram_formatting_when_it_helps():
+    from dom.telegram.format import format_text
+
+    assert "**bold**" in FRAME and "casual chat stays plain" in FRAME
+    text, entities = format_text("- tea\n- toast\n\n**one** thing")[0]  # what the frame promises renders
+    assert text.startswith("• tea\n• toast") and [e.type for e in entities] == ["bold"]

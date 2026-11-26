@@ -43,6 +43,7 @@ from dom.desktop.worker import ACTIVE as DESKTOP_ACTIVE
 from dom.plugins import surfaces
 from dom.plugins.manifest import NETWORK_NOTICE, validate_name as validate_plugin_name
 from dom.telegram import cards
+from dom.notice import first_sentence, send_notice, sentences
 from dom.telegram.executor import retry_telegram, send_text
 from dom.traits import AUTO, GLOBAL_PRESET_KEY, ensure_pick, load_preset, vibe
 
@@ -1122,12 +1123,13 @@ async def offer_update(app: App) -> None:
         return
     nonce = secrets.token_hex(8)
     await app.store.kv_set(UPDATE_OFFER_KEY, json.dumps({"nonce": nonce, "tag": offer.tag, "commit": offer.commit}))
-    text = f"{offer.tag} is available (running {VERSION}).\n\n{offer.notes}"[:MAX_MESSAGE]
-    markup = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"Update to {offer.tag}", callback_data=f"update:go:{nonce}"),
-        InlineKeyboardButton(text="Not now", callback_data=f"update:no:{nonce}"),
-    ]])
-    await _send(app, text, reply_markup=markup)
+    await send_notice(
+        app, app.owner_id, f"{offer.tag} is available", [f"Running {VERSION}.", first_sentence(offer.notes)],
+        buttons=[
+            InlineKeyboardButton(text=f"Update to {offer.tag}", callback_data=f"update:go:{nonce}"),
+            InlineKeyboardButton(text="Not now", callback_data=f"update:no:{nonce}"),
+        ],
+    )
 
 
 async def decide_update(app: App, decision: str, nonce: str) -> str:
@@ -1148,9 +1150,7 @@ async def decide_update(app: App, decision: str, nonce: str) -> str:
         await _send(app, str(error))
         return "Not started"
     await record_event(app, f"Started the update to {chosen.tag}")
-    await _send(
-        app, f"Updating to {chosen.tag}. Dom restarts on the way and reports back here when it is done.",
-    )
+    await send_notice(app, app.owner_id, f"Updating to {chosen.tag}", ["I restart on the way and report back here."])
     watch_update(app)
     return f"Updating to {chosen.tag}"
 
@@ -1168,7 +1168,11 @@ def watch_update(app: App) -> None:
             await app.store.record_owner_event_once(f"release-notes:{tag}", section)
         else:
             await record_event(app, text[:250])
-        await _send(app, text)
+        ok = bool(state and state.get("ok") is True)
+        await send_notice(
+            app, app.owner_id, f"Updated to {state['tag']}" if ok and isinstance(state.get("tag"), str) else
+            ("Update finished" if ok else "Update failed"), sentences(text),
+        )
 
     task = asyncio.create_task(release.deliver_result(app.home.root, send, sleep=asyncio.sleep))
     _update_reports.add(task)

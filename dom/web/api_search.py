@@ -3,6 +3,7 @@ skills and plugins (dom/global_search.py). Another chat's messages arrive as one
 
 from __future__ import annotations
 
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query, Request
@@ -30,12 +31,17 @@ def _href(hit: global_search.Hit) -> str:
 
 
 @router.get("/api/search")
-async def search(request: Request, q: str = Query("", max_length=global_search.MAX_QUERY)) -> dict:
+async def search(
+    request: Request,
+    q: str = Query("", max_length=global_search.MAX_QUERY),
+    mode: Literal["keyword", "meaning", "entity"] = "keyword",
+) -> dict:
     app = owner_app(request)
     titles = {row["chat_id"]: _title(row, app.owner_id) for row in await app.store.list_chats()}
-    found = await global_search.search_all(app.store, app.home, q, titles)
+    found = await global_search.search_all(app.store, app.home, q, titles, mode=mode, knowledge=app.knowledge)
     return {
         "query": " ".join(q.split()),
+        "mode": mode,
         "groups": [
             {
                 "kind": kind, "label": global_search.LABELS[kind],
