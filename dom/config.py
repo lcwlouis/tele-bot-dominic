@@ -312,6 +312,16 @@ class WorldConfig(BaseModel):
         ),
     )
 
+    news: bool = Field(
+        True,
+        description=(
+            "Each evening, before Dom sleeps, he searches the web for the top news and the events in the next few days "
+            "where the owner is (the `place`, or else the `country`), keeps a few headlines as `memory/NEWS.md`, and his "
+            "turn note carries one or two of them for 36 hours. It needs a place or country, the triage model and a web search route that "
+            "returns result lists, and its calls count toward the search spending limit. Off when no search route is set up."
+        ),
+    )
+
     @field_validator("country", mode="before")
     @classmethod
     def _country_code(cls, value: object) -> object:
