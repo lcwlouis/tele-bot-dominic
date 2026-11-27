@@ -141,8 +141,13 @@ def _events_url(calendar_id: str) -> str:
     return f"{CALENDAR_API}/calendars/{quote(calendar_id, safe='')}/events"
 
 
+EVENT_FIELDS = "id,summary,start,end,location,attendees(email,self),status,transparency"
+TIMES_ONLY = "start,end,status,transparency"  # no title, place or person is even asked for
+
+
 async def _events(
     g: GoogleIntegration, start: datetime, end: datetime, limit: int, *, pages: int = 1, calendar_id: str = "primary",
+    fields: str = EVENT_FIELDS,
 ) -> tuple[list[dict], bool]:
     """Events in the range, in order, and whether more exist than were read (the page budget or `limit` ran out)."""
     zone, now = _zone(g.app), datetime.now(_zone(g.app))
@@ -152,7 +157,7 @@ async def _events(
         params = {
             "singleEvents": "true", "orderBy": "startTime", "timeMin": start.isoformat(), "timeMax": end.isoformat(),
             "maxResults": str(min(limit - len(items), PAGE_SIZE)),
-            "fields": "nextPageToken,items(id,summary,start,end,location,attendees(email,self),status,transparency)",
+            "fields": f"nextPageToken,items({fields})",
         }
         if token:
             params["pageToken"] = token
@@ -449,6 +454,23 @@ async def _create_calendar(g: GoogleIntegration, args: dict, zone: ZoneInfo) -> 
     return await _govern(g, "calendar_create", "calendar_write", Card(lines), perform)
 
 
+async def insert_event(
+    g: GoogleIntegration, calendar: dict[str, str], event_id: str, body: dict[str, Any], ticket: Ticket, *, updates: str = "none",
+) -> str | None:
+    """Make an event on one of Dom's calendars under an approval's ticket, with the id chosen first so a repeat finds it
+    already there. None when it is there; otherwise what to tell the owner. Callers that edit an existing event hold the calendar's lock; a booking has its own
+    reserved slot and a fresh event id, so it holds none across the call."""
+    path = _events_url(calendar["id"])
+    try:
+        await g.call("POST", path, params={"sendUpdates": updates}, body={**body, "id": event_id}, idempotent=True, ticket=ticket, allow=(409,))
+    except GoogleError as exc:
+        try:  # the answer may have been lost after the event was made
+            await g.call("GET", f"{path}/{event_id}", ticket=ticket)
+        except GoogleError:
+            return _outcome(exc, "the calendar")
+    return None
+
+
 async def _add_event(g: GoogleIntegration, args: dict, zone: ZoneInfo, calendar: dict[str, str]) -> str:
     title = " ".join(str(args.get("title") or "").split())  # what the card shows is exactly what is created
     if not title:
@@ -476,22 +498,16 @@ async def _add_event(g: GoogleIntegration, args: dict, zone: ZoneInfo, calendar:
     if nudge:
         lines.append(f"Nudge: reminds you {nudge} minutes before")
     event_id = secrets.token_hex(16)  # base32hex-safe; a repeat of the same insert finds it already there, not a second one
-    path = _events_url(calendar["id"])
 
     async def perform(ticket: Ticket) -> str:
         async def work() -> str:
-            body: dict[str, Any] = {"id": event_id, "summary": title, "start": _google_time(start), "end": _google_time(end)}
+            body: dict[str, Any] = {"summary": title, "start": _google_time(start), "end": _google_time(end)}
             if location:
                 body["location"] = location
             if attendees:
                 body["attendees"] = [{"email": email} for email in attendees]
-            try:
-                await g.call("POST", path, params={"sendUpdates": "none"}, body=body, idempotent=True, ticket=ticket, allow=(409,))
-            except GoogleError as exc:
-                try:  # the answer may have been lost after the event was made
-                    await g.call("GET", f"{path}/{event_id}", ticket=ticket)
-                except GoogleError:
-                    return _outcome(exc, "the calendar")
+            if (problem := await insert_event(g, calendar, event_id, body, ticket)) is not None:
+                return problem
             note = await _set_nudge(g, calendar, event_id, title, start, nudge, zone) if nudge else ""
             return f"Added '{title}' ({shown}) to '{calendar['name']}' [id {event_id}].{note}"
 

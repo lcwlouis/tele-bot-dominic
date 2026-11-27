@@ -1,8 +1,10 @@
 # Google Calendar and Gmail
 
 Dom can read the owner's calendar, keep calendars of his own and add, move and delete events on them, search and read
-mail, and save mail drafts. It is owner-only: none of it exists in a group or a friend's DM. Every change goes through an
-approval card, and Dom never sends mail: there is no send in the code. He never writes to the owner's own calendars.
+mail, and save mail drafts. It is owner-only: the calendar and Gmail tools do not exist in a group or a friend's DM. The one
+thing a friend can reach is [booking](#booking-within-your-windows): times inside windows you set, and nothing else. Every
+change goes through an approval card, and Dom never sends mail: there is no send in the code. He never writes to the
+owner's own calendars.
 
 ## What Dom can do
 
@@ -62,6 +64,48 @@ and writing happens only on calendars Dom made.
   up (nothing shows while disconnected). The calendars themselves stay in your Google account until you remove them here.
 - **If Google loses the answer** to "make a calendar" (a timeout), Dom does not try again, and tells you it may or may
   not exist: check Google Calendar before asking again.
+
+## Booking within your windows
+
+A friend, in a DM or in a group, can ask Dom to meet. Your calendar does not hold your whole life, so Dom first needs to
+know **when you are willing to meet**, and he offers only times inside that.
+
+- **Set the windows** in your DM ("weekday evenings 7 to 10, Saturday afternoons"): Dom turns it into exact windows (days,
+  start and end, in your timezone) with the `booking` tool's `set_windows`, saves them and repeats them back so you can
+  correct him. Or edit them in Settings → Services → Google, under "Meeting windows": days, times, the least notice
+  (default 12 hours), the furthest ahead (default 14 days) and whether a friend whose email is known is invited to the
+  event. **No windows means no booking:** Dom tells the friend he will check and asks you to set them. Windows cannot cross
+  midnight; use two. Saving windows the first time asks you (the usual calendar card) to let Dom make the calendar
+  **Dom - Bookings**, where bookings go.
+- **Offers.** The friend asks; Dom's `offer` finds up to three slots of the length asked (default 60 minutes) that lie wholly
+  inside a window, are at least the notice away and within the horizon, and are free on **every calendar he reads**: your
+  primary calendar and each of his own. Slots start on the window's start and every half hour after it, are spread over
+  different days first, and a slot already offered to someone else is not offered again. An all-day event, or any event
+  you are not marked free for, blocks its time. If the calendar cannot be read whole (more events than he can fetch, or Google
+  failing) he offers nothing and tells the friend only that he will ask you for times; the reason (no free time, or what could not be read) goes to your DM history. An offer lasts four hours, and a chat holds at most three open.
+- **The pick.** When the friend chooses one, Dom asks you with one card: the friend's name, the chat (their DM or the
+  group), the time, the calendar, whether the friend is invited, and what they said it is about, all quoted as the
+  friend's own words. The friend is told Dom will check. The card has **Allow once** and **Reject** only. To book without
+  a card, set "Confirm a booking" to Allow in System → Access; Never makes Dom decline every request kindly.
+- **On approval** Dom checks again, against how things are by then, that the time has not started, is still inside your
+  windows and your notice (counted from when it was offered), and is still free, adds "Meet <name>" to **Dom - Bookings**,
+  and tells the friend it is set. If any check fails, nothing is booked and you get a short notice saying which. The
+  friend is added as a guest, and Google emails them, **only if** you allowed invites and they gave their email in the
+  chat; otherwise the event is on your calendar alone. Tapping a card twice books once. **On every decline, whatever the
+  cause** (a rejection, an expiry, a switch turned off, a time taken or no longer allowed, a failed write), the friend
+  gets the same kind line ("Sorry, I can't make that one work. Maybe another time?") and never a reason, so nothing
+  about your calendar can be read from it.
+- **Two friends at once** are never offered the same time: the slots are chosen and held in one step, and a time stays
+  held while it waits for your tap, while it is written, and after it is booked. Times are worked out in your timezone's
+  wall clock but added and compared as real instants, so a daylight-saving change neither offers a time that does not
+  exist nor shortens a meeting, and the end time shown is the real end.
+- **Restarts.** Offers are kept in the database, so a pick finds the slot Dom really offered after a restart. A pick that
+  was waiting for your tap when Dom stopped has lost its card; when he starts again he closes it and tells the friend. A booking that was being written when Dom stopped may or may not
+  have reached Google, so at start he asks Google for the event (its id was saved first): if it is there the booking is
+  settled as booked and the friend told, if not it is declined, and if Google cannot be asked it waits for the next start.
+- **What leaves your DM** is the offered start and end times, and the friend's own confirmation. No title, place,
+  attendee or busy block is ever sent: Dom asks Google for event times only, and the result a friend's chat sees is built
+  from the slots alone. See [Privacy](privacy.md#booking).
 
 ## Create the OAuth client (once)
 

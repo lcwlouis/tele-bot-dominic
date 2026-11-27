@@ -104,7 +104,8 @@ class FakeGoogle:
             elif event_id in self.deleted:
                 return httpx.Response(404, json={"error": {"message": "gone"}})
             if request.method == "GET":
-                return httpx.Response(200, json=next(e for e in self.events if e["id"] == event_id))
+                found = next((e for e in self.events if e["id"] == event_id), None)
+                return httpx.Response(200, json=found) if found is not None else httpx.Response(404, json={"error": {"message": "gone"}})
             return httpx.Response(200 if request.method == "PATCH" else 204, json={"id": event_id} if request.method == "PATCH" else None)
         if path.endswith("/users/me/messages") and request.method == "GET":
             return httpx.Response(200, json={"messages": [{"id": key, "threadId": key} for key in self.messages]})

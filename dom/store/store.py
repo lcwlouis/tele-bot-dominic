@@ -79,6 +79,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (37, "0036_news_usage.sql"),
     (38, "0037_usage_turn.sql"),
     (39, "0038_subscription_usage.sql"),
+    (40, "0039_bookings.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -1036,6 +1037,7 @@ class Store:
                 return False
             conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
             conn.execute("DELETE FROM chat_topic_reads WHERE chat_id = ?", (chat_id,))
+            conn.execute("DELETE FROM booking_offers WHERE chat_id = ?", (chat_id,))
             if delete_history:
                 marks = ",".join("?" * len(aliases))
                 self.drop_knowledge_messages(conn, f"chat_id IN ({marks})", tuple(aliases))
@@ -4496,6 +4498,120 @@ class Store:
                 return rows
 
         return await self._run(update)
+
+    # ---- booking offers (v0.8.6 W2) ------------------------------------------------------------------------------
+
+    async def create_booking_offer(
+        self, *, chat_id: int, scope: str, sender_id: int | None, friend: str, minutes: int,
+        choose: Callable[[list[tuple[datetime, int]]], list[datetime]], context: str, at: str, expires_at: str, limit: int,
+    ) -> tuple[int | None, list[datetime]]:
+        """Choose and keep an offer in one transaction. `choose` gets what is held at this moment and returns the slots to
+        offer (it is pure and quick: it runs inside the transaction, so two offers made at once never share a slot).
+        Returns (id, slots); (None, []) when nothing was free, and (None, slots) when this chat already has `limit` open
+        offers, so nothing was kept."""
+        def insert() -> tuple[int | None, list[datetime]]:
+            with self._tx() as conn:
+                conn.execute(  # offers past their time are closed here too, so old rows do not wait for a restart
+                    "UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'offered' AND expires_at <= ?", (at, at),
+                )
+                conn.execute(
+                    "DELETE FROM booking_offers WHERE state IN ('booked', 'declined', 'expired') AND settled_at < ?",
+                    ((datetime.fromisoformat(at) - timedelta(days=14)).isoformat(),),
+                )
+                slots = choose(self._held_booking_slots(conn, at))
+                (open_offers,) = conn.execute(
+                    "SELECT COUNT(*) FROM booking_offers WHERE chat_id = ? AND state IN ('offered', 'awaiting', 'booking') AND expires_at > ?",
+                    (chat_id, at),
+                ).fetchone()
+                if not slots or open_offers >= limit:
+                    return None, slots
+                cur = conn.execute(
+                    "INSERT INTO booking_offers (chat_id, scope, sender_id, friend, minutes, slots, context, state, created_at, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'offered', ?, ?)",
+                    (chat_id, scope, sender_id, friend, minutes, json.dumps([slot.isoformat() for slot in slots]), context, at, expires_at),
+                )
+                return int(cur.lastrowid), slots
+
+        return await self._run(insert)
+
+    async def get_booking_offer(self, offer_id: int) -> dict[str, Any] | None:
+        def read() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM booking_offers WHERE id = ?", (offer_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(read)
+
+    @staticmethod
+    def _held_booking_slots(conn: sqlite3.Connection, at: str) -> list[tuple[datetime, int]]:
+        """(start, minutes) of every slot not to be offered again: those in an open offer, and the one slot picked in an
+        offer that is awaiting the owner, being booked or booked (a booked slot stays held until it is over, because
+        Google's free/busy can lag behind the event just made)."""
+        now, held = datetime.fromisoformat(at), []
+        for slots, minutes, picked, state, expires_at in conn.execute(
+            "SELECT slots, minutes, picked, state, expires_at FROM booking_offers WHERE state IN ('offered', 'awaiting', 'booking', 'booked')",
+        ).fetchall():
+            if state == "offered":
+                starts = json.loads(slots) if datetime.fromisoformat(expires_at) > now else []
+            else:
+                starts = [picked] if picked else []
+            for raw in starts:
+                start = datetime.fromisoformat(raw)
+                if start + timedelta(minutes=minutes) > now:
+                    held.append((start, minutes))
+        return held
+
+    async def booking_offers_in(self, state: str) -> list[dict[str, Any]]:
+        def read() -> list[dict[str, Any]]:
+            return [dict(row) for row in self._conn.execute("SELECT * FROM booking_offers WHERE state = ? ORDER BY id", (state,)).fetchall()]
+
+        return await self._run(read)
+
+    async def move_booking_offer(self, offer_id: int, expect: str, state: str, at: str, **fields: Any) -> bool:
+        """Change an offer's state only while it is in `expect` (the check and the write are one statement, so of two
+        picks at once exactly one wins). `fields` may set picked, email, event_id, friend and sender_id."""
+        if not set(fields) <= {"picked", "email", "event_id", "friend", "sender_id"}:
+            raise ValueError("unknown booking field")
+        columns = "".join(f", {name} = ?" for name in fields)
+        settled = state in ("booked", "declined", "expired")
+
+        def update() -> bool:
+            with self._tx() as conn:
+                return conn.execute(
+                    f"UPDATE booking_offers SET state = ?{columns}{', settled_at = ?' if settled else ''} WHERE id = ? AND state = ?",
+                    (state, *fields.values(), *([at] if settled else []), offer_id, expect),
+                ).rowcount == 1
+
+        return await self._run(update)
+
+    async def sweep_booking_offers(self, at: str, *, keep_days: int = 14) -> list[dict[str, Any]]:
+        """Close what can no longer be answered and forget what is old. An offer past its time is expired; one still
+        `awaiting` the owner's tap when Dom starts has lost its card (a restart ends every pending request), so it is
+        expired too and returned, so the friend can be told. A `booking` row is left alone: the event may already be at
+        Google, so only a look there settles it (see `booking_offers_in`). Settled rows older than `keep_days` are deleted."""
+        def sweep() -> list[dict[str, Any]]:
+            with self._tx() as conn:
+                lost = [dict(row) for row in conn.execute("SELECT * FROM booking_offers WHERE state = 'awaiting'").fetchall()]
+                conn.execute("UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'awaiting'", (at,))
+                conn.execute(
+                    "UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'offered' AND expires_at <= ?", (at, at),
+                )
+                conn.execute(
+                    "DELETE FROM booking_offers WHERE state IN ('booked', 'declined', 'expired') AND settled_at < ?",
+                    ((datetime.fromisoformat(at) - timedelta(days=keep_days)).isoformat(),),
+                )
+                return lost
+
+        return await self._run(sweep)
+
+    async def latest_sender_name(self, chat_id: int, user_id: int) -> str:
+        def read() -> str:
+            row = self._conn.execute(
+                "SELECT sender_name FROM messages WHERE chat_id = ? AND sender_user_id = ? AND is_bot = 0 AND sender_name != '' "
+                "ORDER BY id DESC LIMIT 1", (str(chat_id), user_id),
+            ).fetchone()
+            return str(row[0]) if row is not None else ""
+
+        return await self._run(read)
 
     # ---- E101 secure secret requests -----------------------------------------------------------------------------
 
