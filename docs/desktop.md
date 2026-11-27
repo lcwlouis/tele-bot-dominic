@@ -207,6 +207,70 @@ uploaded to a fresh `/home/gem/inbox-<task id>/` in the sandbox. If the upload
 fails, those documents are dropped and the task report says so. After the task Dom
 removes that directory and logs a warning if the removal does not exit with 0.
 
+## The shared workspace
+
+`<home>/workspace` (created owner-only) is one folder that Dom's `files` tool, the owner's desktop and the
+dashboard's Files page (Work → Files) all use. A local desktop container mounts it read-write at `/workspace`, so
+a file Dom writes is a file the desktop sees, and a file the desktop saves there (a download, a result) is one Dom can
+read. The default container and every other local one get the mount; Dom's own self-directed `self-work`
+container and a remote desktop host never do. The browser profile stays outside the home, as before.
+
+- **What lands there.** A document sent in the owner DM, with any caption, is saved to `workspace/inbox/` under a plain
+  name (a second `report.pdf` becomes `report-2.pdf`), at most 20 MB, downloaded in the background while Dom's reply
+  waits for it like any other media. Dom is told the file's name, type and path in the message's `<media>` tag, and
+  reads it with `files`. A `/desktop` document is staged for the task as before and also saved there, from the same
+  download. The desktop's own task prompt says `/workspace` is shared.
+- **File tools.** In the owner DM only, `files` has `list`, `read`, `write`, `move` and `delete`. `read` returns
+  text, Markdown, CSV, JSON and similar text files, and PDF text (extracted with
+  [`pypdf`](https://pypi.org/project/pypdf/), a small pure-Python library added for this: nothing else in Dom reads
+  PDFs), twelve thousand characters at a time with the offset of the next part. What it returns is fenced as untrusted data.
+  Writes are at most a million characters, a workspace holds at most 500 MB, and `private/`, `.env`, `state.db` and the
+  rest of the home are not under the folder, so they cannot be named.
+- **Links and tricks.** The desktop runs untrusted web content and can leave anything in `/workspace`, so every path
+  is walked one directory at a time without following links (`O_NOFOLLOW` against the directory just opened), and only
+  regular files and directories are touched. `..`, absolute and hidden paths are refused; links, pipes and devices are
+  neither listed nor opened. A file with more than one name (a hard link the desktop made, say from the owner's folder
+  into `shared/`) is never read, served or archived in any scope: Dom says "this file has several links; copy it to read
+  it".
+- **PDFs.** A PDF is parsed in a separate process with a memory and CPU limit, a 30-second wall-clock limit and a cap on
+  its output, and is killed when the limit passes or the request is cancelled. A PDF over 10 MB is not parsed.
+- **What the desktop can read.** The whole workspace it mounts, `inbox/` and `shared/` included, whatever the
+  chat-sharing setting says: that setting limits what groups and friends reach through Dom, not what the owner's desktop
+  sees. Nothing outside the folder is mounted.
+- **The size cap.** The 500 MB cap is a soft one. A bind mount has no quota, so the desktop could fill the disk behind the
+  file tools, and one download or write can overshoot the cap before the next check notices. Dom measures the workspace (a
+  bounded walk, reused for a few seconds) after every desktop tool step, and measures it fresh, never from that reuse, when a
+  task ends, before a new task starts and when the Files page reports its size. Over 500 MB,
+  the running task stops with a clear result, no new desktop work starts, the `files` tool and the Files page refuse writes
+  (deleting still works), and the owner gets one quiet notice with a link to Files, again only after the folder has been
+  under the cap. `dom doctor` reports the size against the cap.
+- **Sharing with chats.** `[workspace] share_with_chats` (off by default; Settings → What Dom may do) lets groups and
+  friends' DMs list and read `workspace/shared/`, and nothing else, never write. A document sent in such a chat
+  then lands in `workspace/shared/inbox/<chat id>/`, readable only by that chat (and the owner). Off, documents in
+  groups and friends' DMs are not downloaded.
+- **Leaving the sandbox.** Sending a file from the workspace to a website still asks the `upload` permission
+  (the desktop may now upload from `/workspace`), and anything the desktop sends to Telegram still asks `download`.
+  The dashboard's own download and upload are behind its login.
+- **Backups.** `dom backup` includes the workspace. It walks it by directory descriptors without following links, opens
+  each file the same way and archives only regular files with one name, from the open descriptor, so a file swapped for
+  a link mid-backup is not followed. Links, pipes and multi-name files are skipped and counted in the log, and no more
+  than the 500 MB cap is archived. When the files do not all fit, the newest (by modification time) are kept and the log
+  names what was skipped; a file over 20 MB is skipped too. Only a regular file named exactly like the half-written files
+  the workspace stages (`.incoming-` and twelve hex digits) is left out; any other `.incoming-...` file or folder is
+  yours and is archived.
+- **The container's user.** A bind mount shows the host's file owner, so the desktop's user must be the folder's
+  owner. At each start Dom runs a throwaway container as the desktop's user to read its uid and write and delete a file
+  in `/workspace`. If the uid differs from the folder's owner, or the write fails, the desktop starts **without** the
+  workspace and still works; the reason is logged, shown by `dom doctor` and on the Files page ("the desktop can't write
+  to the workspace: its user is uid X, the folder belongs to uid Y"). Fix it by running the sandbox container as the host
+  user (the same uid as Dom) or by changing the owner of `<home>/workspace` to the container's uid; the folder stays mode
+  0700. A Linux host with Dom at user 1000 normally matches; Docker Desktop on a Mac usually does not.
+- **A slow document.** A turn with a document in it waits up to the 60-second download limit for the file to land. If it
+  has not, Dom is told "the file is still arriving"; when it lands he gets an event, and the message gets a normal turn
+  once, after any turn still running has replied: the original request and the history before it, a note saying where the
+  file is, and his file tools for that chat's scope (the same topic, never wider than the chat). It does not run if a turn
+  that ran meanwhile already found the file saved, or if Dom has gone offline (the event waits in the chat for his next turn).
+
 ## Sandbox responses
 
 Dom asks the sandbox for `Accept-Encoding: identity` and refuses any response

@@ -265,7 +265,7 @@
   }
 
   // "What Dom may do": the switches in sections, each with the panels that belong to it, narrowed by the search box.
-  type SectionId = "messaging" | "assistant" | "media" | "desktop" | "memory" | "safety";
+  type SectionId = "messaging" | "assistant" | "media" | "desktop" | "memory" | "files" | "safety";
   const SECTIONS: { id: SectionId; label: string; ids: string[]; words: string }[] = [
     { id: "messaging", label: "Messaging", ids: ["openers", "openers_friends", "openers_groups", "ephemeral_replies"], words: "" },
     {
@@ -278,6 +278,7 @@
     },
     { id: "desktop", label: "Desktop", ids: [], words: "desktop tasks steps step budget computer" },
     { id: "memory", label: "Memory", ids: ["memory_self_edit"], words: "" },
+    { id: "files", label: "Files", ids: ["workspace_share"], words: "workspace shared folder documents groups friends read" },
     { id: "safety", label: "Safety", ids: ["leak_check"], words: "leak scan level strict standard relaxed off private" },
   ];
   let permissionQuery = $state("");
