@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dom.models import StoredMessage
-from dom.store.store import PENDING_ERA, Store
+from dom.store.store import ERA_SUSPECT, PENDING_ERA, Store
 
 OWNER = 111
 CHAT = str(OWNER)
@@ -93,6 +93,7 @@ class BotChangeTests(unittest.IsolatedAsyncioTestCase):
         self.real_shape()
         self.assertEqual(await self.store.adopt_bot(2002), 2)  # the owner DM and the friend's DM
         self.assertEqual(await self.store.kv_get("bot_id"), "2002")
+        self.assertEqual(await self.store.open_era_suspects(), [])  # the owner DM and the friend's DM were both proven
         # Marked read up to Dom's last reply, so only the owner's 75 is unread; the memory pass starts over.
         self.assertEqual(self.state(CHAT), (74, 0))
         count, newest = await self.store.get_unread(CHAT)
@@ -191,6 +192,70 @@ class BotChangeTests(unittest.IsolatedAsyncioTestCase):
         found = {title: source for title, source in conn.execute("SELECT title, source_msg_id FROM noticings")}
         self.assertEqual(found["from 70"], 70)
         self.assertEqual((await self.store.get_message(DM, found["from 3350"])).text, "old 3350")
+
+    # ---- a suspected switch the evidence can't yet prove stays open ------------------------------------------------
+
+    def two_new_rows(self):
+        """A friend's DM that switched before any bot id was stored, with only two messages from the new bot so far."""
+        self.rows(DM, range(3300, 3400))
+        self.rows(DM, range(1, 3))
+        self.marks(DM, 3399, 3399)
+
+    async def test_a_switch_with_too_few_new_rows_stays_open_and_moves_once_the_third_arrives(self):
+        self.two_new_rows()
+        self.assertEqual(await self.store.adopt_bot(2002), 0)
+        self.assertEqual(await self.store.kv_get("bot_id"), "2002")
+        self.assertEqual(self.ids(DM), list(range(3300, 3400)) + [1, 2])  # nothing moved on what is not yet proof
+        self.assertIsNotNone(await self.store.kv_get(ERA_SUSPECT + DM))
+        self.assertEqual(await self.store.adopt_bot(2002), 0)  # a restart with no more evidence: still open
+        self.assertIsNotNone(await self.store.kv_get(ERA_SUSPECT + DM))
+        self.rows(DM, [3])  # the new bot's third message
+        self.assertEqual(await self.store.adopt_bot(2002), 1)
+        self.assertEqual(self.ids(DM)[-3:], [1, 2, 3])
+        self.assertTrue(all(i < 0 for i in self.ids(DM)[:-3]))
+        self.assertEqual(self.state(DM), (0, 0))
+        self.assertEqual(await self.unread(DM), 3)
+        self.assertIsNone(await self.store.kv_get(ERA_SUSPECT + DM))
+        self.assertEqual(await self.store.adopt_bot(2002), 0)  # settled
+        self.assertEqual(self.store._conn.execute("SELECT COUNT(*) FROM messages WHERE role = 'event'").fetchone()[0], 1)
+
+    async def test_an_open_chat_is_logged_at_each_start_and_listed_for_the_doctor(self):
+        self.two_new_rows()
+        with self.assertLogs("dom.store", "WARNING") as first:
+            await self.store.adopt_bot(2002)
+        self.assertEqual(len([line for line in first.output if f"chat {DM}" in line]), 1)
+        with self.assertLogs("dom.store", "WARNING") as second:
+            await self.store.adopt_bot(2002)
+        self.assertEqual(len([line for line in second.output if f"chat {DM}" in line]), 1)
+        self.assertEqual(await self.store.open_era_suspects(), [DM])
+
+    async def test_a_suspicion_ends_when_the_chat_climbs_back_above_the_old_run(self):
+        """One odd lower id (a late edit, an unseen message) looks like a switch until the chat carries on past the old ids."""
+        self.rows(DM, [1000, 1001, 100])
+        await self.store.adopt_bot(2002)
+        self.assertEqual(await self.store.open_era_suspects(), [DM])
+        self.rows(DM, [1002])
+        self.assertEqual(await self.store.adopt_bot(2002), 0)
+        self.assertEqual(await self.store.open_era_suspects(), [])
+        self.assertEqual(self.ids(DM), [1000, 1001, 100, 1002])
+
+    async def test_a_normal_chat_is_never_suspected(self):
+        self.rows(CHAT, range(3000, 3503))
+        self.rows(GROUP, [100, 102, 101, 103, 104])  # saved a little out of order
+        self.rows(DM, range(1, 40))
+        await self.store.adopt_bot(2002)
+        self.assertEqual(await self.store.open_era_suspects(), [])
+        self.assertIsNone(self.store._conn.execute("SELECT 1 FROM kv WHERE key LIKE 'era_suspect:%'").fetchone())
+
+    async def test_a_real_bot_change_closes_the_open_suspicions(self):
+        """Every chat is marked for the new bot anyway, so what was suspected is moved then, not by a strict check."""
+        self.two_new_rows()
+        await self.store.adopt_bot(2002)
+        self.assertEqual(await self.store.adopt_bot(3003), 1)
+        self.assertEqual(await self.store.open_era_suspects(), [])
+        await self.store.record_new_message(self.msg(DM, 1))
+        self.assertEqual(self.ids(DM)[-1], 1)
+        self.assertTrue(all(i < 0 for i in self.ids(DM)[:-1]))
 
     # ---- the first start, a restart -------------------------------------------------------------------------------
 

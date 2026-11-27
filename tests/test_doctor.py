@@ -491,3 +491,13 @@ model = "test-embed"
     assert "ok models.embedding:" in out
     [(route, body)] = embedding_calls
     assert route.endswith("/embeddings") and body["model"] == "test-embed" and body["input"] == ["Health check."]
+
+
+def test_doctor_lists_chats_that_may_have_switched_bots(home, capsys):
+    main(["doctor", str(home)])
+    assert "bot change" not in capsys.readouterr().out
+    with sqlite3.connect(home / "state.db") as db:
+        db.execute("INSERT INTO kv (key, value, updated_at) VALUES ('era_suspect:222', 'x', 't')")
+    assert main(["doctor", str(home)]) == 0  # a warning, not a failure
+    out = capsys.readouterr().out
+    assert "warn bot change: Chat 222 may have switched Telegram bots" in out

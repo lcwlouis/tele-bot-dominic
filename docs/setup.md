@@ -106,11 +106,14 @@ restart every chat's message numbers, which would leave old read markers and mem
 above every new message and let a new message numbered like an old one be lost. When the stored
 bot id differs at start, each chat moves the old bot's rows to negative message numbers, in
 order, when the new bot first writes there: they stay in the history but are never unread,
-never memorised and can't be replied to, and old cards and requests in your DM expire. The
+never memorised and can't be replied to, and old cards and requests in your DM expire at once (their message numbers may already match a new message). The
 chat's read marker moves to Dom's latest reply in the new run (or 0), its memory cursor goes
 back to 0, and a note lands in your DM history. A database that switched before this existed
-is repaired once from its history, and only when the evidence is clear; a late edit or an odd
-lower message number never moves anything.
+is repaired from its history, and only when the evidence is clear; a late edit or an odd
+lower message number never moves anything. A chat that looks switched but has too few new
+messages to be sure (fewer than three, or equal timestamps) is kept open: Dom logs it and
+`dom doctor` lists it at every start, and checks it again until the new messages prove it
+(then it moves) or the chat carries on past the old numbers (then it is left alone).
 
 A new group or a stranger's DM starts pending. Dom sends an approval request to
 the owner, with the chat's Telegram ID and the first message, and stays silent in

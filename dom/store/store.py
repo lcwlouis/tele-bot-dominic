@@ -18,7 +18,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
-from typing import Any, Callable, Iterator, TypeVar
+from typing import Any, Callable, Iterable, Iterator, TypeVar
 from xml.sax.saxutils import escape, quoteattr
 
 from dom.deletion import hash_matches, stamp_matches
@@ -110,6 +110,7 @@ _UNREAD_SQL = (
 # for a real bot change (the bot id differs from the stored one), or once, from the data, when none was stored yet.
 _ALL_ROWS = 1 << 62  # an era start after every row there is
 PENDING_ERA = "pending_era:"  # kv key prefix: a chat to move when its first message from the new bot arrives
+ERA_SUSPECT = "era_suspect:"  # kv key prefix: a chat that looks switched but is not yet proven; looked at again each start
 RECOVERY_MIN_ROWS = 3  # the new run must have at least this many rows to be believed
 RECOVERY_DROP = 10  # and its first id must be under a tenth of the old run's newest
 
@@ -122,18 +123,25 @@ def _when(value: str) -> datetime | None:
     return moment if moment.tzinfo is not None else None
 
 
-def recover_eras(conn: sqlite3.Connection) -> dict[str, tuple[int, str]]:
-    """Chats whose history shows a bot change nobody recorded: chat -> (first row, its time) of the new run.
+def judge_eras(
+    conn: sqlite3.Connection, only: set[str] | None = None,
+) -> tuple[dict[str, tuple[int, str]], list[str]]:
+    """Chats whose history shows a bot change nobody recorded, and chats where it is suspected but not yet proven.
 
-    Message ids only go up, so a drop is a candidate, but a late edit or one odd row also looks like one. A chat's rows
-    after its latest drop count as a new bot's only if every one of them was created after every row before, there
-    are at least `RECOVERY_MIN_ROWS`, none climbs back above the old run's newest id, and the first is under a tenth
-    of it. Anything else is left alone."""
+    The first is chat -> (first row, its time) of the new run. Message ids only go up, so a drop is a candidate, but
+    a late edit or one odd row also looks like one. A chat's rows after its latest drop count as a new bot's only if
+    every one of them was created after every row before, there are at least `RECOVERY_MIN_ROWS`, none climbs back
+    above the old run's newest id, and the first is under a tenth of it.
+
+    The second is a candidate that has not climbed back or been created earlier, yet fails the rest (too few rows,
+    equal or unreadable times): more messages may still prove it, or end it by climbing back. Anything else is left
+    alone. `only` limits the look to those chats."""
     candidates = [row[0] for row in conn.execute(
         "SELECT DISTINCT chat_id FROM (SELECT chat_id, msg_id, LAG(msg_id) OVER (PARTITION BY chat_id ORDER BY id) AS before "
         f"FROM messages WHERE msg_id > 0) WHERE msg_id * {RECOVERY_DROP} < before"
-    )]
+    ) if only is None or row[0] in only]
     found: dict[str, tuple[int, str]] = {}
+    unproven: list[str] = []
     for chat_id in candidates:
         rows = conn.execute(
             "SELECT id, msg_id, created_at FROM messages WHERE chat_id = ? AND msg_id > 0 ORDER BY id", (chat_id,),
@@ -143,25 +151,30 @@ def recover_eras(conn: sqlite3.Connection) -> dict[str, tuple[int, str]]:
             if run_max and msg_id * RECOVERY_DROP < run_max:
                 start, old_max, run_max = index, run_max, msg_id
             run_max = max(run_max, msg_id)
-        if start is None or len(rows) - start < RECOVERY_MIN_ROWS:
+        if start is None:
             continue
-        before, run = rows[:start], rows[start:]
+        run = rows[start:]
         if max(msg_id for _, msg_id, _ in run) > old_max:
             continue
         times = [_when(at) for _, _, at in rows]
-        if None in times or min(times[start:]) <= max(times[:start]):
+        if None not in times and min(times[start:]) < max(times[:start]):
+            continue  # made before the old rows: not a later bot
+        if None in times or len(run) < RECOVERY_MIN_ROWS or min(times[start:]) == max(times[:start]):
+            unproven.append(chat_id)
             continue
         found[chat_id] = (run[0][0], run[0][2])
-    return found
+    return found, unproven
 
 
-def begin_eras(
-    conn: sqlite3.Connection, starts: dict[str, tuple[int, str]], now: str, owner_chat: str | None = None,
-) -> list[str]:
+def recover_eras(conn: sqlite3.Connection) -> dict[str, tuple[int, str]]:
+    """The chats `judge_eras` proves switched."""
+    return judge_eras(conn)[0]
+
+
+def begin_eras(conn: sqlite3.Connection, starts: dict[str, tuple[int, str]], now: str) -> list[str]:
     """Move each chat's rows before its era start (a messages.id; `starts` also gives the time it began) out of the
     new bot's id range; returns the chats that had any. Their reply links and the noticings made before the era move
-    the same distance. What only the old bot could answer is dropped: the chat's open turns and menu cards, and (in the
-    owner's chat) the Telegram message ids of open requests and noticing cards.
+    the same distance. (What only the old bot could answer is dropped by `forget_old_bot_cards`.)
 
     The markers are recomputed, never compared (the numbers overlap): the read marker and each topic marker go to
     Dom's latest reply in the new run (what he answered is read; 0 when he has not replied in it), and the memory
@@ -187,11 +200,6 @@ def begin_eras(
                 "WHERE chat_id = ? AND id < ? AND msg_id > 0", (shift, shift, chat_id, era_row),
             )
             _move_noticing_sources(conn, chat_id, shift, _when(began))
-            conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
-            conn.execute("DELETE FROM menu_cards WHERE chat_id = ?", (chat_id,))
-            conn.execute("UPDATE cross_chat SET sent_msg_id = NULL WHERE target_chat_id = ?", (chat_id,))
-            if chat_id == owner_chat:
-                _forget_owner_cards(conn, now)
             _reset_markers(conn, chat_id, now)
             moved.append(chat_id)
     finally:
@@ -211,9 +219,20 @@ def _move_noticing_sources(conn: sqlite3.Connection, chat_id: str, shift: int, b
             conn.execute("UPDATE noticings SET source_msg_id = source_msg_id - ? WHERE id = ?", (shift, noticing_id))
 
 
+def forget_old_bot_cards(conn: sqlite3.Connection, chats: Iterable[str], now: str, owner_chat: str | None) -> None:
+    """Drop what only the old bot could answer in these chats, the moment they are marked, whenever their rows move:
+    open turns and menu cards, the Telegram id of a cross-chat send, and (in the owner's chat) open requests and noticing
+    cards. They were sent by the old bot, which the new one can neither edit nor answer, and their ids may now name an
+    unrelated new message: the requests behind them expire and nothing keeps their message ids."""
+    for chat_id in chats:
+        conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
+        conn.execute("DELETE FROM menu_cards WHERE chat_id = ?", (chat_id,))
+        conn.execute("UPDATE cross_chat SET sent_msg_id = NULL WHERE target_chat_id = ?", (chat_id,))
+        if chat_id == owner_chat:
+            _forget_owner_cards(conn, now)
+
+
 def _forget_owner_cards(conn: sqlite3.Connection, now: str) -> None:
-    """Cards in the owner's DM were sent by the old bot, which the new one can neither edit nor answer: the requests
-    behind them expire and nothing keeps their message ids."""
     conn.execute(
         "UPDATE desktop_permission_history SET status = 'expired', decided_via = 'bot-change', decided_at = ? "
         "WHERE status = 'pending'", (now,),
@@ -1259,7 +1278,7 @@ class Store:
                 key = PENDING_ERA + msg.chat_id
                 if conn.execute("SELECT 1 FROM kv WHERE key = ?", (key,)).fetchone() is not None:
                     # The first message from the bot this chat changed to: the rows saved so far are the old bot's.
-                    begin_eras(conn, {msg.chat_id: (_ALL_ROWS, _now())}, _now(), str(self.owner_id))
+                    begin_eras(conn, {msg.chat_id: (_ALL_ROWS, _now())}, _now())
                     conn.execute("DELETE FROM kv WHERE key = ?", (key,))
                 existing = conn.execute(
                     "SELECT id FROM messages WHERE chat_id = ? AND msg_id = ?", (msg.chat_id, msg.msg_id)
@@ -1737,43 +1756,73 @@ class Store:
         (see `begin_eras`), but only for a real change:
 
         - the stored bot id differs: every chat with rows is marked, and each moves when its first message from the new
-          bot arrives (nothing has yet; the old rows stay readable until then);
-        - none is stored yet (an instance that switched before this existed): once, chats whose history clearly shows
-          a switch (see `recover_eras`) move now, and the id is stored so this never runs again;
-        - the same id: nothing. A late edit or an odd message with a lower id never moves anything.
+          bot arrives (nothing has yet; the old rows stay readable until then). The old bot's cards and requests
+          expire now, since their ids may already name a new message;
+        - none is stored yet (an instance that switched before this existed): chats whose history clearly shows a
+          switch (see `judge_eras`) move now, and the id is stored. A chat that only looks switched, with too little
+          to prove it, is kept as a suspect and looked at again at every start until it is proven or ends;
+        - the same id: only those suspects are looked at again. A late edit or an odd message with a lower id never
+          moves anything.
 
         The change is noted in the owner's DM history."""
         return await self._run(self._adopt_bot, bot_id, _now())
 
     def _adopt_bot(self, bot_id: int, now: str) -> int:
-        event, repaired = None, []
+        event, repaired, still_open = None, [], []
         with self._tx() as conn:
             row = conn.execute("SELECT value FROM kv WHERE key = 'bot_id'").fetchone()
-            if row is not None and row[0] == str(bot_id):
-                return 0
-            if row is None:
-                repaired = begin_eras(conn, recover_eras(conn), now, str(self.owner_id))
-                if repaired:
-                    event = "Dom's Telegram bot had changed without his noticing; set aside the old bot's messages in " + (
-                        ", ".join(self._chat_label(conn, chat_id) for chat_id in repaired)
-                    ) + " and reset their read markers and memory cursors for the new bot."
-            else:
+            owner = str(self.owner_id) if self.owner_id is not None else None
+            suspects = self._era_suspects(conn)
+            if row is not None and row[0] != str(bot_id):
+                self._clear_era_suspects(conn, suspects)  # every chat is marked below, whatever was suspected
                 chats = [r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages WHERE msg_id > 0")]
                 self._write_kv(conn, {PENDING_ERA + chat_id: now for chat_id in chats})
+                forget_old_bot_cards(conn, [*chats, *([owner] if owner and owner not in chats else [])], now, owner)
                 repaired = chats
                 if chats:
                     event = (
                         f"Dom's Telegram bot changed; the old bot's messages in {len(chats)} chat{'s' if len(chats) != 1 else ''} "
                         "are set aside, and each chat's read markers and memory cursor reset, when the new bot first writes there."
                     )
+            elif row is None or suspects:
+                found, still_open = judge_eras(conn, None if row is None else set(suspects))
+                repaired = begin_eras(conn, found, now)
+                forget_old_bot_cards(conn, repaired, now, owner)
+                self._clear_era_suspects(conn, suspects)
+                self._write_kv(conn, {ERA_SUSPECT + chat_id: now for chat_id in still_open})
+                if repaired:
+                    event = "Dom's Telegram bot had changed without his noticing; set aside the old bot's messages in " + (
+                        ", ".join(self._chat_label(conn, chat_id) for chat_id in repaired)
+                    ) + " and reset their read markers and memory cursors for the new bot."
+            else:
+                return 0
             self._write_kv(conn, {"bot_id": str(bot_id)})
             if event is not None and self.owner_id is not None:
                 self._insert_owner_event(conn, event, now)
             else:
                 event = None
+        for chat_id in still_open:
+            log.warning(
+                "chat %s may have switched bots, but there are not yet enough new messages to be sure; "
+                "its old message numbers stay as they are and are checked again at the next start", chat_id,
+            )
         if event is not None:
             self._append_owner_event_transcript(event, now)
         return len(repaired)
+
+    @staticmethod
+    def _era_suspects(conn: sqlite3.Connection) -> list[str]:
+        return [key[len(ERA_SUSPECT):] for (key,) in conn.execute(
+            "SELECT key FROM kv WHERE key GLOB ? ORDER BY key", (ERA_SUSPECT + "*",),
+        )]
+
+    @staticmethod
+    def _clear_era_suspects(conn: sqlite3.Connection, chats: Iterable[str]) -> None:
+        conn.executemany("DELETE FROM kv WHERE key = ?", [(ERA_SUSPECT + chat_id,) for chat_id in chats])
+
+    async def open_era_suspects(self) -> list[str]:
+        """Chats that look as if the bot changed under them but have too little new history to prove it yet."""
+        return await self._run(lambda: self._era_suspects(self._conn))
 
     @staticmethod
     def _chat_label(conn: sqlite3.Connection, chat_id: str) -> str:
