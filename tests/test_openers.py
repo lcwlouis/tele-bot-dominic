@@ -364,3 +364,19 @@ async def test_group_opener_cancels_if_muted_during_compose(make_app, monkeypatc
         await openers.maybe(now())
     assert not app.bot.of("send", GROUP)
     assert await app.store.kv_get(f"opener:sent:{GROUP}") is None
+
+
+async def test_an_owner_opener_is_a_turn_dom_started_so_no_subscription_agent_serves_it(make_app, monkeypatch):
+    from dom.usage import request_unprompted
+    app = make_app()
+    openers, now = always_try(app)
+    seen = []
+    real = app.dispatch._compose_turn
+
+    async def spy(*args, **kwargs):
+        seen.append(request_unprompted())
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(app.dispatch, "_compose_turn", spy)
+    await openers.maybe(now())
+    assert seen == [True]

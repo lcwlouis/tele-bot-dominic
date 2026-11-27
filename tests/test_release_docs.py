@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderSetup, SelfWorkConfig, StudioConfig, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig
+from dom.config import AcpAgent, Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderSetup, SelfWorkConfig, StudioConfig, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,7 +16,7 @@ def test_configuration_reference_matches_generator():
 
 def test_configuration_reference_has_every_toml_key():
     doc = (ROOT / "docs/configuration.md").read_text()
-    root = Config.model_fields.keys() - {"home", "models", "provider_setups", "desktop_mode", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "workspace", "studio", "knowledge", "world", "web", "tracer", "t3", "update"}
+    root = Config.model_fields.keys() - {"home", "models", "provider_setups", "desktop_mode", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "workspace", "studio", "knowledge", "world", "web", "tracer", "t3", "acp", "update"}
     for name in root:
         assert f"| `{name}` |" in doc
     for section, model in (
@@ -25,6 +25,8 @@ def test_configuration_reference_has_every_toml_key():
     ):
         for name in model.model_fields:
             assert f"| `{section}.{name}` |" in doc
+    for name in AcpAgent.model_fields:
+        assert f"| `acp.<name>.{name}` |" in doc
     for name in StudioConfig.model_fields.keys() - {"limits", "timeouts"}:
         assert f"| `studio.{name}` |" in doc
     for scope in ("owner_dm", "friend_dm", "group"):

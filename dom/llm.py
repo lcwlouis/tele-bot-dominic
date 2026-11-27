@@ -14,7 +14,8 @@ from typing import Awaitable, Callable
 import httpx
 
 from dom import modalities, turn_log
-from dom.config import DEEPSEEK_EFFORT_ERROR, DEEPSEEK_EFFORTS, Config, ModelRole, ProviderEndpoint, deepseek_chat_host
+from dom.acp import AcpError, acp_clients
+from dom.config import ACP_ROLES, DEEPSEEK_EFFORT_ERROR, DEEPSEEK_EFFORTS, Config, ModelRole, ProviderEndpoint, deepseek_chat_host
 from dom.usage import Kind, UsageRecorder, check_model_allowed, provider_address, request_kind
 
 TIMEOUT_SECONDS = 90
@@ -294,7 +295,7 @@ class FallbackClient:
             fallback = index > 0
             try:
                 reply = await provider.complete(messages, tools, fallback=fallback, once=once, timeout=timeout)
-            except (httpx.TransportError, httpx.HTTPStatusError, MissingProviderKey) as exc:
+            except (httpx.TransportError, httpx.HTTPStatusError, MissingProviderKey, AcpError) as exc:
                 status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                 if isinstance(exc, ProviderBudgetError):
                     refusals.append(exc.refusal)
@@ -330,5 +331,7 @@ def routed_client(
                    usage=usage, kind=kind)
         for endpoint in endpoints
     ]
+    if role in ACP_ROLES:  # the owner's subscription agents, when switched on, are tried first (owner DM only)
+        providers = [*acp_clients(config, role, usage), *providers]
     primary, *chain = providers
     return FallbackClient(primary, *chain) if chain else FallbackClient(primary, None)

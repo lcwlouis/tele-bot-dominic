@@ -78,6 +78,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (36, "0035_assistant_usage.sql"),
     (37, "0036_news_usage.sql"),
     (38, "0037_usage_turn.sql"),
+    (39, "0038_subscription_usage.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
