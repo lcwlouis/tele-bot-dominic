@@ -168,7 +168,7 @@ async def test_generate(studio, path, payload, mime):
         assert health["workers"]
         assert health["queue_depth"] == 0
         assert health["available_memory_bytes"] == 64 * GIB
-        assert health["version"] == "0.8.5"
+        assert health["version"] == "0.8.6"
         assert health["video_still"] is True
 
 
