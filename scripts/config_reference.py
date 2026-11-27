@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig, starter_config
+from dom.config import AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, GuestDesktopConfig, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -36,8 +36,10 @@ def fields(
             default = "Required"
         elif field.default_factory_takes_validated_data:
             default = "Derived"
+        elif isinstance(value := field.get_default(call_default_factory=True), BaseModel):
+            default = "A table, below"
         else:
-            default = literal(field.get_default(call_default_factory=True))
+            default = literal(value)
         yield prefix + key, default, field.description
 
 
@@ -122,6 +124,12 @@ def render() -> str:
         "(list at most one). A remote host is one sandbox API and counts as one container, named after the host. "
         "Without any `[[desktop.hosts]]`, `desktop.mode` and the keys above describe a single host named `default`.",
         table(fields(DesktopHost, "desktop.hosts[].")),
+        "### Desktop tasks for groups and friends",
+        "A group or a friend may ask Dom for a web lookup that needs the desktop. Each one waits for your Allow once on a "
+        "card in your DM (there is no Allow always, and Never in System → Access turns it off). It runs on a guest "
+        "container with no saved logins and none of your files, or on a `[[desktop.hosts]]` entry with `guest = true`. "
+        "See [Desktop](desktop.md#desktop-tasks-for-groups-and-friends).",
+        table(fields(GuestDesktopConfig, "desktop.guest.")),
         "## Studio",
         table(fields(StudioConfig, "studio.", exclude={"limits", "timeouts"})),
         "### Studio cloud fallbacks",

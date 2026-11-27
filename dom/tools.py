@@ -918,6 +918,29 @@ MESSAGE_CHAT = Tool(
     scopes={"owner_dm"},
     handler=_message_chat,
 )
+MAX_GUEST_BRIEF = 300  # characters of a guest desktop brief: the owner's card shows all of it
+
+
+async def _request_guest_desktop(args: dict, ctx: TurnCtx) -> str:
+    if ctx.app is None:
+        return "error: desktop tasks are not available here"
+    return await ctx.app.guest_desktop.request(ctx, args.get("brief"))
+
+
+REQUEST_GUEST_DESKTOP = Tool(
+    name="request_guest_desktop",
+    description=(
+        "When someone here asks for something that needs a web search or a look at a website, and you cannot answer it "
+        "yourself, you may propose a small desktop task. The owner decides first; he may say no, and you will not "
+        "say why. Write a short brief of what to look up, using only what was said in THIS chat. Never include "
+        "anything from the owner's DM, private notes or other chats, and never any secret. Tell the person you'll "
+        "check, in your own words, then carry on. The answer comes back to this chat by itself. "
+        "The task only reads public web pages: it cannot log in, post, buy or send anything."
+    ),
+    schema={"type": "object", "properties": {"brief": {"type": "string", "maxLength": MAX_GUEST_BRIEF}}, "required": ["brief"]},
+    handler=_request_guest_desktop,
+    scopes={"group", "friend_dm"},
+)
 TELL_OWNER = Tool(
     name="tell_owner",
     description=(
@@ -947,7 +970,8 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     plugin_tools = sorted(await offered(app, scope), key=lambda tool: tool.name)
     shared.extend(tool for tool in plugin_tools if not _is_owner_only(tool))
     if scope != "owner_dm":
-        return [*shared, *files_tools.offered(app, scope), TELL_OWNER]
+        guest = [REQUEST_GUEST_DESKTOP] if app.guest_desktop.available() and await app.desktop_permissions.resolve("guest_desktop") != "never" else []
+        return [*shared, *files_tools.offered(app, scope), TELL_OWNER, *guest]
 
     owner_only: list[Tool] = [
         REMIND_TOOL,

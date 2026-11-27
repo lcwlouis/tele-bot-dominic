@@ -2246,6 +2246,9 @@ class Dispatcher:
             )
 
     async def report_desktop_task(self, row: dict, files: tuple[SendFile, ...] = ()) -> None:
+        if row.get("guest_chat_id") is not None:  # a task a group or a friend asked for: the owner gets a notice, the chat an answer
+            await self.app.guest_desktop.report(row)
+            return
         app = self.app
         chat_id, task_id = row["chat_id"], row["id"]
         if chat_id != app.owner_id:

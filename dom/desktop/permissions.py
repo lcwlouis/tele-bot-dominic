@@ -28,21 +28,22 @@ log = logging.getLogger(__name__)
 
 DesktopAction = Literal[
     "visit_site", "fill_login", "download", "upload", "background_work",
-    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "guest_desktop",
 ]
 PermissionPolicy = Literal["ask", "allow", "never"]
 ApprovalDecision = Literal["once", "always", "reject"]
 
 ACTIONS: tuple[DesktopAction, ...] = (
     "visit_site", "fill_login", "download", "upload", "background_work",
-    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "guest_desktop",
 )
 POLICIES: tuple[PermissionPolicy, ...] = ("ask", "allow", "never")
 SITE_SCOPED_ACTIONS: frozenset[str] = frozenset(("visit_site", "fill_login", "download", "upload"))
 # Actions with one global policy, so Allow always flips that policy. The Google ones (W4) are owner-DM tool calls.
 GOOGLE_ACTIONS: frozenset[str] = frozenset(("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft"))
-# Making a new calendar is asked every time (Reject, Allow once): no Allow always, and Allow is not a policy for it.
-ASK_EVERY_TIME: frozenset[str] = frozenset(("calendar_create",))
+# Making a new calendar, and a desktop task for a group or a friend, are asked every time (Reject, Allow once): no Allow
+# always, and Allow is not a policy for them. Never turns the guest desktop off.
+ASK_EVERY_TIME: frozenset[str] = frozenset(("calendar_create", "guest_desktop"))
 GLOBAL_ACTIONS: frozenset[str] = frozenset(("background_work", *(GOOGLE_ACTIONS - ASK_EVERY_TIME)))
 APPROVAL_TIMEOUT = 900.0
 CARD_LINES = 8  # lines on a Google approval card; the card never cuts a material detail, it goes dashboard-only instead
@@ -61,6 +62,7 @@ DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "calendar_move": "ask",
     "calendar_delete": "ask",
     "gmail_draft": "ask",
+    "guest_desktop": "ask",
 }
 
 ACTION_META: dict[DesktopAction, dict[str, str]] = {
@@ -103,6 +105,11 @@ ACTION_META: dict[DesktopAction, dict[str, str]] = {
     "gmail_draft": {
         "label": "Save a Gmail draft",
         "description": "Dom saves a draft in Gmail. The card shows the recipients, subject and the start of the text. Dom never sends mail.",
+    },
+    "guest_desktop": {
+        "label": "Desktop task for a chat",
+        "description": "A group or a friend asked Dom to look something up on the web. It runs on a desktop of its own with none of your logins, "
+        "and only after you tap Allow once on the card. It is always asked; Never turns it off.",
     },
 }
 

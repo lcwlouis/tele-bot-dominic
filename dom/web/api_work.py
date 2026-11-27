@@ -86,7 +86,12 @@ def _short(text: str | None) -> str:
 def _task(row: dict | None) -> dict | None:
     if row is None:
         return None
-    return {**{key: row[key] for key in ("id", "status", "steps", "brief", "error", "created_at")}, **_budget(row)}
+    return {**{key: row[key] for key in ("id", "status", "steps", "brief", "error", "created_at")}, **_budget(row), **_guest(row)}
+
+
+def _guest(row: dict) -> dict:
+    """Who a task was for, when a group or a friend asked for it (and the owner allowed it); empty for the owner's own."""
+    return {"guest_chat": row.get("guest_chat_title") or "", "guest_asker": row.get("guest_asker") or ""} if row.get("guest_chat_id") is not None else {}
 
 
 def _budget(row: dict) -> dict:
@@ -122,7 +127,7 @@ async def _desk(app, lane, focus: int | None = None) -> dict:
         } for host in state["hosts"]],
         "history": [{
             "id": row["id"], "status": row["status"], "container": row["container"], "steps": row["steps"],
-            **_budget(row), "brief": row["brief"], "result": _short(row.get("result")), "error": _short(row.get("error")),
+            **_budget(row), **_guest(row), "brief": row["brief"], "result": _short(row.get("result")), "error": _short(row.get("error")),
             "finished": row["finished_local"], "created_at": row["created_at"],
             "finished_at": row.get("finished_at"),
         } for row in history],

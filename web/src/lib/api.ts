@@ -374,7 +374,9 @@ export type ChatsData = {
 /** GET /api/work/* and the Work writes (dom/web/api_work.py). Every write answers { ok, message, ...the tab's data }. */
 // steps_budget: the step budget the task started with (null on tasks from before v0.8.3); extra_steps: steps the owner added.
 export type StepBudget = { steps_budget: number | null; extra_steps: number };
-export type DeskTask = { id: number; status: string; steps: number; brief: string; error: string | null; created_at: string } & StepBudget;
+// guest_chat and guest_asker are set only on a task that a group or a friend asked for (after the owner's OK).
+export type GuestOrigin = { guest_chat?: string; guest_asker?: string };
+export type DeskTask = { id: number; status: string; steps: number; brief: string; error: string | null; created_at: string } & StepBudget & GuestOrigin;
 export type DeskContainer = {
   name: string;
   host: string;
@@ -396,7 +398,7 @@ export type DeskHistory = {
   finished: string;
   created_at: string;
   finished_at: string | null;
-} & StepBudget;
+} & StepBudget & GuestOrigin;
 export type DeskData = {
   enabled: boolean;
   status: string;
@@ -482,7 +484,8 @@ export type DesktopAction =
   | "calendar_add"
   | "calendar_move"
   | "calendar_delete"
-  | "gmail_draft";
+  | "gmail_draft"
+  | "guest_desktop";
 export type PermissionPolicy = "ask" | "allow" | "never";
 export type SavedLogin = {
   id: number;

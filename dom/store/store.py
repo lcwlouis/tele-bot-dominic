@@ -78,6 +78,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (36, "0035_assistant_usage.sql"),
     (37, "0036_news_usage.sql"),
     (38, "0037_usage_turn.sql"),
+    (39, "0038_guest_desktop.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -2502,14 +2503,18 @@ class Store:
 
     # ---- desktop tasks -----------------------------------------------------
 
-    async def enqueue_desktop_task(self, chat_id: int, brief: str, container: str = "default") -> int | None:
-        """Queue a task on a container; None if that container already has an active task."""
+    async def enqueue_desktop_task(
+        self, chat_id: int, brief: str, container: str = "default", *, guest: tuple[int, str, str] | None = None,
+    ) -> int | None:
+        """Queue a task on a container; None if that container already has an active task. `guest` is (chat id, chat
+        title, who asked) for a task that a group or a friend asked for: it is still the owner's row."""
         def enqueue() -> int | None:
             if chat_id != self.owner_id:
                 return None
             row = self._conn.execute(
-                "INSERT INTO desktop_tasks (chat_id, brief, status, created_at, container) VALUES (?, ?, 'queued', ?, ?) "
-                "ON CONFLICT DO NOTHING RETURNING id", (chat_id, brief, _now(), container),
+                "INSERT INTO desktop_tasks (chat_id, brief, status, created_at, container, guest_chat_id, guest_chat_title, guest_asker) "
+                "VALUES (?, ?, 'queued', ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
+                (chat_id, brief, _now(), container, *(guest or (None, None, None))),
             ).fetchone()
             return row["id"] if row else None
 

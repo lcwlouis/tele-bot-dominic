@@ -359,6 +359,57 @@ session cookies after login.
 See [the credentials and permissions security spec](superpowers/specs/2026-11-27-credentials-and-permissions.md)
 for the full threat model, key-rotation protocol, and E101 secure secret request flow.
 
+## Desktop tasks for groups and friends
+
+A person in a group or a friend's DM may ask for something that needs the web ("when does the garden open?"). If Dom
+cannot answer it himself he may propose a small desktop task (`request_guest_desktop`, offered only in those chats,
+never in your DM). The asker hears "let me check" in Dom's own words, and you get a card in your DM:
+
+- the chat, who asked, and their request (marked as untrusted text);
+- the limits: steps, minutes, and spend per task and per day for that chat;
+- **Allow once** and **Reject**. There is no Allow always, and `guest_desktop` under System → Access can only be
+  Ask or Never (Never turns the feature off). A card nobody answers expires after 15 minutes. On Reject or expiry the
+  asker hears a kind, vague no, with no reason and no mention of you.
+
+Only after Allow once does the task run, one at a time (a second request waits for the first to finish).
+
+**Where it runs.**
+
+- A `[[desktop.hosts]]` entry with `guest = true` (a remote host only) is used first. Your own tasks never run on it, so
+  it never holds your logins. Dom cannot reset a remote host's browser, so guest tasks share that host's profile with each
+  other (never with yours); restart the sandbox between tasks if that matters.
+- With no guest host, the local host runs a container named `guest`. It has **no browser profile mount** (the profile
+  lives inside the container and goes with it when the task ends), **no saved logins**, **no workspace** (the shared
+  folder is not mounted even with `share_with_chats` on) and none of your sessions. The same firewall probe runs before
+  it starts, and the network guard of self-directed work runs from inside it. Your own tasks can't use the name
+  `guest`.
+- It shares the desktop bridge, so it starts only while every other local container is stopped, and nothing starts beside
+  it. On the Pi (one container at a time) a guest task **waits** behind your own task for up to
+  `[desktop.guest] queue_minutes` and then gives up; an idle container of yours (no task) is stopped to make room. While a guest task waits
+  or runs, a task you ask for is refused with "Dom is on a task for a chat" and you can ask again when it ends.
+- The usual free-memory floor applies to the guest container (1600 MB plus `min_free_memory_mb`); a task waits until there is room.
+
+**What the task can do.** It gets the same read-only browser as self-directed work: any public web page (no IP
+addresses, LAN names or ports other than 80 and 443), links as the only clicks, a search box as the only form, and
+scrolling keys, and reads pages as text (no screenshots or `look`). It has no shell, no files, no uploads, no handoff, no saved-login fill and no
+`request_secret`; each of those is refused in code. A site you set to Never under System → Access stays blocked.
+
+**Limits.** `[desktop.guest]`: `max_steps` (default 15, never extended), `max_minutes` (5), `task_cost_cap_usd` (0.25) and
+`daily_cost_cap_usd` (1.0, per chat), plus `queue_minutes` and `enabled`. Spend is recorded under kind `desktop` for the
+asking chat and counts toward `daily_spend_cap_usd`, `monthly_spend_cap_usd` and the `desktop` area limit; when any is
+reached the task stops. A chat can have one request waiting at a time and six a day, and three cards can wait for you at
+once. The limits show on the Desktop hosts line of Settings.
+
+**What comes back.** Only a final answer that Dom writes from the task's result, as text, in the chat. Never a screenshot,
+a file, page text or the browser's history; web addresses are stripped from the answer, and it is checked against your
+private notes before it is sent. If it cannot be written the chat gets a plain "couldn't get you a good answer". **You** see the whole task on
+Work → Tasks as usual, marked as a guest task with its chat and who asked, and get a short notice when it ends.
+
+**Privacy, in code.** The brief is what the model wrote in that chat's turn, at most 300 characters. Dom refuses it if it repeats a line of your
+private notes or an instance credential, whatever the prompt said. The worker gets only a fixed prompt and the brief:
+no soul, notes, skills, repository note or history. The task's row belongs to you, so its brief and result are on your dashboard, and the
+notice and the owner event that mention it fence the chat's words as untrusted.
+
 ## Self-directed work
 
 With `[self_work] enabled = true` (the default) and a local desktop host, Dom may

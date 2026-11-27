@@ -185,6 +185,8 @@ async def run_computer_action(app, lane, action: str) -> str:
     the container to exit, and the dashboard must not sit on that request meanwhile."""
     sandbox, worker = lane.sandbox, lane.worker
     if action == "start":
+        if app.desktop_worker.for_guests(lane):  # nothing of yours is ever done in the computer kept for guests
+            return "That computer is kept for tasks that groups and friends ask for."
         if lane.status() == "stopping":
             return "The computer is still stopping."
         # Booting takes a while; the worker's lock must stay free for cancel and resume meanwhile.

@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from dom.config import Config, DesktopConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderSetup, SelfWorkConfig, StudioConfig, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig
+from dom.config import Config, DesktopConfig, DesktopHost, GuestDesktopConfig, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderSetup, SelfWorkConfig, StudioConfig, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,7 +21,7 @@ def test_configuration_reference_has_every_toml_key():
         assert f"| `{name}` |" in doc
     for section, model in (
         ("desktop", DesktopConfig), ("models.<name>", ModelEndpoint), ("providers.<name>", ProviderSetup),
-        ("web", WebConfig), ("openers", OpenersConfig), ("presence", PresenceConfig), ("self_work", SelfWorkConfig), ("t3", T3Config), ("update", UpdateConfig), ("knowledge", KnowledgeConfig), ("world", WorldConfig), ("tracer", TracerConfig), ("workspace", WorkspaceConfig),
+        ("desktop.guest", GuestDesktopConfig), ("web", WebConfig), ("openers", OpenersConfig), ("presence", PresenceConfig), ("self_work", SelfWorkConfig), ("t3", T3Config), ("update", UpdateConfig), ("knowledge", KnowledgeConfig), ("world", WorldConfig), ("tracer", TracerConfig), ("workspace", WorkspaceConfig),
     ):
         for name in model.model_fields:
             assert f"| `{section}.{name}` |" in doc

@@ -135,6 +135,7 @@ Init creates the tables below. Omitted triage, media and drafting tables use the
 | `desktop.remote_isolation_confirmed` | `false` | Set after verifying the remote desktop cannot reach your LAN or Dom host. |
 | `desktop.fallback_usd_per_1k_tokens` | `0.002` | USD per 1,000 tokens when a desktop call reports no cost. Used for the task limit only. |
 | `desktop.hosts` | `[]` | Desktop hosts, as [[desktop.hosts]] tables. Empty means one host built from desktop.mode and the keys above. |
+| `desktop.guest` | A table, below | Desktop tasks for groups and friends. |
 
 ### Desktop hosts
 
@@ -149,6 +150,20 @@ Add one `[[desktop.hosts]]` table per host. A local host runs Docker containers 
 | `desktop.hosts[].remote_isolation_confirmed` | `false` | Set after verifying the remote host cannot reach your LAN or Dom host. |
 | `desktop.hosts[].max_containers` | `1` | Most containers that may run at once on a local host. A remote host runs one. |
 | `desktop.hosts[].min_free_memory_mb` | Unset | Memory the host must still have free after a container's own limit. Dom refuses to start a container that would breach it. Unset means 512 for a local host and 0 (unchecked) for a remote one. |
+| `desktop.hosts[].guest` | `false` | Keep this remote host for tasks that groups and friends ask for (after your OK). Your own desktop tasks never run on it, so it never holds your logins. Guest tasks use a host flagged this way first, then the local host. |
+
+### Desktop tasks for groups and friends
+
+A group or a friend may ask Dom for a web lookup that needs the desktop. Each one waits for your Allow once on a card in your DM (there is no Allow always, and Never in System → Access turns it off). It runs on a guest container with no saved logins and none of your files, or on a `[[desktop.hosts]]` entry with `guest = true`. See [Desktop](desktop.md#desktop-tasks-for-groups-and-friends).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `desktop.guest.enabled` | `true` | Let Dom offer a desktop task to a group or a friend's DM. Each one still waits for your Allow once; there is no Allow always. Inert without a desktop host with room for another container. |
+| `desktop.guest.max_steps` | `15` | Step budget (tool calls and model turns) of one guest task. It is never extended. |
+| `desktop.guest.max_minutes` | `5` | Working-time limit of one guest task, in minutes. |
+| `desktop.guest.task_cost_cap_usd` | `0.25` | Per-guest-task USD limit, counting its model calls and the reply. Zero disables this limit. |
+| `desktop.guest.daily_cost_cap_usd` | `1.0` | USD a chat's guest tasks may cost in one day. Zero disables this limit. |
+| `desktop.guest.queue_minutes` | `10` | Minutes an approved guest task waits for the desktop (an owner task, or memory) before it gives up. |
 
 ## Studio
 

@@ -329,7 +329,9 @@ async def test_desktop_hosts_are_listed_with_status_and_only_the_basics_are_edit
     hosts = {child["label"]: child for child in desktop["children"]}
     assert list(hosts) == ["pi", "gpu"] and hosts["pi"]["id"] == "desktop:pi"
     assert [f["name"] for f in hosts["pi"]["fields"]] == ["max_containers", "min_free_memory_mb"]
-    assert [f["name"] for f in hosts["gpu"]["fields"]] == ["url", "api_key", "remote_isolation_confirmed"]
+    assert [f["name"] for f in hosts["gpu"]["fields"]] == ["url", "api_key", "guest", "remote_isolation_confirmed"]
+    assert next(f for f in hosts["gpu"]["fields"] if f["name"] == "guest")["editable"] is False
+    assert "Tasks for groups and friends" in desktop["help"] and "15 steps" in desktop["help"]
     assert hosts["pi"]["state"] == "ok" and "0 of 2 container" in hosts["pi"]["detail"]
     assert hosts["gpu"]["state"] == "missing" and "API key" in hosts["gpu"]["detail"]
     assert desktop["state"] == "error" and desktop["restart_required"] is False

@@ -78,7 +78,7 @@ def _fake_plugin(name: str, tool_name: str, scopes: tuple[str, ...]) -> tuple[Pl
 
 async def test_tool_list_puts_shared_first_owner_last_and_keeps_scopes_separate(make_app, monkeypatch):
     app = make_app()
-    app.desktop_worker = SimpleNamespace(available=lambda: True, close=_noop)
+    app.desktop_worker = SimpleNamespace(available=lambda: True, has_guest_host=lambda: False, close=_noop)
     app.t3 = SimpleNamespace(available=lambda: True)
     await app.store.kv_set(GLOBAL_PRESET_KEY, AUTO)
 
@@ -129,7 +129,7 @@ async def test_dynamic_tools_coming_and_going_do_not_reshape_shared_part(make_ap
     t3_on = False
     plugin_entries: list[tuple[Plugin, ToolManifest]] = []
 
-    app.desktop_worker = SimpleNamespace(available=lambda: desktop_on, close=_noop)
+    app.desktop_worker = SimpleNamespace(available=lambda: desktop_on, has_guest_host=lambda: False, close=_noop)
     app.t3 = SimpleNamespace(available=lambda: t3_on)
 
     async def fake_entries(scope: str):
