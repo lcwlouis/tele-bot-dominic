@@ -116,6 +116,14 @@ def _parts(rel: str) -> tuple[str, ...]:
     return parts
 
 
+STAGING = re.compile(r"\.incoming-[0-9a-f]{12}")  # the names `Tree._stage` makes: a half-written file, gone a moment later
+
+
+def is_staging(name: str) -> bool:
+    """Whether a file name is one `Tree._stage` could have made. Any other `.incoming-` name is someone's file."""
+    return STAGING.fullmatch(name) is not None
+
+
 def _mtime(info: os.stat_result) -> str:
     return datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat(timespec="seconds")
 
@@ -281,7 +289,7 @@ class Tree:
 
     @staticmethod
     def _stage(parent: int, data: bytes) -> str:
-        """Write `data` to a hidden temporary file in the directory and return its name."""
+        """Write `data` to a hidden temporary file in the directory and return its name (see `is_staging`)."""
         name = f".incoming-{os.urandom(6).hex()}"
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=parent)
         try:
@@ -461,11 +469,13 @@ def measure(home: Path, *, fresh: bool = False) -> int:
     return used
 
 
-async def check_cap(app: App) -> bool:
-    """Whether the workspace is over its size cap. A bind mount has no quota, so the desktop can fill the disk behind
-    the file tools' backs: this is looked at after each desktop step and when a task ends. The first time it is over,
-    the owner gets one quiet notice with a link to Files; the notice comes again only after it has been under."""
-    used = await asyncio.to_thread(measure, app.home.root)
+async def check_cap(app: App, *, fresh: bool = False) -> bool:
+    """Whether the workspace is over its size cap. The cap is soft: a bind mount has no quota, so the desktop can fill
+    the disk behind the file tools' backs, and one download or write can overshoot before the next look. It is looked at
+    between desktop steps (from the short-lived measurement) and, with `fresh`, at the boundaries that act on the answer:
+    a task ending and a new one starting. The first time it is over, the owner gets one quiet notice with a link to
+    Files; the notice comes again only after it has been under."""
+    used = await asyncio.to_thread(measure, app.home.root, fresh=fresh)
     full = used > MAX_TOTAL_BYTES
     flagged = bool(await app.store.kv_get(FULL_FLAG))
     if full and not flagged:

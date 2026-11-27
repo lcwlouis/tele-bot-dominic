@@ -143,14 +143,55 @@ def test_backup_stops_at_the_cap_and_skips_oversize_files(tmp_path, monkeypatch)
     home, folder = make_home(tmp_path)
     monkeypatch.setattr(workspace, "MAX_TOTAL_BYTES", 100)
     monkeypatch.setattr(workspace, "MAX_FILE_BYTES", 60)
-    (folder / "a.txt").write_bytes(b"a" * 50)
-    (folder / "b.txt").write_bytes(b"b" * 50)
-    (folder / "c.txt").write_bytes(b"c" * 50)
+    for age, name in enumerate(("a.txt", "b.txt", "c.txt")):
+        (folder / name).write_bytes(name[:1].encode() * 50)
+        os.utime(folder / name, (1_000_000 + age, 1_000_000 + age))  # c is the newest
     (folder / "huge.bin").write_bytes(b"h" * 70)  # over the per-file limit
     members, _ = archived(home, tmp_path)
     files = {name: member for name, member in members.items() if name.startswith("workspace/") and member.isfile()}
-    assert sorted(files) == ["workspace/a.txt", "workspace/b.txt"]
+    assert sorted(files) == ["workspace/b.txt", "workspace/c.txt"]  # the newest two; the oldest is what does not fit
     assert sum(member.size for member in files.values()) == 100
+
+
+def test_the_backup_cap_keeps_the_newest_files_whatever_their_names_and_logs_what_it_skipped(tmp_path, monkeypatch, caplog):
+    home, folder = make_home(tmp_path)
+    monkeypatch.setattr(workspace, "MAX_TOTAL_BYTES", 60)
+    (folder / "sub").mkdir()
+    (folder / "a-old.txt").write_bytes(b"o" * 50)
+    (folder / "sub" / "m-mid.txt").write_bytes(b"m" * 50)
+    (folder / "z-new.txt").write_bytes(b"n" * 50)
+    for name, when in (("a-old.txt", 1_000_000), ("sub/m-mid.txt", 2_000_000), ("z-new.txt", 3_000_000)):
+        os.utime(folder / name, (when, when))
+    with caplog.at_level("WARNING", logger="dom.backup"):
+        members, _ = archived(home, tmp_path)
+    files = sorted(name for name, member in members.items() if name.startswith("workspace/") and member.isfile())
+    assert files == ["workspace/z-new.txt"]
+    skipped = " ".join(record.getMessage() for record in caplog.records)
+    assert "2 files over the cap" in skipped and "a-old.txt" in skipped and "m-mid.txt" in skipped
+
+
+def test_backup_leaves_out_only_the_staging_files_the_workspace_makes(tmp_path):
+    home, folder = make_home(tmp_path)
+    (folder / ".incoming-user").mkdir()
+    (folder / ".incoming-user" / "valuable.txt").write_text("keep me")
+    (folder / ".incoming-notes").write_text("made by the desktop")
+    (folder / ".incoming-0123456789ab").write_text("half-written")  # the exact name `_stage` makes
+    (folder / "sub").mkdir()
+    (folder / "sub" / ".incoming-fedcba987654").write_text("half-written")
+    (folder / ".incoming-aabbccddeeff").mkdir()  # a folder is never a staging file
+    (folder / ".incoming-aabbccddeeff" / "inside.txt").write_text("keep me too")
+    members, _ = archived(home, tmp_path)
+    assert "workspace/.incoming-user/valuable.txt" in members and "workspace/.incoming-notes" in members
+    assert "workspace/.incoming-aabbccddeeff/inside.txt" in members
+    assert "workspace/.incoming-0123456789ab" not in members and "workspace/sub/.incoming-fedcba987654" not in members
+
+
+def test_the_name_the_workspace_stages_with_is_the_name_the_backup_leaves_out(tmp_path):
+    tree = Tree(ensure_workspace(tmp_path))
+    with tree._directory(()) as parent:
+        name = tree._stage(parent, b"x")
+    assert workspace.is_staging(name)
+    assert not workspace.is_staging(".incoming-notes") and not workspace.is_staging("incoming-0123456789ab")
 
 
 # ---- 2. PDF extraction runs in a killable, limited process ---------------------------------------------------------
@@ -322,6 +363,55 @@ async def test_a_running_desktop_task_is_stopped_when_the_workspace_overflows(ma
     await wait_task(worker)
     row = await task_row(app, task_id)
     assert row["status"] == "failed" and "workspace is full" in row["error"]
+
+
+@pytest.fixture
+def cached_cap(monkeypatch):
+    """A small cap with the real five-second measurement cache, so a stale measurement can show."""
+    monkeypatch.setattr(workspace, "MAX_TOTAL_BYTES", 10)
+    workspace._measured.clear()
+
+
+async def test_a_write_just_before_the_task_finishes_is_caught_by_the_final_check(make_app, cached_cap, monkeypatch):
+    import dom.desktop.worker as worker_module
+    from dom.home import Home
+    from test_desktop_worker import call, task_row, wait_task, worker_for
+
+    app = make_app()
+    app.home = Home(app.home.root / "home")
+    worker = await worker_for(app, call("finish", result="done"), {"content": '{"bubbles":[{"text":"ok"}]}'})
+    worker.sandbox.workspace_mounted = True
+    assert await workspace.check_cap(app) is False  # measured under the cap a moment ago: the cache is warm
+    real = worker_module.download_results
+
+    async def late_download(client, files):
+        fill(app)  # the container's last download lands as the task ends, after the last step's check
+        return await real(client, files)
+
+    monkeypatch.setattr(worker_module, "download_results", late_download)
+    task_id = await worker.enqueue(OWNER, "Do something")
+    await wait_task(worker)
+    assert (await task_row(app, task_id))["status"] == "done"  # the check is soft: the task's result stands
+    assert sum("workspace is full" in str(sent[2]) for sent in app.bot.of("send", OWNER)) == 1
+
+
+async def test_a_new_desktop_task_is_refused_from_a_fresh_measurement_not_a_cached_one(make_app, cached_cap):
+    from test_desktop_fleet import fleet_for
+
+    app = make_app()
+    fleet = fleet_for(app)
+    assert await workspace.check_cap(app) is False  # the cache now says there is room
+    fill(app)
+    with pytest.raises(ValueError, match="workspace is full"):
+        await fleet.enqueue(OWNER, "one")
+
+
+async def test_the_files_page_reports_fullness_from_a_fresh_measurement(make_app, cached_cap, browser):
+    app = make_app()
+    async with browser(app) as client:
+        assert (await client.get("/api/files/list")).json()["full"] is False  # warms the cache
+        fill(app)
+        assert (await client.get("/api/files/list")).json()["full"] is True
 
 
 async def test_a_task_without_the_mount_ignores_the_workspace_size(make_app, small_cap):
@@ -536,7 +626,28 @@ def json_prompt(app):
     return json.dumps(app.script.requests)
 
 
-async def test_a_document_still_arriving_is_said_so_and_when_it_lands_dom_follows_up_once(make_app, monkeypatch):
+def read_the_file_on_the_second_turn(app, monkeypatch, path="inbox/plan.txt"):
+    """The model's second request asks for the file with the `files` tool, as the real model would; the rest is the script."""
+    import json
+
+    import httpx
+
+    from tghelpers import ModelScript
+
+    real = ModelScript.__call__
+
+    def respond(script, request):
+        body = json.loads(request.content)
+        if script is app.script and len(script.requests) == 1 and "tools" in body:
+            script.requests.append(body)
+            call = {"id": "c1", "type": "function", "function": {"name": "files", "arguments": json.dumps({"action": "read", "path": path})}}
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [call]}}]})
+        return real(script, request)
+
+    monkeypatch.setattr(ModelScript, "__call__", respond)
+
+
+async def test_a_document_still_arriving_is_said_so_and_when_it_lands_dom_takes_a_real_turn_once(make_app, monkeypatch):
     from dom import dispatch
     from test_workspace import document, stored_media
     from test_usage import online
@@ -547,8 +658,9 @@ async def test_a_document_still_arriving_is_said_so_and_when_it_lands_dom_follow
     monkeypatch.setattr(dispatch, "DOCUMENT_WAIT_SECONDS", 0.05)
     gate = asyncio.Event()
     slow_document(app, monkeypatch, gate)
+    read_the_file_on_the_second_turn(app, monkeypatch)
     await online(app, OWNER)
-    await handle_message(app, tg(OWNER, OWNER, text=None, caption="read this", document=document("plan.txt")))
+    await handle_message(app, tg(OWNER, OWNER, text=None, caption="answer the questions in this", document=document("plan.txt")))
     for _ in range(200):  # the turn goes ahead without the file, then waits for its slot
         if app.script.requests:
             break
@@ -557,13 +669,84 @@ async def test_a_document_still_arriving_is_said_so_and_when_it_lands_dom_follow
     assert len(app.script.requests) == 1
     gate.set()
     await drain_dispatch(app.dispatch)
-    assert len(app.script.requests) == 2  # one follow-up turn, no more
-    follow_up = str(app.script.requests[1]["messages"])
-    assert "finished arriving" in follow_up and "inbox/plan.txt" in follow_up and "the long awaited text" in follow_up
+    assert len(app.script.requests) == 3  # the first turn, then one more turn (the file tool call and its answer), no more
+    late = app.script.requests[1]
+    text = str(late["messages"])
+    assert "answer the questions in this" in text  # the original request, not an excerpt of the file
+    assert "was still arriving when you answered it" in text and "inbox/plan.txt" in text
+    assert "the long awaited text" not in text  # the file is read through the tool, not pasted into the prompt
+    assert "files" in [tool["function"]["name"] for tool in late["tools"]]
+    assert "the long awaited text" in str(app.script.requests[2]["messages"])  # the tool read it
     assert (await stored_media(app, OWNER, 1))["saved"] == "inbox/plan.txt"
     events = [row.text for row in await app.store.get_recent_chat_window(OWNER) if row.role == "event"]
     assert any("plan.txt finished arriving" in text for text in events)
-    assert len(sent_texts(app)) == 2  # the reply, then the follow-up
+    assert len(sent_texts(app)) == 2  # the reply, then the answer from the second turn
+    assert app.dispatch._landing_missed == set()
+
+
+async def test_a_turn_that_already_had_the_file_means_no_late_turn(make_app, monkeypatch):
+    from dom import dispatch
+    from test_workspace import document
+    from test_usage import online
+    from dom.telegram.handlers import handle_message
+    from tghelpers import drain_dispatch, tg
+
+    app = make_app()
+    monkeypatch.setattr(dispatch, "DOCUMENT_WAIT_SECONDS", 0.05)
+    gate = asyncio.Event()
+    slow_document(app, monkeypatch, gate)
+    await online(app, OWNER)
+    await handle_message(app, tg(OWNER, OWNER, text=None, caption="read this", document=document("plan.txt")))
+    while len(sent_texts(app)) < 1:  # the first turn answered without the file
+        await asyncio.sleep(0.01)
+    busy = app.dispatch._turn_slot(OWNER)  # a turn is running in the chat
+    await busy.__aenter__()
+    try:
+        await handle_message(app, tg(OWNER, OWNER, text="so?", msg_id=2))  # waits for the slot first
+        await asyncio.sleep(0.3)
+        gate.set()  # the document lands; the late turn queues behind the other
+        while app.dispatch._landing_pending:
+            await asyncio.sleep(0.01)
+    finally:
+        await busy.__aexit__(None, None, None)
+    await drain_dispatch(app.dispatch)
+    turns = [str(request["messages"]) for request in app.script.requests]
+    assert len(turns) == 2  # the first turn and the "so?" turn, which found the file saved: nothing more
+    assert "inbox/plan.txt" in turns[1] and "still arriving" not in turns[1] and "was still arriving when you" not in turns[1]
+    assert app.dispatch._landing_missed == set()
+
+
+async def test_the_late_turn_keeps_the_topic_and_the_chats_scope(make_app, monkeypatch):
+    from dom import dispatch
+    from test_workspace import document
+    from dom.telegram.handlers import handle_message
+    from tghelpers import drain_dispatch, tg
+    from test_usage import online
+
+    app = make_app()
+    app.config = app.config.model_copy(update={"workspace": WorkspaceConfig(share_with_chats=True)})
+    monkeypatch.setattr(dispatch, "DOCUMENT_WAIT_SECONDS", 0.05)
+    gate = asyncio.Event()
+    slow_document(app, monkeypatch, gate)
+    read_the_file_on_the_second_turn(app, monkeypatch, path=f"inbox/{GROUP}/plan.txt")
+    await online(app, GROUP)
+    message = tg(GROUP, FRIEND, text=None, caption="@dombot answer the questions in this", document=document("plan.txt"),
+                 chat_type="supergroup", is_topic_message=True, message_thread_id=7)
+    await handle_message(app, message)
+    for _ in range(200):
+        if app.script.requests:
+            break
+        await asyncio.sleep(0.01)
+    gate.set()
+    await drain_dispatch(app.dispatch)
+    assert len(app.script.requests) == 3
+    late = app.script.requests[1]
+    assert "answer the questions in this" in str(late["messages"])
+    shared = next(tool for tool in late["tools"] if tool["function"]["name"] == "files")["function"]
+    assert "write" not in str(shared["parameters"])  # a group gets the read-only files tool, never the owner's
+    sends = app.bot.of("send", GROUP)
+    assert len(sends) == 2 and all(call[3].get("message_thread_id") == 7 for call in sends)
+    assert "the long awaited text" in str(app.script.requests[2]["messages"])
 
 
 async def test_a_document_that_lands_before_the_turn_needs_no_follow_up(make_app, monkeypatch):

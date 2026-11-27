@@ -510,7 +510,7 @@ work; the summary of web content stays out of that history. See
 
 `<home>/workspace` is a folder Dom, the owner's desktop and the dashboard's Files page share (see
 [The shared workspace](desktop.md#the-shared-workspace)). It is the only part of the home the desktop container can
-see. Documents the owner sends in the DM land in `workspace/inbox/`; Dom reads them with the owner-DM-only `files` tool and
+see, and the container can read all of it (`inbox/` and `shared/` too, whatever `share_with_chats` says). Documents the owner sends in the DM land in `workspace/inbox/`; Dom reads them with the owner-DM-only `files` tool and
 the text he reads goes to the chat model like any other tool result, fenced as untrusted data. Nothing in the workspace
 leaves the host except through that, the desktop's own `download` and `upload` permissions, and the dashboard.
 

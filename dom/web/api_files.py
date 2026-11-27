@@ -77,7 +77,7 @@ async def list_files(request: Request, area: Area = "workspace", path: str = Que
         "area": area, "writable": tree.writable, **listing,
         # What the page tells the owner beside the files: the desktop runs without the workspace, or it is over its cap.
         "mount_problem": workspace.mount_problem(request.app.state.dom.home.root) if shared else None,
-        "full": shared and await asyncio.to_thread(workspace.measure, request.app.state.dom.home.root) > workspace.MAX_TOTAL_BYTES,
+        "full": shared and await asyncio.to_thread(workspace.measure, request.app.state.dom.home.root, fresh=True) > workspace.MAX_TOTAL_BYTES,
     }
 
 

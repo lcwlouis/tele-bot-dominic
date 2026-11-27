@@ -140,7 +140,7 @@ class DesktopFleet:
         return any(lane.worker.available() for lane in self.lanes.values())
 
     async def _refusal(self, lane: Lane) -> str | None:
-        if lane.host.config.mode == "local" and await workspace.check_cap(self.app):
+        if lane.host.config.mode == "local" and await workspace.check_cap(self.app, fresh=True):
             return workspace.FULL_MESSAGE  # the mounted folder is over its cap: no new desktop work until it is cleared
         if lane.status() == "ready":
             return None  # it already holds its slot

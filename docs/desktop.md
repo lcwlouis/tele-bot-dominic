@@ -234,8 +234,13 @@ container and a remote desktop host never do. The browser profile stays outside 
   it".
 - **PDFs.** A PDF is parsed in a separate process with a memory and CPU limit, a 30-second wall-clock limit and a cap on
   its output, and is killed when the limit passes or the request is cancelled. A PDF over 10 MB is not parsed.
-- **The size cap.** A bind mount has no quota, so the desktop could fill the disk behind the file tools. Dom measures the
-  workspace (a bounded walk, reused for a few seconds) after every desktop tool step and when a task ends. Over 500 MB,
+- **What the desktop can read.** The whole workspace it mounts, `inbox/` and `shared/` included, whatever the
+  chat-sharing setting says: that setting limits what groups and friends reach through Dom, not what the owner's desktop
+  sees. Nothing outside the folder is mounted.
+- **The size cap.** The 500 MB cap is a soft one. A bind mount has no quota, so the desktop could fill the disk behind the
+  file tools, and one download or write can overshoot the cap before the next check notices. Dom measures the workspace (a
+  bounded walk, reused for a few seconds) after every desktop tool step, and measures it fresh, never from that reuse, when a
+  task ends, before a new task starts and when the Files page reports its size. Over 500 MB,
   the running task stops with a clear result, no new desktop work starts, the `files` tool and the Files page refuse writes
   (deleting still works), and the owner gets one quiet notice with a link to Files, again only after the folder has been
   under the cap. `dom doctor` reports the size against the cap.
@@ -249,7 +254,10 @@ container and a remote desktop host never do. The browser profile stays outside 
 - **Backups.** `dom backup` includes the workspace. It walks it by directory descriptors without following links, opens
   each file the same way and archives only regular files with one name, from the open descriptor, so a file swapped for
   a link mid-backup is not followed. Links, pipes and multi-name files are skipped and counted in the log, and no more
-  than the 500 MB cap is archived (a file over 20 MB, or one that no longer fits, is skipped).
+  than the 500 MB cap is archived. When the files do not all fit, the newest (by modification time) are kept and the log
+  names what was skipped; a file over 20 MB is skipped too. Only a regular file named exactly like the half-written files
+  the workspace stages (`.incoming-` and twelve hex digits) is left out; any other `.incoming-...` file or folder is
+  yours and is archived.
 - **The container's user.** A bind mount shows the host's file owner, so the desktop's user must be the folder's
   owner. At each start Dom runs a throwaway container as the desktop's user to read its uid and write and delete a file
   in `/workspace`. If the uid differs from the folder's owner, or the write fails, the desktop starts **without** the
@@ -258,8 +266,10 @@ container and a remote desktop host never do. The browser profile stays outside 
   user (the same uid as Dom) or by changing the owner of `<home>/workspace` to the container's uid; the folder stays mode
   0700. A Linux host with Dom at user 1000 normally matches; Docker Desktop on a Mac usually does not.
 - **A slow document.** A turn with a document in it waits up to the 60-second download limit for the file to land. If it
-  has not, Dom is told "the file is still arriving"; when it lands he gets an event and a short follow-up with the start
-  of the file, once, after any turn still running has replied.
+  has not, Dom is told "the file is still arriving"; when it lands he gets an event, and the message gets a normal turn
+  once, after any turn still running has replied: the original request and the history before it, a note saying where the
+  file is, and his file tools for that chat's scope (the same topic, never wider than the chat). It does not run if a turn
+  that ran meanwhile already found the file saved, or if Dom has gone offline (the event waits in the chat for his next turn).
 
 ## Sandbox responses
 

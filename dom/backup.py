@@ -22,78 +22,136 @@ log = logging.getLogger(__name__)
 ARCHIVE_NAME = re.compile(r"dom-[0-9]{8}-[0-9]{6}\.tar\.gz")
 
 
+UNREADABLE = "links, pipes and files with several names"
+OVER_LIMIT = "files over the size limit"
+OVER_CAP = "files over the cap"
+
+
 def _archive_workspace(tar: tarfile.TarFile, home: Path) -> None:
     """Archive `workspace/` without trusting any name in it. The desktop container writes there while the backup
     runs, so a file may be replaced by a link, or a second name given to one of the owner's files, at any moment.
     Each directory is opened relative to its parent with O_NOFOLLOW, each file the same way and checked on the open
     descriptor (a regular file with one name), and the bytes come from that descriptor. Everything else is skipped and
-    counted, and no more than the workspace's size cap is archived."""
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    counted. No more than the workspace's size cap is archived, and when the files do not all fit the newest are kept."""
     try:
-        root = os.open(home / workspace.WORKSPACE_DIR, flags)
+        root = os.open(home / workspace.WORKSPACE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return
     except OSError:
         log.warning("the workspace is not a plain folder, so it was not archived")
         return
-    skipped = {"links, pipes and files with several names": 0, "files over the size limit": 0, "files over the cap": 0}
     try:
-        _archive_directory(tar, root, workspace.WORKSPACE_DIR, [workspace.MAX_TOTAL_BYTES], skipped)
+        candidates: list[tuple[float, str, int]] = []
+        _scan(root, workspace.WORKSPACE_DIR, candidates)
+        kept, room = set(), workspace.MAX_TOTAL_BYTES
+        for _, arcname, size in sorted(candidates, key=lambda item: (-item[0], item[1])):  # newest first
+            if size <= room:
+                kept.add(arcname)
+                room -= size
+        skipped = {UNREADABLE: 0, OVER_LIMIT: 0, OVER_CAP: 0}
+        capped: list[str] = []
+        _archive_directory(tar, root, workspace.WORKSPACE_DIR, kept, [workspace.MAX_TOTAL_BYTES], skipped, capped)
     finally:
         os.close(root)
     if any(skipped.values()):
-        log.warning("the workspace backup skipped %s", ", ".join(f"{count} {what}" for what, count in skipped.items() if count))
+        what = ", ".join(f"{count} {kind}" for kind, count in skipped.items() if count)
+        log.warning("the workspace backup skipped %s%s", what, f" (not kept: {_names(capped)})" if capped else "")
 
 
-def _archive_directory(tar: tarfile.TarFile, directory: int, arcname: str, budget: list[int], skipped: dict[str, int]) -> None:
+def _names(paths: list[str], limit: int = 10) -> str:
+    shown = ", ".join(path.removeprefix(workspace.WORKSPACE_DIR + "/") for path in paths[:limit])
+    return shown + (f" and {len(paths) - limit} more" if len(paths) > limit else "")
+
+
+def _entries(directory: int) -> list[tuple[str, os.stat_result]]:
+    """Every name in a directory with its status (not following links), read before any is opened. A name that vanished
+    is left out."""
+    with os.scandir(directory) as scan:
+        names = sorted(entry.name for entry in scan)
+    entries = []
+    for name in names:
+        try:
+            entries.append((name, os.stat(name, dir_fd=directory, follow_symlinks=False)))
+        except OSError:
+            continue
+    return entries
+
+
+def _open_directory(directory: int, name: str) -> int | None:
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+    except OSError:
+        return None  # replaced by a link since it was listed
+
+
+def _skip_staging(name: str, info: os.stat_result) -> bool:
+    """Only a regular file with the exact name the workspace stages with is left out of the archive: a half-written
+    file that is gone a moment later. A directory or file the desktop or the owner named `.incoming-...` is kept."""
+    return stat.S_ISREG(info.st_mode) and workspace.is_staging(name)
+
+
+def _scan(directory: int, arcname: str, found: list[tuple[float, str, int]]) -> None:
+    """The files that could be archived, with their age and size, so the cap can be spent on the newest first."""
+    for name, info in _entries(directory):
+        child = f"{arcname}/{name}"
+        if stat.S_ISDIR(info.st_mode):
+            if (sub := _open_directory(directory, name)) is not None:
+                try:
+                    _scan(sub, child, found)
+                finally:
+                    os.close(sub)
+        elif stat.S_ISREG(info.st_mode) and not _skip_staging(name, info):
+            if info.st_nlink == 1 and info.st_size <= workspace.MAX_FILE_BYTES:
+                found.append((info.st_mtime, child, info.st_size))
+
+
+def _archive_directory(
+    tar: tarfile.TarFile, directory: int, arcname: str, kept: set[str], budget: list[int], skipped: dict[str, int],
+    capped: list[str],
+) -> None:
     info = tarfile.TarInfo(arcname)
     info.type, info.mode, info.mtime = tarfile.DIRTYPE, 0o700, os.fstat(directory).st_mtime
     tar.addfile(info)
-    with os.scandir(directory) as scan:
-        names = sorted(entry.name for entry in scan)  # every name is read before any is opened
-    unreadable = "links, pipes and files with several names"
-    for name in names:
-        if name.startswith(".incoming-"):
+    for name, info in _entries(directory):
+        if _skip_staging(name, info):
             continue
         child = f"{arcname}/{name}"
-        try:
-            kind = os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode
-        except OSError:
-            continue
-        if stat.S_ISDIR(kind):
-            try:
-                sub = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-            except OSError:
-                skipped[unreadable] += 1
+        if stat.S_ISDIR(info.st_mode):
+            if (sub := _open_directory(directory, name)) is None:
+                skipped[UNREADABLE] += 1
                 continue
             try:
-                _archive_directory(tar, sub, child, budget, skipped)
+                _archive_directory(tar, sub, child, kept, budget, skipped, capped)
             finally:
                 os.close(sub)
-        elif stat.S_ISREG(kind):
-            _archive_file(tar, directory, name, child, budget, skipped)
+        elif stat.S_ISREG(info.st_mode):
+            _archive_file(tar, directory, name, child, kept, budget, skipped, capped)
         else:
-            skipped[unreadable] += 1
+            skipped[UNREADABLE] += 1
 
 
-def _archive_file(tar: tarfile.TarFile, directory: int, name: str, arcname: str, budget: list[int], skipped: dict[str, int]) -> None:
+def _archive_file(
+    tar: tarfile.TarFile, directory: int, name: str, arcname: str, kept: set[str], budget: list[int],
+    skipped: dict[str, int], capped: list[str],
+) -> None:
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     except OSError:
-        skipped["links, pipes and files with several names"] += 1  # replaced by a link since it was listed
+        skipped[UNREADABLE] += 1  # replaced by a link since it was listed
         return
     with os.fdopen(fd, "rb") as handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            skipped["links, pipes and files with several names"] += 1
+            skipped[UNREADABLE] += 1
         elif info.st_size > workspace.MAX_FILE_BYTES:
-            skipped["files over the size limit"] += 1
-        elif info.st_size > budget[0]:
-            skipped["files over the cap"] += 1
+            skipped[OVER_LIMIT] += 1
+        elif arcname not in kept or info.st_size > budget[0]:  # not among the newest that fit, or it grew since
+            skipped[OVER_CAP] += 1
+            capped.append(arcname)
         else:
             data = handle.read(info.st_size + 1)
             if len(data) != info.st_size:  # it changed while it was read
-                skipped["links, pipes and files with several names"] += 1
+                skipped[UNREADABLE] += 1
                 return
             member = tarfile.TarInfo(arcname)
             member.size, member.mtime, member.mode = len(data), info.st_mtime, info.st_mode & 0o777

@@ -616,7 +616,7 @@ class DesktopWorker:
         run.tool = partial(self._owner_tool, run)
         outcome = await self._loop(client, run, progress)
         if getattr(self.sandbox, "workspace_mounted", False):
-            await workspace.check_cap(self.app)  # a task that ends with the folder full tells the owner once
+            await workspace.check_cap(self.app, fresh=True)  # a task that ends with the folder full tells the owner once
         return outcome
 
     async def work_own(
