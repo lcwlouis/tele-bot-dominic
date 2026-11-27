@@ -111,7 +111,11 @@ def world_edit_problem(home: Home, old: str, new: str) -> str | None:
 
 def apply_world_edit(home: Home, old: str, new: str) -> None:
     """Write an approved world edit the way the reflection's world changes write: as Dom, not the owner, so pinned and
-    chat-tagged lines stay protected. Raises ValueError with the reason when it can't."""
+    chat-tagged lines stay protected and the new line is Dom's, not pinned. Raises ValueError with the reason when it
+    can't.
+
+    The owner approved it, so it is the owner's decision: it neither checks nor spends Dom's weekly world-change
+    allowance (dom.world_change's marker), which only limits the changes the nightly reflection makes on its own."""
     if problem := world_edit_problem(home, old, new):
         raise ValueError(problem)
     scoped = home.scoped(allow_private=False)

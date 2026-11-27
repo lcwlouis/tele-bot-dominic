@@ -496,7 +496,7 @@ async def test_extend_turn_adds_to_the_saved_row(make_app):
     await app.store.extend_turn(row_id + 99, ["x"], [])  # a pruned row is ignored
     [row] = await app.store.recent_turns()
     assert (row["calls"], json.loads(row["trace"]), json.loads(row["model_calls"])) == (
-        2, ["final", "after_reply@9"], [{"kind": "triage"}],
+        2, ["final", "after_reply@9"], [{"kind": "triage", "after": True}],  # marked: not what the reply itself took
     )
 
 

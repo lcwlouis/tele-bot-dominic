@@ -76,6 +76,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (34, "0033_credentials_and_permissions.sql"),
     (35, "0034_message_origin.sql"),
     (36, "0035_assistant_usage.sql"),
+    (37, "0036_usage_turn.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -2116,7 +2117,10 @@ class Store:
         return cursor.lastrowid
 
     async def extend_turn(self, turn_id: int, trace: list[str], model_calls: list[dict]) -> None:
-        """Add work done after the turn was saved (a Jev call once the bubbles were out) to its row."""
+        """Add work done after the turn was saved (a Jev call once the bubbles were out) to its row. Its calls are
+        marked `after`, so what the reply itself took (the dashboard's tokens for a message) leaves them out."""
+        model_calls = [{**call, "after": True} for call in model_calls]
+
         def extend() -> None:
             with self._tx() as conn:
                 row = conn.execute("SELECT trace, model_calls FROM turns WHERE id = ?", (turn_id,)).fetchone()
@@ -2153,25 +2157,58 @@ class Store:
             )
         ])
 
-    async def turns_between(self, chat_id: int | str, start: str, end: str) -> list[dict[str, Any]]:
-        """One chat's turns that started in [start, end] (UTC ISO strings), oldest first, for matching Dom's
-        messages to the turn that sent them."""
-        return await self._run(lambda: [
-            dict(row) for row in self._conn.execute(
-                "SELECT id, at, model, fallback, calls, duration_ms, first_bubble_ms, trace, model_calls FROM turns "
-                "WHERE chat_id = ? AND at >= ? AND at <= ? ORDER BY at, id LIMIT 500",
-                (str(chat_id), start, end),
-            )
-        ])
+    async def link_usage_to_turn(self, turn_id: int, usage_ids: list[int]) -> None:
+        """Mark the usage rows a turn's own calls wrote as that turn's, once its row exists. A row already claimed keeps
+        its turn."""
+        ids = sorted({int(item) for item in usage_ids})
 
-    async def usage_between(self, chat_id: int, start: str, end: str) -> list[tuple[str, float]]:
-        """Each paid call's time and cost in one chat in [start, end] (UTC ISO strings)."""
-        return await self._run(lambda: [
-            (row[0], row[1]) for row in self._conn.execute(
-                "SELECT at, cost_usd FROM usage WHERE chat_id = ? AND at >= ? AND at <= ? ORDER BY at LIMIT 5000",
-                (chat_id, start, end),
-            )
-        ])
+        def link() -> None:
+            with self._tx() as conn:
+                for at in range(0, len(ids), 500):
+                    chunk = ids[at:at + 500]
+                    conn.execute(
+                        f"UPDATE usage SET turn_id = ? WHERE turn_id IS NULL AND id IN ({','.join('?' * len(chunk))})",
+                        (turn_id, *chunk),
+                    )
+
+        if ids:
+            await self._run(link)
+
+    async def turns_for_messages(
+        self, chat_id: int | str, stamps: list[str], *, lead_hours: float = 6, slack_ms: int = 2000,
+    ) -> list[dict[str, Any] | None]:
+        """For each UTC ISO stamp, the chat's latest turn that started at or before it, at most `lead_hours` earlier,
+        and was still running then (its duration plus `slack_ms`), or None. One indexed lookup per stamp, so a busy
+        stretch of turns can't push a message's turn out; and each turn's cost, from the usage rows linked to it."""
+
+        def match() -> list[dict[str, Any] | None]:
+            found: list[dict[str, Any] | None] = []
+            for stamp in stamps:
+                row = self._conn.execute(
+                    "SELECT id, at, model, fallback, calls, duration_ms, first_bubble_ms, trace, model_calls FROM turns "
+                    "WHERE chat_id = ? AND at <= ? AND at >= strftime('%Y-%m-%dT%H:%M:%f', julianday(?) - ? / 24.0) "
+                    "AND julianday(at) + (duration_ms + ?) / 1000.0 / 86400 >= julianday(?) "
+                    "ORDER BY at DESC, id DESC LIMIT 1",
+                    (str(chat_id), stamp, stamp, lead_hours, slack_ms, stamp),
+                ).fetchone()
+                found.append(dict(row) if row is not None else None)
+            ids = sorted({row["id"] for row in found if row is not None})
+            costs: dict[int, tuple[float, int]] = {}
+            for at in range(0, len(ids), 500):
+                chunk = ids[at:at + 500]
+                costs.update(
+                    (turn, (total, count)) for turn, total, count in self._conn.execute(
+                        f"SELECT turn_id, TOTAL(cost_usd), COUNT(*) FROM usage WHERE turn_id IN ({','.join('?' * len(chunk))}) "
+                        "GROUP BY turn_id", chunk,
+                    )
+                )
+            for row in found:
+                if row is not None:
+                    total, count = costs.get(row["id"], (0.0, 0))
+                    row["cost_usd"] = total if count else None
+            return found
+
+        return await self._run(match)
 
     async def recent_attention_turns(self) -> list[dict[str, Any]]:
         return await self._run(lambda: [

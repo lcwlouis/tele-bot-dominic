@@ -151,3 +151,23 @@ async def test_world_edit_checks_and_writes_directly(make_app):
     assert soul_edit_lines({"file": WORLD, "old": "", "new": "A"}) == ["+ A"]
     assert soul_edit_lines({"old": "A", "new": ""}) == ["- A", "+ "]  # SOUL.md's card is as it was
     assert issubclass(Refused, ValueError)
+
+
+async def test_an_approved_world_edit_is_the_owners_call_not_dom_weekly_change(make_app):
+    """The reflection changed the sheet yesterday, so Dom's own week is spent; the owner still approves an edit from
+    the conversation, the week's marker is left as it was, and the new line is Dom's, not pinned."""
+    from datetime import date, timedelta
+
+    from dom import world_change
+
+    app = make(make_app)
+    marker = json.dumps({"day": (date.today() - timedelta(days=1)).isoformat(), "reason": "Started at the studio"})
+    app.home.write_file(world_change.MARKER, marker)
+    assert not await world_change.due(app, date.today())
+    proposal = await app.proposals.create(
+        "soul_edit", "Kopi", {"file": WORLD, "old": "", "new": "Sunday morning: kopi at the market"}, "dashboard", notify=False,
+    )
+    assert await app.proposals.decide(proposal, True) == "Approved"
+    added = [line for line in app.home.read(WORLD).splitlines() if "kopi at the market" in line]
+    assert added == ["- Sunday morning: kopi at the market"]  # Dom's line: no {core owner ...} pin
+    assert app.home.read(world_change.MARKER) == marker

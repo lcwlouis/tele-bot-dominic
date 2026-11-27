@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -260,8 +260,8 @@ async def read_messages(
     }
 
 
-TURN_LEAD = timedelta(minutes=15)  # how long before its first bubble a turn may have started
-TURN_SLACK = timedelta(seconds=2)  # a bubble saved just after the turn's clock stopped still belongs to it
+TURN_LEAD_HOURS = 6  # how long before a message the turn that sent it may have started
+TURN_SLACK_MS = 2000  # a bubble saved just after the turn's clock stopped still belongs to it
 
 
 def _tokens(calls: list[dict], key: str) -> int | None:
@@ -270,50 +270,38 @@ def _tokens(calls: list[dict], key: str) -> int | None:
 
 
 async def _message_turns(app, chat_id: int, rows) -> dict[int, dict]:
-    """The turn behind each of Dom's messages on this page, by message row id: the last turn in this chat that started
-    before the message and was still running when it was saved. Model, tokens (in, cached, out) over every call of the
-    turn, its cost from the usage rows written while it ran, how long it took and the lane it ran in. A message no turn
-    covers (a reminder, an opener before the turn log) has none."""
+    """The turn behind each of Dom's messages on this page, by message row id: the chat's latest turn that started
+    before the message and was still running when it was saved, looked up per message. Model, tokens (in, cached, out)
+    over the turn's own calls (not the work recorded after it), its cost from the usage rows linked to it (None for a
+    turn from before they were linked), how long it took and the lane it ran in. A message no turn covers (a reminder,
+    an opener before the turn log) has none."""
     sent = [(row.id, row.created_at) for row in rows if row.role == "assistant"]
     if not sent:
         return {}
     try:
-        times = [datetime.fromisoformat(at).astimezone(timezone.utc) for _, at in sent]
-        start, end = min(times) - TURN_LEAD, max(times) + TURN_SLACK
-        turns = await app.store.turns_between(chat_id, start.isoformat(), end.isoformat())
-        costs = [
-            (datetime.fromisoformat(stamp), cost)
-            for stamp, cost in await app.store.usage_between(chat_id, start.isoformat(), (end + TURN_LEAD).isoformat())
-        ]
+        stamps = [datetime.fromisoformat(at).astimezone(timezone.utc).isoformat() for _, at in sent]
+        turns = await app.store.turns_for_messages(chat_id, stamps, lead_hours=TURN_LEAD_HOURS, slack_ms=TURN_SLACK_MS)
     except Exception as error:  # a bad stamp or a store error: the bubbles go without it
         log.warning("could not match chat %s messages to their turns (%s)", chat_id, type(error).__name__)
         return {}
-    spans = []
-    for turn in turns:
-        try:
-            began = datetime.fromisoformat(turn["at"])
-        except ValueError:
-            continue
-        spans.append((began, began + timedelta(milliseconds=turn["duration_ms"]) + TURN_SLACK, turn))
     found: dict[int, dict] = {}
-    for (row_id, _), at in zip(sent, times):
-        match = next((span for span in reversed(spans) if span[0] <= at <= span[1]), None)
-        if match is None:
+    for (row_id, _), turn in zip(sent, turns):
+        if turn is None:
             continue
-        began, ended, turn = match
         try:
-            calls = [call for call in json.loads(turn["model_calls"] or "[]") if isinstance(call, dict)]
+            calls = [
+                call for call in json.loads(turn["model_calls"] or "[]") if isinstance(call, dict) and not call.get("after")
+            ]
             visits = turn_log.visits_in(json.loads(turn["trace"] or "[]"))
             # Turns from before the fast lane have no lane in their visits: they ran in the one lane there was.
             lane = visits[-1].get("lane", "main") if visits else None
         except (ValueError, TypeError, AttributeError):  # a row written by hand or damaged: the turn shows without them
             calls, lane = [], None
-        spent = [cost for stamp, cost in costs if began <= stamp <= ended]
         found[row_id] = {
             "id": turn["id"], "model": turn["model"], "fallback": bool(turn["fallback"]), "calls": turn["calls"],
             "input_tokens": _tokens(calls, "input_tokens"), "cached_tokens": _tokens(calls, "cached_tokens"),
             "output_tokens": _tokens(calls, "output_tokens"),
-            "cost_usd": round(sum(spent), 6) if spent else None,
+            "cost_usd": round(turn["cost_usd"], 6) if turn["cost_usd"] is not None else None,
             "duration_ms": turn["duration_ms"], "first_bubble_ms": turn["first_bubble_ms"], "lane": lane,
         }
     return found

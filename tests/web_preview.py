@@ -628,8 +628,9 @@ async def seed_talk(app: handlers.App) -> None:
     row = await store.record_turn(start, OWNER, "owner_dm", 1, ["final"], "example/chat-model", False, 11000, "Replied",
                                   model_calls=calls, first_bubble_ms=9000, last_bubble_ms=11000)
     # What the turn cost, so Your DM's (i) on Dom's bubbles has a price.
-    await store.record_usage((start + timedelta(seconds=3)).isoformat(), "chat", "example/chat-model", "homelab", OWNER, 2048, 96, 0.00042, 0)
+    spent = await store.record_usage((start + timedelta(seconds=3)).isoformat(), "chat", "example/chat-model", "homelab", OWNER, 2048, 96, 0.00042, 0)
     store._conn.execute("UPDATE turns SET id = ? WHERE id = ?", (TRACED_TURN, row))
+    await store.link_usage_to_turn(TRACED_TURN, [spent])
 
     writer = tracer.TraceWriter(tracer.TraceStore(app.home.root / "traces.db"), lambda: (7, 256_000_000), lambda: ())
     app.traces = writer
