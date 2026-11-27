@@ -347,3 +347,22 @@ async def test_a_turn_cut_off_by_a_restart_is_logged_as_interrupted_not_quiet(ma
         await task
     [row] = await app.store.recent_turns()
     assert row["outcome"] == "Interrupted"
+
+
+async def test_rows_from_an_earlier_bot_never_hold_a_trim_back(make_app):
+    # A new bot restarts the message ids: the old rows' ids stay above the memory cursor for good, but the memory pass
+    # never reads them, so only the new bot's rows decide whether a trim is allowed.
+    app = make_app()
+    small(app)
+    await measured(app)
+    for n in range(5001, 5021):
+        await add(app, n)
+    await app.store.advance_memory_cursor(GROUP, 5020)
+    for n in range(1, 21):
+        await add(app, n)
+    assert await app.store.get_memory_cursor(GROUP) == 0
+    assert (await read(app)).blocked  # the new bot's rows are not read yet
+    await processed(app, 20)
+    window = await read(app)
+    assert not window.blocked
+    assert len(window.rows) < 40  # it did trim, past rows the cursor number alone would have held back

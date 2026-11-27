@@ -545,8 +545,8 @@ async def test_friend_dm_under_spend_cap_gets_one_line_per_day_and_groups_get_no
     assert app.bot.of("send", GROUP) == []
 
     # Friend DM gets exactly one line for this cap period, no model calls, no numbers or mechanism words.
-    await deliver(app, tg(FRIEND, FRIEND, text="hey you around?", msg_id=1))
-    await deliver(app, tg(FRIEND, FRIEND, text="hello??", msg_id=2))
+    await deliver(app, tg(FRIEND, FRIEND, text="hey you around?", msg_id=6000))  # the fake bot numbers its sends from 5000
+    await deliver(app, tg(FRIEND, FRIEND, text="hello??", msg_id=6001))
     assert app.script.requests == []
     sent = [c[2] for c in app.bot.of("send", FRIEND)]
     assert sent == [SPEND_CAP_LINE]
@@ -556,7 +556,7 @@ async def test_friend_dm_under_spend_cap_gets_one_line_per_day_and_groups_get_no
     # Next local day: cap resets; hitting cap again sends one line for the new period.
     clock.advance(minutes=1)
     await app.dispatch.usage.record("chat", "mock", "example.org", {"cost": 1.5})
-    await deliver(app, tg(FRIEND, FRIEND, text="morning!", msg_id=3))
+    await deliver(app, tg(FRIEND, FRIEND, text="morning!", msg_id=6002))
     assert [c[2] for c in app.bot.of("send", FRIEND)] == [SPEND_CAP_LINE, SPEND_CAP_LINE]
 
 

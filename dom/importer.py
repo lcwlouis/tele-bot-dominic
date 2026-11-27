@@ -8,11 +8,13 @@ import re
 import shutil
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dom.config import load_config, save_owner
 from dom.home import Home, limit_for, parse_front_matter
 from dom.store import Store
+from dom.store.store import begin_eras, detect_eras
 from dom.traits import normalise
 
 # V2 kept these under identity/. Dom does not import them: the new soul is written fresh.
@@ -236,10 +238,13 @@ async def _finish_database(
             conn.execute("UPDATE people_identities SET profile_path = ? WHERE profile_path = ?", (new, old))
         # Imported history is old news: without this every chat looks fully unread and Dom's first
         # catch-up would answer months-old messages in every group.
+        # (History from before a bot change counts only from the chat's current run of message ids.)
+        begin_eras(conn, detect_eras(conn), datetime.now(timezone.utc).isoformat())
         conn.execute(
             "UPDATE chats SET last_read_msg_id = "
-            "(SELECT MAX(msg_id) FROM messages m WHERE m.chat_id = chats.chat_id) "
-            "WHERE EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = chats.chat_id AND m.msg_id IS NOT NULL)"
+            "(SELECT MAX(msg_id) FROM messages m WHERE m.chat_id = chats.chat_id AND m.id >= chats.era_row) "
+            "WHERE EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = chats.chat_id AND m.msg_id IS NOT NULL "
+            "AND m.id >= chats.era_row)"
         )
         # Likewise the background memory pass starts from now, not from months of imported history.
         conn.execute("UPDATE chats SET memory_cursor_msg_id = COALESCE(last_read_msg_id, memory_cursor_msg_id)")

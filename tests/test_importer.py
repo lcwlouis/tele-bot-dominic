@@ -247,3 +247,18 @@ def test_preset_copied_with_normalised_sliders(src, home):
         {"title": "Assistant", "description": "Direct", "traits": {"humor": 0.3, "slang": 0.2}},
         "Keep it clear.\n",
     )
+
+
+def test_imported_history_counts_only_from_the_latest_run_of_message_ids(src, home):
+    # The old workspace switched bots: its ids ran to 3500, then restarted (at 2 here; the fixture's own row is 1).
+    with sqlite3.connect(src / "state.db") as conn:
+        conn.executemany(
+            "INSERT INTO messages (chat_id, msg_id, role, visibility_scope, text, created_at) "
+            f"VALUES ('{GROUP}', ?, 'user', 'chat:{GROUP}', 'm', 't')", [(3500,), (2,), (3,)],
+        )
+    import_v2(src, home, OWNER)
+    with sqlite3.connect(home / "state.db") as conn:
+        read, cursor, era = conn.execute(
+            f"SELECT last_read_msg_id, memory_cursor_msg_id, era_row FROM chats WHERE chat_id = '{GROUP}'").fetchone()
+        first_new = conn.execute(f"SELECT id FROM messages WHERE chat_id = '{GROUP}' AND msg_id = 2").fetchone()[0]
+    assert (read, cursor, era) == (3, 3, first_new)  # not read up to 3500, and none of the new rows left unread

@@ -101,10 +101,14 @@ process for the bot token. Open a private Telegram chat with the bot and send
 `/claim <code>` using the code from `init`. The bot records your user ID and
 publishes the owner command menu. Send `/wake` and then a message to try it.
 
-Dom remembers which bot his database talks to. If you later switch to a new bot token (a
-new handle), Telegram restarts every chat's message numbers, so at the next start he resets
-each chat's read markers, notes it in your DM history and treats what the new bot receives
-as unread; the old history stays but is never counted as unread.
+Dom remembers which bot his database talks to. A new bot token (a new handle) makes Telegram
+restart every chat's message numbers, which would leave old read markers and memory cursors
+above every new message. At each start Dom looks for chats whose numbers dropped (so a switch
+made before he noticed is repaired too) and, when the stored bot id differs, treats everything
+saved so far as the old bot's. Each affected chat's current run of numbers starts over: old
+rows are never unread and never memorised, markers and cursors above the new numbers go back
+to 0, and a note lands in your DM history. A chat the new bot has not written to yet starts
+over when its first message arrives. The old bot's history stays.
 
 A new group or a stranger's DM starts pending. Dom sends an approval request to
 the owner, with the chat's Telegram ID and the first message, and stays silent in
