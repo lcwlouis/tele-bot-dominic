@@ -266,7 +266,7 @@ def test_extra_bubbles_from_the_model_join_the_last_one_instead_of_losing_the_re
     # A 4-day itinerary came back from the homelab model as 9 bubbles and was dropped as malformed.
     texts = [f"day {n}" for n in range(1, 10)]
     actions = parse_actions(json.dumps({"no_response": False, "bubbles": [{"text": t, "reply_to": None} for t in texts]}))
-    assert [b.text for b in actions.bubbles] == [*texts[:5], "day 6\n\nday 7\n\nday 8\n\nday 9"]
+    assert [b.text for b in actions.bubbles] == [*texts[:3], "day 4\n\nday 5\n\nday 6\n\nday 7\n\nday 8\n\nday 9"]
 
 
 def test_a_bubble_written_as_a_bare_string_is_read_as_its_text():
@@ -279,17 +279,17 @@ def test_a_bubble_written_as_a_bare_string_is_read_as_its_text():
 def test_extra_bubbles_fold_before_telegram_formats_the_merged_text():
     from dom.telegram.format import format_text
 
-    actions = parse_actions(json.dumps({"bubbles": [{"text": "x" * 1500} for _ in range(9)]}))
+    actions = parse_actions(json.dumps({"bubbles": [{"text": "x" * 1500} for _ in range(6)]}))
     assert actions is not None
-    assert len(actions.bubbles) == 6
-    assert actions.bubbles[-1].text == "\n\n".join(["x" * 1500] * 4)
+    assert len(actions.bubbles) == 4
+    assert actions.bubbles[-1].text == "\n\n".join(["x" * 1500] * 3)
     assert len(format_text(actions.bubbles[-1].text)) == 2
 
 
 def test_the_reply_format_tells_the_model_the_bubble_limit():
     from dom.prompt import FRAME
 
-    assert "at most 6" in FRAME
+    assert "at most 4" in FRAME
 
 
 def test_a_malformed_reply_is_described_by_its_shape_not_its_text():
@@ -305,9 +305,9 @@ def test_a_malformed_reply_is_described_by_its_shape_not_its_text():
 
 
 def test_actions_validation_limits():
-    Actions(bubbles=[Bubble(text="a")] * 6)
+    Actions(bubbles=[Bubble(text="a")] * 4)
     with pytest.raises(ValidationError):
-        Actions(bubbles=[Bubble(text="a")] * 7)
+        Actions(bubbles=[Bubble(text="a")] * 5)
     with pytest.raises(ValidationError):
         Bubble(text="")
     assert Bubble(text="x" * 4097).text == "x" * 4097
@@ -690,3 +690,102 @@ async def test_a_media_promise_is_recorded_in_the_turn_log(env):
             media_offered=frozenset({"image"}),
         )
     assert "media promise" in trace.steps
+
+
+# ---- a promise to act that no tool call backs ------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "fine, i'll fire one in again. this time i check before i speak", "ok let me check", "lemme look that up",
+    "I'll add it to your calendar", "i'm gonna set a reminder", "on it", "ok on it!", "doing it now",
+    "Let me search for that", "i will schedule it", "imma put it in", "i’ll book it now",
+    "hmm. i'll delete the old one and redo it",
+])
+def test_a_promise_to_act_now_is_found(text):
+    from dom.actions import promised_action
+    assert promised_action(text)
+
+
+@pytest.mark.parametrize("text", [
+    "i'll add it tomorrow", "i'll check later", "let me check next week", "I'll set it up when you're back",
+    "should i add it?", "do you want me to check?", "i'll check?", "i won't add it", "i'll never fire one in",
+    "i'm not going to delete it", "if you want i'll add it", "let me know", "let me think", "i'll be honest",
+    "i'll see you there", "i'll miss you", "i'll check in on you tonight", "i'll check back in a bit",
+    'he said "i\'ll add it"', "she told me she'll book it", "“let me check” is what he wrote",
+    "i can add it if you like", "i added it", "i'll try to be better", "once i'm home i'll set it up",
+    "i'll find out on monday", "i'll write to you in the morning",
+])
+def test_a_deferral_a_question_a_negation_or_reported_words_is_not_a_promise_to_act(text):
+    from dom.actions import promised_action
+    assert not promised_action(text)
+
+
+def test_the_promising_sentence_is_quoted_as_written():
+    promise = Actions.model_validate({"bubbles": [{"text": "hey"}, {"text": "ok. fine, i'll fire one in again. bye"}]})
+    assert promise.action_promise() == "fine, i'll fire one in again."
+
+
+def a_tool(name="calendar"):
+    async def handler(args, ctx):
+        return "added"
+    return Tool(name, "the calendar", {"type": "object", "properties": {}}, handler, {"owner_dm"})
+
+
+PROMISE_ONLY = json.dumps({"bubbles": [{"text": "fine, i'll fire one in again"}, {"text": "this time i check before i speak"}]})
+PROMISE_DONE = json.dumps({"bubbles": [{"text": "done, it's in for 3pm"}]})
+
+
+async def test_an_unkept_promise_to_act_is_put_back_and_the_tool_is_then_called(env):
+    script = Script(reply(PROMISE_ONLY), reply(tool_calls=[call("calendar", {})]), reply(PROMISE_DONE))
+    actions = await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [a_tool()], ctx_for(env, scope="owner_dm", chat_id=OWNER),
+        keep_word=True,
+    )
+    assert actions.bubbles[0].text == "done, it's in for 3pm" and len(script.requests) == 3
+    nudge = script.requests[1]["messages"]
+    assert nudge[-2] == {"role": "assistant", "content": PROMISE_ONLY}
+    assert "fine, i'll fire one in again" in nudge[-1]["content"] and "no tool was called" in nudge[-1]["content"]
+    assert [t["function"]["name"] for t in script.requests[1]["tools"]] == ["calendar"]  # the tools stay on offer
+    assert script.requests[2]["messages"][-2]["role"] == "tool"
+
+
+async def test_a_promise_that_stands_after_one_put_back_is_sent_as_it_is(env):
+    script = Script(reply(PROMISE_ONLY), reply(PROMISE_ONLY))
+    actions = await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [a_tool()], ctx_for(env, scope="owner_dm", chat_id=OWNER),
+        keep_word=True,
+    )
+    assert len(script.requests) == 2  # one put back, no more
+    assert [b.text for b in actions.bubbles] == ["fine, i'll fire one in again", "this time i check before i speak"]
+
+
+async def test_a_promise_after_a_tool_call_in_the_turn_is_not_put_back(env):
+    script = Script(reply(tool_calls=[call("calendar", {})]), reply(PROMISE_ONLY))
+    await run_turn(
+        make_client(script), [{"role": "user", "content": "hi"}], [a_tool()], ctx_for(env, scope="owner_dm", chat_id=OWNER),
+        keep_word=True,
+    )
+    assert len(script.requests) == 2
+
+
+async def test_the_action_promise_check_is_off_without_keep_word_or_tools_and_for_silence(env):
+    ctx = ctx_for(env, scope="owner_dm", chat_id=OWNER)
+    for tools, keep_word, content in [
+        ([a_tool()], False, PROMISE_ONLY), ([], True, PROMISE_ONLY),
+        ([a_tool()], True, json.dumps({"no_response": True})), ([a_tool()], True, json.dumps({"bubbles": [{"text": "done, i added it"}]})),
+    ]:
+        script = Script(reply(content))
+        await run_turn(make_client(script), [{"role": "user", "content": "hi"}], tools, ctx, keep_word=keep_word)
+        assert len(script.requests) == 1
+
+
+async def test_an_action_promise_is_recorded_in_the_turn_log_and_the_trace(env):
+    from dom import turn_log
+    trace = turn_log.TurnTrace()
+    with turn_log.track(trace):
+        await run_turn(
+            make_client(Script(reply(PROMISE_ONLY), reply(PROMISE_DONE))), [{"role": "user", "content": "hi"}], [a_tool()],
+            ctx_for(env, scope="owner_dm", chat_id=OWNER), keep_word=True,
+        )
+    assert "Action promise put back" in trace.steps
+    assert [e["sentence"] for e in trace.events if e["type"] == "action_promise"] == ["fine, i'll fire one in again"]
+

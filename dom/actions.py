@@ -73,7 +73,7 @@ class VideoNote(BaseModel):
         return self
 
 
-MAX_BUBBLES = 6
+MAX_BUBBLES = 4
 # How Dom's own media and Telegram media read in the chat window: a "[kind]" label on his sent media and a
 # <media kind=...> tag on any message with media.
 _FAKE_MEDIA = re.compile(
@@ -161,6 +161,44 @@ def promised_media(text: str) -> set[str]:
     return set().union(*(kinds for _, _, kinds in promising_sentences(text)))
 
 
+# A bubble that says Dom is about to do something with a tool ("i'll add it", "let me check", "on it") on a turn that
+# called none. The final answer is the last thing a turn runs, so such a bubble is an empty promise. A deterministic
+# list kept narrow on purpose: a missed promise costs one unkept sentence, a wrong hit costs a model call. It needs a
+# first-person lead and a verb a tool does, and never fires on a question, a negation, a deferral, quoted or reported words.
+_ACTION_VERB = (
+    r"(?:check(?!\s+(?:in|back|on\s+(?:you|u|it\s+later))\b)|look\s+(?:it\s+|that\s+|this\s+)?up|look\s+(?:at|into|through)|"
+    r"search|google|find|add|create|schedule|book|set|fire|put|delete|remove|cancel|save|update|pull\s+up|open|run|"
+    r"note|remind|write|log|record\s+it|fix|re-?add|redo|try\s+(?:adding|creating|setting|again))"
+)
+_ACTION_PROMISE = re.compile(
+    rf"\b(?:i'll|ill|i\s+will|i'm\s+going\s+to|i\s+am\s+going\s+to|i'm\s+gonna|im\s+gonna|gonna|imma|i'ma|let\s+me|lemme)\s+"
+    rf"(?:just\s+|quickly\s+|go\s+(?:and\s+)?|now\s+|also\s+)?{_ACTION_VERB}\b"
+    rf"|^[\s,]*(?:(?:ok|okay|yep|yeah|sure|aight|alright|fine|k)[\s,!.]+)*(?:on\s+it|doing\s+(?:it|that|this)\s+now)\b",
+    re.IGNORECASE,
+)
+_NOT_AN_ACTION = re.compile(
+    r"n't\b|\b(?:not|never|no|cannot|cant|wont|if|unless|maybe|perhaps|probably|someday|eventually|tomorrow|tonight|later|"
+    r"next|once|after|before\s+you|when|whenever|until|till|while|because|so\s+that|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|in\s+the\s+(?:morning|evening)|"
+    r"said|says|told|asked|wrote|texted|replied|quoted|goes|want|wanna|should|would|could|can|did|does)\b|https?://",
+    re.IGNORECASE,
+)
+_QUOTE_CHARS = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+ACTION_QUOTE_MAX = 160
+
+
+def promised_action(text: str) -> str | None:
+    """The first sentence of a bubble that promises Dom is about to do something now, as written, else None. Quoted
+    words and questions are not looked at; a negation, a deferral or reported speech rules a sentence out."""
+    masked = _QUOTE_CHARS.sub(lambda quoted: " " * len(quoted.group()), text.replace("\u2019", "'"))
+    for sentence in _SENTENCE.finditer(masked):
+        words = sentence.group()
+        if words.rstrip().endswith("?") or _NOT_AN_ACTION.search(words) or not _ACTION_PROMISE.search(words):
+            continue
+        return text[sentence.start():sentence.end()].strip()[:ACTION_QUOTE_MAX]
+    return None
+
+
 class Actions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -246,6 +284,10 @@ class Actions(BaseModel):
         for bubble in self.bubbles:
             promised |= promised_media(bubble.text)
         return {field for field in promised if not getattr(self, field)}
+
+    def action_promise(self) -> str | None:
+        """The first sentence in the bubbles that promises an action Dom is about to do (see promised_action)."""
+        return next((found for bubble in self.bubbles if (found := promised_action(bubble.text))), None)
 
     def without_unkept_media_promises(self) -> Actions:
         """These actions with every sentence that promises media nothing carries cut out of the bubbles, and a bubble
