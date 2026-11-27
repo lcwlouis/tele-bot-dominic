@@ -152,6 +152,10 @@ async def run(home: Path) -> bool:
     app = None
     try:
         me = await bot.get_me()
+        if repaired := await store.adopt_bot(me.id):
+            logging.getLogger("dom").warning(
+                "the Telegram bot changed (now @%s): read markers and memory cursors reset in %d chat(s)", me.username, repaired,
+            )
         async with httpx.AsyncClient() as http, httpx.AsyncClient(trust_env=False) as studio_http:
             usage = UsageRecorder(store)
             client = chat_client(config, http, usage)

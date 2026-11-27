@@ -1,7 +1,10 @@
-"""The photos, voice notes and video notes Dom sends, kept as files under the home.
+"""The photos, voice notes and video notes Dom sends, and the frame strips of the clips he is sent, kept as files under
+the home.
 
 Each file is `media/<chat id>/<YYYY-MM>/<msg id>.<ext>`; the message's media_json records its path, size, the scene or
-speech text, kind, time and Telegram's `file_id`. The folder is private (0700) and a chat's files are read only
+speech text, kind, time and Telegram's `file_id`. A clip someone sent keeps only its frame strips, as
+`<msg id>-strip<N>.jpg` (`strips` in media_json, `bytes` their total), so a later description can look at them again;
+they count toward the same cap and go the same way. The folder is private (0700) and a chat's files are read only
 through that chat's own id, so they never reach another chat's prompt. Files are written to a temporary name and moved
 into place, so a cancelled or crashed save leaves nothing half-written. Total size is capped: past
 `studio.keep_cap_mb` the oldest files are removed, and their messages keep the `file_id`, so Telegram can still
@@ -25,7 +28,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("dom.media_files")
 MEDIA_DIR = "media"
-_PATH = re.compile(r"media/(-?\d+)/(\d{4}-\d{2})/(-?\d+)(?:-still)?\.(?:png|jpg|webp|ogg|mp4|mp3)")
+_PATH = re.compile(r"media/(-?\d+)/(\d{4}-\d{2})/(-?\d+)(?:-still|-strip\d+)?\.(?:png|jpg|webp|ogg|mp4|mp3)")
 MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "ogg": "audio/ogg", "mp4": "video/mp4", "mp3": "audio/mpeg"}
 
 
@@ -39,6 +42,13 @@ def extension(kind: str, data: bytes) -> str:
 
 def relative_path(chat_id: int, msg_id: int, kind: str, data: bytes, at: datetime) -> str:
     return f"{MEDIA_DIR}/{chat_id}/{at:%Y-%m}/{msg_id}.{extension(kind, data)}"
+
+
+def files_of(media: dict) -> list[str]:
+    """Every relative path a message's media_json records: its file, the still it was filmed from, its frame strips."""
+    strips = media.get("strips")
+    found = [media.get("file"), media.get("still_file"), *(strips if isinstance(strips, list) else ())]
+    return [str(path) for path in found if path]
 
 
 def file_id_of(sent: object, kind: str) -> str | None:
@@ -104,6 +114,19 @@ class MediaFiles:
         await asyncio.to_thread(self.save, rel, data)
         return fields
 
+    async def keep_strips(self, chat_id: int, msg_id: int, images: list[bytes], at: datetime) -> dict:
+        """Save the frame strips of an incoming clip and return the media_json fields that describe them. Nothing is
+        saved when the cap is zero or the strips together are bigger than the cap."""
+        cap = self.cap_bytes
+        total = sum(len(image) for image in images)
+        if cap <= 0 or not images or total > cap:
+            return {}
+        stem = f"{MEDIA_DIR}/{chat_id}/{at:%Y-%m}/{msg_id}"
+        paths = [f"{stem}-strip{number}.jpg" for number in range(1, len(images) + 1)]
+        for rel, image in zip(paths, images):
+            await asyncio.to_thread(self.save, rel, image)
+        return {"strips": paths, "bytes": total}
+
     async def read(self, chat_id: int | str, rel: str) -> bytes | None:
         """A kept file's bytes, only through its own chat's id."""
         path = self._absolute(rel, chat_id)
@@ -129,10 +152,7 @@ class MediaFiles:
         """Remove files no message records (the process died between saving and recording) and half-written temp
         files, so the cap, which counts recorded files, is also the disk's real use. Run it at startup, before
         anything is being saved. Returns how many went."""
-        known = {
-            str(row["media"][key]) for row in await self.store.kept_media() for key in ("file", "still_file")
-            if row["media"].get(key)
-        }
+        known = {path for row in await self.store.kept_media() for path in files_of(row["media"])}
         root = self.home / MEDIA_DIR
 
         def sweep() -> int:
@@ -159,12 +179,12 @@ class MediaFiles:
                 if total <= cap:
                     break
                 media = row["media"]
-                for key in ("file", "still_file"):
-                    path = self._absolute(str(media.get(key))) if media.get(key) else None
+                for rel in files_of(media):
+                    path = self._absolute(rel)
                     if path is not None:
                         await asyncio.to_thread(path.unlink, True)
                 await self.store.update_media(
-                    row["chat_id"], row["msg_id"], {"removed": True}, remove=("file", "bytes", "still_file"),
+                    row["chat_id"], row["msg_id"], {"removed": True}, remove=("file", "bytes", "still_file", "strips"),
                 )
                 total -= int(media.get("bytes") or 0)
                 removed += 1

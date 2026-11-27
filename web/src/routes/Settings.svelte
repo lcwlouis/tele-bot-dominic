@@ -26,6 +26,7 @@
   } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
+  import SectionTabs from "$lib/components/kit/SectionTabs.svelte";
   import AssistantCard from "$lib/components/settings/AssistantCard.svelte";
   import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
   import LeakScan from "$lib/components/settings/LeakScan.svelte";
@@ -264,7 +265,7 @@
   }
 
   // "What Dom may do": the switches in sections, each with the panels that belong to it, narrowed by the search box.
-  type SectionId = "messaging" | "assistant" | "media" | "desktop" | "memory" | "safety";
+  type SectionId = "messaging" | "assistant" | "media" | "desktop" | "memory" | "files" | "safety";
   const SECTIONS: { id: SectionId; label: string; ids: string[]; words: string }[] = [
     { id: "messaging", label: "Messaging", ids: ["openers", "openers_friends", "openers_groups", "ephemeral_replies"], words: "" },
     {
@@ -277,13 +278,16 @@
     },
     { id: "desktop", label: "Desktop", ids: [], words: "desktop tasks steps step budget computer" },
     { id: "memory", label: "Memory", ids: ["memory_self_edit"], words: "" },
+    { id: "files", label: "Files", ids: ["workspace_share"], words: "workspace shared folder documents groups friends read" },
     { id: "safety", label: "Safety", ids: ["leak_check"], words: "leak scan level strict standard relaxed off private" },
   ];
   let permissionQuery = $state("");
   const matches = (text: string, query: string) => query.split(/\s+/).every((word) => text.toLowerCase().includes(word));
+  // The subscription agents' switches (the pilot) sit on the Models tab with the jobs they serve, not in this list.
+  const acpItems = $derived(permissions.filter((item) => item.id.startsWith("acp_")));
   const visibleSections = $derived.by(() => {
     const query = permissionQuery.trim().toLowerCase();
-    const placed = new Set(SECTIONS.flatMap((group) => group.ids));
+    const placed = new Set([...SECTIONS.flatMap((group) => group.ids), ...acpItems.map((item) => item.id)]);
     return SECTIONS.map((group) => {
       // A switch the page doesn't know yet still shows, under Messaging, rather than vanishing.
       const own = permissions.filter((item) => group.ids.includes(item.id) || (group.id === "messaging" && !placed.has(item.id)));
@@ -355,8 +359,8 @@
       </span>
       {#if !item.available}
         <p id={`perm-${item.id}-hint`} class="mt-0.5 text-sm {item.enabled ? 'text-coral' : 'text-muted-foreground'}">
-          {item.enabled ? "On, but nothing can serve it: Dom sends text instead. " : ""}{item.needs}
-          {#if item.id !== "studio_profile"}
+          {item.enabled ? (item.id.startsWith("acp_") ? "On, but it never starts. " : "On, but nothing can serve it: Dom sends text instead. ") : ""}{item.needs}
+          {#if item.id.startsWith("studio_") && item.id !== "studio_profile"}
             <button type="button" class="text-signal-strong underline underline-offset-2" onclick={() => (section = "models")}>
               Studio cloud backups
             </button>
@@ -608,12 +612,14 @@
   {/if}
 
   <Tabs.Root bind:value={section}>
-    <Tabs.List variant="line" class="no-scrollbar mb-5 h-auto! w-full justify-start gap-5 overflow-x-auto border-b pb-1">
-      <Tabs.Trigger value="models" class="flex-none px-0 py-2 data-active:text-signal-strong">Models</Tabs.Trigger>
-      <Tabs.Trigger value="providers" class="flex-none px-0 py-2 data-active:text-signal-strong">Providers</Tabs.Trigger>
-      <Tabs.Trigger value="permissions" class="flex-none px-0 py-2 data-active:text-signal-strong">What Dom may do</Tabs.Trigger>
-      <Tabs.Trigger value="services" class="flex-none px-0 py-2 data-active:text-signal-strong">Services</Tabs.Trigger>
-    </Tabs.List>
+    <SectionTabs
+      items={[
+        { value: "models", label: "Models" },
+        { value: "providers", label: "Providers" },
+        { value: "permissions", label: "What Dom may do" },
+        { value: "services", label: "Services" },
+      ]}
+    />
 
     <Tabs.Content value="models">
       <section aria-labelledby="routing-title" class="mb-8">
@@ -634,6 +640,23 @@
           {#each DECISION_ROLES as role (role)}{@render roleCard(settings, role)}{/each}
         </div>
       </section>
+      {#if acpItems.length}
+        <section aria-labelledby="acp-title" aria-describedby="acp-warning" class="mb-8">
+          <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+            <h2 id="acp-title" class="text-lg font-semibold">Subscription agents <Badge variant="outline">Pilot</Badge></h2>
+            <p class="kicker">Escalation and drafting · your DM only</p>
+          </div>
+          <p id="acp-warning" class="mb-3 text-sm text-coral">
+            Not zero data retention: each provider keeps your prompts under its consumer terms. Running a bot on a
+            subscription may break those terms. All off until you turn one on; none ever serves chat, friends or groups.
+          </p>
+          <Card.Root class="py-2">
+            <ul class="divide-y">
+              {#each acpItems as item (item.id)}{@render permissionRow(item)}{/each}
+            </ul>
+          </Card.Root>
+        </section>
+      {/if}
       <section aria-labelledby="meaning-title" class="mb-8">
         <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
           <h2 id="meaning-title" class="text-lg font-semibold">Search by meaning</h2>

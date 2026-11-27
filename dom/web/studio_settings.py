@@ -9,8 +9,9 @@ POST takes the settings revision and keeps dashboard/web/model_settings.py's rul
 with config.toml.bak, and a key variable never reaches a host config.toml doesn't already pair it with. Each returns
 ModelSettings (the list route returns ModelListView), and the running config takes the new chains at once.
 
-GET /api/studio/limits returns LimitsView: `[studio.limits]` as it is saved, and what is left (and used) now in the owner's DM,
-read from StudioQuota without reserving anything. `media_standing` is the same read for any chat; GET
+GET /api/studio/limits returns LimitsView: `[studio.limits]` and `studio.spontaneity` (rarely, sometimes or often: how
+readily Dom adds media, scaling every per-chat limit and gap inside the global daily total) as they are saved, and
+what is left (and used) now in the owner's DM, read from StudioQuota without reserving anything. `media_standing` is the same read for any chat; GET
 /api/chats/{id}/media (dom/web/api_chats.py) serves it for a friend's DM or a group. POST /api/studio/limits takes LimitsSave, validated with the
 config's own bounds, writes only the values that changed (comments and other tables stay), and returns LimitsView. A
 weekly video or image limit writes `<kind>_daily = false` when the tier's daily default is set. A per-kind gap
@@ -74,7 +75,7 @@ from dom.web.model_settings import (
     set_value,
     validated,
 )
-from dom.studio.policy import SWITCH, Kind, enabled, windows
+from dom.studio.policy import SWITCH, Kind, Spontaneity, enabled, windows
 from dom.studio.cloud import VideoUnsupported, video_models, video_plan, video_rate
 from dom.web.provider_settings import ListedModelView, ModelListView, _http
 from dom.web.shared import owner_app
@@ -180,6 +181,7 @@ class LimitsSave(BaseModel):
     model_config = STRICT
     revision: str = Field(pattern=REVISION)
     limits: LimitsInput
+    spontaneity: Spontaneity | None = None  # null leaves it as saved
 
 
 class KindLeft(BaseModel):
@@ -204,6 +206,7 @@ class MediaStanding(BaseModel):
 class LimitsView(BaseModel):
     revision: str
     limits: StudioLimits
+    spontaneity: Spontaneity
     owner: MediaStanding
 
 
@@ -213,6 +216,8 @@ def _limits_saved(current: Snapshot, edit: LimitsSave) -> Snapshot:
     before = current.config.studio.limits
     after = StudioLimits.model_validate(edit.limits.model_dump())
     document = tomlkit.parse(current.text)
+    if edit.spontaneity is not None and edit.spontaneity != current.config.studio.spontaneity:
+        set_value(document, ("studio", "spontaneity"), edit.spontaneity)
     if after.daily != before.daily:
         set_value(document, ("studio", "limits", "daily"), after.daily)
     for scope in SCOPES:
@@ -257,7 +262,8 @@ async def media_standing(app: App, scope: str, chat_id: int) -> MediaStanding:
 
 async def _limits_view(app: App, snapshot: Snapshot) -> LimitsView:
     owner = await media_standing(app, "owner_dm", app.owner_id or 0)
-    return LimitsView(revision=snapshot.revision, limits=snapshot.config.studio.limits, owner=owner)
+    studio = snapshot.config.studio
+    return LimitsView(revision=snapshot.revision, limits=studio.limits, spontaneity=studio.spontaneity, owner=owner)
 
 
 def _chain(snapshot: Snapshot, chain: StudioChain) -> list[StudioFallback]:
@@ -579,10 +585,11 @@ async def read_limits(request: Request) -> LimitsView:
 
 @router.post(LIMITS_PATH)
 async def save_limits(request: Request) -> LimitsView:
-    """Save the media limits. The quota reads them on every turn, so a save applies at once, without a restart."""
+    """Save the media limits and spontaneity. The quota reads them on every turn, so a save applies at once, without
+    a restart."""
     app = owner_app(request)
     edit = await _input(request, LimitsSave)
     saved = await _commit(app, lambda current: _limits_saved(current, edit),
                           "Could not save the media limits. Check config.toml and its permissions.",
-                          part=lambda studio: {"limits": studio.limits})
+                          part=lambda studio: {"limits": studio.limits, "spontaneity": studio.spontaneity})
     return await _limits_view(app, saved)

@@ -232,6 +232,20 @@ class AssistantConfig(BaseModel):
         return value
 
 
+class WorkspaceConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    share_with_chats: bool = Field(
+        False,
+        description=(
+            "Let groups and friends' DMs read the workspace's `shared/` folder: Dom may list and read files there for "
+            "them, never write, and nothing else in the workspace. A document someone sends in such a chat then lands in "
+            "`shared/inbox/<chat id>/`, readable only by that chat. Off, only your DM reaches the workspace. Settings → "
+            "What Dom may do."
+        ),
+    )
+
+
 class SelfWorkConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -309,6 +323,16 @@ class WorldConfig(BaseModel):
         description=(
             "Two-letter ISO country code (for example `SG`) for the public holidays in Dom's turn note. Independent of "
             "the place. Empty, the default, turns the holidays off."
+        ),
+    )
+
+    news: bool = Field(
+        True,
+        description=(
+            "Each evening, before Dom sleeps, he searches the web for the top news and the events in the next few days "
+            "where the owner is (the `place`, or else the `country`), keeps a few headlines as `memory/NEWS.md`, and his "
+            "turn note carries one or two of them for 36 hours. It needs a place or country, the triage model and a web search route that "
+            "returns result lists, and its calls count toward the search spending limit. Off when no search route is set up."
         ),
     )
 
@@ -572,7 +596,7 @@ class StudioLimits(BaseModel):
 
 
 class StudioTimeouts(BaseModel):
-    health: float = Field(3, gt=0, allow_inf_nan=False, description="Health check request deadline in seconds.")
+    health: float = Field(10, gt=0, allow_inf_nan=False, description="Health check request deadline in seconds.")
     voice: float = Field(65, gt=0, allow_inf_nan=False, description="Voice request deadline in seconds.")
     video_notes: float = Field(185, gt=0, allow_inf_nan=False, description="Round video request deadline in seconds.")
     special: float = Field(425, gt=0, allow_inf_nan=False, description="Special video request deadline in seconds.")
@@ -660,8 +684,9 @@ class StudioConfig(BaseModel):
     default_outfit: str = Field("", pattern=r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?$",
                                description="Wardrobe ID to use when the active preset has no outfit list.")
     keep_cap_mb: int = Field(
-        2048, ge=0, description="Disk space, in MB, for the photos, voice notes and video notes Dom has sent, kept under "
-        "the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). Past it the oldest files are removed; "
+        2048, ge=0, description="Disk space, in MB, for the photos, voice notes and video notes Dom has sent, and the frame "
+        "strips of the clips he is sent, kept under the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). "
+        "Past it the oldest files are removed; "
         "Telegram's file_id stays on the message so Telegram can still provide them. Zero keeps nothing.",
     )
     look_owner_dm: bool = Field(
@@ -677,6 +702,14 @@ class StudioConfig(BaseModel):
         "itself. The still counts toward the studio-wide daily total and its cost (when a cloud image backup makes it) "
         "is recorded and capped like any photo; it does not use the chat's photo allowance. If the still can't be made, "
         "the note uses the portrait.",
+    )
+    spontaneity: Literal["rarely", "sometimes", "often"] = Field(
+        "sometimes", description="How readily Dom adds a voice note, video note or photo on his own, in replies and when "
+        "he writes first: rarely (the prompt says to keep them for when they matter, and the per-chat limits are halved "
+        "and the gaps doubled), sometimes (the default) or often (the prompt invites them, the per-chat limits double "
+        "and the gaps halve). It never passes the global daily total, the spend caps or the switches above. The level is "
+        "your own baseline: an event day can only raise a limit, and its ceiling (`event_day_max_multiplier`) bounds only "
+        "what the day adds, so when the level already puts a limit above the ceiling the day adds nothing.",
     )
     event_day_max_multiplier: float = Field(
         2, ge=0, le=10, allow_inf_nan=False, description="The most Dom can raise his own media limits on a special day "
@@ -723,6 +756,95 @@ class StudioConfig(BaseModel):
         return str(url).rstrip("/")
 
 
+# Subscription agents (v0.8.6 W7, owner decision D20): coding agents reached over the Agent Client Protocol on the
+# owner's own plan. A pilot, each behind its own switch (off by default), for the owner's DM only, and only in the two
+# roles below: never chat, triage or media. dom/acp.py runs them.
+AcpName = Literal["codex", "claude", "antigravity"]
+ACP_NAMES = get_args(AcpName)
+AcpRole = Literal["escalation", "drafting"]
+ACP_ROLES = get_args(AcpRole)
+ACP_LABELS = {"codex": "Codex", "claude": "Claude", "antigravity": "Antigravity"}
+# What starts each agent's ACP server: the adapter's own command and arguments.
+ACP_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "codex": ("codex-acp", ()),
+    "claude": ("claude-agent-acp", ()),
+    "antigravity": ("agy", ("acp",)),
+}
+# An agent is enabled only when Dom can switch its own tools off (dom/acp.py); these cannot be, so they never start.
+# Antigravity's `agy acp` takes no per-session settings or mode, and its only tool rules are a deny list in the
+# owner's global settings.json, which Dom neither writes nor can check (docs/acp-agents.md).
+ACP_NO_TOOLS_OFF = {"antigravity": "no way to turn its tools off yet"}
+ACP_NOT_ZDR = (
+    "Not zero data retention: the provider keeps your prompts under its consumer terms and may train on them unless "
+    "you opt out in its settings. Running a bot on a subscription may break the provider's terms."
+)
+
+
+class AcpAgent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(
+        False, description="The switch. Off, the agent is never started. On, it is tried first in the roles below, "
+        "in the owner's DM turns only. Antigravity cannot be switched on yet (no way to turn its tools off): the "
+        "dashboard refuses it, and a hand-written `true` is refused at each call. " + ACP_NOT_ZDR,
+    )
+    roles: tuple[AcpRole, ...] = Field(
+        ACP_ROLES, description="Roles the agent serves: escalation (the model switch you approve) and drafting "
+        "(skill and plugin drafts). Never chat, triage or media.",
+    )
+    command: str | None = Field(
+        None, pattern=r"^[A-Za-z0-9_./+@][A-Za-z0-9_./+@-]{0,199}$",
+        description="The adapter's executable. Unset uses the agent's usual one: codex-acp, claude-agent-acp or agy.",
+    )
+    args: tuple[str, ...] | None = Field(
+        None, description="Arguments for the command. Unset uses the agent's usual ones (`acp` for agy).",
+    )
+    host: str | None = Field(
+        None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,99}$",
+        description="An SSH destination (a name in ~/.ssh/config, key login) to run the agent on, for an adapter that "
+        "does not run on this machine, such as a Mac. Unset runs it here. Sign the agent in on that host.",
+    )
+    auth_env: tuple[str, ...] = Field(
+        (), description="Names of secret variables (from .env) the agent's own process receives, such as an API key "
+        "for it. Not for a subscription login, which the agent keeps itself. Not allowed with `host`.",
+    )
+    timeout_seconds: float = Field(
+        120, ge=5, le=900, allow_inf_nan=False, description="Hard limit for one call. At the limit Dom cancels the "
+        "prompt and kills the agent's process.",
+    )
+
+    @field_validator("auth_env")
+    @classmethod
+    def _auth_names(cls, names: tuple[str, ...]) -> tuple[str, ...]:
+        for name in names:
+            if not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,63}", name):
+                raise ValueError("auth_env holds variable names such as CODEX_API_KEY")
+        return names
+
+    @model_validator(mode="after")
+    def _remote_without_secrets(self) -> AcpAgent:
+        if self.host and self.auth_env:
+            raise ValueError("auth_env cannot be used with host: secrets are never sent to another machine. Sign in on that host.")
+        return self
+
+
+class AcpConfig(BaseModel):
+    """The `[acp.codex]`, `[acp.claude]` and `[acp.antigravity]` tables."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    codex: AcpAgent = Field(default_factory=AcpAgent, description="Codex (OpenAI), through codex-acp.")
+    claude: AcpAgent = Field(default_factory=AcpAgent, description="Claude (Anthropic), through claude-agent-acp.")
+    antigravity: AcpAgent = Field(default_factory=AcpAgent, description="Antigravity (Google), through `agy acp`.")
+
+    def agents(self, role: str) -> Iterator[tuple[AcpName, AcpAgent]]:
+        """The switched-on agents that serve a role, in the order codex, claude, antigravity."""
+        for name in ACP_NAMES:
+            agent = getattr(self, name)
+            if agent.enabled and role in agent.roles:
+                yield name, agent
+
+
 class Config(BaseModel):
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
@@ -762,6 +884,7 @@ class Config(BaseModel):
     )
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
+    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
@@ -771,13 +894,15 @@ class Config(BaseModel):
     web: WebConfig = Field(default_factory=WebConfig)
     tracer: TracerConfig = Field(default_factory=TracerConfig)
     t3: T3Config = Field(default_factory=T3Config)
+    acp: AcpConfig = Field(default_factory=AcpConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     ephemeral_replies: bool = Field(False, description="Allow owner-only ephemeral replies in groups. Telegram sends these only from a bot that is an admin of the group; Dom knows whether he is one; where he is not, a private reply goes straight to the owner's DM, with a note saying why.")
     memory_self_edit: bool = Field(False, description="Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves.")
     core_memory_cap: int = Field(30, ge=1, description="Most core memories (pinned note lines) across all of Dom's notes, the owner's pins included. Core memories never fade and the memory pass never rewrites them. At the cap Dom must unpin one of his own to pin another.")
     media_input_images: int = Field(
-        2, ge=0, le=8, description="Most images (photos, stickers) Dom is shown as the real picture in one prompt, newest "
-        "first, when his chat model accepts images. Older media stays as its tag in the window. Zero turns image input off.",
+        2, ge=0, le=8, description="Most images (photos, stickers, and the frame strips of a clip) Dom is shown as the real picture in "
+        "one prompt, newest first, when his chat model accepts images; a clip with fewer free slots than strips is shown "
+        "as fewer, combined images. Older media stays as its tag in the window. Zero turns image input off.",
     )
     media_input_audio: int = Field(
         1, ge=0, le=4, description="Most voice notes or audio files Dom hears as the real recording in one prompt. "
@@ -789,7 +914,8 @@ class Config(BaseModel):
     )
     media_input_max_mb: float = Field(
         6, gt=0, le=20, allow_inf_nan=False, description="Largest attachment, in MB, that is sent to the chat model itself; "
-        "a bigger one is described by the media model instead.",
+        "a bigger one is described by the media model instead. A clip his model can't take as video is cut into frame "
+        "strips instead (a Telegram bot can download up to 20 MB), whatever its size.",
     )
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_scan: LeakScan | None = Field(
@@ -955,6 +1081,8 @@ class Config(BaseModel):
                     walk(item)
 
         walk(self.model_dump(mode="python"))
+        for name in ACP_NAMES:
+            names.update(getattr(self.acp, name).auth_env)
         return names
 
     def secret(self, name: str) -> str | None:

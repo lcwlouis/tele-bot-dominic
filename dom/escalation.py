@@ -17,6 +17,7 @@ import httpx
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from dom.agent import NoFinalAnswer
+from dom.acp import AcpClient, AcpError
 from dom.llm import ChatClient, FallbackClient, MissingProviderKey, _retryable, openrouter_host
 from dom.models import Scope, StoredMessage
 from dom.telegram.executor import edit_text, send_text
@@ -31,7 +32,7 @@ OFFER_AFTER_ROUNDS = 2
 OFFER_AFTER_FAILURES = 2
 RETRY_OFFER_SECONDS = 600
 RECOVERY_TIMEOUT = 15
-MODEL_FAILURES = (httpx.HTTPError, MissingProviderKey, ValueError, KeyError, IndexError, TypeError)
+MODEL_FAILURES = (httpx.HTTPError, MissingProviderKey, AcpError, ValueError, KeyError, IndexError, TypeError)
 PRICE_TTL = 3600
 PRICE_TIMEOUT = 4
 PRICE_LIST = "https://openrouter.ai/api/v1/models"
@@ -71,6 +72,8 @@ class Prices:
             self.refresh_after = self.clock() + PRICE_TTL
 
     async def estimate(self, client: ChatClient, messages: list[dict], tools: list[dict]) -> str:
+        if isinstance(client, AcpClient):
+            return "Billed to your subscription, not per call. It keeps your prompts under its consumer terms."
         if on_own_network(client.host):
             return "Estimated model cost $0 on the local endpoint."
         if openrouter_host(client.host):

@@ -20,4 +20,4 @@ CREATE TABLE booking_offers (
 );
 CREATE INDEX idx_booking_offers_chat ON booking_offers(chat_id, state);
 
-PRAGMA user_version = 37;
+PRAGMA user_version = 40;

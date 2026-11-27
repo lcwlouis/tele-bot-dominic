@@ -33,7 +33,7 @@ CSP-sensitive changes with `npm run build` and `npm run test:screens`.
 - `src/shadcn-svelte.css`: shadcn-svelte's Tailwind variants for Bits UI state attributes.
 - `src/lib/components/kit/`: Dom's own building blocks, the baseline list pages are rebuilt from (below).
 - `src/lib/components/ui/`: shadcn-svelte components, restyled. Add more with `npx shadcn-svelte@1.8.1 add <name>`.
-- `src/lib/nav.ts`: the navigation: six destinations, their tabs, and the desktop's Workspace shortcuts.
+- `src/lib/nav.ts`: the navigation: six destinations and their tabs.
 - `src/routes/`: pages. `Gallery.svelte` is the component library (`/app/gallery`, reachable only by its address),
   with a mock Work list and Turn log on fixture data from `gallery-fixtures.ts`.
 - `screens/`: Playwright checks and screenshot baselines (phone 390 px, desktop 1280 px, dark and light).
@@ -63,10 +63,18 @@ All in `src/app.css`, for both themes; every text pair is checked for WCAG AA by
   hover and keyboard focus. `shortcut` adds a key hint.
 - **`InfoGlyph`**: the glyph rule, below.
 - **`StatusGlyph`**: a status as its glyph, with its word for screen readers (or on screen with `word`).
+- **`RowMenu`**: a row's less common actions (delete) behind one ellipsis glyph, a Bits UI dropdown menu. `label`
+  names the row ("Actions for desktop task 2") and is the tooltip; its items are `DropdownMenu.Item`s.
+- **`SectionTabs`**: the sections inside one page (Settings: Models, Providers…; Access: Saved logins…), as the
+  underlined row under the page's own tabs. Settings and Access share it.
+- **`MessageBubble`** (`components/`): one message the Talk page's way, Dom's left and the owner's right at a readable
+  width, with its time, the dashboard glyph and, on Dom's, an (i) with the turn that sent it. Talk and Chats → Your DM.
 - **`StripList`**: a newest-first list of one-line strips (status glyph, title, optional meta, relative time,
   trailing action glyphs). Clicking a strip, or Enter or Space on it, opens its details beside the list on a wide
   screen (1024 px and up) or in a bottom sheet on a phone. Focus moves to the details' title and back to the strip on
   Esc or close. Generic over the item, for Work tasks, turns, messages and reminders. Long lists come with it:
+  - **Two-line strips**: a strip with `chip` shows its status as a worded chip on a second line, beside `line` (the
+    Work list: a task's short title, then its status and the first line of its result).
   - **Date groups**: Today, Yesterday, This week (from Monday), This month, then month names, each a heading over a
     list it names. They stick to the top while their strips scroll.
   - **Filter bar**: `search` (a text filter's label) and `statuses` (status chips) as the page chooses, plus a
@@ -107,6 +115,12 @@ on screen: warnings (a provider that keeps data, a spend cap reached), errors an
 warning that only matters once, like the ZDR recommendation, shows once at setup rather than forever.
 
 ## Sidebar
+
+The six destinations, then Waiting for you at the foot with its count. The utility pages (Reminders, Access, the Turn
+log…) are reached by the tabs under Work's and System's headers, so the sidebar doesn't repeat them.
+
+On a phone each page mounts its own tab strip. It opens where the last strip of that destination was scrolled to,
+moved only as far as needed to show the current tab, before the page paints, so it never jumps or slides.
 
 On a desktop the sidebar folds to a rail (the logo spot's button, or `[`). A resting mouse opens the folded rail for a
 look, over the page, which keeps its width; moving away folds it again. The logo spot is the fold button: the orbit

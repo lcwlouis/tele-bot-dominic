@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from dom.store import Store
 
 Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation",
-               "studio_voice", "studio_image", "studio_video", "embedding", "assistant"]
+               "studio_voice", "studio_image", "studio_video", "embedding", "assistant", "news", "subscription"]
 log = logging.getLogger("dom.usage")
 
 # Which monthly area a kind of paid call is counted under. Everything counts toward the monthly cap whatever its area;
@@ -37,7 +37,7 @@ log = logging.getLogger("dom.usage")
 AREA_OF_KIND: dict[str, SpendArea] = {
     "chat": "chat", "triage": "chat", "guard": "chat", "escalation": "chat", "assistant": "chat",
     "media": "media", "studio_voice": "media", "studio_image": "media", "studio_video": "media",
-    "search": "search", "desktop": "desktop",
+    "search": "search", "news": "search", "desktop": "desktop",
     "memory": "memory", "reflection": "memory", "embedding": "memory",
 }
 
@@ -101,19 +101,34 @@ class _Request:
     kind: Kind
     chat_id: int | None
     allowed: Callable[[], Awaitable[bool]]
+    unprompted: bool = False  # a turn Dom starts himself (an opener, a noticing), not one a message asked for
 
 
 _request: ContextVar[_Request | None] = ContextVar("model_request", default=None)
 
 
 @contextmanager
-def model_request(kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]]) -> Iterator[None]:
+def model_request(
+    kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]], *, unprompted: bool = False,
+) -> Iterator[None]:
     """Carry request attribution and approval through tool rounds, retries and fallback."""
-    token = _request.set(_Request(kind, chat_id, allowed))
+    token = _request.set(_Request(kind, chat_id, allowed, unprompted))
     try:
         yield
     finally:
         _request.reset(token)
+
+
+def request_chat_id() -> int | None:
+    """The chat the model request in progress is for, or None outside a request."""
+    request = _request.get()
+    return request.chat_id if request is not None else None
+
+
+def request_unprompted() -> bool:
+    """Whether the model request in progress is for a turn Dom started himself."""
+    request = _request.get()
+    return request is not None and request.unprompted
 
 
 def request_kind(default: Kind) -> Kind:
@@ -219,6 +234,9 @@ class UsageRecorder:
             )
             if kind.startswith("studio_"):  # a media job in progress links the row, so its cost can be read back
                 provenance.note(kind, model, host, row)
+            from dom import turn_log  # imported here: turn_log imports this module
+
+            turn_log.usage_recorded(row)
             return row
         except Exception:
             log.exception("could not record %s usage; the model call is unaffected", kind)

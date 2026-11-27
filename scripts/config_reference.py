@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorldConfig, starter_config
+from dom.config import AcpAgent, AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -59,7 +59,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "workspace", "studio", "knowledge", "world", "web", "tracer", "t3", "acp", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -170,12 +170,30 @@ def render() -> str:
         "It comes from [Nager.Date](https://date.nager.at/) (no key), fetched in the background about once a day and "
         "cached, so no reply waits on it. Only the country code and the year leave the host (see [Privacy](privacy.md)). "
         "Today's date is read in `timezone`. Holidays that apply to some regions only are left out. When the list can't be fetched, the line is left out once "
-        "the cached list is a week old. The country works without a place. News and local events are not included: no free source without a key was reliable enough to trust in his notes.",
+        "the cached list is a week old. The country works without a place.",
         "The same block carries Dom's life sheet (`memory/WORLD.md`: home, work, routine, regular spots), the routine slot "
         "for the current weekday and part of the day, what the notes a chat may read say about that slot's places, and a "
         "variety hint when Dom has just said one of his usual options in this chat. The sheet works without `[world]`; "
         "only the weather line needs the place. See [Memory formats](memory-format.md) for the format and who can change "
         "it, and the dashboard's Memory → World page to edit it.",
+        "With `news` on (the default), a place or a country, and a web search route, Dom does a little reading each evening, "
+        "before he sleeps, in the same window as the reflection: a few searches for the top news and the events in the next "
+        "few days where the owner is, and one model call that picks and dates at most eight of the results. It runs in that "
+        "window when the last news is over 12 hours old, and a missed evening is made up by the next background tick once "
+        "the last news is over 26 hours old, never on a reply; a failed attempt is not repeated for 6 hours. The model writes "
+        "no text that is kept: each line is a result's own title, cut to 120 characters, with its own website domain, kept "
+        "only when the model's pick is that title (or a trim of it) and nothing in it reads as an instruction, role text, "
+        "markup or a link. A headline that does is dropped, so a few harmless ones are lost with it. As a second layer, one call "
+        "to the triage model (Jev) then reads the night's headlines as data and keeps only those it is confident do not try to "
+        "steer an AI assistant or bot; an unsure answer drops a headline, and with Jev unavailable nothing is written that night. The lines replace "
+        "`memory/NEWS.md` each night, and for the next 36 hours the turn note of every chat carries one or two of them inside "
+        "a fenced element marked as untrusted web text; the owner's DM sees each with its day and source, every other chat "
+        "only the headline. The note is public news: no chat text or private note goes into the searches or the call, and "
+        "the reply path only reads the file. It needs the triage model and a provider that returns result lists (SearXNG, DeepSeek or Tavily); "
+        "OpenRouter's web answers are prose with no titles to quote, so they are skipped. The searches count toward the "
+        "search spending limit and the call is attributed as `news` (see [Spend limits](setup.md#spend-limits)); background "
+        "work obeys the monthly cap and the area limits. A failed night leaves the file as it was, and a note older than "
+        "36 hours is not shown. With no search route, nothing runs. Changes apply at the next start.",
         "## Dispatch",
         table(fields(DispatchConfig, "dispatch.")),
         "With the fast lane on, Dom composes the owner's DM turns apart from every other chat's: each turn is "
@@ -184,6 +202,9 @@ def render() -> str:
         "the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),
+        "## Workspace",
+        table(fields(WorkspaceConfig, "workspace.")),
+        "See [The shared workspace](desktop.md#the-shared-workspace) for what the folder is and who reaches it.",
         "## Self-directed work",
         table(fields(SelfWorkConfig, "self_work.")),
         "See [Self-directed work](desktop.md#self-directed-work) for the network guard it needs and what it may do.",
@@ -193,6 +214,12 @@ def render() -> str:
         table(fields(TracerConfig, "tracer.")),
         "Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See "
         "[Privacy](privacy.md#debug-traces).",
+        "## Subscription agents (pilot)",
+        "Codex, Claude and Antigravity on your own subscriptions, through the Agent Client Protocol: tables "
+        "`[acp.codex]`, `[acp.claude]` and `[acp.antigravity]`, each with the keys below (shown for `acp.<name>`). "
+        "Every agent is off until you switch it on, serves only escalation and drafting, and only in your DM.",
+        table(fields(AcpAgent, "acp.<name>.")),
+        "See [Subscription agents](acp-agents.md) for setup, sign-in and the risks.",
         "## T3 Code",
         table(fields(T3Config, "t3.")),
         "See the [T3 Code bridge guide](t3-bridge.md) for service setup and CLI compatibility.",

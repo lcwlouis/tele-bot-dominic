@@ -20,6 +20,7 @@ from dom.web.api_access import JSON_POSTS as ACCESS_POSTS, router as access_rout
 from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
 from dom.web.assistant_settings import JSON_POSTS as ASSISTANT_POSTS, router as assistant_router
 from dom.google import CALLBACK_PATH
+from dom.web.api_files import GUARDED_PREFIX as FILES_GET_PREFIX, JSON_POSTS as FILES_POSTS, router as files_router
 from dom.web.api_google import JSON_POSTS as GOOGLE_POSTS, router as google_router
 from dom.web.api_goals import JSON_POSTS as GOALS_POSTS, router as goals_router
 from dom.web.api_media import GUARDED_PREFIX as MEDIA_GET_PREFIX, JSON_POSTS as MEDIA_POSTS, router as media_router
@@ -84,7 +85,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
             response = await call_next(request)
         elif (
             request.url.path in MEMORY_GETS | SEARCH_GETS | TALK_GETS
-            or request.url.path.startswith((MEDIA_GET_PREFIX, TRACE_GET_PREFIX, WORLD_GET_PREFIX))
+            or request.url.path.startswith((MEDIA_GET_PREFIX, TRACE_GET_PREFIX, WORLD_GET_PREFIX, FILES_GET_PREFIX))
         ) and not fetch_site_ok(request, identity):
             response = PlainTextResponse("Forbidden", status_code=403)
         elif request.method not in ("GET", "HEAD") and not (
@@ -92,7 +93,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
             and request.url.path in (
                 JSON_POSTS | PROVIDER_POSTS | STUDIO_POSTS | SPEND_POSTS | SERVICES_POSTS | VIEWER_JSON_POSTS | CHAT_POSTS
                 | MEMORY_POSTS | WORK_POSTS | WAITING_POSTS | SYSTEM_POSTS | GOALS_POSTS | NOTICINGS_POSTS | MEDIA_POSTS
-                | WORLD_POSTS | TALK_POSTS | ACCESS_POSTS | GOOGLE_POSTS | ASSISTANT_POSTS
+                | WORLD_POSTS | TALK_POSTS | ACCESS_POSTS | GOOGLE_POSTS | ASSISTANT_POSTS | FILES_POSTS
             )
             and is_json(request) and "Origin" in request.headers
             and same_origin(request, identity)
@@ -131,6 +132,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.include_router(world_router)
     web.include_router(search_router)
     web.include_router(work_router)
+    web.include_router(files_router)
     web.include_router(waiting_router)
     web.include_router(goals_router)
     web.include_router(noticings_router)

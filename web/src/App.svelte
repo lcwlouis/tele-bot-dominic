@@ -13,6 +13,7 @@
   import Briefs from "./routes/Briefs.svelte";
   import Chats from "./routes/Chats.svelte";
   import Desk from "./routes/Desk.svelte";
+  import Files from "./routes/Files.svelte";
   import Home from "./routes/Home.svelte";
   import Memory from "./routes/Memory.svelte";
   import World from "./routes/World.svelte";
@@ -111,6 +112,8 @@
           <OwnWork destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "reminders"}
           <Reminders destination={where.destination} tab={where.tab} />
+        {:else if where.tab?.id === "files"}
+          <Files destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "briefs"}
           <Briefs destination={where.destination} tab={where.tab} />
         {:else if where.tab?.id === "plugins" && review.length === 2}

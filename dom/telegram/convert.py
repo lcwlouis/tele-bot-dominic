@@ -20,6 +20,10 @@ def _media(message: Message) -> dict | None:
             item = max(value, key=lambda photo: (photo.width * photo.height, photo.file_size or 0))
         mime = getattr(item, "mime_type", None) or DEFAULT_MIME.get(kind, "application/octet-stream")
         media = {"kind": kind, "file_id": item.file_id, "file_size": item.file_size, "mime": mime}
+        if kind == "document":
+            media["name"] = item.file_name  # kept so a landed document keeps its own name (dom/workspace.py)
+        if kind in ("video", "video_note", "animation") and getattr(item, "duration", None) is not None:
+            media["duration"] = item.duration  # seconds, for sampling frames when ffmpeg can't tell
         if kind == "sticker":
             if item.is_animated:
                 media["mime"] = "application/x-tgsticker"

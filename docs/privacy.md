@@ -114,6 +114,45 @@ tiny generated image, cached per address and model. Unknown means text-only. The
 test and the list fetch run in the background (never while a reply waits), and
 the owner can run the test again with `POST /api/media/inputs/probe`.
 
+**Clips: frame strips and a transcript.** A video, animation or video note that
+the chat model can't take as video is, when it takes images and `ffmpeg` is
+installed, cut into frame strips on arrival, in the background (never while a
+reply waits). A strip is one image: evenly spaced frames, one every 2 to 5
+seconds and at most 16, each with its time burnt in, made on this machine; every
+frame fits a 320-pixel box and a strip never passes 2048 pixels a side, so an
+odd-shaped clip can't make a huge image. A clip is downloaded up to 20 MB
+(Telegram's own limit for a bot; the 8 MB limit applies only to a clip described
+whole), one at a time, and at most the first 5 minutes 20 seconds are looked at,
+in at most 4 strips; Dom's note on the clip says when it was cut, and which
+stretches had frames that could not be read (a clip with too few readable frames
+is treated as unreadable). Its sound goes to a model as a small audio file for a
+transcript: **the media model when its route takes audio** (set `input = ["text",
+"image", "audio"]` on the media route), else **the chat model when it takes
+audio**, else nothing is transcribed and the note says so.
+
+The chat model itself sees the whole clip: each strip is its own image on the
+turn, with the transcript as text, inside `media_input_images` (the other media
+in that turn count against it). With fewer free image slots than strips, strips
+are combined into fewer images, their times intact; a clip with no slot left is
+described by the media model instead (the turn waits for that description no longer than the catch-up wait, else it
+gets the transcript and a note that the frames did not fit, and the job goes on for later turns), and the Turn log says so. A kept strip is a
+JPEG in the same private `media/` folder as the photos Dom sends (`<message
+id>-strip<N>.jpg`), counted in `studio.keep_cap_mb` and removed with the oldest
+files; once Dom has answered, the media model describes the strips from those
+files (one call per strip, each told what came before, joined with the
+transcript) so a later turn remembers the clip. If the strips are gone by then,
+the whole clip is described when it can still be fetched, else Dom's note says
+the picture is no longer available. The strips and the sound go only to the
+models above, under the usual spend caps. Where Dom's chat model takes no images
+(or `media_input_images` is 0) but `ffmpeg` is there, the media model describes
+the strips on arrival and the Turn log says `clip described by the media model`.
+A chat model that takes video natively still gets a small clip itself; a clip too
+big for it is cut into strips instead. Without `ffmpeg`, or when the clip can't be
+watched, the media model describes the whole clip (up to 8 MB), as before.
+Install `ffmpeg` from your system's package manager (`apt install ffmpeg` on a
+Raspberry Pi, `brew install ffmpeg` on a Mac); Dom runs the `ffmpeg` found on
+`PATH`, as the look before sending does.
+
 A model that can't take a type, or a server that refuses the request, falls back
 to a description from the media model; the Turn log says `media described` or
 `media refused`. With triage turned on, a photo is still described once for the
@@ -127,7 +166,8 @@ did not fit the per-prompt limits, and when the file can't be downloaded for the
 turn (if that fails too, its `<media>` tag says it couldn't be loaded). Global search and the dashboard never showed
 descriptions, so nothing changes there.
 
-**What he keeps.** Each photo, voice note and video note Dom sends is saved
+**What he keeps.** Each photo, voice note and video note Dom sends (and the frame
+strips of the clips he is sent) is saved
 under `media/<chat id>/<YYYY-MM>/<message id>.<ext>` in the home, with the scene
 or speech text, kind, time and Telegram's `file_id` on the message. The folder
 is owner-only (0700); files are written to a temporary name and moved into
@@ -243,6 +283,12 @@ Cloudflare. Keep local bearer-token testing on loopback.
 - **Nager.Date** (only when `[world] country` is set) receives the configured country code and the year, in a plain
   HTTPS request about once a day, to answer with the public holidays for Dom's turn note. No key, place, chat or
   personal text is sent.
+- **The web search provider and the chat model** (only when `[world]` has a place or country and a search route is set,
+  unless `[world] news` is off) receive that place or country name in a few searches each evening, and the model gets
+  the numbered result titles and snippets to pick from. No chat text or private note is part of either request. Only
+  a result's own title and domain are kept, filtered for anything that reads as an instruction, and they may reach
+  every chat as headlines marked as untrusted web text. The triage model also reads the night's few kept headlines, as
+  public web text, in one call that screens them.
 - **Chat model providers** also receive the real photos, voice notes and clips
   of the newest turn (and Dom's own latest generated media) when the chat model
   takes that type of input. See [Media Dom sees and sends](#media-dom-sees-and-sends).
@@ -335,6 +381,10 @@ DeepSeek's direct API uses the privacy terms for the DeepSeek account. DeepSeek 
 the People's Republic of China, keeps inputs used to provide the service while the account exists, and may
 use inputs to improve or train its models. The policy describes how to opt out of training. DeepSeek does
 not offer zero data retention on this route. [DeepSeek Privacy Policy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html).
+
+## Subscription agents
+
+The pilot [subscription agents](acp-agents.md) (Codex, Claude, Antigravity) are not zero data retention: the provider keeps what Dom sends under its consumer terms and may train on it unless you opt out there. Dom sends them only owner-DM content, for the escalation and drafting jobs, and refuses any other chat or background job in code. The agent's process receives none of Dom's keys and not your ssh agent, and an agent runs only with its tools switched off, which is why Antigravity is not available yet.
 
 ## OpenRouter data policies
 
@@ -535,6 +585,21 @@ and it never messages anyone else. The owner's DM history keeps a note of each
 plan (goals and reasons) and how each task ended, so Dom can talk about his own
 work; the summary of web content stays out of that history. See
 [Self-directed work](desktop.md#self-directed-work).
+
+## The shared workspace
+
+`<home>/workspace` is a folder Dom, the owner's desktop and the dashboard's Files page share (see
+[The shared workspace](desktop.md#the-shared-workspace)). It is the only part of the home the desktop container can
+see, and the container can read all of it (`inbox/` and `shared/` too, whatever `share_with_chats` says). Documents the owner sends in the DM land in `workspace/inbox/`; Dom reads them with the owner-DM-only `files` tool and
+the text he reads goes to the chat model like any other tool result, fenced as untrusted data. Nothing in the workspace
+leaves the host except through that, the desktop's own `download` and `upload` permissions, and the dashboard.
+
+By default groups and friends' DMs cannot reach any of it. With `[workspace] share_with_chats = true` they get a
+read-only `files` tool limited to `workspace/shared/` (code chooses the folder from the turn's scope; the model cannot
+name another), and a document sent in such a chat is saved to `shared/inbox/<chat id>/`, which only that chat and the
+owner can read. Another chat's landed documents are hidden from it in code, and a file with more than one name is never
+read in any chat, since the desktop could use a second name to move a file out of its folder. `private/`, notes, the database and `.env` are
+never under the workspace.
 
 ## Home network and T3 Code
 

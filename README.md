@@ -17,5 +17,6 @@ private chat. The owner dashboard, desktop sandbox and plugins are optional.
 - [Voice notes, round videos and photos](docs/studio.md)
 - [Presets and Dom's daily vibe](docs/presets.md)
 - [T3 Code bridge](docs/t3-bridge.md)
+- [Subscription agents (pilot)](docs/acp-agents.md)
 
 [MIT licence](LICENSE)

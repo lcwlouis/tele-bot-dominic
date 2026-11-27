@@ -94,8 +94,13 @@ Dom's life sheet: where he lives, where he works, his routine and his regular sp
 - **Who changes it.** The owner edits the sheet on the Memory page or the World page, and those lines are pinned like
   every hand edit. Dom changes it only through the nightly reflection, at most once a week and with a reason
   (`memory/WORLD.change.json`, written before the sheet in one atomic step and checked and written without yielding,
-  records the day and reason, so a crash or two proposals at once can never open the week twice; the World page shows them). His edit can never replace or remove a
-  pinned line or one tagged to a chat, and can't write a `{core ...}` or `{chat ...}` group.
+  records the day and reason, so a crash or two proposals at once can never open the week twice; the World page shows them), or when
+  the owner talks it over with him on the dashboard: the conversation about SOUL.md and WORLD.md (opened from either
+  file or from the World page) may propose one line to add, replace or remove, filed as a waiting proposal that
+  changes nothing until the owner approves it. An approved one is the owner's decision, so it neither waits for nor
+  uses up the reflection's week, and its line is written as Dom's (not pinned). His edit can never replace or remove a
+  pinned line or one tagged to a chat (checked when he proposes it and again when it is approved), and can't write a
+  `{core ...}` or `{chat ...}` group.
 - **Who sees it.** The tag rules above apply as for any note: a line tagged `{chat <id>}` (by hand) shows only in that
   chat and in the owner's DM; untagged and `{any}` lines show everywhere. The block is built on every turn and sits
   after the chat window, so it never changes the cached prompt prefix.

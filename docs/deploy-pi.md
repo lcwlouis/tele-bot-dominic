@@ -13,8 +13,10 @@ moving the database, notes or secrets.
   backups/
 ```
 
-Studio cloud backups (voice and round video notes) encode media with `ffmpeg`. Install it once with
-`sudo apt install ffmpeg`; check with `ffmpeg -hide_banner -encoders | grep -E 'libopus|libx264| aac'`.
+Studio cloud backups (voice and round video notes) encode media with `ffmpeg`, and Dom cuts the videos people send him
+into frame strips with it (see [Media Dom sees and sends](privacy.md#media-dom-sees-and-sends)). Install it once with
+`sudo apt install ffmpeg`; check with `ffmpeg -hide_banner -encoders | grep -E 'libopus|libx264| aac'`. Dom uses the
+`ffmpeg` on `PATH`; no other tool is needed (the strips' time labels are drawn with Pillow, which Dom already installs).
 
 Run Python from `~/dom/app`. When you run `python -m dom` from your user home,
 the `~/dom` folder can shadow the installed `dom` package. Use a normal `cd` into

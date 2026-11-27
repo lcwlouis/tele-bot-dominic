@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dom.config import (
+    ACP_NO_TOOLS_OFF,
     DEEPSEEK_EFFORT_ERROR,
     MAX_DESKTOP_STEPS,
     MEDIA_ADDRESS_RULE,
@@ -889,6 +890,12 @@ class Permission:
     description: str
 
 
+ACP_DESCRIPTION = (
+    "{agent} on your {plan} plan, through {command}, for escalation and drafting in your DM only. Not zero data "
+    "retention: {provider} keeps your prompts under its consumer terms and may train on them unless you opt out. "
+    "Running a bot on a subscription may break {provider}'s terms. Install it and sign in on the machine that runs "
+    "it first; see docs/acp-agents.md."
+)
 # What Dom may do: switches the owner flips from the dashboard. Each is read from app.config on every use, so a save
 # applies at once, without a restart.
 PERMISSIONS = (
@@ -905,6 +912,9 @@ PERMISSIONS = (
                "Dom may message first in approved friends’ DMs after 45 quiet minutes."),
     Permission("ephemeral_replies", ("ephemeral_replies",), "Private replies in groups",
                "Dom may answer you privately inside a group where he is an admin, or in your DM where he is not."),
+    Permission("workspace_share", ("workspace", "share_with_chats"), "Let groups and friends read the shared folder",
+               "Dom may list and read the files in the workspace's shared folder for groups and friends’ DMs, never "
+               "write, and nothing else in the workspace. Documents they send then land there, readable by their chat only."),
     Permission("leak_check", ("leak_check",), "Check replies for leaks",
                "Jev screens what Dom sends and what network plugins send for private information first."),
     Permission("studio_voice", ("studio", "voice"), "Send voice notes",
@@ -918,6 +928,14 @@ PERMISSIONS = (
     Permission("studio_profile", ("studio", "profile_photo_follows_preset"), "Match the Everywhere preset’s profile photo",
                "Dom updates his Telegram profile photo when his Everywhere preset’s outfit changes, at most once per "
                "the interval you choose."),
+    # Subscription agents (pilot, v0.8.6 W7). Shown on the Models tab, not under What Dom may do; each switch rebuilds
+    # the model routes so it applies at once.
+    Permission("acp_codex", ("acp", "codex", "enabled"), "Codex (OpenAI subscription)", ACP_DESCRIPTION.format(
+        agent="Codex", plan="ChatGPT", provider="OpenAI", command="codex-acp")),
+    Permission("acp_claude", ("acp", "claude", "enabled"), "Claude (Anthropic subscription)", ACP_DESCRIPTION.format(
+        agent="Claude", plan="Claude", provider="Anthropic", command="claude-agent-acp")),
+    Permission("acp_antigravity", ("acp", "antigravity", "enabled"), "Antigravity (Google subscription)", ACP_DESCRIPTION.format(
+        agent="Antigravity", plan="Google AI", provider="Google", command="agy acp")),
 )
 # What a studio switch needs before it can be turned on, and where the owner sets that up.
 STUDIO_NEEDS = {
@@ -928,8 +946,9 @@ STUDIO_NEEDS = {
     "profile_photo_follows_preset": "Set up the local studio first: the profile photo uses its portraits.",
 }
 PermissionId = Literal[
-    "memory_self_edit", "openers", "assistant", "openers_groups", "openers_friends", "ephemeral_replies", "leak_check",
-    "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
+    "memory_self_edit", "openers", "assistant", "openers_groups", "openers_friends", "ephemeral_replies",
+    "workspace_share", "leak_check", "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
+    "acp_codex", "acp_claude", "acp_antigravity",
 ]
 assert set(get_args(PermissionId)) == {item.id for item in PERMISSIONS}
 
@@ -939,8 +958,9 @@ class PermissionView(BaseModel):
     label: str
     description: str
     enabled: bool
-    # False when nothing set up can serve this studio switch; `needs` says what to set up first. A switch that is on
-    # although nothing serves it stays on (Dom sends text instead) and can always be turned off.
+    # False when nothing set up can serve this studio switch, or a subscription agent cannot be started; `needs` says
+    # what to set up first, or why not. A switch that is on although nothing serves it stays on (a studio one sends
+    # text instead; an agent is refused at each call) and can always be turned off.
     available: bool = True
     needs: str | None = None
 
@@ -984,26 +1004,32 @@ def _permission_value(config: Config, permission: Permission) -> bool:
     return bool(value)
 
 
-def _servable(config: Config, permission: Permission) -> bool:
-    """Whether anything set up can serve the switch (a backup counts once its key has a value); only studio switches
-    need something. Reads .env: call it off the event loop."""
+def _unserved(config: Config, permission: Permission) -> str | None:
+    """What stops the switch from being turned on, or None when it can be: a studio switch needs something set up that
+    can serve it (a backup counts once its key has a value), and a subscription agent with no way to turn its own
+    tools off never starts. Reads .env: call it off the event loop."""
     def media_key(name: str) -> bool:  # a backup whose key is also chat's never serves
         try:
             return bool(config.media_secret(name))
         except (OSError, ValueError):
             return False
 
-    return permission.path[0] != "studio" or switch_servable(config.studio, permission.path[1], media_key)
+    if permission.path[0] == "acp":
+        reason = ACP_NO_TOOLS_OFF.get(permission.path[1])
+        return f"Can't be switched on: {reason}." if reason else None
+    if permission.path[0] == "studio" and not switch_servable(config.studio, permission.path[1], media_key):
+        return STUDIO_NEEDS[permission.path[1]]
+    return None
 
 
 def _permissions(snapshot: Snapshot) -> Permissions:
     config = snapshot.config
     items = []
     for item in PERMISSIONS:
-        available = _servable(config, item)
+        needs = _unserved(config, item)
         items.append(PermissionView(
             id=item.id, label=item.label, description=item.description, enabled=_permission_value(config, item),
-            available=available, needs=None if available else STUDIO_NEEDS[item.path[1]],
+            available=needs is None, needs=needs,
         ))
     return Permissions(revision=snapshot.revision, items=items,
                        desktop_steps=DesktopStepsView(value=config.desktop.max_steps),
@@ -1032,12 +1058,14 @@ async def update_permission(request: Request) -> Permissions:
     # Reading, checking and replacing config.toml waits on the disk; it runs off the event loop, one save at a time,
     # so a slow disk never stalls Dom's other work.
     def refuse_unserved(config: Config) -> None:  # turning a switch off is always allowed
-        if update.enabled and not _servable(config, permission):
-            raise HTTPException(409, STUDIO_NEEDS[permission.path[1]])
+        if update.enabled and (needs := _unserved(config, permission)):
+            raise HTTPException(409, needs)
 
     async def turned_on(was_on: bool) -> None:
         if permission.id == "studio_profile" and update.enabled and not was_on:
             await app.store.kv_set(PROFILE_AT, "")  # the first sync after turning it on may happen at once
+        if permission.path[0] == "acp":
+            app.apply_model_routes(app.config)  # the agents sit in the escalation and drafting chains, built at once
 
     saved = await _save_now(app, update.revision, permission.path, update.enabled, refuse_unserved, turned_on)
     return await asyncio.to_thread(_permissions, saved)
@@ -1135,7 +1163,7 @@ def _save_setting(
     return saved
 
 
-def set_value(document: tomlkit.TOMLDocument, path: tuple[str, ...], setting: bool | int | None) -> None:
+def set_value(document: tomlkit.TOMLDocument, path: tuple[str, ...], setting: bool | int | str | None) -> None:
     """Set one value in config.toml's document, creating its tables and keeping the comment beside it; None drops the
     key, so its default applies."""
     table = document
