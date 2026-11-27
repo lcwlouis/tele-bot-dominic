@@ -6,7 +6,7 @@ import { PREVIEW_PORT as PORT } from "./preview";
 const PREVIEW_NOW = new Date("2026-11-22T20:30:00Z");
 const viewports = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } } as const;
 const pages: { name: string; path: string; heading: string; tab?: string; click?: string; fill?: [string, string]; link?: string; menu?: boolean; phoneOnly?: boolean; desktopOnly?: boolean; folded?: boolean; soul?: string; region?: string; strip?: string; peek?: boolean; long?: boolean; all?: boolean; full?: boolean }[] = [
-  // The shell on a page that shows where the utility pages live (Work's tabs, the sidebar's Workspace group).
+  // The shell on a page that shows where the utility pages live (Work's tabs) and Waiting for you at the sidebar's foot.
   { name: "shell", path: "/app/work/reminders", heading: "Reminders" },
   { name: "home", path: "/app", heading: "Good evening." },
   // The desktop sidebar folded to its rail of icons; the page takes back the room.
@@ -82,11 +82,15 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "menu", path: "/app/work/briefs", heading: "Briefs", menu: true, phoneOnly: true },
   // A chat's recent messages, and the soul request on its own screen.
   { name: "chats-messages", path: "/app/chats", heading: "Chats", click: "Messages in Weekend crew" },
+  // Your DM's recent messages as Talk's bubbles: Dom's on the left with the (i) for his turn, yours on the right.
+  { name: "chats-dm", path: "/app/chats", heading: "Chats", click: "Messages in Your DM" },
   // The search page: grouped hits, with another chat's message shown as a preview only.
   { name: "search", path: "/app/search?q=plan", heading: "Search" },
-  { name: "memory-soul", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul" },
+  { name: "memory-soul", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul and world" },
   // The soul conversation with a reply and its proposed edit (the answer is canned here: the route itself runs below).
-  { name: "memory-soul-chat", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul", soul: "Would you mention board games?" },
+  { name: "memory-soul-chat", path: "/app/memory", heading: "Memory", click: "Talk to Dom about his soul and world", soul: "Would you mention board games?" },
+  // The same conversation opened from the World page: WORLD.md beside it, and Back returns to World.
+  { name: "memory-soul-world", path: "/app/memory?talk=world&from=world", heading: "Memory" },
 ];
 
 /** Collect every CSP violation and every request that leaves Dom's origin. */
@@ -1071,8 +1075,8 @@ test.describe("interactions under the CSP", () => {
     const unfold = page.getByRole("button", { name: "Expand sidebar" });
     await expect(unfold).toHaveAttribute("aria-expanded", "false");
     await expect(page.getByRole("heading", { name: "Control surface" })).toHaveClass(/sr-only/); // hidden, still named for screen readers
-    const reminders = page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Reminders, in Work" });
-    await expect(reminders).toHaveAttribute("aria-current", "page");
+    const reminders = page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Work", exact: true });
+    await expect(reminders).toHaveAttribute("aria-current", "location");
     // The page takes the room back: wait for the columns to settle.
     let folded = -1;
     await expect
@@ -1086,7 +1090,7 @@ test.describe("interactions under the CSP", () => {
     // Keyboard focus on a rail icon shows its label as a tooltip.
     await page.mouse.move(900, 600);
     await reminders.focus();
-    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Reminders" })).toBeVisible();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Work" })).toBeVisible();
     // A resting mouse opens the rail for a look, over the page: the page keeps its width and the labels show.
     await reminders.hover();
     await expect(page.locator("aside[data-peek]")).toBeVisible();
@@ -1113,11 +1117,11 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("searchbox").first()).toHaveValue("[");
     // "[" on a focused sidebar link keeps focus on that destination in the other layout.
     const nav = page.getByRole("navigation", { name: "Main" });
-    await nav.getByRole("link", { name: "Reminders" }).focus();
+    await nav.getByRole("link", { name: "Work", exact: true }).focus();
     await page.keyboard.press("[");
-    await expect(nav.getByRole("link", { name: "Reminders, in Work" })).toBeFocused();
+    await expect(nav.getByRole("link", { name: "Work", exact: true })).toBeFocused();
     await page.keyboard.press("[");
-    await expect(nav.getByRole("link", { name: /^Reminders/ })).toBeFocused();
+    await expect(nav.getByRole("link", { name: "Work", exact: true })).toBeFocused();
     expect(problems).toEqual([]);
   });
 
@@ -1296,13 +1300,14 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("link", { name: "Open live viewer" })).toHaveAttribute("href", "/desktop/vnc/index.html");
     await page.getByRole("button", { name: "I'm done, resume Dom" }).click();
     await expect(page.getByRole("status").filter({ hasText: "The handoff has already ended." })).toBeVisible();
-    // One list holds both kinds; a finished task's trash glyph and its details' Delete both ask first.
+    // One list holds both kinds; a finished task's row menu and its details' Delete both ask first.
     const list = page.getByRole("group", { name: "Tasks, newest first" });
-    await list.getByRole("button", { name: "Delete desktop task 2" }).click();
+    await list.getByRole("button", { name: "Actions for desktop task 2" }).click();
+    await page.getByRole("menuitem", { name: "Delete task" }).click();
     await dialog.getByRole("button", { name: "Keep it" }).click();
     await expect(dialog).toBeHidden();
     await list.getByRole("button", { name: /^Look up opening hours for the library/ }).click();
-    const panel = page.getByRole("region", { name: "Look up opening hours for the library." });
+    const panel = page.getByRole("region", { name: "Look up opening hours for the library", exact: true });
     await expect(panel.getByText("Result, as the web gave it (not checked)")).toBeVisible();
     await panel.getByRole("button", { name: "Delete task" }).click();
     await dialog.getByRole("button", { name: "Keep it" }).click();
@@ -1311,7 +1316,8 @@ test.describe("interactions under the CSP", () => {
     await list.getByRole("button", { name: /^Read about slow-travel itineraries/ }).click();
     await page.getByRole("region", { name: "Read about slow-travel itineraries" }).getByRole("button", { name: "Cancel task" }).click();
     await dialog.getByRole("button", { name: "Keep it" }).click();
-    await list.getByRole("button", { name: "Delete own work task 2" }).click();
+    await list.getByRole("button", { name: "Actions for own work task 2" }).click();
+    await page.getByRole("menuitem", { name: "Delete task" }).click();
     await dialog.getByRole("button", { name: "Keep it" }).click();
     await list.getByRole("button", { name: /^Check the weather page for Saturday/ }).click();
     const shot = page.getByRole("img", { name: "Screenshot weather.png from task 2" });
@@ -1536,7 +1542,7 @@ test.describe("interactions under the CSP", () => {
     await page.clock.setFixedTime(PREVIEW_NOW);
     // A desktop task: its details open beside the list.
     await page.goto("/app/work?task=2");
-    const task = page.getByRole("region", { name: "Look up opening hours for the library." });
+    const task = page.getByRole("region", { name: "Look up opening hours for the library", exact: true });
     await expect(task).toBeVisible();
     // Closing it drops the link from the address, so a reload doesn't reopen it.
     await task.getByRole("button", { name: "Close details" }).click();
@@ -1588,7 +1594,7 @@ test.describe("interactions under the CSP", () => {
     for (const bad of ["0", "99999999999999999999", "12abc"]) {
       await page.goto(`/app/work?task=${bad}`);
       await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
-      await expect(page.getByText("Look up opening hours for the library.").first()).toBeVisible();
+      await expect(page.getByText("Look up opening hours for the library").first()).toBeVisible();
       await page.goto(`/app/work?own=${bad}`);
       await expect(page.getByRole("status").filter({ hasText: "That task is gone." })).toBeVisible();
       await page.goto(`/app/work/own-work?own=${bad}`);
@@ -2305,6 +2311,187 @@ test.describe("interactions under the CSP", () => {
     expect(page.url()).not.toContain("leaked-query-token");
     const axe4 = await new AxeBuilder({ page }).analyze();
     expect(axe4.violations).toEqual([]);
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b: the sidebar keeps the destinations and Waiting for you, and no subtitle or Workspace list", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/work/reminders");
+    const nav = page.getByRole("navigation", { name: "Main" });
+    await expect(page.getByText("Quiet orbit")).toHaveCount(0);
+    await expect(nav.getByRole("heading", { name: "Workspace" })).toHaveCount(0);
+    await expect(nav.getByRole("link", { name: /^Reminders/ })).toHaveCount(0); // Work's own tabs reach it
+    const waitingLink = nav.getByRole("link", { name: /^Waiting for you/ });
+    await expect(waitingLink).toHaveAccessibleName(/^Waiting for you \d+ waiting$/);
+    await waitingLink.click();
+    await expect(page).toHaveURL(/\/app\/waiting$/);
+    await expect(waitingLink).toHaveAttribute("aria-current", "page");
+    await expect(nav.getByRole("link", { name: "Home", exact: true })).not.toHaveAttribute("aria-current", /.+/);
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b phone: a tab strip opens where it was, with the tab tapped in view, and never slides", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/system");
+    const strip = () => page.getByRole("navigation", { name: "System pages" }).getByRole("list");
+    // Swipe the strip along, then tap a tab that is in view: the next page's strip starts where this one was.
+    await strip().evaluate((list) => (list.scrollLeft = 120));
+    const before = await strip().evaluate((list) => list.scrollLeft);
+    // Record every scroll position the new strip shows from its first frame, to catch a jump or a slide.
+    await page.evaluate(() => {
+      const seen: number[] = [];
+      (window as unknown as { seen: number[] }).seen = seen;
+      new MutationObserver(() => {
+        const list = document.querySelector<HTMLElement>('nav[aria-label="System pages"] ul');
+        if (list) seen.push(list.scrollLeft);
+      }).observe(document.body, { childList: true, subtree: true });
+      const frame = () => {
+        const list = document.querySelector<HTMLElement>('nav[aria-label="System pages"] ul');
+        if (list) seen.push(list.scrollLeft);
+        if (seen.length < 40) requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    });
+    await strip().getByRole("link", { name: "Spend" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Spend" })).toBeVisible();
+    await page.waitForTimeout(400);
+    const seen = await page.evaluate(() => (window as unknown as { seen: number[] }).seen);
+    expect(new Set(seen.slice(-30))).toEqual(new Set([before]));
+    expect(await strip().evaluate((list) => list.scrollLeft)).toBe(before);
+    // A tab out of view on arrival is brought in at once, before the page shows.
+    await page.goto("/app/work");
+    await page.getByRole("navigation", { name: "Work pages" }).getByRole("list").evaluate((list) => (list.scrollLeft = 0));
+    await page.goto("/app/work/library");
+    const work = page.getByRole("navigation", { name: "Work pages" }).getByRole("list");
+    const [box, tab] = [await work.boundingBox(), await work.getByRole("link", { name: "Library" }).boundingBox()];
+    expect(tab!.x + tab!.width).toBeLessThanOrEqual(box!.x + box!.width + 1);
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b phone: a tab brought into view on arrival stays in view when the strip narrows after", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/work/library");
+    const work = page.getByRole("navigation", { name: "Work pages" }).getByRole("list");
+    await expect(work.getByRole("link", { name: "Library" })).toHaveAttribute("aria-current", "page");
+    // A classic scrollbar appearing once the page grows taller (desktop Linux, Windows) narrows the strip after the
+    // tab was placed; the tab must be brought back into view.
+    await page.setViewportSize({ width: viewports.phone.width - 30, height: viewports.phone.height });
+    await page.waitForTimeout(200);
+    const [box, tab] = [await work.boundingBox(), await work.getByRole("link", { name: "Library" }).boundingBox()];
+    expect(tab!.x + tab!.width).toBeLessThanOrEqual(box!.x + box!.width + 1);
+    expect(tab!.x).toBeGreaterThanOrEqual(box!.x - 1);
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b: Work tasks read as a short title, a status chip and the result, with delete in a row menu", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/work");
+    const list = page.getByRole("group", { name: "Tasks, newest first" });
+    const row = list.getByRole("button", { name: /^Look up opening hours for the library/ });
+    await expect(row).toContainText("Done");
+    await expect(row).toContainText("The library opens at 9 am on weekdays.");
+    await expect(list.getByRole("button", { name: /^Delete/ })).toHaveCount(0); // no bin on every row
+    await expect(list.getByText("Own work", { exact: true })).toHaveCount(0);
+    const menu = list.getByRole("button", { name: "Actions for desktop task 2" });
+    await menu.focus();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Actions for desktop task 2" })).toBeVisible();
+    await menu.press("Enter");
+    await expect(page.getByRole("menuitem", { name: "Delete task" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toBeHidden();
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b: Your DM shows Talk's bubbles, and the (i) on Dom's names his turn's model, tokens and cost", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/chats");
+    await page.getByRole("button", { name: "Messages in Your DM" }).click();
+    const box = page.getByRole("region", { name: "Messages in Your DM, oldest first" });
+    await expect(box.getByText("Are we still on for board games on Friday?")).toBeVisible();
+    // The newest message is at the bottom, where the box starts.
+    await expect.poll(() => box.evaluate((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight))).toBeLessThanOrEqual(1);
+    await expect(box.locator("[title='Sent from the dashboard']")).toHaveCount(1);
+    const glyph = box.getByRole("button", { name: /^About the turn that sent this/ }).last();
+    await glyph.click();
+    const tip = page.locator("[data-slot=tooltip-content]");
+    await expect(tip).toContainText("example/chat-model");
+    await expect(tip).toContainText("2,048 in, 1,536 cached, 96 out");
+    await expect(tip).toContainText("$0.0004");
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b: the Memory file list filters by name, keeps its groups' headings and says when nothing matches", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory");
+    const list = page.getByRole("navigation", { name: "Memory files" });
+    const filter = list.getByRole("searchbox", { name: "Filter memory files" });
+    await filter.fill("place");
+    await expect(list.getByRole("heading", { name: /Places, projects and goals/ })).toBeVisible();
+    await expect(list.getByRole("heading", { name: /Shared memory/ })).toHaveCount(0);
+    await expect(list.getByRole("button", { name: "Place · the bakery" })).toBeVisible();
+    await filter.fill("nothing like this");
+    await expect(list.getByText("No files match")).toBeVisible();
+    await filter.press("Escape");
+    await expect(filter).toHaveValue("");
+    await expect(list.getByRole("button", { name: "SOUL.md" })).toBeVisible();
+    // The headings stick under the filter while the list scrolls inside its pane.
+    const heading = list.getByRole("heading", { name: /Only in your DM/ });
+    await expect(heading).toHaveCSS("position", "sticky");
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b: Access sections are the same underlined tabs as Settings", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/system/access");
+    const tabs = page.getByRole("tablist");
+    await expect(tabs).toHaveAttribute("data-variant", "line");
+    await page.getByRole("tab", { name: "Permissions" }).click();
+    await expect(page.getByRole("tab", { name: "Permissions" })).toHaveAttribute("aria-selected", "true");
+    const accessClass = await tabs.getAttribute("class");
+    await page.goto("/app/system");
+    expect(await page.getByRole("tablist").getAttribute("class")).toBe(accessClass);
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b phone: Talk fills the screen under its header, keeps Trace in reach and the composer at the bottom", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/talk");
+    const composer = page.getByRole("textbox", { name: "Message to Dom" });
+    await expect(composer).toBeVisible();
+    const send = (await page.getByRole("button", { name: "Send", exact: true }).boundingBox())!;
+    expect(send.y + send.height).toBeLessThanOrEqual(viewports.phone.height);
+    await expect(page.getByRole("switch", { name: "Trace" })).toBeInViewport();
+    // Writing: the card takes the whole visible height, scrolled so the composer sits at its bottom edge.
+    await composer.focus();
+    await expect(page.getByRole("switch", { name: "Trace" })).toBeInViewport();
+    const bottom = await composer.evaluate((el) => el.getBoundingClientRect().bottom);
+    expect(bottom).toBeLessThanOrEqual(viewports.phone.height);
+    expect(bottom).toBeGreaterThan(viewports.phone.height - 90);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewports.phone.width);
+    await page.getByRole("button", { name: "Dom right now" }).click();
+    await expect(page.getByRole("dialog", { name: "Dom right now" })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("w8b: one conversation about soul and world opens from SOUL.md, WORLD.md and the World page", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/memory/world");
+    await page.getByRole("link", { name: "Talk to Dom about his world" }).click();
+    await expect(page).toHaveURL(/\/app\/memory\?talk=world&from=world$/);
+    await expect(page.getByRole("heading", { name: "Talk to Dom about his soul and world" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "WORLD.md" }).first()).toBeChecked();
+    await page.getByRole("button", { name: "World", exact: true }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "World" })).toBeVisible();
+    // From the files themselves.
+    for (const [file, path] of [["SOUL.md", "SOUL.md"], ["WORLD.md", "memory/WORLD.md"]] as const) {
+      await page.goto(`/app/memory?file=${path}`);
+      await page.getByRole("button", { name: "Talk it over with Dom" }).click();
+      await expect(page.getByRole("radio", { name: file }).first()).toBeChecked();
+      await expect(page.getByRole("button", { name: "Files", exact: true })).toBeVisible();
+    }
     expect(problems).toEqual([]);
   });
 

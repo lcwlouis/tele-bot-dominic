@@ -219,6 +219,9 @@ class UsageRecorder:
             )
             if kind.startswith("studio_"):  # a media job in progress links the row, so its cost can be read back
                 provenance.note(kind, model, host, row)
+            from dom import turn_log  # imported here: turn_log imports this module
+
+            turn_log.usage_recorded(row)
             return row
         except Exception:
             log.exception("could not record %s usage; the model call is unaffected", kind)

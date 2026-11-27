@@ -1,10 +1,11 @@
 <script lang="ts">
+  import Inbox from "@lucide/svelte/icons/inbox";
   import PanelLeftClose from "@lucide/svelte/icons/panel-left-close";
   import PanelLeftOpen from "@lucide/svelte/icons/panel-left-open";
   import type { Component } from "svelte";
   import Orbit from "$lib/components/Orbit.svelte";
   import * as Tooltip from "$lib/components/ui/tooltip";
-  import { destinations, workspace, type Destination } from "$lib/nav";
+  import { destinations, waiting, type Destination } from "$lib/nav";
   import { shell } from "$lib/shell.svelte";
   import { sidebar, typing } from "$lib/sidebar.svelte";
   import { cn, tipTrigger } from "$lib/utils";
@@ -55,7 +56,7 @@
 
 <svelte:window onkeydown={shortcut} />
 
-{#snippet link(href: string, label: string, Icon: Component, here: boolean, aria: "page" | "location" | undefined, small: boolean, tag?: string)}
+{#snippet link(href: string, label: string, Icon: Component, here: boolean, aria: "page" | "location" | undefined, count?: number)}
   <!-- One link in both layouts. Folded, it is the icon alone, named for screen readers, with its label as a tooltip. -->
   <Tooltip.Root disabled={!compact || hovering}>
     <Tooltip.Trigger>
@@ -63,14 +64,20 @@
         <a
           {...tipTrigger(props)}
           {href}
-          class={cn(item, small && "h-9", compact && "w-10 justify-center px-0", here && active)}
+          class={cn(item, compact && "relative w-10 justify-center px-0", here && active)}
           aria-current={aria}
-          aria-label={compact ? (tag ? `${label}, in ${tag}` : label) : undefined}
+          aria-label={compact ? (count !== undefined ? `${label}, ${count}` : label) : undefined}
         >
-          <Icon class={cn(small ? "size-4" : "size-[1.15rem]", "shrink-0", here && "text-signal")} aria-hidden="true" />
+          <Icon class={cn("size-[1.15rem] shrink-0", here && "text-signal")} aria-hidden="true" />
           {#if !compact}
             <span class="flex-1 truncate">{label}</span>
-            {#if tag}<span class="font-mono text-[0.62rem] tracking-[0.12em] uppercase text-muted-foreground" aria-label={`in ${tag}`}>{tag}</span>{/if}
+            {#if count !== undefined}
+              <span class={cn("rounded-full px-2 py-0.5 font-mono text-xs", count ? "bg-signal text-primary-foreground" : "bg-raised text-muted-foreground")}>
+                {count}<span class="sr-only"> waiting</span>
+              </span>
+            {/if}
+          {:else if count}
+            <span class="absolute top-1.5 right-1.5 size-2 rounded-full bg-signal ring-2 ring-rail" aria-hidden="true"></span>
           {/if}
         </a>
       {/snippet}
@@ -79,8 +86,9 @@
   </Tooltip.Root>
 {/snippet}
 
-<!-- Desktop only: the kit's grouped sidebar, folding to a rail of icons. Control surface is the five destinations of
-     the phone menu; Workspace reaches the utility pages, each of which also lives as a tab in Work or System. -->
+<!-- Desktop only: the kit's sidebar, folding to a rail of icons. Control surface is the six destinations of the phone
+     menu; their own pages are the tabs under each page's header, so the sidebar doesn't repeat them. Waiting for you
+     sits at the foot, with its count, one click from anywhere. -->
 <div class="relative z-40 hidden border-r bg-rail lg:block">
 <aside
   class={cn(
@@ -121,9 +129,8 @@
       </Tooltip.Content>
     </Tooltip.Root>
     {#if !compact}
-      <a href="/app" class="flex min-w-0 flex-col rounded-lg px-1 py-1 leading-none">
+      <a href="/app" class="flex min-w-0 items-center rounded-lg px-1 py-1 leading-none">
         <span class="text-[1.35rem] font-semibold tracking-tight">dom<span class="text-signal">.</span></span>
-        <span class="kicker mt-1.5 text-[0.62rem]">Quiet orbit</span>
       </a>
     {/if}
   </div>
@@ -132,19 +139,15 @@
     <h2 id="nav-control" class={cn("kicker mb-2 px-3", compact && "sr-only")}>Control surface</h2>
     <ul aria-labelledby="nav-control" class={cn("flex flex-col gap-1", !compact && "w-full")}>
       {#each destinations as destination (destination.id)}
-        {@const here = destination.id === current.id}
-        <li>{@render link(destination.href, destination.label, destination.icon, here, path === destination.href ? "page" : here ? "location" : undefined, false)}</li>
+        {@const here = destination.id === current.id && path !== waiting.href}
+        <li>{@render link(destination.href, destination.label, destination.icon, here, path === destination.href ? "page" : here ? "location" : undefined)}</li>
       {/each}
     </ul>
 
-    <h2 id="nav-workspace" class={cn("kicker mt-auto mb-2 px-3 pt-8", compact && "sr-only")}>Workspace</h2>
-    {#if compact}<div class="mt-auto mb-3 h-px w-6 self-center bg-line" aria-hidden="true"></div>{/if}
-    <ul aria-labelledby="nav-workspace" class={cn("flex flex-col gap-0.5", !compact && "w-full")}>
-      {#each workspace as { tab, home } (tab.id)}
-        {@const here = path === tab.href}
-        <li>{@render link(tab.href, tab.label, tab.icon, here, here ? "page" : undefined, true, home)}</li>
-      {/each}
-    </ul>
+    <div class={cn("mt-auto pt-8", !compact && "w-full")}>
+      {#if compact}<div class="mx-auto mb-3 h-px w-6 bg-line" aria-hidden="true"></div>{/if}
+      {@render link(waiting.href, waiting.label, Inbox, path === waiting.href, path === waiting.href ? "page" : undefined, shell.waiting)}
+    </div>
   </nav>
 
   {#if shell.version}
