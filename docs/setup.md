@@ -167,8 +167,8 @@ KLIPY and the studio apply at once; desktop hosts and the T3 switch are read at 
 
 ## Google Calendar and Gmail
 
-Optional. Dom can read the owner's calendar and mail and save drafts, behind per-scope switches and approval
-cards, in the owner DM only. Create a Web-application OAuth client with the redirect URI
+Optional. Dom can read the owner's calendar and mail, save drafts, work with the Drive files he made or was handed and
+look up contacts, behind per-scope switches and approval cards, in the owner DM only. Create a Web-application OAuth client with the redirect URI
 `<web.public_url>/api/integrations/google/callback`, put `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`,
 then press **Connect Google** in Settings → Services. See [Google Calendar and Gmail](google.md) for the scopes, the
 switches and the callback behind Cloudflare Access.

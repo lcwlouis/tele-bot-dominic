@@ -210,15 +210,32 @@ class Card:
 
     lines: list[str]
     count: str = ""  # "6 attendees": named on a summary card
-    preview: str = ""  # a non-material extra shown in full on the dashboard, and shortened on the card
+    preview: str = ""  # shown in full on the dashboard; on the card shortened, or whole when `whole`
     headline: str = ""  # what a summary card leads with when the lines do not fit (the first line if empty)
+    whole: bool = False  # the preview is what gets written, so it is material like a recipient: listed uncut, or dashboard-only
+
+    def _listed(self) -> list[str]:
+        """Every line the card lists when it fits."""
+        if not self.preview:
+            return list(self.lines)
+        if not self.whole:
+            return [*self.lines, f"Preview: {shorten(self.preview, 150)}"]
+        return [*self.lines, *self.preview.split("\n")]
+
+    def _exact(self) -> bool:
+        """Whether a Telegram card would show the preview exactly: the card drops blank lines and collapses spaces, so
+        a preview with either (or tabs, or spaces at a line's ends) is only shown as it is on the dashboard."""
+        return not self.whole or not self.preview or all(line and line == " ".join(line.split()) for line in self.preview.split("\n"))
 
     def fits(self) -> bool:
-        return len(self.lines) < CARD_LINES and all(len(" ".join(line.split())) <= CARD_LINE_LIMIT for line in self.lines)
+        listed = self._listed()
+        return self._exact() and len(listed) <= CARD_LINES and all(
+            len(" ".join(line.split())) <= CARD_LINE_LIMIT for line in listed
+        )
 
     def telegram(self) -> list[str]:
         if self.fits():
-            return [*self.lines, *([f"Preview: {shorten(self.preview, 150)}"] if self.preview else [])]
+            return self._listed()
         return [shorten(self.headline or self.lines[0], 120), f"{self.count or 'The details'} too long to list here. Approve or reject it on the dashboard."]
 
     def detail(self) -> str:

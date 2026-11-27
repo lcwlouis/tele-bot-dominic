@@ -491,7 +491,7 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
   calendar is asked every time. He still reads your calendars as before.
 - **A nudge reaches only you.** An event on his calendar can carry a reminder; it is an ordinary reminder in the owner DM
   and is never sent to a group or a friend. Removing a calendar, or moving or deleting an event, cancels it.
-- **Who can reach it.** The `calendar` and `gmail` tools are offered only in the owner's DM, only for the switches
+- **Who can reach it.** The `calendar`, `gmail`, `drive` and `contacts` tools are offered only in the owner's DM, only for the switches
   that are on and the scopes Google granted, and each handler checks the owner DM and the switch again in code. The
   "today and tomorrow" block in the turn note is added only for the owner DM. A group or a friend's DM never gets the
   tools, the block or any result.
@@ -507,6 +507,25 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
   or events in the owner DM cannot reach notes that groups or friends read. Dom's tool descriptions also tell him not to copy mail into notes or other chats.
 - **Drafts and events.** Adding, moving or deleting an event and saving a draft each need an approval card unless the
   owner chose Allow always for that kind. Dom has no way to send mail.
+- **Drive sees only what Dom made or was handed.** Dom's connection holds `drive.file` and nothing wider (never `drive`,
+  `documents` or `spreadsheets`), so Google shows him only the files he made, in his own folder "Dom", and the files the
+  owner picked for him with Google Picker. Creating a file, adding to a Doc, adding rows to a Sheet and replacing cells
+  each need an approval card that shows the file's name and the exact change, unless the owner chose Allow always for that
+  kind. The `drive` tool is offered only in the owner DM, when the Files switch is on and Google granted the scope; the
+  handler checks both again in code.
+- **Contacts are read only.** The Contacts switch (`contacts.readonly`) lets Dom look up a name for an email address or
+  phone number in the owner DM. Nothing can be changed, and the lookup is also used by Dom's own booking code only to find
+  one unambiguous address.
+- **What goes to which model.** File text Dom reads and the contacts he looks up are tool results in the owner DM, so they
+  go to the chat model route that serves that turn under the same `zdr` routing and provider rules as event and mail text,
+  and to no other model or service. Read results are size-bounded and fenced as untrusted data, never instructions, and
+  Dom is told not to copy them into notes or other chats.
+- **The file picker page.** Handing Dom a file opens a dashboard page behind the same login as the rest of the dashboard.
+  It is the only page that loads Google's scripts and frames, and has its own content security policy for that. No token
+  of Dom's reaches the browser: the browser asks Google for its own `drive.file`-only token, and Dom's server asks Google
+  whether the pick worked. The page holds the OAuth client id, the browser API key and the Cloud project number
+  (`GOOGLE_PICKER_API_KEY`, `GOOGLE_PROJECT_NUMBER` in `.env`); they are never logged or shown anywhere else. The Picker
+  and Google's sign-in are Google's services running in your browser, under Google's terms.
 
 ## Booking
 

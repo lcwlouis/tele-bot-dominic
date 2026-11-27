@@ -90,11 +90,12 @@ async def test_no_old_route_still_serves_html(web):
             assert "text/html" not in response.headers.get("content-type", ""), path
         for path in ("/chats/1/wake", "/memory/save", "/proposals/1/approve", "/stickers", "/plugins/convert/delete"):
             assert (await http.post(path, headers=POST_HEADERS)).status_code == 403, path
-    # The only server-rendered page left is the desktop viewer's; the built app is static files.
+    # The only server-rendered pages left are the desktop viewer and the Google file picker (the one page with its own CSP
+    # for Google's scripts, so they never load into the app); the built app is static files.
     templates = {path.name for path in (Path(dom.web.__file__).parent / "templates").iterdir()}
-    assert templates == {"desktop_viewer.html"}
+    assert templates == {"desktop_viewer.html", "google_picker.html"}
     statics = {path.name for path in (Path(dom.web.__file__).parent / "static").iterdir()}
-    assert statics == {"app", "desktop-viewer.css", "desktop-viewer.js", "fonts", "novnc"}
+    assert statics == {"app", "desktop-viewer.css", "desktop-viewer.js", "fonts", "google-picker.css", "google-picker.js", "novnc"}
 
 
 async def test_the_plugin_review_link_dom_sends_opens_the_app_page(make_app, browser):

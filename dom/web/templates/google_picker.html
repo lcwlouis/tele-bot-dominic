@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Give Dom a file</title>
+  <link rel="stylesheet" href="/static/google-picker.css">
+  {% if config %}<script type="module" src="/static/google-picker.js"></script>{% endif %}
+</head>
+<body
+  {% if config %}
+  data-client-id="{{ config.client_id }}"
+  data-api-key="{{ config.api_key }}"
+  data-project="{{ config.project_number }}"
+  data-file="{{ file }}"
+  {% endif %}
+>
+  <main>
+    <a class="back" href="/app/system" aria-label="Back to Settings">← Settings</a>
+    <h1>Give Dom a file</h1>
+    {% if problem %}
+    <p role="alert">{{ problem }}</p>
+    {% else %}
+    <p>
+      Dom sees only files he made and files you hand him. Choose {% if file %}the file you linked{% else %}a file{% endif %} in Google's
+      picker below; that is the only thing this gives him, and you can turn Files off in Settings at any time.
+    </p>
+    <button id="choose" type="button" disabled>Loading Google…</button>
+    <p id="status" role="status" aria-live="polite"></p>
+    <ul id="handed" aria-label="Files Dom can now read"></ul>
+    {% endif %}
+  </main>
+</body>
+</html>
