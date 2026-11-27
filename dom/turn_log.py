@@ -96,6 +96,7 @@ class TurnTrace:
     turn_id: int | None = None  # for an `after` part started outside its turn: that turn's row
     children: list[TurnTrace] = field(default_factory=list)  # `after` parts that finished before this turn was saved
     replaced_by: TurnTrace | None = None  # a restarted attempt: the trace that absorbed it, which its children join
+    usage_ids: list[int] = field(default_factory=list)  # usage rows this turn's own calls wrote, linked once it is saved
 
     def add_timing(self, what: str, elapsed_ms: int) -> None:
         self.timings.append(f"{what}@{elapsed_ms}")
@@ -113,6 +114,7 @@ class TurnTrace:
         self.events[:0] = other.events
         self.dropped_events += other.dropped_events
         self.started = min(self.started, other.started)
+        self.usage_ids[:0] = other.usage_ids  # what the arrival's triage or the restarted attempt cost is this turn's
         other.replaced_by = self  # a child of it still running finds this trace when it finishes
         for child in other.children:  # work a restarted attempt spawned belongs to the turn that replaced it
             child.parent = self
@@ -345,6 +347,15 @@ def bubble_sent(kind: str = "text", *, chat_id: int | None = None, msg_id: int |
         trace.last_bubble_ms = max(trace.last_bubble_ms or 0, elapsed)
 
 
+def usage_recorded(row_id: int | None) -> None:
+    """A paid call's usage row, written inside a turn's own trace: the turn claims it once its row is saved (capture),
+    so the dashboard can say what that reply cost. Work after the turn and background passes run under traces of their
+    own (follow_up, background), so their calls never count toward a reply."""
+    trace = _current.get()
+    if row_id is not None and trace is not None and trace.kind == "turn" and not trace.sealed:
+        trace.usage_ids.append(row_id)
+
+
 def outcome(text: str) -> None:
     if (trace := _current.get()) is not None:
         trace.outcome = text
@@ -391,6 +402,8 @@ async def capture(
                     model_calls=calls_out,
                     first_bubble_ms=trace.first_bubble_ms, last_bubble_ms=trace.last_bubble_ms,
                 )
+                if trace.row_id is not None and trace.usage_ids:
+                    await store.link_usage_to_turn(trace.row_id, trace.usage_ids)
             except Exception:
                 log.exception("could not save turn metadata in chat %s", chat_id)
         if not trace.superseded:

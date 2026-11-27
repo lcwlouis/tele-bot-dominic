@@ -3,6 +3,7 @@
   import MapPin from "@lucide/svelte/icons/map-pin";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
+  import Sparkles from "@lucide/svelte/icons/sparkles";
   import Trash from "@lucide/svelte/icons/trash-2";
   import { onMount } from "svelte";
   import { ApiError, getJSON, send, type WorldData, type WorldPlace } from "$lib/api";
@@ -12,7 +13,7 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
-  import { Button } from "$lib/components/ui/button";
+  import { Button, buttonVariants } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
@@ -115,7 +116,14 @@
   const day = (iso: string) => new Date(iso + "T12:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 </script>
 
-<PageHeader kicker={destination.label} title={tab.label} subtitle={tab.blurb} />
+<PageHeader kicker={destination.label} title={tab.label} subtitle={tab.blurb}>
+  {#snippet aside()}
+    <!-- The same conversation as SOUL.md's (E117), opened on WORLD.md; its Back returns here. -->
+    <a href="/app/memory?talk=world&from=world" class={buttonVariants({ variant: "secondary" })}>
+      <Sparkles aria-hidden="true" /> Talk to Dom about his world
+    </a>
+  {/snippet}
+</PageHeader>
 <PageTabs {destination} {tab} />
 
 {#if world === null && failed}

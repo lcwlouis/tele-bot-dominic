@@ -26,6 +26,7 @@
   } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
+  import SectionTabs from "$lib/components/kit/SectionTabs.svelte";
   import AssistantCard from "$lib/components/settings/AssistantCard.svelte";
   import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
   import LeakScan from "$lib/components/settings/LeakScan.svelte";
@@ -608,12 +609,14 @@
   {/if}
 
   <Tabs.Root bind:value={section}>
-    <Tabs.List variant="line" class="no-scrollbar mb-5 h-auto! w-full justify-start gap-5 overflow-x-auto border-b pb-1">
-      <Tabs.Trigger value="models" class="flex-none px-0 py-2 data-active:text-signal-strong">Models</Tabs.Trigger>
-      <Tabs.Trigger value="providers" class="flex-none px-0 py-2 data-active:text-signal-strong">Providers</Tabs.Trigger>
-      <Tabs.Trigger value="permissions" class="flex-none px-0 py-2 data-active:text-signal-strong">What Dom may do</Tabs.Trigger>
-      <Tabs.Trigger value="services" class="flex-none px-0 py-2 data-active:text-signal-strong">Services</Tabs.Trigger>
-    </Tabs.List>
+    <SectionTabs
+      items={[
+        { value: "models", label: "Models" },
+        { value: "providers", label: "Providers" },
+        { value: "permissions", label: "What Dom may do" },
+        { value: "services", label: "Services" },
+      ]}
+    />
 
     <Tabs.Content value="models">
       <section aria-labelledby="routing-title" class="mb-8">

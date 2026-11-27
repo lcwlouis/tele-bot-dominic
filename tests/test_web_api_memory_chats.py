@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+from datetime import timedelta, timezone
 
 import pytest
 
@@ -354,6 +355,140 @@ async def test_a_chats_recent_messages_are_full_only_in_the_owners_dm(make_app, 
         assert (await client.get(f"/api/chats/{FRIEND}/messages")).status_code == 404  # not approved
         assert (await client.get("/api/chats/12345/messages")).status_code == 404
         assert (await client.get(f"/api/chats/{GROUP}/messages", headers={"Authorization": ""})).status_code == 403
+
+
+async def test_owner_dm_messages_carry_the_turn_that_sent_them(make_app, browser):
+    """Your DM's bubbles: each of Dom's messages names the turn that was running when it was saved, with its model,
+    tokens over the turn's own calls (not the work recorded after it), its cost from the usage rows linked to it,
+    time taken and lane. A background call, an overlapping turn's call or another chat's never adds to it. A message
+    no turn covers, the owner's own messages and every other chat carry none."""
+    from dom.models import StoredMessage
+
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    start = app.dispatch.now()
+    visit = "attention:" + json.dumps({
+        "chat_id": OWNER, "at": start.isoformat(), "duration_ms": 4000, "lane": "fast", "wait_ms": 0,
+        "reason": "reply", "behind": None, "depth": 0, "capped": None,
+    })
+    calls = [
+        {"kind": "triage", "model": "example/triage", "input_tokens": 300, "output_tokens": 5, "cached_tokens": None},
+        {"kind": "chat", "model": "example/chat", "input_tokens": 2000, "output_tokens": 80, "cached_tokens": 1500},
+    ]
+    turn = await app.store.record_turn(start, OWNER, "owner_dm", 2, [visit], "example/chat", False, 4000, "Replied",
+                                       model_calls=calls, first_bubble_ms=2500, last_bubble_ms=3900)
+    await app.store.extend_turn(turn, ["after_reply@900"], [{"kind": "triage", "input_tokens": 999, "output_tokens": 9}])
+    # A turn in the main lane that overlaps it, and an old one long finished.
+    other = await app.store.record_turn(start + timedelta(seconds=0.2), OWNER, "owner_dm", 1, [], "example/other", False, 100, "Stayed quiet")
+    await app.store.record_turn(start - timedelta(hours=2), OWNER, "owner_dm", 0, ["garbled"], "old/model", False, 10, "Stayed quiet")
+    at = lambda seconds: (start + timedelta(seconds=seconds)).astimezone(timezone.utc).isoformat()  # noqa: E731
+    own = [
+        await app.store.record_usage(at(1), "triage", "example/triage", "llm.example", OWNER, 300, 5, 0.0001, 0),
+        await app.store.record_usage(at(3), "chat", "example/chat", "llm.example", OWNER, 2000, 80, 0.002, 0),
+    ]
+    await app.store.link_usage_to_turn(turn, own)
+    overlapping = await app.store.record_usage(at(1), "chat", "example/other", "llm.example", OWNER, 10, 10, 0.3, 0)
+    await app.store.link_usage_to_turn(other, [overlapping])
+    await app.store.link_usage_to_turn(turn, [overlapping])  # already another turn's: it stays that turn's
+    await app.store.record_usage(at(2), "memory", "example/chat", "llm.example", OWNER, 5000, 400, 0.7, 0)  # background
+    await app.store.record_usage(at(3), "chat", "example/chat", "llm.example", GROUP, 2000, 80, 0.5, 0)  # another chat
+    for chat_id, role, text, msg_id, seconds in (
+        (OWNER, "user", "Board games Friday?", 1, 0), (OWNER, "assistant", "Yes!", 2, 3),
+        (OWNER, "assistant", "A reminder, later.", 3, 3600), (GROUP, "assistant", "Sounds good.", 4, 3),
+    ):
+        await app.store.record_new_message(StoredMessage(
+            chat_id=str(chat_id), role=role, text=text, msg_id=msg_id, is_bot=role == "assistant", origin="dashboard" if msg_id == 1 else None,
+            created_at=at(seconds), visibility_scope=app.store.visibility_for(chat_id),
+        ))
+    async with browser(app) as client:
+        later, reply, mine = (await client.get(f"/api/chats/{OWNER}/messages")).json()["messages"]
+        theirs = (await client.get(f"/api/chats/{GROUP}/messages")).json()["messages"]
+    assert reply["turn"] == {
+        "id": turn, "model": "example/chat", "fallback": False, "calls": 3,
+        "input_tokens": 2300, "cached_tokens": 1500, "output_tokens": 85, "cost_usd": 0.0021,
+        "duration_ms": 4000, "first_bubble_ms": 2500, "lane": "fast",
+    }
+    assert reply["iso"] == at(3) and reply["origin"] is None and reply["edited"] is False and reply["media"] is None
+    assert later["turn"] is None  # no turn was running an hour on
+    assert mine["turn"] is None and mine["origin"] == "dashboard"  # the owner's own message: no turn, its origin
+    assert "turn" not in theirs[0] and "iso" not in theirs[0]  # another chat: one line, no turn details
+
+
+async def test_owner_dm_messages_match_their_turn_however_many_turns_ran(make_app, browser):
+    """Each message is matched on its own, so a busy stretch (more turns than any page-wide cap) can't drop the newest
+    messages' turns; a turn from before usage was linked shows no cost rather than a guess."""
+    from dom.models import StoredMessage
+
+    app = make_app()
+    start = app.dispatch.now() - timedelta(hours=1)
+    store = app.store
+    for index in range(700):  # 700 short turns, five seconds apart, in the hour before the messages
+        store._conn.execute(
+            "INSERT INTO turns (at, chat_id, scope, calls, trace, model, fallback, duration_ms, outcome) "
+            "VALUES (?, ?, 'owner_dm', 0, '[]', 'busy/model', 0, 1000, 'Stayed quiet')",
+            ((start + timedelta(seconds=5 * index)).astimezone(timezone.utc).isoformat(), str(OWNER)),
+        )
+    last = start + timedelta(seconds=5 * 699)
+    final = await store.record_turn(last + timedelta(seconds=2), OWNER, "owner_dm", 1, [], "last/model", False, 3000, "Replied")
+    for msg_id, when, text in ((1, start + timedelta(seconds=0.5), "First."), (2, last + timedelta(seconds=4), "Last.")):
+        await store.record_new_message(StoredMessage(
+            chat_id=str(OWNER), role="assistant", text=text, msg_id=msg_id, is_bot=True,
+            created_at=when.astimezone(timezone.utc).isoformat(), visibility_scope=store.visibility_for(OWNER),
+        ))
+    async with browser(app) as client:
+        newest, oldest = (await client.get(f"/api/chats/{OWNER}/messages")).json()["messages"]
+    assert newest["turn"]["id"] == final and newest["turn"]["model"] == "last/model"
+    assert newest["turn"]["cost_usd"] is None  # no usage linked to it
+    assert oldest["turn"]["model"] == "busy/model"
+
+
+async def test_a_turns_own_usage_is_linked_to_it_and_background_work_is_not(make_app):
+    """The usage rows a turn's own calls write are claimed by its row once saved; a background pass or work after the
+    turn, under traces of their own, is not, even when it runs while the turn does."""
+    from dom import turn_log
+    from dom.usage import UsageRecorder
+
+    app = make_app()
+    recorder = UsageRecorder(app.store, app.dispatch.now)
+    async with turn_log.capture(app.store, app.dispatch.now(), OWNER, "owner_dm"):
+        turn_log.outcome("Replied")
+        turn_log.current().steps.append("final")  # a turn with something to log, so its row is saved
+        mine = await recorder.record("chat", "example/chat", "llm.example", {"cost": 0.01}, chat_id=OWNER)
+        with turn_log.background("memory pass", OWNER, "owner_dm"):
+            background = await recorder.record("memory", "example/chat", "llm.example", {"cost": 0.2}, chat_id=OWNER)
+        with turn_log.follow_up("stay check", OWNER, "owner_dm"):
+            after = await recorder.record("triage", "example/jev", "llm.example", {"cost": 0.03}, chat_id=OWNER)
+    outside = await recorder.record("chat", "example/chat", "llm.example", {"cost": 0.5}, chat_id=OWNER)
+    linked = dict(app.store._conn.execute("SELECT id, turn_id FROM usage").fetchall())
+    [turn] = [row["id"] for row in await app.store.recent_turns()]
+    assert linked[mine] == turn
+    assert linked[background] is None and linked[after] is None and linked[outside] is None
+
+
+async def test_owner_dm_messages_survive_a_turn_row_they_cannot_read(make_app, browser):
+    """A turn with unreadable model calls or steps still matches, without tokens or a lane; a store failure while
+    matching leaves the bubbles without turns rather than failing the page."""
+    from dom.models import StoredMessage
+
+    app = make_app()
+    start = app.dispatch.now()
+    turn = await app.store.record_turn(start, OWNER, "owner_dm", 1, [], "example/chat", True, 5000, "Replied")
+    app.store._conn.execute("UPDATE turns SET model_calls = 'not json', trace = '{' WHERE id = ?", (turn,))
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(OWNER), role="assistant", text="Hi.", msg_id=9, is_bot=True,
+        created_at=start.astimezone(timezone.utc).isoformat(), visibility_scope=app.store.visibility_for(OWNER),
+    ))
+    async with browser(app) as client:
+        (message,) = (await client.get(f"/api/chats/{OWNER}/messages")).json()["messages"]
+        assert message["turn"]["fallback"] is True and message["turn"]["input_tokens"] is None
+        assert message["turn"]["lane"] is None and message["turn"]["cost_usd"] is None
+
+        async def broken(*_args, **_kwargs):
+            raise RuntimeError("database is locked")
+
+        app.store.turns_for_messages = broken
+        response = await client.get(f"/api/chats/{OWNER}/messages")
+        assert response.status_code == 200 and response.json()["messages"][0]["turn"] is None
 
 
 async def test_chat_actions_run_the_owner_functions(make_app, browser):
