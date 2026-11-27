@@ -18,7 +18,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
-from typing import Any, Callable, Iterator, TypeVar
+from typing import Any, Callable, Iterable, Iterator, TypeVar
 from xml.sax.saxutils import escape, quoteattr
 
 from dom.deletion import hash_matches, stamp_matches
@@ -76,6 +76,8 @@ MIGRATIONS: list[tuple[int, str]] = [
     (34, "0033_credentials_and_permissions.sql"),
     (35, "0034_message_origin.sql"),
     (36, "0035_assistant_usage.sql"),
+    (37, "0036_news_usage.sql"),
+    (38, "0037_usage_turn.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -102,6 +104,166 @@ _UNREAD_SQL = (
     "ELSE COALESCE((SELECT c.last_read_msg_id FROM chats c WHERE c.chat_id = m.chat_id), 0) "
     "END"
 )
+
+
+# A new bot's message ids restart from 1 in every chat. The ids the old bot gave are moved this far below zero, in order
+# and clear of every Telegram id, so the two runs never meet in the (chat_id, msg_id) index. A message with a negative
+# id is never unread, never memorised and can't be replied to: the new bot can't reach it. A chat is only ever moved
+# for a real bot change (the bot id differs from the stored one), or once, from the data, when none was stored yet.
+_ALL_ROWS = 1 << 62  # an era start after every row there is
+PENDING_ERA = "pending_era:"  # kv key prefix: a chat to move when its first message from the new bot arrives
+ERA_SUSPECT = "era_suspect:"  # kv key prefix: a chat that looks switched but is not yet proven; looked at again each start
+RECOVERY_MIN_ROWS = 3  # the new run must have at least this many rows to be believed
+RECOVERY_DROP = 10  # and its first id must be under a tenth of the old run's newest
+
+
+def _when(value: str) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def judge_eras(
+    conn: sqlite3.Connection, only: set[str] | None = None,
+) -> tuple[dict[str, tuple[int, str]], list[str]]:
+    """Chats whose history shows a bot change nobody recorded, and chats where it is suspected but not yet proven.
+
+    The first is chat -> (first row, its time) of the new run. Message ids only go up, so a drop is a candidate, but
+    a late edit or one odd row also looks like one. A chat's rows after its latest drop count as a new bot's only if
+    every one of them was created after every row before, there are at least `RECOVERY_MIN_ROWS`, none climbs back
+    above the old run's newest id, and the first is under a tenth of it.
+
+    The second is a candidate that has not climbed back or been created earlier, yet fails the rest (too few rows,
+    equal or unreadable times): more messages may still prove it, or end it by climbing back. Anything else is left
+    alone. `only` limits the look to those chats."""
+    candidates = [row[0] for row in conn.execute(
+        "SELECT DISTINCT chat_id FROM (SELECT chat_id, msg_id, LAG(msg_id) OVER (PARTITION BY chat_id ORDER BY id) AS before "
+        f"FROM messages WHERE msg_id > 0) WHERE msg_id * {RECOVERY_DROP} < before"
+    ) if only is None or row[0] in only]
+    found: dict[str, tuple[int, str]] = {}
+    unproven: list[str] = []
+    for chat_id in candidates:
+        rows = conn.execute(
+            "SELECT id, msg_id, created_at FROM messages WHERE chat_id = ? AND msg_id > 0 ORDER BY id", (chat_id,),
+        ).fetchall()
+        start, run_max, old_max = None, 0, 0
+        for index, (_, msg_id, _) in enumerate(rows):
+            if run_max and msg_id * RECOVERY_DROP < run_max:
+                start, old_max, run_max = index, run_max, msg_id
+            run_max = max(run_max, msg_id)
+        if start is None:
+            continue
+        run = rows[start:]
+        if max(msg_id for _, msg_id, _ in run) > old_max:
+            continue
+        times = [_when(at) for _, _, at in rows]
+        if None not in times and min(times[start:]) < max(times[:start]):
+            continue  # made before the old rows: not a later bot
+        if None in times or len(run) < RECOVERY_MIN_ROWS or min(times[start:]) == max(times[:start]):
+            unproven.append(chat_id)
+            continue
+        found[chat_id] = (run[0][0], run[0][2])
+    return found, unproven
+
+
+def recover_eras(conn: sqlite3.Connection) -> dict[str, tuple[int, str]]:
+    """The chats `judge_eras` proves switched."""
+    return judge_eras(conn)[0]
+
+
+def begin_eras(conn: sqlite3.Connection, starts: dict[str, tuple[int, str]], now: str) -> list[str]:
+    """Move each chat's rows before its era start (a messages.id; `starts` also gives the time it began) out of the
+    new bot's id range; returns the chats that had any. Their reply links and the noticings made before the era move
+    the same distance. (What only the old bot could answer is dropped by `forget_old_bot_cards`.)
+
+    The markers are recomputed, never compared (the numbers overlap): the read marker and each topic marker go to
+    Dom's latest reply in the new run (what he answered is read; 0 when he has not replied in it), and the memory
+    cursor to 0 so the memory pass catches up. The full-text trigger would delete index entries of rows that are
+    already out of it (soft-deleted ones), and the index does not hold ids, so it is dropped while the rows move."""
+    moved = []
+    trigger = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'messages_au'").fetchone()
+    if trigger is not None:
+        conn.execute("DROP TRIGGER messages_au")
+    try:
+        for chat_id, (era_row, began) in starts.items():
+            top = conn.execute(
+                "SELECT MAX(msg_id) FROM messages WHERE chat_id = ? AND id < ? AND msg_id > 0", (chat_id, era_row),
+            ).fetchone()[0]
+            if top is None:
+                continue  # nothing before it is left to move: already done
+            floor = conn.execute(
+                "SELECT COALESCE(MIN(msg_id), 0) FROM messages WHERE chat_id = ? AND msg_id < 0", (chat_id,)
+            ).fetchone()[0]
+            shift = top - floor + 1  # the newest old id lands just under the oldest one moved before
+            conn.execute(
+                "UPDATE messages SET msg_id = msg_id - ?, reply_to_msg_id = reply_to_msg_id - ? "
+                "WHERE chat_id = ? AND id < ? AND msg_id > 0", (shift, shift, chat_id, era_row),
+            )
+            _move_noticing_sources(conn, chat_id, shift, _when(began))
+            _reset_markers(conn, chat_id, now)
+            moved.append(chat_id)
+    finally:
+        if trigger is not None:
+            conn.execute(trigger[0])
+    return moved
+
+
+def _move_noticing_sources(conn: sqlite3.Connection, chat_id: str, shift: int, before: datetime | None) -> None:
+    """A noticing made before the era points at an old row; one made in the new run points at a new one."""
+    if before is None:
+        return
+    for noticing_id, made in conn.execute(
+        "SELECT id, created_at FROM noticings WHERE source_chat_id = ? AND source_msg_id > 0", (chat_id,),
+    ).fetchall():
+        if (when := _when(made)) is not None and when < before:
+            conn.execute("UPDATE noticings SET source_msg_id = source_msg_id - ? WHERE id = ?", (shift, noticing_id))
+
+
+def forget_old_bot_cards(conn: sqlite3.Connection, chats: Iterable[str], now: str, owner_chat: str | None) -> None:
+    """Drop what only the old bot could answer in these chats, the moment they are marked, whenever their rows move:
+    open turns and menu cards, the Telegram id of a cross-chat send, and (in the owner's chat) open requests and noticing
+    cards. They were sent by the old bot, which the new one can neither edit nor answer, and their ids may now name an
+    unrelated new message: the requests behind them expire and nothing keeps their message ids."""
+    for chat_id in chats:
+        conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
+        conn.execute("DELETE FROM menu_cards WHERE chat_id = ?", (chat_id,))
+        conn.execute("UPDATE cross_chat SET sent_msg_id = NULL WHERE target_chat_id = ?", (chat_id,))
+        if chat_id == owner_chat:
+            _forget_owner_cards(conn, now)
+
+
+def _forget_owner_cards(conn: sqlite3.Connection, now: str) -> None:
+    conn.execute(
+        "UPDATE desktop_permission_history SET status = 'expired', decided_via = 'bot-change', decided_at = ? "
+        "WHERE status = 'pending'", (now,),
+    )
+    conn.execute("UPDATE desktop_permission_history SET card_message_id = NULL")
+    conn.execute("UPDATE secret_requests SET status = 'expired', resolved_at = ? WHERE status = 'pending'", (now,))
+    conn.execute("UPDATE secret_requests SET card_message_id = NULL")
+    conn.execute("UPDATE noticings SET opener_msg_id = NULL")
+
+
+def _reset_markers(conn: sqlite3.Connection, chat_id: str, now: str) -> None:
+    replied = (
+        "SELECT COALESCE(MAX(msg_id), 0) FROM messages WHERE chat_id = ? AND role = 'assistant' AND msg_id > 0"
+    )
+    conn.execute("UPDATE chats SET memory_cursor_msg_id = 0 WHERE chat_id = ?", (chat_id,))
+    topics = conn.execute("SELECT thread_id FROM chat_topic_reads WHERE chat_id = ?", (chat_id,)).fetchall()
+    for (thread_id,) in topics:
+        conn.execute(
+            "UPDATE chat_topic_reads SET updated_at = ?, last_read_msg_id = ("
+            f"{replied} AND COALESCE(thread_id, 0) = ?) WHERE chat_id = ? AND thread_id = ?",
+            (now, chat_id, thread_id, chat_id, thread_id),
+        )
+    # With topic rows the chat's marker is their newest (a chat marker past them would be read back into them).
+    conn.execute(
+        "UPDATE chats SET updated_at = ?, last_read_msg_id = COALESCE("
+        "(SELECT MAX(last_read_msg_id) FROM chat_topic_reads WHERE chat_id = ?), "
+        f"({replied})) WHERE chat_id = ? AND last_read_msg_id IS NOT NULL",
+        (now, chat_id, chat_id, chat_id),
+    )
 
 
 def _topic_key(thread_id: int | None) -> int:
@@ -1115,6 +1277,11 @@ class Store:
     def _record_new_message(self, msg: StoredMessage) -> int:
         with self._tx() as conn:
             if msg.msg_id is not None:
+                key = PENDING_ERA + msg.chat_id
+                if conn.execute("SELECT 1 FROM kv WHERE key = ?", (key,)).fetchone() is not None:
+                    # The first message from the bot this chat changed to: the rows saved so far are the old bot's.
+                    begin_eras(conn, {msg.chat_id: (_ALL_ROWS, _now())}, _now())
+                    conn.execute("DELETE FROM kv WHERE key = ?", (key,))
                 existing = conn.execute(
                     "SELECT id FROM messages WHERE chat_id = ? AND msg_id = ?", (msg.chat_id, msg.msg_id)
                 ).fetchone()
@@ -1160,7 +1327,8 @@ class Store:
                 msg.created_at, msg.updated_at, msg.origin,
             ),
         )
-        return int(cur.lastrowid)
+        row_id = int(cur.lastrowid)
+        return row_id
 
     async def record_t3(
         self, chat_id: int, tool: str, machine: str, target: str, summary: str, outcome: str, error: str,
@@ -1409,14 +1577,19 @@ class Store:
         self, *, chat_id: int | str | None = None, oldest_first: bool = False, limit: int | None = None,
         before: tuple[str, int] | None = None,
     ) -> list[dict[str, Any]]:
-        """Messages whose generated file is still on disk, as {chat_id, msg_id, created_at, media}. `before` is the
+        """Messages whose file (a generated one, or the frame strips of a clip someone sent) is still on disk, as
+        {chat_id, msg_id, created_at, media}. `before` is the
         (created_at, row id) a previous page ended at."""
         return await self._run(self._kept_media, None if chat_id is None else str(chat_id), oldest_first, limit, before)
 
     def _kept_media(
         self, chat_id: str | None, oldest_first: bool, limit: int | None, before: tuple[str, int] | None,
     ) -> list[dict[str, Any]]:
-        where, args = ["json_valid(media_json)", "json_extract(media_json, '$.file') IS NOT NULL"], []
+        where = [
+            "json_valid(media_json)",
+            "(json_extract(media_json, '$.file') IS NOT NULL OR json_extract(media_json, '$.strips') IS NOT NULL)",
+        ]
+        args: list[Any] = []
         if chat_id is not None:
             where.append("chat_id = ?")
             args.append(chat_id)
@@ -1580,6 +1753,88 @@ class Store:
                 "WHERE chat_id = ?",
                 (up_to_msg_id, now, chat_id),
             )
+
+    async def adopt_bot(self, bot_id: int) -> int:
+        """Remember which bot this database talks to and handle a bot change; returns how many chats were set aside now.
+
+        A new bot token restarts Telegram's message ids in every chat. The old rows would meet the new ones in the
+        (chat_id, msg_id) index, which would drop a new message numbered like an old one, and read markers and the
+        memory cursor, which only move up, would sit above every new id. So the old bot's rows move to negative ids
+        (see `begin_eras`), but only for a real change:
+
+        - the stored bot id differs: every chat with rows is marked, and each moves when its first message from the new
+          bot arrives (nothing has yet; the old rows stay readable until then). The old bot's cards and requests
+          expire now, since their ids may already name a new message;
+        - none is stored yet (an instance that switched before this existed): chats whose history clearly shows a
+          switch (see `judge_eras`) move now, and the id is stored. A chat that only looks switched, with too little
+          to prove it, is kept as a suspect and looked at again at every start until it is proven or ends;
+        - the same id: only those suspects are looked at again. A late edit or an odd message with a lower id never
+          moves anything.
+
+        The change is noted in the owner's DM history."""
+        return await self._run(self._adopt_bot, bot_id, _now())
+
+    def _adopt_bot(self, bot_id: int, now: str) -> int:
+        event, repaired, still_open = None, [], []
+        with self._tx() as conn:
+            row = conn.execute("SELECT value FROM kv WHERE key = 'bot_id'").fetchone()
+            owner = str(self.owner_id) if self.owner_id is not None else None
+            suspects = self._era_suspects(conn)
+            if row is not None and row[0] != str(bot_id):
+                self._clear_era_suspects(conn, suspects)  # every chat is marked below, whatever was suspected
+                chats = [r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages WHERE msg_id > 0")]
+                self._write_kv(conn, {PENDING_ERA + chat_id: now for chat_id in chats})
+                forget_old_bot_cards(conn, [*chats, *([owner] if owner and owner not in chats else [])], now, owner)
+                repaired = chats
+                if chats:
+                    event = (
+                        f"Dom's Telegram bot changed; the old bot's messages in {len(chats)} chat{'s' if len(chats) != 1 else ''} "
+                        "are set aside, and each chat's read markers and memory cursor reset, when the new bot first writes there."
+                    )
+            elif row is None or suspects:
+                found, still_open = judge_eras(conn, None if row is None else set(suspects))
+                repaired = begin_eras(conn, found, now)
+                forget_old_bot_cards(conn, repaired, now, owner)
+                self._clear_era_suspects(conn, suspects)
+                self._write_kv(conn, {ERA_SUSPECT + chat_id: now for chat_id in still_open})
+                if repaired:
+                    event = "Dom's Telegram bot had changed without his noticing; set aside the old bot's messages in " + (
+                        ", ".join(self._chat_label(conn, chat_id) for chat_id in repaired)
+                    ) + " and reset their read markers and memory cursors for the new bot."
+            else:
+                return 0
+            self._write_kv(conn, {"bot_id": str(bot_id)})
+            if event is not None and self.owner_id is not None:
+                self._insert_owner_event(conn, event, now)
+            else:
+                event = None
+        for chat_id in still_open:
+            log.warning(
+                "chat %s may have switched bots, but there are not yet enough new messages to be sure; "
+                "its old message numbers stay as they are and are checked again at the next start", chat_id,
+            )
+        if event is not None:
+            self._append_owner_event_transcript(event, now)
+        return len(repaired)
+
+    @staticmethod
+    def _era_suspects(conn: sqlite3.Connection) -> list[str]:
+        return [key[len(ERA_SUSPECT):] for (key,) in conn.execute(
+            "SELECT key FROM kv WHERE key GLOB ? ORDER BY key", (ERA_SUSPECT + "*",),
+        )]
+
+    @staticmethod
+    def _clear_era_suspects(conn: sqlite3.Connection, chats: Iterable[str]) -> None:
+        conn.executemany("DELETE FROM kv WHERE key = ?", [(ERA_SUSPECT + chat_id,) for chat_id in chats])
+
+    async def open_era_suspects(self) -> list[str]:
+        """Chats that look as if the bot changed under them but have too little new history to prove it yet."""
+        return await self._run(lambda: self._era_suspects(self._conn))
+
+    @staticmethod
+    def _chat_label(conn: sqlite3.Connection, chat_id: str) -> str:
+        row = conn.execute("SELECT title FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        return (row[0] if row is not None and row[0] else "") or f"chat {chat_id}"
 
     async def set_catch_up_pending(
         self, chat_id: int | str, thread_id: int | None, pending: bool,
@@ -2116,7 +2371,10 @@ class Store:
         return cursor.lastrowid
 
     async def extend_turn(self, turn_id: int, trace: list[str], model_calls: list[dict]) -> None:
-        """Add work done after the turn was saved (a Jev call once the bubbles were out) to its row."""
+        """Add work done after the turn was saved (a Jev call once the bubbles were out) to its row. Its calls are
+        marked `after`, so what the reply itself took (the dashboard's tokens for a message) leaves them out."""
+        model_calls = [{**call, "after": True} for call in model_calls]
+
         def extend() -> None:
             with self._tx() as conn:
                 row = conn.execute("SELECT trace, model_calls FROM turns WHERE id = ?", (turn_id,)).fetchone()
@@ -2152,6 +2410,69 @@ class Store:
                 (chat_id, chat_id, capped),
             )
         ])
+
+    async def turns_with_step(self, prefix: str, since: datetime) -> list[dict[str, Any]]:
+        """Turns since `since`, newest first, whose steps include one that starts with `prefix` (no SQL wildcards in it): just
+        their time, chat and steps."""
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT at, chat_id, trace FROM turns WHERE at >= ? AND trace LIKE ? ORDER BY at DESC, id DESC",
+                (since.astimezone(timezone.utc).isoformat(), f'%"{prefix}%'),
+            )
+        ])
+
+    async def link_usage_to_turn(self, turn_id: int, usage_ids: list[int]) -> None:
+        """Mark the usage rows a turn's own calls wrote as that turn's, once its row exists. A row already claimed keeps
+        its turn."""
+        ids = sorted({int(item) for item in usage_ids})
+
+        def link() -> None:
+            with self._tx() as conn:
+                for at in range(0, len(ids), 500):
+                    chunk = ids[at:at + 500]
+                    conn.execute(
+                        f"UPDATE usage SET turn_id = ? WHERE turn_id IS NULL AND id IN ({','.join('?' * len(chunk))})",
+                        (turn_id, *chunk),
+                    )
+
+        if ids:
+            await self._run(link)
+
+    async def turns_for_messages(
+        self, chat_id: int | str, stamps: list[str], *, lead_hours: float = 6, slack_ms: int = 2000,
+    ) -> list[dict[str, Any] | None]:
+        """For each UTC ISO stamp, the chat's latest turn that started at or before it, at most `lead_hours` earlier,
+        and was still running then (its duration plus `slack_ms`), or None. One indexed lookup per stamp, so a busy
+        stretch of turns can't push a message's turn out; and each turn's cost, from the usage rows linked to it."""
+
+        def match() -> list[dict[str, Any] | None]:
+            found: list[dict[str, Any] | None] = []
+            for stamp in stamps:
+                row = self._conn.execute(
+                    "SELECT id, at, model, fallback, calls, duration_ms, first_bubble_ms, trace, model_calls FROM turns "
+                    "WHERE chat_id = ? AND at <= ? AND at >= strftime('%Y-%m-%dT%H:%M:%f', julianday(?) - ? / 24.0) "
+                    "AND julianday(at) + (duration_ms + ?) / 1000.0 / 86400 >= julianday(?) "
+                    "ORDER BY at DESC, id DESC LIMIT 1",
+                    (str(chat_id), stamp, stamp, lead_hours, slack_ms, stamp),
+                ).fetchone()
+                found.append(dict(row) if row is not None else None)
+            ids = sorted({row["id"] for row in found if row is not None})
+            costs: dict[int, tuple[float, int]] = {}
+            for at in range(0, len(ids), 500):
+                chunk = ids[at:at + 500]
+                costs.update(
+                    (turn, (total, count)) for turn, total, count in self._conn.execute(
+                        f"SELECT turn_id, TOTAL(cost_usd), COUNT(*) FROM usage WHERE turn_id IN ({','.join('?' * len(chunk))}) "
+                        "GROUP BY turn_id", chunk,
+                    )
+                )
+            for row in found:
+                if row is not None:
+                    total, count = costs.get(row["id"], (0.0, 0))
+                    row["cost_usd"] = total if count else None
+            return found
+
+        return await self._run(match)
 
     async def recent_attention_turns(self) -> list[dict[str, Any]]:
         return await self._run(lambda: [

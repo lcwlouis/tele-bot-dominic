@@ -21,7 +21,8 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from dom import memory_export, memory_import
-from dom.home import MAX_SOUL_EDIT, content_version
+from dom.home import MAX_SOUL_EDIT, WORLD, content_version
+from dom.proposals import soul_edit_lines
 from dom.telegram import owner
 from dom.web.model_settings import _input
 from dom.web.shared import (
@@ -111,7 +112,7 @@ async def _waiting(app) -> dict:
     for card in cards:
         if card.get("kind") == "soul_edit":
             edits.append({"id": card["id"], "kind": "soul_edit", "label": card["label"], "title": card["title"],
-                          "diff": [f"- {card['body']['old']}", f"+ {card['body']['new']}"]})
+                          "diff": soul_edit_lines(card["body"])})
         elif card.get("kind") == "memory_edit":
             edits.append({"id": card["id"], "kind": "memory_edit", "label": card["label"], "title": card["title"],
                           "diff": card["changes"]})
@@ -215,15 +216,18 @@ async def save_file(request: Request) -> dict:
 
 @router.post(PREFIX + "/soul")
 async def soul_conversation(request: Request) -> dict:
-    """Dom's next reply in the owner's conversation about SOUL.md. The page keeps the conversation and sends it whole;
-    an edit Dom proposes waits as a soul_edit proposal, decided through /proposal."""
+    """Dom's next reply in the owner's conversation about SOUL.md and WORLD.md (E117). The page keeps the conversation
+    and sends it whole; an edit Dom proposes to either file waits as a soul_edit proposal, decided through /proposal."""
     app = owner_app(request)
     update = await _input(request, SoulChat, MAX_SOUL_CHAT * 6 + 16_384)
     try:
         reply, edit, proposal_id = await soul_chat(app, [(turn.role, turn.text) for turn in update.messages])
     except OwnerError as exc:
         raise HTTPException(422, str(exc)) from None
-    proposal = None if edit is None else {"id": proposal_id, "diff": [f"- {edit['old']}", f"+ {edit['new']}"]}
+    proposal = None if edit is None else {
+        "id": proposal_id, "file": edit["file"],
+        "diff": soul_edit_lines({"old": edit["old"], "new": edit["new"], **({"file": WORLD} if edit["file"] == "WORLD.md" else {})}),
+    }
     return {"reply": reply, "proposal": proposal, **await _waiting(app)}
 
 

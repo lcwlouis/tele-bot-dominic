@@ -28,20 +28,22 @@ log = logging.getLogger(__name__)
 
 DesktopAction = Literal[
     "visit_site", "fill_login", "download", "upload", "background_work",
-    "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
 ]
 PermissionPolicy = Literal["ask", "allow", "never"]
 ApprovalDecision = Literal["once", "always", "reject"]
 
 ACTIONS: tuple[DesktopAction, ...] = (
     "visit_site", "fill_login", "download", "upload", "background_work",
-    "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
 )
 POLICIES: tuple[PermissionPolicy, ...] = ("ask", "allow", "never")
 SITE_SCOPED_ACTIONS: frozenset[str] = frozenset(("visit_site", "fill_login", "download", "upload"))
 # Actions with one global policy, so Allow always flips that policy. The Google ones (W4) are owner-DM tool calls.
-GOOGLE_ACTIONS: frozenset[str] = frozenset(("calendar_add", "calendar_move", "calendar_delete", "gmail_draft"))
-GLOBAL_ACTIONS: frozenset[str] = frozenset(("background_work", *GOOGLE_ACTIONS))
+GOOGLE_ACTIONS: frozenset[str] = frozenset(("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft"))
+# Making a new calendar is asked every time (Reject, Allow once): no Allow always, and Allow is not a policy for it.
+ASK_EVERY_TIME: frozenset[str] = frozenset(("calendar_create",))
+GLOBAL_ACTIONS: frozenset[str] = frozenset(("background_work", *(GOOGLE_ACTIONS - ASK_EVERY_TIME)))
 APPROVAL_TIMEOUT = 900.0
 CARD_LINES = 8  # lines on a Google approval card; the card never cuts a material detail, it goes dashboard-only instead
 CARD_LINE_LIMIT = 200
@@ -54,6 +56,7 @@ DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "download": "ask",
     "upload": "ask",
     "background_work": "allow",
+    "calendar_create": "ask",
     "calendar_add": "ask",
     "calendar_move": "ask",
     "calendar_delete": "ask",
@@ -81,17 +84,21 @@ ACTION_META: dict[DesktopAction, dict[str, str]] = {
         "label": "Background work",
         "description": "Dom's self-directed desktop research tasks (Own work). Ask requires your tap before each task starts.",
     },
+    "calendar_create": {
+        "label": "Create a Dom calendar",
+        "description": "Dom makes a new calendar of his own in your Google account. It is always asked, once per calendar.",
+    },
     "calendar_add": {
         "label": "Add a calendar event",
-        "description": "Dom adds an event to your Google Calendar. The card shows the title, time and attendees.",
+        "description": "Dom adds an event to one of his own calendars. The card shows the title, time and attendees.",
     },
     "calendar_move": {
         "label": "Move a calendar event",
-        "description": "Dom changes the time of an event on your Google Calendar. The card shows the old and new time.",
+        "description": "Dom changes the time of an event on one of his own calendars. The card shows the old and new time.",
     },
     "calendar_delete": {
         "label": "Delete a calendar event",
-        "description": "Dom deletes an event from your Google Calendar. The card shows what will be removed.",
+        "description": "Dom deletes an event from one of his own calendars. The card shows what will be removed.",
     },
     "gmail_draft": {
         "label": "Save a Gmail draft",
@@ -180,6 +187,8 @@ class DesktopPermissions:
         self._waiters: dict[int, tuple[str, asyncio.Future[str]]] = {}
         # Requests whose card could not show every material detail: only the dashboard may approve them.
         self._dashboard_only: set[int] = set()
+        # Requests that belong to something a later change can take away (a calendar being removed): request id -> tag.
+        self._tags: dict[int, str] = {}
 
     def _now(self) -> str:
         return self.app.dispatch.now().astimezone(timezone.utc).isoformat()
@@ -191,16 +200,19 @@ class DesktopPermissions:
 
     async def get_policies(self) -> dict[str, str]:
         stored = await self.app.store.desktop_action_policies()
-        return {
+        policies = {
             action: stored[action] if stored.get(action) in POLICIES else DEFAULT_POLICIES[action]
             for action in ACTIONS
         }
+        return {action: "ask" if action in ASK_EVERY_TIME and policy == "allow" else policy for action, policy in policies.items()}
 
     async def set_policy(self, action: str, policy: str) -> dict[str, str]:
         if action not in ACTIONS:
             raise ValueError("unknown desktop action")
         if policy not in POLICIES:
             raise ValueError("policy must be ask, allow, or never")
+        if action in ASK_EVERY_TIME and policy == "allow":
+            raise ValueError("This one is always asked: choose Ask or Never.")
         await self.app.store.set_desktop_action_policy(action, policy, self._now())
         await self.app.store.record_owner_event(f"Set desktop permission '{action}' to {policy}")
         return await self.get_policies()
@@ -540,7 +552,7 @@ class DesktopPermissions:
 
     async def _settle_card(self, message_id: int | None, label: str) -> None:
         app = self.app
-        if not message_id or app.owner_id is None:
+        if not message_id or message_id < 0 or app.owner_id is None:  # no card, or one the old bot sent
             return
         markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]])
         try:
@@ -575,6 +587,8 @@ class DesktopPermissions:
         action = row["action"]
         site = row["site"]
         waiter = self._waiters.get(request_id)
+        if decision == "always" and action in ASK_EVERY_TIME:
+            return False, "this one is always asked"
         if decision != "reject":
             if via == "telegram" and request_id in self._dashboard_only:
                 return False, "approve this one on the dashboard"
@@ -622,6 +636,7 @@ class DesktopPermissions:
         perform: Callable[[bool], Awaitable[str]],
         guard: Callable[[], Awaitable[str | None]],
         dashboard_only: bool = False,
+        tag: str = "",
     ) -> str:
         """Run an owner-DM tool action under its policy and return what the tool tells the model.
 
@@ -647,6 +662,8 @@ class DesktopPermissions:
             request = await self.open_request(action=action, site="", detail=detail, dashboard_only=dashboard_only)
         except ValueError as exc:
             return f"error: {exc}"
+        if tag:
+            self._tags[request.id] = tag
         self.app.dispatch._spawn(self._ask_then_perform(request, action, detail, lines, perform, guard, dashboard_only))
         return (
             f"Asked the owner to approve: {label.lower()}. Nothing has happened yet. "
@@ -659,6 +676,7 @@ class DesktopPermissions:
     ) -> None:
         store, label = self.app.store, ACTION_META[action]["label"]
         outcome = await self.ask(request, action, "", detail, DEFAULT, lines, APPROVAL_TIMEOUT, dashboard_only)
+        self._tags.pop(request.id, None)
         if outcome not in ("allowed_once", "allowed_always"):
             said = {"expired": "timed out", "cancelled": "was cancelled"}.get(outcome, "was rejected")
             # The detail names things others wrote (an invite's title, a draft's subject): fenced as untrusted, as
@@ -683,12 +701,12 @@ class DesktopPermissions:
             except Exception:
                 log.warning("could not tell the owner that %s failed", action)
 
-    async def cancel_pending(self, actions: Iterable[str]) -> int:
+    async def cancel_pending(self, actions: Iterable[str], *, tag: str | None = None) -> int:
         """Cancel the waiting requests of these actions (their switch went off, or the account changed): the waiter is
-        woken first, then the card says Cancelled."""
+        woken first, then the card says Cancelled. With a `tag`, only the requests made under it."""
         wanted, count = set(actions), 0
         for row in await self.app.store.pending_desktop_permission_requests():
-            if row["action"] not in wanted:
+            if row["action"] not in wanted or (tag is not None and self._tags.get(row["id"]) != tag):
                 continue
             done = await self.app.store.decide_desktop_permission_request(row["id"], "cancelled", "policy", self._now())
             if done is None:

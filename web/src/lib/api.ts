@@ -245,9 +245,12 @@ export type MediaStanding = {
   next_at: string | null;
   now: string;
 };
+/** How readily Dom adds media on his own (`studio.spontaneity`): it scales every per-chat limit and gap, inside the global daily total. */
+export type Spontaneity = "rarely" | "sometimes" | "often";
 export type StudioLimitsView = {
   revision: string;
   limits: StudioLimits;
+  spontaneity: Spontaneity;
   owner: MediaStanding;
 };
 
@@ -308,10 +311,33 @@ export type ChatSlider = { name: string; value: number; custom: boolean };
 export type ChatMessages = {
   chat_id: number;
   full: boolean;
-  messages: { id: number; who: string; mine: boolean; text: string; at: string }[];
+  /** `at` is a short local time. The owner's DM (full) adds what its bubbles need, and on Dom's messages the turn
+   *  that sent them (null when none was running). */
+  messages: ({ id: number; who: string; mine: boolean; text: string; at: string } & Partial<{
+    iso: string;
+    origin: string | null;
+    edited: boolean;
+    media: TalkMessage["media"];
+    turn: MessageTurn | null;
+  }>)[];
   /** The cursor for the next older page (GET …/messages?before=…), null at the start of the chat. */
   next_before: number | null;
   has_more: boolean;
+};
+/** The turn behind one of Dom's messages: tokens over every call of the turn, its cost from the usage rows written
+ *  while it ran (null when none was), and the attention lane it ran in (null before the turn log kept lanes). */
+export type MessageTurn = {
+  id: number;
+  model: string;
+  fallback: boolean;
+  calls: number;
+  input_tokens: number | null;
+  cached_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  duration_ms: number;
+  first_bubble_ms: number | null;
+  lane: string | null;
 };
 /** GET /api/chats/unreachable: chats the current bot can no longer reach (E74). Their history is kept. */
 export type UnreachableChat = {
@@ -452,6 +478,7 @@ export type DesktopAction =
   | "download"
   | "upload"
   | "background_work"
+  | "calendar_create"
   | "calendar_add"
   | "calendar_move"
   | "calendar_delete"
@@ -474,6 +501,7 @@ export type DesktopActionItem = {
   label: string;
   description: string;
   site_scoped: boolean;
+  asks_every_time: boolean;
   policy: PermissionPolicy;
   site_allow_count: number;
 };
@@ -718,8 +746,13 @@ export type GoogleView = {
   status: "disconnected" | "connected" | "needs_reconnect";
   connected_at: string | null;
   last_error: string;
+  /** Whether Google granted `calendar.app.created`: without it Dom cannot keep calendars of his own. */
+  own_calendars_granted: boolean;
+  calendars: { id: string; name: string }[];
   switches: GoogleSwitch[];
 };
+/** GET /api/integrations/google/calendars: Dom's calendars as Google shows them now. `upcoming` is null when Google could not say. */
+export type GoogleCalendar = { id: string; name: string; color: string; upcoming: number | null; more: boolean };
 
 /** GET /api/goals and its writes (dom/web/api_goals.py). Every write answers { ok, message, ...GoalsData }. */
 export type GoalStatus = "active" | "paused" | "done" | "dropped";

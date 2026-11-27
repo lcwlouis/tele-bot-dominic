@@ -22,7 +22,7 @@ import httpx
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from dom import guard, notice, salvage, turn_log, workspace
+from dom import guard, news, notice, salvage, turn_log, workspace
 from dom.secrets import redact_secrets
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
@@ -590,6 +590,8 @@ class Dispatcher:
             with turn_log.track(trace):
                 if await self.native.takes(msg.media):  # the reply model gets the real thing: no description, no model call
                     await self.native.prefetch(msg.chat_id, msg.msg_id, msg.media)
+                elif await self.native.arrive(msg.chat_id, msg.msg_id, msg.media):  # a clip: frame strips and a transcript
+                    pass
                 else:
                     await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
         except Exception:
@@ -638,7 +640,8 @@ class Dispatcher:
         if not self._media_budget(chat_id):
             return False
         try:
-            description = await describer.describe(media, request=request)
+            # a clip shown as frame strips is described from them, else the media model describes the file whole
+            description = await self.native.describe(chat_id, msg_id, media, request)
             await self.app.store.set_media_description(chat_id, msg_id, description)
         except Exception:
             log.exception("could not record media description in chat %s", chat_id)
@@ -819,6 +822,7 @@ class Dispatcher:
         await self.app.stickers.refresh()
         self._spawn(self.app.world.refresh())  # its own fetch, so a slow answer never holds up the jobs below
         self._spawn(self.app.chat_titles.refresh())  # a few Telegram asks, likewise on their own
+        self._spawn(news.tick(self.app))  # the overnight news: searches and a call, so also on its own
         await self.jobs.tick()
         await self.openers.maybe(self.now())
         await self.app.assistant.tick(self.now())
@@ -2510,7 +2514,7 @@ class Dispatcher:
                     event_note = (
                         f"Today is an event day{what}: your media limits are raised, so a few more than usual are fine."
                     )
-                note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset), event_note) or STUDIO_UNAVAILABLE}"
+                note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset), event_note, config.studio.spontaneity) or STUDIO_UNAVAILABLE}"
         if attempt is not None:
             attempt.assistant = preset is not None and preset.name == ASSISTANT
         if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:

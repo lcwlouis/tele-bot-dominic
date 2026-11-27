@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from dom.store import Store
 
 Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation",
-               "studio_voice", "studio_image", "studio_video", "embedding", "assistant"]
+               "studio_voice", "studio_image", "studio_video", "embedding", "assistant", "news"]
 log = logging.getLogger("dom.usage")
 
 # Which monthly area a kind of paid call is counted under. Everything counts toward the monthly cap whatever its area;
@@ -37,7 +37,7 @@ log = logging.getLogger("dom.usage")
 AREA_OF_KIND: dict[str, SpendArea] = {
     "chat": "chat", "triage": "chat", "guard": "chat", "escalation": "chat", "assistant": "chat",
     "media": "media", "studio_voice": "media", "studio_image": "media", "studio_video": "media",
-    "search": "search", "desktop": "desktop",
+    "search": "search", "news": "search", "desktop": "desktop",
     "memory": "memory", "reflection": "memory", "embedding": "memory",
 }
 
@@ -219,6 +219,9 @@ class UsageRecorder:
             )
             if kind.startswith("studio_"):  # a media job in progress links the row, so its cost can be read back
                 provenance.note(kind, model, host, row)
+            from dom import turn_log  # imported here: turn_log imports this module
+
+            turn_log.usage_recorded(row)
             return row
         except Exception:
             log.exception("could not record %s usage; the model call is unaffected", kind)

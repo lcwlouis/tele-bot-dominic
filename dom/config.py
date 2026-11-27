@@ -326,6 +326,16 @@ class WorldConfig(BaseModel):
         ),
     )
 
+    news: bool = Field(
+        True,
+        description=(
+            "Each evening, before Dom sleeps, he searches the web for the top news and the events in the next few days "
+            "where the owner is (the `place`, or else the `country`), keeps a few headlines as `memory/NEWS.md`, and his "
+            "turn note carries one or two of them for 36 hours. It needs a place or country, the triage model and a web search route that "
+            "returns result lists, and its calls count toward the search spending limit. Off when no search route is set up."
+        ),
+    )
+
     @field_validator("country", mode="before")
     @classmethod
     def _country_code(cls, value: object) -> object:
@@ -586,7 +596,7 @@ class StudioLimits(BaseModel):
 
 
 class StudioTimeouts(BaseModel):
-    health: float = Field(3, gt=0, allow_inf_nan=False, description="Health check request deadline in seconds.")
+    health: float = Field(10, gt=0, allow_inf_nan=False, description="Health check request deadline in seconds.")
     voice: float = Field(65, gt=0, allow_inf_nan=False, description="Voice request deadline in seconds.")
     video_notes: float = Field(185, gt=0, allow_inf_nan=False, description="Round video request deadline in seconds.")
     special: float = Field(425, gt=0, allow_inf_nan=False, description="Special video request deadline in seconds.")
@@ -674,8 +684,9 @@ class StudioConfig(BaseModel):
     default_outfit: str = Field("", pattern=r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?$",
                                description="Wardrobe ID to use when the active preset has no outfit list.")
     keep_cap_mb: int = Field(
-        2048, ge=0, description="Disk space, in MB, for the photos, voice notes and video notes Dom has sent, kept under "
-        "the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). Past it the oldest files are removed; "
+        2048, ge=0, description="Disk space, in MB, for the photos, voice notes and video notes Dom has sent, and the frame "
+        "strips of the clips he is sent, kept under the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). "
+        "Past it the oldest files are removed; "
         "Telegram's file_id stays on the message so Telegram can still provide them. Zero keeps nothing.",
     )
     look_owner_dm: bool = Field(
@@ -691,6 +702,14 @@ class StudioConfig(BaseModel):
         "itself. The still counts toward the studio-wide daily total and its cost (when a cloud image backup makes it) "
         "is recorded and capped like any photo; it does not use the chat's photo allowance. If the still can't be made, "
         "the note uses the portrait.",
+    )
+    spontaneity: Literal["rarely", "sometimes", "often"] = Field(
+        "sometimes", description="How readily Dom adds a voice note, video note or photo on his own, in replies and when "
+        "he writes first: rarely (the prompt says to keep them for when they matter, and the per-chat limits are halved "
+        "and the gaps doubled), sometimes (the default) or often (the prompt invites them, the per-chat limits double "
+        "and the gaps halve). It never passes the global daily total, the spend caps or the switches above. The level is "
+        "your own baseline: an event day can only raise a limit, and its ceiling (`event_day_max_multiplier`) bounds only "
+        "what the day adds, so when the level already puts a limit above the ceiling the day adds nothing.",
     )
     event_day_max_multiplier: float = Field(
         2, ge=0, le=10, allow_inf_nan=False, description="The most Dom can raise his own media limits on a special day "
@@ -791,8 +810,9 @@ class Config(BaseModel):
     memory_self_edit: bool = Field(False, description="Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves.")
     core_memory_cap: int = Field(30, ge=1, description="Most core memories (pinned note lines) across all of Dom's notes, the owner's pins included. Core memories never fade and the memory pass never rewrites them. At the cap Dom must unpin one of his own to pin another.")
     media_input_images: int = Field(
-        2, ge=0, le=8, description="Most images (photos, stickers) Dom is shown as the real picture in one prompt, newest "
-        "first, when his chat model accepts images. Older media stays as its tag in the window. Zero turns image input off.",
+        2, ge=0, le=8, description="Most images (photos, stickers, and the frame strips of a clip) Dom is shown as the real picture in "
+        "one prompt, newest first, when his chat model accepts images; a clip with fewer free slots than strips is shown "
+        "as fewer, combined images. Older media stays as its tag in the window. Zero turns image input off.",
     )
     media_input_audio: int = Field(
         1, ge=0, le=4, description="Most voice notes or audio files Dom hears as the real recording in one prompt. "
@@ -804,7 +824,8 @@ class Config(BaseModel):
     )
     media_input_max_mb: float = Field(
         6, gt=0, le=20, allow_inf_nan=False, description="Largest attachment, in MB, that is sent to the chat model itself; "
-        "a bigger one is described by the media model instead.",
+        "a bigger one is described by the media model instead. A clip his model can't take as video is cut into frame "
+        "strips instead (a Telegram bot can download up to 20 MB), whatever its size.",
     )
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_scan: LeakScan | None = Field(

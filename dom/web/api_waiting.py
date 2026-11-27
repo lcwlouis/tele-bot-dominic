@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dom.plugins.manifest import NETWORK_NOTICE
 from dom.plugins.trial import STORAGE_NOTICE, test_run_detail
+from dom.proposals import soul_edit_lines
 from dom.telegram import owner
 from dom.web.model_settings import _input
 from dom.web.shared import WHO, _proposals, decide_import_batch, owner_app
@@ -71,7 +72,7 @@ def _card(row: dict) -> dict:
     body, kind = row["body"], row["kind"]
     card = {"type": "proposal", "id": row["id"], "kind": kind, "label": row["label"], "title": row["title"]}
     if kind == "soul_edit":
-        card["diff"] = [f"- {body['old']}", f"+ {body['new']}"]
+        card["diff"] = soul_edit_lines(body)
     elif kind == "skill":
         card |= {"description": body["description"], "text": body["body"], "diff": row.get("changes", [])}
     elif kind == "plugin":

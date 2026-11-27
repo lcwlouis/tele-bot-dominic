@@ -35,7 +35,7 @@ from dom.plugins.runner import PluginRunner
 from dom.search import SearchClient, search_provider_kind
 from dom.selfwork import GUARD_KEY
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
-from dom.store.store import TARGET_VERSION
+from dom.store.store import ERA_SUSPECT, TARGET_VERSION
 from dom.web.auth import Auth
 
 Status = Literal["ok", "warn", "fail"]
@@ -209,6 +209,23 @@ def _self_work(config: Config, home: Path) -> Check:
     if ok is not True:
         return Check("warn", "self-directed work", f"Network guard NOT verified at {at}: {detail}. Tasks are refused. {hint}")
     return Check("ok", "self-directed work", f"Network guard verified from inside the sandbox at {at}.")
+
+
+def _bot_change(home: Path) -> Check | None:
+    """Chats that look as if the Telegram bot changed under them, with too little new history to be sure yet."""
+    try:
+        with closing(sqlite3.connect(f"{(home / 'state.db').as_uri()}?mode=ro", uri=True, timeout=2)) as db:
+            keys = [key for (key,) in db.execute("SELECT key FROM kv WHERE key GLOB ? ORDER BY key", (ERA_SUSPECT + "*",))]
+    except (OSError, sqlite3.Error):
+        return None
+    if not keys:
+        return None
+    chats = ", ".join(key[len(ERA_SUSPECT):] for key in keys)
+    return Check(
+        "warn", "bot change",
+        f"Chat {chats} may have switched Telegram bots, but has too few new messages to be sure. Dom checks again at "
+        "every start and sets the old messages aside once the new ones prove it.",
+    )
 
 
 def _unknown_config_keys(raw: dict) -> list[str]:
@@ -486,6 +503,8 @@ def run(home: Path, *, online: bool = False) -> int:
         checks.extend(_config_checks(config))
     notes = Home(home, allow_private=True)
     checks.extend((_soul(notes), _memory(notes), _database(home), _backups(home), _disk(home), _workspace(home)))
+    if (bot_change := _bot_change(home)) is not None:
+        checks.append(bot_change)
     if config is not None:
         checks.append(_self_work(config, home))
     runner = PluginRunner(home=home)

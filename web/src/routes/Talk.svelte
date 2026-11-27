@@ -6,14 +6,15 @@
   import SendIcon from "@lucide/svelte/icons/send";
   import X from "@lucide/svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import { MediaQuery } from "svelte/reactivity";
   import { getJSON, send, type HomeData, type TalkData, type TalkMessage, type TraceSummary } from "$lib/api";
   import { ACTIVITY_LABELS } from "$lib/components/Orbit.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import IconButton from "$lib/components/kit/IconButton.svelte";
+  import MessageBubble from "$lib/components/MessageBubble.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import TraceLoader from "$lib/components/trace/TraceLoader.svelte";
-  import { Badge } from "$lib/components/ui/badge";
   import { Button, buttonVariants } from "$lib/components/ui/button";
   import { Label } from "$lib/components/ui/label";
   import * as Sheet from "$lib/components/ui/sheet";
@@ -70,7 +71,13 @@
     turns = next;
   }
 
-  const nearBottom = () => !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
+  // Photos and videos load after the first scroll to the bottom and push it up: for a few seconds after a load, each
+  // one that arrives scrolls back down (unless a turn was asked for, or the owner scrolled away).
+  let settleUntil = 0;
+  function settle() {
+    if (Date.now() < settleUntil && openTurn === null && nearBottom(400)) scroller?.scrollTo({ top: scroller.scrollHeight });
+  }
+  const nearBottom = (within = 120) => !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < within;
   async function toBottom(force = false) {
     if (!force && !nearBottom()) return;
     await tick();
@@ -87,6 +94,7 @@
       ({ has_more: hasMore, typing, traced } = data);
       failed = "";
       loaded = true;
+      settleUntil = Date.now() + 5000;
       await toBottom(true);
       if (openTurn !== null) document.getElementById(`turn-${openTurn}`)?.scrollIntoView({ block: "start" });
     } catch (error) {
@@ -225,6 +233,53 @@
     return list.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.kind === "message" ? -1 : 1));
   });
 
+  // Phone: the card's height follows the visible screen (the visual viewport shrinks while the keyboard is up). At
+  // rest it fills what is left below the header, at least most of the screen; while writing it is the whole visible
+  // height, scrolled so its bottom (the composer) sits on the keyboard. A wide screen sizes it with CSS.
+  const wide = new MediaQuery("(min-width: 1024px)");
+  let card = $state<HTMLElement | null>(null);
+  let composing = $state(false);
+  let screen = $state(0);
+  let top = $state(0); // the card's distance from the top of the page
+  const cardHeight = $derived.by(() => {
+    if (wide.current || !screen) return undefined;
+    return `${Math.round(composing ? screen - 8 : Math.max(screen - top - 12, screen * 0.6))}px`;
+  });
+  function fit() {
+    const view = window.visualViewport;
+    if (!card || !view || wide.current) return;
+    const bottom = card.getBoundingClientRect().bottom;
+    window.scrollBy({ top: bottom - (view.offsetTop + view.height) + 4, behavior: "instant" });
+  }
+  async function startComposing() {
+    composing = true;
+    if (wide.current) return;
+    await tick();
+    fit();
+    await toBottom(true);
+  }
+  $effect(() => {
+    const view = window.visualViewport;
+    const measure = async () => {
+      screen = view?.height ?? window.innerHeight;
+      if (card) top = card.getBoundingClientRect().top + window.scrollY;
+      if (composing) {
+        await tick();
+        fit();
+      }
+    };
+    measure();
+    view?.addEventListener("resize", measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      view?.removeEventListener("resize", measure);
+      window.removeEventListener("resize", measure);
+    };
+  });
+  $effect(() => {
+    if (card && loaded) top = card.getBoundingClientRect().top + window.scrollY;
+  });
+
   const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
   const time = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   const newDay = (index: number) => index === 0 || day(items[index].at) !== day(items[index - 1].at);
@@ -273,27 +328,7 @@
   {/if}
 {/snippet}
 
-<PageHeader kicker="Talk" title="Dom" subtitle="The same conversation as your Telegram DM. What you write here goes there too.">
-  {#snippet aside()}
-    <div class="flex items-center gap-2">
-      <Switch id="talk-trace" checked={tracing} onCheckedChange={setTracing} disabled={!traced} />
-      <Label for="talk-trace">Trace</Label>
-      <InfoGlyph label="About Trace">Shows every turn's full audit between the messages: triage, the exact prompt, each model call with its request and response, tools, checks, delivery and what ran after. Secrets are redacted.</InfoGlyph>
-    </div>
-    <Sheet.Root bind:open={panelOpen}>
-      <Sheet.Trigger class={cn(buttonVariants({ variant: "outline", size: "sm" }), "lg:hidden")}>
-        <PanelRight aria-hidden="true" />Dom right now
-      </Sheet.Trigger>
-      <Sheet.Content onswipe={() => (panelOpen = false)}>
-        <div class="flex items-center justify-between px-4 pt-4 pb-2">
-          <Sheet.Title class="text-lg font-semibold tracking-tight">Dom right now</Sheet.Title>
-          <Sheet.Close class={buttonVariants({ variant: "ghost", size: "sm" })}>Done</Sheet.Close>
-        </div>
-        <div class="px-4 pb-6">{@render panel()}</div>
-      </Sheet.Content>
-    </Sheet.Root>
-  {/snippet}
-</PageHeader>
+<PageHeader kicker="Talk" title="Dom" subtitle="The same conversation as your Telegram DM. What you write here goes there too." />
 
 {#if !loaded && failed}
   <StatusNote tone="error" title="Couldn't load the conversation" detail={`Dom's dashboard answered: ${failed}.`}>
@@ -301,9 +336,29 @@
   </StatusNote>
 {:else}
   <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_17rem]">
-    <div class="flex min-w-0 flex-col rounded-xl border bg-surface">
+    <!-- On a phone the card is as tall as the screen shows: below the header at first, and the whole visible height
+         above the keyboard while writing, so the composer sits on the keyboard and the conversation above it. -->
+    <div bind:this={card} style:height={cardHeight} class="flex min-w-0 flex-col overflow-hidden rounded-xl border bg-surface">
+      <!-- The card's own bar keeps Trace (and, on a phone, Dom right now) in reach while the page is scrolled to it. -->
+      <div class="flex min-h-11 items-center gap-2 border-b px-3 py-1.5 sm:px-4">
+        <Switch id="talk-trace" checked={tracing} onCheckedChange={setTracing} disabled={!traced} />
+        <Label for="talk-trace">Trace</Label>
+        <InfoGlyph label="About Trace">Shows every turn's full audit between the messages: triage, the exact prompt, each model call with its request and response, tools, checks, delivery and what ran after. Secrets are redacted.</InfoGlyph>
+        <Sheet.Root bind:open={panelOpen}>
+          <Sheet.Trigger class={cn(buttonVariants({ variant: "ghost", size: "sm" }), "ml-auto lg:hidden")}>
+            <PanelRight aria-hidden="true" />Dom right now
+          </Sheet.Trigger>
+          <Sheet.Content onswipe={() => (panelOpen = false)}>
+            <div class="flex items-center justify-between px-4 pt-4 pb-2">
+              <Sheet.Title class="text-lg font-semibold tracking-tight">Dom right now</Sheet.Title>
+              <Sheet.Close class={buttonVariants({ variant: "ghost", size: "sm" })}>Done</Sheet.Close>
+            </div>
+            <div class="overflow-y-auto px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]">{@render panel()}</div>
+          </Sheet.Content>
+        </Sheet.Root>
+      </div>
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-      <div bind:this={scroller} tabindex="0" role="log" aria-label="Conversation with Dom" aria-live="polite" class="h-[62dvh] overflow-y-auto overscroll-contain px-3 py-4 sm:px-5 lg:h-[calc(100dvh-19rem)]">
+      <div bind:this={scroller} onloadcapture={settle} onloadedmetadatacapture={settle} tabindex="0" role="log" aria-label="Conversation with Dom" aria-live="polite" class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-5 lg:h-[calc(100dvh-22rem)] lg:flex-none">
         {#if !loaded}
           <div class="grid gap-3" aria-hidden="true">
             {#each [0, 1, 2] as index (index)}<div class="h-12 w-2/3 animate-pulse rounded-2xl bg-raised {index % 2 ? 'ml-auto' : ''}"></div>{/each}
@@ -322,29 +377,7 @@
               {/if}
               {#if item.kind === "message"}
                 {@const message = item.message}
-                <li class="flex {message.mine ? 'justify-start' : 'justify-end'}">
-                  <div class="bubble max-w-[85%] rounded-2xl px-3.5 py-2 sm:max-w-[70%] {message.mine ? 'rounded-bl-md bg-raised' : 'rounded-br-md bg-tint'}">
-                    <span class="sr-only">{message.who}{message.origin === "dashboard" ? ", from the dashboard" : ""}:</span>
-                    {#if message.media?.url && message.media.kind === "photo"}
-                      <img src={message.media.url} alt={message.media.description ?? "A photo Dom sent"} class="mb-1.5 max-h-72 rounded-lg" loading="lazy" />
-                    {:else if message.media?.url && message.media.kind === "voice"}
-                      <audio controls src={message.media.url} class="mb-1.5 max-w-full" aria-label="Voice note from Dom"></audio>
-                    {:else if message.media?.url}
-                      <!-- svelte-ignore a11y_media_has_caption -->
-                      <video controls src={message.media.url} class="mb-1.5 max-h-72 rounded-full" aria-label="Round video from Dom"></video>
-                    {:else if message.media}
-                      <Badge variant="outline" class="mb-1">{message.media.kind}{message.media.description ? `: ${message.media.description}` : ""}</Badge>
-                    {/if}
-                    {#if message.text && !(message.media && message.text === `[${message.media.kind}]`)}
-                      <p class="text-body break-words whitespace-pre-wrap">{message.text}</p>
-                    {/if}
-                    <p class="mt-0.5 flex items-center justify-end gap-1 text-caption text-muted-foreground">
-                      {#if message.origin === "dashboard"}<span title="Sent from the dashboard" aria-hidden="true">🖥</span>{/if}
-                      {#if message.edited}<span>edited</span>{/if}
-                      <time datetime={message.at}>{time(message.at)}</time>
-                    </p>
-                  </div>
-                </li>
+                <li><MessageBubble {message} time={time(message.at)} /></li>
               {:else}
                 {@const turn = item.turn}
                 <li id={`turn-${turn.turn_id ?? turn.id}`} class="my-1.5 min-w-0">
@@ -384,7 +417,7 @@
       </div>
 
       <form
-        class="border-t p-2.5 sm:p-3"
+        class="border-t p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:p-3"
         onsubmit={(event) => {
           event.preventDefault();
           submit();
@@ -407,12 +440,15 @@
             id="talk-draft"
             bind:value={draft}
             onkeydown={onKey}
+            onfocus={startComposing}
+            onblur={() => (composing = false)}
             rows="1"
             maxlength="4000"
             placeholder="Message Dom"
             class="field-sizing-content max-h-40 min-h-10 min-w-0 flex-1 resize-none rounded-lg border bg-raised px-3 py-2 text-body outline-none placeholder:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
           ></textarea>
-          <IconButton label={sending ? "Sending…" : "Send"} shortcut="Enter" icon={SendIcon} type="submit" disabled={sending || (!draft.trim() && !photo)} variant="default" size="icon" />
+          <!-- Pressing Send keeps the draft's focus, so a phone's keyboard stays up and the card doesn't resize under the tap. -->
+          <IconButton label={sending ? "Sending…" : "Send"} shortcut="Enter" icon={SendIcon} type="submit" onmousedown={(event: MouseEvent) => event.preventDefault()} disabled={sending || (!draft.trim() && !photo)} variant="default" size="icon" />
         </div>
       </form>
     </div>
