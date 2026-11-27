@@ -64,6 +64,9 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "work-own", path: "/app/work/own-work", heading: "Own work" },
   { name: "work-reminders", path: "/app/work/reminders", heading: "Reminders" },
   { name: "work-briefs", path: "/app/work/briefs", heading: "Briefs" },
+  // The shared workspace (W3): the folder Dom and his desktop share, browsed and previewed.
+  { name: "work-files", path: "/app/work/files", heading: "Files" },
+  { name: "work-files-preview", path: "/app/work/files", heading: "Files", click: "notes.md" },
   // System and Waiting: plugins with their panel, a plugin's code review, spend, the turn log and what waits for the owner.
   { name: "system-plugins", path: "/app/system/plugins", heading: "Plugins" },
   { name: "system-plugin-review", path: "/app/system/plugins", heading: "Plugins", link: "Review code of trip_planner" },

@@ -301,6 +301,14 @@ With the fast lane on, Dom composes the owner's DM turns apart from every other 
 | --- | --- | --- |
 | `presence.seen_reaction` | `true` | While a DM is online, react 👀 to the newest message Dom read when he answers with nothing (never in groups). It stands in for a read receipt and is never sent while he is asleep or offline. |
 
+## Workspace
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `workspace.share_with_chats` | `false` | Let groups and friends' DMs read the workspace's `shared/` folder: Dom may list and read files there for them, never write, and nothing else in the workspace. A document someone sends in such a chat then lands in `shared/inbox/<chat id>/`, readable only by that chat. Off, only your DM reaches the workspace. Settings → What Dom may do. |
+
+See [The shared workspace](desktop.md#the-shared-workspace) for what the folder is and who reaches it.
+
 ## Self-directed work
 
 | Key | Default | Meaning |

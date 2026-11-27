@@ -207,6 +207,40 @@ uploaded to a fresh `/home/gem/inbox-<task id>/` in the sandbox. If the upload
 fails, those documents are dropped and the task report says so. After the task Dom
 removes that directory and logs a warning if the removal does not exit with 0.
 
+## The shared workspace
+
+`<home>/workspace` (created owner-only) is one folder that Dom's `files` tool, the owner's desktop and the
+dashboard's Files page (Work → Files) all use. A local desktop container mounts it read-write at `/workspace`, so
+a file Dom writes is a file the desktop sees, and a file the desktop saves there (a download, a result) is one Dom can
+read. The default container and every other local one get the mount; Dom's own self-directed `self-work`
+container and a remote desktop host never do. The browser profile stays outside the home, as before.
+
+- **What lands there.** A document sent in the owner DM, with any caption, is saved to `workspace/inbox/` under a plain
+  name (a second `report.pdf` becomes `report-2.pdf`), at most 20 MB, downloaded in the background while Dom's reply
+  waits for it like any other media. Dom is told the file's name, type and path in the message's `<media>` tag, and
+  reads it with `files`. A `/desktop` document is staged for the task as before and also saved there, from the same
+  download. The desktop's own task prompt says `/workspace` is shared.
+- **File tools.** In the owner DM only, `files` has `list`, `read`, `write`, `move` and `delete`. `read` returns
+  text, Markdown, CSV, JSON and similar text files, and PDF text (extracted with
+  [`pypdf`](https://pypi.org/project/pypdf/), a small pure-Python library added for this: nothing else in Dom reads
+  PDFs), twelve thousand characters at a time with the offset of the next part. What it returns is fenced as untrusted data.
+  Writes are at most a million characters, a workspace holds at most 500 MB, and `private/`, `.env`, `state.db` and the
+  rest of the home are not under the folder, so they cannot be named.
+- **Links and tricks.** The desktop runs untrusted web content and can leave anything in `/workspace`, so every path
+  is walked one directory at a time without following links (`O_NOFOLLOW` against the directory just opened), and only
+  regular files and directories are touched. `..`, absolute and hidden paths are refused; links, pipes and devices are
+  neither listed nor opened.
+- **Sharing with chats.** `[workspace] share_with_chats` (off by default; Settings → What Dom may do) lets groups and
+  friends' DMs list and read `workspace/shared/`, and nothing else, never write. A document sent in such a chat
+  then lands in `workspace/shared/inbox/<chat id>/`, readable only by that chat (and the owner). Off, documents in
+  groups and friends' DMs are not downloaded.
+- **Leaving the sandbox.** Sending a file from the workspace to a website still asks the `upload` permission
+  (the desktop may now upload from `/workspace`), and anything the desktop sends to Telegram still asks `download`.
+  The dashboard's own download and upload are behind its login.
+- **Backups.** `dom backup` includes the workspace (without links or pipes the desktop may have left in it).
+- **File ownership.** The container writes as its own user. Where that user is not the one running Dom, files the
+  desktop saves may not be readable by Dom (Linux hosts normally match at user 1000).
+
 ## Sandbox responses
 
 Dom asks the sandbox for `Accept-Encoding: identity` and refuses any response

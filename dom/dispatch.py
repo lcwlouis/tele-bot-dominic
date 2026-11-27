@@ -22,7 +22,7 @@ import httpx
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from dom import guard, notice, salvage, turn_log
+from dom import guard, notice, salvage, turn_log, workspace
 from dom.secrets import redact_secrets
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
@@ -502,6 +502,13 @@ class Dispatcher:
 
     def describe_media(self, msg: IncomingMessage) -> None:
         if msg.is_bot:
+            return
+        if msg.media and msg.media.get("kind") == "document":
+            # A document is saved to the workspace, not described: no model call, and it waits like any media, so
+            # the reply sees where the file is.
+            task = self._spawn(workspace.land_document(self.app, msg))
+            self._media_tasks.setdefault(msg.chat_id, set()).add(task)
+            task.add_done_callback(lambda done: self._clear_media_task(msg.chat_id, done))
             return
         trace = turn_log.TurnTrace()
         self._arrival_media.setdefault(msg.chat_id, {})[msg.msg_id] = trace

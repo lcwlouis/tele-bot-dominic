@@ -37,6 +37,8 @@ def _home_files(tar: tarfile.TarFile, home: Path, folder: Path, destination: Pat
         try:
             info = tar.gettarinfo(arcname=arcname, name=str(path))
             if info is None or not (info.isfile() or info.isdir()):
+                if path.relative_to(home).parts[0] == "workspace":
+                    continue  # the desktop can drop links and pipes there; they are not archived, and do not stop a backup
                 raise ValueError(f"cannot archive a link or special file: {arcname}")
             if info.isdir():
                 tar.addfile(info)

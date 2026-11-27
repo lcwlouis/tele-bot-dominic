@@ -30,6 +30,7 @@ from dom.desktop.files import (
 )
 from dom.desktop.permissions import DesktopAction, host_matches_site, normalize_site
 from dom.desktop.sandbox import DEFAULT
+from dom.workspace import MOUNT as WORKSPACE_MOUNT
 from dom.desktop.vnc_type import vnc_type_text
 from dom.llm import ChatBudgetExhausted, MissingProviderKey
 from dom.secrets import SecretStoreError, redact_secrets, register_redaction, secret_redaction_scope
@@ -55,6 +56,10 @@ WORKER_SYSTEM_PROMPT = (
     "workaround you had to find during this run that a future run would need; never for a routine one-off. Then call "
     "it once, after the work succeeds, with a reusable procedure. Use placeholders and omit personal data and secrets. Call finish with a concise result. To show the owner a page, save_screenshot and pass its path in finish files; "
     "save other results as files in /home/gem/outbox and pass those paths too."
+)
+WORKSPACE_NOTE = (
+    "\nThe folder {mount} is the owner's shared workspace, the same files Dom reads and writes. Files you save there "
+    "stay; documents the owner sent are in {mount}/inbox. Save anything the owner may want to keep there."
 )
 REPOSITORY_NOTE = (
     "\nDom's own code is public at {url}. To read it or its history you may git clone it inside this sandbox. "
@@ -596,6 +601,8 @@ class DesktopWorker:
         if attached:
             brief += f"\n\nThe owner attached files in {inbox_dir(task_id)}/: " + ", ".join(attached)
         system_prompt = WORKER_SYSTEM_PROMPT + REPOSITORY_NOTE.format(url=self.app.config.update.repo_url)
+        if getattr(self.sandbox, "workspace_mounted", False):
+            system_prompt += WORKSPACE_NOTE.format(mount=WORKSPACE_MOUNT)
         if skills := skills_list(self.app.home):
             system_prompt += "\nApproved skill names and descriptions: " + json.dumps(skills, ensure_ascii=False)
         budget = self.max_steps
@@ -1058,9 +1065,9 @@ class DesktopWorker:
             if not raw_path.startswith("/") or "\n" in raw_path or "\0" in raw_path:
                 return "Blocked: upload path must be an absolute sandbox path."
             norm = posixpath.normpath(raw_path)
-            allowed_roots = (inbox_dir(run.task_id), OUTBOX_DIR, "/tmp")
+            allowed_roots = (inbox_dir(run.task_id), OUTBOX_DIR, "/tmp", *((WORKSPACE_MOUNT,) if getattr(self.sandbox, "workspace_mounted", False) else ()))
             if not any(norm == root or norm.startswith(root + "/") for root in allowed_roots):
-                return "Blocked: upload_file only accepts files from the task inbox, outbox, or /tmp."
+                return "Blocked: upload_file only accepts files from the task inbox, outbox, the workspace, or /tmp."
             site = await self._browser_host(client) or ""
             refusal = await self._check_permission(run, "upload", site, f"File: {PurePosixPath(norm).name}")
             if refusal is not None:

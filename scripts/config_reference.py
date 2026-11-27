@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorldConfig, starter_config
+from dom.config import AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -59,7 +59,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "workspace", "studio", "knowledge", "world", "web", "tracer", "t3", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -184,6 +184,9 @@ def render() -> str:
         "the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),
+        "## Workspace",
+        table(fields(WorkspaceConfig, "workspace.")),
+        "See [The shared workspace](desktop.md#the-shared-workspace) for what the folder is and who reaches it.",
         "## Self-directed work",
         table(fields(SelfWorkConfig, "self_work.")),
         "See [Self-directed work](desktop.md#self-directed-work) for the network guard it needs and what it may do.",

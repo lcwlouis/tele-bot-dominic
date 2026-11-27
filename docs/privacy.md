@@ -506,6 +506,20 @@ plan (goals and reasons) and how each task ended, so Dom can talk about his own
 work; the summary of web content stays out of that history. See
 [Self-directed work](desktop.md#self-directed-work).
 
+## The shared workspace
+
+`<home>/workspace` is a folder Dom, the owner's desktop and the dashboard's Files page share (see
+[The shared workspace](desktop.md#the-shared-workspace)). It is the only part of the home the desktop container can
+see. Documents the owner sends in the DM land in `workspace/inbox/`; Dom reads them with the owner-DM-only `files` tool and
+the text he reads goes to the chat model like any other tool result, fenced as untrusted data. Nothing in the workspace
+leaves the host except through that, the desktop's own `download` and `upload` permissions, and the dashboard.
+
+By default groups and friends' DMs cannot reach any of it. With `[workspace] share_with_chats = true` they get a
+read-only `files` tool limited to `workspace/shared/` (code chooses the folder from the turn's scope; the model cannot
+name another), and a document sent in such a chat is saved to `shared/inbox/<chat id>/`, which only that chat and the
+owner can read. Another chat's landed documents are hidden from it in code. `private/`, notes, the database and `.env` are
+never under the workspace.
+
 ## Home network and T3 Code
 
 In the owner DM, `find_devices` reads the Dom host's mDNS answers and neighbour

@@ -16,6 +16,7 @@ from typing import Literal
 
 import httpx
 
+from dom import workspace
 from dom.config import Config, DesktopHost
 from dom.desktop import network
 from dom.desktop.client import SandboxClient, SandboxError
@@ -58,6 +59,18 @@ def desktop_profile_path(config: Config, name: str = DEFAULT) -> Path:
     if profile.is_relative_to(home) or home.is_relative_to(profile):
         raise SandboxError("desktop profile must be outside DOM_HOME")
     return profile
+
+
+def workspace_volume(config: Config, name: str = DEFAULT) -> tuple[str, ...]:
+    """The `docker run` arguments that mount the shared workspace at /workspace, or none for Dom's self-directed
+    container, which works from a stricter set of files and never sees the owner's."""
+    if name == SELF_WORK:
+        return ()
+    try:
+        folder = workspace.ensure_workspace(config.home)
+    except (OSError, workspace.WorkspaceError) as error:
+        raise SandboxError(f"could not prepare the workspace folder ({error})") from None
+    return ("-v", f"{folder.resolve()}:{workspace.MOUNT}")
 
 
 class Refused(SandboxError):
@@ -139,6 +152,7 @@ class Host:
 class RemoteSandbox:
     memory_mb = 0  # Dom does not start this sandbox, so it does not know its limit
     port = None
+    workspace_mounted = False  # a remote host cannot see Dom's folders
 
     def __init__(
         self, url: str, api_key: str | None, *, http: httpx.AsyncClient | None = None, isolation_confirmed: bool = False,
@@ -225,6 +239,10 @@ class RemoteSandbox:
 
 class LocalSandbox:
     memory_mb = CONTAINER_MEMORY_MB
+
+    @property
+    def workspace_mounted(self) -> bool:
+        return self.name != SELF_WORK
 
     def __init__(
         self, config: Config, run=asyncio.create_subprocess_exec, *, http=None, clock=time.monotonic,
@@ -435,7 +453,7 @@ class LocalSandbox:
             "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
             "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
             "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true", "-e", "DISABLE_JUPYTER=true",
-            "-v", f"{profile}:/home/gem/.config/browser", settings.image,
+            "-v", f"{profile}:/home/gem/.config/browser", *workspace_volume(self.config, self.name), settings.image,
             env={"SANDBOX_API_KEY": key},  # keeps the key out of the process list
         )
         if code:

@@ -1,6 +1,7 @@
 import type { Component } from "svelte";
 import Bell from "@lucide/svelte/icons/bell";
 import FileText from "@lucide/svelte/icons/file-text";
+import FolderOpen from "@lucide/svelte/icons/folder-open";
 import Gauge from "@lucide/svelte/icons/gauge";
 import Globe from "@lucide/svelte/icons/globe";
 import House from "@lucide/svelte/icons/house";
@@ -56,6 +57,7 @@ export const destinations: Destination[] = [
       { id: "own-work", label: "Own work", href: "/app/work/own-work", icon: Sparkles, blurb: "How Dom's own work runs, and the skills he learned." },
       { id: "reminders", label: "Reminders", href: "/app/work/reminders", icon: Bell, blurb: "What Dom will remind you of, and when." },
       { id: "briefs", label: "Briefs", href: "/app/work/briefs", icon: FileText, blurb: "The briefs Dom wrote for you." },
+      { id: "files", label: "Files", href: "/app/work/files", icon: FolderOpen, blurb: "The workspace Dom and his desktop share, and the files Dom may read. Browse, preview, upload and download." },
       { id: "library", label: "Library", href: "/app/work/library", icon: Images, blurb: "What Dom made and kept: photos, voice and video notes, his own files and exports." },
     ],
   },

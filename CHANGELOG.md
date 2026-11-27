@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **A shared workspace.** `<home>/workspace` (owner-only) is one folder for Dom, the owner's desktop and the dashboard: a local desktop container mounts it at `/workspace`, Dom reads and writes it with the owner-DM `files` tool (list, read text, Markdown, CSV, JSON and PDF text, write, move, delete; every path walked without following links, sizes capped, nothing outside it reachable), and a document sent in the owner DM, with any caption, now lands in `workspace/inbox/` (up to 20 MB, saved in the background) with its name and type in the `<media>` tag and its path told to Dom. `/desktop` documents still stage for the task and also land there. PDF text needs `pypdf`, a new dependency. Work → Files browses the workspace and Dom's readable files (memory, media, briefs, skills) with text and image preview, upload, download and a confirmed delete. `[workspace] share_with_chats` (off; Settings → What Dom may do) lets groups and friends read `workspace/shared/` only, never write, and sent documents land in `shared/inbox/<chat id>/` for that chat alone. See [The shared workspace](docs/desktop.md#the-shared-workspace).
+
 ## [0.8.5] - 2026-11-27
 
 Dom gets hands, a world of his own and a window into how he thinks. He can browse for you behind per-site approvals, fill saved logins without ever seeing the password, ask you for a secret through a private form, and read your Calendar and Gmail with every change on a card. He has a life sheet with places and routines, a Talk page in the dashboard with a full debug trace of every turn, an owner-DM lane that never waits behind a group, an optional morning plan and evening wrap-up, and video notes whose faces finally move.

@@ -113,7 +113,8 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
              "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
              "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
              "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true", "-e", "DISABLE_JUPYTER=true",
-             "-v", f"{tmp_path}/desktop-profile:/home/gem/.config/browser", config.desktop.image),
+             "-v", f"{tmp_path}/desktop-profile:/home/gem/.config/browser", "-v", f"{tmp_path}/home/workspace:/workspace",
+             config.desktop.image),
         ]
         assert not any("secret-key" in str(call) for call in docker.calls)
         assert [env["SANDBOX_API_KEY"] for env in docker.environments if env] == ["secret-key"]

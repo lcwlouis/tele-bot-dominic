@@ -232,6 +232,20 @@ class AssistantConfig(BaseModel):
         return value
 
 
+class WorkspaceConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    share_with_chats: bool = Field(
+        False,
+        description=(
+            "Let groups and friends' DMs read the workspace's `shared/` folder: Dom may list and read files there for "
+            "them, never write, and nothing else in the workspace. A document someone sends in such a chat then lands in "
+            "`shared/inbox/<chat id>/`, readable only by that chat. Off, only your DM reaches the workspace. Settings → "
+            "What Dom may do."
+        ),
+    )
+
+
 class SelfWorkConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -762,6 +776,7 @@ class Config(BaseModel):
     )
     openers: OpenersConfig = Field(default_factory=OpenersConfig)
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
+    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
