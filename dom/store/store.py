@@ -106,74 +106,143 @@ _UNREAD_SQL = (
 
 # A new bot's message ids restart from 1 in every chat. The ids the old bot gave are moved this far below zero, in order
 # and clear of every Telegram id, so the two runs never meet in the (chat_id, msg_id) index. A message with a negative
-# id is never unread, never memorised and can't be replied to: the new bot can't reach it.
+# id is never unread, never memorised and can't be replied to: the new bot can't reach it. A chat is only ever moved
+# for a real bot change (the bot id differs from the stored one), or once, from the data, when none was stored yet.
 _ALL_ROWS = 1 << 62  # an era start after every row there is
+PENDING_ERA = "pending_era:"  # kv key prefix: a chat to move when its first message from the new bot arrives
+RECOVERY_MIN_ROWS = 3  # the new run must have at least this many rows to be believed
+RECOVERY_DROP = 10  # and its first id must be under a tenth of the old run's newest
 
 
-def _ids_restarted(before: int, after: int) -> bool:
-    """A chat's message ids only go up, so one numbered less than half the chat's newest comes from a new bot. (Two
-    messages saved a little out of order differ by a few, never by half.)"""
-    return after * 2 < before
+def _when(value: str) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo is not None else None
 
 
-def detect_eras(conn: sqlite3.Connection) -> dict[str, int]:
-    """For each chat whose message ids dropped, the first row (messages.id) of its latest run of ids."""
-    return dict(conn.execute(
-        "SELECT chat_id, MAX(id) FROM ("
-        "SELECT chat_id, id, msg_id, LAG(msg_id) OVER (PARTITION BY chat_id ORDER BY id) AS before "
-        "FROM messages WHERE msg_id > 0) WHERE msg_id * 2 < before GROUP BY chat_id"
-    ).fetchall())
+def recover_eras(conn: sqlite3.Connection) -> dict[str, tuple[int, str]]:
+    """Chats whose history shows a bot change nobody recorded: chat -> (first row, its time) of the new run.
+
+    Message ids only go up, so a drop is a candidate, but a late edit or one odd row also looks like one. A chat's rows
+    after its latest drop count as a new bot's only if every one of them was created after every row before, there
+    are at least `RECOVERY_MIN_ROWS`, none climbs back above the old run's newest id, and the first is under a tenth
+    of it. Anything else is left alone."""
+    candidates = [row[0] for row in conn.execute(
+        "SELECT DISTINCT chat_id FROM (SELECT chat_id, msg_id, LAG(msg_id) OVER (PARTITION BY chat_id ORDER BY id) AS before "
+        f"FROM messages WHERE msg_id > 0) WHERE msg_id * {RECOVERY_DROP} < before"
+    )]
+    found: dict[str, tuple[int, str]] = {}
+    for chat_id in candidates:
+        rows = conn.execute(
+            "SELECT id, msg_id, created_at FROM messages WHERE chat_id = ? AND msg_id > 0 ORDER BY id", (chat_id,),
+        ).fetchall()
+        start, run_max, old_max = None, 0, 0
+        for index, (_, msg_id, _) in enumerate(rows):
+            if run_max and msg_id * RECOVERY_DROP < run_max:
+                start, old_max, run_max = index, run_max, msg_id
+            run_max = max(run_max, msg_id)
+        if start is None or len(rows) - start < RECOVERY_MIN_ROWS:
+            continue
+        before, run = rows[:start], rows[start:]
+        if max(msg_id for _, msg_id, _ in run) > old_max:
+            continue
+        times = [_when(at) for _, _, at in rows]
+        if None in times or min(times[start:]) <= max(times[:start]):
+            continue
+        found[chat_id] = (run[0][0], run[0][2])
+    return found
 
 
-def begin_eras(conn: sqlite3.Connection, starts: dict[str, int], now: str) -> int:
-    """Move each chat's rows before its era start (a messages.id) out of the new bot's id range; returns how many
-    chats had any. Their reply links and the notes that point at them move the same distance, and the chat's open
-    turns and menu cards, which only the old bot could answer, are dropped.
+def begin_eras(
+    conn: sqlite3.Connection, starts: dict[str, tuple[int, str]], now: str, owner_chat: str | None = None,
+) -> list[str]:
+    """Move each chat's rows before its era start (a messages.id; `starts` also gives the time it began) out of the
+    new bot's id range; returns the chats that had any. Their reply links and the noticings made before the era move
+    the same distance. What only the old bot could answer is dropped: the chat's open turns and menu cards, and (in the
+    owner's chat) the Telegram message ids of open requests and noticing cards.
 
-    A read marker or memory cursor above every id in the new run must be the old bot's. The cursor goes back to 0, so
-    the memory pass catches up. A marker goes to Dom's latest reply in the run (what he answered is read), or 0 when
-    he has not replied in it yet; per topic for the topic markers. One at or below the run's newest id is kept."""
-    moved = 0
-    for chat_id, era_row in starts.items():
-        top = conn.execute(
-            "SELECT MAX(msg_id) FROM messages WHERE chat_id = ? AND id < ? AND msg_id > 0", (chat_id, era_row),
-        ).fetchone()[0]
-        if top is None:
-            continue  # nothing before it is left to move: already done
-        floor = conn.execute(
-            "SELECT COALESCE(MIN(msg_id), 0) FROM messages WHERE chat_id = ? AND msg_id < 0", (chat_id,)
-        ).fetchone()[0]
-        shift = top - floor + 1  # the newest old id lands just under the oldest one moved before
-        conn.execute(
-            "UPDATE messages SET msg_id = msg_id - ?, reply_to_msg_id = reply_to_msg_id - ? "
-            "WHERE chat_id = ? AND id < ? AND msg_id > 0", (shift, shift, chat_id, era_row),
-        )
-        conn.execute(
-            "UPDATE noticings SET source_msg_id = source_msg_id - ? "
-            "WHERE source_chat_id = ? AND source_msg_id > 0 AND source_msg_id <= ?", (shift, chat_id, top),
-        )
-        conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
-        conn.execute("DELETE FROM menu_cards WHERE chat_id = ?", (chat_id,))
-        newest = conn.execute(
-            "SELECT COALESCE(MAX(msg_id), 0) FROM messages WHERE chat_id = ? AND msg_id > 0", (chat_id,),
-        ).fetchone()[0]
-        replied = "SELECT COALESCE(MAX(msg_id), 0) FROM messages WHERE chat_id = ? AND role = 'assistant' AND msg_id > 0"
-        conn.execute(
-            "UPDATE chats SET last_read_msg_id = ?, updated_at = ? WHERE chat_id = ? AND last_read_msg_id > ?",
-            (conn.execute(replied, (chat_id,)).fetchone()[0], now, chat_id, newest),
-        )
-        conn.execute("UPDATE chats SET memory_cursor_msg_id = 0 WHERE chat_id = ? AND memory_cursor_msg_id > ?", (chat_id, newest))
-        for (thread_id,) in conn.execute(
-            "SELECT thread_id FROM chat_topic_reads WHERE chat_id = ? AND last_read_msg_id > ?", (chat_id, newest),
-        ).fetchall():
+    The markers are recomputed, never compared (the numbers overlap): the read marker and each topic marker go to
+    Dom's latest reply in the new run (what he answered is read; 0 when he has not replied in it), and the memory
+    cursor to 0 so the memory pass catches up. The full-text trigger would delete index entries of rows that are
+    already out of it (soft-deleted ones), and the index does not hold ids, so it is dropped while the rows move."""
+    moved = []
+    trigger = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'messages_au'").fetchone()
+    if trigger is not None:
+        conn.execute("DROP TRIGGER messages_au")
+    try:
+        for chat_id, (era_row, began) in starts.items():
+            top = conn.execute(
+                "SELECT MAX(msg_id) FROM messages WHERE chat_id = ? AND id < ? AND msg_id > 0", (chat_id, era_row),
+            ).fetchone()[0]
+            if top is None:
+                continue  # nothing before it is left to move: already done
+            floor = conn.execute(
+                "SELECT COALESCE(MIN(msg_id), 0) FROM messages WHERE chat_id = ? AND msg_id < 0", (chat_id,)
+            ).fetchone()[0]
+            shift = top - floor + 1  # the newest old id lands just under the oldest one moved before
             conn.execute(
-                "UPDATE chat_topic_reads SET updated_at = ?, last_read_msg_id = ("
-                "SELECT COALESCE(MAX(msg_id), 0) FROM messages WHERE chat_id = ? AND role = 'assistant' AND msg_id > 0 "
-                "AND COALESCE(thread_id, 0) = ?) WHERE chat_id = ? AND thread_id = ?",
-                (now, chat_id, thread_id, chat_id, thread_id),
+                "UPDATE messages SET msg_id = msg_id - ?, reply_to_msg_id = reply_to_msg_id - ? "
+                "WHERE chat_id = ? AND id < ? AND msg_id > 0", (shift, shift, chat_id, era_row),
             )
-        moved += 1
+            _move_noticing_sources(conn, chat_id, shift, _when(began))
+            conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
+            conn.execute("DELETE FROM menu_cards WHERE chat_id = ?", (chat_id,))
+            conn.execute("UPDATE cross_chat SET sent_msg_id = NULL WHERE target_chat_id = ?", (chat_id,))
+            if chat_id == owner_chat:
+                _forget_owner_cards(conn, now)
+            _reset_markers(conn, chat_id, now)
+            moved.append(chat_id)
+    finally:
+        if trigger is not None:
+            conn.execute(trigger[0])
     return moved
+
+
+def _move_noticing_sources(conn: sqlite3.Connection, chat_id: str, shift: int, before: datetime | None) -> None:
+    """A noticing made before the era points at an old row; one made in the new run points at a new one."""
+    if before is None:
+        return
+    for noticing_id, made in conn.execute(
+        "SELECT id, created_at FROM noticings WHERE source_chat_id = ? AND source_msg_id > 0", (chat_id,),
+    ).fetchall():
+        if (when := _when(made)) is not None and when < before:
+            conn.execute("UPDATE noticings SET source_msg_id = source_msg_id - ? WHERE id = ?", (shift, noticing_id))
+
+
+def _forget_owner_cards(conn: sqlite3.Connection, now: str) -> None:
+    """Cards in the owner's DM were sent by the old bot, which the new one can neither edit nor answer: the requests
+    behind them expire and nothing keeps their message ids."""
+    conn.execute(
+        "UPDATE desktop_permission_history SET status = 'expired', decided_via = 'bot-change', decided_at = ? "
+        "WHERE status = 'pending'", (now,),
+    )
+    conn.execute("UPDATE desktop_permission_history SET card_message_id = NULL")
+    conn.execute("UPDATE secret_requests SET status = 'expired', resolved_at = ? WHERE status = 'pending'", (now,))
+    conn.execute("UPDATE secret_requests SET card_message_id = NULL")
+    conn.execute("UPDATE noticings SET opener_msg_id = NULL")
+
+
+def _reset_markers(conn: sqlite3.Connection, chat_id: str, now: str) -> None:
+    replied = (
+        "SELECT COALESCE(MAX(msg_id), 0) FROM messages WHERE chat_id = ? AND role = 'assistant' AND msg_id > 0"
+    )
+    conn.execute("UPDATE chats SET memory_cursor_msg_id = 0 WHERE chat_id = ?", (chat_id,))
+    topics = conn.execute("SELECT thread_id FROM chat_topic_reads WHERE chat_id = ?", (chat_id,)).fetchall()
+    for (thread_id,) in topics:
+        conn.execute(
+            "UPDATE chat_topic_reads SET updated_at = ?, last_read_msg_id = ("
+            f"{replied} AND COALESCE(thread_id, 0) = ?) WHERE chat_id = ? AND thread_id = ?",
+            (now, chat_id, thread_id, chat_id, thread_id),
+        )
+    # With topic rows the chat's marker is their newest (a chat marker past them would be read back into them).
+    conn.execute(
+        "UPDATE chats SET updated_at = ?, last_read_msg_id = COALESCE("
+        "(SELECT MAX(last_read_msg_id) FROM chat_topic_reads WHERE chat_id = ?), "
+        f"({replied})) WHERE chat_id = ? AND last_read_msg_id IS NOT NULL",
+        (now, chat_id, chat_id, chat_id),
+    )
 
 
 def _topic_key(thread_id: int | None) -> int:
@@ -1187,9 +1256,11 @@ class Store:
     def _record_new_message(self, msg: StoredMessage) -> int:
         with self._tx() as conn:
             if msg.msg_id is not None:
-                newest = conn.execute("SELECT MAX(msg_id) FROM messages WHERE chat_id = ?", (msg.chat_id,)).fetchone()[0]
-                if newest is not None and _ids_restarted(newest, msg.msg_id):  # the first message from a new bot
-                    begin_eras(conn, {msg.chat_id: _ALL_ROWS}, _now())
+                key = PENDING_ERA + msg.chat_id
+                if conn.execute("SELECT 1 FROM kv WHERE key = ?", (key,)).fetchone() is not None:
+                    # The first message from the bot this chat changed to: the rows saved so far are the old bot's.
+                    begin_eras(conn, {msg.chat_id: (_ALL_ROWS, _now())}, _now(), str(self.owner_id))
+                    conn.execute("DELETE FROM kv WHERE key = ?", (key,))
                 existing = conn.execute(
                     "SELECT id FROM messages WHERE chat_id = ? AND msg_id = ?", (msg.chat_id, msg.msg_id)
                 ).fetchone()
@@ -1658,39 +1729,56 @@ class Store:
             )
 
     async def adopt_bot(self, bot_id: int) -> int:
-        """Remember which bot this database talks to and repair a bot change; returns how many chats were repaired.
+        """Remember which bot this database talks to and handle a bot change; returns how many chats were set aside now.
 
         A new bot token restarts Telegram's message ids in every chat. The old rows would meet the new ones in the
         (chat_id, msg_id) index, which would drop a new message numbered like an old one, and read markers and the
-        memory cursor, which only move up, would sit above every new id. So each chat's rows from before its ids
-        dropped move to negative ids (see `begin_eras`). That is found in the data (a switch made before any bot id was
-        stored is repaired too), and, when the stored bot id differs, for chats with nothing from the new bot yet. The
-        first start only stores the id. The repair is noted in the owner's DM history."""
+        memory cursor, which only move up, would sit above every new id. So the old bot's rows move to negative ids
+        (see `begin_eras`), but only for a real change:
+
+        - the stored bot id differs: every chat with rows is marked, and each moves when its first message from the new
+          bot arrives (nothing has yet; the old rows stay readable until then);
+        - none is stored yet (an instance that switched before this existed): once, chats whose history clearly shows
+          a switch (see `recover_eras`) move now, and the id is stored so this never runs again;
+        - the same id: nothing. A late edit or an odd message with a lower id never moves anything.
+
+        The change is noted in the owner's DM history."""
         return await self._run(self._adopt_bot, bot_id, _now())
 
     def _adopt_bot(self, bot_id: int, now: str) -> int:
-        repaired = 0
+        event, repaired = None, []
         with self._tx() as conn:
             row = conn.execute("SELECT value FROM kv WHERE key = 'bot_id'").fetchone()
-            changed = row is not None and row[0] != str(bot_id)
-            starts = detect_eras(conn)
-            if changed:  # everything saved so far came from the old bot
-                boundary = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM messages").fetchone()[0]
-                for (chat_id,) in conn.execute("SELECT chat_id FROM chats").fetchall():
-                    starts.setdefault(chat_id, boundary)
-            repaired = begin_eras(conn, starts, now)
-            if changed or row is None:
-                self._write_kv(conn, {"bot_id": str(bot_id)})
-            event = None
-            if repaired and self.owner_id is not None:
-                event = (
-                    f"Dom's Telegram bot changed; {repaired} chat{'s' if repaired != 1 else ''} had their old message numbers "
-                    "set aside and their read markers and memory cursors reset for the new bot."
-                )
+            if row is not None and row[0] == str(bot_id):
+                return 0
+            if row is None:
+                repaired = begin_eras(conn, recover_eras(conn), now, str(self.owner_id))
+                if repaired:
+                    event = "Dom's Telegram bot had changed without his noticing; set aside the old bot's messages in " + (
+                        ", ".join(self._chat_label(conn, chat_id) for chat_id in repaired)
+                    ) + " and reset their read markers and memory cursors for the new bot."
+            else:
+                chats = [r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages WHERE msg_id > 0")]
+                self._write_kv(conn, {PENDING_ERA + chat_id: now for chat_id in chats})
+                repaired = chats
+                if chats:
+                    event = (
+                        f"Dom's Telegram bot changed; the old bot's messages in {len(chats)} chat{'s' if len(chats) != 1 else ''} "
+                        "are set aside, and each chat's read markers and memory cursor reset, when the new bot first writes there."
+                    )
+            self._write_kv(conn, {"bot_id": str(bot_id)})
+            if event is not None and self.owner_id is not None:
                 self._insert_owner_event(conn, event, now)
+            else:
+                event = None
         if event is not None:
             self._append_owner_event_transcript(event, now)
-        return repaired
+        return len(repaired)
+
+    @staticmethod
+    def _chat_label(conn: sqlite3.Connection, chat_id: str) -> str:
+        row = conn.execute("SELECT title FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        return (row[0] if row is not None and row[0] else "") or f"chat {chat_id}"
 
     async def set_catch_up_pending(
         self, chat_id: int | str, thread_id: int | None, pending: bool,

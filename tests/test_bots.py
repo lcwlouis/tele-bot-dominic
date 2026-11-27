@@ -33,7 +33,7 @@ async def bot_line(app, clock, msg_id, text, user=OTHER_BOT, chat_id=GROUP):
 
 async def test_bot_loop_stops_after_depth(bot_chat):
     app, clock = await bot_chat()
-    for msg_id in range(6001, 6009):  # above the fake bot's own ids (it numbers its sends from 5000)
+    for msg_id in range(1, 9):
         await bot_line(app, clock, msg_id, f"bot message {msg_id}")
         clock.advance(seconds=11)
     contents = [request["messages"][-1]["content"] for request in turn_requests(app)]
@@ -42,7 +42,7 @@ async def test_bot_loop_stops_after_depth(bot_chat):
     assert EXIT_NOTE in contents[-1]
     assert await app.store.get_bot_depth(GROUP) == 7
     window = await app.store.get_recent_chat_window(GROUP)
-    assert [row.msg_id for row in window if row.role == "user" and row.is_bot] == list(range(6001, 6009))
+    assert [row.msg_id for row in window if row.role == "user" and row.is_bot] == list(range(1, 9))
 
 
 async def test_human_message_resets_depth(bot_chat):

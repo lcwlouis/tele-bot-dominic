@@ -37,7 +37,8 @@ class StudioClient:
 
     @property
     def health(self) -> dict | None:
-        return self._health if self._clock() < self._health_until else None
+        # A probe in flight keeps the last good health: it expires when a probe is due, not while one is running.
+        return self._health if self._probing or self._clock() < self._health_until else None
 
     @property
     def ready(self) -> bool:

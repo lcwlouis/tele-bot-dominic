@@ -540,7 +540,7 @@ class DesktopPermissions:
 
     async def _settle_card(self, message_id: int | None, label: str) -> None:
         app = self.app
-        if not message_id or app.owner_id is None:
+        if not message_id or message_id < 0 or app.owner_id is None:  # no card, or one the old bot sent
             return
         markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]])
         try:

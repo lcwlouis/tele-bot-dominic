@@ -540,3 +540,40 @@ async def test_timeouts_of_other_requests_name_their_path_and_warn(caplog):
         (logging.WARNING, "studio voice request timed out or broke off (ReadTimeout)"),
         (logging.WARNING, "studio portrait request timed out or broke off (ReadTimeout)"),
     ]
+
+
+async def test_the_last_good_health_stays_valid_while_the_next_probe_is_running():
+    import asyncio
+
+    release, started = asyncio.Event(), asyncio.Event()
+    replies = iter(["ok", "slow", "slow"])
+
+    async def respond(request):
+        step = next(replies)
+        if step == "slow":
+            started.set()
+            await release.wait()
+            raise httpx.ReadTimeout("wifi spike")
+        return httpx.Response(200, json={"models": {}})
+
+    clock = [0.0]
+    config = StudioConfig(enabled=True, base_url="https://studio.example.test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = StudioClient(config, TOKEN, http, lambda: clock[0])
+        await client.refresh()
+        clock[0] += HEALTH_TTL  # the health is due for a new probe
+        probe = asyncio.create_task(client.refresh())
+        await started.wait()
+        assert client.ready and client.health is not None  # the probe is still running: the studio is still on
+        release.set()
+        await probe
+        assert client.ready  # one failed probe keeps the last good health for one more interval
+        started.clear()
+        release.clear()
+        clock[0] += HEALTH_TTL
+        probe = asyncio.create_task(client.refresh())
+        await started.wait()
+        assert client.ready  # and again while the second one runs
+        release.set()
+        await probe
+        assert not client.ready  # two failures in a row clear it

@@ -767,7 +767,7 @@ async def test_message_during_delivery_gets_a_linked_followup(setup_dispatch, mo
     app, dispatch, clock = await setup_dispatch(FakeJev(done=1))
     await dispatch.presence.go_online(GROUP, parse_habits(""))
     app.script.contents[:] = [
-        '{"bubbles":[{"text":"first bubble"},{"text":"second bubble","reply_to":6001}]}',
+        '{"bubbles":[{"text":"first bubble"},{"text":"second bubble","reply_to":1}]}',
         '{"bubbles":[{"text":"followup bubble"}]}',
     ]
     delivering, release = asyncio.Event(), asyncio.Event()
@@ -789,22 +789,22 @@ async def test_message_during_delivery_gets_a_linked_followup(setup_dispatch, mo
 
         monkeypatch.setattr(app, "sleep", hold_gap)
 
-    await handle_message(app, tg(msg_id=6001, text="before Dom answered").model_copy(update={"date": clock()}))
+    await handle_message(app, tg(text="before Dom answered").model_copy(update={"date": clock()}))
     await asyncio.wait_for(delivering.wait(), timeout=2)
     # This timestamp predates the first message to prove the prompt follows arrival order.
-    await handle_message(app, tg(msg_id=6002, text="new information").model_copy(update={"date": clock() - timedelta(seconds=1)}))
+    await handle_message(app, tg(msg_id=2, text="new information").model_copy(update={"date": clock() - timedelta(seconds=1)}))
     release.set()
     await asyncio.wait_for(drain_dispatch(dispatch), timeout=2)
 
     before, after = (request["messages"][-1]["content"] for request in turn_requests(app))
     assert "new information" not in before
-    assert "Messages with IDs 6002 came in while you were answering" in after
+    assert "Messages with IDs 2 came in while you were answering" in after
     assert "Your earlier bubbles did not see them" in after
     assert after.index("before Dom answered") < after.index("new information") < after.index("second bubble")
-    assert 'role="assistant" reply_to="6001"' in after
+    assert 'role="assistant" reply_to="1"' in after
     assert [c[2] for c in app.bot.of("send", GROUP)] == ["first bubble", "second bubble", "followup bubble"]
     rows = await app.store.get_recent_chat_window(GROUP)
-    assert [m.reply_to_msg_id for m in rows if m.role == "assistant"] == [6001, 6001, 6002]
+    assert [m.reply_to_msg_id for m in rows if m.role == "assistant"] == [1, 1, 2]
     assert (await app.store.get_unread(GROUP))[0] == 0
     assert len(await app.store.recent_turns()) == 2
 

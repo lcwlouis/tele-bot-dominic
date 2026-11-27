@@ -610,7 +610,7 @@ class Noticings:
 
     async def _settle_card(self, msg_id: int | None, label: str) -> None:
         owner = self.app.owner_id
-        if owner is None or msg_id is None:
+        if owner is None or not msg_id or msg_id < 0:  # no card, or one the old bot sent
             return
         markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="noop")]])
         try:

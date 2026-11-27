@@ -207,13 +207,13 @@ async def test_a_due_trim_asks_for_a_pass_and_the_trim_follows_it_in_the_next_tu
     assert await app.store.get_memory_cursor(GROUP) >= 30  # the pass read everything before anything was dropped
     first = first_id(turn_requests(app)[0])
     assert first == "1"
-    await add(app, 6031)  # above the fake bot's own ids (it numbers its sends from 5000)
+    await add(app, 31)
     app.dispatch.now.advance(minutes=1)
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
     trimmed = first_id(turn_requests(app)[1])
     assert int(trimmed) > 1
-    await add(app, 6032)
+    await add(app, 32)
     app.dispatch.now.advance(minutes=1)
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
@@ -355,9 +355,11 @@ async def test_rows_from_an_earlier_bot_never_hold_a_trim_back(make_app):
     app = make_app()
     small(app)
     await measured(app)
+    await app.store.adopt_bot(1001)
     for n in range(5001, 5021):
         await add(app, n)
     await app.store.advance_memory_cursor(GROUP, 5020)
+    await app.store.adopt_bot(2002)  # the token changes: the new bot's ids start again from 1
     for n in range(1, 21):
         await add(app, n)
     assert await app.store.get_memory_cursor(GROUP) == 0

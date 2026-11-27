@@ -14,7 +14,7 @@ from pathlib import Path
 from dom.config import load_config, save_owner
 from dom.home import Home, limit_for, parse_front_matter
 from dom.store import Store
-from dom.store.store import begin_eras, detect_eras
+from dom.store.store import begin_eras, recover_eras
 from dom.traits import normalise
 
 # V2 kept these under identity/. Dom does not import them: the new soul is written fresh.
@@ -239,7 +239,7 @@ async def _finish_database(
         # Imported history is old news: without this every chat looks fully unread and Dom's first
         # catch-up would answer months-old messages in every group.
         # (History from before a bot change is set aside first, so only the latest run of message ids counts.)
-        begin_eras(conn, detect_eras(conn), datetime.now(timezone.utc).isoformat())
+        begin_eras(conn, recover_eras(conn), datetime.now(timezone.utc).isoformat(), str(owner_id))
         conn.execute(
             "UPDATE chats SET last_read_msg_id = "
             "(SELECT MAX(msg_id) FROM messages m WHERE m.chat_id = chats.chat_id) "
