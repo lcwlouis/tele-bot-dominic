@@ -14,7 +14,8 @@ from dom.llm import ChatClient, FallbackClient
 from dom.usage import ModelCallSkipped
 
 log = logging.getLogger("dom.media")
-# Per-kind download limits in bytes; the Pi that runs Dom has 4 GB of memory.
+# Per-kind download limits in bytes; the Pi that runs Dom has 4 GB of memory. A clip sent whole to the media model
+# stays at 8 MB; one cut into frame strips (dom.video) may be up to the 20 MB Telegram lets a bot download.
 MAX_BYTES = {
     "photo": 10_000_000, "sticker": 10_000_000, "voice": 10_000_000, "audio": 10_000_000,
     "video": 8_000_000, "animation": 8_000_000, "video_note": 8_000_000,
@@ -53,14 +54,18 @@ class PermanentMediaSkip(Exception):
     """Attachment cannot be described (oversize or no preview image) and should not be retried."""
 
 
-async def download(bot, media: dict, *, limit: int | None = None) -> tuple[str, bytes]:
-    """The attachment's (mime type, bytes) from Telegram. `limit` tightens the per-kind size limit. Raises
-    PermanentMediaSkip for one that is too big or an animated sticker with no preview image (retrying won't help),
-    and ValueError or whatever Telegram raises for a failure that may pass."""
+async def download(
+    bot, media: dict, *, limit: int | None = None, ceiling: int | None = None,
+) -> tuple[str, bytes]:
+    """The attachment's (mime type, bytes) from Telegram. `limit` tightens the per-kind size limit; `ceiling` lifts it
+    (a clip cut into frame strips can be bigger than one sent whole to a model). Raises PermanentMediaSkip for one
+    that is too big or an animated sticker with no preview image (retrying won't help), and ValueError or whatever
+    Telegram raises for a failure that may pass."""
     kind = media.get("kind")
     cap = MAX_BYTES.get(kind)
     if cap is None:
         raise PermanentMediaSkip("not an attachment kind")
+    cap = max(cap, ceiling) if ceiling is not None else cap
     cap = min(cap, limit) if limit is not None else cap
     size = media.get("file_size")
     if size is not None and size > cap:

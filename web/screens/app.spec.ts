@@ -884,6 +884,21 @@ test.describe("interactions under the CSP", () => {
     const save = limits.getByRole("button", { name: "Save media limits" });
     await expect(save).toBeDisabled();
 
+    // How readily Dom adds media: a segmented control that saves with the limits and applies at once.
+    const readiness = limits.getByRole("group", { name: /How readily Dom adds media/ });
+    await expect(readiness.getByRole("radio", { name: /^Sometimes/ })).toBeChecked();
+    await readiness.getByText("Often", { exact: true }).click();
+    await expect(save).toBeEnabled();
+    await save.click();
+    await expect(page.getByRole("status").filter({ hasText: "Media limits saved." })).toBeVisible();
+    await page.reload();
+    await page.getByRole("tab", { name: "What Dom may do" }).click();
+    await expect(readiness.getByRole("radio", { name: /^Often/ })).toBeChecked();
+    await readiness.getByText("Sometimes", { exact: true }).click();
+    await save.click();
+    await expect(page.getByRole("status").filter({ hasText: "Media limits saved." })).toBeVisible();
+    await expect(readiness.getByRole("radio", { name: /^Sometimes/ })).toBeChecked();
+
     const gap = limits.getByRole("spinbutton", { name: "Gap" }).first();
     await gap.fill("10081");
     await expect(limits.getByText("The gap is at most 10080 minutes", { exact: false })).toBeVisible();

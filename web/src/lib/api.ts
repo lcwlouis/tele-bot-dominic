@@ -245,9 +245,12 @@ export type MediaStanding = {
   next_at: string | null;
   now: string;
 };
+/** How readily Dom adds media on his own (`studio.spontaneity`): it scales every per-chat limit and gap, inside the global daily total. */
+export type Spontaneity = "rarely" | "sometimes" | "often";
 export type StudioLimitsView = {
   revision: string;
   limits: StudioLimits;
+  spontaneity: Spontaneity;
   owner: MediaStanding;
 };
 
