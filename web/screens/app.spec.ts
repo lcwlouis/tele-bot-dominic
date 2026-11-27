@@ -1904,9 +1904,10 @@ test.describe("interactions under the CSP", () => {
     const connected = {
       ...start, client_id_set: true, client_secret_set: true, redirect_uri: "https://dom.example.org/api/integrations/google/callback",
       status: "connected", connected_at: "2026-11-27T10:00:00+00:00",
+      own_calendars_granted: false, calendars: [],
       switches: [
         { id: "calendar_read", label: "Calendar: read events", on: false, granted: true },
-        { id: "calendar_write", label: "Calendar: add, move and delete events (each needs your approval)", on: false, granted: true },
+        { id: "calendar_write", label: "Dom's own calendars: create them, add, move and delete events there (each needs your approval)", on: false, granted: false },
         { id: "gmail_read", label: "Gmail: search and read mail", on: false, granted: false },
         { id: "gmail_drafts", label: "Gmail: save drafts (each needs your approval; Dom never sends)", on: false, granted: true },
       ],
@@ -1930,11 +1931,61 @@ test.describe("interactions under the CSP", () => {
     await expect(card.getByText("https://dom.example.org/api/integrations/google/callback")).toBeVisible();
     // A permission Google did not grant is locked.
     await expect(card.getByRole("switch", { name: "Gmail: search and read mail" })).toBeDisabled();
+    // A connection from before Dom kept his own calendars says what to do, and locks that switch.
+    await expect(card.getByText("Reconnect to let Dom keep his own calendars.")).toBeVisible();
+    await expect(card.getByRole("switch", { name: /^Dom's own calendars/ })).toBeDisabled();
     await card.getByRole("switch", { name: "Calendar: read events" }).click();
     await expect.poll(() => bodies.length).toBe(1);
     expect(bodies[0]).toEqual({ id: "calendar_read", on: true });
     await expect(card.getByRole("switch", { name: "Calendar: read events" })).toBeChecked();
     await expect(card.getByRole("button", { name: "Disconnect Google" })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("google: Dom's calendars are listed with their colour and count, and one is removed only after a confirm", async ({ page }) => {
+    const problems = await watch(page);
+    const start = await (await page.request.get("/api/integrations/google")).json();
+    const calendars = [
+      { id: "plan@group.calendar.example.org", name: "Dom - Planning", color: "#16a765", upcoming: 3, more: false },
+      { id: "louis@group.calendar.example.org", name: "Dom - Louis", color: "", upcoming: null, more: false },
+    ];
+    const connected = {
+      ...start, client_id_set: true, client_secret_set: true, redirect_uri: "https://dom.example.org/api/integrations/google/callback",
+      status: "connected", connected_at: "2026-11-27T10:00:00+00:00", own_calendars_granted: true,
+      calendars: calendars.map(({ id, name }) => ({ id, name })),
+      switches: [{ id: "calendar_write", label: "Dom's own calendars: create them, add, move and delete events there (each needs your approval)", on: true, granted: true }],
+    };
+    const removed: unknown[] = [];
+    await page.route("**/api/integrations/google", (route) => route.fulfill({ json: connected }));
+    await page.route("**/api/integrations/google/calendars", (route) => route.fulfill({ json: { calendars } }));
+    await page.route("**/api/integrations/google/calendars/remove", async (route) => {
+      const body = route.request().postDataJSON();
+      removed.push(body);
+      calendars.splice(calendars.findIndex((item) => item.id === body.id), 1);
+      connected.calendars = calendars.map(({ id, name }) => ({ id, name }));
+      await route.fulfill({ json: connected });
+    });
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "Services" }).click();
+    const card = page.getByRole("region", { name: "Google Calendar and Gmail" });
+    await expect(card.getByText("Reconnect to let Dom keep his own calendars.")).toHaveCount(0);
+    await expect(card.getByText("Dom - Planning")).toBeVisible();
+    await expect(card.getByText("3 upcoming")).toBeVisible();
+    await expect(card.getByText("events unknown")).toBeVisible();
+    // Every icon button has a name and a tooltip; removing asks first and Keep it changes nothing.
+    const trash = card.getByRole("button", { name: "Remove Dom - Planning" });
+    await trash.hover();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Remove Dom - Planning" })).toBeVisible();
+    await trash.click();
+    await expect(page.getByRole("alertdialog")).toContainText("Remove Dom - Planning?");
+    await page.getByRole("button", { name: "Keep it" }).click();
+    expect(removed).toEqual([]);
+    await trash.click();
+    await page.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect.poll(() => removed.length).toBe(1);
+    expect(removed[0]).toEqual({ id: "plan@group.calendar.example.org" });
+    await expect(card.getByText("Dom - Planning")).toHaveCount(0);
+    await expect(card.getByText("Dom - Louis")).toBeVisible();
     expect(problems).toEqual([]);
   });
 

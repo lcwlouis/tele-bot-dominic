@@ -22,7 +22,7 @@ import httpx
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from dom import guard, notice, salvage, turn_log
+from dom import guard, news, notice, salvage, turn_log
 from dom.secrets import redact_secrets
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
@@ -753,6 +753,7 @@ class Dispatcher:
         await self.app.stickers.refresh()
         self._spawn(self.app.world.refresh())  # its own fetch, so a slow answer never holds up the jobs below
         self._spawn(self.app.chat_titles.refresh())  # a few Telegram asks, likewise on their own
+        self._spawn(news.tick(self.app))  # the overnight news: searches and a call, so also on its own
         await self.jobs.tick()
         await self.openers.maybe(self.now())
         await self.app.assistant.tick(self.now())

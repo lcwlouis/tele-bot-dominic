@@ -118,7 +118,7 @@ spends counts toward the totals.
 
 `[area_spend_caps_usd]` sets an optional monthly limit per area: `chat` (replies, triage,
 the leak check, escalation), `media` (reading attachments, studio voice, photos and
-video), `search`, `desktop` and `memory` (the memory pass, reflection, summaries,
+video), `search` (web search, and the overnight news), `desktop` and `memory` (the memory pass, reflection, summaries,
 embeddings). An area at its limit pauses that work until the 1st while the others
 go on. One-offs such as event days draw only on the month's unused budget and never pass the
 monthly cap or their area's limit; a cost that a provider reports late counts once it
