@@ -60,7 +60,7 @@ Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud p
 | `models.<name>.provider` | Unset | Search provider for models.search: searxng, openrouter, deepseek or tavily. |
 | `models.<name>.input` | Unset | What this model accepts as input, for example ["text", "image"]. Omit it to use the provider's model list (OpenRouter lists each model's input types) or, for other OpenAI-compatible servers, a one-off test with a tiny generated image. Dom sends a photo, voice note or video to the model itself only when this says the model takes it; with nothing known the model is treated as text-only. Set it to override what the list or the test found. |
 
-Chat, fallback, media, drafting, search, escalation and embedding can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.
+Chat, fallback, media, drafting, search, escalation and embedding can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one. A subscription agent is the one case that goes on: if the pinned agent fails (refused, not installed, signed out, timed out), the task goes once to the next provider and Dom tells you in your DM (see [Subscription agents](acp-agents.md)).
 
 | Key | Default | Meaning |
 | --- | --- | --- |

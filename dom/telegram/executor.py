@@ -808,7 +808,7 @@ async def _look_before_send(
 
 
 async def deliver_studio(
-    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
+    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int | None,
     actions: Actions, on_sent: Callable[[int], Awaitable[None]],
 ) -> None:
     """Generate and send screened media after the text, without occupying a turn. Traced as work after the turn."""
@@ -822,7 +822,7 @@ async def deliver_studio(
 
 
 async def _deliver_studio(
-    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
+    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int | None,
     actions: Actions, on_sent: Callable[[int], Awaitable[None]],
 ) -> None:
     if actions.private or actions.no_response:
