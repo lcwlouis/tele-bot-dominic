@@ -458,6 +458,28 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
 - **Drafts and events.** Adding, moving or deleting an event and saving a draft each need an approval card unless the
   owner chose Allow always for that kind. Dom has no way to send mail.
 
+## Booking
+
+Optional, off until the owner has set meeting windows and turned on Google's calendar read and Dom's own calendars (see
+[Booking within your windows](google.md#booking-within-your-windows)). It is the one Google feature that reaches a friend's
+DM or a group, so the rules are in code:
+
+- **Only the offered times leave the owner DM.** The free/busy read asks Google for event start and end times only (the
+  request names no title, place or attendee field), the busy blocks stay inside the function that finds slots, and the
+  tool result a friend's chat gets is built from the slot times and fixed instructions. A failed read says nothing about
+  the calendar. In a group the offered times are visible to everyone there, so Dom offers window slots and no more.
+- **The windows are the owner's.** Friends and groups cannot see or change them: the `windows` and `set_windows` actions
+  exist only in the owner DM and the handler checks the chat again in code. A friend's tool can only `offer` and `pick`.
+- **An offer belongs to its chat.** A pick names an offer and a slot number; an offer made in another chat, one that is
+  not open, expired or already picked is simply "not open", so one chat cannot learn of or use another's offer.
+- **The owner decides.** Every booking is an approval card (Allow once, Reject) unless the owner sets "Confirm a
+  booking" to Allow. What the friend wrote (their name, what it is about) is quoted on the card and fenced as untrusted
+  text in the owner's history. The friend is invited to the event, and Google emails them, only when the owner allows
+  it and the friend gave their email in that chat.
+- **What is kept.** The offers (chat, who asked, the slots, the time chosen, what they said it was about, the outcome and
+  the event id) are rows in `state.db`, removed after fourteen days and when the chat is forgotten. The windows are one
+  setting in the same database.
+
 ## Assistant mode
 
 Assistant mode is off until the owner turns it on, and it only ever speaks in the owner's DM.

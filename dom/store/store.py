@@ -76,6 +76,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (34, "0033_credentials_and_permissions.sql"),
     (35, "0034_message_origin.sql"),
     (36, "0035_assistant_usage.sql"),
+    (37, "0036_bookings.sql"),
 ]
 TARGET_VERSION = MIGRATIONS[-1][0]
 
@@ -873,6 +874,7 @@ class Store:
                 return False
             conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
             conn.execute("DELETE FROM chat_topic_reads WHERE chat_id = ?", (chat_id,))
+            conn.execute("DELETE FROM booking_offers WHERE chat_id = ?", (chat_id,))
             if delete_history:
                 marks = ",".join("?" * len(aliases))
                 self.drop_knowledge_messages(conn, f"chat_id IN ({marks})", tuple(aliases))
@@ -4174,6 +4176,105 @@ class Store:
                 return rows
 
         return await self._run(update)
+
+    # ---- booking offers (v0.8.6 W2) ------------------------------------------------------------------------------
+
+    async def create_booking_offer(
+        self, *, chat_id: int, scope: str, sender_id: int | None, friend: str, minutes: int, slots: list[str],
+        context: str, at: str, expires_at: str, limit: int,
+    ) -> int | None:
+        """Keep an offer, unless this chat already has `limit` open ones (None then)."""
+        def insert() -> int | None:
+            with self._tx() as conn:
+                conn.execute(  # offers past their time are closed here too, so old rows do not wait for a restart
+                    "UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'offered' AND expires_at <= ?", (at, at),
+                )
+                conn.execute(
+                    "DELETE FROM booking_offers WHERE state IN ('booked', 'declined', 'expired') AND settled_at < ?",
+                    ((datetime.fromisoformat(at) - timedelta(days=14)).isoformat(),),
+                )
+                (open_offers,) = conn.execute(
+                    "SELECT COUNT(*) FROM booking_offers WHERE chat_id = ? AND state IN ('offered', 'awaiting') AND expires_at > ?",
+                    (chat_id, at),
+                ).fetchone()
+                if open_offers >= limit:
+                    return None
+                cur = conn.execute(
+                    "INSERT INTO booking_offers (chat_id, scope, sender_id, friend, minutes, slots, context, state, created_at, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'offered', ?, ?)",
+                    (chat_id, scope, sender_id, friend, minutes, json.dumps(slots), context, at, expires_at),
+                )
+                return int(cur.lastrowid)
+
+        return await self._run(insert)
+
+    async def get_booking_offer(self, offer_id: int) -> dict[str, Any] | None:
+        def read() -> dict[str, Any] | None:
+            row = self._conn.execute("SELECT * FROM booking_offers WHERE id = ?", (offer_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._run(read)
+
+    async def held_booking_slots(self, at: str) -> list[tuple[str, int]]:
+        """(start, minutes) of every slot in an open offer, so a time already offered to someone is not offered again.
+        An offer awaiting the owner holds only the slot picked."""
+        def read() -> list[tuple[str, int]]:
+            rows = self._conn.execute(
+                "SELECT slots, minutes, picked, state FROM booking_offers WHERE state IN ('offered', 'awaiting') AND expires_at > ?",
+                (at,),
+            ).fetchall()
+            held: list[tuple[str, int]] = []
+            for slots, minutes, picked, state in rows:
+                held.extend((start, minutes) for start in ([picked] if state == "awaiting" and picked else json.loads(slots)))
+            return held
+
+        return await self._run(read)
+
+    async def move_booking_offer(self, offer_id: int, expect: str, state: str, at: str, **fields: Any) -> bool:
+        """Change an offer's state only while it is in `expect` (the check and the write are one statement, so of two
+        picks at once exactly one wins). `fields` may set picked, email, event_id, friend and sender_id."""
+        if not set(fields) <= {"picked", "email", "event_id", "friend", "sender_id"}:
+            raise ValueError("unknown booking field")
+        columns = "".join(f", {name} = ?" for name in fields)
+        settled = state in ("booked", "declined", "expired")
+
+        def update() -> bool:
+            with self._tx() as conn:
+                return conn.execute(
+                    f"UPDATE booking_offers SET state = ?{columns}{', settled_at = ?' if settled else ''} WHERE id = ? AND state = ?",
+                    (state, *fields.values(), *([at] if settled else []), offer_id, expect),
+                ).rowcount == 1
+
+        return await self._run(update)
+
+    async def sweep_booking_offers(self, at: str, *, keep_days: int = 14) -> list[dict[str, Any]]:
+        """Close what can no longer be answered and forget what is old. An offer past its time is expired; one still
+        `awaiting` the owner's tap when Dom starts has lost its card (a restart ends every pending request), so it is
+        expired too and returned, so the friend can be told. Settled rows older than `keep_days` are deleted."""
+        def sweep() -> list[dict[str, Any]]:
+            with self._tx() as conn:
+                lost = [dict(row) for row in conn.execute("SELECT * FROM booking_offers WHERE state = 'awaiting'").fetchall()]
+                conn.execute("UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'awaiting'", (at,))
+                conn.execute(
+                    "UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'offered' AND expires_at <= ?", (at, at),
+                )
+                conn.execute(
+                    "DELETE FROM booking_offers WHERE state IN ('booked', 'declined', 'expired') AND settled_at < ?",
+                    ((datetime.fromisoformat(at) - timedelta(days=keep_days)).isoformat(),),
+                )
+                return lost
+
+        return await self._run(sweep)
+
+    async def latest_sender_name(self, chat_id: int, user_id: int) -> str:
+        def read() -> str:
+            row = self._conn.execute(
+                "SELECT sender_name FROM messages WHERE chat_id = ? AND sender_user_id = ? AND is_bot = 0 AND sender_name != '' "
+                "ORDER BY id DESC LIMIT 1", (str(chat_id), user_id),
+            ).fetchone()
+            return str(row[0]) if row is not None else ""
+
+        return await self._run(read)
 
     # ---- E101 secure secret requests -----------------------------------------------------------------------------
 

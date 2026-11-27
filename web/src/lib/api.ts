@@ -725,6 +725,21 @@ export type GoogleView = {
   calendars: { id: string; name: string }[];
   switches: GoogleSwitch[];
 };
+/** GET and POST /api/integrations/google/booking (dom/web/api_google.py, dom/booking.py): when the owner is willing to meet friends. */
+export type BookingWindow = { days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[]; start: string; end: string };
+export type BookingView = {
+  windows: BookingWindow[];
+  notice_hours: number;
+  ahead_days: number;
+  invite_friends: boolean;
+  /** The owner's timezone, which the windows are in. */
+  zone: string;
+  /** The calendar bookings go to, and whether Dom has made it. */
+  calendar: string;
+  calendar_made: boolean;
+  /** Calendar read and Dom's own calendars are both on. */
+  ready: boolean;
+};
 /** GET /api/integrations/google/calendars: Dom's calendars as Google shows them now. `upcoming` is null when Google could not say. */
 export type GoogleCalendar = { id: string; name: string; color: string; upcoming: number | null; more: boolean };
 

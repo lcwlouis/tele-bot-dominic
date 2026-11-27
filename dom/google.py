@@ -77,10 +77,10 @@ STALE = "Google was switched off, disconnected or connected to another account s
 UNCERTAIN = "Google did not confirm that: it may or may not have happened. Check before trying again."
 # The approval kinds whose cards a switch going off cancels.
 SWITCH_ACTIONS: dict[str, tuple[str, ...]] = {
-    "calendar_write": ("calendar_create", "calendar_add", "calendar_move", "calendar_delete"),
+    "calendar_write": ("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "booking_confirm"),
     "gmail_drafts": ("gmail_draft",),
 }
-ALL_GOOGLE_ACTIONS = ("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft")
+ALL_GOOGLE_ACTIONS = ("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm")
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("dom_google_deadline", default=None)
 NAMESPACE, TOKEN_KEY, CALENDARS_KEY = "google", "oauth", "calendars"
 UNKNOWN_ACCOUNT = "unknown"  # a connection made before the account's id was kept
@@ -368,7 +368,7 @@ class GoogleIntegration:
             raise GoogleError("Google has not granted Dom his own calendars. Connect Google again.")
         if all(item["id"] != calendar_id for item in await self.own_calendars()):
             raise GoogleError("Dom did not make that calendar.")
-        await self._cancel(("calendar_add", "calendar_move", "calendar_delete"), tag=calendar_id)
+        await self._cancel(("calendar_add", "calendar_move", "calendar_delete", "booking_confirm"), tag=calendar_id)
         async with self.calendar_lock(calendar_id):
             with self.budget(FOREGROUND_SECONDS):
                 await self.call(

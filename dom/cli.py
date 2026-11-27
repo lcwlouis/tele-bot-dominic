@@ -179,6 +179,7 @@ async def run(home: Path) -> bool:
             await app.plugins.cleanup_drafts()
             await app.desktop_permissions.expire_pending()
             await app.secret_requests.expire_pending()
+            await app.booking.recover()
             if app.desktop_worker is not None:
                 await app.desktop_worker.recover()
             app.dispatch.jobs.register("habits", habits.due, partial(habits.run, app))
