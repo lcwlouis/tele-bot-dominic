@@ -20,6 +20,7 @@
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
+  import SectionTabs from "$lib/components/kit/SectionTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import Confirm from "$lib/components/work/Confirm.svelte";
   import { Badge } from "$lib/components/ui/badge";
@@ -225,12 +226,14 @@
     </Card.Root>
   {/if}
 
-  <Tabs.Root bind:value={section} class="grid gap-5">
-    <Tabs.List class="w-full justify-start overflow-x-auto sm:w-auto">
-      <Tabs.Trigger value="logins">Saved logins</Tabs.Trigger>
-      <Tabs.Trigger value="permissions">Permissions</Tabs.Trigger>
-      <Tabs.Trigger value="history">Approvals history</Tabs.Trigger>
-    </Tabs.List>
+  <Tabs.Root bind:value={section}>
+    <SectionTabs
+      items={[
+        { value: "logins", label: "Saved logins" },
+        { value: "permissions", label: "Permissions" },
+        { value: "history", label: "Approvals history" },
+      ]}
+    />
 
     <!-- Tab 1: Saved logins, owner secrets, and encryption key -->
     <Tabs.Content value="logins" class="grid gap-5">

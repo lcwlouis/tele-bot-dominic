@@ -2153,6 +2153,26 @@ class Store:
             )
         ])
 
+    async def turns_between(self, chat_id: int | str, start: str, end: str) -> list[dict[str, Any]]:
+        """One chat's turns that started in [start, end] (UTC ISO strings), oldest first, for matching Dom's
+        messages to the turn that sent them."""
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT id, at, model, fallback, calls, duration_ms, first_bubble_ms, trace, model_calls FROM turns "
+                "WHERE chat_id = ? AND at >= ? AND at <= ? ORDER BY at, id LIMIT 500",
+                (str(chat_id), start, end),
+            )
+        ])
+
+    async def usage_between(self, chat_id: int, start: str, end: str) -> list[tuple[str, float]]:
+        """Each paid call's time and cost in one chat in [start, end] (UTC ISO strings)."""
+        return await self._run(lambda: [
+            (row[0], row[1]) for row in self._conn.execute(
+                "SELECT at, cost_usd FROM usage WHERE chat_id = ? AND at >= ? AND at <= ? ORDER BY at LIMIT 5000",
+                (chat_id, start, end),
+            )
+        ])
+
     async def recent_attention_turns(self) -> list[dict[str, Any]]:
         return await self._run(lambda: [
             dict(row) for row in self._conn.execute(

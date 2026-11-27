@@ -6,6 +6,9 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **A tidier dashboard.** The Memory file list has a filter, groups with sticky headings and compact rows. Work's tasks read as a short title (the brief's first clause), a status chip and the result's first line, with delete in a row menu. Chats → Your DM shows Talk's bubbles, and the (i) on Dom's names the turn that sent them: model, tokens in, cached and out, cost, time taken and lane (`GET /api/chats/{id}/messages` adds them for your DM, matched from the turn log and usage rows). Access uses Settings' section tabs. The sidebar drops the "Quiet Orbit" subtitle and the Workspace list, which repeated Work's and System's tabs, and keeps Waiting for you at its foot with its count. Phone tab strips open where they were, with no jump or slide. Talk on a phone fills the screen under its header, keeps Trace and Dom right now in the card's own bar, and puts the composer on the keyboard.
+- **One conversation about soul and world.** The dashboard's talk with Dom about SOUL.md now covers WORLD.md too (E117): he may propose a line to add, replace or remove in either file, filed as a waiting proposal and changed only when you approve. It never touches a line you pinned or one tagged to a chat, checked when he proposes it and again on approval. It opens from SOUL.md, from WORLD.md and from the World page.
+
 ## [0.8.5] - 2026-11-27
 
 Dom gets hands, a world of his own and a window into how he thinks. He can browse for you behind per-site approvals, fill saved logins without ever seeing the password, ask you for a secret through a private form, and read your Calendar and Gmail with every change on a card. He has a life sheet with places and routines, a Talk page in the dashboard with a full debug trace of every turn, an owner-DM lane that never waits behind a group, an optional morning plan and evening wrap-up, and video notes whose faces finally move.

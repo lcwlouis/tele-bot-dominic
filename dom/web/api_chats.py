@@ -10,17 +10,20 @@ shows Dom's replies; the dashboard is not a place to read friends' chats.
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from dom import tracer
+from dom import tracer, turn_log
 from dom.reachability import check_reachability
 from dom.telegram import owner
 from dom.traits import NAMES
 from dom.web.api import _local, _preview, _when
+from dom.web.api_talk import _media
 from dom.web.model_settings import _input
 from dom.web.shared import WHO, _chats, _title, owner_app
 from dom.web.studio_settings import MediaStanding, media_standing
@@ -235,6 +238,7 @@ async def read_messages(
     tz = app.dispatch.presence.tz
     now = app.dispatch.now().astimezone(tz)
     rows, next_before = await app.store.get_recent_chat_messages(chat_id, limit, before_id=before)
+    turns = await _message_turns(app, chat_id, rows) if full else {}
     return {
         "chat_id": chat_id,
         "full": full,
@@ -244,10 +248,75 @@ async def read_messages(
             "mine": row.role == "assistant",
             "text": row.text if full else _preview(row.text),
             "at": _when(_local(row.created_at, tz), now),
+            # The owner's DM only: what the bubbles need (the exact time, where it was written, any media) and, on
+            # Dom's messages, the turn that sent them.
+            **({
+                "iso": row.created_at, "origin": row.origin, "edited": bool(row.is_edited), "media": _media(row),
+                "turn": turns.get(row.id),
+            } if full else {}),
         } for row in rows],
         "next_before": next_before,
         "has_more": next_before is not None,
     }
+
+
+TURN_LEAD = timedelta(minutes=15)  # how long before its first bubble a turn may have started
+TURN_SLACK = timedelta(seconds=2)  # a bubble saved just after the turn's clock stopped still belongs to it
+
+
+def _tokens(calls: list[dict], key: str) -> int | None:
+    values = [call.get(key) for call in calls if isinstance(call.get(key), int)]
+    return sum(values) if values else None
+
+
+async def _message_turns(app, chat_id: int, rows) -> dict[int, dict]:
+    """The turn behind each of Dom's messages on this page, by message row id: the last turn in this chat that started
+    before the message and was still running when it was saved. Model, tokens (in, cached, out) over every call of the
+    turn, its cost from the usage rows written while it ran, how long it took and the lane it ran in. A message no turn
+    covers (a reminder, an opener before the turn log) has none."""
+    sent = [(row.id, row.created_at) for row in rows if row.role == "assistant"]
+    if not sent:
+        return {}
+    try:
+        times = [datetime.fromisoformat(at).astimezone(timezone.utc) for _, at in sent]
+        start, end = min(times) - TURN_LEAD, max(times) + TURN_SLACK
+        turns = await app.store.turns_between(chat_id, start.isoformat(), end.isoformat())
+        costs = [
+            (datetime.fromisoformat(stamp), cost)
+            for stamp, cost in await app.store.usage_between(chat_id, start.isoformat(), (end + TURN_LEAD).isoformat())
+        ]
+    except Exception as error:  # a bad stamp or a store error: the bubbles go without it
+        log.warning("could not match chat %s messages to their turns (%s)", chat_id, type(error).__name__)
+        return {}
+    spans = []
+    for turn in turns:
+        try:
+            began = datetime.fromisoformat(turn["at"])
+        except ValueError:
+            continue
+        spans.append((began, began + timedelta(milliseconds=turn["duration_ms"]) + TURN_SLACK, turn))
+    found: dict[int, dict] = {}
+    for (row_id, _), at in zip(sent, times):
+        match = next((span for span in reversed(spans) if span[0] <= at <= span[1]), None)
+        if match is None:
+            continue
+        began, ended, turn = match
+        try:
+            calls = [call for call in json.loads(turn["model_calls"] or "[]") if isinstance(call, dict)]
+            visits = turn_log.visits_in(json.loads(turn["trace"] or "[]"))
+            # Turns from before the fast lane have no lane in their visits: they ran in the one lane there was.
+            lane = visits[-1].get("lane", "main") if visits else None
+        except (ValueError, TypeError, AttributeError):  # a row written by hand or damaged: the turn shows without them
+            calls, lane = [], None
+        spent = [cost for stamp, cost in costs if began <= stamp <= ended]
+        found[row_id] = {
+            "id": turn["id"], "model": turn["model"], "fallback": bool(turn["fallback"]), "calls": turn["calls"],
+            "input_tokens": _tokens(calls, "input_tokens"), "cached_tokens": _tokens(calls, "cached_tokens"),
+            "output_tokens": _tokens(calls, "output_tokens"),
+            "cost_usd": round(sum(spent), 6) if spent else None,
+            "duration_ms": turn["duration_ms"], "first_bubble_ms": turn["first_bubble_ms"], "lane": lane,
+        }
+    return found
 
 
 async def _done(app, message: str) -> dict:

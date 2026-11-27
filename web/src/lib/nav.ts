@@ -73,14 +73,7 @@ export const destinations: Destination[] = [
   },
 ];
 
-/** The desktop sidebar's "Workspace" group: shortcuts to the utility pages (each lives in Work or System as
- * a tab, which is where the phone reaches them) and the component library. */
-export const workspace: { tab: Tab; home: string }[] = [
-  ...["reminders", "briefs", "library"].map((id) => ({ tab: tabOf("work", id), home: "Work" })),
-  ...["access", "plugins", "spend", "usage", "turns"].map((id) => ({ tab: tabOf("system", id), home: "System" })),
-];
-
-// Everything waiting for the owner's yes or no: reached from Home's card and Chats' pending link, not from the navigation.
+// Everything waiting for the owner's yes or no: at the foot of the desktop sidebar and the top of the phone menu, with its count.
 export const waiting = { label: "Waiting for you", href: "/app/waiting", blurb: "Everything Dom won't do until you say so." };
 
 // One-time secure secret entry form (E101): opened from Dom's Telegram card link or Waiting, not in navigation.
@@ -98,10 +91,6 @@ export function searchHref(text: string, meaning: boolean): string {
 
 // A design reference, reachable only by its address: not in the navigation.
 export const gallery = { label: "Component library", href: "/app/gallery", icon: Layers };
-
-function tabOf(destination: string, id: string): Tab {
-  return destinations.find((item) => item.id === destination)!.tabs!.find((tab) => tab.id === id)!;
-}
 
 /** The destination and tab a path belongs to; unknown paths fall back to Home. */
 export function locate(path: string): { destination: Destination; tab?: Tab } {

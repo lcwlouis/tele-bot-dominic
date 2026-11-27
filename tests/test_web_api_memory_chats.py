@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+from datetime import timedelta, timezone
 
 import pytest
 
@@ -354,6 +355,79 @@ async def test_a_chats_recent_messages_are_full_only_in_the_owners_dm(make_app, 
         assert (await client.get(f"/api/chats/{FRIEND}/messages")).status_code == 404  # not approved
         assert (await client.get("/api/chats/12345/messages")).status_code == 404
         assert (await client.get(f"/api/chats/{GROUP}/messages", headers={"Authorization": ""})).status_code == 403
+
+
+async def test_owner_dm_messages_carry_the_turn_that_sent_them(make_app, browser):
+    """Your DM's bubbles: each of Dom's messages names the turn that was running when it was saved, with its model,
+    tokens over every call, cost from the usage written while it ran, time taken and lane. A message no turn covers,
+    the owner's own messages and every other chat carry none."""
+    from dom.models import StoredMessage
+
+    app = make_app()
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book Club")
+    start = app.dispatch.now()
+    visit = "attention:" + json.dumps({
+        "chat_id": OWNER, "at": start.isoformat(), "duration_ms": 4000, "lane": "fast", "wait_ms": 0,
+        "reason": "reply", "behind": None, "depth": 0, "capped": None,
+    })
+    calls = [
+        {"kind": "triage", "model": "example/triage", "input_tokens": 300, "output_tokens": 5, "cached_tokens": None},
+        {"kind": "chat", "model": "example/chat", "input_tokens": 2000, "output_tokens": 80, "cached_tokens": 1500},
+    ]
+    await app.store.record_turn(start, OWNER, "owner_dm", 2, [visit], "example/chat", False, 4000, "Replied",
+                                model_calls=calls, first_bubble_ms=2500, last_bubble_ms=3900)
+    await app.store.record_turn(start - timedelta(hours=2), OWNER, "owner_dm", 0, ["garbled"], "old/model", False, 10, "Stayed quiet")
+    at = lambda seconds: (start + timedelta(seconds=seconds)).astimezone(timezone.utc).isoformat()  # noqa: E731
+    await app.store.record_usage(at(1), "triage", "example/triage", "llm.example", OWNER, 300, 5, 0.0001, 0)
+    await app.store.record_usage(at(3), "chat", "example/chat", "llm.example", OWNER, 2000, 80, 0.002, 0)
+    await app.store.record_usage(at(3), "chat", "example/chat", "llm.example", GROUP, 2000, 80, 0.5, 0)  # another chat
+    await app.store.record_usage(at(600), "chat", "example/chat", "llm.example", OWNER, 10, 10, 0.9, 0)  # long after
+    for chat_id, role, text, msg_id, seconds in (
+        (OWNER, "user", "Board games Friday?", 1, 0), (OWNER, "assistant", "Yes!", 2, 3),
+        (OWNER, "assistant", "A reminder, later.", 3, 3600), (GROUP, "assistant", "Sounds good.", 4, 3),
+    ):
+        await app.store.record_new_message(StoredMessage(
+            chat_id=str(chat_id), role=role, text=text, msg_id=msg_id, is_bot=role == "assistant", origin="dashboard" if msg_id == 1 else None,
+            created_at=at(seconds), visibility_scope=app.store.visibility_for(chat_id),
+        ))
+    async with browser(app) as client:
+        later, reply, mine = (await client.get(f"/api/chats/{OWNER}/messages")).json()["messages"]
+        theirs = (await client.get(f"/api/chats/{GROUP}/messages")).json()["messages"]
+    assert reply["turn"] == {
+        "id": reply["turn"]["id"], "model": "example/chat", "fallback": False, "calls": 2,
+        "input_tokens": 2300, "cached_tokens": 1500, "output_tokens": 85, "cost_usd": 0.0021,
+        "duration_ms": 4000, "first_bubble_ms": 2500, "lane": "fast",
+    }
+    assert reply["iso"] == at(3) and reply["origin"] is None and reply["edited"] is False and reply["media"] is None
+    assert later["turn"] is None  # no turn was running an hour on
+    assert mine["turn"] is None and mine["origin"] == "dashboard"  # the owner's own message: no turn, its origin
+    assert "turn" not in theirs[0] and "iso" not in theirs[0]  # another chat: one line, no turn details
+
+
+async def test_owner_dm_messages_survive_a_turn_row_they_cannot_read(make_app, browser):
+    """A turn with unreadable model calls or steps still matches, without tokens or a lane; a store failure while
+    matching leaves the bubbles without turns rather than failing the page."""
+    from dom.models import StoredMessage
+
+    app = make_app()
+    start = app.dispatch.now()
+    turn = await app.store.record_turn(start, OWNER, "owner_dm", 1, [], "example/chat", True, 5000, "Replied")
+    app.store._conn.execute("UPDATE turns SET model_calls = 'not json', trace = '{' WHERE id = ?", (turn,))
+    await app.store.record_new_message(StoredMessage(
+        chat_id=str(OWNER), role="assistant", text="Hi.", msg_id=9, is_bot=True,
+        created_at=start.astimezone(timezone.utc).isoformat(), visibility_scope=app.store.visibility_for(OWNER),
+    ))
+    async with browser(app) as client:
+        (message,) = (await client.get(f"/api/chats/{OWNER}/messages")).json()["messages"]
+        assert message["turn"]["fallback"] is True and message["turn"]["input_tokens"] is None
+        assert message["turn"]["lane"] is None and message["turn"]["cost_usd"] is None
+
+        async def broken(*_args):
+            raise RuntimeError("database is locked")
+
+        app.store.turns_between = broken
+        response = await client.get(f"/api/chats/{OWNER}/messages")
+        assert response.status_code == 200 and response.json()["messages"][0]["turn"] is None
 
 
 async def test_chat_actions_run_the_owner_functions(make_app, browser):

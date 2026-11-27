@@ -22,7 +22,8 @@ from dom.guard import check_local_private_text
 from dom.memory_edit import apply_proposal as apply_memory_edit, format_summary as memory_edit_summary, prepare_proposal as prepare_memory_edit
 from dom.plugins.manifest import MAX_BYTES, MAX_FILES, NETWORK_NOTICE, Plugin, validate_name, validate_plugin
 from dom.plugins.trial import STORAGE_NOTICE, test_run_summary
-from dom.home import MAX_SOUL, MAX_SOUL_EDIT, Home
+from dom import notes
+from dom.home import MAX_SOUL, MAX_SOUL_EDIT, WORLD, Home, _foreign, limit_for
 from dom.llm import ChatBudgetExhausted
 from dom.notice import REVIEW_LABEL, link_button, send_notice
 from dom.skills import BODY_LIMIT, Skill, skill_diff, skill_text, write_skill
@@ -67,6 +68,75 @@ def soul_edit_problem(home: Home, old: str, new: str) -> str | None:
     return None
 
 
+WORLD_SOURCE = "world"  # how a world edit writes: never a chat's, so it can't pin a line or touch one a chat owns
+
+
+def edits_world(body: dict) -> bool:
+    """A `soul_edit` proposal may name WORLD.md (E117: one conversation about both files); without `file` it is SOUL.md."""
+    return body.get("file") == WORLD
+
+
+def world_edit_problem(home: Home, old: str, new: str) -> str | None:
+    """Why the edit to WORLD.md cannot be proposed or applied now, or None. `old` and `new` replace a line or part of
+    one; an empty `old` adds `new` as a line, an empty `new` removes the lines `old` covers. A line the owner pinned
+    (a core memory) or tagged to one chat is never touched; `Home.memory_write` checks the same when it applies."""
+    if len(old) > MAX_SOUL_EDIT or len(new) > MAX_SOUL_EDIT:
+        return f"a world edit's old and new text can be at most {MAX_SOUL_EDIT} characters each"
+    if not old.strip() and not new.strip():
+        return "a world edit needs the old text, the new text or both"
+    if not old and "\n" in new.strip():
+        return "add one line at a time to WORLD.md"
+    try:
+        current = home.scoped(allow_private=False).read(WORLD)
+    except (OSError, ValueError):
+        return "WORLD.md is unavailable"
+    if old:
+        if current.count(old) != 1:
+            return "WORLD.md must contain the old text exactly once"
+        start = current.index(old)
+        end = start + len(old.rstrip("\n"))
+        touched = current.split("\n")[current.count("\n", 0, start):current.count("\n", 0, end) + 1]
+        if any(notes.parse_line(line).core is not None for line in touched):
+            return "that line is pinned (a core memory), so it stays as it is"
+        if any(_foreign(line, WORLD_SOURCE, WORLD) for line in touched):
+            return "that line belongs to one chat's notes"
+        edited = current.replace(old, new, 1)
+    else:
+        edited = f"{current.rstrip()}\n- {new.strip().removeprefix('- ')}"
+    limit = limit_for(WORLD)
+    if limit is not None and notes.visible_len(edited) > limit and notes.visible_len(edited) >= notes.visible_len(current):
+        return f"that edit would make WORLD.md longer than {limit} characters"
+    return None
+
+
+def apply_world_edit(home: Home, old: str, new: str) -> None:
+    """Write an approved world edit the way the reflection's world changes write: as Dom, not the owner, so pinned and
+    chat-tagged lines stay protected. Raises ValueError with the reason when it can't."""
+    if problem := world_edit_problem(home, old, new):
+        raise ValueError(problem)
+    scoped = home.scoped(allow_private=False)
+    if not old:
+        result = scoped.memory_write(WORLD, "add", new.strip().removeprefix("- "), source=WORLD_SOURCE)
+    elif not new.strip():
+        result = scoped.memory_write(WORLD, "remove", "", old, source=WORLD_SOURCE)
+    else:
+        result = scoped.memory_write(WORLD, "replace", new, old, source=WORLD_SOURCE)
+    if not result.ok:
+        raise ValueError(f"WORLD.md: {result.error}")
+
+
+def soul_edit_lines(body: dict) -> list[str]:
+    """A soul_edit proposal's change as diff lines. A world edit that adds or removes a line shows only that side."""
+    if not edits_world(body):
+        return [f"- {body['old']}", f"+ {body['new']}"]
+    return [*([f"- {body['old']}"] if body["old"] else []), *([f"+ {body['new']}"] if body["new"].strip() else [])]
+
+
+def edit_problem(home: Home, body: dict) -> str | None:
+    """The problem with a soul_edit proposal's change, for whichever file it names."""
+    return (world_edit_problem if edits_world(body) else soul_edit_problem)(home, body["old"], body["new"])
+
+
 PROPOSAL_KINDS = {
     "soul_edit": "A change to my soul", "skill": "A skill I drafted", "plugin": "A plugin I drafted",
     "memory_fact": "Something to remember", "memory_edit": "An edit to my notes", "lan_address": "A change of LAN address",
@@ -94,6 +164,12 @@ def summary(row: dict) -> str:
     body = json.loads(row["body_json"])
     heading = f"#{row['id']} {row['title']}"
     if row["kind"] == "soul_edit":
+        if edits_world(body):
+            if not body["old"]:
+                return f"{heading}\n\nAdd to WORLD.md:\n{body['new']}"
+            if not body["new"].strip():
+                return f"{heading}\n\nRemove from WORLD.md:\n{body['old']}"
+            return f"{heading}\n\nIn WORLD.md, replace:\n{body['old']}\n\nWith:\n{body['new']}"
         return f"{heading}\n\nReplace:\n{body['old']}\n\nWith:\n{body['new']}"
     if row["kind"] == "skill":
         # The card stays short: what the skill is for and how big a change it is. The full procedure follows as a file.
@@ -161,9 +237,12 @@ class Proposals:
             body = await self._draft_plugin(body, authored=from_brief)
             title = f"Plugin: {body['name']}"
         elif kind == "soul_edit":
-            if not (isinstance(body.get("old"), str) and body["old"] and isinstance(body.get("new"), str)):
+            world = edits_world(body)
+            if not (isinstance(body.get("old"), str) and (body["old"] or world) and isinstance(body.get("new"), str)):
                 raise ValueError("a soul edit needs old and new text")
-            if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
+            if body.get("file") not in (None, WORLD):
+                raise ValueError("a soul edit changes SOUL.md or WORLD.md")
+            if problem := edit_problem(self.app.home, body):
                 raise ValueError(problem)
         elif kind == "skill":
             skill = Skill(body.get("name"), body.get("description"), body.get("body"))
@@ -499,6 +578,12 @@ class Proposals:
         if kind == "cross_chat":
             return
         if kind == "soul_edit":
+            if edits_world(body):
+                try:
+                    apply_world_edit(self.app.home, body["old"], body["new"])
+                except ValueError as error:
+                    raise Refused(str(error)) from None
+                return
             if problem := soul_edit_problem(self.app.home, body["old"], body["new"]):
                 raise Refused(problem)
             self.app.home.replace_soul(body["old"], body["new"])

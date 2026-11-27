@@ -6,13 +6,14 @@
   import Monitor from "@lucide/svelte/icons/monitor";
   import ShieldAlert from "@lucide/svelte/icons/shield-alert";
   import Trash from "@lucide/svelte/icons/trash-2";
+  import RowMenu from "$lib/components/kit/RowMenu.svelte";
+  import * as DropdownMenu from "$lib/components/ui/dropdown-menu";
   import { onMount } from "svelte";
   import type { DeskData, OwnData, StepBudget } from "$lib/api";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import GoneNote from "$lib/components/kit/GoneNote.svelte";
-  import IconButton from "$lib/components/kit/IconButton.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import StripList from "$lib/components/kit/StripList.svelte";
   import type { Status } from "$lib/components/kit/status";
@@ -106,6 +107,7 @@
   const words = (text: string) => text.replaceAll("_", " ");
   const tones = { waiting: "secondary", running: "secondary", starting: "outline", refused: "destructive", error: "destructive", off: "outline" } as const;
   const kindOf = (item: WorkItem) => (item.kind === "desk" ? "Desktop task" : "Own work");
+  const nameOf = (item: WorkItem) => `${item.kind === "desk" ? "desktop task" : "own work task"} ${item.task.id}`;
 
   function cancel(item: WorkItem) {
     if (item.kind === "desk") desk.write("/api/work/desk/cancel", { id: item.task.id });
@@ -232,7 +234,7 @@
     <StripList
       {items}
       key={(item) => item.key}
-      strip={(item) => ({ status: item.status, title: item.title, at: item.at, meta: kindOf(item) })}
+      strip={(item) => ({ status: item.status, title: item.title, at: item.at, line: item.outcome, chip: true })}
       label="Tasks, newest first"
       bind:selected
       search="Filter tasks"
@@ -245,19 +247,21 @@
         {#if item.live}
           <span class="size-8" aria-hidden="true"></span>
         {:else}
-          <IconButton
-            label={`Delete ${item.kind === "desk" ? "desktop task" : "own work task"} ${item.task.id}`}
-            icon={Trash}
-            class="bg-transparent text-muted-foreground hover:bg-coral-tint hover:text-coral"
-            disabled={desk.busy || own.busy}
-            onclick={() => (deleting = item)}
-          />
+          <RowMenu label={`Actions for ${nameOf(item)}`} disabled={desk.busy || own.busy}>
+            <DropdownMenu.Item variant="destructive" onSelect={() => (deleting = item)}>
+              <Trash aria-hidden="true" /> Delete task
+            </DropdownMenu.Item>
+          </RowMenu>
         {/if}
       {/snippet}
       {#snippet details(item)}
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-body">
           <dt class="text-muted-foreground">Task</dt>
-          <dd class="tabular-nums">#{item.task.id}, {item.word}</dd>
+          <dd class="tabular-nums">#{item.task.id}, {kindOf(item).toLowerCase()}, {item.word}</dd>
+          {#if item.brief.replace(/\.$/, "") !== item.title}
+            <dt class="text-muted-foreground">Brief</dt>
+            <dd class="break-words">{item.brief}</dd>
+          {/if}
           {#if item.kind === "desk"}
             {@const task = item.task}
             <dt class="text-muted-foreground">Steps</dt>
