@@ -660,8 +660,9 @@ class StudioConfig(BaseModel):
     default_outfit: str = Field("", pattern=r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?$",
                                description="Wardrobe ID to use when the active preset has no outfit list.")
     keep_cap_mb: int = Field(
-        2048, ge=0, description="Disk space, in MB, for the photos, voice notes and video notes Dom has sent, kept under "
-        "the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). Past it the oldest files are removed; "
+        2048, ge=0, description="Disk space, in MB, for the photos, voice notes and video notes Dom has sent, and the frame "
+        "strips of the clips he is sent, kept under the home's media/ folder (media/<chat id>/<month>/<message id>.<ext>). "
+        "Past it the oldest files are removed; "
         "Telegram's file_id stays on the message so Telegram can still provide them. Zero keeps nothing.",
     )
     look_owner_dm: bool = Field(
@@ -677,6 +678,12 @@ class StudioConfig(BaseModel):
         "itself. The still counts toward the studio-wide daily total and its cost (when a cloud image backup makes it) "
         "is recorded and capped like any photo; it does not use the chat's photo allowance. If the still can't be made, "
         "the note uses the portrait.",
+    )
+    spontaneity: Literal["rarely", "sometimes", "often"] = Field(
+        "sometimes", description="How readily Dom adds a voice note, video note or photo on his own, in replies and when "
+        "he writes first: rarely (the prompt says to keep them for when they matter, and the per-chat limits are halved "
+        "and the gaps doubled), sometimes (the default) or often (the prompt invites them, the per-chat limits double "
+        "and the gaps halve). It never passes the global daily total, the spend caps or the switches above.",
     )
     event_day_max_multiplier: float = Field(
         2, ge=0, le=10, allow_inf_nan=False, description="The most Dom can raise his own media limits on a special day "
@@ -789,7 +796,8 @@ class Config(BaseModel):
     )
     media_input_max_mb: float = Field(
         6, gt=0, le=20, allow_inf_nan=False, description="Largest attachment, in MB, that is sent to the chat model itself; "
-        "a bigger one is described by the media model instead.",
+        "a bigger one is described by the media model instead. A clip his model can't take as video is cut into frame "
+        "strips instead (a Telegram bot can download up to 20 MB), whatever its size.",
     )
     leak_check: bool = Field(True, description="Use Jev to screen eligible outbound text and network plugin calls for private information.")
     leak_scan: LeakScan | None = Field(

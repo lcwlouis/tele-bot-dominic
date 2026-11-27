@@ -114,6 +114,33 @@ tiny generated image, cached per address and model. Unknown means text-only. The
 test and the list fetch run in the background (never while a reply waits), and
 the owner can run the test again with `POST /api/media/inputs/probe`.
 
+**Clips: frame strips and a transcript.** A video, animation or video note that
+the chat model can't take as video is, when it takes images and `ffmpeg` is
+installed, cut into frame strips on arrival, in the background (never while a
+reply waits). A strip is one image: evenly spaced frames, one every 2 to 5
+seconds and at most 16, each with its time burnt in, made on this machine. A clip
+is downloaded up to 20 MB (Telegram's own limit for a bot; the 8 MB limit applies
+only to a clip described whole) and at most the first 5 minutes 20 seconds are
+looked at, in at most 4 strips; Dom's note on the clip says when it was cut. Its
+sound goes to a model as a small audio file for a transcript: **the media model
+when its route takes audio** (set `input = ["text", "image", "audio"]` on the
+media route), else **the chat model when it takes audio**, else nothing is
+transcribed and the note says so. The chat model then gets a one-strip clip as an
+image with the transcript as text, in place of the clip. A clip of several
+strips is described by the media model instead, one call per strip in turn, each
+told what came before, and joined; the description (with the transcript) is what
+Dom sees of it. A kept strip is a JPEG in the same private `media/` folder as the
+photos Dom sends (`<message id>-strip<N>.jpg`), counted in `studio.keep_cap_mb`
+and removed with the oldest files; once Dom has answered, the media model
+describes the strip from that file so a later turn remembers the clip. The
+strips and the sound go only to the models above, under the usual spend caps. A
+chat model that takes video natively still gets a small clip itself; a clip too
+big for it is cut into strips instead. Without `ffmpeg`, or with a chat model
+that takes no images, the media model describes the whole clip (up to 8 MB), as
+before. Install `ffmpeg` from your system's package manager (`apt install ffmpeg`
+on a Raspberry Pi, `brew install ffmpeg` on a Mac); Dom runs the `ffmpeg` found
+on `PATH`, as the look before sending does.
+
 A model that can't take a type, or a server that refuses the request, falls back
 to a description from the media model; the Turn log says `media described` or
 `media refused`. With triage turned on, a photo is still described once for the
@@ -127,7 +154,8 @@ did not fit the per-prompt limits, and when the file can't be downloaded for the
 turn (if that fails too, its `<media>` tag says it couldn't be loaded). Global search and the dashboard never showed
 descriptions, so nothing changes there.
 
-**What he keeps.** Each photo, voice note and video note Dom sends is saved
+**What he keeps.** Each photo, voice note and video note Dom sends (and the frame
+strips of the clips he is sent) is saved
 under `media/<chat id>/<YYYY-MM>/<message id>.<ext>` in the home, with the scene
 or speech text, kind, time and Telegram's `file_id` on the message. The folder
 is owner-only (0700); files are written to a temporary name and moved into

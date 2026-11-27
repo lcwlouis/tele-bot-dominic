@@ -1409,14 +1409,19 @@ class Store:
         self, *, chat_id: int | str | None = None, oldest_first: bool = False, limit: int | None = None,
         before: tuple[str, int] | None = None,
     ) -> list[dict[str, Any]]:
-        """Messages whose generated file is still on disk, as {chat_id, msg_id, created_at, media}. `before` is the
+        """Messages whose file (a generated one, or the frame strips of a clip someone sent) is still on disk, as
+        {chat_id, msg_id, created_at, media}. `before` is the
         (created_at, row id) a previous page ended at."""
         return await self._run(self._kept_media, None if chat_id is None else str(chat_id), oldest_first, limit, before)
 
     def _kept_media(
         self, chat_id: str | None, oldest_first: bool, limit: int | None, before: tuple[str, int] | None,
     ) -> list[dict[str, Any]]:
-        where, args = ["json_valid(media_json)", "json_extract(media_json, '$.file') IS NOT NULL"], []
+        where = [
+            "json_valid(media_json)",
+            "(json_extract(media_json, '$.file') IS NOT NULL OR json_extract(media_json, '$.strips') IS NOT NULL)",
+        ]
+        args: list[Any] = []
         if chat_id is not None:
             where.append("chat_id = ?")
             args.append(chat_id)

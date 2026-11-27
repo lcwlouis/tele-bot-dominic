@@ -6,6 +6,9 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **How readily Dom adds media.** `studio.spontaneity` (Settings → What Dom may do → Media: rarely, sometimes or often; sometimes is today's behaviour) changes the studio turn note's wording and scales every per-chat media limit (halved or doubled) and gap (doubled or halved) in replies and openers alike, always inside the global daily total, the switches and the spend caps.
+- **Dom watches clips as frame strips.** A video, animation or video note his chat model can't take as video is cut with ffmpeg into one image of evenly spaced, time-stamped frames (a frame every 2 to 5 seconds, up to 16 per strip) plus a transcript of its sound (the media route's audio input, else the chat model's, else none and the note says so), both on arrival in the background, and the chat model gets the strip and the text in place of the clip. Long clips become up to four strips, described in turn and joined, up to 5 minutes 20 seconds with a note when cut; clips up to Telegram's 20 MB are taken, not just 8 MB. The strips are kept beside the media files, count toward `studio.keep_cap_mb`, and feed Dom's later description. Without ffmpeg or an image-capable chat model the media model describes the whole clip as before.
+
 ## [0.8.5] - 2026-11-27
 
 Dom gets hands, a world of his own and a window into how he thinks. He can browse for you behind per-site approvals, fill saved logins without ever seeing the password, ask you for a secret through a private form, and read your Calendar and Gmail with every change on a card. He has a life sheet with places and routines, a Talk page in the dashboard with a full debug trace of every turn, an owner-DM lane that never waits behind a group, an optional morning plan and evening wrap-up, and video notes whose faces finally move.

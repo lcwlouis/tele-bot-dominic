@@ -19,12 +19,22 @@ if TYPE_CHECKING:
 
 Kind = Literal["voice", "video_note", "photo", "special"]
 SWITCH = {"voice": "voice", "video_note": "video_notes", "photo": "images", "special": "special"}
-STUDIO_NOTE = (
-    "Most replies stay text. Use these sparingly when they add something. Never speak private details aloud, "
-    "describe the machinery behind these actions, or use media in a private reply. These are fields of your final "
-    "JSON answer, next to \"bubbles\": they are not tools, so never call a tool named image, photo, voice or "
-    "video_note. Writing [photo] or similar in a bubble sends nothing."
+Spontaneity = Literal["rarely", "sometimes", "often"]
+# How readily Dom adds media on his own (studio.spontaneity): the lead of the turn note, and a multiplier on every
+# per-chat limit (gaps divide by it). The global daily total, the switches and the spend caps stay as they are.
+SPONTANEITY_SCALE: dict[Spontaneity, float] = {"rarely": 0.5, "sometimes": 1.0, "often": 2.0}
+STUDIO_LEADS: dict[Spontaneity, str] = {
+    "rarely": "Most replies stay text. Keep these for the rare moment one truly adds something; when in doubt, send text.",
+    "sometimes": "Most replies stay text. Use these sparingly when they add something.",
+    "often": "Send one when it fits: a voice note or a photo now and then makes you feel real. "
+             "Quick back-and-forth can stay text.",
+}
+STUDIO_RULES = (
+    "Never speak private details aloud, describe the machinery behind these actions, or use media in a private reply. "
+    "These are fields of your final JSON answer, next to \"bubbles\": they are not tools, so never call a tool named "
+    "image, photo, voice or video_note. Writing [photo] or similar in a bubble sends nothing."
 )
+STUDIO_NOTE = f"{STUDIO_LEADS['sometimes']} {STUDIO_RULES}"  # today's wording, and the default level
 UNAVAILABLE_NOTE = (
     "You can't send voice notes, video notes or photos right now. Never write one out as text or promise one; "
     "if asked, say not right now, in your own words."
@@ -105,10 +115,12 @@ def outfits(config: StudioConfig, preset: Preset | None) -> tuple[str, ...]:
     return (config.default_outfit,) if config.default_outfit else ()
 
 
-def turn_note(remaining: dict[Kind, int], wardrobe: tuple[str, ...], event: str = "") -> str:
+def turn_note(
+    remaining: dict[Kind, int], wardrobe: tuple[str, ...], event: str = "", spontaneity: Spontaneity = "sometimes",
+) -> str:
     if not remaining:
         return ""
-    lines = [STUDIO_NOTE, "At most one of these per reply."]
+    lines = [f"{STUDIO_LEADS[spontaneity]} {STUDIO_RULES}", "At most one of these per reply."]
     if event:
         lines.append(event)
     for kind, count in remaining.items():
@@ -142,23 +154,34 @@ class Standing:
         return max(self.gaps.values(), default=None)
 
 
-def windows(tier: StudioTier) -> dict[Kind, tuple[int, timedelta]]:
-    """Each kind's cap and rolling window; a daily video or image limit wins when set."""
+def scaled(limit: int, scale: float) -> int:
+    """A per-chat limit under the spontaneity multiplier: rounded down, never to zero from a limit the owner left on
+    (a zero limit stays off)."""
+    return limit if limit <= 0 or scale == 1.0 else max(1, floor(limit * scale + 1e-9))
+
+
+def windows(tier: StudioTier, scale: float = 1.0) -> dict[Kind, tuple[int, timedelta]]:
+    """Each kind's cap (under the spontaneity multiplier) and rolling window; a daily video or image limit wins when set."""
     day, week = timedelta(days=1), timedelta(days=7)
-    return {
+    caps = {
         "voice": (tier.voice_daily, day),
         "video_note": (tier.video_weekly, week) if tier.video_daily is None else (tier.video_daily, day),
         "photo": (tier.image_weekly, week) if tier.image_daily is None else (tier.image_daily, day),
         "special": (tier.special_daily, day),
     }
+    return {kind: (scaled(cap, scale), window) for kind, (cap, window) in caps.items()}
 
 
-def gap_minutes(tier: StudioTier, kind: Kind) -> int:
+def gap_minutes(tier: StudioTier, kind: Kind, scale: float = 1.0) -> int:
+    """A kind's gap in minutes: the divisor of the spontaneity multiplier lengthens it for rarely, shortens it for often."""
     own = getattr(tier, GAP_FIELDS[kind])
-    return tier.gap_minutes if own is None else own
+    minutes = tier.gap_minutes if own is None else own
+    return minutes if scale == 1.0 else round(minutes / scale)
 
 
-def gap_ends(tier: StudioTier, rows: list[tuple[str, datetime]], now: datetime) -> dict[Kind, datetime]:
+def gap_ends(
+    tier: StudioTier, rows: list[tuple[str, datetime]], now: datetime, scale: float = 1.0,
+) -> dict[Kind, datetime]:
     """When each kind's minimum gap ends, for the kinds still waiting. A kind with a gap of its own is spaced only from
     its own last item. The kinds without one share the general `gap_minutes` and are spaced from each other, so a
     config that sets no per-kind gap behaves as it always did: any media holds back the next."""
@@ -167,7 +190,7 @@ def gap_ends(tier: StudioTier, rows: list[tuple[str, datetime]], now: datetime) 
     for kind in GAP_FIELDS:
         lane = shared if kind in shared else {kind}
         last = max((stamp for item, stamp in rows if item in lane), default=None)
-        if last is not None and (end := last + timedelta(minutes=gap_minutes(tier, kind))) > now:
+        if last is not None and (end := last + timedelta(minutes=gap_minutes(tier, kind, scale))) > now:
             ends[kind] = end
     return ends
 
@@ -180,19 +203,20 @@ def boosted(limit: int, boost: float) -> int:
 
 def standing(
     limits: StudioLimits, scope: str, total: int, rows: list[tuple[str, datetime]], now: datetime,
-    boost: float = 1.0,
+    boost: float = 1.0, spontaneity: Spontaneity = "sometimes",
 ) -> Standing:
     """`total` is the studio items sent across all chats in the last 24 hours (plus any in flight); `rows` is this
     chat's rolling week of deliveries. `boost` is the event-day multiplier on every limit (1 when there is none): `left`
-    counts what the boosted limits allow, `normal` what the usual ones do."""
-    tier = getattr(limits, scope)
+    counts what the boosted limits allow, `normal` what the usual ones do. `spontaneity` scales every per-chat limit and
+    gap; the global daily total is the owner's ceiling and is never scaled, so no level raises past it."""
+    tier, scale = getattr(limits, scope), SPONTANEITY_SCALE[spontaneity]
     daily_normal, daily_boosted = max(limits.daily - total, 0), max(boosted(limits.daily, boost) - total, 0)
     left, normal, used = {}, {}, {}
-    for kind, (cap, window) in windows(tier).items():
+    for kind, (cap, window) in windows(tier, scale).items():
         count = used[kind] = sum(item == kind and stamp > now - window for item, stamp in rows)
         normal[kind] = max(min(cap - count, daily_normal), 0)
         left[kind] = max(min(boosted(cap, boost) - count, daily_boosted), 0)
-    return Standing(left, daily_boosted, gap_ends(tier, rows, now), normal, used)
+    return Standing(left, daily_boosted, gap_ends(tier, rows, now, scale), normal, used)
 
 
 class StudioQuota:
@@ -209,7 +233,8 @@ class StudioQuota:
         if not any(enabled(config, scope, kind) for kind in SWITCH) or chat_id in self._pending:
             return {}
         total, rows = await self.store.studio_usage(chat_id, now)
-        now_standing = standing(config.limits, scope, total + len(self._pending), rows, now, await self._boost(now))
+        now_standing = standing(
+            config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity)
         result = {}
         for kind, left in now_standing.left.items():
             if left <= 0 or kind in now_standing.gaps or not enabled(config, scope, kind):
@@ -228,7 +253,8 @@ class StudioQuota:
         """Where a chat stands now, for the dashboard. It reserves nothing and takes no lock: a reply in flight still
         counts toward the global total."""
         total, rows = await self.store.studio_usage(chat_id, now)
-        return standing(config.limits, scope, total + len(self._pending), rows, now, await self._boost(now))
+        return standing(
+            config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity)
 
     async def has_room_for_still(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> bool:
         """After this chat's reserved video note, is there still a slot in the daily total for the still it is filmed
@@ -236,7 +262,7 @@ class StudioQuota:
         async with self._lock:
             total, rows = await self.store.studio_usage(chat_id, now)
             return standing(
-                config.limits, scope, total + len(self._pending), rows, now, await self._boost(now),
+                config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity,
             ).daily_left > 0
 
     async def remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:
