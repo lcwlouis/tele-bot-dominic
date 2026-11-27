@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from dom.store import Store
 
 Kind = Literal["chat", "triage", "media", "memory", "search", "reflection", "guard", "desktop", "escalation",
-               "studio_voice", "studio_image", "studio_video", "embedding", "assistant"]
+               "studio_voice", "studio_image", "studio_video", "embedding", "assistant", "subscription"]
 log = logging.getLogger("dom.usage")
 
 # Which monthly area a kind of paid call is counted under. Everything counts toward the monthly cap whatever its area;
@@ -114,6 +114,12 @@ def model_request(kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitab
         yield
     finally:
         _request.reset(token)
+
+
+def request_chat_id() -> int | None:
+    """The chat the model request in progress is for, or None outside a request."""
+    request = _request.get()
+    return request.chat_id if request is not None else None
 
 
 def request_kind(default: Kind) -> Kind:

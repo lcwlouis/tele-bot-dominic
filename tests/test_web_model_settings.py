@@ -807,7 +807,7 @@ async def test_permission_save_writes_config_and_applies_without_restart(dashboa
             "memory_self_edit": False, "openers": False, "assistant": False, "openers_groups": False, "openers_friends": False,
             "ephemeral_replies": False, "leak_check": True,
             "studio_voice": False, "studio_video": False, "studio_images": False, "studio_special": False,
-            "studio_profile": False,
+            "studio_profile": False, "acp_codex": False, "acp_claude": False, "acp_antigravity": False,
         }
         assert initial["revision"] == (await client.get(API)).json()["revision"]
         result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={"revision": initial["revision"], "id": "openers", "enabled": True})
@@ -984,3 +984,24 @@ async def test_embedding_role_is_tested_with_an_embedding_request_saved_and_stag
         assert tested["ok"] and tested["reply"] == "3 dimensions"
         # Embedding may be left unset: meaning search is then off.
         assert (await _save(client, "embedding", None)).status_code == 200
+
+
+async def test_a_subscription_agent_switch_saves_and_puts_the_agent_in_the_routes_at_once(dashboard):
+    from dom.acp import AcpClient
+
+    app, path, browser = dashboard
+    async with browser() as client:
+        revision = (await client.get(PERMISSIONS)).json()["revision"]
+        items = {item["id"]: item for item in (await client.get(PERMISSIONS)).json()["items"]}
+        assert "Not zero data retention" in items["acp_claude"]["description"] and "terms" in items["acp_claude"]["description"]
+        result = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={"revision": revision, "id": "acp_claude", "enabled": True})
+        assert result.status_code == 200, result.text
+        assert tomllib.loads(path.read_text())["acp"] == {"claude": {"enabled": True}}
+        assert app.config.acp.claude.enabled and not app.config.acp.codex.enabled
+        for route in (app.escalation_client, app.draft_client):
+            assert isinstance(route.providers[0], AcpClient) and route.providers[0].name == "claude"
+        assert not any(isinstance(provider, AcpClient) for provider in app.client.providers)  # chat never has one
+        off = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
+            "revision": result.json()["revision"], "id": "acp_claude", "enabled": False})
+        assert off.status_code == 200
+        assert not any(isinstance(provider, AcpClient) for provider in app.escalation_client.providers)

@@ -889,6 +889,12 @@ class Permission:
     description: str
 
 
+ACP_DESCRIPTION = (
+    "{agent} on your {plan} plan, through {command}, for escalation and drafting in your DM only. Not zero data "
+    "retention: {provider} keeps your prompts under its consumer terms and may train on them unless you opt out. "
+    "Running a bot on a subscription may break {provider}'s terms. Install it and sign in on the machine that runs "
+    "it first; see docs/acp-agents.md."
+)
 # What Dom may do: switches the owner flips from the dashboard. Each is read from app.config on every use, so a save
 # applies at once, without a restart.
 PERMISSIONS = (
@@ -918,6 +924,14 @@ PERMISSIONS = (
     Permission("studio_profile", ("studio", "profile_photo_follows_preset"), "Match the Everywhere preset’s profile photo",
                "Dom updates his Telegram profile photo when his Everywhere preset’s outfit changes, at most once per "
                "the interval you choose."),
+    # Subscription agents (pilot, v0.8.6 W7). Shown on the Models tab, not under What Dom may do; each switch rebuilds
+    # the model routes so it applies at once.
+    Permission("acp_codex", ("acp", "codex", "enabled"), "Codex (OpenAI subscription)", ACP_DESCRIPTION.format(
+        agent="Codex", plan="ChatGPT", provider="OpenAI", command="codex-acp")),
+    Permission("acp_claude", ("acp", "claude", "enabled"), "Claude (Anthropic subscription)", ACP_DESCRIPTION.format(
+        agent="Claude", plan="Claude", provider="Anthropic", command="claude-agent-acp")),
+    Permission("acp_antigravity", ("acp", "antigravity", "enabled"), "Antigravity (Google subscription)", ACP_DESCRIPTION.format(
+        agent="Antigravity", plan="Google AI", provider="Google", command="agy acp")),
 )
 # What a studio switch needs before it can be turned on, and where the owner sets that up.
 STUDIO_NEEDS = {
@@ -930,6 +944,7 @@ STUDIO_NEEDS = {
 PermissionId = Literal[
     "memory_self_edit", "openers", "assistant", "openers_groups", "openers_friends", "ephemeral_replies", "leak_check",
     "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
+    "acp_codex", "acp_claude", "acp_antigravity",
 ]
 assert set(get_args(PermissionId)) == {item.id for item in PERMISSIONS}
 
@@ -1038,6 +1053,8 @@ async def update_permission(request: Request) -> Permissions:
     async def turned_on(was_on: bool) -> None:
         if permission.id == "studio_profile" and update.enabled and not was_on:
             await app.store.kv_set(PROFILE_AT, "")  # the first sync after turning it on may happen at once
+        if permission.path[0] == "acp":
+            app.apply_model_routes(app.config)  # the agents sit in the escalation and drafting chains, built at once
 
     saved = await _save_now(app, update.revision, permission.path, update.enabled, refuse_unserved, turned_on)
     return await asyncio.to_thread(_permissions, saved)

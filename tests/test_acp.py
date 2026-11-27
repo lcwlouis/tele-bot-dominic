@@ -1,0 +1,458 @@
+"""Subscription agents over ACP (v0.8.6 W7): the client against a fake agent process, the routing limits, the owner-DM
+guard, the switches, usage attribution and the migration. No real agent runs here."""
+
+import asyncio
+import json
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+import httpx
+import pytest
+from pydantic import ValidationError
+
+from dom import acp
+from dom.acp import AcpClient, AcpError, AcpNotAllowed, ask, as_message, launch, render_prompt
+from dom.config import AcpAgent, AcpConfig, Config, ModelEndpoint, load_config
+from dom.llm import FallbackClient, routed_client
+from dom.usage import model_request
+from tghelpers import FRIEND, OWNER, no_sleep
+
+FAKE = str(Path(__file__).parent / "fixtures" / "fake_acp_agent.py")
+ENV = {"PATH": os.environ.get("PATH", "")}
+
+
+@pytest.fixture(autouse=True)
+def quick_stops(monkeypatch):
+    monkeypatch.setattr(acp, "CANCEL_GRACE", 0.3)
+    monkeypatch.setattr(acp, "STOP_GRACE", 0.5)
+
+
+def run(tmp_path, mode="ok", **kw):
+    log = tmp_path / "agent.jsonl"
+    argv = [sys.executable, FAKE, mode, str(log)]
+    return ask("Fake", argv, kw.pop("env", ENV), kw.pop("prompt", "hi"), timeout=kw.pop("timeout", 10), **kw), log
+
+
+def events(log, name=None):
+    rows = [json.loads(line) for line in Path(log).read_text().splitlines()] if Path(log).exists() else []
+    return [row for row in rows if name is None or row["event"] == name]
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+# ---- the client against a fake agent -----------------------------------------------------------------------------------
+
+
+async def test_a_prompt_streams_its_text_and_ignores_thoughts_and_tool_progress(tmp_path):
+    call, log = run(tmp_path, prompt="say hello")
+    assert await call == "Hello, owner."
+    (initialize,) = events(log, "initialize")
+    assert initialize["params"]["protocolVersion"] == 1 and initialize["params"]["clientCapabilities"] == {}
+    (session,) = events(log, "session_new")
+    assert session["params"]["mcpServers"] == [] and "_meta" not in session["params"]
+    assert events(log, "prompt")[0]["text"] == "say hello"
+    assert not alive(events(log, "start")[0]["pid"])  # one process per call, gone when it ends
+
+
+async def test_the_session_works_in_an_empty_directory_that_is_removed_afterwards(tmp_path):
+    call, log = run(tmp_path)
+    await call
+    directory = Path(events(log, "session_new")[0]["params"]["cwd"])
+    assert directory.name.startswith("dom-acp-") and not directory.exists()
+
+
+async def test_every_permission_request_is_refused_with_the_agents_reject_option(tmp_path):
+    call, log = run(tmp_path, "permission")
+    assert await call == "done after refusal"
+    (answer,) = events(log, "permission_answer")
+    assert answer["result"] == {"outcome": {"outcome": "selected", "optionId": "no"}}
+
+
+def test_a_permission_request_without_a_reject_option_is_cancelled():
+    assert acp.refusal({"options": [{"optionId": "y", "kind": "allow_once"}]}) == {"outcome": "cancelled"}
+    assert acp.refusal(None) == {"outcome": "cancelled"}
+
+
+async def test_session_meta_is_sent_when_given(tmp_path):
+    call, log = run(tmp_path, meta={"claudeCode": {"options": {"tools": []}}})
+    await call
+    assert events(log, "session_new")[0]["params"]["_meta"] == {"claudeCode": {"options": {"tools": []}}}
+
+
+async def test_a_hard_timeout_cancels_the_prompt_and_kills_the_process(tmp_path):
+    call, log = run(tmp_path, "hang", timeout=1)
+    with pytest.raises(AcpError, match="did not answer within 1 s"):
+        await call
+    assert events(log, "cancel") == [{"event": "cancel", "params": {"sessionId": "s1"}}]
+    assert not alive(events(log, "start")[0]["pid"])
+
+
+async def test_cancelling_the_task_cancels_the_prompt_and_kills_the_process(tmp_path):
+    call, log = run(tmp_path, "hang")
+    task = asyncio.create_task(call)
+    while not events(log, "prompt"):
+        await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events(log, "cancel")
+    assert not alive(events(log, "start")[0]["pid"])
+
+
+async def test_a_crash_is_an_error_not_a_hang(tmp_path):
+    call, _ = run(tmp_path, "crash")
+    with pytest.raises(AcpError, match="exited before answering"):
+        await call
+
+
+async def test_an_agent_that_is_not_installed_is_an_error(tmp_path):
+    with pytest.raises(AcpError, match="could not start"):
+        await ask("Fake", [str(tmp_path / "no-such-agent")], ENV, "hi", timeout=5)
+
+
+async def test_a_refusal_or_empty_reply_is_an_error(tmp_path):
+    call, _ = run(tmp_path, "empty")
+    with pytest.raises(AcpError, match="gave no reply"):
+        await call
+
+
+async def test_log_noise_on_stdout_is_skipped(tmp_path):
+    call, _ = run(tmp_path, "noise")
+    assert await call == "Hello, owner."
+
+
+async def test_a_signed_in_agent_that_asks_to_authenticate_is_authenticated_once(tmp_path):
+    call, log = run(tmp_path, "auth")
+    assert await call == "Hello, owner."
+    assert events(log, "authenticate") == [{"event": "authenticate", "params": {"methodId": "login"}}]
+    assert len(events(log, "session_new")) == 2
+
+
+# ---- launching: environment, tools off, a remote host -----------------------------------------------------------------
+
+
+def cfg(tmp_path, **agents):
+    return Config(home=tmp_path, owner_id=OWNER, acp=AcpConfig(**{name: AcpAgent(**value) for name, value in agents.items()}))
+
+
+def test_the_agents_process_gets_no_secret_it_was_not_named(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOM_TEST_SECRET", "hunter2")
+    monkeypatch.setenv("FAKE_API_KEY", "key-value")
+    config = cfg(tmp_path, codex={"enabled": True, "auth_env": ["FAKE_API_KEY"]})
+    argv, env, session_cwd = launch(config, "codex")
+    assert argv == ["codex-acp"] and session_cwd == ""
+    assert "DOM_TEST_SECRET" not in env and env["FAKE_API_KEY"] == "key-value" and "PATH" in env
+
+
+def test_codex_starts_read_only_with_its_shell_tool_and_web_search_off(tmp_path):
+    _, env, _ = launch(cfg(tmp_path, codex={"enabled": True}), "codex")
+    assert env["INITIAL_AGENT_MODE"] == "read-only"
+    assert json.loads(env["CODEX_CONFIG"]) == {"features": {"shell_tool": False}, "web_search": "disabled"}
+
+
+def test_each_agent_has_its_usual_command_unless_configured(tmp_path):
+    config = cfg(tmp_path, claude={"enabled": True}, antigravity={"enabled": True}, codex={"command": "/opt/codex-acp", "args": ["--x"]})
+    assert launch(config, "claude")[0] == ["claude-agent-acp"]
+    assert launch(config, "antigravity")[0] == ["agy", "acp"]
+    assert launch(config, "codex")[0] == ["/opt/codex-acp", "--x"]
+    assert acp.TOOLS_OFF_META["claude"] == {"claudeCode": {"options": {"tools": []}}}
+
+
+def test_a_remote_host_runs_the_same_command_over_ssh_with_the_tool_switches_as_env(tmp_path):
+    argv, env, session_cwd = launch(cfg(tmp_path, codex={"enabled": True, "host": "studio-mac"}), "codex")
+    assert argv[:7] == ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "studio-mac"] and argv[7] == "--"
+    assert argv[8].startswith("env INITIAL_AGENT_MODE=read-only 'CODEX_CONFIG=") and argv[8].endswith(" codex-acp")
+    assert session_cwd == "/tmp" and "INITIAL_AGENT_MODE" not in env
+
+
+def test_secrets_are_never_sent_to_a_remote_host_and_a_host_cannot_look_like_an_option():
+    with pytest.raises(ValidationError, match="never sent to another machine"):
+        AcpAgent(host="mac", auth_env=["CODEX_API_KEY"])
+    with pytest.raises(ValidationError):
+        AcpAgent(host="-oProxyCommand=x")
+    with pytest.raises(ValidationError):
+        AcpAgent(command="-rf")
+    with pytest.raises(ValidationError):
+        AcpAgent(auth_env=["not a name"])
+
+
+# ---- the prompt and its tool protocol ---------------------------------------------------------------------------------
+
+
+TOOLS = [{"type": "function", "function": {"name": "remind", "description": "Set a reminder", "parameters": {"type": "object"}}}]
+
+
+def test_the_prompt_carries_the_conversation_and_the_tools():
+    messages = [
+        {"role": "system", "content": "Be Dom."},
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "remind", "arguments": '{"text": "tea"}'}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "set"},
+    ]
+    prompt = render_prompt(messages, TOOLS)
+    assert "Do not use any tool of your own" in prompt and '"name": "remind"' in prompt
+    assert "<system>\nBe Dom.\n</system>" in prompt and "<user>\nhi\n</user>" in prompt
+    assert '{"tool_calls": [{"name": "remind", "arguments": {"text": "tea"}}]}' in prompt
+    assert '<tool_result id="c1">\nset\n</tool_result>' in prompt
+    assert "tool_calls" not in render_prompt(messages[:2], [])
+
+
+def test_a_tool_call_object_becomes_an_openai_style_message_and_anything_else_stays_text():
+    message = as_message('```json\n{"tool_calls": [{"name": "remind", "arguments": {"text": "tea"}}]}\n```', TOOLS)
+    (call,) = message["tool_calls"]
+    assert message["content"] is None and call["function"] == {"name": "remind", "arguments": '{"text": "tea"}'}
+    actions = '{"bubbles": [{"text": "hi"}]}'
+    assert as_message(actions, TOOLS) == {"role": "assistant", "content": actions}
+    unknown = '{"tool_calls": [{"name": "rm_rf", "arguments": {}}]}'
+    assert as_message(unknown, TOOLS)["content"] == unknown  # not an offered tool: left as text
+    assert as_message('{"tool_calls": []}', [])["content"] == '{"tool_calls": []}'  # no tools offered
+
+
+# ---- the provider: owner DM only, usage, tool calls --------------------------------------------------------------------
+
+
+def agent_config(app, tmp_path, mode="ok", name="codex", **extra):
+    log = tmp_path / "agent.jsonl"
+    agent = AcpAgent(enabled=True, command=sys.executable, args=(FAKE, mode, str(log)), **extra)
+    return app.config.model_copy(update={"acp": AcpConfig(**{name: agent})}), log
+
+
+def usage_rows(app):
+    with sqlite3.connect(app.store.db_path) as conn:
+        return conn.execute("SELECT kind, model, endpoint_host, chat_id, input_tokens, cost_usd, fallback FROM usage ORDER BY id").fetchall()
+
+
+async def allowed():
+    return True
+
+
+async def test_the_owners_dm_gets_a_reply_recorded_as_subscription_usage_with_no_cost(make_app, tmp_path):
+    app = make_app()
+    config, log = agent_config(app, tmp_path)
+    client = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
+    with model_request("escalation", OWNER, allowed):
+        reply = await client.complete([{"role": "user", "content": "hi"}], [])
+    assert reply == {"role": "assistant", "content": "Hello, owner."}
+    assert usage_rows(app) == [("subscription", "Codex subscription", "acp:codex", OWNER, 0, 0.0, 0)]
+    assert events(log, "initialize")
+
+
+async def test_a_failed_call_still_counts_as_subscription_usage(make_app, tmp_path):
+    app = make_app()
+    config, _ = agent_config(app, tmp_path, "crash")
+    client = acp.acp_clients(config, "drafting", app.dispatch.usage)[0]
+    with model_request("chat", OWNER, allowed), pytest.raises(AcpError):
+        await client.complete([{"role": "user", "content": "hi"}], [])
+    assert [row[0] for row in usage_rows(app)] == ["subscription"]
+
+
+@pytest.mark.parametrize("chat_id", [FRIEND, -1009, None])
+async def test_no_chat_but_the_owners_dm_ever_starts_the_agent(make_app, tmp_path, chat_id):
+    app = make_app()
+    config, log = agent_config(app, tmp_path)
+    client = acp.acp_clients(config, "drafting", app.dispatch.usage)[0]
+    with model_request("chat", chat_id, allowed), pytest.raises(AcpNotAllowed):
+        await client.complete([{"role": "user", "content": "hi"}], [])
+    assert not log.exists() and usage_rows(app) == []  # nothing was started or recorded
+
+
+async def test_a_call_outside_any_request_or_with_no_owner_is_refused(make_app, tmp_path):
+    app = make_app(owner_id=None)
+    config, log = agent_config(app, tmp_path)
+    client = acp.acp_clients(config, "drafting", app.dispatch.usage)[0]
+    with model_request("chat", None, allowed), pytest.raises(AcpNotAllowed):
+        await client.complete([], [])
+    with pytest.raises(AcpNotAllowed):  # no request at all
+        await client.complete([], [])
+    assert not log.exists()
+
+
+async def test_the_chat_loses_approval_before_the_agent_starts(make_app, tmp_path):
+    from dom.usage import ModelCallSkipped
+
+    app = make_app()
+    config, log = agent_config(app, tmp_path)
+    client = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
+
+    async def denied():
+        return False
+
+    with model_request("escalation", OWNER, denied), pytest.raises(ModelCallSkipped):
+        await client.complete([], [])
+    assert not log.exists()
+
+
+async def test_a_tool_call_from_the_agent_reaches_dom_as_an_ordinary_tool_call(make_app, tmp_path):
+    app = make_app()
+    config, _ = agent_config(app, tmp_path, "tools")
+    client = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
+    with model_request("escalation", OWNER, allowed):
+        reply = await client.complete([{"role": "user", "content": "remind me"}], TOOLS)
+    assert reply["tool_calls"][0]["function"] == {"name": "remind", "arguments": '{"text": "tea"}'}
+
+
+async def test_claude_is_started_with_its_tools_switched_off_in_the_session(make_app, tmp_path):
+    app = make_app()
+    config, log = agent_config(app, tmp_path, name="claude")
+    client = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
+    with model_request("escalation", OWNER, allowed):
+        await client.complete([{"role": "user", "content": "hi"}], [])
+    assert events(log, "session_new")[0]["params"]["_meta"] == {"claudeCode": {"options": {"tools": []}}}
+
+
+async def test_codex_runs_read_only_with_the_shell_tool_off(make_app, tmp_path):
+    app = make_app()
+    config, log = agent_config(app, tmp_path)
+    client = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
+    with model_request("escalation", OWNER, allowed):
+        await client.complete([{"role": "user", "content": "hi"}], [])
+    start = events(log, "start")[0]
+    assert start["initial_agent_mode"] == "read-only" and json.loads(start["codex_config"])["features"] == {"shell_tool": False}
+
+
+# ---- routing: which roles, switched off by default --------------------------------------------------------------------
+
+
+def role_config(tmp_path, **agents):
+    endpoint = ModelEndpoint(base_url="https://llm.test/v1", model="m", api_key_env=None)
+    return Config(
+        home=tmp_path, owner_id=OWNER, models={role: endpoint for role in ("chat", "fallback", "media", "drafting", "escalation")},
+        acp=AcpConfig(**{name: AcpAgent(**value) for name, value in agents.items()}),
+    )
+
+
+def kinds(client):
+    return [type(provider).__name__ for provider in client.providers]
+
+
+async def test_every_agent_is_off_by_default_and_no_role_has_one(tmp_path):
+    config = role_config(tmp_path)
+    assert [getattr(config.acp, name).enabled for name in ("codex", "claude", "antigravity")] == [False, False, False]
+    async with httpx.AsyncClient() as http:
+        for role in ("chat", "fallback", "media", "drafting", "escalation"):
+            assert "AcpClient" not in kinds(routed_client(config, role, http))
+
+
+async def test_a_switched_on_agent_is_first_in_escalation_and_drafting_and_nowhere_else(tmp_path):
+    config = role_config(tmp_path, claude={"enabled": True}, antigravity={"enabled": False})
+    async with httpx.AsyncClient() as http:
+        assert kinds(routed_client(config, "escalation", http)) == ["AcpClient", "ChatClient"]
+        assert kinds(routed_client(config, "drafting", http))[0] == "AcpClient"
+        for role in ("chat", "fallback", "media"):
+            assert "AcpClient" not in kinds(routed_client(config, role, http))
+
+
+async def test_an_agent_can_be_limited_to_one_role_and_each_switch_is_its_own(tmp_path):
+    config = role_config(tmp_path, codex={"enabled": True, "roles": ["escalation"]}, claude={"enabled": True})
+    async with httpx.AsyncClient() as http:
+        assert [p.name for p in routed_client(config, "escalation", http).providers if isinstance(p, AcpClient)] == ["codex", "claude"]
+        assert [p.name for p in routed_client(config, "drafting", http).providers if isinstance(p, AcpClient)] == ["claude"]
+
+
+def test_chat_triage_and_media_cannot_be_named_as_an_agents_role(tmp_path):
+    for role in ("chat", "triage", "media", "fallback"):
+        with pytest.raises(ValidationError):
+            AcpAgent(roles=[role])
+
+
+async def test_a_friends_drafting_request_falls_through_to_the_next_provider(make_app, tmp_path):
+    app = make_app()
+    config, log = agent_config(app, tmp_path)
+    first = acp.acp_clients(config, "drafting", app.dispatch.usage)[0]
+    seen = []
+
+    class Next:
+        endpoint = ModelEndpoint(base_url="https://llm.test/v1", model="next")
+        address, kind, usage, available = "llm.test", "chat", None, True
+
+        async def complete(self, messages, tools, **kw):
+            seen.append(kw["fallback"])
+            return {"role": "assistant", "content": "from the next provider"}
+
+    client = FallbackClient(first, Next())
+    with model_request("chat", FRIEND, allowed):
+        assert (await client.complete([], []))["content"] == "from the next provider"
+    assert seen == [True] and not log.exists()
+
+
+async def test_a_failing_agent_falls_through_to_the_next_provider(make_app, tmp_path):
+    app = make_app()
+    config, _ = agent_config(app, tmp_path, "crash")
+    first = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
+
+    class Next:
+        endpoint = ModelEndpoint(base_url="https://llm.test/v1", model="next")
+        address, kind, usage, available = "llm.test", "chat", None, True
+
+        async def complete(self, messages, tools, **kw):
+            return {"role": "assistant", "content": "ok"}
+
+    with model_request("escalation", OWNER, allowed):
+        assert (await FallbackClient(first, Next()).complete([{"role": "user", "content": "x"}], []))["content"] == "ok"
+
+
+# ---- the switches: config, secrets, the escalation card, the migration -------------------------------------------------
+
+
+def test_the_config_reads_each_agent_table_and_names_its_secrets(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        '[models.chat]\nbase_url = "https://llm.test/v1"\nmodel = "m"\n'
+        '[acp.codex]\nenabled = true\nauth_env = ["CODEX_API_KEY"]\ntimeout_seconds = 60\n'
+        '[acp.claude]\nhost = "studio-mac"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.acp.codex.enabled and config.acp.codex.timeout_seconds == 60
+    assert config.acp.claude.enabled is False and config.acp.antigravity.enabled is False
+    assert "CODEX_API_KEY" in config.secret_names()
+    assert [name for name, _ in config.acp.agents("escalation")] == ["codex"]
+
+
+def test_an_unknown_agent_table_is_refused(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        '[models.chat]\nbase_url = "https://llm.test/v1"\nmodel = "m"\n[acp.gemini]\nenabled = true\n'
+    )
+    with pytest.raises((ValidationError, ValueError)):
+        load_config(tmp_path)
+
+
+async def test_the_escalation_card_says_the_agent_is_billed_to_the_subscription(make_app, tmp_path):
+    from dom.escalation import MODEL_FAILURES, Prices
+
+    app = make_app()
+    config, _ = agent_config(app, tmp_path)
+    client = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
+    assert AcpError in MODEL_FAILURES
+    prices = Prices(lambda coro: asyncio.ensure_future(coro), lambda: 0.0)
+    assert (await prices.estimate(client, [], [])).startswith("Billed to your subscription")
+
+
+def test_the_usage_migration_keeps_rows_and_accepts_the_subscription_kind(tmp_path):
+    from dom.store.store import MIGRATIONS, MIGRATIONS_DIR, TARGET_VERSION, migrate_database
+
+    db = tmp_path / "state.db"
+    with sqlite3.connect(db) as conn:
+        for version, name in MIGRATIONS:
+            if version <= 36:
+                conn.executescript((MIGRATIONS_DIR / name).read_text())
+        conn.execute(
+            "INSERT INTO usage (at, kind, model, endpoint_host, chat_id, input_tokens, output_tokens, cost_usd, fallback, settled) "
+            "VALUES ('t', 'assistant', 'm', 'h', 111, 1, 2, 0.5, 0, 1)"
+        )
+    assert migrate_database(db) == TARGET_VERSION >= 37
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT kind, cost_usd, settled FROM usage").fetchall() == [("assistant", 0.5, 1)]
+        conn.execute(
+            "INSERT INTO usage (at, kind, model, endpoint_host, chat_id, input_tokens, output_tokens, cost_usd, fallback) "
+            "VALUES ('t', 'subscription', 'm', 'acp:codex', 111, 0, 0, 0, 0)"
+        )
+        assert conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0] == 2
+        assert ("idx_usage_at",) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()

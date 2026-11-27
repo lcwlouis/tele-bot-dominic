@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Subscription agents, a pilot.** Codex (`codex-acp`), Claude (`claude-agent-acp`) and Antigravity (`agy acp`) on your own subscriptions can serve as the escalation and drafting model, in your DM only, each behind its own switch in Settings → Models (`[acp.<name>] enabled`), off by default and warned as not zero data retention and possibly against the provider's terms. A hand-written ACP client starts the agent fresh for each call, with its own tools switched off where the agent allows it and every permission request refused, and kills it on timeout or cancel; Dom keeps its own tool loop and parses the reply as usual. An agent can run on a Mac over SSH. Calls are usage of kind `subscription` at cost 0, so spend caps are not fooled, and the Turn log and Trace show the agent, its time and any failure. See [Subscription agents](docs/acp-agents.md).
+
 ## [0.8.5] - 2026-11-27
 
 Dom gets hands, a world of his own and a window into how he thinks. He can browse for you behind per-site approvals, fill saved logins without ever seeing the password, ask you for a secret through a private form, and read your Calendar and Gmail with every change on a card. He has a life sheet with places and routines, a Talk page in the dashboard with a full debug trace of every turn, an owner-DM lane that never waits behind a group, an optional morning plan and evening wrap-up, and video notes whose faces finally move.
