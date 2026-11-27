@@ -222,7 +222,18 @@ async def typing_while(
         indicator.stop()
 
 
+def _earlier_bot(message_id: int | None, what: str, chat_id: int) -> bool:
+    """Messages from an earlier bot have negative ids (the store sets them aside when a bot changes); the new bot
+    can't reply to, react to, edit or delete them, so those calls are skipped rather than sent."""
+    if message_id is None or message_id > 0:
+        return False
+    log.info("not sending %s for message %s in chat %s: it is from an earlier bot", what, message_id, chat_id)
+    return True
+
+
 async def _delete_later(bot, store: Store, chat_id: int, message_id: int, delay: float, sleep) -> None:
+    if _earlier_bot(message_id, "a delete", chat_id):
+        return
     await sleep(delay)
     try:
         await retry_telegram(lambda: bot.delete_message(chat_id, message_id), sleep=sleep, budget=FloodBudget())
@@ -282,7 +293,7 @@ async def send_text(
 async def edit_text(bot, chat_id: int, message_id: int, text: str, *, sleep=asyncio.sleep, literal: bool = False, **options):
     """Replace a single status card in place, within Telegram's message length."""
     chunks = format_text(text, literal=literal)
-    if not chunks:
+    if not chunks or _earlier_bot(message_id, "an edit", chat_id):
         return None
 
     async def edit(text, **kwargs):
@@ -492,6 +503,8 @@ async def perform(
                     await sleep(seconds)  # the caller's indicator keeps refreshing in parallel until the send
                 else:
                     await _type_for(bot, chat_id, seconds, thread_id, sleep)
+        if _earlier_bot(bubble.reply_to, "a reply", chat_id):
+            bubble = bubble.model_copy(update={"reply_to": None})
         reply = (
             ReplyParameters(message_id=bubble.reply_to, allow_sending_without_reply=True)
             if bubble.reply_to is not None
@@ -1113,7 +1126,10 @@ async def react(
     budget: FloodBudget | None = None,
 ) -> bool | None:
     """React to a message: True when sent, False when Telegram refuses it (e.g. the chat has reactions
-    turned off), None when it failed for another reason, such as the network or flood budget."""
+    turned off), None when it failed for another reason, such as the network or flood budget, or when the message
+    is from an earlier bot."""
+    if _earlier_bot(msg_id, "a reaction", chat_id):
+        return None
     try:
         with turn_log.timed("send"):
             await retry_telegram(
@@ -1122,9 +1138,12 @@ async def react(
             )
     except TelegramMigrateToChat:
         raise
-    except (TelegramBadRequest, ValidationError):
-        log.warning("reaction %r rejected in chat %s", emoji, chat_id)
-        turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result="refused")
+    except (TelegramBadRequest, ValidationError) as error:
+        # The reason is Telegram's own words (e.g. REACTION_INVALID), kept short: the Turn log counts these.
+        reason = (getattr(error, "message", "") or type(error).__name__).removeprefix("Bad Request: ")[:100]
+        log.warning("reaction %r on message %s rejected in chat %s: %s", emoji, msg_id, chat_id, reason)
+        turn_log.step(f"{turn_log.REACTION_REJECTED}: {reason.replace('@', '')}")  # an "@" hides a step in the Turn log
+        turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result="refused", reason=reason)
         return False
     except (TelegramAPIError, FloodBudgetExhausted) as error:
         log.warning("reaction %r failed in chat %s (%s)", emoji, chat_id, type(error).__name__)

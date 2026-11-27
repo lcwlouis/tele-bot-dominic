@@ -1,4 +1,5 @@
 import json
+import logging
 
 from dom.studio.policy import UNAVAILABLE_NOTE
 import socket
@@ -16,7 +17,7 @@ from dom.actions import Actions
 from dom.config import StudioConfig
 from dom.media import MediaDescriber
 from dom.models import StoredMessage
-from dom.studio.client import AWAY_SECONDS, StudioClient
+from dom.studio.client import AWAY_SECONDS, HEALTH_TTL, StudioClient
 from dom.studio.profile import sync_profile
 from dom.telegram.handlers import handle_message
 from dom.telegram.owner import set_global_preset
@@ -453,3 +454,126 @@ async def test_a_promised_photo_is_dropped_when_photos_are_not_on_offer(make_app
     assert "/v1/image" not in [route for route, _ in studio_server[2]]
     assert [call[2] for call in app.bot.of("send")] == ["no pics right now"]
     assert [r for r in app.script.requests if "can't send a photo right now" in r["messages"][-1]["content"]]
+
+
+def _flaky_health(script):
+    """A studio whose health replies follow `script`: "ok", "slow" (a timeout) or "down" (a connect error)."""
+    steps = iter(script)
+
+    def respond(request):
+        step = next(steps)
+        if step == "slow":
+            raise httpx.ReadTimeout("wifi spike")
+        if step == "down":
+            raise httpx.ConnectError("no route")
+        return httpx.Response(200, json={"models": {}})
+
+    return respond
+
+
+async def test_the_health_deadline_defaults_to_ten_seconds():
+    assert StudioConfig().timeouts.health == 10
+
+
+async def test_one_failed_health_probe_keeps_the_last_good_health_and_two_clear_it(caplog):
+    caplog.set_level(logging.INFO, logger="dom.studio.client")
+    clock = [0.0]
+    config = StudioConfig(enabled=True, base_url="https://studio.example.test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_flaky_health(["ok", "slow", "slow", "ok"]))) as http:
+        client = StudioClient(config, TOKEN, http, lambda: clock[0])
+        await client.refresh()
+        assert client.ready
+        clock[0] += HEALTH_TTL
+        await client.refresh()  # one failure: still on for another interval
+        assert client.ready and client.status == "on"
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (logging.INFO, "studio health request timed out or broke off (ReadTimeout)"),
+        ]
+        clock[0] += HEALTH_TTL
+        await client.refresh()  # two in a row: away until a probe works
+        assert not client.ready and client.status == "away"
+        assert caplog.records[-1].levelno == logging.WARNING
+        assert "studio health request" in caplog.records[-1].getMessage()
+        clock[0] += HEALTH_TTL
+        await client.refresh()
+        assert client.ready
+
+
+async def test_a_good_probe_between_failures_resets_the_count():
+    clock = [0.0]
+    config = StudioConfig(enabled=True, base_url="https://studio.example.test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_flaky_health(["ok", "slow", "ok", "slow"]))) as http:
+        client = StudioClient(config, TOKEN, http, lambda: clock[0])
+        for _ in range(4):
+            await client.refresh()
+            assert client.ready  # never two failures in a row
+            clock[0] += HEALTH_TTL
+
+
+async def test_a_connect_error_marks_the_studio_away_at_once_and_names_the_path(caplog):
+    caplog.set_level(logging.INFO, logger="dom.studio.client")
+    clock = [0.0]
+    config = StudioConfig(enabled=True, base_url="https://studio.example.test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_flaky_health(["ok", "down"]))) as http:
+        client = StudioClient(config, TOKEN, http, lambda: clock[0])
+        await client.refresh()
+        clock[0] += HEALTH_TTL
+        await client.refresh()
+        assert not client.ready and client.status.startswith("away since")
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (logging.WARNING, "studio health connection failed (ConnectError)"),
+        ]
+
+
+async def test_timeouts_of_other_requests_name_their_path_and_warn(caplog):
+    caplog.set_level(logging.INFO, logger="dom.studio.client")
+    config = StudioConfig(enabled=True, base_url="https://studio.example.test")
+
+    def respond(request):
+        raise httpx.ReadTimeout("slow render")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = StudioClient(config, TOKEN, http, lambda: 0.0)
+        assert await client.voice("Hi") is None
+        assert await client.portrait("outfit-a") is None
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.WARNING, "studio voice request timed out or broke off (ReadTimeout)"),
+        (logging.WARNING, "studio portrait request timed out or broke off (ReadTimeout)"),
+    ]
+
+
+async def test_the_last_good_health_stays_valid_while_the_next_probe_is_running():
+    import asyncio
+
+    release, started = asyncio.Event(), asyncio.Event()
+    replies = iter(["ok", "slow", "slow"])
+
+    async def respond(request):
+        step = next(replies)
+        if step == "slow":
+            started.set()
+            await release.wait()
+            raise httpx.ReadTimeout("wifi spike")
+        return httpx.Response(200, json={"models": {}})
+
+    clock = [0.0]
+    config = StudioConfig(enabled=True, base_url="https://studio.example.test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = StudioClient(config, TOKEN, http, lambda: clock[0])
+        await client.refresh()
+        clock[0] += HEALTH_TTL  # the health is due for a new probe
+        probe = asyncio.create_task(client.refresh())
+        await started.wait()
+        assert client.ready and client.health is not None  # the probe is still running: the studio is still on
+        release.set()
+        await probe
+        assert client.ready  # one failed probe keeps the last good health for one more interval
+        started.clear()
+        release.clear()
+        clock[0] += HEALTH_TTL
+        probe = asyncio.create_task(client.refresh())
+        await started.wait()
+        assert client.ready  # and again while the second one runs
+        release.set()
+        await probe
+        assert not client.ready  # two failures in a row clear it

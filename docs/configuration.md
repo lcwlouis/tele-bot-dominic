@@ -236,7 +236,7 @@ Video fallbacks support `heygen/heygen-avatar-6-turbo` and `heygen/heygen-avatar
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `studio.timeouts.health` | `3` | Health check request deadline in seconds. |
+| `studio.timeouts.health` | `10` | Health check request deadline in seconds. |
 | `studio.timeouts.voice` | `65` | Voice request deadline in seconds. |
 | `studio.timeouts.video_notes` | `185` | Round video request deadline in seconds. |
 | `studio.timeouts.special` | `425` | Special video request deadline in seconds. |

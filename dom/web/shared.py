@@ -7,7 +7,7 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from statistics import median
@@ -360,6 +360,20 @@ def _attention_stats(rows: list[dict], title, tz: ZoneInfo) -> dict:
     return {"visits": visits, "cache": cache}
 
 
+REACTION_WATCH_DAYS = 7
+
+
+async def _rejected_reactions(app: App) -> dict:
+    """Reactions Telegram refused over the last week, read from the Turn log's steps: how many, and the latest reasons."""
+    since = app.dispatch.now() - timedelta(days=REACTION_WATCH_DAYS)
+    found = [
+        {"at": row["at"], "chat_id": row["chat_id"], "reason": reason}
+        for row in await app.store.turns_with_step(turn_log.REACTION_REJECTED, since)
+        for reason in turn_log.rejected_reactions(json.loads(row["trace"]))
+    ]
+    return {"days": REACTION_WATCH_DAYS, "rejected": len(found), "latest": found[:5]}
+
+
 async def _turns(app: App, chat: str = "") -> dict:
     tz = ZoneInfo(app.config.timezone)
     known = {row["chat_id"]: row for row in await app.store.list_chats()}
@@ -383,6 +397,7 @@ async def _turns(app: App, chat: str = "") -> dict:
         for visit in row["visits"]:
             visit["behind_title"] = title(str(visit["behind"])) if visit["behind"] is not None else ""
             visit["capped_title"] = title(str(visit["capped"])) if visit["capped"] is not None else ""
+        row["reaction_rejected"] = bool(turn_log.rejected_reactions(trace))
         _turn_timings(row, trace)
     # The filter offers chats Dom is in, plus any that appear in the turns shown; a chat he left long ago does not
     # clutter it.
@@ -392,7 +407,7 @@ async def _turns(app: App, chat: str = "") -> dict:
         item["source_title"] = title(str(item["source_chat_id"]))
         item["target_title"] = title(str(item["target_chat_id"]))
     return {
-        "cross_chat": cross_chat,
+        "cross_chat": cross_chat, "reactions": await _rejected_reactions(app),
         "rows": rows, "chat": chat, "stages": TURN_STAGES,
         **_attention_stats(await app.store.recent_attention_turns(), title, tz),
         "visible_stages": {stage for row in rows for stage, _, _, _ in row["segments"]},

@@ -247,3 +247,21 @@ def test_preset_copied_with_normalised_sliders(src, home):
         {"title": "Assistant", "description": "Direct", "traits": {"humor": 0.3, "slang": 0.2}},
         "Keep it clear.\n",
     )
+
+
+def test_imported_history_counts_only_from_the_latest_run_of_message_ids(src, home):
+    # The old workspace switched bots without saying so: its ids ran to 3502, then restarted from 1.
+    with sqlite3.connect(src / "state.db") as conn:
+        conn.executemany(
+            "INSERT INTO messages (chat_id, msg_id, role, visibility_scope, text, created_at) "
+            f"VALUES ('{OWNER}', ?, 'user', 'admin_private', 'm', ?)",
+            [(msg_id, f"2026-11-0{1 + index // 4}T10:0{index % 4}:00+00:00")
+             for index, msg_id in enumerate([3500, 3501, 3502, 1, 2, 3, 4])],
+        )
+    import_v2(src, home, OWNER)
+    with sqlite3.connect(home / "state.db") as conn:
+        read, cursor = conn.execute(
+            f"SELECT last_read_msg_id, memory_cursor_msg_id FROM chats WHERE chat_id = '{OWNER}'").fetchone()
+        ids = [r[0] for r in conn.execute(f"SELECT msg_id FROM messages WHERE chat_id = '{OWNER}' ORDER BY id")]
+    assert (read, cursor) == (4, 4)  # not read up to 3502, and none of the new rows left unread
+    assert ids == [-3, -2, -1, 1, 2, 3, 4]  # the old run is set aside, in order
