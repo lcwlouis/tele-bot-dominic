@@ -13,6 +13,10 @@ GET  /api/integrations/google/callback    where Google sends the browser back. I
                                           set. It is not a `fetch_site` guarded read.
 POST /api/integrations/google/disconnect  revokes the token at Google and deletes it here.
 POST /api/integrations/google/switch      turns one of the four switches on or off.
+GET  /api/integrations/google/calendars   Dom's own calendars (v0.8.6): name, colour and the number of upcoming events,
+                                          read from Google on request so the card itself never waits on it.
+POST /api/integrations/google/calendars/remove  deletes one of Dom's calendars at Google (the dashboard asked the owner
+                                          to confirm first). Only a calendar Dom made can be named.
 
 Owner only. The POSTs are same-origin JSON, in JSON_POSTS like every other dashboard write.
 """
@@ -24,8 +28,9 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
+from dom.google_tools import calendar_rows
 from dom.google import BINDING_COOKIE, CALLBACK_PATH, SETTINGS_PATH, GoogleError, InvalidCallback
 from dom.web.model_settings import _input
 from dom.web.shared import owner_app
@@ -33,7 +38,7 @@ from dom.web.shared import owner_app
 log = logging.getLogger("dom.web")
 router = APIRouter()
 PREFIX = "/api/integrations/google"
-JSON_POSTS = {f"{PREFIX}/connect", f"{PREFIX}/disconnect", f"{PREFIX}/switch"}
+JSON_POSTS = {f"{PREFIX}/connect", f"{PREFIX}/disconnect", f"{PREFIX}/switch", f"{PREFIX}/calendars/remove"}
 
 
 class Empty(BaseModel):
@@ -44,6 +49,11 @@ class SwitchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: Literal["calendar_read", "calendar_write", "gmail_read", "gmail_drafts"]
     on: bool
+
+
+class CalendarInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=256)
 
 
 @router.get(PREFIX)
@@ -114,3 +124,20 @@ async def switch(request: Request) -> dict:
         return await app.google.set_switch(body.id, body.on)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
+
+
+@router.get(f"{PREFIX}/calendars")
+async def read_calendars(request: Request) -> dict:
+    g = owner_app(request).google
+    return {"calendars": await calendar_rows(g) if (await g.view())["own_calendars_granted"] else []}
+
+
+@router.post(f"{PREFIX}/calendars/remove")
+async def remove_calendar(request: Request) -> dict:
+    g = owner_app(request).google
+    body = await _input(request, CalendarInput)
+    try:
+        await g.remove_calendar(body.id)
+    except GoogleError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return await g.view()

@@ -1,8 +1,11 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount } from "svelte";
-  import { getJSON, send, type GoogleView } from "$lib/api";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import { getJSON, send, type GoogleCalendar, type GoogleView } from "$lib/api";
+  import IconButton from "$lib/components/kit/IconButton.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
   import { Switch } from "$lib/components/ui/switch";
@@ -10,12 +13,14 @@
   import { cn } from "$lib/utils";
   import { SERVICE_STATE } from "./ServiceCard.svelte";
 
-  // Settings → Services → Google (v0.8.5 W4): connect, the four switches and disconnect. The client id and secret only
+  // Settings → Services → Google (v0.8.5 W4, v0.8.6 W1): connect, the four switches, Dom's own calendars and disconnect. The client id and secret only
   // ever show as set or not set. Connecting leaves for Google and comes back to Settings with ?google=connected|failed.
   const PATH = "/api/integrations/google";
   let view = $state<GoogleView | null>(null);
   let failed = $state("");
   let busy = $state("");
+  let calendars = $state<GoogleCalendar[] | null>(null);
+  let removing = $state<GoogleCalendar | null>(null);
 
   const health = $derived.by(() => {
     if (!view) return "off" as const;
@@ -42,6 +47,31 @@
     }
   }
 
+  // Dom's own calendars come from Google on their own request, so the card itself never waits on Google.
+  async function loadCalendars() {
+    calendars = null;
+    if (!view?.own_calendars_granted) return;
+    try {
+      calendars = (await getJSON<{ calendars: GoogleCalendar[] }>(`${PATH}/calendars`)).calendars;
+    } catch {
+      calendars = view.calendars.map((item) => ({ ...item, color: "", upcoming: null, more: false }));
+    }
+  }
+
+  async function removeCalendar(item: GoogleCalendar) {
+    busy = `calendar-${item.id}`;
+    try {
+      view = await send<GoogleView>(`${PATH}/calendars/remove`, { id: item.id });
+      toast.show("ok", `Removed ${item.name} from Google Calendar.`);
+      await loadCalendars();
+    } catch {
+      // the toast says why
+    } finally {
+      busy = "";
+      removing = null;
+    }
+  }
+
   onMount(() => {
     // Google's redirect lands here: say how it went, then drop the marker from the address.
     const params = new URLSearchParams(location.search);
@@ -51,6 +81,7 @@
       history.replaceState(null, "", location.pathname + (params.size ? `?${params}` : ""));
     }
     void load().then(() => {
+      void loadCalendars();
       if (outcome === "connected") toast.show("ok", "Google connected. Turn on what Dom may use.");
       else if (outcome === "failed") toast.show("error", view?.last_error || "Connecting Google failed.");
       else if (outcome === "invalid") toast.show("error", "That connect link was not valid or has expired. Press Connect Google again.");
@@ -84,6 +115,7 @@
     busy = id;
     try {
       view = await send<GoogleView>(`${PATH}/switch`, { id, on });
+      if (id === "calendar_write") await loadCalendars();
     } catch {
       // the toast says why; the switch falls back to what the server holds
       await load();
@@ -139,6 +171,35 @@
           </li>
         {/each}
       </ul>
+      {#if !view.own_calendars_granted}
+        <p class="text-sm text-muted-foreground">Reconnect to let Dom keep his own calendars. Everything else keeps working until then.</p>
+      {:else}
+        <div class="grid gap-1.5" aria-labelledby="google-calendars-title">
+          <h4 id="google-calendars-title" class="text-sm font-medium">Dom's calendars</h4>
+          {#if calendars === null}
+            <p class="text-sm text-muted-foreground">Asking Google…</p>
+          {:else if calendars.length === 0}
+            <p class="text-sm text-muted-foreground">None yet. Dom asks you before he makes one.</p>
+          {:else}
+            <ul class="grid gap-1.5">
+              {#each calendars as item (item.id)}
+                <li class="flex items-center gap-2 text-sm">
+                  <span
+                    class="size-3 shrink-0 rounded-full border bg-raised"
+                    style:background-color={item.color || undefined}
+                    aria-hidden="true"
+                  ></span>
+                  <span class="min-w-0 flex-1 break-words">{item.name}</span>
+                  <span class="shrink-0 text-xs text-muted-foreground">
+                    {#if item.upcoming === null}events unknown{:else}{item.upcoming}{item.more ? "+" : ""} upcoming{/if}
+                  </span>
+                  <IconButton label={`Remove ${item.name}`} icon={Trash2} disabled={busy !== ""} onclick={() => (removing = item)} />
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
       {#if view.switches.some((item) => !item.granted)}
         <p class="text-xs text-muted-foreground">A switch is locked when you did not tick that permission on Google's screen. Connect again to grant it.</p>
       {/if}
@@ -161,3 +222,20 @@
     </div>
   {/if}
 </section>
+
+<AlertDialog.Root open={removing !== null} onOpenChange={(open) => !open && (removing = null)}>
+  <AlertDialog.Content>
+    {#if removing}
+      <AlertDialog.Header>
+        <AlertDialog.Title>Remove {removing.name}?</AlertDialog.Title>
+        <AlertDialog.Description>
+          This deletes the calendar and every event on it from your Google account, and cancels Dom's nudges for them. It can't be undone.
+        </AlertDialog.Description>
+      </AlertDialog.Header>
+      <AlertDialog.Footer>
+        <AlertDialog.Cancel variant="outline">Keep it</AlertDialog.Cancel>
+        <AlertDialog.Action variant="destructive-solid" onclick={() => removing && removeCalendar(removing)}>Remove</AlertDialog.Action>
+      </AlertDialog.Footer>
+    {/if}
+  </AlertDialog.Content>
+</AlertDialog.Root>

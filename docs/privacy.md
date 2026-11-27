@@ -438,7 +438,15 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
   by its instance list. Calendar and mail text that Dom reads in the owner DM is turn content like any other, so the
   tracer's full trace of that turn holds it (owner-only, on the dashboard). A database copy
   without `.env` is unreadable. A full backup holds both, like it does for `.env` today. Disconnect revokes the token
-  at Google and deletes it here.
+  at Google and deletes it here. The ids of the calendars Dom made (and which of their events carry a nudge) are
+  encrypted in the same store, per Google account (a hash of its `sub`, from an `openid` ID token that is not kept); a copy
+  of the database alone shows neither. Only the connected account's list is used, and another account connecting sets the
+  earlier one's aside and cancels its nudges.
+- **Dom writes only to his own calendars.** With `calendar.app.created`, Dom makes calendars of his own and changes events
+  only on those; code refuses any other target, your primary calendar included, and Google enforces the same. Making a
+  calendar is asked every time. He still reads your calendars as before.
+- **A nudge reaches only you.** An event on his calendar can carry a reminder; it is an ordinary reminder in the owner DM
+  and is never sent to a group or a friend. Removing a calendar, or moving or deleting an event, cancels it.
 - **Who can reach it.** The `calendar` and `gmail` tools are offered only in the owner's DM, only for the switches
   that are on and the scopes Google granted, and each handler checks the owner DM and the switch again in code. The
   "today and tomorrow" block in the turn note is added only for the owner DM. A group or a friend's DM never gets the
