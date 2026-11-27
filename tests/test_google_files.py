@@ -280,7 +280,7 @@ async def test_a_new_sheet_is_made_in_dom_s_folder_with_its_first_rows(setup):
     app, fake, client = await files_ready(setup)
     await _drive({"action": "create", "kind": "sheet", "name": "Gym log", "rows": [["day", "kg"], ["mon", 80]]}, owner_ctx(app))
     row = await pending(app)
-    assert row["action"] == "sheet_create" and "day | kg" in app.bot.of("send", OWNER)[-1][2]
+    assert row["action"] == "sheet_create" and '["day", "kg"]' in app.bot.of("send", OWNER)[-1][2]
     await tap(app, "once")
     made = [w for w in fake.writes if w[0] == "create"]
     assert made[-1][2]["mimeType"] == SHEET and made[-1][2]["parents"] == [made[0][1]]
@@ -546,7 +546,7 @@ async def test_b1_short_content_still_fits_a_telegram_card_with_nothing_cut(setu
         args["rows"] = [["milk", 2], ["eggs", 12]]
     row, card = await _card_for(app, args)
     assert row["dashboard_only"] is False and "Allow once" in await card_buttons(app) and "…" not in card
-    shown = ("Remember the milk", "and the eggs") if "text" in args else ("milk | 2", "eggs | 12")
+    shown = ("Remember the milk", "and the eggs") if "text" in args else ('["milk", 2]', '["eggs", 12]')
     assert all(part in card for part in shown)
     await tap(app, "reject")
 
@@ -599,3 +599,21 @@ async def test_sf1_an_oversized_range_answer_is_refused_before_it_is_read_whole(
     out = await _drive({"action": "read", "file": SHEET_ID, "range": "A1:B2"}, owner_ctx(app))
     assert out.startswith("error") and "too big" in out
     assert len(pulled) < 10 and not parsed  # it stopped reading at the limit and never parsed it
+
+
+@pytest.mark.parametrize("text", ["a\n\nb", "two  spaces", "tab\there", "line one\n  indented"])
+async def test_b1_text_a_telegram_card_would_change_is_approved_on_the_dashboard_only(setup, text):
+    """The card drops blank lines and collapses spaces, so what it showed could differ from what is written."""
+    app, fake, client = await files_ready(setup)
+    add(fake, DOC_ID, "Notes", DOC, "old")
+    row, card = await _card_for(app, {"action": "append", "file": DOC_ID, "text": text})
+    assert row["dashboard_only"] is True and await card_buttons(app) == ["Reject", "Review on dashboard"]
+    assert text in row["detail"]
+
+
+@pytest.mark.parametrize("rows,shown", [([["a | b"]], '["a | b"]'), ([["a", "b"]], '["a", "b"]')])
+async def test_b1_cells_are_shown_unambiguously_so_one_cell_never_reads_as_two(setup, rows, shown):
+    app, fake, client = await files_ready(setup)
+    add(fake, SHEET_ID, "Budget", SHEET, "", grid=[["x"]])
+    row, _ = await _card_for(app, {"action": "append", "file": SHEET_ID, "rows": rows})
+    assert shown in row["detail"]

@@ -215,11 +215,18 @@ class Card:
             return list(self.lines)
         if not self.whole:
             return [*self.lines, f"Preview: {shorten(self.preview, 150)}"]
-        return [*self.lines, *(line for line in self.preview.splitlines() if line.strip())]
+        return [*self.lines, *self.preview.split("\n")]
+
+    def _exact(self) -> bool:
+        """Whether a Telegram card would show the preview exactly: the card drops blank lines and collapses spaces, so
+        a preview with either (or tabs, or spaces at a line's ends) is only shown as it is on the dashboard."""
+        return not self.whole or not self.preview or all(line and line == " ".join(line.split()) for line in self.preview.split("\n"))
 
     def fits(self) -> bool:
         listed = self._listed()
-        return len(listed) <= CARD_LINES and all(len(" ".join(line.split())) <= CARD_LINE_LIMIT for line in listed)
+        return self._exact() and len(listed) <= CARD_LINES and all(
+            len(" ".join(line.split())) <= CARD_LINE_LIMIT for line in listed
+        )
 
     def telegram(self) -> list[str]:
         if self.fits():

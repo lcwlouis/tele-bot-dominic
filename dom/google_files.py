@@ -330,7 +330,8 @@ def _rows(args: dict, *, required: bool) -> list[list[Any]]:
 
 
 def _show(rows: list[list[Any]]) -> str:
-    return "\n".join(" | ".join(str(cell) for cell in row) for row in rows) or "(empty)"
+    """One row per line as a JSON list, so every cell's edges, spaces and separators are unambiguous on the card."""
+    return "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) or "(empty)"
 
 
 def _col_index(letters: str) -> int:
@@ -495,9 +496,10 @@ async def _update(g: GoogleIntegration, args: dict) -> str:
     rows = _rows(args, required=True)
     cells = _fitted(str(args.get("range") or ""), rows)
     now = await g.call("GET", f"{SHEETS_API}/spreadsheets/{file_id}/values/{quote(cells, safe='')}")
-    before = _grid((now or {}).get("values")) if isinstance(now, dict) else ""
+    values = (now or {}).get("values") if isinstance(now, dict) else None
+    before = [["" if cell is None else cell for cell in row] for row in values or [] if isinstance(row, list)]
     lines = [f"Replace cells in the Google Sheet: {name}", f"Cells: {cells}", f"{len(rows)} row(s) by {max(len(r) for r in rows)} column(s) are overwritten."]
-    card = Card(lines, "The cells", f"Before:\n{before.replace(chr(9), ' | ') or '(empty)'}\nAfter:\n{_show(rows)}", whole=True)
+    card = Card(lines, "The cells", f"Before:\n{_show(before)}\nAfter:\n{_show(rows)}", whole=True)
 
     async def replace(ticket: Ticket) -> str:
         try:
