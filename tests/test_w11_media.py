@@ -83,14 +83,46 @@ def test_a_level_never_passes_the_global_daily_total():
             for level in ("rarely", "sometimes", "often")] == [2, 4, 8]
 
 
-def test_an_event_day_raises_the_scaled_limit_and_still_stops_at_the_total():
+@pytest.mark.parametrize("level, boost, expected", [
+    ("rarely", 1.0, 1), ("sometimes", 1.0, 2), ("often", 1.0, 4),  # no event day: the level alone
+    ("rarely", 2.0, 2), ("sometimes", 2.0, 4),  # an event day raises the scaled limit...
+    ("often", 2.0, 4),  # ...but a level never stacks past the owner's ceiling: 2 x 2, not 2 x 2 x 2
+    ("often", 1.5, 4),  # 4 doubled is 6 under the day's 1.5, held to the ceiling of 4
+])
+def test_a_level_and_an_event_day_never_stack_past_the_event_ceiling(level, boost, expected):
+    limits = StudioLimits(daily=50, owner_dm=OwnerStudioTier(voice_daily=2))
+    now = standing(limits, "owner_dm", 0, [], NOW, boost=boost, spontaneity=level, ceiling=2.0)
+    assert now.left["voice"] == expected
+    assert now.left["voice"] <= 2 * 2.0  # configured x ceiling, at every level
+
+
+def test_an_event_day_never_lowers_the_scaled_limit_and_still_stops_at_the_total():
     limits = StudioLimits(daily=10, owner_dm=OwnerStudioTier(voice_daily=4))
-    now = standing(limits, "owner_dm", 0, [], NOW, boost=1.5, spontaneity="often")
-    assert now.normal["voice"] == 8 and now.left["voice"] == 12  # 4 doubled, then raised by the event day
-    assert now.daily_left == 15
-    big = StudioLimits(daily=10, owner_dm=OwnerStudioTier(voice_daily=8))
-    now = standing(big, "owner_dm", 0, [], NOW, boost=1.5, spontaneity="often")
-    assert now.normal["voice"] == 10 and now.left["voice"] == 15  # each held to its total, normal or event day
+    now = standing(limits, "owner_dm", 0, [], NOW, boost=1.5, spontaneity="often", ceiling=1.5)
+    assert now.normal["voice"] == 8 and now.left["voice"] == 8  # the ceiling (6) is under the level's own 8: never lower
+    big = StudioLimits(daily=10, owner_dm=OwnerStudioTier(voice_daily=12))
+    now = standing(big, "owner_dm", 0, [], NOW, boost=2.0, spontaneity="sometimes", ceiling=2.0)
+    assert now.normal["voice"] == 10 and now.left["voice"] == 20 and now.daily_left == 20  # each held to its total
+
+
+async def test_the_quota_holds_a_level_to_the_owners_event_ceiling(make_app):
+    class OnEventDay:
+        """An event day at the owner's 2x ceiling."""
+
+        async def multiplier(self, now):
+            return 2.0
+
+        async def may_extra(self, kind):
+            return True
+
+    app = make_app()
+    limits = StudioLimits(daily=50, owner_dm=OwnerStudioTier(voice_daily=2, gap_minutes=0))
+    base = StudioConfig(
+        enabled=True, base_url="https://studio.example.org", voice=True, limits=limits, event_day_max_multiplier=2)
+    quota = StudioQuota(app.store, OnEventDay())
+    for level, voices in (("rarely", 2), ("sometimes", 4), ("often", 4)):
+        config = base.model_copy(update={"spontaneity": level})
+        assert (await quota.remaining(config, "owner_dm", OWNER, NOW))["voice"] == voices
 
 
 async def test_the_quota_reads_the_level_from_the_studio_config(make_app):
@@ -198,7 +230,7 @@ def test_clock_and_probe_parsing():
     (True, True, True, "native"), (True, False, False, "native"),  # a model that takes video gets the clip itself
     (False, True, True, "strips"),  # the main way otherwise
     (False, True, False, "clip"),  # no ffmpeg: the media model describes the whole clip
-    (False, False, True, "clip"),  # no image-capable chat model
+    (False, False, True, "described"),  # no image-capable chat model: the media model describes the strips
     (False, False, False, "clip"),
 ])
 def test_the_path_a_clip_takes(video_in, images_in, ffmpeg_in, expected):
@@ -242,7 +274,7 @@ async def test_a_short_clip_becomes_one_strip_with_its_sound(tmp_path):
     seen = await video.watch(make_clip(tmp_path / "a.mp4", 6))
     assert not seen.cut and len(seen.strips) == 1 and 5.5 < seen.total < 6.6
     sheet = Image.open(io.BytesIO(seen.strips[0].image))
-    assert sheet.format == "JPEG" and sheet.size[0] == 3 * video.CELL_WIDTH  # three frames in a row
+    assert sheet.format == "JPEG" and sheet.size[0] == 3 * video.CELL_SIZE  # three frames in a row
     assert seen.audio is not None and seen.audio[4:8] == b"ftyp"  # an m4a the audio input takes
 
 
@@ -365,7 +397,7 @@ def clip_message(msg_id=5, size=15_000_000, duration=6):
     return tg(msg_id=msg_id, text=None, video=video_in, chat_id=OWNER, sender=OWNER)
 
 
-def fake_watch(monkeypatch, strips=1, audio=b"sound", total=6.0, cut=False):
+def fake_watch(monkeypatch, strips=1, audio=b"sound", total=6.0, cut=False, missing=()):
     calls = []
 
     async def watch(clip, known_duration=None):
@@ -373,7 +405,7 @@ def fake_watch(monkeypatch, strips=1, audio=b"sound", total=6.0, cut=False):
         each = total / strips
         return video.Watched(
             [video.Strip(i * each, (i + 1) * each, STRIP) for i in range(strips)],
-            total if not cut else 320.0, total, audio,
+            total if not cut else 320.0, total, audio, missing,
         )
 
     monkeypatch.setattr(video, "ffmpeg", lambda: "/usr/bin/ffmpeg")
@@ -382,8 +414,11 @@ def fake_watch(monkeypatch, strips=1, audio=b"sound", total=6.0, cut=False):
 
 
 async def arrive(make_app, monkeypatch, *, chat_takes=("text", "image"), hears=True, strips=1, audio=b"sound",
-                 contents=(), replies=("hello there",), size=15_000_000, total=6.0, cut=False, tmp_path=None):
+                 contents=(), replies=("hello there",), size=15_000_000, total=6.0, cut=False, images=None, missing=(),
+                 tmp_path=None):
     app = make_app(contents=contents)
+    if images is not None:
+        app.config = app.config.model_copy(update={"media_input_images": images})
     app.client = ChatClient(ModelEndpoint(
         base_url="https://llm.test/v1", model="m", api_key_env=None, input=chat_takes), None, app.client.http, sleep=no_sleep)
     await online(app, OWNER)
@@ -395,10 +430,16 @@ async def arrive(make_app, monkeypatch, *, chat_takes=("text", "image"), hears=T
         return hears
 
     monkeypatch.setattr(app.dispatch.native, "_hears", media_hears)
-    calls = fake_watch(monkeypatch, strips=strips, audio=audio, total=total, cut=cut)
+    calls = fake_watch(monkeypatch, strips=strips, audio=audio, total=total, cut=cut, missing=missing)
     await handle_message(app, clip_message(size=size))
     await drain_dispatch(app.dispatch)
     return app, scribe, calls
+
+
+def image_parts(app):
+    """The image parts of the first reply turn's user message."""
+    content = turn_requests(app)[0]["messages"][-1]["content"]
+    return [part for part in content if isinstance(part, dict) and part.get("type") == "image_url"]
 
 
 def wire(app):
@@ -415,7 +456,7 @@ async def test_a_clip_for_a_model_that_sees_images_goes_as_a_strip_and_a_transcr
     assert not scribe.of("video_url")
     row = json.loads((await app.store.get_message(OWNER, 5)).media_json)
     assert row["watched"] == {
-        "strips": 1, "spans": [[0.0, 6.0]], "seconds": 6.0, "total": 6.0, "cut": False,
+        "strips": 1, "spans": [[0.0, 6.0]], "seconds": 6.0, "total": 6.0, "cut": False, "missing": [],
         "sound": "heard", "transcript": "hello there",
     }
     assert row["bytes"] == len(STRIP)
@@ -448,11 +489,15 @@ async def test_a_clip_too_big_to_send_whole_to_a_video_model_is_watched_as_strip
     assert calls and "video_url" not in wire(app) and '"image_url"' in wire(app)
 
 
-async def test_no_image_model_falls_back_to_the_media_models_whole_clip(make_app, monkeypatch):
-    app, scribe, calls = await arrive(make_app, monkeypatch, chat_takes=("text",), size=3_000_000, replies=("A cat.",))
-    assert not calls
-    [sent] = scribe.sent
-    assert [part["type"] for part in sent[0]["content"]] == ["text", "video_url"]  # today's behaviour
+async def test_no_image_model_has_the_media_model_describe_the_strips_and_the_turn_log_says_so(make_app, monkeypatch):
+    app, scribe, calls = await arrive(
+        make_app, monkeypatch, chat_takes=("text",), size=3_000_000, replies=("hello there", "A cat jumps."),
+    )
+    assert calls  # watched: the chat model can't see, but the media model reads the strips, not the whole clip
+    assert not scribe.of("video_url") and len(scribe.of("image_url")) == 1
+    assert json.loads((await app.store.get_message(OWNER, 5)).media_json)["description"] == 'A cat jumps. Heard: "hello there"'
+    [row] = await app.store.recent_turns()
+    assert "clip described by the media model: his chat model takes no images" in json.loads(row["trace"])
 
 
 async def test_no_ffmpeg_falls_back_to_the_media_models_whole_clip(make_app, monkeypatch):
@@ -500,18 +545,71 @@ async def test_silence_is_noted_not_invented(make_app, monkeypatch):
     assert "There is no speech in it." in wire(app)
 
 
-async def test_a_long_clip_is_summarised_part_by_part_and_joined_instead_of_attached(make_app, monkeypatch):
-    app, scribe, _ = await arrive(
-        make_app, monkeypatch, strips=2, total=100.0, replies=("hi all", "A man enters.", "He sits down."),
-    )
-    # the transcript, then each part in turn; the second part is told what came before
-    assert len(scribe.sent) == 3
-    assert "A man enters." in scribe.sent[2][0]["content"][0]["text"] and "part 2 of 2" in scribe.sent[2][0]["content"][0]["text"]
+async def test_a_long_clip_goes_to_the_chat_model_as_one_image_per_strip(make_app, monkeypatch):
+    app, scribe, _ = await arrive(make_app, monkeypatch, strips=2, total=100.0, replies=("hi all",))
+    seen = wire(app)
+    assert len(image_parts(app)) == 2  # both strips, each its own image part, in the chat model's own turn
+    assert "frame strip 1 of 2" in seen and "frame strip 2 of 2" in seen and "0:00 to 0:50" in seen and "0:50 to 1:40" in seen
+    assert 'Heard: \\"hi all\\"' in seen
     row = json.loads((await app.store.get_message(OWNER, 5)).media_json)
     assert row["watched"]["strips"] == 2 and len(row["strips"]) == 2
-    assert row["description"] == '0:00-0:50: A man enters. 0:50-1:40: He sits down. Heard: "hi all"'
-    assert '"image_url"' not in wire(app)  # a turn can't carry several strips: the description stands in
-    assert "A man enters. 0:50-1:40: He sits down." in wire(app)
+    assert len(scribe.of("input_audio")) == 1  # nothing described the clip for this turn: no media model call but the sound
+
+
+async def test_more_strips_than_free_image_slots_are_squeezed_into_the_slots(make_app, monkeypatch):
+    app, _, _ = await arrive(make_app, monkeypatch, strips=4, total=300.0, images=1, replies=("hi all",))
+    seen = wire(app)
+    assert len(image_parts(app)) == 1  # one slot: one combined image of all four strips
+    assert "0:00 to 5:00" in seen and "frame strip 1" not in seen
+
+
+async def test_two_slots_share_four_strips_two_each(make_app, monkeypatch):
+    app, _, _ = await arrive(make_app, monkeypatch, strips=4, total=300.0, images=2, replies=("hi all",))
+    seen = wire(app)
+    assert len(image_parts(app)) == 2 and "frame strip 1 of 2" in seen and "frame strip 2 of 2" in seen
+    assert "0:00 to 2:30" in seen and "2:30 to 5:00" in seen
+
+
+async def test_image_input_switched_off_leaves_the_strips_to_the_media_model(make_app, monkeypatch):
+    app, scribe, calls = await arrive(make_app, monkeypatch, images=0, replies=("hi", "A cat jumps."))
+    assert calls and not image_parts(app)  # no image input: the chat model is shown none
+    assert len(scribe.of("image_url")) == 1 and not scribe.of("video_url")
+    assert "A cat jumps." in wire(app) or json.loads(
+        (await app.store.get_message(OWNER, 5)).media_json)["description"].startswith("A cat jumps.")
+
+
+async def test_a_clip_with_no_image_slot_left_is_described_in_the_background_and_the_turn_says_so(make_app, monkeypatch):
+    from aiogram.types import PhotoSize
+
+    app = make_app()
+    await online(app, OWNER)
+    app.config = app.config.model_copy(update={"media_input_images": 1})
+    app.client = ChatClient(ModelEndpoint(
+        base_url="https://llm.test/v1", model="m", api_key_env=None, input=("text", "image")), None,
+        app.client.http, sleep=no_sleep)
+    scribe = Scribe("hi", "A man waves.")
+    app.media_describer = MediaDescriber(scribe, SimpleNamespace(download=FakeDownload().download))
+    app.bot.download = FakeDownload().download
+
+    async def hears(client):
+        return True
+
+    monkeypatch.setattr(app.dispatch.native, "_hears", hears)
+    fake_watch(monkeypatch)
+    app.dispatch.debounce_seconds = 0
+    photo = tg(chat_id=OWNER, sender=OWNER, msg_id=6, text=None,
+               photo=[PhotoSize(file_id="p", file_unique_id="pu", width=10, height=10, file_size=50)])
+    await handle_message(app, clip_message(msg_id=5, size=3_000_000))
+    await handle_message(app, photo)
+    await drain_dispatch(app.dispatch)
+    first = turn_requests(app)[0]["messages"][-1]["content"]
+    assert len(image_parts(app)) == 1  # the newer photo took the only slot
+    assert "its frames don't fit this turn's images" in json.dumps(first)
+    await drain_dispatch(app.dispatch)
+    description = json.loads((await app.store.get_message(OWNER, 5)).media_json)["description"]
+    assert description == 'A man waves. Heard: "hi"'  # described in the background for the next turns
+    [row] = await app.store.recent_turns()
+    assert "clip described by the media model: no free image slot" in json.loads(row["trace"])
 
 
 async def test_a_clip_past_the_cap_says_how_much_was_looked_at(make_app, monkeypatch):
@@ -554,3 +652,229 @@ async def test_strips_gone_from_disk_leave_the_description_and_the_sound(make_ap
     (app.home.root / row["strips"][0]).unlink()
     assert await native._strip_images(OWNER, 5, row) == []
     assert await native.takes(row) and row["description"] == 'A man waves. Heard: "hello there"'
+
+
+# --- review round: tall clips, partial decodes, lost strips, shared work, memory -----------------------------------------
+
+def test_strips_are_squeezed_into_fewer_images_with_their_sizes_bounded():
+    assert video.groups(4, 2) == [[0, 1], [2, 3]] and video.groups(5, 2) == [[0, 1, 2], [3, 4]]
+    assert video.groups(3, 5) == [[0], [1], [2]] and video.groups(4, 1) == [[0, 1, 2, 3]]
+    images = []
+    for _ in range(4):
+        out = io.BytesIO()
+        Image.new("RGB", (1280, 1280), "blue").save(out, "JPEG")
+        images.append(out.getvalue())
+    assert video.fit(images, 4) is images and video.fit(images, 9) is images  # enough slots: unchanged
+    [one] = video.fit(images, 1)
+    width, height = Image.open(io.BytesIO(one)).size
+    assert max(width, height) <= video.MAX_SIDE and width * height <= video.MAX_PIXELS
+    two = video.fit(images, 2)
+    assert len(two) == 2 and all(Image.open(io.BytesIO(i)).size[0] <= video.MAX_SIDE for i in two)
+
+
+def test_a_sheet_never_passes_the_size_bounds():
+    big = video._bounded(Image.new("RGB", (6000, 3000), "red"))
+    assert big.size[0] <= video.MAX_SIDE and big.size[1] <= video.MAX_SIDE and big.size[0] * big.size[1] <= video.MAX_PIXELS
+    assert big.size[0] == 2 * big.size[1]  # proportions kept
+    small = Image.new("RGB", (100, 80))
+    assert video._bounded(small) is small
+
+
+@needs_ffmpeg
+async def test_a_very_tall_clip_makes_bounded_frames_and_sheet(tmp_path):
+    command = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x2400:rate=2:duration=6",
+               "-c:v", "mpeg4", str(tmp_path / "tall.mp4")]
+    subprocess.run(command, check=True)
+    seen = await video.watch((tmp_path / "tall.mp4").read_bytes())
+    width, height = Image.open(io.BytesIO(seen.strips[0].image)).size
+    assert height <= video.CELL_SIZE and width <= 3 * video.CELL_SIZE  # each frame fits its box, so the sheet does
+    assert width * height <= video.MAX_PIXELS
+
+
+@needs_ffmpeg
+async def test_frames_that_cannot_be_read_are_reported_as_missing_stretches(tmp_path, monkeypatch):
+    real = video._frame
+
+    async def flaky(binary, source, at, target, gate):
+        return None if abs(at - 3.0) < 0.01 else await real(binary, source, at, target, gate)
+
+    monkeypatch.setattr(video, "_frame", flaky)
+    seen = await video.watch(make_clip(tmp_path / "a.mp4", 6, sound=False))
+    assert seen.missing == ((2.0, 4.0),) and len(seen.strips) == 1  # the frame at 3 s stood for 2 to 4 s
+
+
+@needs_ffmpeg
+async def test_a_clip_with_too_few_readable_frames_is_refused_not_half_described(tmp_path, monkeypatch):
+    real = video._frame
+
+    async def mostly_broken(binary, source, at, target, gate):
+        return await real(binary, source, at, target, gate) if abs(at - 1.0) < 0.01 else None
+
+    monkeypatch.setattr(video, "_frame", mostly_broken)
+    with pytest.raises(video.Unwatchable, match="1 of 3 frames"):
+        await video.watch(make_clip(tmp_path / "a.mp4", 6, sound=False))
+
+
+def test_adjacent_missing_stretches_merge():
+    assert video._merged([(4.0, 6.0), (0.0, 2.0), (2.0, 4.0), (8.0, 9.0)]) == ((0.0, 6.0), (8.0, 9.0))
+
+
+async def test_a_partial_decode_is_said_in_the_note_and_kept_on_the_message(make_app, monkeypatch):
+    app, _, _ = await arrive(make_app, monkeypatch, missing=((80.0, 100.0),), total=300.0)
+    assert "Frames from 1:20 to 1:40 could not be read." in wire(app)
+    assert json.loads((await app.store.get_message(OWNER, 5)).media_json)["watched"]["missing"] == [[80.0, 100.0]]
+
+
+async def test_a_clip_whose_frames_cannot_be_read_falls_back_to_the_whole_clip(make_app, monkeypatch):
+    app = make_app()
+    await online(app, OWNER)
+    app.client = ChatClient(ModelEndpoint(
+        base_url="https://llm.test/v1", model="m", api_key_env=None, input=("text", "image")), None,
+        app.client.http, sleep=no_sleep)
+    scribe = Scribe("A shaky clip.")
+    app.media_describer = MediaDescriber(scribe, SimpleNamespace(download=FakeDownload().download))
+    app.bot.download = FakeDownload().download
+    monkeypatch.setattr(video, "ffmpeg", lambda: "/usr/bin/ffmpeg")
+
+    async def too_few(clip, known=None):
+        raise video.Unwatchable("only 1 of 3 frames could be read")
+
+    monkeypatch.setattr(video, "watch", too_few)
+    await handle_message(app, clip_message(size=3_000_000))
+    await drain_dispatch(app.dispatch)
+    assert [part["type"] for part in scribe.sent[0][0]["content"]] == ["text", "video_url"]
+
+
+async def lose_the_strips(app):
+    native = app.dispatch.native
+    row = json.loads((await app.store.get_message(OWNER, 5)).media_json)
+    native._strips.clear()
+    for rel in row["strips"]:
+        (app.home.root / rel).unlink()
+    return native, row
+
+
+async def test_lost_strips_use_the_whole_clip_when_it_can_still_be_fetched(make_app, monkeypatch):
+    from contextlib import nullcontext
+
+    app, scribe, _ = await arrive(make_app, monkeypatch, size=3_000_000, replies=("hello there",))
+    await drain_dispatch(app.dispatch)
+    native, row = await lose_the_strips(app)
+    scribe.replies[:] = ["A cat sits."]
+    text = await native.describe(OWNER, 5, row, nullcontext())
+    assert text == 'A cat sits. Heard: "hello there"'
+    assert [part["type"] for part in scribe.sent[-1][0]["content"]] == ["text", "video_url"]
+
+
+async def test_lost_strips_with_no_whole_clip_say_the_picture_is_gone_not_that_it_was_silent(make_app, monkeypatch):
+    from contextlib import nullcontext
+
+    app, scribe, _ = await arrive(make_app, monkeypatch, size=3_000_000, replies=("hello there",))
+    await drain_dispatch(app.dispatch)
+    native, row = await lose_the_strips(app)
+    await app.store.update_media(OWNER, 5, {"file_size": 25_000_000})  # over what the media model takes whole
+    text = await native.describe(OWNER, 5, row, nullcontext())
+    assert text == '(The picture of this video is no longer available.) Heard: "hello there"'
+    assert "no sound" not in text
+
+
+class Counting:
+    """A Telegram download that counts how many are running at once."""
+
+    def __init__(self):
+        self.downloads, self.active, self.peak = [], 0, 0
+
+    async def download(self, file_id):
+        self.downloads.append(file_id)
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        await asyncio.sleep(0.02)
+        self.active -= 1
+        return io.BytesIO(b"fake attachment")
+
+
+async def bare_clip_app(make_app, monkeypatch, *, count=1):
+    app = make_app()
+    app.client = ChatClient(ModelEndpoint(
+        base_url="https://llm.test/v1", model="m", api_key_env=None, input=("text", "image")), None,
+        app.client.http, sleep=no_sleep)
+    scribe = Scribe()
+    app.media_describer = MediaDescriber(scribe, SimpleNamespace(download=FakeDownload().download))
+    bot = Counting()
+    app.bot.download = bot.download
+
+    async def deaf(client):
+        return False
+
+    monkeypatch.setattr(app.dispatch.native, "_hears", deaf)
+    media = []
+    for number in range(count):
+        item = {"kind": "video", "file_id": f"v{number}", "file_size": 1000, "mime": "video/mp4", "duration": 6}
+        await app.store.record_new_message(StoredMessage_(10 + number, item))
+        media.append(item)
+    return app, scribe, bot, media
+
+
+async def wait_until(check):
+    for _ in range(500):
+        if check():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("timed out waiting")
+
+
+async def test_a_second_need_for_a_clip_joins_the_running_job_instead_of_starting_another(make_app, monkeypatch):
+    from contextlib import nullcontext
+
+    app, scribe, bot, [media] = await bare_clip_app(make_app, monkeypatch)
+    gate, started = asyncio.Event(), []
+
+    async def slow(clip, known=None):
+        started.append(1)
+        await gate.wait()
+        return video.Watched([video.Strip(0, 6, STRIP)], 6.0, 6.0, None)
+
+    monkeypatch.setattr(video, "ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(video, "watch", slow)
+    native = app.dispatch.native
+    arriving = asyncio.create_task(native.arrive(GROUP, 10, media))
+    await wait_until(lambda: started)
+    describing = asyncio.create_task(native.describe(GROUP, 10, media, nullcontext()))  # triage, a catch-up...
+    await asyncio.sleep(0.05)
+    assert not describing.done()  # waiting for the same job
+    gate.set()
+    assert await arriving is True
+    assert (await describing).startswith("Something happens.")
+    assert started == [1] and bot.downloads == ["v0"]  # one download and one ffmpeg job, shared
+    assert not scribe.of("video_url")  # and no whole-clip description on top
+
+
+async def test_the_reply_path_never_waits_on_a_running_clip_job_longer_than_the_catch_up_wait(make_app, monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr("dom.dispatch.MEDIA_WAIT_SECONDS", 0.05)
+    app, scribe, bot, [media] = await bare_clip_app(make_app, monkeypatch)
+    gate, started = asyncio.Event(), []
+
+    async def slow(clip, known=None):
+        started.append(1)
+        await gate.wait()
+        return video.Watched([video.Strip(0, 6, STRIP)], 6.0, 6.0, None)
+
+    monkeypatch.setattr(video, "ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(video, "watch", slow)
+    native = app.dispatch.native
+    arriving = asyncio.create_task(native.arrive(GROUP, 10, media))
+    await wait_until(lambda: started)
+    assert await asyncio.wait_for(native.describe(GROUP, 10, media, nullcontext()), 2) is None  # gave up, did not wait
+    assert not scribe.sent and bot.downloads == ["v0"]  # and started no second download or whole-clip description
+    gate.set()
+    assert await arriving is True  # the job itself was not cancelled
+
+
+async def test_a_burst_of_clips_is_downloaded_one_at_a_time(make_app, monkeypatch):
+    app, _, bot, media = await bare_clip_app(make_app, monkeypatch, count=3)
+    fake_watch(monkeypatch, audio=None)
+    native = app.dispatch.native
+    assert all(await asyncio.gather(*(native.arrive(GROUP, 10 + n, item) for n, item in enumerate(media))))
+    assert sorted(bot.downloads) == ["v0", "v1", "v2"] and bot.peak == 1  # never several clips in memory at once

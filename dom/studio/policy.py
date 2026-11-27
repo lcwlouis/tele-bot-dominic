@@ -201,21 +201,33 @@ def boosted(limit: int, boost: float) -> int:
     return max(limit, floor(limit * boost + 1e-9))
 
 
+def event_limit(configured: int, scale: float, boost: float, ceiling: float) -> int:
+    """A per-chat limit on an event day: the spontaneity-scaled limit under the day's multiplier, held to the owner's
+    event ceiling on the limit as configured, so a level and an event day never stack past it (a limit of 2 with a 2x
+    ceiling is 4 at most, at any level), and never below the scaled limit."""
+    now = scaled(configured, scale)
+    return min(boosted(now, boost), max(now, floor(configured * ceiling + 1e-9)))
+
+
 def standing(
     limits: StudioLimits, scope: str, total: int, rows: list[tuple[str, datetime]], now: datetime,
-    boost: float = 1.0, spontaneity: Spontaneity = "sometimes",
+    boost: float = 1.0, spontaneity: Spontaneity = "sometimes", ceiling: float | None = None,
 ) -> Standing:
     """`total` is the studio items sent across all chats in the last 24 hours (plus any in flight); `rows` is this
     chat's rolling week of deliveries. `boost` is the event-day multiplier on every limit (1 when there is none): `left`
     counts what the boosted limits allow, `normal` what the usual ones do. `spontaneity` scales every per-chat limit and
-    gap; the global daily total is the owner's ceiling and is never scaled, so no level raises past it."""
+    gap; the global daily total is the owner's ceiling and is never scaled, so no level raises past it. `ceiling` is
+    the owner's event-day maximum multiplier (default: the day's own): with a level it bounds the boosted limits, see
+    event_limit."""
     tier, scale = getattr(limits, scope), SPONTANEITY_SCALE[spontaneity]
+    ceiling = max(boost, 1.0) if ceiling is None else max(ceiling, 1.0)
+    configured = windows(tier)
     daily_normal, daily_boosted = max(limits.daily - total, 0), max(boosted(limits.daily, boost) - total, 0)
     left, normal, used = {}, {}, {}
     for kind, (cap, window) in windows(tier, scale).items():
         count = used[kind] = sum(item == kind and stamp > now - window for item, stamp in rows)
         normal[kind] = max(min(cap - count, daily_normal), 0)
-        left[kind] = max(min(boosted(cap, boost) - count, daily_boosted), 0)
+        left[kind] = max(min(event_limit(configured[kind][0], scale, boost, ceiling) - count, daily_boosted), 0)
     return Standing(left, daily_boosted, gap_ends(tier, rows, now, scale), normal, used)
 
 
@@ -226,6 +238,10 @@ class StudioQuota:
         self._lock = asyncio.Lock()
         self._pending: set[int] = set()
 
+    def _ceiling(self, config: StudioConfig) -> float:
+        """The owner's event-day maximum multiplier (1 with no event days)."""
+        return 1.0 if self.events is None else config.event_day_max_multiplier
+
     async def _boost(self, now: datetime) -> float:
         return 1.0 if self.events is None else await self.events.multiplier(now)
 
@@ -234,7 +250,8 @@ class StudioQuota:
             return {}
         total, rows = await self.store.studio_usage(chat_id, now)
         now_standing = standing(
-            config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity)
+            config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity,
+            self._ceiling(config))
         result = {}
         for kind, left in now_standing.left.items():
             if left <= 0 or kind in now_standing.gaps or not enabled(config, scope, kind):
@@ -254,7 +271,8 @@ class StudioQuota:
         counts toward the global total."""
         total, rows = await self.store.studio_usage(chat_id, now)
         return standing(
-            config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity)
+            config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity,
+            self._ceiling(config))
 
     async def has_room_for_still(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> bool:
         """After this chat's reserved video note, is there still a slot in the daily total for the still it is filmed
@@ -263,6 +281,7 @@ class StudioQuota:
             total, rows = await self.store.studio_usage(chat_id, now)
             return standing(
                 config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity,
+                self._ceiling(config),
             ).daily_left > 0
 
     async def remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:

@@ -3,8 +3,11 @@
 A video, animation or video note becomes a few strips, each one image: a grid of evenly spaced stills with the time
 burnt onto every one, made with ffmpeg and Pillow. The sound is cut out as a small audio file for a transcript. A short
 clip makes one strip (a frame every 2 to 5 seconds, 16 at most); a long one is split into equal parts of one strip each,
-up to MAX_STRIPS and MAX_SECONDS, and the rest is cut off (the caller says so). Everything here is blocking-free: the
-ffmpeg processes run as subprocesses with timeouts, the grid is drawn in a thread.
+up to MAX_STRIPS and MAX_SECONDS, and the rest is cut off (the caller says so). Every frame fits a CELL_SIZE box and a
+sheet never passes MAX_SIDE or MAX_PIXELS, so a very tall or wide clip can't make a huge image. Frames that can't be
+read are reported as `missing` spans, and a clip with too few readable frames is refused. Everything here is
+blocking-free: the ffmpeg processes run as subprocesses with timeouts, the grid is drawn in a thread. `fit` squeezes
+the strips into fewer images when a prompt has fewer free image slots.
 
 ffmpeg is the system binary found on PATH, as the studio's own ffmpeg calls find it (`apt install ffmpeg` on the Pi,
 `brew install ffmpeg` on a Mac, and in a container image the same package). Nothing else is needed: the duration and
@@ -36,12 +39,15 @@ STRIP_SECONDS = FRAMES_PER_STRIP * MAX_STEP  # what one strip covers at its wide
 MAX_SECONDS = MAX_STRIPS * STRIP_SECONDS  # the longest stretch of a clip that is looked at
 DOWNLOAD_BYTES = 20_000_000  # what Telegram lets a bot download
 COLUMNS = 4
-CELL_WIDTH = 320  # pixels; a full strip is 1280 wide
+CELL_SIZE = 320  # pixels: every frame fits a box this size; a full strip of a 16:9 clip is 1280 wide
+MAX_SIDE = 2048  # no sheet is wider or taller than this, nor bigger than MAX_PIXELS (small enough for a 4 GB Pi)
+MAX_PIXELS = MAX_SIDE * MAX_SIDE
+MIN_READ = 0.5  # a clip is watched only if at least this share of its planned frames could be read
 FRAME_SECONDS = 30  # for one ffmpeg call
 WATCH_SECONDS = 240  # for a whole clip
 _PARALLEL = 3  # frames cut at once
 
-Route = Literal["native", "strips", "clip"]
+Route = Literal["native", "strips", "described", "clip"]
 Listener = Literal["media", "chat"]
 
 
@@ -71,6 +77,7 @@ class Watched:
     seconds: float  # how much of the clip the strips cover
     total: float  # the clip's length
     audio: bytes | None  # m4a of the covered stretch, None when the clip has no sound
+    missing: tuple[tuple[float, float], ...] = ()  # stretches whose frames could not be read, merged and in order
 
     @property
     def cut(self) -> bool:
@@ -82,11 +89,14 @@ def ffmpeg() -> str | None:
 
 
 def route(*, takes_video: bool, takes_images: bool, has_ffmpeg: bool) -> Route:
-    """How a clip reaches Dom: as the clip itself when his chat model takes video, as frame strips when it takes images
-    and ffmpeg is there, else the media model describes the whole clip."""
+    """How a clip reaches Dom: as the clip itself when his chat model takes video; as frame strips for his chat model
+    when it takes images and ffmpeg is there; as frame strips the media model describes when ffmpeg is there but his
+    chat model takes no images; else the media model describes the whole clip."""
     if takes_video:
         return "native"
-    return "strips" if takes_images and has_ffmpeg else "clip"
+    if not has_ffmpeg:
+        return "clip"
+    return "strips" if takes_images else "described"
 
 
 def listener(media_hears: bool, chat_hears: bool) -> Listener | None:
@@ -149,7 +159,7 @@ async def _frame(binary: str, source: Path, at: float, target: Path, gate: async
         try:
             await _run(
                 binary, "-v", "error", "-ss", f"{at:.2f}", "-i", str(source), "-frames:v", "1",
-                "-vf", f"scale={CELL_WIDTH}:-2", "-q:v", "5", "-y", str(target),
+                "-vf", f"scale={CELL_SIZE}:{CELL_SIZE}:force_original_aspect_ratio=decrease", "-q:v", "5", "-y", str(target),
             )
             return await asyncio.to_thread(target.read_bytes)
         except (TimeoutError, OSError):
@@ -161,6 +171,53 @@ def _font() -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
         return ImageFont.load_default(size=16)
     except (TypeError, OSError):  # a Pillow without FreeType has only the small bitmap font
         return ImageFont.load_default()
+
+
+def _bounded(sheet: Image.Image) -> Image.Image:
+    """The sheet, shrunk (keeping its proportions) to fit MAX_SIDE and MAX_PIXELS."""
+    width, height = sheet.size
+    factor = min(1.0, MAX_SIDE / width, MAX_SIDE / height, (MAX_PIXELS / (width * height)) ** 0.5)
+    if factor < 1.0:
+        sheet = sheet.resize((max(1, int(width * factor)), max(1, int(height * factor))), Image.LANCZOS)
+    return sheet
+
+
+def _jpeg(sheet: Image.Image, quality: int = 82) -> bytes:
+    out = io.BytesIO()
+    sheet.save(out, "JPEG", quality=quality)
+    return out.getvalue()
+
+
+def groups(count: int, slots: int) -> list[list[int]]:
+    """Which of `count` strips (by index, in order) share each of `slots` images: as even as possible."""
+    slots = max(1, min(slots, count))
+    base, extra = divmod(count, slots)
+    result, start = [], 0
+    for number in range(slots):
+        size = base + (1 if number < extra else 0)
+        result.append(list(range(start, start + size)))
+        start += size
+    return result
+
+
+def fit(images: list[bytes], slots: int) -> list[bytes]:
+    """The strips as at most `slots` images: neighbours share one, laid out two across with their burnt-in times
+    intact, and the result bounded in size. A prompt with fewer free image slots than strips takes this."""
+    if slots >= len(images):
+        return images
+    out = []
+    for group in groups(len(images), slots):
+        if len(group) == 1:
+            out.append(images[group[0]])
+            continue
+        parts = [Image.open(io.BytesIO(images[index])).convert("RGB") for index in group]
+        width, height = max(part.size[0] for part in parts), max(part.size[1] for part in parts)
+        rows = ceil(len(parts) / 2)
+        sheet = Image.new("RGB", (width * min(2, len(parts)), height * rows), "black")
+        for number, part in enumerate(parts):
+            sheet.paste(part, ((number % 2) * width, (number // 2) * height))
+        out.append(_jpeg(_bounded(sheet), 80))
+    return out
 
 
 def _grid(frames: list[tuple[float, bytes]]) -> bytes:
@@ -177,9 +234,7 @@ def _grid(frames: list[tuple[float, bytes]]) -> bytes:
         box = draw.textbbox((left + 4, top + 4), text, font=font)
         draw.rectangle((box[0] - 3, box[1] - 2, box[2] + 3, box[3] + 2), fill="black")
         draw.text((left + 4, top + 4), text, fill="white", font=font)
-    out = io.BytesIO()
-    sheet.save(out, "JPEG", quality=82)
-    return out.getvalue()
+    return _jpeg(_bounded(sheet))
 
 
 async def _audio(binary: str, source: Path, target: Path, seconds: float) -> bytes | None:
@@ -219,16 +274,33 @@ async def _watch(binary: str, clip: bytes, known_duration: float | None) -> Watc
         spans, _ = plan(duration)
         gate = asyncio.Semaphore(_PARALLEL)
         strips: list[Strip] = []
+        lost: list[tuple[float, float]] = []
+        planned = read = 0
         for number, span in enumerate(spans):
             frames = await asyncio.gather(*(
                 _frame(binary, source, at, Path(folder, f"f{number}-{slot}.jpg"), gate)
                 for slot, at in enumerate(span.times)
             ))
             got = [(at, data) for at, data in zip(span.times, frames) if data]
+            planned, read = planned + len(span.times), read + len(got)
+            half = (span.end - span.start) / len(span.times) / 2
+            lost += [(max(span.start, at - half), min(span.end, at + half))
+                     for at, data in zip(span.times, frames) if not data]
             if got:
                 strips.append(Strip(span.start, span.end, await asyncio.to_thread(_grid, got)))
-        if not strips:
-            raise Unwatchable("no frames could be read")
+        if not strips or read < planned * MIN_READ:
+            raise Unwatchable(f"only {read} of {planned} frames could be read")
         covered = min(duration, MAX_SECONDS)
         sound = await _audio(binary, source, Path(folder, "sound.m4a"), covered) if has_sound else None
-        return Watched(strips, covered, duration, sound)
+        return Watched(strips, covered, duration, sound, _merged(lost))
+
+
+def _merged(stretches: list[tuple[float, float]]) -> tuple[tuple[float, float], ...]:
+    """Neighbouring or overlapping stretches joined, in order."""
+    out: list[tuple[float, float]] = []
+    for start, end in sorted(stretches):
+        if out and start <= out[-1][1] + 1e-6:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return tuple(out)

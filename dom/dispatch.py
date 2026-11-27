@@ -574,11 +574,7 @@ class Dispatcher:
             return False
         try:
             # a clip shown as frame strips is described from them, else the media model describes the file whole
-            seen = await self.native.watched(chat_id, msg_id, media)
-            description = (
-                await self.native.summarise(chat_id, msg_id, seen, request) if seen is not None
-                else await describer.describe(media, request=request)
-            )
+            description = await self.native.describe(chat_id, msg_id, media, request)
             await self.app.store.set_media_description(chat_id, msg_id, description)
         except Exception:
             log.exception("could not record media description in chat %s", chat_id)

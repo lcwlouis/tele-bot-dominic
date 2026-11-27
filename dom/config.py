@@ -683,7 +683,8 @@ class StudioConfig(BaseModel):
         "sometimes", description="How readily Dom adds a voice note, video note or photo on his own, in replies and when "
         "he writes first: rarely (the prompt says to keep them for when they matter, and the per-chat limits are halved "
         "and the gaps doubled), sometimes (the default) or often (the prompt invites them, the per-chat limits double "
-        "and the gaps halve). It never passes the global daily total, the spend caps or the switches above.",
+        "and the gaps halve). It never passes the global daily total, the spend caps, the switches above or, on an event "
+        "day, the event ceiling.",
     )
     event_day_max_multiplier: float = Field(
         2, ge=0, le=10, allow_inf_nan=False, description="The most Dom can raise his own media limits on a special day "
@@ -783,8 +784,9 @@ class Config(BaseModel):
     memory_self_edit: bool = Field(False, description="Allow Dom to propose edits to his notes in the owner's DM. Each proposal appears on an approval card with a unified diff and a one-line reason; nothing changes until the owner approves.")
     core_memory_cap: int = Field(30, ge=1, description="Most core memories (pinned note lines) across all of Dom's notes, the owner's pins included. Core memories never fade and the memory pass never rewrites them. At the cap Dom must unpin one of his own to pin another.")
     media_input_images: int = Field(
-        2, ge=0, le=8, description="Most images (photos, stickers) Dom is shown as the real picture in one prompt, newest "
-        "first, when his chat model accepts images. Older media stays as its tag in the window. Zero turns image input off.",
+        2, ge=0, le=8, description="Most images (photos, stickers, and the frame strips of a clip) Dom is shown as the real picture in "
+        "one prompt, newest first, when his chat model accepts images; a clip with fewer free slots than strips is shown "
+        "as fewer, combined images. Older media stays as its tag in the window. Zero turns image input off.",
     )
     media_input_audio: int = Field(
         1, ge=0, le=4, description="Most voice notes or audio files Dom hears as the real recording in one prompt. "
