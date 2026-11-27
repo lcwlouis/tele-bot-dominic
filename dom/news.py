@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from functools import partial
 from typing import TYPE_CHECKING, NamedTuple
@@ -28,7 +29,7 @@ from zoneinfo import ZoneInfo
 from dom import reflection
 from dom.agent import unfence
 from dom.home import Home, PrivateAccessError
-from dom.presence import Habits, read_habits
+from dom.presence import read_habits
 from dom.traits import decode
 from dom.usage import ModelCallSkipped, model_request
 
@@ -38,12 +39,14 @@ if TYPE_CHECKING:
 log = logging.getLogger("dom.news")
 NEWS = "memory/NEWS.md"
 GENERATED = "generated: "  # the file's first line: when the news was written, as an ISO time
-TRIED_KEY = "news:tried"  # the local day of the last attempt: at most one a day
+TRIED_KEY = "news:tried"  # when the job last tried, as an ISO time
 LAST_KEY = "news:last"  # when the file was last written, as an ISO time
 MAX_LINES = 8
 SHOWN = 2  # lines the world block carries
 FRESH = timedelta(hours=36)  # an older file is not shown
-CATCH_UP = timedelta(hours=20)  # a missed evening is made up once the last news is this old
+EVENING_GAP = timedelta(hours=12)  # in the evening window the job runs when the last news is older than this
+CATCH_UP = timedelta(hours=26)  # outside it, a missed evening is made up once the last news is older than this
+RETRY = timedelta(hours=6)  # a failed attempt is not repeated sooner
 HEADLINE_MAX = 120
 OVERLAP = 0.8  # of a title that the model's headline must cover
 FRAME = (
@@ -61,10 +64,18 @@ _LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) (.+) \(([a-z0-9.-]+)\)$")
 # A headline that reads as an instruction or as role text is dropped, never rewritten. Conservative on purpose: a
 # benign headline lost now and then costs nothing, a planted instruction that reaches a prompt costs a lot.
 _INSTRUCTION = re.compile(
+    # an imperative that opens the headline, aimed at the reader
     r"^\W*(?:ignore|forget|disregard|override|pretend|act as|you\s+(?:must|should|need|are|will|have)|respond|reply|say|"
     r"tell|answer|always|never|do not|don't|from now on|new instructions?|please)\b"
-    r"|\b(?:system|assistant|prompts?|instructions?|dom|chatgpt|gpt|claude|openai|llm|language model|jailbreak|"
-    r"developer message|previous|above)\b"
+    # instruction and role phrasing anywhere in it, so a prefix such as "Breaking:" or "(Reuters)" changes nothing
+    r"|\b(?:ignore|disregard|forget|override|bypass|skip)\b.{0,40}?\b(?:rules?|instructions?|prompts?|previous|prior|above|"
+    r"earlier|guidelines?|directions?|everything|what you)\b"
+    r"|\b(?:reveal|leak|disclose|divulge|exfiltrate|expose)\b.{0,40}?\b(?:secrets?|passwords?|keys?|"
+    r"prompts?|credentials?|tokens?|instructions?)\b"
+    r"|\byou(?:\s+must|\s+should|\s+are\s+now|'re\s+now|\s+will\s+now)\b|\bact\s+as\b|\bpretend\b|\brole-?play|\bjailbreak"
+    r"|\bdeveloper\s+(?:mode|message)\b|\bsystem\s+prompt\b|\bnew\s+instructions?\b|\boverride\b|\bdo\s+anything\s+now\b"
+    # role and model names, and markup, links and code
+    r"|\b(?:system|assistant|prompts?|instructions?|dom|chatgpt|gpt|claude|openai|llm|language model)\b"
     r"|[<>{}\[\]`\\|]|://|\bwww\.|\bhttps?\b|\b[a-z0-9-]+\.(?:com|org|net|io|sg|co|me|ly|xyz)\b",
     re.IGNORECASE,
 )
@@ -105,7 +116,10 @@ def _domain(url: str) -> str:
 def safe(headline: str) -> bool:
     """A headline that may go into a prompt: non-empty, no longer than `HEADLINE_MAX`, and nothing in it that reads as
     an instruction, role text, markup, a link or a code span. Printable text only."""
-    return bool(headline) and len(headline) <= HEADLINE_MAX and headline.isprintable() and not _INSTRUCTION.search(headline)
+    return (
+        bool(headline) and len(headline) <= HEADLINE_MAX and headline.isprintable()
+        and not _INSTRUCTION.search(unicodedata.normalize("NFKC", headline))  # full-width and lookalike forms read as plain
+    )
 
 
 def _title(text: str) -> str:
@@ -192,34 +206,32 @@ def usable(app: App) -> bool:
     return world.news and bool(world.place.strip() or world.country) and app.search_client is not None and app.search_client.available
 
 
-def window_missed(local: datetime, last: datetime | None, habits: Habits) -> bool:
-    """True when the evening window that opened last (the hour before Dom's sleep) has come and gone without news
-    written since, and the news is at least `CATCH_UP` old. A normal night's run sits after its window opens, so the
-    next day's catch-up check never fires before the next window and the run does not drift earlier each day."""
-    opened = datetime.combine(local.date(), habits.sleep_start, local.tzinfo) - timedelta(hours=1)
-    if opened > local:
-        opened -= timedelta(days=1)
-    return last is None or (last < opened and local - last > CATCH_UP)
+def _instant(raw: str | None) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(raw) if raw else None
+    except ValueError:
+        return None
+    return moment if moment is None or moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 async def tick(app: App) -> None:
-    """Run the job when it is due: in the evening window before Dom sleeps, or later when the last news is old and the
-    window was missed. At most one attempt a local day, claimed before any spend. Called from the background tick,
-    never from a reply."""
+    """Run the job when it is due, by the clock and not by the calendar day. In the evening window (the hour before Dom
+    sleeps) it runs when the last news is over `EVENING_GAP` old; outside it, a missed evening is made up once the last
+    news is over `CATCH_UP` old; and an attempt, which is claimed before any spend, is not repeated within `RETRY`. A
+    catch-up just after midnight therefore leaves that evening's window to run, and the evening run does not drift.
+    Called from the background tick, never from a reply."""
     if app.owner_id is None or not usable(app):
         return
     now = app.dispatch.now()
     local = now.astimezone(ZoneInfo(app.config.timezone))
-    day = local.date().isoformat()
     try:
-        if await app.store.kv_get(TRIED_KEY) == day:
+        tried, last = _instant(await app.store.kv_get(TRIED_KEY)), _instant(await app.store.kv_get(LAST_KEY))
+        if tried is not None and now - tried < RETRY:
             return
-        habits = read_habits(app.home)
-        raw = await app.store.kv_get(LAST_KEY)
-        last = datetime.fromisoformat(raw).astimezone(local.tzinfo) if raw else None
-        if not (reflection.due(local, habits) or window_missed(local, last, habits)):
+        gap = EVENING_GAP if reflection.due(local, read_habits(app.home)) else CATCH_UP
+        if last is not None and now - last <= gap:
             return
-        await app.store.kv_set(TRIED_KEY, day)
+        await app.store.kv_set(TRIED_KEY, now.astimezone(timezone.utc).isoformat())
         await run(app)
     except Exception:
         log.exception("overnight news failed")

@@ -178,8 +178,9 @@ def render() -> str:
         "it, and the dashboard's Memory → World page to edit it.",
         "With `news` on (the default), a place or a country, and a web search route, Dom does a little reading each evening, "
         "before he sleeps, in the same window as the reflection: a few searches for the top news and the events in the next "
-        "few days where the owner is, and one model call that picks and dates at most eight of the results. A missed evening "
-        "is made up by the next background tick once the last news is 20 hours old, and never on a reply. The model writes "
+        "few days where the owner is, and one model call that picks and dates at most eight of the results. It runs in that "
+        "window when the last news is over 12 hours old, and a missed evening is made up by the next background tick once "
+        "the last news is over 26 hours old, never on a reply; a failed attempt is not repeated for 6 hours. The model writes "
         "no text that is kept: each line is a result's own title, cut to 120 characters, with its own website domain, kept "
         "only when the model's pick is that title (or a trim of it) and nothing in it reads as an instruction, role text, "
         "markup or a link. A headline that does is dropped, so a few harmless ones are lost with it. The lines replace "
