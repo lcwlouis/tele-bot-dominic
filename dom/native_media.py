@@ -107,6 +107,8 @@ class NativeMedia:
         self._strips: OrderedDict[tuple[int, int], list[bytes]] = OrderedDict()
         self._watching = asyncio.Semaphore(1)  # one clip downloaded and in ffmpeg at a time: the Pi has 4 GB
         self._watches: dict[tuple[int, int], asyncio.Task] = {}  # clips being watched now, shared by whoever needs them
+        self._summaries: dict[tuple[int, int], asyncio.Task] = {}  # clips being described from their strips now
+        self._descriptions: dict[tuple[int, int], asyncio.Task] = {}  # clips being described in the background now
 
     # --- what the chat route takes ---
 
@@ -375,6 +377,7 @@ class NativeMedia:
                 ref = f"message {row.msg_id}, {media['kind'].replace('_', ' ')} from {who}"
                 describe = partial(self._describe_now, chat_id, row.msg_id, media)
             attachments.append(Attachment(modality, mime, data, ref, describe))
+        pending: list[tuple[StoredMessage, asyncio.Task]] = []
         for row, media in unseated:  # over the turn's image budget: the media model describes it, and the turn says so
             turn_log.step("clip described by the media model: no free image slot")
             watched = media["watched"]
@@ -382,7 +385,15 @@ class NativeMedia:
                 f"({str(media['kind']).replace('_', ' ')}, {video.clock(watched['total'])}; its frames don't fit this "
                 "turn's images)", sound_line(watched), cut_line(watched),
             )))
-            self._describe_later(chat_id, row.msg_id, media)
+            if media.get("description") is None:
+                pending.append((row, self._description_task(chat_id, row.msg_id, media)))
+        if pending:  # the picture, as text, if it comes within the catch-up wait; else the note stands and the job goes on
+            from dom.dispatch import MEDIA_WAIT_SECONDS
+
+            await asyncio.wait([task for _, task in pending], timeout=MEDIA_WAIT_SECONDS)
+            for row, task in pending:
+                if task.done() and not task.cancelled() and task.exception() is None and task.result():
+                    heard[row.msg_id] = task.result()
         if attachments:
             counts = {kind: sum(1 for a in attachments if a["modality"] == kind) for kind in MODALITIES}
             turn_log.step("sees " + ", ".join(f"{n} {kind}" for kind, n in counts.items() if n))
@@ -446,14 +457,20 @@ class NativeMedia:
                 return await self.summarise(chat_id, msg_id, current, request)
         return await describer.describe(media, request=request)
 
-    def _describe_later(self, chat_id: int, msg_id: int, media: dict) -> None:
+    def _description_task(self, chat_id: int, msg_id: int, media: dict) -> asyncio.Task:
+        """The one job describing this clip in the background (under the media budget and spend cap); a turn that
+        wants the picture and an aged-media pass share it. Its result is the stored description."""
         key = (chat_id, msg_id)
-        if key in self._aged or media.get("description") is not None:
-            return
-        self._aged[key] = None
-        while len(self._aged) > AGED_TRIED:
-            self._aged.popitem(last=False)
-        self.d._spawn(self._describe_aged(chat_id, [(msg_id, media)]))
+        task = self._descriptions.get(key)
+        if task is None:
+            task = self._descriptions[key] = self.d._spawn(self._describe_one(chat_id, msg_id, media))
+            task.add_done_callback(lambda _: self._descriptions.pop(key, None))
+        return task
+
+    async def _describe_one(self, chat_id: int, msg_id: int, media: dict) -> str | None:
+        await self.d._describe(chat_id, msg_id, media, self.d._media_request(chat_id, background=True))
+        row = await self.d.app.store.get_message(chat_id, msg_id)
+        return _media(row).get("description") if row is not None else None
 
     async def watch(self, chat_id: int, msg_id: int, media: dict, *, background: bool = False) -> dict | None:
         """Cut a clip into strips, transcribe its sound, keep the strips beside the media files and record what was
@@ -551,7 +568,17 @@ class NativeMedia:
 
     async def summarise(self, chat_id: int, msg_id: int, media: dict, request: AsyncContextManager[None]) -> str | None:
         """What happens in a watched clip, from its strips (one media-model call each, in turn, every part told what
-        came before) joined with what was heard in it. None when the strips exist but none could be described."""
+        came before) joined with what was heard in it. None when the strips exist but none could be described.
+        Callers that come while it is running (arrival, triage, a catch-up) share its one result, so the media model
+        is asked, and paid, once; `request` is the first caller's."""
+        key = (chat_id, msg_id)
+        task = self._summaries.get(key)
+        if task is None:
+            task = self._summaries[key] = self.d._spawn(self._summarise(chat_id, msg_id, media, request))
+            task.add_done_callback(lambda _: self._summaries.pop(key, None))
+        return await asyncio.shield(task)
+
+    async def _summarise(self, chat_id: int, msg_id: int, media: dict, request: AsyncContextManager[None]) -> str | None:
         watched = media["watched"]
         images = await self._strip_images(chat_id, msg_id, media)
         describer = self.d.app.media_describer

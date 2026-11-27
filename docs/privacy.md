@@ -134,7 +134,8 @@ The chat model itself sees the whole clip: each strip is its own image on the
 turn, with the transcript as text, inside `media_input_images` (the other media
 in that turn count against it). With fewer free image slots than strips, strips
 are combined into fewer images, their times intact; a clip with no slot left is
-described by the media model instead, and the Turn log says so. A kept strip is a
+described by the media model instead (the turn waits for that description no longer than the catch-up wait, else it
+gets the transcript and a note that the frames did not fit, and the job goes on for later turns), and the Turn log says so. A kept strip is a
 JPEG in the same private `media/` folder as the photos Dom sends (`<message
 id>-strip<N>.jpg`), counted in `studio.keep_cap_mb` and removed with the oldest
 files; once Dom has answered, the media model describes the strips from those

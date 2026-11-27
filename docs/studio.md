@@ -42,8 +42,11 @@ he writes first. Settings → What Dom may do → Media shows it as a small cont
 | `often` | send one when it fits; a voice note or a photo now and then makes you feel real | doubled | halved |
 
 The level multiplies the per-chat limits and gaps of [Limits](#limits) below; it never raises past the global daily
-total, the spend caps or the switches, and a limit set to zero stays off. An event day's multiplier applies on top, but a
-level and an event day never stack past the event ceiling: a limit of 2 with a 2x ceiling is 4 at most at any level.
+total, the spend caps or the switches, and a limit set to zero stays off. The level is your own baseline.
+An event day's multiplier applies on top of it, but it can only raise a limit, and its ceiling
+(`event_day_max_multiplier`) bounds only what the day adds: the two never stack past the ceiling. A configured limit of
+2 with a 2x ceiling is 4 at most at any level. With a 1.5x ceiling, "often" already puts it at 4, above the ceiling of
+3, so that day adds nothing; at "sometimes" the same day raises it to 3.
 
 ## Where the studio runs
 

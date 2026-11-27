@@ -683,8 +683,9 @@ class StudioConfig(BaseModel):
         "sometimes", description="How readily Dom adds a voice note, video note or photo on his own, in replies and when "
         "he writes first: rarely (the prompt says to keep them for when they matter, and the per-chat limits are halved "
         "and the gaps doubled), sometimes (the default) or often (the prompt invites them, the per-chat limits double "
-        "and the gaps halve). It never passes the global daily total, the spend caps, the switches above or, on an event "
-        "day, the event ceiling.",
+        "and the gaps halve). It never passes the global daily total, the spend caps or the switches above. The level is "
+        "your own baseline: an event day can only raise a limit, and its ceiling (`event_day_max_multiplier`) bounds only "
+        "what the day adds, so when the level already puts a limit above the ceiling the day adds nothing.",
     )
     event_day_max_multiplier: float = Field(
         2, ge=0, le=10, allow_inf_nan=False, description="The most Dom can raise his own media limits on a special day "

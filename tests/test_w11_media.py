@@ -19,7 +19,7 @@ from dom.llm import ChatClient
 from dom.media import MediaDescriber, PermanentMediaSkip, download
 from dom.media_files import MediaFiles, files_of
 from dom.studio.policy import (
-    STUDIO_NOTE, StudioQuota, gap_ends, gap_minutes, scaled, standing, turn_note, windows,
+    STUDIO_NOTE, StudioQuota, event_limit, gap_ends, gap_minutes, scaled, standing, turn_note, windows,
 )
 from dom.telegram.handlers import handle_message
 from test_media import FakeDownload
@@ -94,6 +94,17 @@ def test_a_level_and_an_event_day_never_stack_past_the_event_ceiling(level, boos
     now = standing(limits, "owner_dm", 0, [], NOW, boost=boost, spontaneity=level, ceiling=2.0)
     assert now.left["voice"] == expected
     assert now.left["voice"] <= 2 * 2.0  # configured x ceiling, at every level
+
+
+def test_a_baseline_already_above_the_ceiling_gets_nothing_more_from_an_event_day():
+    # The level is the owner's own baseline; an event day can only raise a limit, and its ceiling bounds only what the
+    # day adds. A configured 2 at "often" is 4; a 1.5x ceiling (3) is under it, so the day adds nothing.
+    limits = StudioLimits(daily=50, owner_dm=OwnerStudioTier(voice_daily=2))
+    quiet = standing(limits, "owner_dm", 0, [], NOW, boost=1.0, spontaneity="often", ceiling=1.5)
+    day = standing(limits, "owner_dm", 0, [], NOW, boost=1.5, spontaneity="often", ceiling=1.5)
+    assert quiet.left["voice"] == 4 and day.left["voice"] == 4 and day.normal["voice"] == 4
+    assert event_limit(2, 2.0, 1.5, 1.5) == 4  # the reviewer's case
+    assert event_limit(2, 1.0, 1.5, 1.5) == 3  # at "sometimes" the same day does raise it, to the ceiling
 
 
 def test_an_event_day_never_lowers_the_scaled_limit_and_still_stops_at_the_total():
@@ -380,8 +391,13 @@ def StoredMessage_(msg_id, media):
 class Scribe:
     """A scripted media model that takes audio."""
 
-    def __init__(self, *replies):
-        self.replies, self.sent = list(replies), []
+    def __init__(self, *replies, hold=None, strip_reply=None):
+        self.replies, self.sent, self.hold = list(replies), [], hold  # `hold`: an event the strip calls wait for
+        self.strip_reply = strip_reply
+
+    def strips(self):
+        """The requests that asked for a frame strip to be described."""
+        return [sent for sent in self.sent if sent[0]["content"][0]["text"].startswith("This image is a grid")]
 
     def of(self, part_type):
         """The requests that carried a part of this type."""
@@ -389,6 +405,11 @@ class Scribe:
 
     async def complete(self, messages, tools, **kwargs):
         self.sent.append(messages)
+        is_strip = messages[0]["content"][0]["text"].startswith("This image is a grid")
+        if self.hold is not None and is_strip:
+            await self.hold.wait()
+        if is_strip and self.strip_reply is not None:
+            return {"content": self.strip_reply}
         return {"content": self.replies.pop(0) if self.replies else "Something happens."}
 
 
@@ -578,7 +599,8 @@ async def test_image_input_switched_off_leaves_the_strips_to_the_media_model(mak
         (await app.store.get_message(OWNER, 5)).media_json)["description"].startswith("A cat jumps.")
 
 
-async def test_a_clip_with_no_image_slot_left_is_described_in_the_background_and_the_turn_says_so(make_app, monkeypatch):
+async def clip_losing_its_slot(make_app, monkeypatch, scribe):
+    """A clip and then a newer photo arrive together; one image slot, and the photo takes it."""
     from aiogram.types import PhotoSize
 
     app = make_app()
@@ -587,7 +609,6 @@ async def test_a_clip_with_no_image_slot_left_is_described_in_the_background_and
     app.client = ChatClient(ModelEndpoint(
         base_url="https://llm.test/v1", model="m", api_key_env=None, input=("text", "image")), None,
         app.client.http, sleep=no_sleep)
-    scribe = Scribe("hi", "A man waves.")
     app.media_describer = MediaDescriber(scribe, SimpleNamespace(download=FakeDownload().download))
     app.bot.download = FakeDownload().download
 
@@ -596,20 +617,56 @@ async def test_a_clip_with_no_image_slot_left_is_described_in_the_background_and
 
     monkeypatch.setattr(app.dispatch.native, "_hears", hears)
     fake_watch(monkeypatch)
-    app.dispatch.debounce_seconds = 0
     photo = tg(chat_id=OWNER, sender=OWNER, msg_id=6, text=None,
                photo=[PhotoSize(file_id="p", file_unique_id="pu", width=10, height=10, file_size=50)])
     await handle_message(app, clip_message(msg_id=5, size=3_000_000))
     await handle_message(app, photo)
     await drain_dispatch(app.dispatch)
-    first = turn_requests(app)[0]["messages"][-1]["content"]
+    return app
+
+
+async def test_a_clip_with_no_image_slot_gets_its_description_in_the_turn_when_it_arrives_in_time(make_app, monkeypatch):
+    app = await clip_losing_its_slot(make_app, monkeypatch, Scribe("hi", strip_reply="A man waves."))
     assert len(image_parts(app)) == 1  # the newer photo took the only slot
-    assert "its frames don't fit this turn's images" in json.dumps(first)
-    await drain_dispatch(app.dispatch)
-    description = json.loads((await app.store.get_message(OWNER, 5)).media_json)["description"]
-    assert description == 'A man waves. Heard: "hi"'  # described in the background for the next turns
+    seen = json.dumps(turn_requests(app)[0]["messages"][-1]["content"])
+    assert 'A man waves. Heard: \\"hi\\"' in seen  # the picture, as text, within the catch-up wait
+    assert "its frames don't fit" not in seen
+    assert json.loads((await app.store.get_message(OWNER, 5)).media_json)["description"] == 'A man waves. Heard: "hi"'
     [row] = await app.store.recent_turns()
     assert "clip described by the media model: no free image slot" in json.loads(row["trace"])
+
+
+async def test_a_clip_with_no_slot_keeps_its_note_when_the_description_is_late_and_starts_no_second_job(make_app, monkeypatch):
+    monkeypatch.setattr("dom.dispatch.MEDIA_WAIT_SECONDS", 0.05)
+    hold = asyncio.Event()
+    scribe = Scribe("hi", strip_reply="A man waves.", hold=hold)
+    asyncio.get_running_loop().call_later(0.4, hold.set)  # the media model answers well after the turn stopped waiting
+    app = await clip_losing_its_slot(make_app, monkeypatch, scribe)  # returns once the background job has finished too
+    seen = json.dumps(turn_requests(app)[0]["messages"][-1]["content"])
+    assert "its frames don't fit this turn's images" in seen and 'Heard: \\"hi\\"' in seen  # the note stands
+    assert "A man waves." not in seen  # the turn went ahead without waiting longer
+    assert len(scribe.strips()) == 1  # one media-model call for the strip, however many wanted it
+    description = json.loads((await app.store.get_message(OWNER, 5)).media_json)["description"]
+    assert description == 'A man waves. Heard: "hi"'  # the job went on and later turns have it
+
+
+async def test_callers_that_want_the_same_clip_summarised_share_one_set_of_media_model_calls(make_app, monkeypatch):
+    from contextlib import nullcontext
+
+    app, scribe, _ = await arrive(make_app, monkeypatch, strips=2, total=100.0, replies=("hi",))
+    await drain_dispatch(app.dispatch)
+    native = app.dispatch.native
+    media = json.loads((await app.store.get_message(OWNER, 5)).media_json)
+    media.pop("description", None)
+    before = len(scribe.strips())
+    hold = asyncio.Event()
+    scribe.hold = hold
+    calls = [asyncio.create_task(native.summarise(OWNER, 5, media, nullcontext())) for _ in range(3)]
+    await asyncio.sleep(0.05)
+    hold.set()
+    results = await asyncio.gather(*calls)
+    assert len(set(results)) == 1 and results[0]
+    assert len(scribe.strips()) - before == 2  # one call per strip, not per caller
 
 
 async def test_a_clip_past_the_cap_says_how_much_was_looked_at(make_app, monkeypatch):
