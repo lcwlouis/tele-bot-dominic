@@ -16,15 +16,25 @@
   let pill = $state<HTMLUListElement | null>(null);
   $effect(() => {
     void tab?.id;
-    const current = pill?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (!pill || !current) return;
-    let scroll = kept.get(destination.id) ?? 0;
-    const left = current.offsetLeft; // the strip is the tab's offset parent
-    const right = left + current.offsetWidth;
-    if (left < scroll) scroll = left - 4;
-    else if (right > scroll + pill.clientWidth) scroll = right - pill.clientWidth + 4;
-    pill.scrollLeft = scroll;
-    kept.set(destination.id, pill.scrollLeft);
+    const strip = pill;
+    const current = strip?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!strip || !current) return;
+    const reveal = (from: number) => {
+      let scroll = from;
+      const left = current.offsetLeft; // the strip is the tab's offset parent
+      const right = left + current.offsetWidth;
+      if (left < scroll) scroll = left - 4;
+      else if (right > scroll + strip.clientWidth) scroll = right - strip.clientWidth + 4;
+      if (scroll !== strip.scrollLeft) strip.scrollLeft = scroll;
+      kept.set(destination.id, strip.scrollLeft);
+    };
+    reveal(kept.get(destination.id) ?? 0);
+    // The strip can narrow or its tabs widen after this first placement (a classic scrollbar appearing once the page
+    // grows taller, a late font): bring the tab back into view then too, from where the strip is.
+    const resized = new ResizeObserver(() => reveal(strip.scrollLeft));
+    resized.observe(strip);
+    for (const link of strip.querySelectorAll("a")) resized.observe(link);
+    return () => resized.disconnect();
   });
 
   function remember() {

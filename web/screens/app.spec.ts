@@ -2303,6 +2303,22 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("w8b phone: a tab brought into view on arrival stays in view when the strip narrows after", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/work/library");
+    const work = page.getByRole("navigation", { name: "Work pages" }).getByRole("list");
+    await expect(work.getByRole("link", { name: "Library" })).toHaveAttribute("aria-current", "page");
+    // A classic scrollbar appearing once the page grows taller (desktop Linux, Windows) narrows the strip after the
+    // tab was placed; the tab must be brought back into view.
+    await page.setViewportSize({ width: viewports.phone.width - 30, height: viewports.phone.height });
+    await page.waitForTimeout(200);
+    const [box, tab] = [await work.boundingBox(), await work.getByRole("link", { name: "Library" }).boundingBox()];
+    expect(tab!.x + tab!.width).toBeLessThanOrEqual(box!.x + box!.width + 1);
+    expect(tab!.x).toBeGreaterThanOrEqual(box!.x - 1);
+    expect(problems).toEqual([]);
+  });
+
   test("w8b: Work tasks read as a short title, a status chip and the result, with delete in a row menu", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/work");
