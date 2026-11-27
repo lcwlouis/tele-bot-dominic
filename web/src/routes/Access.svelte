@@ -429,11 +429,11 @@
                 {#each POLICY_OPTIONS as opt (opt.value)}
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || (item.asks_every_time && opt.value === "allow")}
                     aria-pressed={item.policy === opt.value}
                     class={item.policy === opt.value
                       ? "rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
-                      : "rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"}
+                      : "rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-40"}
                     onclick={() => item.policy !== opt.value && post("/api/access/policy", { action: item.id as DesktopAction, policy: opt.value })}
                   >
                     {opt.label}

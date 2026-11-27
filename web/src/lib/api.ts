@@ -452,6 +452,7 @@ export type DesktopAction =
   | "download"
   | "upload"
   | "background_work"
+  | "calendar_create"
   | "calendar_add"
   | "calendar_move"
   | "calendar_delete"
@@ -474,6 +475,7 @@ export type DesktopActionItem = {
   label: string;
   description: string;
   site_scoped: boolean;
+  asks_every_time: boolean;
   policy: PermissionPolicy;
   site_allow_count: number;
 };
@@ -718,8 +720,13 @@ export type GoogleView = {
   status: "disconnected" | "connected" | "needs_reconnect";
   connected_at: string | null;
   last_error: string;
+  /** Whether Google granted `calendar.app.created`: without it Dom cannot keep calendars of his own. */
+  own_calendars_granted: boolean;
+  calendars: { id: string; name: string }[];
   switches: GoogleSwitch[];
 };
+/** GET /api/integrations/google/calendars: Dom's calendars as Google shows them now. `upcoming` is null when Google could not say. */
+export type GoogleCalendar = { id: string; name: string; color: string; upcoming: number | null; more: boolean };
 
 /** GET /api/goals and its writes (dom/web/api_goals.py). Every write answers { ok, message, ...GoalsData }. */
 export type GoalStatus = "active" | "paused" | "done" | "dropped";

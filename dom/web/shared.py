@@ -34,7 +34,7 @@ KINDS = {
     "chat": "Replies", "triage": "Triage", "media": "Photos and voice", "memory": "Memory",
     "search": "Web search", "reflection": "Reflection", "guard": "Leak check", "desktop": "Desktop",
     "escalation": "Escalation", "studio_image": "Studio photos", "studio_voice": "Studio voice notes",
-    "studio_video": "Studio video notes", "embedding": "Meaning index", "assistant": "Assistant",
+    "studio_video": "Studio video notes", "embedding": "Meaning index", "assistant": "Assistant", "news": "Overnight news",
 }
 IMPORT_SERVICES = {"chatgpt": "ChatGPT", "claude": "Claude", "muse": "Muse", "other": "Other assistant"}
 SOUL_INSTRUCTIONS = (
