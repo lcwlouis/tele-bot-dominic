@@ -190,6 +190,14 @@ def visits_in(trace: list[str]) -> list[dict]:
     return [json.loads(step[len(_VISIT_STEP):]) for step in trace if step.startswith(_VISIT_STEP)]
 
 
+REACTION_REJECTED = "reaction rejected"  # a step: Telegram refused a reaction; the text after "<step>: " is its reason
+
+
+def rejected_reactions(trace: list[str]) -> list[str]:
+    """The reasons Telegram gave for the reactions a turn's steps say it refused."""
+    return [step[len(REACTION_REJECTED):].lstrip(": ") for step in trace if step.startswith(REACTION_REJECTED)]
+
+
 def visible_steps(trace: list[str]) -> list[str]:
     return [step for step in trace if "@" not in step and not step.startswith(_VISIT_STEP)]
 

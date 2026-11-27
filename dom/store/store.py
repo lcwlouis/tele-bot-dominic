@@ -94,8 +94,11 @@ _MESSAGE_COLUMNS = (
     "previous_seen_text, is_deleted, created_at, updated_at, origin"
 )
 _MESSAGE_COLUMNS_M = ", ".join(f"m.{col.strip()}" for col in _MESSAGE_COLUMNS.split(","))
+# Rows saved before a bot change (see `adopt_bot`) are never unread: the new bot's message ids restart from 1, so they
+# can't be told from old ones by msg_id alone, and a read marker reset to 0 would otherwise call all of them unread.
 _UNREAD_SQL = (
-    "m.msg_id > CASE "
+    "m.id > COALESCE((SELECT CAST(value AS INTEGER) FROM kv WHERE key = 'bot_switch_row'), 0) "
+    "AND m.msg_id > CASE "
     "WHEN EXISTS (SELECT 1 FROM chat_topic_reads ctr_any WHERE ctr_any.chat_id = m.chat_id) "
     "THEN COALESCE((SELECT ctr.last_read_msg_id FROM chat_topic_reads ctr "
     "WHERE ctr.chat_id = m.chat_id AND ctr.thread_id = COALESCE(m.thread_id, 0)), 0) "
@@ -1581,6 +1584,35 @@ class Store:
                 (up_to_msg_id, now, chat_id),
             )
 
+    async def adopt_bot(self, bot_id: int) -> bool:
+        """Remember which bot this database talks to; True when it changed since the last start.
+
+        A new bot token restarts Telegram's message ids for every chat, and the read markers only ever move up, so
+        an old marker of 3497 would hide every new message (they count up from 1). On a change, and only then,
+        every chat's markers in both tables go back to 0 and the rows saved so far stop counting as unread (nothing
+        has arrived under the new bot yet, so 0 is the newest id seen since the switch). The first start only stores
+        the id. The change is noted in the owner's DM history."""
+        return await self._run(self._adopt_bot, bot_id, _now())
+
+    def _adopt_bot(self, bot_id: int, now: str) -> bool:
+        event = None
+        with self._tx() as conn:
+            row = conn.execute("SELECT value FROM kv WHERE key = 'bot_id'").fetchone()
+            if row is not None and row[0] == str(bot_id):
+                return False
+            values = {"bot_id": str(bot_id)}
+            if row is not None:
+                values["bot_switch_row"] = str(conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0])
+                conn.execute("UPDATE chat_topic_reads SET last_read_msg_id = 0, updated_at = ?", (now,))
+                conn.execute("UPDATE chats SET last_read_msg_id = 0, updated_at = ? WHERE last_read_msg_id IS NOT NULL", (now,))
+                if self.owner_id is not None:
+                    event = "Dom's Telegram bot changed; every chat's read markers were reset so new messages count as unread."
+                    self._insert_owner_event(conn, event, now)
+            self._write_kv(conn, values)
+        if event is not None:
+            self._append_owner_event_transcript(event, now)
+        return row is not None
+
     async def set_catch_up_pending(
         self, chat_id: int | str, thread_id: int | None, pending: bool,
     ) -> None:
@@ -2150,6 +2182,16 @@ class Store:
             dict(row) for row in self._conn.execute(
                 "SELECT * FROM turns WHERE (? IS NULL OR chat_id = ?) ORDER BY at DESC, id DESC LIMIT ?",
                 (chat_id, chat_id, capped),
+            )
+        ])
+
+    async def turns_with_step(self, prefix: str, since: datetime) -> list[dict[str, Any]]:
+        """Turns since `since`, newest first, whose steps include one that starts with `prefix` (no SQL wildcards in it): just
+        their time, chat and steps."""
+        return await self._run(lambda: [
+            dict(row) for row in self._conn.execute(
+                "SELECT at, chat_id, trace FROM turns WHERE at >= ? AND trace LIKE ? ORDER BY at DESC, id DESC",
+                (since.astimezone(timezone.utc).isoformat(), f'%"{prefix}%'),
             )
         ])
 

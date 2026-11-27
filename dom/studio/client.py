@@ -30,6 +30,7 @@ class StudioClient:
         self._health: dict | None = None
         self._health_until = 0.0
         self._probing = False
+        self._health_failures = 0  # health probes failed in a row (a connect error resets it: the studio is away)
         self._away_until = 0.0
         self._away_since: datetime | None = None
         self._busy_until = 0.0
@@ -60,6 +61,7 @@ class StudioClient:
                        mime: str = "application/json") -> bytes | None:
         if self._clock() < self._away_until:
             return None
+        name = path.split("/")[0]  # the request kind (a portrait's outfit is left out of the log)
         try:
             async with asyncio.timeout(timeout):
                 async with self._http.stream(
@@ -87,12 +89,19 @@ class StudioClient:
             self._away_since = self._away_since or datetime.now(timezone.utc)
             self._away_until = self._clock() + AWAY_SECONDS
             self._health = None
-            log.warning("studio connection failed (%s)", type(error).__name__)
+            self._health_failures = 0
+            log.warning("studio %s connection failed (%s)", name, type(error).__name__)
         except (httpx.TransportError, TimeoutError) as error:
-            log.warning("studio request timed out or broke off (%s)", type(error).__name__)
+            self._log_failure(name, "timed out or broke off", error)
         except (httpx.HTTPError, httpx.InvalidURL, ValueError) as error:
-            log.warning("studio request failed (%s)", type(error).__name__)
+            self._log_failure(name, "failed", error)
         return None
+
+    def _log_failure(self, name: str, what: str, error: BaseException | str) -> None:
+        """One failed health probe is Wi-Fi noise (INFO); a second in a row, or any other request, is a WARNING."""
+        quiet = name == "health" and self._health_failures == 0
+        detail = error if isinstance(error, str) else type(error).__name__
+        log.log(logging.INFO if quiet else logging.WARNING, "studio %s request %s (%s)", name, what, detail)
 
     async def refresh(self) -> None:
         if self._probing or self._clock() < max(self._health_until, self._away_until):
@@ -101,17 +110,24 @@ class StudioClient:
         try:
             data = await self._request("health", self.config.timeouts.health)
             self._health_until = self._clock() + HEALTH_TTL
-            self._health = None
+            health = None
             if data is not None:
                 try:
                     health = json.loads(data)
                     if not isinstance(health, dict):
                         raise ValueError("expected an object")
                 except ValueError:
-                    log.warning("studio health returned invalid JSON")
-                else:
-                    self._health = health
-                    self._away_since = None
+                    health = None
+                    self._log_failure("health", "returned invalid JSON", "ValueError")
+            if health is not None:
+                self._health, self._health_failures, self._away_since = health, 0, None
+            elif self._clock() < self._away_until:
+                pass  # the request found the studio unreachable and already marked it away
+            else:
+                # One failed probe keeps the last good health for one more interval; two in a row clear it.
+                self._health_failures += 1
+                if self._health_failures >= 2:
+                    self._health = None
         finally:
             self._probing = False
 

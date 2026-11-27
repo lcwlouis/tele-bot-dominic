@@ -1122,9 +1122,12 @@ async def react(
             )
     except TelegramMigrateToChat:
         raise
-    except (TelegramBadRequest, ValidationError):
-        log.warning("reaction %r rejected in chat %s", emoji, chat_id)
-        turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result="refused")
+    except (TelegramBadRequest, ValidationError) as error:
+        # The reason is Telegram's own words (e.g. REACTION_INVALID), kept short: the Turn log counts these.
+        reason = (getattr(error, "message", "") or type(error).__name__).removeprefix("Bad Request: ")[:100]
+        log.warning("reaction %r on message %s rejected in chat %s: %s", emoji, msg_id, chat_id, reason)
+        turn_log.step(f"{turn_log.REACTION_REJECTED}: {reason.replace('@', '')}")  # an "@" hides a step in the Turn log
+        turn_log.event("reaction", chat_id=chat_id, msg_id=msg_id, emoji=emoji, result="refused", reason=reason)
         return False
     except (TelegramAPIError, FloodBudgetExhausted) as error:
         log.warning("reaction %r failed in chat %s (%s)", emoji, chat_id, type(error).__name__)

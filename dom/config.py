@@ -572,7 +572,7 @@ class StudioLimits(BaseModel):
 
 
 class StudioTimeouts(BaseModel):
-    health: float = Field(3, gt=0, allow_inf_nan=False, description="Health check request deadline in seconds.")
+    health: float = Field(10, gt=0, allow_inf_nan=False, description="Health check request deadline in seconds.")
     voice: float = Field(65, gt=0, allow_inf_nan=False, description="Voice request deadline in seconds.")
     video_notes: float = Field(185, gt=0, allow_inf_nan=False, description="Round video request deadline in seconds.")
     special: float = Field(425, gt=0, allow_inf_nan=False, description="Special video request deadline in seconds.")

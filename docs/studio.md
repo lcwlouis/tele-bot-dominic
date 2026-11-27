@@ -22,6 +22,11 @@ step. A promise still standing after that one nudge is cut out of the bubbles, n
 becomes "Can't send that right now." Only a direct promise to the reader counts: not a question, a negation, a
 third party ("to her"), "take a look", a link, or words in quotes.
 
+Dom checks the studio's health every minute with a 10 second deadline. One failed check (Wi-Fi
+is rarely perfect) keeps the last good health for one more minute and logs at INFO; two in a
+row mark the studio away until a check works and log a warning. A refused connection marks it
+away at once. Every studio log line names the request (`health`, `voice`, ...).
+
 A failed, refused or limited generation leaves one short, rate-limited event in
 that chat's history; it never crosses into another chat.
 
@@ -100,7 +105,7 @@ days, and Settings → What Dom may do → Event days lists them with a Cancel b
 (the limits go back to normal at once). The API is `GET /api/studio/event-days` and
 `POST /api/studio/event-days/cancel` with `{"id": ...}`.
 
-The `[studio.timeouts]` keys are `health` (3 s), `voice` (65 s),
+The `[studio.timeouts]` keys are `health` (10 s), `voice` (65 s),
 `video_notes` (185 s), `special` (425 s), `images` (125 s), and
 `portrait` (10 s). Run `/studio` in the owner DM to see status and counts.
 

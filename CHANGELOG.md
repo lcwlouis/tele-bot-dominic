@@ -6,6 +6,10 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **A bot change no longer hides new messages.** Dom stores the bot's id. When a new token brings a different id, Telegram has restarted every chat's message numbers, so each chat's read markers (both tables) go back to 0 and the old rows stop counting as unread; Dom notes it in your DM history. A normal restart changes nothing, and the first start only stores the id.
+- **Studio health survives Wi-Fi spikes.** The health check deadline is now 10 s (was 3 s), one failed check keeps the last good health for one more minute and only two in a row mark the studio away (so media stays off paid backups), and a refused connection still marks it away at once. Studio log lines name the request, and one failed check logs at INFO.
+- **Watching rejected reactions.** When Telegram refuses a reaction, the log names the emoji, the message and Telegram's reason, the turn gets a `reaction rejected` step and a trace event with the reason, `/api/system/turns` marks the row (`reaction_rejected`) and reports the week's count with the latest reasons.
+
 ## [0.8.5] - 2026-11-27
 
 Dom gets hands, a world of his own and a window into how he thinks. He can browse for you behind per-site approvals, fill saved logins without ever seeing the password, ask you for a secret through a private form, and read your Calendar and Gmail with every change on a card. He has a life sheet with places and routines, a Talk page in the dashboard with a full debug trace of every turn, an owner-DM lane that never waits behind a group, an optional morning plan and evening wrap-up, and video notes whose faces finally move.
