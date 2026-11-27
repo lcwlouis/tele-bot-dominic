@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher
 
-from dom import doctor, habits, journal_archive, news, reflection, release, service, setup, tracer
+from dom import doctor, habits, journal_archive, reflection, release, service, setup, tracer
 from dom.backup import backup, restore
 from dom.claim import write_claim_code
 from dom.config import Config, load_config
@@ -187,8 +187,6 @@ async def run(home: Path) -> bool:
             app.dispatch.jobs.register("self-work", reflection.due, app.self_work.plan)
             # Noticings and goal progress run once nightly in the same reflection window (at most one small call).
             app.dispatch.jobs.register("noticings", reflection.due, app.noticings.reflect)
-            # The overnight news (a few searches and one call) for the world block, in the same window.
-            app.dispatch.jobs.register("news", reflection.due, partial(news.run, app))
             app.dispatch.jobs.register("memory-upkeep", journal_archive.due, partial(journal_archive.run, app))
             app.dispatch._spawn(app.knowledge.run_background())
             dispatcher = Dispatcher()

@@ -244,9 +244,10 @@ Cloudflare. Keep local bearer-token testing on loopback.
   HTTPS request about once a day, to answer with the public holidays for Dom's turn note. No key, place, chat or
   personal text is sent.
 - **The web search provider and the chat model** (only when `[world]` has a place or country and a search route is set,
-  unless `[world] news` is off) receive that place or country name in a few searches each night, and the model gets the
-  results to condense them into `memory/NEWS.md`. No chat text or private note is part of either request, the news
-  lines are public, and they may reach every chat.
+  unless `[world] news` is off) receive that place or country name in a few searches each evening, and the model gets
+  the numbered result titles and snippets to pick from. No chat text or private note is part of either request. Only
+  a result's own title and domain are kept, filtered for anything that reads as an instruction, and they may reach
+  every chat as headlines marked as untrusted web text.
 - **Chat model providers** also receive the real photos, voice notes and clips
   of the newest turn (and Dom's own latest generated media) when the chat model
   takes that type of input. See [Media Dom sees and sends](#media-dom-sees-and-sends).
