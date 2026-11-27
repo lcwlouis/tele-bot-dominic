@@ -185,8 +185,9 @@ owner DM only, and the answer is fenced as untrusted data because contact text w
 most five matches. Google's People API wants one empty search before the first real one to fill its cache; Dom does that
 once.
 
-Dom's own code uses the same lookup through `contact_email(google, name)` in `dom/google_contacts.py`: it returns one
-address, or `None` when nothing matches, when two people could be meant (it never guesses) or when the switch is off.
+The same lookup is available to Dom's own code as `contact_email(google, name)` in `dom/google_contacts.py`: it returns
+one address, or `None` when nothing matches, when two people could be meant (it never guesses) or when the switch is off.
+Nothing calls it yet: booking invites a friend only by the email they give in the chat.
 
 ## What Dom can and cannot see
 
