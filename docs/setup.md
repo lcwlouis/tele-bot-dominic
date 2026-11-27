@@ -195,7 +195,7 @@ applies at once, with no restart. On, Dom keeps your day in view, in your DM onl
   is then left out for the rest of the day.
 
 Settings shows both times and, for each message, when it was last sent or why not. Off, Dom is the friend he is today.
-Nothing from assistant mode reaches groups or friends' DMs. Booking appointments is not part of it yet.
+Nothing from assistant mode reaches groups or friends' DMs. Booking is separate: see [Booking within your windows](google.md#booking-within-your-windows).
 
 ## Menu cards
 

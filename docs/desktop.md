@@ -371,7 +371,7 @@ never in your DM). The asker hears "let me check" in Dom's own words, and you ge
   Ask or Never (Never turns the feature off). A card nobody answers expires after 15 minutes. On Reject or expiry the
   asker hears a kind, vague no, with no reason and no mention of you.
 
-Only after Allow once does the task run, one at a time (a second request waits for the first to finish).
+Only after Allow once does the task run, one at a time: a guest task waits behind an owner task, but a second guest request while one runs is declined (the asker hears the same kind no).
 
 **Where it runs.**
 

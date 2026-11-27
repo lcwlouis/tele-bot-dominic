@@ -686,7 +686,7 @@ class GoogleIntegration:
         try:
             await send_notice(
                 self.app, self.app.owner_id, RECONNECT_LEAD,
-                ["Calendar and Gmail stay off until you connect again."], path=SETTINGS_PATH, label="Open Settings",
+                ["Calendar, Gmail, Drive files, Contacts and booking stay off until you connect again."], path=SETTINGS_PATH, label="Open Settings",
             )
         except Exception:
             log.warning("could not tell the owner that Google needs reconnecting")

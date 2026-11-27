@@ -51,6 +51,8 @@ async def test_the_turn_row_is_flagged_and_the_week_is_counted(make_app, browser
         data = (await client.get("/api/system/turns")).json()
     assert [turn["reaction_rejected"] for turn in data["turns"]].count(True) == 2  # the live turn and the old one shown
     assert [turn["outcome"] for turn in data["turns"] if not turn["reaction_rejected"]] == ["Replied in 1 bubble"]
+    assert ["REACTION_INVALID"] * 2 in [turn["reaction_reasons"] for turn in data["turns"]]  # one reason per refusal
+    assert all(turn["reaction_reasons"] == [] for turn in data["turns"] if not turn["reaction_rejected"])
     assert data["reactions"]["days"] == 7 and data["reactions"]["rejected"] == 1  # the old turn's two are out of the week
     [latest] = data["reactions"]["latest"]
     assert latest["reason"] == "REACTION_INVALID" and latest["chat_id"] == str(GROUP)

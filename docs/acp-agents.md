@@ -10,7 +10,7 @@ Dom can use the coding agents you already pay for, Codex (ChatGPT) and Claude, a
 
 ## Switch one on
 
-Settings → Models → Subscription agents has one switch per agent, each off by default (Antigravity's is disabled). A switch applies at once and is saved as `[acp.<name>] enabled = true` in `config.toml` (see [Configuration](configuration.md#subscription-agents-pilot)). An agent that is on is tried **first** in the escalation and drafting chains; if it fails or is not allowed, Dom goes on to the providers configured for that role. Limit one to a single role with `roles = ["escalation"]`.
+Settings → Models → Subscription agents has one switch per agent, each off by default (Antigravity's is disabled). A switch applies at once and is saved as `[acp.<name>] enabled = true` in `config.toml` (see [Configuration](configuration.md#subscription-agents-pilot)). An agent that is on is tried **first** in the escalation and drafting chains; if it fails or is not allowed, Dom goes on to the providers configured for that role. For escalation the card pins the first available provider, an agent when one is on: if that agent fails (refused, not installed, signed out, timed out), whether on Switch or on Retry, the task goes **once** to the next configured escalation provider and Dom sends you a short note that it did, since the card had said the task was billed to your subscription and the next provider is billed by use. A cloud provider pinned on the card is never failed over. An agent that cannot be started with its tools off (Antigravity) or is not switched on is not available, so the card never pins it. Limit one to a single role with `roles = ["escalation"]`.
 
 When you approve a model switch for a task, the card names the agent ("Codex subscription") and says it is billed to your subscription. Each call is recorded as usage of kind `subscription` with cost 0, so the spend caps never count it and never stop it. Turn logs and traces show the agent, how long it took, any failure and that it was billed to a subscription. The subscription's own allowance is the only limit; Dom adds none beyond a per-call timeout.
 
@@ -58,7 +58,7 @@ The agent is used as a plain text model. Dom puts the conversation, and the tool
 2. Confirm its tools are off: ask for something only a tool could do ("run `ls` and tell me what is in the folder"). It should answer that it cannot, and the agent's own history must show no command ran.
 3. Look at Usage: calls appear as `Subscription agents` with no cost.
 
-If it fails, Dom's log has one line, `<agent> agent failed after N s: <reason>` ("is it installed here?", "answered with an error (-32000): Authentication required", "did not answer within 120 s"), and Dom falls through to the next provider.
+If it fails, Dom's log has one line, `<agent> agent failed after N s: <reason>` ("is it installed here?", "answered with an error (-32000): Authentication required", "did not answer within 120 s"), and Dom falls through to the next provider. For a model switch, that provider then serves the rest of the task: the agent is not started again for it, and you get one note.
 
 ## Drop it
 

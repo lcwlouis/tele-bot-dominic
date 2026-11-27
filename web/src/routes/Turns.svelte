@@ -1,5 +1,6 @@
 <script lang="ts">
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import HeartOff from "@lucide/svelte/icons/heart-off";
   import ScrollText from "@lucide/svelte/icons/scroll-text";
   import { onMount } from "svelte";
   import type { Turn, TurnsData } from "$lib/api";
@@ -12,7 +13,9 @@
   import type { Status } from "$lib/components/kit/status";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
+  import * as Tooltip from "$lib/components/ui/tooltip";
   import type { Destination, Tab } from "$lib/nav";
+  import { tipTrigger } from "$lib/utils";
   import { WorkPage } from "$lib/work.svelte";
 
   let { destination, tab }: { destination: Destination; tab: Tab } = $props();
@@ -44,6 +47,8 @@
   const rows = $derived<Row[]>((page.data?.turns ?? []).map((turn) => ({ ...turn, key: String(turn.id), status: statusOf(turn.outcome) })));
   const options = $derived([{ value: "", label: "All chats" }, ...(page.data?.choices ?? []).map((choice) => ({ value: choice.id, label: choice.title }))]);
 
+  // What Telegram said about a refused reaction: its reasons, or a plain line when the log kept none.
+  const refusal = (reasons: string[]) => (reasons.length ? reasons.join(", ") : "No reason recorded");
   const duration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
   const tokens = (value: number | null) => (value === null ? "unknown" : value.toLocaleString("en-US"));
   const words = (text: string) => text.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
@@ -190,6 +195,21 @@
     </div>
   {/if}
 
+  {#if data.reactions.rejected > 0}
+    {@const count = data.reactions.rejected}
+    {@const label = `${count} ${count === 1 ? "reaction" : "reactions"} rejected in the last ${data.reactions.days} days`}
+    <p class="mb-3 flex items-center gap-1.5 text-meta text-muted-foreground" data-reactions-rejected>
+      <HeartOff class="size-3.5 shrink-0" aria-hidden="true" />
+      {label}
+      <InfoGlyph label="Why Telegram rejected them">
+        Telegram refused these reactions, newest first:
+        <ul class="mt-1 grid gap-0.5">
+          {#each data.reactions.latest as item, index (index)}<li>{item.reason}</li>{/each}
+        </ul>
+      </InfoGlyph>
+    </p>
+  {/if}
+
   <StripList
     items={rows}
     key={(row) => row.key}
@@ -204,6 +224,25 @@
   >
     {#snippet toolbar()}
       {#if data.choices.length}<AppPicker label="Chat" {options} value={chat} onchange={reload} class="w-full sm:w-56 [&>label]:sr-only" />{/if}
+    {/snippet}
+    {#snippet actions(turn)}
+      {#if turn.reaction_rejected}
+        <Tooltip.Root>
+          <Tooltip.Trigger>
+            {#snippet child({ props })}
+              <button
+                {...tipTrigger(props)}
+                type="button"
+                aria-label={`Reaction rejected: ${refusal(turn.reaction_reasons)}`}
+                class="inline-flex min-h-8 items-center gap-1 rounded-full border border-current/30 px-2 text-caption text-status-held outline-offset-2"
+              >
+                <HeartOff class="size-3.5" aria-hidden="true" /><span class="max-sm:sr-only">Reaction rejected</span>
+              </button>
+            {/snippet}
+          </Tooltip.Trigger>
+          <Tooltip.Content class="max-w-72 text-left">Telegram said: {refusal(turn.reaction_reasons)}</Tooltip.Content>
+        </Tooltip.Root>
+      {/if}
     {/snippet}
     {#snippet details(turn)}
       {@const hit = cached(turn)}
@@ -238,6 +277,10 @@
         {/if}
         <dt class="text-muted-foreground">Calls</dt>
         <dd class="tabular-nums">{turn.calls}{hit !== null ? `, ${hit}% of the prompt cached` : ""}</dd>
+        {#if turn.reaction_rejected}
+          <dt class="text-muted-foreground">Reaction</dt>
+          <dd class="flex flex-wrap items-center gap-1.5"><Badge variant="outline">Rejected</Badge><span>Telegram said {refusal(turn.reaction_reasons)}</span></dd>
+        {/if}
         {#if turn.steps.length}
           <dt class="text-muted-foreground">Tools</dt>
           <dd class="flex flex-wrap gap-1">{#each turn.steps as step, index (index)}<Badge variant="outline">{step === "web_search" ? "Search" : words(step)}</Badge>{/each}</dd>

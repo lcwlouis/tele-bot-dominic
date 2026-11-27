@@ -18,9 +18,10 @@ import pytest
 from pydantic import ValidationError
 
 from dom import acp
+from dom.agent import NoFinalAnswer
 from dom.acp import AcpClient, AcpError, AcpNotAllowed, ask, as_message, launch, render_prompt
 from dom.config import AcpAgent, AcpConfig, Config, ModelEndpoint, load_config
-from dom.llm import FallbackClient, routed_client
+from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.usage import model_request
 from tghelpers import FRIEND, OWNER, no_sleep
 
@@ -662,3 +663,126 @@ def test_the_remote_directory_is_removed_even_when_the_agent_leaves_files_in_it(
     argv, _, session_cwd = launch(cfg(tmp_path, claude={"enabled": True, "host": "mac", "command": sys.executable, "args": [str(script)]}), "claude")
     assert subprocess.run(["sh", "-c", argv[-1]], check=True).returncode == 0
     assert not Path(session_cwd).exists()
+
+
+# ---- an agent pinned for escalation that fails goes on to the cloud provider -------------------------------------------
+
+
+def escalation_app(make_app, http, tmp_path, **agents):
+    """An app whose escalation route is the given agents first, then one cloud provider named `cloud`."""
+    app = make_app()
+    local = ModelEndpoint(base_url="http://localhost/v1", model="local")
+    cloud = ModelEndpoint(base_url="https://llm.test/v1", model="cloud")
+    app.config = app.config.model_copy(update={
+        "models": {"chat": local, "escalation": cloud},
+        "acp": AcpConfig(**{
+            name: AcpAgent(**{key: item for key, item in value.items() if key != "quick"}).model_copy(
+                update={"timeout_seconds": 0.3} if value.get("quick") else {})  # the setting's own minimum is 5 s
+            for name, value in agents.items()
+        }),
+    })
+    app.client = FallbackClient(ChatClient(local, None, http, sleep=no_sleep, usage=app.dispatch.usage), None)
+    app.escalation_client = routed_client(app.config, "escalation", http, app.dispatch.usage)
+    return app
+
+
+def fake_agent(tmp_path, mode, **extra):
+    return {"enabled": True, "command": sys.executable, "args": (FAKE, mode, str(tmp_path / "agent.jsonl")), **extra}
+
+
+@pytest.mark.parametrize("failure", ["refused", "missing", "signed_out", "timeout", "crash"])
+async def test_a_failed_pinned_agent_goes_on_to_the_cloud_provider_and_tells_the_owner(make_app, tmp_path, failure):
+    asked = []
+
+    async def respond(request):
+        asked.append(json.loads(request.content)["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "from cloud"}}]})
+
+    agent = {
+        "refused": fake_agent(tmp_path, "empty"),
+        "missing": {"enabled": True, "command": str(tmp_path / "no-such-agent")},
+        "signed_out": fake_agent(tmp_path, "signed_out"),
+        "timeout": fake_agent(tmp_path, "hang", quick=True),
+        "crash": fake_agent(tmp_path, "crash"),
+    }[failure]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        app = escalation_app(make_app, http, tmp_path, codex=agent)
+        with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
+            assert isinstance(turn.provider, AcpClient)  # the card shows the agent
+            turn.choice = "switch"
+            with model_request("escalation", OWNER, allowed):
+                reply = await turn.complete(app.client, [{"role": "user", "content": "hi"}], [])
+            assert turn.pinned.then.endpoint.model == "cloud"
+        await drain(app)
+    assert reply["content"] == "from cloud" and asked == ["cloud"]
+    [note] = [call for call in app.bot.of("send", OWNER) if "did not answer" in call[2]]
+    assert "Codex subscription" in note[2] and "cloud" in note[2]
+    assert [row[0] for row in usage_rows(app)] == ["subscription", "escalation"]
+
+
+async def test_a_pinned_agent_that_answers_never_reaches_the_cloud_provider(make_app, tmp_path):
+    async def respond(request):
+        raise AssertionError("the cloud provider was called")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        app = escalation_app(make_app, http, tmp_path, codex=fake_agent(tmp_path, "ok"))
+        with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
+            turn.choice = "switch"
+            with model_request("escalation", OWNER, allowed):
+                reply = await turn.complete(app.client, [{"role": "user", "content": "hi"}], [])
+        await drain(app)
+    assert reply["content"] == "Hello, owner." and not app.bot.of("send", OWNER)
+
+
+async def test_a_cloud_provider_pinned_for_escalation_still_fails_alone(make_app, tmp_path):
+    asked = []
+
+    async def respond(request):
+        asked.append(json.loads(request.content)["model"])
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        app = escalation_app(make_app, http, tmp_path)
+        second = ChatClient(ModelEndpoint(base_url="https://other.test/v1", model="second"), None, http, sleep=no_sleep)
+        app.escalation_client = FallbackClient(app.escalation_client.primary, second)
+        with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
+            turn.choice = "switch"
+            assert turn.pinned.then is None
+            with model_request("escalation", OWNER, allowed), pytest.raises(NoFinalAnswer):
+                await turn.complete(app.client, [{"role": "user", "content": "hi"}], [])
+    assert set(asked) == {"cloud"}
+
+
+async def test_antigravity_enabled_by_hand_is_never_pinned_or_counted_available(make_app, tmp_path):
+    async with httpx.AsyncClient() as http:
+        app = escalation_app(make_app, http, tmp_path, antigravity={"enabled": True})
+        agent = app.escalation_client.providers[0]
+        assert isinstance(agent, AcpClient) and agent.name == "antigravity" and not agent.available
+        with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
+            assert turn.provider.endpoint.model == "cloud" and turn.pinned.then is None
+    assert not AcpClient(app.config.model_copy(update={"acp": AcpConfig()}), "codex", "escalation").available  # off
+
+
+async def drain(app):
+    from tghelpers import drain_dispatch
+    await drain_dispatch(app.dispatch)
+
+
+async def test_after_a_failed_agent_every_later_round_of_the_task_goes_to_the_cloud_and_the_owner_hears_once(make_app, tmp_path):
+    asked = []
+
+    async def respond(request):
+        asked.append(json.loads(request.content)["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "from cloud"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        app = escalation_app(make_app, http, tmp_path, codex=fake_agent(tmp_path, "crash"))
+        with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
+            turn.choice = "switch"
+            with model_request("escalation", OWNER, allowed):
+                for _ in range(3):  # three tool rounds of one task
+                    await turn.complete(app.client, [{"role": "user", "content": "hi"}], [])
+        await drain(app)
+    assert asked == ["cloud", "cloud", "cloud"]
+    assert len([call for call in app.bot.of("send", OWNER) if "did not answer" in call[2]]) == 1
+    assert [row[0] for row in usage_rows(app)].count("subscription") == 1  # the agent was started once
