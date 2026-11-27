@@ -125,13 +125,14 @@ def detect_eras(conn: sqlite3.Connection) -> dict[str, int]:
     ).fetchall())
 
 
-def begin_eras(conn: sqlite3.Connection, starts: dict[str, int], now: str, *, fresh: bool = False) -> int:
+def begin_eras(conn: sqlite3.Connection, starts: dict[str, int], now: str) -> int:
     """Move each chat's rows before its era start (a messages.id) out of the new bot's id range; returns how many
     chats had any. Their reply links and the notes that point at them move the same distance, and the chat's open
     turns and menu cards, which only the old bot could answer, are dropped.
 
-    A read marker or memory cursor above every id in the new run must be the old bot's, so it goes back to 0. One at
-    or below the run's newest id is kept, unless `fresh`: its first message has only just arrived."""
+    A read marker or memory cursor above every id in the new run must be the old bot's. The cursor goes back to 0, so
+    the memory pass catches up. A marker goes to Dom's latest reply in the run (what he answered is read), or 0 when
+    he has not replied in it yet; per topic for the topic markers. One at or below the run's newest id is kept."""
     moved = 0
     for chat_id, era_row in starts.items():
         top = conn.execute(
@@ -153,16 +154,24 @@ def begin_eras(conn: sqlite3.Connection, starts: dict[str, int], now: str, *, fr
         )
         conn.execute("DELETE FROM pending_turns WHERE chat_id = ?", (chat_id,))
         conn.execute("DELETE FROM menu_cards WHERE chat_id = ?", (chat_id,))
-        newest = 0 if fresh else conn.execute(
+        newest = conn.execute(
             "SELECT COALESCE(MAX(msg_id), 0) FROM messages WHERE chat_id = ? AND msg_id > 0", (chat_id,),
         ).fetchone()[0]
-        conn.execute("UPDATE chats SET last_read_msg_id = 0, updated_at = ? WHERE chat_id = ? AND last_read_msg_id > ?",
-                     (now, chat_id, newest))
-        conn.execute("UPDATE chats SET memory_cursor_msg_id = 0 WHERE chat_id = ? AND memory_cursor_msg_id > ?", (chat_id, newest))
+        replied = "SELECT COALESCE(MAX(msg_id), 0) FROM messages WHERE chat_id = ? AND role = 'assistant' AND msg_id > 0"
         conn.execute(
-            "UPDATE chat_topic_reads SET last_read_msg_id = 0, updated_at = ? WHERE chat_id = ? AND last_read_msg_id > ?",
-            (now, chat_id, newest),
+            "UPDATE chats SET last_read_msg_id = ?, updated_at = ? WHERE chat_id = ? AND last_read_msg_id > ?",
+            (conn.execute(replied, (chat_id,)).fetchone()[0], now, chat_id, newest),
         )
+        conn.execute("UPDATE chats SET memory_cursor_msg_id = 0 WHERE chat_id = ? AND memory_cursor_msg_id > ?", (chat_id, newest))
+        for (thread_id,) in conn.execute(
+            "SELECT thread_id FROM chat_topic_reads WHERE chat_id = ? AND last_read_msg_id > ?", (chat_id, newest),
+        ).fetchall():
+            conn.execute(
+                "UPDATE chat_topic_reads SET updated_at = ?, last_read_msg_id = ("
+                "SELECT COALESCE(MAX(msg_id), 0) FROM messages WHERE chat_id = ? AND role = 'assistant' AND msg_id > 0 "
+                "AND COALESCE(thread_id, 0) = ?) WHERE chat_id = ? AND thread_id = ?",
+                (now, chat_id, thread_id, chat_id, thread_id),
+            )
         moved += 1
     return moved
 
@@ -1180,7 +1189,7 @@ class Store:
             if msg.msg_id is not None:
                 newest = conn.execute("SELECT MAX(msg_id) FROM messages WHERE chat_id = ?", (msg.chat_id,)).fetchone()[0]
                 if newest is not None and _ids_restarted(newest, msg.msg_id):  # the first message from a new bot
-                    begin_eras(conn, {msg.chat_id: _ALL_ROWS}, _now(), fresh=True)
+                    begin_eras(conn, {msg.chat_id: _ALL_ROWS}, _now())
                 existing = conn.execute(
                     "SELECT id FROM messages WHERE chat_id = ? AND msg_id = ?", (msg.chat_id, msg.msg_id)
                 ).fetchone()

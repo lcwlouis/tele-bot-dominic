@@ -32,7 +32,7 @@ class BotChangeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self._tmp.cleanup)
         self.addCleanup(self.store.close)
 
-    def rows(self, chat_id: str, ids, *, replies=False, media=()):
+    def rows(self, chat_id: str, ids, *, replies=False, media=(), assistant=()):
         """Save rows exactly as an old database holds them (no era noticing the jump between them)."""
         conn = self.store._conn
         conn.execute("INSERT INTO chats (chat_id, chat_type, visibility_scope, authorization_status, updated_at) "
@@ -42,7 +42,7 @@ class BotChangeTests(unittest.IsolatedAsyncioTestCase):
                 "INSERT INTO messages (chat_id, msg_id, reply_to_msg_id, role, visibility_scope, text, media_json, is_bot, "
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'x', 'x')",
                 (chat_id, msg_id, msg_id - 1 if replies and msg_id > 1 else None,
-                 "assistant" if msg_id in media else "user", scope(chat_id), f"old {msg_id}",
+                 "assistant" if msg_id in media or msg_id in assistant else "user", scope(chat_id), f"old {msg_id}",
                  json.dumps({"kind": "photo", "file": f"media/{chat_id}/2026-11/{msg_id}.png"}) if msg_id in media else None),
             )
 
@@ -96,6 +96,44 @@ class BotChangeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.memory_texts(GROUP), [f"old {n}" for n in range(2301, 2308)])
         topics = self.store._conn.execute("SELECT chat_id, last_read_msg_id FROM chat_topic_reads ORDER BY chat_id").fetchall()
         self.assertEqual([tuple(t) for t in topics], [(CHAT, 63), (DM, 0)])
+
+    async def test_answered_messages_stay_read_when_a_stale_marker_resets(self):
+        """The real owner DM: the marker had slid back to the old bot's 3497 although Dom answered the new run's 74."""
+        self.rows(CHAT, range(3000, 3503))
+        self.rows(CHAT, range(1, 76), assistant={5, 74})
+        self.marks(CHAT, 3497, 3502, topic=3497)
+        self.assertEqual(await self.store.adopt_bot(2002), 1)
+        self.assertEqual(self.state(CHAT), (74, 0))  # read up to Dom's last reply; the memory pass starts over
+        self.assertEqual(self.store._conn.execute("SELECT last_read_msg_id FROM chat_topic_reads").fetchone()[0], 74)
+        count, newest = await self.store.get_unread(CHAT)
+        self.assertEqual((count, newest.msg_id, newest.text), (1, 75, "old 75"))
+
+    async def test_a_topic_marker_goes_to_dom_s_last_reply_in_that_topic(self):
+        self.rows(GROUP, [*range(2200, 2300), *range(1, 21)], assistant={10, 15})
+        conn = self.store._conn
+        conn.execute("UPDATE messages SET thread_id = 7 WHERE chat_id = ? AND msg_id BETWEEN 1 AND 20 AND msg_id != 15", (GROUP,))
+        self.marks(GROUP, 2299, 2299)
+        for thread in (0, 7):
+            conn.execute("INSERT INTO chat_topic_reads (chat_id, thread_id, last_read_msg_id, updated_at) VALUES (?, ?, 2299, 'x')", (GROUP, thread))
+        await self.store.adopt_bot(2002)
+        reads = dict(conn.execute("SELECT thread_id, last_read_msg_id FROM chat_topic_reads WHERE chat_id = ?", (GROUP,)).fetchall())
+        self.assertEqual(reads, {0: 15, 7: 10})
+        self.assertEqual(self.state(GROUP)[0], 15)
+
+    async def test_a_turn_after_the_repair_marks_read_in_the_new_run_never_an_old_id(self):
+        """On v0.8.5 the old bot's rows counted as unread (ids above the marker), so the newest of them won and the
+        marker slid back to 3497 after every answer."""
+        self.real_shape()
+        await self.store.adopt_bot(2002)
+        count, newest = await self.store.get_unread(CHAT)
+        self.assertEqual((count, newest.msg_id), (11, 74))
+        self.assertEqual([(t, c, m.msg_id) for t, c, m in await self.store.get_unread_topics(CHAT)], [(None, 11, 74)])
+        self.assertEqual((await self.store.latest_chat_message(CHAT))[0], 74)
+        await self.store.mark_chat_read(CHAT, newest.msg_id)  # what the dispatcher does once it has answered
+        self.assertEqual(self.state(CHAT)[0], 74)
+        self.assertEqual(await self.unread(CHAT), 0)
+        await self.store.mark_chat_read(CHAT, -5)  # a pre-repair id (now negative) can never move a marker
+        self.assertEqual(self.state(CHAT)[0], 74)
 
     async def test_a_second_start_changes_nothing_and_the_repair_is_noted_once(self):
         self.real_shape()

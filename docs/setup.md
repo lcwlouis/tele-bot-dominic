@@ -107,8 +107,9 @@ above every new message and let a new message numbered like an old one be lost. 
 Dom looks for chats whose numbers dropped (so a switch made before he noticed is repaired too)
 and, when the stored bot id differs, treats everything saved so far as the old bot's. The old
 rows move to negative message numbers, in order: they stay in the history but are never unread,
-never memorised and can't be replied to. Markers and cursors above the new numbers go back to
-0, and a note lands in your DM history. A chat the new bot has not written to yet is handled
+never memorised and can't be replied to. A read marker above the new numbers moves to Dom's
+latest reply (or 0 if he has not replied yet), the memory cursor goes back to 0, and a note
+lands in your DM history. A chat the new bot has not written to yet is handled
 when its first message arrives.
 
 A new group or a stranger's DM starts pending. Dom sends an approval request to
