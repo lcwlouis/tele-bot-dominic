@@ -72,7 +72,13 @@ async def list_files(request: Request, area: Area = "workspace", path: str = Que
         listing = await asyncio.to_thread(tree.list, path)
     except WorkspaceError as error:
         raise _refused(error) from None
-    return {"area": area, "writable": tree.writable, **listing}
+    shared = area == "workspace"
+    return {
+        "area": area, "writable": tree.writable, **listing,
+        # What the page tells the owner beside the files: the desktop runs without the workspace, or it is over its cap.
+        "mount_problem": workspace.mount_problem(request.app.state.dom.home.root) if shared else None,
+        "full": shared and await asyncio.to_thread(workspace.measure, request.app.state.dom.home.root) > workspace.MAX_TOTAL_BYTES,
+    }
 
 
 @router.get(PREFIX + "/preview")
@@ -86,7 +92,7 @@ async def preview_file(
         if suffix in IMAGE_TYPES or (suffix != workspace.PDF_SUFFIX and suffix not in workspace.TEXT_SUFFIXES):
             info = await asyncio.to_thread(tree.stat, path)  # also proves the path is a regular file in the folder
             return {"kind": "image" if suffix in IMAGE_TYPES else "none", "name": name, **info}
-        return {"kind": "text", **await asyncio.to_thread(tree.read_text, path, offset)}
+        return {"kind": "text", **await workspace.read_document(tree, path, offset)}
     except WorkspaceError as error:
         raise _refused(error) from None
 

@@ -22,7 +22,7 @@
   // GET /api/files/list, /preview (dom/web/api_files.py).
   type Area = "workspace" | "home";
   type Entry = { name: string; kind: "dir" | "file"; size: number | null; modified: string };
-  type Listing = { area: Area; path: string; writable: boolean; entries: Entry[]; truncated: boolean };
+  type Listing = { area: Area; path: string; writable: boolean; entries: Entry[]; truncated: boolean; mount_problem: string | null; full: boolean };
   type Preview =
     | { kind: "text"; name: string; text: string; offset: number; next_offset: number | null }
     | { kind: "image" | "none"; name: string; size: number; modified: string };
@@ -163,6 +163,20 @@
 {:else if listing === null}
   <div class="h-40 animate-pulse rounded-xl border bg-surface" aria-hidden="true"></div>
 {:else}
+  {#if listing.mount_problem}
+    <StatusNote
+      tone="error"
+      title="The desktop can't use the workspace"
+      detail={`${listing.mount_problem}. Dom's desktop runs without it. Run the desktop container as the same user as Dom, or change the owner of the workspace folder.`}
+    />
+  {/if}
+  {#if listing.full}
+    <StatusNote
+      tone="error"
+      title="The workspace is full"
+      detail="Dom's desktop has stopped and Dom can't save files until you delete some. Uploads are refused too."
+    />
+  {/if}
   <div class="mb-3 flex flex-wrap items-center gap-2">
     <nav aria-label="Folder" class="min-w-0 flex-1">
       <ol class="flex flex-wrap items-center gap-1 text-sm">

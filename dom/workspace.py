@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
 import stat
+import sys
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -44,9 +47,13 @@ MAX_WRITE_CHARS = 1_000_000  # the most Dom writes in one call
 MAX_TOTAL_BYTES = 500_000_000  # everything in the workspace
 READ_CHARS = 12_000  # one read's worth of text; the result says where the next starts
 MAX_ENTRIES = 500
+MAX_WALK = 200_000  # files counted when measuring the workspace
+USAGE_TTL = 5.0  # seconds a measurement of the workspace is reused
 MAX_DEPTH = 8
 MAX_NAME = 120
-MAX_PDF_PAGES = 300
+MAX_PDF_BYTES = 10_000_000  # a PDF is not parsed at all above this
+PDF_SECONDS = 30  # wall-clock limit on reading one
+PDF_WORKER = Path(__file__).with_name("pdf_worker.py")
 DOWNLOAD_TIMEOUT = 60  # seconds a document may take to download
 
 TEXT_SUFFIXES = frozenset({
@@ -191,6 +198,11 @@ class Tree:
         if not stat.S_ISREG(info.st_mode):
             os.close(fd)
             raise WorkspaceError("That is not a regular file.")
+        if info.st_nlink > 1:
+            # The desktop can hard-link any file it can reach into another folder, past the folder rules (the shared
+            # folder, another chat's inbox). Which name it is read by no longer says whose it is, so it is not read.
+            os.close(fd)
+            raise WorkspaceError("This file has several links; copy it to read it.")
         return fd, info
 
     # ---- reading ------------------------------------------------------------------------------
@@ -237,23 +249,24 @@ class Tree:
             return PurePosixPath(rel).name, handle.read(limit + 1)[:limit]
 
     def read_text(self, rel: str, offset: int = 0) -> dict:
-        """The text of a text, Markdown, CSV, JSON or PDF file, `READ_CHARS` at a time from `offset`."""
-        suffix = PurePosixPath(rel).suffix.lower()
-        if suffix != PDF_SUFFIX and suffix not in TEXT_SUFFIXES:
+        """The text of a text, Markdown, CSV or JSON file, `READ_CHARS` at a time from `offset`. A PDF goes through
+        `read_document`, which parses it in a process of its own."""
+        if PurePosixPath(rel).suffix.lower() not in TEXT_SUFFIXES:
             raise WorkspaceError("I can read text, Markdown, CSV, JSON and PDF files; that type is not one of them.")
-        offset = max(0, offset) if isinstance(offset, int) else 0
-        name, data = self.read_bytes(rel, limit=MAX_FILE_BYTES if suffix == PDF_SUFFIX else MAX_TEXT_BYTES)
-        text = pdf_text(data, offset + READ_CHARS) if suffix == PDF_SUFFIX else data.decode("utf-8", errors="replace")
-        chunk = text[offset:offset + READ_CHARS]
-        more = len(text) > offset + READ_CHARS
-        return {"name": name, "text": chunk, "offset": offset, "next_offset": offset + len(chunk) if more else None}
+        name, data = self.read_bytes(rel, limit=MAX_TEXT_BYTES)
+        return _part(name, data.decode("utf-8", errors="replace"), offset)
 
     # ---- changing -----------------------------------------------------------------------------
 
     def used_bytes(self) -> int:
-        total = 0
+        """Bytes in every regular file below the root, without following links. A walk that grows past `MAX_WALK`
+        entries (a flood of tiny files) stops and counts as over the cap."""
+        total, seen = 0, 0
         for folder, _, names in os.walk(self.root, followlinks=False):
             for name in names:
+                seen += 1
+                if seen > MAX_WALK:
+                    return MAX_TOTAL_BYTES + 1
                 try:
                     info = os.lstat(os.path.join(folder, name))
                 except OSError:
@@ -365,30 +378,48 @@ class Tree:
         raise WorkspaceError("Only files and empty folders can be deleted.")
 
 
-def pdf_text(data: bytes, wanted: int) -> str:
-    """The text of a PDF's pages in order, read only as far as `wanted` characters (and `MAX_PDF_PAGES` pages)."""
-    from pypdf import PdfReader
+def _part(name: str, text: str, offset: object) -> dict:
+    offset = max(0, offset) if isinstance(offset, int) else 0
+    chunk = text[offset:offset + READ_CHARS]
+    more = len(text) > offset + READ_CHARS
+    return {"name": name, "text": chunk, "offset": offset, "next_offset": offset + len(chunk) if more else None}
 
+
+async def read_document(tree: Tree, rel: str, offset: int = 0) -> dict:
+    """`Tree.read_text` for any readable type. A PDF is untrusted input that can cost a parser unbounded time and memory,
+    so it is parsed in a separate process with memory and CPU limits, a wall-clock timeout and a cap on its output,
+    and the process is killed if the timeout passes or the caller is cancelled."""
+    if PurePosixPath(rel).suffix.lower() != PDF_SUFFIX:
+        return await asyncio.to_thread(tree.read_text, rel, offset)
+    name, data = await asyncio.to_thread(tree.read_bytes, rel, limit=MAX_PDF_BYTES)  # the size is checked before parsing
+    offset = max(0, offset) if isinstance(offset, int) else 0
+    return _part(name, await _pdf_text(data, offset + READ_CHARS + 1), offset)  # one more, to know there is more
+
+
+async def _pdf_text(data: bytes, wanted: int) -> str:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-I", str(PDF_WORKER), str(wanted),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env={},
+    )
     try:
-        reader = PdfReader(BytesIO(data))
-        if reader.is_encrypted and not reader.decrypt(""):
-            raise WorkspaceError("That PDF is password-protected.")
-        out, size = [], 0
-        for page in reader.pages[:MAX_PDF_PAGES]:
-            text = page.extract_text() or ""
-            out.append(text)
-            size += len(text) + 2
-            if size > wanted:
-                break
-    except WorkspaceError:
-        raise
-    except Exception:
-        log.warning("could not read a PDF")
-        raise WorkspaceError("I could not read the text of that PDF.") from None
-    text = "\n\n".join(out).strip()
-    if not text:
+        try:
+            async with asyncio.timeout(PDF_SECONDS):
+                out, _ = await process.communicate(data)
+        except TimeoutError:
+            raise WorkspaceError("Reading that PDF took too long, so I stopped.") from None
+    finally:
+        if process.returncode is None:  # a timeout, a cancel or any other way out: nothing is left running
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await asyncio.shield(process.wait())
+    if process.returncode == 0:
+        return out.decode("utf-8", errors="replace")
+    if process.returncode == 3:
         raise WorkspaceError("That PDF has no text I can read (it may be scanned pages).")
-    return text
+    if process.returncode == 4:
+        raise WorkspaceError("That PDF is password-protected.")
+    log.warning("could not read a PDF (the reader ended with %s)", process.returncode)
+    raise WorkspaceError("I could not read the text of that PDF.")
 
 
 def workspace(home: Path) -> Tree:
@@ -409,6 +440,72 @@ def shared_for(home: Path, chat_id: int) -> Tree:
 def home_view(home: Path) -> Tree:
     """The dashboard's read-only view of what Dom may read in his home: memory, media, briefs and skills."""
     return Tree(Path(home), top=HOME_READABLE, writable=False)
+
+
+# ---- the size cap and the mount's state ---------------------------------------------------------------------
+
+
+_measured: dict[str, tuple[float, int]] = {}
+FULL_FLAG = "workspace:full_notified"
+MOUNT_STATE = "workspace-mount.json"  # beside the config: why the desktop was started without the workspace, if it was
+
+
+def measure(home: Path, *, fresh: bool = False) -> int:
+    """Bytes in the workspace, reused for `USAGE_TTL` seconds. Blocks (a walk): call it through a thread."""
+    now = time.monotonic()
+    hit = _measured.get(str(home))
+    if hit is not None and not fresh and now - hit[0] < USAGE_TTL:
+        return hit[1]
+    used = Tree(workspace_dir(home)).used_bytes()
+    _measured[str(home)] = (now, used)
+    return used
+
+
+async def check_cap(app: App) -> bool:
+    """Whether the workspace is over its size cap. A bind mount has no quota, so the desktop can fill the disk behind
+    the file tools' backs: this is looked at after each desktop step and when a task ends. The first time it is over,
+    the owner gets one quiet notice with a link to Files; the notice comes again only after it has been under."""
+    used = await asyncio.to_thread(measure, app.home.root)
+    full = used > MAX_TOTAL_BYTES
+    flagged = bool(await app.store.kv_get(FULL_FLAG))
+    if full and not flagged:
+        await app.store.kv_set(FULL_FLAG, "1")
+        if app.owner_id is not None:
+            from dom.notice import send_notice
+
+            try:
+                await send_notice(
+                    app, app.owner_id, "The workspace is full",
+                    [f"It holds {used // 1_000_000} MB of its {MAX_TOTAL_BYTES // 1_000_000} MB. Dom's desktop stops and "
+                     "Dom can't save files until you delete some."],
+                    path="/app/work/files", label="Open Files", disable_notification=True,
+                )
+            except Exception as error:
+                log.warning("could not tell the owner the workspace is full (%s)", type(error).__name__)
+    elif not full and flagged:
+        await app.store.kv_set(FULL_FLAG, "")
+    return full
+
+
+FULL_MESSAGE = "The workspace is full, so the desktop stopped. Delete some files in Work → Files, then ask again."
+
+
+def mount_problem(home: Path) -> str | None:
+    """Why the desktop runs without the workspace (it could not write there as its user), or None."""
+    try:
+        return json.loads((Path(home) / MOUNT_STATE).read_text()).get("problem") or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def set_mount_problem(home: Path, problem: str | None) -> None:
+    path = Path(home) / MOUNT_STATE
+    if problem is None:
+        path.unlink(missing_ok=True)
+        return
+    temporary = path.with_name(MOUNT_STATE + ".tmp")
+    temporary.write_text(json.dumps({"problem": problem}))
+    os.replace(temporary, path)
 
 
 # ---- documents sent in Telegram ---------------------------------------------------------------
@@ -443,19 +540,19 @@ def clean_mime(value: object) -> str:
     return mime if _MIME.fullmatch(mime) else "application/octet-stream"
 
 
-async def land_document(app: App, msg: IncomingMessage) -> None:
+async def land_document(app: App, msg: IncomingMessage) -> dict | None:
     """Download a document that was sent to Dom and keep it in the workspace, off the reply path: the dispatcher
     waits for this like any other media. The message's media then names the file and where Dom can read it, and the
     file's own name and type show in its `<media>` tag even when it could not be saved."""
     media = msg.media or {}
     if media.get("kind") != "document" or media.get("saved"):
-        return
+        return None
     name, mime = safe_name(media.get("name")), clean_mime(media.get("mime"))
     try:
         target = destination(app, msg)
         if target is None:
             await app.store.update_media(msg.chat_id, msg.msg_id, {"description": f"{name} ({mime})"})
-            return
+            return None
         tree, folder, seen = target
         if (media.get("file_size") or 0) > MAX_FILE_BYTES:
             raise WorkspaceError(f"documents can be at most {MAX_FILE_BYTES // 1_000_000} MB")
@@ -472,3 +569,4 @@ async def land_document(app: App, msg: IncomingMessage) -> None:
         log.warning("could not save a document to the workspace (%s)", type(error).__name__)
         fields = {"description": f"{name} ({mime}), could not be saved"}
     await app.store.update_media(msg.chat_id, msg.msg_id, fields)
+    return fields

@@ -229,7 +229,16 @@ container and a remote desktop host never do. The browser profile stays outside 
 - **Links and tricks.** The desktop runs untrusted web content and can leave anything in `/workspace`, so every path
   is walked one directory at a time without following links (`O_NOFOLLOW` against the directory just opened), and only
   regular files and directories are touched. `..`, absolute and hidden paths are refused; links, pipes and devices are
-  neither listed nor opened.
+  neither listed nor opened. A file with more than one name (a hard link the desktop made, say from the owner's folder
+  into `shared/`) is never read, served or archived in any scope: Dom says "this file has several links; copy it to read
+  it".
+- **PDFs.** A PDF is parsed in a separate process with a memory and CPU limit, a 30-second wall-clock limit and a cap on
+  its output, and is killed when the limit passes or the request is cancelled. A PDF over 10 MB is not parsed.
+- **The size cap.** A bind mount has no quota, so the desktop could fill the disk behind the file tools. Dom measures the
+  workspace (a bounded walk, reused for a few seconds) after every desktop tool step and when a task ends. Over 500 MB,
+  the running task stops with a clear result, no new desktop work starts, the `files` tool and the Files page refuse writes
+  (deleting still works), and the owner gets one quiet notice with a link to Files, again only after the folder has been
+  under the cap. `dom doctor` reports the size against the cap.
 - **Sharing with chats.** `[workspace] share_with_chats` (off by default; Settings → What Dom may do) lets groups and
   friends' DMs list and read `workspace/shared/`, and nothing else, never write. A document sent in such a chat
   then lands in `workspace/shared/inbox/<chat id>/`, readable only by that chat (and the owner). Off, documents in
@@ -237,9 +246,20 @@ container and a remote desktop host never do. The browser profile stays outside 
 - **Leaving the sandbox.** Sending a file from the workspace to a website still asks the `upload` permission
   (the desktop may now upload from `/workspace`), and anything the desktop sends to Telegram still asks `download`.
   The dashboard's own download and upload are behind its login.
-- **Backups.** `dom backup` includes the workspace (without links or pipes the desktop may have left in it).
-- **File ownership.** The container writes as its own user. Where that user is not the one running Dom, files the
-  desktop saves may not be readable by Dom (Linux hosts normally match at user 1000).
+- **Backups.** `dom backup` includes the workspace. It walks it by directory descriptors without following links, opens
+  each file the same way and archives only regular files with one name, from the open descriptor, so a file swapped for
+  a link mid-backup is not followed. Links, pipes and multi-name files are skipped and counted in the log, and no more
+  than the 500 MB cap is archived (a file over 20 MB, or one that no longer fits, is skipped).
+- **The container's user.** A bind mount shows the host's file owner, so the desktop's user must be the folder's
+  owner. At each start Dom runs a throwaway container as the desktop's user to read its uid and write and delete a file
+  in `/workspace`. If the uid differs from the folder's owner, or the write fails, the desktop starts **without** the
+  workspace and still works; the reason is logged, shown by `dom doctor` and on the Files page ("the desktop can't write
+  to the workspace: its user is uid X, the folder belongs to uid Y"). Fix it by running the sandbox container as the host
+  user (the same uid as Dom) or by changing the owner of `<home>/workspace` to the container's uid; the folder stays mode
+  0700. A Linux host with Dom at user 1000 normally matches; Docker Desktop on a Mac usually does not.
+- **A slow document.** A turn with a document in it waits up to the 60-second download limit for the file to land. If it
+  has not, Dom is told "the file is still arriving"; when it lands he gets an event and a short follow-up with the start
+  of the file, once, after any turn still running has replied.
 
 ## Sandbox responses
 

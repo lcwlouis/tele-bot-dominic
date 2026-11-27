@@ -159,11 +159,11 @@ def test_text_types_are_read_and_others_refused(tree):
 
 def test_long_text_is_read_in_parts(tree, monkeypatch):
     monkeypatch.setattr(workspace, "READ_CHARS", 10)
-    tree.write_text("long.txt", "0123456789abcdefghij!")
+    tree.write_text("long.txt", "abcdefghijklmnopqrst!")
     first = tree.read_text("long.txt")
-    assert first["text"] == "0123456789" and first["next_offset"] == 10
+    assert first["text"] == "abcdefghij" and first["next_offset"] == 10
     second = tree.read_text("long.txt", first["next_offset"])
-    assert second["text"] == "abcdefghij" and second["next_offset"] == 20
+    assert second["text"] == "klmnopqrst" and second["next_offset"] == 20
     assert tree.read_text("long.txt", 20) == {"name": "long.txt", "text": "!", "offset": 20, "next_offset": None}
 
 
@@ -230,18 +230,18 @@ def make_pdf(text: str = "Quarterly figures") -> bytes:
     return out.encode("latin-1")
 
 
-def test_pdf_text_is_read(tree):
+async def test_pdf_text_is_read(tree):
     (tree.root / "report.pdf").write_bytes(make_pdf())
-    assert "Quarterly figures" in tree.read_text("report.pdf")["text"]
+    assert "Quarterly figures" in (await workspace.read_document(tree, "report.pdf"))["text"]
 
 
-def test_a_broken_or_textless_pdf_is_a_clear_refusal(tree):
+async def test_a_broken_or_textless_pdf_is_a_clear_refusal(tree):
     (tree.root / "bad.pdf").write_bytes(b"not a pdf at all")
     with pytest.raises(WorkspaceError, match="could not read"):
-        tree.read_text("bad.pdf")
+        await workspace.read_document(tree, "bad.pdf")
     (tree.root / "blank.pdf").write_bytes(make_pdf(""))
     with pytest.raises(WorkspaceError, match="no text"):
-        tree.read_text("blank.pdf")
+        await workspace.read_document(tree, "blank.pdf")
 
 
 # ---- the files tool and the sharing toggle ---------------------------------------------------------
@@ -506,7 +506,7 @@ def test_the_sandbox_reports_whether_it_mounts_the_workspace(tmp_path):
     from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
 
     config = Config(home=tmp_path / "home", desktop_mode="local", desktop=DesktopConfig())
-    assert LocalSandbox(config).workspace_mounted and not LocalSandbox(config, name=SELF_WORK).workspace_mounted
+    assert not LocalSandbox(config).workspace_mounted  # until a start has checked the folder (tests/test_workspace_security.py)
     assert RemoteSandbox("https://sandbox.test", None).workspace_mounted is False
 
 
@@ -612,7 +612,7 @@ async def test_files_api_needs_the_dashboards_auth(make_app, browser):
     ensure_workspace(app.home.root)
     (app.home.root / "workspace" / "a.txt").write_text("x")
     async with browser(app) as client:
-        wrong = {"Authorization": "Bearer not-the-token"}
+        wrong = {"Authorization": "wrong-credentials"}
         assert (await client.get(f"{PATHS}/list", headers=wrong)).status_code == 403
         assert (await client.get(f"{PATHS}/raw", params={"path": "a.txt"}, headers=wrong)).status_code == 403
         assert (await client.post(f"{PATHS}/delete", json={"path": "a.txt"}, headers=wrong)).status_code == 403

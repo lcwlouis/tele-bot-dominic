@@ -28,6 +28,8 @@ CONTAINER = "dom-desktop"
 # The container of Dom's self-directed tasks (W13). Containers share the desktop bridge, so it runs only while
 # every other local container is stopped, and no other may start while it runs.
 SELF_WORK = "self-work"
+# Run in a throwaway container with the workspace mounted: the user's id, then a write and a delete in the folder.
+WORKSPACE_PROBE = 'id -u; f=/workspace/.dom-probe-$$; : > "$f" && rm -f "$f"'
 CONTAINER_MEMORY_MB = 1600  # the --memory limit of a local container
 SECCOMP_PROFILE = Path(__file__).resolve().with_name("seccomp-chromium.json")
 LAN_REACHABLE = "LAN reachable from the sandbox — run dom desktop-setup"
@@ -242,7 +244,8 @@ class LocalSandbox:
 
     @property
     def workspace_mounted(self) -> bool:
-        return self.name != SELF_WORK
+        """Whether the running container has the workspace at /workspace: only after a start that checked it."""
+        return self._workspace_mounted
 
     def __init__(
         self, config: Config, run=asyncio.create_subprocess_exec, *, http=None, clock=time.monotonic,
@@ -264,6 +267,7 @@ class LocalSandbox:
         self._lock = asyncio.Lock()
         self._idle_task: asyncio.Task | None = None
         self._status: Status = "off" if config.desktop_mode == "off" else "stopped"
+        self._workspace_mounted = False
         self.error: str | None = None
         self.client: SandboxClient | None = None
         # Told once, with a short message, when the LAN probe stops a start.
@@ -443,6 +447,7 @@ class LocalSandbox:
         # container, and Chromium would refuse the profile until it is gone.
         for lock in profile.glob("Singleton*"):
             lock.unlink(missing_ok=True)
+        mount = await self._workspace_mount()
         key = secrets.token_urlsafe(32)
         if self.host is not None:
             self.port = self.host.claim_port(self.name, settings.port)
@@ -453,7 +458,7 @@ class LocalSandbox:
             "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
             "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
             "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true", "-e", "DISABLE_JUPYTER=true",
-            "-v", f"{profile}:/home/gem/.config/browser", *workspace_volume(self.config, self.name), settings.image,
+            "-v", f"{profile}:/home/gem/.config/browser", *mount, settings.image,
             env={"SANDBOX_API_KEY": key},  # keeps the key out of the process list
         )
         if code:
@@ -470,6 +475,33 @@ class LocalSandbox:
                 failure += " (could not remove the desktop container)"
             raise SandboxError(failure) from None
         self.client = client
+
+    async def _workspace_mount(self) -> tuple[str, ...]:
+        """The `-v` arguments for the workspace, if the container's user can use the folder; otherwise none, with the
+        reason kept for the doctor and the Files page. A bind mount shows the host's owner, so a container user that is
+        not the folder's owner cannot write there (or leaves files Dom cannot read), and the desktop is better off
+        without it than with a folder that fails halfway through a task."""
+        self._workspace_mounted = False
+        mount = workspace_volume(self.config, self.name)
+        if not mount:
+            return ()
+        folder = workspace.workspace_dir(self.config.home).resolve()
+        code, output = await self._docker_to_completion(
+            "run", "--rm", "--pull=never", "--network", "none", "--memory", "64m", "--pids-limit", "32",
+            "--security-opt", "no-new-privileges", "--entrypoint", "sh", "-v", f"{folder}:{workspace.MOUNT}",
+            self.config.desktop.image, "-c", WORKSPACE_PROBE,
+        )
+        words = output.split()
+        owner = folder.stat().st_uid
+        if code == 0 and words and words[0] == str(owner).encode():
+            workspace.set_mount_problem(self.config.home, None)
+            self._workspace_mounted = True
+            return mount
+        who = words[0].decode(errors="replace")[:12] if words and words[0].isdigit() else "unknown"
+        problem = f"the desktop can't write to the workspace: its user is uid {who}, the folder belongs to uid {owner}"
+        log.error("%s. The desktop starts without it; run the sandbox as the host user or chown the folder.", problem)
+        workspace.set_mount_problem(self.config.home, problem)
+        return ()
 
     @staticmethod
     async def _wait_until_ready(check: Callable[[], Awaitable[object]]) -> None:

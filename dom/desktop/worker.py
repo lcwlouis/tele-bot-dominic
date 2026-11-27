@@ -30,6 +30,7 @@ from dom.desktop.files import (
 )
 from dom.desktop.permissions import DesktopAction, host_matches_site, normalize_site
 from dom.desktop.sandbox import DEFAULT
+from dom import workspace
 from dom.workspace import MOUNT as WORKSPACE_MOUNT
 from dom.desktop.vnc_type import vnc_type_text
 from dom.llm import ChatBudgetExhausted, MissingProviderKey
@@ -613,7 +614,10 @@ class DesktopWorker:
             ask_more=self._ask_more, redactions=progress.redactions,
         )
         run.tool = partial(self._owner_tool, run)
-        return await self._loop(client, run, progress)
+        outcome = await self._loop(client, run, progress)
+        if getattr(self.sandbox, "workspace_mounted", False):
+            await workspace.check_cap(self.app)  # a task that ends with the folder full tells the owner once
+        return outcome
 
     async def work_own(
         self, row: dict, brief: str, owner: int, guard: Callable[[SandboxClient], Awaitable[str | None]],
@@ -695,6 +699,8 @@ class DesktopWorker:
                         progress.steps = steps
                         await run.step(steps, run.deadline)
                         self.sandbox.touch()
+                        if getattr(self.sandbox, "workspace_mounted", False) and await workspace.check_cap(self.app):
+                            raise SandboxError(workspace.FULL_MESSAGE)  # the mount has no quota: stop what fills it
                         try:
                             name, args = tools.arguments(call["function"])
                             if name not in run.names:

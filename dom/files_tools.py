@@ -74,7 +74,7 @@ async def _files(args: dict, ctx: TurnCtx) -> str:
             return f"{DATA_NOTE}\n{untrusted(json.dumps(listing, ensure_ascii=False), limit=_FENCED_LIMIT)}"
         if action == "read":
             offset = args.get("offset", 0)
-            result = await asyncio.to_thread(tree.read_text, path, offset if isinstance(offset, int) else 0)
+            result = await workspace.read_document(tree, path, offset if isinstance(offset, int) else 0)
             more = f"\nmore: read again with offset {result['next_offset']}" if result["next_offset"] is not None else ""
             return f"{DATA_NOTE}\n{untrusted(result['text'], limit=_FENCED_LIMIT)}{more}"
         if action == "write":

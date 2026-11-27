@@ -517,7 +517,8 @@ leaves the host except through that, the desktop's own `download` and `upload` p
 By default groups and friends' DMs cannot reach any of it. With `[workspace] share_with_chats = true` they get a
 read-only `files` tool limited to `workspace/shared/` (code chooses the folder from the turn's scope; the model cannot
 name another), and a document sent in such a chat is saved to `shared/inbox/<chat id>/`, which only that chat and the
-owner can read. Another chat's landed documents are hidden from it in code. `private/`, notes, the database and `.env` are
+owner can read. Another chat's landed documents are hidden from it in code, and a file with more than one name is never
+read in any chat, since the desktop could use a second name to move a file out of its folder. `private/`, notes, the database and `.env` are
 never under the workspace.
 
 ## Home network and T3 Code

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
 from ipaddress import IPv4Network
 from pathlib import Path
@@ -13,7 +14,7 @@ from dom.config import Config, DesktopConfig, load_config
 from dom.desktop.client import SandboxClient, SandboxError, url_host
 from dom.desktop import network
 from dom.desktop.network import PROBE_SCRIPT as PROBE
-from dom.desktop.sandbox import LocalSandbox, RemoteSandbox
+from dom.desktop.sandbox import WORKSPACE_PROBE, LocalSandbox, RemoteSandbox
 from dom.desktop.tools import RESULT_LIMIT, invoke, untrusted
 from dom.desktop.worker import DesktopWorker
 from tghelpers import OWNER
@@ -44,6 +45,7 @@ class FakeDocker:
         self.run_entered = asyncio.Event()
         self.running = False
         self.environments = []
+        self.workspace_probe = None  # (exit code, stdout) of the workspace check; None means the host's own uid
 
     async def __call__(self, *args, **kwargs):
         self.calls.append(args)
@@ -56,6 +58,8 @@ class FakeDocker:
             code, output = (0, b"true") if self.running else (1, b"")
         elif command == "network":
             code, output = (0, json.dumps(self.network).encode()) if self.network else (1, b"")
+        elif command == "run" and "--entrypoint" in args:  # the workspace check: the container's uid, then a write
+            code, output = self.workspace_probe if self.workspace_probe is not None else (0, f"{os.getuid()}\n".encode())
         elif command == "run" and "--rm" in args:
             code, output = self.probe, b""
         else:
@@ -68,10 +72,10 @@ class FakeDocker:
         return Process(code, output)
 
     def started(self):
-        return [call for call in self.calls if call[1] == "run" and "--rm" not in call]
+        return [call for call in self.calls if call[1] == "run" and "--rm" not in call and "--entrypoint" not in call]
 
     def probes(self):
-        return [call for call in self.calls if call[1] == "run" and "--rm" in call]
+        return [call for call in self.calls if call[1] == "run" and "--rm" in call and "--entrypoint" not in call]
 
 
 class Process:
@@ -107,6 +111,9 @@ async def test_local_start_exact_arguments_and_idle_stop(tmp_path, monkeypatch, 
             ("docker", "image", "inspect", "alpine:3.22"),
             probe_call(config, ["192.0.2.1:443", "192.0.2.2:22", f"{GATEWAY}:8080", f"{GATEWAY}:22"]),
             ("docker", "container", "inspect", "--format", "{{.State.Running}}", "dom-desktop"),
+            ("docker", "run", "--rm", "--pull=never", "--network", "none", "--memory", "64m", "--pids-limit", "32",
+             "--security-opt", "no-new-privileges", "--entrypoint", "sh", "-v", f"{tmp_path}/home/workspace:/workspace",
+             config.desktop.image, "-c", WORKSPACE_PROBE),
             ("docker", "run", "-d", "--name", "dom-desktop", "--pull=never",
              "--network", "dom-desktop", "-p", "127.0.0.1:18080:8080",
              "--shm-size", "1g", "--memory", "1600m", "--memory-swap", "1600m", "--pids-limit", "512",
