@@ -826,8 +826,8 @@ class AcpAgent(BaseModel):
 
     enabled: bool = Field(
         False, description="The switch. Off, the agent is never started. On, it is tried first in the roles below, "
-        "in the owner's DM turns only. Antigravity cannot be switched on yet (no way to turn its tools off): the "
-        "dashboard refuses it, and a hand-written `true` is refused at each call. " + ACP_NOT_ZDR,
+        "in the owner's DM turns only. Codex and Antigravity cannot be switched on yet (Dom can't turn all their tools off): the "
+        "dashboard refuses them, and a hand-written `true` is refused at each call. " + ACP_NOT_ZDR,
     )
     roles: tuple[AcpRole, ...] = Field(
         ACP_ROLES, description="Roles the agent serves: escalation (the model switch you approve) and drafting "

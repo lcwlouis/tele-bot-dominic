@@ -794,3 +794,17 @@ async def test_the_desktop_may_not_upload_from_the_workspace_when_it_is_not_moun
 ])
 def test_a_senders_claimed_type_is_shown_only_if_it_looks_like_one(claimed, shown):
     assert workspace.clean_mime(claimed) == shown
+
+
+async def test_a_talk_file_is_mirrored_as_a_document_and_an_empty_one_is_refused_even_with_text(make_app, browser, monkeypatch):
+    app = make_app()
+    sent = mirror_documents(app, monkeypatch)
+    await online(app, OWNER)
+    async with browser(app) as client:
+        refused = await talk_send(client, text="read this", file="", name="empty.txt")
+        assert refused.status_code == 400 and "empty" in refused.text
+        assert not sent
+        ok = await talk_send(client, text="", file=b64(b"hello"), name="note.txt")
+        assert ok.status_code == 200
+    # Telegram may not reclassify it (a GIF, an MP3, a WebP): it stays a document, so it lands in the workspace
+    assert sent and sent[-1][3].get("disable_content_type_detection") is True

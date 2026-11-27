@@ -97,7 +97,10 @@ async def send_from_dashboard(
         elif document is not None:
             upload = BufferedInputFile(document, workspace.safe_name(name))
             sent = await retry_telegram(
-                lambda: app.bot.send_document(owner_id, upload, caption=mirror, disable_notification=True),
+                lambda: app.bot.send_document(
+                    owner_id, upload, caption=mirror, disable_notification=True,
+                    disable_content_type_detection=True,  # stays a document, so it lands in the workspace
+                ),
                 sleep=app.sleep,
             )
         else:
