@@ -811,7 +811,10 @@ ACP_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
 # An agent is enabled only when Dom can switch its own tools off (dom/acp.py); these cannot be, so they never start.
 # Antigravity's `agy acp` takes no per-session settings or mode, and its only tool rules are a deny list in the
 # owner's global settings.json, which Dom neither writes nor can check (docs/acp-agents.md).
-ACP_NO_TOOLS_OFF = {"antigravity": "no way to turn its tools off yet"}
+ACP_NO_TOOLS_OFF = {
+    "antigravity": "no way to turn its tools off yet",
+    "codex": "it loads your own MCP servers and plugins, which Dom can't turn off yet",
+}
 ACP_NOT_ZDR = (
     "Not zero data retention: the provider keeps your prompts under its consumer terms and may train on them unless "
     "you opt out in its settings. Running a bot on a subscription may break the provider's terms."

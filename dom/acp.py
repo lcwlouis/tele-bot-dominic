@@ -51,14 +51,19 @@ ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE")
 # included, carries other kinds and never reaches an agent.
 SERVED_KINDS = {"escalation": ("escalation",), "chat": ("chat", "escalation")}
 
-# Each agent's own switches for its built-in tools, which ACP leaves to the agent (v0.8.3 research, section 2).
-# Not every one is documented: main's live test checks that a prompt asking each agent to run a command fails.
+# Each agent's own switches for its tools, which ACP leaves to the agent (v0.8.3 research, section 2). The agent runs
+# under the owner's HOME, so it would also load the owner's own MCP servers, plugins and claude.ai connectors: those
+# are switched off too. Checked live on 2026-11-27 (v0.8.6 W9): with `tools: []` alone Claude still offered the owner's
+# MCP tools; with all of the below it made no tool call at all. Codex is not enabled (`ACP_NO_TOOLS_OFF`): its settings
+# leave the owner's MCP servers and plugins on, and its session did not even open under them.
 CODEX_CONFIG = {"features": {"shell_tool": False}, "web_search": "disabled"}
 TOOLS_OFF_ENV: dict[str, dict[str, str]] = {
     "codex": {"INITIAL_AGENT_MODE": "read-only", "CODEX_CONFIG": json.dumps(CODEX_CONFIG)},
+    "claude": {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"},  # no claude.ai connectors (Claude Docs and the like)
 }
 TOOLS_OFF_META: dict[str, dict] = {  # sent as `_meta` on session/new; an adapter that does not know it ignores it
-    "claude": {"claudeCode": {"options": {"tools": []}}},
+    # no built-in tools, only the MCP servers given here (none), and none of the owner's settings files
+    "claude": {"claudeCode": {"options": {"tools": [], "strictMcpConfig": True, "mcpServers": {}, "settingSources": []}}},
 }
 
 PLAIN_TEXT_NOTICE = (
