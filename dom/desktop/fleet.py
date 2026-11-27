@@ -88,7 +88,7 @@ class DesktopFleet:
         if not isinstance(name, str):
             raise ValueError(NAME_RULE)
         for host in self.hosts:
-            if host.config.mode == "remote" and host.config.name == name:
+            if host.config.mode == "remote" and host.config.name == name and name != GUEST:  # guest is always local
                 return name, host
         if not NAME.fullmatch(name):
             raise ValueError(NAME_RULE)

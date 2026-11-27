@@ -413,6 +413,8 @@ class DesktopHost(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _no_guest_host(cls, data: object) -> object:
+        if isinstance(data, dict) and data.get("name") == "guest":
+            raise ValueError("a desktop host cannot be named guest: the name belongs to the container for groups and friends")
         if isinstance(data, dict) and data.get("guest"):
             raise ValueError(
                 "a desktop host cannot be kept for guests (remove guest = true): Dom cannot reset a remote sandbox between "

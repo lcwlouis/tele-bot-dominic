@@ -614,6 +614,11 @@ class DesktopWorker:
         step and time limits, and model calls attributed to the asking chat."""
         settings, owner = self.app.config.desktop.guest, row["chat_id"]
         try:
+            if (stop := getattr(self.sandbox, "stop", None)) is None:
+                raise SandboxError("a task for a chat needs a container Dom can remove")
+            # A container an earlier task's clean-up could not remove is removed now; if it still cannot be, this
+            # task fails rather than finding what the earlier one left.
+            await stop()
             with self.sandbox.in_use():
                 client = await self.sandbox.ensure_running()  # a local start is bounded by the sandbox's own timeout
                 await self._restore_screen(client)
@@ -1260,6 +1265,9 @@ class DesktopWorker:
         host = await self._browser_host(client)
         canonical = normalize_site(host) or host if host else None  # an IP literal is its own site, as for browse
         if not canonical:
+            if run.guest:  # a task for a chat never keeps a page whose site could not be checked
+                await self._close_page(client)
+                return "Blocked: the page's address could not be read, so it was closed."
             return None
         if await self.app.desktop_permissions.resolve("visit_site", canonical) == "never":
             await self._close_page(client)
