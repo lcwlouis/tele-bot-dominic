@@ -212,6 +212,8 @@
     const file = input.files?.[0];
     input.value = ""; // the same file can be chosen again after it is removed
     if (!file) return;
+    // Any pick replaces what was attached or still being read, even one that is then refused for its size.
+    clearAttachment();
     if (file.size > LIMITS[kind]) {
       failedAttach = `That ${kind} is over ${LIMITS[kind] / 1_000_000} MB.`;
       return;
@@ -221,9 +223,8 @@
       return;
     }
     failedAttach = "";
-    // A new pick replaces the old one at once: nothing is attached until this file is read, and a read that finishes
-    // after another pick (or a remove) is dropped, so Send can never carry the previous file.
-    attachment = null;
+    // Nothing is attached until this file is read, and a read that finishes after another pick (or a remove) is
+    // dropped, so Send can never carry the previous file.
     const pick = ++picks;
     reading = true;
     const reader = new FileReader();

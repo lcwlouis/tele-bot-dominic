@@ -102,7 +102,7 @@ async def read_talk(
 
 
 def _decoded(data: str | None, what: str) -> bytes | None:
-    if not data:
+    if data is None:  # an empty string is an empty file, which the send refuses
         return None
     try:
         return base64.b64decode(data, validate=True)
