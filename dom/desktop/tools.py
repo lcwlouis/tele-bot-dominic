@@ -81,6 +81,9 @@ BROWSER = ("browse", "read_page", "list_elements", "click", "fill", "press", "sc
 # What a self-directed task (W13) may plan to use. No handoff (no logins), no skills, no skill proposals, and no
 # shell or Python: those would share the user, files and X display with the browser and could drive it directly.
 OWN = (*BROWSER, "read_file", "write_file")
+# What a task for a group or a friend may use: the same read-only browser as a self-directed task, as text only: no
+# files (nothing it makes is sent anywhere), no screenshots, and no `look`, which is a paid vision call of its own.
+GUEST = tuple(name for name in BROWSER if name not in ("save_screenshot", "look"))
 SEARCH_TEXT_LIMIT = 120
 _BLANK = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/")
 _SITE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
@@ -168,12 +171,23 @@ def own_host(url: object) -> str | None:
     return url_host(url)
 
 
-def on_plan(host: str | None, sites: tuple[str, ...]) -> bool:
-    """Whether `host` is one of the plan's sites or a subdomain of one."""
+def web_host(host: str | None) -> bool:
+    """Whether `host` is a public web name: not an IP literal, a LAN-style name or a wildcard-DNS service. Unlike
+    `site`, shared suffixes (`github.io`) are fine: this is a page to read, not a site to trust."""
+    if not host or not _SITE.fullmatch(host) or host.endswith(_PRIVATE_SUFFIXES):
+        return False
+    return not any(host == name or host.endswith("." + name) for name in _WILDCARD_DNS)
+
+
+def on_plan(host: str | None, sites: tuple[str, ...] | None) -> bool:
+    """Whether `host` is one of the plan's sites or a subdomain of one. With no plan (a guest task browses the open
+    web), any public web name."""
+    if sites is None:
+        return web_host(host)
     return bool(host) and any(host == entry or host.endswith("." + entry) for entry in sites)
 
 
-def on_plan_url(url: object, sites: tuple[str, ...]) -> bool:
+def on_plan_url(url: object, sites: tuple[str, ...] | None) -> bool:
     return url in _BLANK or on_plan(own_host(url), sites)
 
 

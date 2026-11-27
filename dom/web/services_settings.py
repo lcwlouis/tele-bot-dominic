@@ -227,8 +227,21 @@ def _desktop(app: App, config: Config) -> ServiceView:
     return ServiceView(
         id="desktop", label="Desktop hosts", state=state, detail=detail, children=children,
         help="Machines that run Dom's desktop. Hosts, limits and isolation are read when Dom starts, so a change "
-             "applies after a restart.",
+             "applies after a restart. " + _guest_limits(config),
         restart_required=config.desktop != app.config.desktop or config.desktop_mode != app.config.desktop_mode,
+    )
+
+
+def _guest_limits(config: Config) -> str:
+    """What a task for a group or a friend may use, so the owner sees it beside the hosts (set under [desktop.guest])."""
+    guest = config.desktop.guest
+    if not guest.enabled:
+        return "Tasks for groups and friends are off."
+    cap = lambda usd: f"${usd:.2f}" if usd else "no limit"  # noqa: E731
+    return (
+        f"Tasks for groups and friends (each needs your Allow once): {guest.max_steps} steps and {guest.max_minutes} "
+        f"minutes at most, {cap(guest.task_cost_cap_usd)} a task and {cap(guest.daily_cost_cap_usd)} a day for each chat. "
+        "Each runs in a fresh container on the local host that Dom starts and removes himself."
     )
 
 

@@ -106,8 +106,9 @@
 
   const words = (text: string) => text.replaceAll("_", " ");
   const tones = { waiting: "secondary", running: "secondary", starting: "outline", refused: "destructive", error: "destructive", off: "outline" } as const;
-  const kindOf = (item: WorkItem) => (item.kind === "desk" ? "Desktop task" : "Own work");
-  const nameOf = (item: WorkItem) => `${item.kind === "desk" ? "desktop task" : "own work task"} ${item.task.id}`;
+  const guest = (item: WorkItem) => item.kind === "desk" && item.task.guest_chat !== undefined;
+  const kindOf = (item: WorkItem) => (item.kind === "own" ? "Own work" : guest(item) ? "Guest task" : "Desktop task");
+  const nameOf = (item: WorkItem) => `${item.kind === "own" ? "own work task" : guest(item) ? "guest task" : "desktop task"} ${item.task.id}`;
 
   function cancel(item: WorkItem) {
     if (item.kind === "desk") desk.write("/api/work/desk/cancel", { id: item.task.id });
@@ -266,6 +267,7 @@
             {@const task = item.task}
             <dt class="text-muted-foreground">Steps</dt>
             <dd class="tabular-nums">{stepsLabel(task)}</dd>
+            {#if task.guest_chat !== undefined}<dt class="text-muted-foreground">Guest task</dt><dd class="break-words">From {task.guest_chat || "a chat"}{#if task.guest_asker}, asked by {task.guest_asker}{/if}. It ran with none of your logins.</dd>{/if}
             {#if "container" in task && task.container && task.container !== "default"}<dt class="text-muted-foreground">Computer</dt><dd>{task.container}</dd>{/if}
             {#if "finished" in task && task.finished}<dt class="text-muted-foreground">Ended</dt><dd>{task.finished}</dd>{/if}
           {:else}

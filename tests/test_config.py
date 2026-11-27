@@ -157,6 +157,7 @@ min_free_memory_mb = 16384
     ('[[desktop.hosts]]\nname = "a"\nmode = "local"\n[[desktop.hosts]]\nname = "b"\nmode = "local"\n', "one local"),
     ('[[desktop.hosts]]\nname = "a"\nmode = "remote"\nmax_containers = 2\n', "one container"),
     ('[[desktop.hosts]]\nname = "a"\nmode = "local"\nmax_containers = 0\n', "max_containers"),
+    ('[[desktop.hosts]]\nname = "a"\nmode = "remote"\nurl = "https://a.example.org"\nguest = true\n', "cannot be kept for guests"),
 ])
 def test_invalid_desktop_hosts_rejected(tmp_path, hosts, message):
     write(tmp_path, MINIMAL + "\n[desktop]\n" + hosts)

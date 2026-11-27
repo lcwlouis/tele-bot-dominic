@@ -410,6 +410,17 @@ class DesktopHost(BaseModel):
         None, ge=0,
         description="Memory the host must still have free after a container's own limit. Dom refuses to start a container that would breach it. Unset means 512 for a local host and 0 (unchecked) for a remote one.",
     )
+    @model_validator(mode="before")
+    @classmethod
+    def _no_guest_host(cls, data: object) -> object:
+        if isinstance(data, dict) and data.get("name") == "guest":
+            raise ValueError("a desktop host cannot be named guest: the name belongs to the container for groups and friends")
+        if isinstance(data, dict) and data.get("guest"):
+            raise ValueError(
+                "a desktop host cannot be kept for guests (remove guest = true): Dom cannot reset a remote sandbox between "
+                "tasks, so tasks for groups and friends run only in a container Dom starts and removes himself on the local host"
+            )
+        return data
 
     @model_validator(mode="after")
     def _limits(self) -> DesktopHost:
@@ -425,6 +436,32 @@ class DesktopHost(BaseModel):
 
 
 MIN_DESKTOP_STEPS, MAX_DESKTOP_STEPS = 10, 100
+
+
+class GuestDesktopConfig(BaseModel):
+    """Tasks that groups and friends ask for: one at a time, on a desktop of their own, after the owner's OK."""
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(
+        True,
+        description="Let Dom offer a desktop task to a group or a friend's DM. Each one still waits for your Allow once; "
+        "there is no Allow always. Inert without a desktop host with room for another container.",
+    )
+    max_steps: int = Field(
+        15, ge=5, le=MAX_DESKTOP_STEPS,
+        description="Step budget (tool calls and model turns) of one guest task. It is never extended.",
+    )
+    max_minutes: int = Field(5, ge=1, le=30, description="Working-time limit of one guest task, in minutes.")
+    task_cost_cap_usd: float = Field(
+        0.25, ge=0, allow_inf_nan=False, description="Per-guest-task USD limit, counting its model calls and the reply. Zero disables this limit.",
+    )
+    daily_cost_cap_usd: float = Field(
+        1.0, ge=0, allow_inf_nan=False, description="USD a chat's guest tasks may cost in one day. Zero disables this limit.",
+    )
+    queue_minutes: float = Field(
+        10, gt=0, le=60, allow_inf_nan=False, description="Minutes an approved guest task waits for the desktop (an owner task, or memory) before it gives up.",
+    )
 
 
 class DesktopConfig(BaseModel):
@@ -453,6 +490,7 @@ class DesktopConfig(BaseModel):
     remote_isolation_confirmed: bool = Field(False, description="Set after verifying the remote desktop cannot reach your LAN or Dom host.")
     fallback_usd_per_1k_tokens: float = Field(0.002, ge=0, allow_inf_nan=False, description="USD per 1,000 tokens when a desktop call reports no cost. Used for the task limit only.")
     hosts: list[DesktopHost] = Field([], description="Desktop hosts, as [[desktop.hosts]] tables. Empty means one host built from desktop.mode and the keys above.")
+    guest: GuestDesktopConfig = Field(default_factory=GuestDesktopConfig, description="Desktop tasks for groups and friends.")
 
     @field_validator("hosts")
     @classmethod

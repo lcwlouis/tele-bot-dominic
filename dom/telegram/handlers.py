@@ -61,6 +61,7 @@ from dom.studio.policy import StudioQuota
 from dom.stickers import Stickers
 from dom.store import Store
 from dom.search import SearchClient, SearchRouter, routed_search_client
+from dom.guest_desktop import GuestDesktop
 from dom.selfwork import SelfWork
 from dom.telegram import gate, owner
 from dom.telegram.convert import to_incoming
@@ -113,6 +114,7 @@ class App:
     plugins: PluginRegistry = field(init=False)
     plugin_runner: PluginRunner = field(init=False)
     self_work: SelfWork = field(init=False)
+    guest_desktop: GuestDesktop = field(init=False)
     goals: Goals = field(init=False)
     assistant: Assistant = field(init=False)
     noticings: Noticings = field(init=False)
@@ -159,6 +161,7 @@ class App:
             config=self.config.knowledge,
         )
         self.self_work = SelfWork(self)
+        self.guest_desktop = GuestDesktop(self)
         self.goals = Goals(self)
         self.assistant = Assistant(self)
         self.noticings = Noticings(self)

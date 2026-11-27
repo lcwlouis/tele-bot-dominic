@@ -586,7 +586,7 @@ Dom screens tool arguments and command text for known secrets and verbatim owner
 notes, and can run the Jev leak check for network plugin tool calls. See
 [Writing plugins](plugins.md) for the limits.
 
-The desktop is owner-only. Its separate worker receives the task brief,
+The desktop is the owner's: only the owner DM starts its tasks (a group or a friend can only propose one for the owner to allow, below). Its separate worker receives the task brief,
 applicable skills, and sandbox results. The brief can contain information
 passed along from the owner DM. Staged documents are uploaded to the sandbox
 for their assigned task. A local Docker desktop must pass LAN isolation probes
@@ -604,6 +604,14 @@ and it never messages anyone else. The owner's DM history keeps a note of each
 plan (goals and reasons) and how each task ended, so Dom can talk about his own
 work; the summary of web content stays out of that history. See
 [Self-directed work](desktop.md#self-directed-work).
+
+Desktop tasks for groups and friends (on by default, each one only after the owner taps Allow once on a card) run on a
+container of their own, started fresh for each task and removed when it ends, with no saved logins, no browser profile on disk, no
+workspace and none of the owner's sessions (never on a remote host, whose browser Dom cannot reset). The brief is written from that chat alone and is refused in code if it repeats a private note or
+a credential. The task gets only a fixed prompt and the brief. The chat receives only a final answer Dom writes from the result,
+with web addresses removed and checked against the private notes; never screenshots, files, page text or browsing history. The
+owner sees the whole task on the dashboard and the chat's words are fenced as untrusted wherever Dom reads them. The model calls
+count as spend of that chat. See [Desktop tasks for groups and friends](desktop.md#desktop-tasks-for-groups-and-friends).
 
 ## The shared workspace
 

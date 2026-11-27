@@ -28,6 +28,9 @@ CONTAINER = "dom-desktop"
 # The container of Dom's self-directed tasks (W13). Containers share the desktop bridge, so it runs only while
 # every other local container is stopped, and no other may start while it runs.
 SELF_WORK = "self-work"
+# The container of tasks that groups and friends ask for. It has no browser profile on disk (the profile lives in the
+# container and goes with it), none of the owner's mounts, and no logins; the owner's own tasks never run in it.
+GUEST = "guest"
 # Run in a throwaway container with the workspace mounted: the user's id, then a write and a delete in the folder.
 WORKSPACE_PROBE = 'id -u; f=/workspace/.dom-probe-$$; : > "$f" && rm -f "$f"'
 CONTAINER_MEMORY_MB = 1600  # the --memory limit of a local container
@@ -65,8 +68,8 @@ def desktop_profile_path(config: Config, name: str = DEFAULT) -> Path:
 
 def workspace_volume(config: Config, name: str = DEFAULT) -> tuple[str, ...]:
     """The `docker run` arguments that mount the shared workspace at /workspace, or none for Dom's self-directed
-    container, which works from a stricter set of files and never sees the owner's."""
-    if name == SELF_WORK:
+    and guest containers, which never see the owner's files."""
+    if name in (SELF_WORK, GUEST):
         return ()
     try:
         folder = workspace.ensure_workspace(config.home)
@@ -114,14 +117,21 @@ class Host:
         """Why `sandbox` may not start now, or None. `memory=False` skips a reading that would cost a request."""
         settings = self.config
         if settings.mode == "local":
-            if sandbox.name == SELF_WORK:
+            # Containers share the desktop bridge. A container that runs pages nobody vetted (Dom's own tasks, a task
+            # for a chat) runs only while every other local container is stopped, and nothing starts beside it.
+            if sandbox.name in (SELF_WORK, GUEST):
                 others = sorted(
-                    name for name, other in self.sandboxes.items() if name != SELF_WORK and other.status() not in ("stopped", "off")
+                    name for name, other in self.sandboxes.items() if name != sandbox.name and other.status() not in ("stopped", "off")
                 )
                 if others:
-                    return f"Dom's own tasks run only while no other desktop container is running ({', '.join(others)})"
-            elif SELF_WORK in self.running(sandbox.name, busy):
-                return "Dom's own task is using the desktop; cancel it on the Own work page or wait for it to finish"
+                    who = "Dom's own tasks" if sandbox.name == SELF_WORK else "Tasks for a chat"
+                    return f"{who} run only while no other desktop container is running ({', '.join(others)})"
+            else:
+                holding = self.running(sandbox.name, busy)
+                if SELF_WORK in holding:
+                    return "Dom's own task is using the desktop; cancel it on the Own work page or wait for it to finish"
+                if GUEST in holding:
+                    return "Dom is on a task for a chat; try again when it has finished"
         holding = self.running(sandbox.name, busy)
         if len(holding) >= settings.max_containers:
             return (
@@ -441,13 +451,22 @@ class LocalSandbox:
         if exists == 0:
             # A previous Dom process may have exited with its key still in memory.
             await self._remove_container(running.strip() == b"true")
-        profile = desktop_profile_path(self.config, self.name)
-        profile.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # No container uses the profile now. A lock left by an unclean stop names the old
-        # container, and Chromium would refuse the profile until it is gone.
-        for lock in profile.glob("Singleton*"):
-            lock.unlink(missing_ok=True)
-        mount = await self._workspace_mount()
+        guest = self.name == GUEST
+        if guest:
+            # Nothing is mounted: no browser profile (so no logins, and nothing survives the container) and no
+            # workspace, the shared folder included.
+            mount = ()
+            self._workspace_mounted = False
+            profile_mount: tuple[str, ...] = ()
+        else:
+            profile = desktop_profile_path(self.config, self.name)
+            profile.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # No container uses the profile now. A lock left by an unclean stop names the old
+            # container, and Chromium would refuse the profile until it is gone.
+            for lock in profile.glob("Singleton*"):
+                lock.unlink(missing_ok=True)
+            mount = await self._workspace_mount()
+            profile_mount = ("-v", f"{profile}:/home/gem/.config/browser")
         key = secrets.token_urlsafe(32)
         if self.host is not None:
             self.port = self.host.claim_port(self.name, settings.port)
@@ -458,7 +477,7 @@ class LocalSandbox:
             "--security-opt", "no-new-privileges", "--security-opt", f"seccomp={SECCOMP_PROFILE}", "--cpus", "3",
             "-e", "SANDBOX_API_KEY", "-e", "DISABLE_CODE_SERVER=true",
             "-e", "DISABLE_NODEJS_REPL=true", "-e", "DISABLE_MCP_BROWSER=true", "-e", "DISABLE_JUPYTER=true",
-            "-v", f"{profile}:/home/gem/.config/browser", *mount, settings.image,
+            *profile_mount, *mount, settings.image,
             env={"SANDBOX_API_KEY": key},  # keeps the key out of the process list
         )
         if code:

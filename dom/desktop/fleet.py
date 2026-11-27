@@ -8,13 +8,14 @@ import re
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING
 
 from dom import workspace
 from dom.config import HOST_NAME
 from dom.desktop.client import SandboxError
 from dom.desktop.files import drop_stale
-from dom.desktop.sandbox import DEFAULT, Host, LocalSandbox, RemoteSandbox, read_free_memory_mb
+from dom.desktop.sandbox import DEFAULT, GUEST, Host, LocalSandbox, RemoteSandbox, read_free_memory_mb
 from dom.desktop.worker import ACTIVE, DesktopWorker
 
 if TYPE_CHECKING:
@@ -87,7 +88,7 @@ class DesktopFleet:
         if not isinstance(name, str):
             raise ValueError(NAME_RULE)
         for host in self.hosts:
-            if host.config.mode == "remote" and host.config.name == name:
+            if host.config.mode == "remote" and host.config.name == name and name != GUEST:  # guest is always local
                 return name, host
         if not NAME.fullmatch(name):
             raise ValueError(NAME_RULE)
@@ -100,8 +101,28 @@ class DesktopFleet:
         name, host = self._resolve(name)
         if name not in self.lanes:
             sandbox = self._factory(host, name)
-            self.lanes[name] = Lane(name, host, sandbox, DesktopWorker(self.app, sandbox, container=name, **self._options))
+            worker = DesktopWorker(self.app, sandbox, container=name, **self._options)
+            self.lanes[name] = lane = Lane(name, host, sandbox, worker)
+            if self.for_guests(lane):
+                worker.guest_admit = partial(self._guest_refusal, lane)
         return self.lanes[name]
+
+    @staticmethod
+    def for_guests(lane: Lane) -> bool:
+        """Whether this container is the one for tasks that groups and friends ask for; the owner's never run in it."""
+        return lane.name == GUEST
+
+    def has_guest_host(self) -> bool:
+        """Whether a guest container can run: only the local host can, because Dom starts and destroys it himself.
+        A remote sandbox cannot be reset between chats, so it never takes a guest task."""
+        return any(host.config.mode == "local" for host in self.hosts)
+
+    def guest_lane(self) -> Lane | None:
+        """Where a guest task runs: a container of its own on the local host, or None without one."""
+        try:
+            return self.lane(GUEST)
+        except ValueError:
+            return None  # no local host
 
     def containers(self) -> list[Lane]:
         """The containers worth showing: the default one and each remote host, and every other that is running or has a task."""
@@ -139,17 +160,47 @@ class DesktopFleet:
     def available(self) -> bool:
         return any(lane.worker.available() for lane in self.lanes.values())
 
+    async def _guest_refusal(self, lane: Lane) -> str | None:
+        """Like `_refusal`, but a guest task may stop an owner container that is only idling (no task, no handoff) to
+        make room: its logins stay in its profile on disk, and waiting out its idle timer would outlast the queue."""
+        reason = await self._refusal(lane)
+        if reason is None:
+            return None
+        freed = False
+        for other in list(self.lanes.values()):
+            idle = other.status() == "ready" and not other.worker.busy()
+            if other is not lane and other.host is lane.host and idle and (stop := getattr(other.sandbox, "stop", None)) is not None:
+                try:
+                    await stop()
+                    freed = True
+                except SandboxError as exc:
+                    log.warning("could not stop an idle desktop container to make room for a guest task (%s)", exc)
+        return await self._refusal(lane) if freed else reason
+
     async def _refusal(self, lane: Lane) -> str | None:
-        if lane.host.config.mode == "local" and await workspace.check_cap(self.app, fresh=True):
+        if lane.host.config.mode == "local" and lane.name != GUEST and await workspace.check_cap(self.app, fresh=True):
             return workspace.FULL_MESSAGE  # the mounted folder is over its cap: no new desktop work until it is cleared
         if lane.status() == "ready":
             return None  # it already holds its slot
         busy = [other.name for other in self.lanes.values() if other.host is lane.host and other is not lane and other.worker.busy()]
         return await lane.host.refusal(lane.sandbox, busy=busy, memory=lane.host.config.mode == "local")
 
+    async def enqueue_guest(self, brief: str, chat_id: int, title: str, asker: str) -> int:
+        """Queue a task that a group or a friend asked for, once the owner allowed it."""
+        await self.drop_idle()
+        lane = self.guest_lane()
+        if lane is None:
+            raise ValueError("there is no desktop host for tasks like this")
+        try:
+            return await lane.worker.enqueue_guest(brief, chat_id, title, asker)
+        finally:
+            await self.drop_idle()
+
     async def enqueue(self, chat_id: int, brief: str, container: str | None = None) -> int:
         await self.drop_idle()
         lane = self.lane(container)
+        if self.for_guests(lane):
+            raise ValueError("that desktop is kept for tasks that groups and friends ask for")
         try:
             return await lane.worker.enqueue(chat_id, brief, admit=lambda: self._refusal(lane))
         finally:

@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 DesktopAction = Literal[
     "visit_site", "fill_login", "download", "upload", "background_work",
-    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm", "guest_desktop",
     "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 ]
 PermissionPolicy = Literal["ask", "allow", "never"]
@@ -36,7 +36,7 @@ ApprovalDecision = Literal["once", "always", "reject"]
 
 ACTIONS: tuple[DesktopAction, ...] = (
     "visit_site", "fill_login", "download", "upload", "background_work",
-    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm", "guest_desktop",
     "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 )
 POLICIES: tuple[PermissionPolicy, ...] = ("ask", "allow", "never")
@@ -46,8 +46,9 @@ GOOGLE_ACTIONS: frozenset[str] = frozenset((
     "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm",
     "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 ))
-# Making a new calendar is asked every time (Reject, Allow once): no Allow always, and Allow is not a policy for it.
-ASK_EVERY_TIME: frozenset[str] = frozenset(("calendar_create",))
+# Making a new calendar, and a desktop task for a group or a friend, are asked every time (Reject, Allow once): no Allow
+# always, and Allow is not a policy for them. Never turns the guest desktop off.
+ASK_EVERY_TIME: frozenset[str] = frozenset(("calendar_create", "guest_desktop"))
 # A booking card offers Allow once and Reject only: a friend's request is never approved for good from a tap. The owner can
 # still set the policy to Allow on the dashboard, which is the one way to book without a card.
 NO_ALLOW_ALWAYS: frozenset[str] = frozenset(("booking_confirm",))
@@ -75,6 +76,7 @@ DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "sheet_append": "ask",
     "sheet_update": "ask",
     "booking_confirm": "ask",
+    "guest_desktop": "ask",
 }
 
 ACTION_META: dict[DesktopAction, dict[str, str]] = {
@@ -142,6 +144,11 @@ ACTION_META: dict[DesktopAction, dict[str, str]] = {
     "sheet_update": {
         "label": "Replace cells in a Google Sheet",
         "description": "Dom overwrites cells in a spreadsheet he made or one you handed him. The card shows the file name, the cells and what was there before.",
+    },
+    "guest_desktop": {
+        "label": "Desktop task for a chat",
+        "description": "A group or a friend asked Dom to look something up on the web. It runs on a desktop of its own with none of your logins, "
+        "and only after you tap Allow once on the card. It is always asked; Never turns it off.",
     },
 }
 
