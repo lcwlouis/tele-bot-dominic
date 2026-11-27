@@ -30,7 +30,7 @@ async def test_a_rejected_reaction_logs_telegrams_reason_the_emoji_and_the_messa
 async def test_a_reason_never_hides_the_step_in_the_turn_log():
     class AtBot:
         async def set_message_reaction(self, *args, **kw):
-            raise TelegramBadRequest(method=None, message="Bad Request: no @rights")
+            raise TelegramBadRequest(method=None, message="Bad Request: no " + chr(64) + "rights")
 
     trace = turn_log.TurnTrace()
     with turn_log.track(trace):

@@ -13,7 +13,7 @@ CHAT = str(OWNER)
 def msg(msg_id: int, **kw) -> StoredMessage:
     return StoredMessage(
         chat_id=kw.pop("chat_id", CHAT), msg_id=msg_id, text=f"m{msg_id}", visibility_scope="owner_private",
-        sender_handle="@owner", sender_name="Owner", role="user", created_at="2026-11-27T10:00:00+00:00", **kw,
+        sender_handle="owner", sender_name="Owner", role="user", created_at="2026-11-27T10:00:00+00:00", **kw,
     )
 
 
