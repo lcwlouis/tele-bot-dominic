@@ -173,13 +173,25 @@ _ACTION_VERB = (
 _ACTION_PROMISE = re.compile(
     rf"\b(?:i'll|ill|i\s+will|i'm\s+going\s+to|i\s+am\s+going\s+to|i'm\s+gonna|im\s+gonna|gonna|imma|i'ma|let\s+me|lemme)\s+"
     rf"(?:just\s+|quickly\s+|go\s+(?:and\s+)?|now\s+|also\s+)?{_ACTION_VERB}\b"
-    rf"|^[\s,]*(?:(?:ok|okay|yep|yeah|sure|aight|alright|fine|k)[\s,!.]+)*(?:on\s+it|doing\s+(?:it|that|this)\s+now)\b",
+    # "on it" only as the whole of what is said (not "on it like a car bonnet"), "doing it now", and "adding it now"
+    rf"|^[\s,]*(?:(?:ok|okay|yep|yeah|sure|aight|alright|fine|k)[\s,!.]+)*(?:on\s+it(?=[\s,]*(?:[^\w\s]|$))|doing\s+(?:it|that|this)\s+now\b)"
+    r"|^[\s,]*(?:(?:ok|okay|yep|yeah|sure|aight|alright|fine|k)[\s,!.]+)*(?:adding|creating|setting|booking|scheduling|deleting|"
+    r"removing|cancell?ing|saving|updating|checking|searching|firing|putting|looking\s+(?:it\s+|that\s+)?up)\b[^.?!]{0,40}?"
+    r"\b(?:now|rn|right\s+now)\b",
+    re.IGNORECASE,
+)
+# A time that says what the thing is for ("a reminder for tomorrow", "add it for monday") is not a deferral of the doing.
+# Only "for": "on monday" or "by friday" may as well say when Dom will do it ("i'll find out on monday").
+_FOR_A_TIME = re.compile(
+    r"\bfor\s+(?:the\s+)?(?:tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"weekend|next\s+\w+|later\s+today)\b",
     re.IGNORECASE,
 )
 _NOT_AN_ACTION = re.compile(
     r"n't\b|\b(?:not|never|no|cannot|cant|wont|if|unless|maybe|perhaps|probably|someday|eventually|tomorrow|tonight|later|"
     r"next|once|after|before\s+you|when|whenever|until|till|while|because|so\s+that|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|in\s+the\s+(?:morning|evening)|"
+    r"sometime|some\s+time|soon|one\s+day|at\s+some\s+point|"
     r"said|says|told|asked|wrote|texted|replied|quoted|goes|want|wanna|should|would|could|can|did|does)\b|https?://",
     re.IGNORECASE,
 )
@@ -193,7 +205,8 @@ def promised_action(text: str) -> str | None:
     masked = _QUOTE_CHARS.sub(lambda quoted: " " * len(quoted.group()), text.replace("\u2019", "'"))
     for sentence in _SENTENCE.finditer(masked):
         words = sentence.group()
-        if words.rstrip().endswith("?") or _NOT_AN_ACTION.search(words) or not _ACTION_PROMISE.search(words):
+        timing = _FOR_A_TIME.sub(" ", words)  # what the thing is for, taken out before looking for a deferral
+        if words.rstrip().endswith("?") or _NOT_AN_ACTION.search(timing) or not _ACTION_PROMISE.search(words):
             continue
         return text[sentence.start():sentence.end()].strip()[:ACTION_QUOTE_MAX]
     return None

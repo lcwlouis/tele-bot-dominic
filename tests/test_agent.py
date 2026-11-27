@@ -789,3 +789,19 @@ async def test_an_action_promise_is_recorded_in_the_turn_log_and_the_trace(env):
     assert "Action promise put back" in trace.steps
     assert [e["sentence"] for e in trace.events if e["type"] == "action_promise"] == ["fine, i'll fire one in again"]
 
+
+
+@pytest.mark.parametrize("text,promised", [
+    ("I'll set a reminder for tomorrow", True),  # what the reminder is for, not when it is set
+    ("i'll add it for monday at 9", True),
+    ("Adding it now", True),
+    ("ok adding the event rn", True),
+    ("on it!", True),
+    ("on it like a car bonnet", False),
+    ("I'll check it out sometime", False),
+    ("i'll add it tomorrow", False),
+    ("adding salt to the soup is wild", False),
+])
+def test_action_promise_edges_from_review(text, promised):
+    from dom.actions import promised_action
+    assert (promised_action(text) is not None) is promised
