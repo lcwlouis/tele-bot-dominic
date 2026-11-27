@@ -1,15 +1,15 @@
 # Google Calendar and Gmail
 
-Dom can read the owner's calendar, add, move and delete events, search and read mail, and save mail drafts. It is
-owner-only: none of it exists in a group or a friend's DM. Every change goes through an approval card, and Dom never
-sends mail: there is no send in the code.
+Dom can read the owner's calendar, keep calendars of his own and add, move and delete events on them, search and read
+mail, and save mail drafts. It is owner-only: none of it exists in a group or a friend's DM. Every change goes through an
+approval card, and Dom never sends mail: there is no send in the code. He never writes to the owner's own calendars.
 
 ## What Dom can do
 
 | Switch (Settings → Services → Google) | Scope | Dom can |
 | --- | --- | --- |
 | Calendar: read events | `calendar.events` | List upcoming events and free/busy in the owner DM. A compact "today and tomorrow" block also rides in the owner DM's turn note, fetched in the background and cached for about 15 minutes. |
-| Calendar: add, move, delete | `calendar.events` | Propose an event change. An owner-DM card shows the title, time and attendees, with Reject, Allow once and Allow always, **per kind** (add, move and delete each have their own policy in System → Access). |
+| Dom's own calendars | `calendar.app.created` | Make calendars of his own (for example "Dom - Planning") and add, move and delete events on **those only**. An owner-DM card shows the calendar, title, time and attendees, with Reject, Allow once and Allow always, **per kind** (add, move and delete each have their own policy in System → Access). |
 | Gmail: search and read | `gmail.readonly` | Search (a Gmail query, newest first, snippets) and read one message (text only, capped; attachments are named, never opened). |
 | Gmail: save drafts | `gmail.compose` | Save a draft after a card shows the recipients, subject and the start of the text. The draft is not sent. |
 
@@ -19,8 +19,39 @@ screen) cannot be turned on. Off means the tool is not offered and the handler r
 `gmail.compose` technically also lets a token send mail; Google has no drafts-only scope. Dom's code exposes no send,
 and the tool has no such action.
 
-To turn an event into a reminder, ask Dom: he reads the event and uses his ordinary `remind` tool. Nothing is synced
-automatically.
+## Dom's own calendars
+
+`calendar.app.created` is Google's narrow scope for an app that keeps calendars of its own: it can make secondary
+calendars and see, add, change and delete events on the ones **it made**, and nothing else. That is why Dom's writes
+no longer go to your primary calendar (v0.8.6): reading your calendars keeps working as before under `calendar.events`,
+and writing happens only on calendars Dom made.
+
+- **Making one asks every time.** `create_calendar` sends a card (Reject, Allow once). There is no Allow always for it,
+  and Allow is not a policy you can set for it: each new calendar is asked once, when Dom first wants it. Dom keeps at
+  most five calendars and refuses a name he already has.
+- **Code checks the target.** Dom's calendar tool takes the calendar by name or id. Add, move and delete refuse
+  anything that is not in the list of calendars he made ("Dom writes only to calendars he made himself"), including your
+  primary calendar, before any card is sent. Google enforces the same under this scope. The ids of his calendars are
+  kept in the encrypted secret store (namespace `google`, key `calendars`), not in the database as text.
+- **Reading.** Dom can list the events of one of his calendars (`calendar` on `list` or `freebusy`) as well as your
+  primary calendar, and the `calendars` action lists the calendars he made.
+- **Nudges.** An event Dom adds or moves can carry `nudge_minutes` (1 to 10080). Dom then reminds you that long before it
+  through the ordinary reminder system (`dom/reminders.py`), in your DM only, as a normal reminder: nothing about it
+  reaches a group or a friend. Moving the event moves the reminder, `nudge_minutes: 0` on a move takes it off, and
+  deleting the event (or removing its calendar) cancels it. A nudge whose time has already passed is refused before a card
+  is shown, and if the reminder list is full the event is still made and Dom says no nudge was set.
+- **Existing connections.** A connection made before v0.8.6 lacks the new scope. Everything else keeps working; the
+  Google card says "Reconnect to let Dom keep his own calendars", the "Dom's own calendars" switch stays locked, and the
+  tool offers only reading until you press **Connect again** and Google grants it. Add `calendar.app.created` to the
+  consent screen first (below).
+- **On the dashboard.** Settings → Services → Google lists Dom's calendars with their colour and the number of upcoming
+  events (read from Google when the page opens, so the card itself never waits on Google). The trash button next to one
+  deletes it from your Google account after a confirmation, and cancels its nudges. Colour appears when Google lets Dom
+  read it.
+- **Disconnecting** revokes the token but keeps the list of calendars, so connecting the same account again picks them
+  up. The calendars themselves stay in your Google account until you remove them here.
+- **If Google loses the answer** to "make a calendar" (a timeout), Dom does not try again, and tells you it may or may
+  not exist: check Google Calendar before asking again.
 
 ## Create the OAuth client (once)
 
@@ -29,8 +60,9 @@ automatically.
 2. Configure the OAuth consent screen. A personal Google account can keep the app **unverified in production** for
    owner-only use (the consent screen then says the app is unverified; continue past it). Do not leave it in
    *Testing*: Google expires a Testing app's refresh token after seven days.
-3. Add the three scopes:
+3. Add the four scopes:
    - `https://www.googleapis.com/auth/calendar.events`
+   - `https://www.googleapis.com/auth/calendar.app.created`
    - `https://www.googleapis.com/auth/gmail.readonly`
    - `https://www.googleapis.com/auth/gmail.compose`
 4. Create an OAuth client of type **Web application** with exactly this authorized redirect URI:
@@ -87,7 +119,7 @@ Cloudflare Access the same checks apply on top of Access's own gate.
 
 ## Approvals
 
-Add, move, delete and draft each go through an owner-DM card, and the tool returns at once ("asked the owner"); the
+Create calendar, add, move, delete and draft each go through an owner-DM card, and the tool returns at once ("asked the owner"); the
 action runs in the background after the tap and its outcome is written to the DM history for Dom's next turn.
 
 - **The card shows everything that matters:** the title or subject, every attendee or recipient, the times with the

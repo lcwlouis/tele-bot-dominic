@@ -1,4 +1,4 @@
-"""Google Calendar and Gmail for the owner (v0.8.5 W4): the OAuth connection, its tokens and the API calls.
+"""Google Calendar and Gmail for the owner (v0.8.5 W4, v0.8.6 W1): the OAuth connection, its tokens and the API calls.
 
 The owner connects once from Settings → Services. The dashboard starts an authorization-code flow with PKCE (S256)
 and a random `state` that is bound to the browser that started it by a short-lived cookie, is single-use and expires
@@ -7,7 +7,9 @@ after ten minutes. The callback exchanges the code on the server and keeps the t
 
 What Dom may do with the connection is limited three ways, each checked in code at the moment of use: the scope Google
 granted, the owner's switch for it (Calendar read, Calendar write, Gmail read, Gmail drafts) and the owner's DM.
-Dom never sends mail: no send exists here.
+Dom never sends mail: no send exists here. He never writes to the owner's own calendars either: with the narrow
+`calendar.app.created` scope he makes calendars of his own and writes only there. The ids of the calendars he made (and
+which of their events carry a nudge) are kept in the encrypted `SecretStore` too, and code checks every write against them.
 
 An expired or revoked refresh token (`invalid_grant`) marks the connection `needs_reconnect`, drops the dead token and
 sends the owner exactly one quiet notice; it stays quiet until the owner connects again.
@@ -27,13 +29,13 @@ import re
 import secrets
 import time
 from collections import deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from time import monotonic
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 
@@ -51,14 +53,15 @@ CALENDAR_API = "https://www.googleapis.com/calendar/v3"
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 
 SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar.events"
+SCOPE_APP_CALENDAR = "https://www.googleapis.com/auth/calendar.app.created"
 SCOPE_GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPE_GMAIL_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
-SCOPES = (SCOPE_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE)
+SCOPES = (SCOPE_CALENDAR, SCOPE_APP_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE)
 
 # The owner's switches, in the order the dashboard shows them, and the scope each needs.
 SWITCHES: dict[str, tuple[str, str]] = {
     "calendar_read": (SCOPE_CALENDAR, "Calendar: read events"),
-    "calendar_write": (SCOPE_CALENDAR, "Calendar: add, move and delete events (each needs your approval)"),
+    "calendar_write": (SCOPE_APP_CALENDAR, "Dom's own calendars: create them, add, move and delete events there (each needs your approval)"),
     "gmail_read": (SCOPE_GMAIL_READ, "Gmail: search and read mail"),
     "gmail_drafts": (SCOPE_GMAIL_COMPOSE, "Gmail: save drafts (each needs your approval; Dom never sends)"),
 }
@@ -73,12 +76,13 @@ STALE = "Google was switched off, disconnected or connected to another account s
 UNCERTAIN = "Google did not confirm that: it may or may not have happened. Check before trying again."
 # The approval kinds whose cards a switch going off cancels.
 SWITCH_ACTIONS: dict[str, tuple[str, ...]] = {
-    "calendar_write": ("calendar_add", "calendar_move", "calendar_delete"),
+    "calendar_write": ("calendar_create", "calendar_add", "calendar_move", "calendar_delete"),
     "gmail_drafts": ("gmail_draft",),
 }
-ALL_GOOGLE_ACTIONS = ("calendar_add", "calendar_move", "calendar_delete", "gmail_draft")
+ALL_GOOGLE_ACTIONS = ("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft")
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("dom_google_deadline", default=None)
-NAMESPACE, TOKEN_KEY = "google", "oauth"
+NAMESPACE, TOKEN_KEY, CALENDARS_KEY = "google", "oauth", "calendars"
+MAX_CALENDARS = 5  # the calendars Dom may keep at once
 STATE_KEY = "google:state"
 STATE_TTL = 600.0  # seconds a started authorization stays valid
 MAX_PENDING = 8
@@ -241,6 +245,8 @@ class GoogleIntegration:
             "status": state["status"],
             "connected_at": state["connected_at"],
             "last_error": state["last_error"],
+            "own_calendars_granted": state["status"] == "connected" and SCOPE_APP_CALENDAR in state["scopes"],
+            "calendars": await self.own_calendars(),
             "switches": [
                 {
                     "id": name, "label": label, "on": state["switches"][name],
@@ -249,6 +255,66 @@ class GoogleIntegration:
                 for name, (scope, label) in SWITCHES.items()
             ],
         }
+
+    # ---- Dom's own calendars: what he made, and the nudges on their events -----------------------------------------
+
+    async def _book(self) -> dict[str, Any]:
+        """`calendars`: [{id, name}] he made. `nudges`: "calendar/event" -> {reminder, minutes}. Anything malformed is dropped."""
+        raw = await self.app.secrets.get(NAMESPACE, CALENDARS_KEY)
+        raw = raw if isinstance(raw, dict) else {}
+        calendars = [
+            {"id": item["id"], "name": item["name"]} for item in raw.get("calendars") or []
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("name"), str)
+        ]
+        nudges = {
+            key: {"reminder": item["reminder"], "minutes": item["minutes"]} for key, item in (raw.get("nudges") or {}).items()
+            if isinstance(key, str) and isinstance(item, dict) and type(item.get("reminder")) is int and type(item.get("minutes")) is int
+        }
+        return {"calendars": calendars, "nudges": nudges}
+
+    async def own_calendars(self) -> list[dict[str, str]]:
+        return (await self._book())["calendars"]
+
+    async def nudge_for(self, calendar_id: str, event_id: str) -> dict[str, int] | None:
+        return (await self._book())["nudges"].get(f"{calendar_id}/{event_id}")
+
+    async def edit_book(self, change: Callable[[dict[str, Any]], Any]) -> Any:
+        """Change what Dom keeps about his calendars: read, change and write back together, with only local work inside."""
+        async with self._apply:
+            book = await self._book()
+            result = change(book)
+            await self.app.secrets.put(NAMESPACE, CALENDARS_KEY, book)
+        return result
+
+    async def keep_calendar(self, calendar_id: str, name: str) -> None:
+        def add(book: dict[str, Any]) -> None:
+            if all(item["id"] != calendar_id for item in book["calendars"]):
+                book["calendars"].append({"id": calendar_id, "name": name})
+
+        await self.edit_book(add)
+
+    async def forget_calendar(self, calendar_id: str) -> list[int]:
+        """Drop one calendar and every nudge on its events; the reminder ids those nudges held come back to be cancelled."""
+        def drop(book: dict[str, Any]) -> list[int]:
+            book["calendars"] = [item for item in book["calendars"] if item["id"] != calendar_id]
+            gone = [key for key in book["nudges"] if key.startswith(f"{calendar_id}/")]
+            return [book["nudges"].pop(key)["reminder"] for key in gone]
+
+        return await self.edit_book(drop)
+
+    async def remove_calendar(self, calendar_id: str) -> None:
+        """Delete one of Dom's calendars at Google (the owner confirmed on the dashboard), then forget it and cancel its
+        nudges. Only a calendar he made can be named; Google would refuse any other under this scope as well."""
+        if all(item["id"] != calendar_id for item in await self.own_calendars()):
+            raise GoogleError("Dom did not make that calendar.")
+        state = await self.state()
+        if state["status"] != "connected" or SCOPE_APP_CALENDAR not in state["scopes"]:
+            raise GoogleError("Google has not granted Dom his own calendars. Connect Google again.")
+        with self.budget(FOREGROUND_SECONDS):
+            await self.call("DELETE", f"{CALENDAR_API}/calendars/{quote(calendar_id, safe='')}", ticket=await self.ticket("calendar_write"), allow=(404, 410))
+        for reminder_id in await self.forget_calendar(calendar_id):
+            await self.app.dispatch.reminders.cancel(reminder_id)
+        await self.app.store.record_owner_event("Removed one of Dom's Google calendars")
 
     # ---- connect ------------------------------------------------------------------------------------------------
 

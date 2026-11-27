@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
@@ -17,10 +18,10 @@ from aiogram.types import CallbackQuery, User
 
 from dom.config import WebConfig, set_dotenv
 from dom.google import (
-    CALENDAR_API, CALLBACK_PATH, GMAIL_API, REVOKE_URL, SCOPE_CALENDAR, SCOPE_GMAIL_COMPOSE, SCOPE_GMAIL_READ, SCOPES,
+    CALENDAR_API, CALLBACK_PATH, GMAIL_API, REVOKE_URL, SCOPE_APP_CALENDAR, SCOPE_CALENDAR, SCOPE_GMAIL_COMPOSE, SCOPE_GMAIL_READ, SCOPES,
     SWITCHES, TOKEN_URL, GoogleError, GoogleIntegration, GoogleSlow,
 )
-from dom.google_tools import _calendar, _gmail
+from dom.google_tools import _calendar, _gmail, offered
 from dom.secrets import redact_secrets
 from dom.telegram.handlers import handle_callback
 from dom.tools import TurnCtx, enabled_tools
@@ -34,6 +35,7 @@ CODE = "4/0AcodeCanary"
 DASH = "https://dom.example.org"
 TOKEN = "dev-token-" + "x" * 32
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Origin": "http://127.0.0.1:8080"}
+DOM_CAL = "domcal@group.calendar.example.org"
 CANARIES = (ACCESS1, ACCESS2, REFRESH, CODE, CLIENT_SECRET)
 
 
@@ -50,6 +52,8 @@ class FakeGoogle:
         self.statuses: list[int] = []  # answers to give the next API calls before the real one
         self.events: list[dict] = []
         self.messages: dict[str, dict] = {}
+        self.calendars: dict[str, str] = {}  # id -> name, the calendars Dom made
+        self.insert_status = 200
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -75,11 +79,22 @@ class FakeGoogle:
             if status != 200:
                 return httpx.Response(status, json={"error": {"message": "busy"}}, headers={"Retry-After": "2"})
         path = request.url.path
-        if path.endswith("/calendars/primary/events") and request.method == "GET":
+        if path.endswith("/calendars") and request.method == "POST":
+            if self.insert_status != 200:
+                return httpx.Response(self.insert_status, json={"error": {"message": "no"}})
+            made = DOM_CAL.replace("domcal", f"cal{len(self.calendars) + 1}")
+            self.calendars[made] = json.loads(body)["summary"]
+            return httpx.Response(200, json={"id": made, "summary": self.calendars[made]})
+        if "/calendarList/" in path and request.method == "GET":
+            return httpx.Response(200, json={"summary": self.calendars.get(path.rsplit("/", 1)[1], "?"), "backgroundColor": "#16a765"})
+        if "/calendars/" in path and "/events" not in path and request.method == "DELETE":
+            self.calendars.pop(path.rsplit("/", 1)[1], None)
+            return httpx.Response(204)
+        if re.search(r"/calendars/[^/]+/events$", path) and request.method == "GET":
             return httpx.Response(200, json={"items": self.events})
-        if path.endswith("/calendars/primary/events") and request.method == "POST":
+        if re.search(r"/calendars/[^/]+/events$", path) and request.method == "POST":
             return httpx.Response(200, json={"id": "newevent1"})
-        if "/calendars/primary/events/" in path:
+        if re.search(r"/calendars/[^/]+/events/", path):
             event_id = path.rsplit("/", 1)[1]
             if request.method == "GET":
                 return httpx.Response(200, json=next(e for e in self.events if e["id"] == event_id))
@@ -149,6 +164,9 @@ async def ready(setup, *on: str, scope: str | None = None):
     await connect(app, fake, client)
     for name in on:
         await app.google.set_switch(name, True)
+    if "calendar_write" in on:  # Dom already made a calendar of his own; the write tests use it
+        await app.google.keep_calendar(DOM_CAL, "Dom - Test")
+        fake.calendars[DOM_CAL] = "Dom - Test"
     return app, fake, client
 
 
@@ -203,7 +221,7 @@ async def test_connect_uses_pkce_and_stores_tokens_encrypted(setup):
     query = {key: values[0] for key, values in parse_qs(url.query).items()}
     assert f"{url.scheme}://{url.netloc}{url.path}" == "https://accounts.google.com/o/oauth2/v2/auth"
     assert query["redirect_uri"] == "https://dom.example.org/api/integrations/google/callback"
-    assert query["scope"].split() == [SCOPE_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE]
+    assert query["scope"].split() == [SCOPE_CALENDAR, SCOPE_APP_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE]
     assert (query["access_type"], query["prompt"], query["code_challenge_method"]) == ("offline", "consent", "S256")
     assert query["client_id"] == CLIENT_ID and "client_secret" not in query
     cookie = started.headers["set-cookie"].lower()
@@ -283,7 +301,7 @@ async def test_a_scope_the_owner_unticked_cannot_be_switched_on(setup):
     app, fake, client = await ready(setup, scope=SCOPE_CALENDAR)
     view = await app.google.view()
     assert {s["id"]: s["granted"] for s in view["switches"]} == {
-        "calendar_read": True, "calendar_write": True, "gmail_read": False, "gmail_drafts": False}
+        "calendar_read": True, "calendar_write": False, "gmail_read": False, "gmail_drafts": False}
     refused = await client.post("/api/integrations/google/switch", headers=HEADERS, json={"id": "gmail_read", "on": True})
     assert refused.status_code == 409
     assert (await client.post("/api/integrations/google/switch", headers=HEADERS, json={"id": "calendar_read", "on": True})).status_code == 200
@@ -384,8 +402,8 @@ async def test_requests_are_rate_limited(setup):
 
 
 @pytest.mark.parametrize("switch, tool, actions", [
-    ("calendar_read", "calendar", ["list", "freebusy"]),
-    ("calendar_write", "calendar", ["add", "move", "delete"]),
+    ("calendar_read", "calendar", ["calendars", "list", "freebusy"]),
+    ("calendar_write", "calendar", ["calendars", "create_calendar", "add", "move", "delete"]),
     ("gmail_read", "gmail", ["search", "read"]),
     ("gmail_drafts", "gmail", ["draft"]),
 ])
@@ -1229,3 +1247,253 @@ async def test_r5_a_refresh_in_flight_counts_against_the_foreground_deadline_onc
     async with asyncio.timeout(2):
         while (await app.secrets.get("google", "oauth"))["access_token"] != ACCESS2:
             await asyncio.sleep(0.01)
+
+
+# ---- v0.8.6 W1: Dom's own calendars ---------------------------------------------------------------------------------
+
+
+async def card_labels(app) -> list[str]:
+    return [b.text for r in app.bot.of("send", OWNER)[-1][3]["reply_markup"].inline_keyboard for b in r]
+
+
+async def reminders_of(app) -> list[dict]:
+    return await app.dispatch.reminders.active()
+
+
+async def test_w1_creating_a_calendar_asks_first_every_time_and_has_no_allow_always(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    fake.calendars.clear()
+    await app.google.forget_calendar(DOM_CAL)
+    out = await _calendar({"action": "create_calendar", "name": "Dom - Louis"}, owner_ctx(app))
+    assert "Asked the owner" in out and "Nothing has happened" in out
+    assert not fake.sent("POST", "/calendars")  # nothing until the owner taps
+    row = await pending(app)
+    assert row["action"] == "calendar_create" and row["can_allow_always"] is False
+    assert "Create calendar: Dom - Louis" in app.bot.of("send", OWNER)[-1][2]
+    labels = set(await card_labels(app))
+    assert {"Allow once", "Reject"} <= labels and "Allow always" not in labels
+    refused = await app.desktop_permissions.decide(row["id"], "always", via="dashboard")
+    assert refused == (False, "this one is always asked")
+    await tap(app, "once")
+    made = fake.sent("POST", "/calendars")
+    assert len(made) == 1 and json.loads(fake.bodies[fake.requests.index(made[0])])["summary"] == "Dom - Louis"
+    mine = await app.google.own_calendars()
+    assert [item["name"] for item in mine] == ["Dom - Louis"]
+    assert "Created the calendar 'Dom - Louis'" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+    # The id is kept encrypted, never as plain text in the database.
+    assert mine[0]["id"] not in database_text(app)
+    # Asked again for the next one: Allow was never saved.
+    await _calendar({"action": "create_calendar", "name": "Dom - Planning"}, owner_ctx(app))
+    await pending(app)
+    await tap(app, "reject")
+    assert len(fake.sent("POST", "/calendars")) == 1
+    # The same name twice, and a name that is not one, never reach a card.
+    assert "already has a calendar" in await _calendar({"action": "create_calendar", "name": "dom - louis"}, owner_ctx(app))
+    assert (await _calendar({"action": "create_calendar", "name": "  "}, owner_ctx(app))).startswith("error")
+    assert not await app.desktop_permissions.pending_requests()
+
+
+async def test_w1_allow_is_not_a_policy_for_creating_a_calendar(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    refused = await client.post("/api/access/policy", headers=HEADERS, json={"action": "calendar_create", "policy": "allow"})
+    assert refused.status_code == 409
+    await app.store.set_desktop_action_policy("calendar_create", "allow", "2026-11-27T00:00:00+00:00")  # even if it got stored
+    assert (await app.desktop_permissions.get_policies())["calendar_create"] == "ask"
+    fake.calendars.clear()
+    await _calendar({"action": "create_calendar", "name": "Dom - Louis"}, owner_ctx(app))
+    await pending(app)  # still asks
+    await tap(app, "reject")
+    assert not fake.sent("POST", "/calendars")
+    view = (await client.get("/api/access", headers=HEADERS)).json()
+    assert next(a for a in view["actions"] if a["id"] == "calendar_create")["asks_every_time"] is True
+
+
+async def test_w1_a_calendar_that_may_have_been_made_is_not_made_twice(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    await app.google.forget_calendar(DOM_CAL)
+    fake.insert_status = 500
+    await _calendar({"action": "create_calendar", "name": "Dom - Louis"}, owner_ctx(app))
+    await tap(app, "once")
+    assert len(fake.sent("POST", "/calendars")) == 1  # no retry after Google may have acted
+    assert await app.google.own_calendars() == []
+    assert "uncertain" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+
+
+async def test_w1_a_write_to_the_owners_primary_calendar_or_any_other_is_refused(setup):
+    app, fake, client = await ready(setup, "calendar_write", "calendar_read")
+    fake.events = [event("e9", "Retro", "2099-03-04T10:00:00+00:00", "2099-03-04T11:00:00+00:00")]
+    ctx = owner_ctx(app)
+    for calendar in ("primary", "someone@example.org", "other@group.calendar.example.org"):
+        for args in (
+            {"action": "add", "title": "Nope", "start": "2099-03-02T15:00"},
+            {"action": "move", "event_id": "e9", "start": "2099-03-04T14:00"},
+            {"action": "delete", "event_id": "e9"},
+        ):
+            out = await _calendar({**args, "calendar": calendar}, ctx)
+            assert out.startswith("error: Dom writes only to calendars he made") and "read-only" in out and "Dom - Test" in out
+    assert not await app.desktop_permissions.pending_requests()
+    assert not fake.sent("POST", "/events") and not fake.sent("PATCH", "/e9") and not fake.sent("DELETE", "/e9")
+    # With none of his own yet, the message says to make one; naming his by name or id works.
+    await app.google.forget_calendar(DOM_CAL)
+    assert "create_calendar makes one" in await _calendar({"action": "add", "title": "x", "start": "2099-03-02T15:00"}, ctx)
+    await app.google.keep_calendar(DOM_CAL, "Dom - Test")
+    assert "Asked the owner" in await _calendar({"action": "add", "title": "x", "start": "2099-03-02T15:00", "calendar": "dom - test"}, ctx)
+    await tap(app, "once")
+    assert [r.url.path for r in fake.sent("POST", "/events")] == [f"/calendar/v3/calendars/{DOM_CAL}/events"]
+
+
+async def test_w1_the_owners_own_calendar_is_still_read_as_before_and_his_are_readable_too(setup):
+    app, fake, client = await ready(setup, "calendar_read", "calendar_write")
+    fake.events = [event("e1", "Dentist", "2099-03-02T15:00:00+00:00", "2099-03-02T16:00:00+00:00")]
+    ctx = owner_ctx(app)
+    assert "Dentist" in await _calendar({"action": "list", "start": "2099-03-02", "end": "2099-03-03"}, ctx)
+    assert fake.requests[-1].url.path.endswith("/calendars/primary/events")
+    assert "Dentist" in await _calendar({"action": "list", "start": "2099-03-02", "end": "2099-03-03", "calendar": "Dom - Test"}, ctx)
+    assert DOM_CAL in fake.requests[-1].url.path
+    assert (await _calendar({"action": "list", "calendar": "nobody@example.org"}, ctx)).startswith("error: calendar must be primary")
+    assert DOM_CAL in await _calendar({"action": "calendars"}, ctx)
+
+
+async def test_w1_nudges_are_created_moved_and_cancelled_with_the_event(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    ctx = owner_ctx(app)
+    await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00", "nudge_minutes": 30}, ctx)
+    await pending(app)
+    assert "Nudge: reminds you 30 minutes before" in app.bot.of("send", OWNER)[-1][2]
+    assert not await reminders_of(app)  # not until it is approved and made
+    await tap(app, "once")
+    (reminder,) = await reminders_of(app)
+    assert str(reminder["chat_id"]) == str(OWNER) and "Dentist" in reminder["text"] and "15:00" in reminder["text"]
+    assert reminder["due_at"].startswith("2099-03-02T14:30") or reminder["due_at"].startswith("2099-03-02T06:30")  # 15:00 in the owner's zone
+    first_due = reminder["due_at"]
+    (key,) = (await app.google._book())["nudges"]
+    event_id = key.split("/")[1]
+    fake.events = [event(event_id, "Dentist", "2099-03-02T15:00:00+00:00", "2099-03-02T16:00:00+00:00")]
+
+    # Moving it moves the reminder (the old one is cancelled, a new one made 30 minutes before the new time).
+    await _calendar({"action": "move", "calendar": "Dom - Test", "event_id": event_id, "start": "2099-03-04T09:00"}, ctx)
+    await pending(app)
+    assert "Nudge: moves with it, 30 minutes before" in app.bot.of("send", OWNER)[-1][2]
+    await tap(app, "once")
+    (moved,) = await reminders_of(app)
+    assert moved["id"] != reminder["id"] and moved["due_at"] != first_due and "04 Mar" in moved["text"]
+    assert (await app.google._book())["nudges"][key]["reminder"] == moved["id"]
+
+    # A new time for the nudge replaces the old one; 0 takes it off.
+    await _calendar({"action": "move", "event_id": event_id, "start": "2099-03-04T09:00", "nudge_minutes": 0}, ctx)
+    await pending(app)
+    assert "Nudge: removed" in app.bot.of("send", OWNER)[-1][2]
+    await tap(app, "once")
+    assert not await reminders_of(app) and not (await app.google._book())["nudges"]
+
+    # Deleting the event cancels its reminder.
+    await _calendar({"action": "move", "event_id": event_id, "start": "2099-03-05T09:00", "nudge_minutes": 60}, ctx)
+    await tap(app, "once")
+    assert len(await reminders_of(app)) == 1
+    await _calendar({"action": "delete", "event_id": event_id}, ctx)
+    await tap(app, "once")
+    assert not await reminders_of(app) and not (await app.google._book())["nudges"]
+    assert "Deleted 'Dentist'" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+
+
+async def test_w1_a_nudge_that_is_already_past_is_refused_before_a_card_and_a_full_list_is_said(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    ctx = owner_ctx(app)
+    out = await _calendar({"action": "add", "title": "Soon", "start": "2000-01-01T10:00", "nudge_minutes": 30}, ctx)
+    assert out.startswith("error") and "already passed" in out
+    assert not await app.desktop_permissions.pending_requests()
+    for bad in (-1, 10081, "30", 2.5, True):
+        assert (await _calendar({"action": "add", "title": "x", "start": "2099-03-02T15:00", "nudge_minutes": bad}, ctx)).startswith("error")
+    assert not await app.desktop_permissions.pending_requests()
+
+
+async def test_w1_a_nudge_that_cannot_be_made_does_not_undo_the_event(setup, monkeypatch):
+    app, fake, client = await ready(setup, "calendar_write")
+
+    async def full(*args, **kwargs):
+        raise ValueError("at most 25 active reminders")
+
+    monkeypatch.setattr(app.dispatch.reminders, "create", full)
+    await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00", "nudge_minutes": 30}, owner_ctx(app))
+    await tap(app, "once")
+    assert len(fake.sent("POST", "/events")) == 1
+    assert "No nudge was set: at most 25 active reminders" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+    assert not (await app.google._book())["nudges"]
+
+
+async def test_w1_a_connection_without_the_new_scope_degrades_gracefully(setup):
+    old = " ".join(scope for scope in SCOPES if scope != SCOPE_APP_CALENDAR)
+    app, fake, client = await ready(setup, scope=old)
+    view = (await client.get("/api/integrations/google", headers=HEADERS)).json()
+    assert view["status"] == "connected" and view["own_calendars_granted"] is False and view["calendars"] == []
+    assert {s["id"]: s["granted"] for s in view["switches"]}["calendar_write"] is False
+    assert {s["id"]: s["granted"] for s in view["switches"]}["calendar_read"] is True
+    assert (await client.post("/api/integrations/google/switch", headers=HEADERS, json={"id": "calendar_write", "on": True})).status_code == 409
+    await app.google.set_switch("calendar_read", True)
+    await app.google._save(switches={**(await app.google.state())["switches"], "calendar_write": True})  # on from before the scope existed
+    tool = next(t for t in await offered(app, "owner_dm") if t.name == "calendar")
+    assert tool.schema["properties"]["action"]["enum"] == ["calendars", "list", "freebusy"]
+    ctx = owner_ctx(app)
+    for action in ("create_calendar", "add", "move", "delete"):
+        assert (await _calendar({"action": action, "name": "x", "title": "x", "start": "2099-03-02T15:00", "event_id": "e"}, ctx)).startswith(
+            "error: that calendar action is not available")
+    assert not await app.desktop_permissions.pending_requests()
+    fake.events = [event("e1", "Dentist", "2099-03-02T15:00:00+00:00", "2099-03-02T16:00:00+00:00")]
+    assert "Dentist" in await _calendar({"action": "list", "start": "2099-03-02", "end": "2099-03-03"}, ctx)  # reading is untouched
+    listed = await client.get("/api/integrations/google/calendars", headers=HEADERS)
+    assert listed.status_code == 200 and listed.json() == {"calendars": []}
+    assert (await client.post("/api/integrations/google/calendars/remove", headers=HEADERS, json={"id": DOM_CAL})).status_code == 409
+
+
+async def test_w1_nothing_about_dom_s_calendars_reaches_groups_or_friends(setup):
+    app, fake, client = await ready(setup, "calendar_read", "calendar_write")
+    for scope, chat in (("group", GROUP), ("friend_dm", FRIEND)):
+        assert await offered(app, scope) == []
+        ctx = owner_ctx(app, scope=scope, chat_id=chat, sender_id=FRIEND)
+        for action in ("calendars", "list", "create_calendar", "add"):
+            assert (await _calendar({"action": action, "name": "x", "title": "x", "start": "2099-03-02T15:00"}, ctx)).startswith(
+                "error: the calendar is available only in the owner's DM")
+        assert await app.google.turn_note(scope, chat) == ""
+    assert not fake.sent("POST", "/events") and not await app.desktop_permissions.pending_requests()
+    # A nudge is an ordinary reminder of the owner's: it belongs to the owner DM and nothing else.
+    await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00", "nudge_minutes": 15}, owner_ctx(app))
+    await tap(app, "once")
+    assert {str(r["chat_id"]) for r in await reminders_of(app)} == {str(OWNER)}
+
+
+async def test_w1_the_dashboard_lists_dom_s_calendars_and_removes_one_after_a_confirm(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00", "nudge_minutes": 30}, owner_ctx(app))
+    await tap(app, "once")
+    view = (await client.get("/api/integrations/google", headers=HEADERS)).json()
+    assert view["own_calendars_granted"] is True and view["calendars"] == [{"id": DOM_CAL, "name": "Dom - Test"}]
+    fake.events = [event("e1", "Dentist", "2099-03-02T15:00:00+00:00", "2099-03-02T16:00:00+00:00")]
+    rows = (await client.get("/api/integrations/google/calendars", headers=HEADERS)).json()["calendars"]
+    assert rows == [{"id": DOM_CAL, "name": "Dom - Test", "color": "#16a765", "upcoming": 1, "more": False}]
+    assert await reminders_of(app)
+    # Only a calendar Dom made can be named, and nothing is deleted for another one.
+    refused = await client.post("/api/integrations/google/calendars/remove", headers=HEADERS, json={"id": "primary"})
+    assert refused.status_code == 409 and not fake.sent("DELETE", "/primary")
+    removed = await client.post("/api/integrations/google/calendars/remove", headers=HEADERS, json={"id": DOM_CAL})
+    assert removed.status_code == 200 and removed.json()["calendars"] == []
+    assert len(fake.sent("DELETE", DOM_CAL)) == 1 and DOM_CAL not in fake.calendars
+    assert not await reminders_of(app) and not (await app.google._book())["nudges"]
+    # Without the owner's dashboard auth nothing happens.
+    assert (await client.post("/api/integrations/google/calendars/remove", json={"id": DOM_CAL})).status_code in (401, 403)
+
+
+async def test_w1_a_calendar_google_cannot_count_still_shows_and_a_missing_one_is_forgotten_on_removal(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    fake.statuses = []
+    rows = (await client.get("/api/integrations/google/calendars", headers=HEADERS)).json()["calendars"]
+    assert rows[0]["name"] == "Dom - Test"
+    fake.calendars.pop(DOM_CAL)  # gone at Google already: its delete answers 204 in the fake, and a 404 is allowed too
+    assert (await client.post("/api/integrations/google/calendars/remove", headers=HEADERS, json={"id": DOM_CAL})).status_code == 200
+    assert await app.google.own_calendars() == []
+
+
+async def test_w1_disconnecting_keeps_the_list_so_the_same_account_picks_it_up_again(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    await app.google.disconnect()
+    assert [c["id"] for c in await app.google.own_calendars()] == [DOM_CAL]
+    assert (await app.google.view())["own_calendars_granted"] is False

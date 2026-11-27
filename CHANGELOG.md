@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Dom keeps his own calendars.** Google now also asks for `calendar.app.created`, and Dom's calendar writes go only to calendars he made himself, never to your primary calendar. He asks you with a card (Reject, Allow once, never Allow always) before making each new one, keeps their ids encrypted, and code refuses any other target before a card is sent. An event he adds or moves can carry `nudge_minutes`: he reminds you before it through the ordinary reminders in your DM only, and moving or deleting the event moves or cancels the reminder. Settings → Services → Google lists his calendars with colour and upcoming events, and a trash button deletes one at Google after a confirm. Connections made before this one keep reading and everything else, and the card says "Reconnect to let Dom keep his own calendars" until Google grants the scope; add it to your consent screen first.
+
 ## [0.8.5] - 2026-11-27
 
 Dom gets hands, a world of his own and a window into how he thinks. He can browse for you behind per-site approvals, fill saved logins without ever seeing the password, ask you for a secret through a private form, and read your Calendar and Gmail with every change on a card. He has a life sheet with places and routines, a Talk page in the dashboard with a full debug trace of every turn, an owner-DM lane that never waits behind a group, an optional morning plan and evening wrap-up, and video notes whose faces finally move.
