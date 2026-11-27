@@ -238,13 +238,12 @@ async def _finish_database(
             conn.execute("UPDATE people_identities SET profile_path = ? WHERE profile_path = ?", (new, old))
         # Imported history is old news: without this every chat looks fully unread and Dom's first
         # catch-up would answer months-old messages in every group.
-        # (History from before a bot change counts only from the chat's current run of message ids.)
+        # (History from before a bot change is set aside first, so only the latest run of message ids counts.)
         begin_eras(conn, detect_eras(conn), datetime.now(timezone.utc).isoformat())
         conn.execute(
             "UPDATE chats SET last_read_msg_id = "
-            "(SELECT MAX(msg_id) FROM messages m WHERE m.chat_id = chats.chat_id AND m.id >= chats.era_row) "
-            "WHERE EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = chats.chat_id AND m.msg_id IS NOT NULL "
-            "AND m.id >= chats.era_row)"
+            "(SELECT MAX(msg_id) FROM messages m WHERE m.chat_id = chats.chat_id) "
+            "WHERE EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = chats.chat_id AND m.msg_id IS NOT NULL)"
         )
         # Likewise the background memory pass starts from now, not from months of imported history.
         conn.execute("UPDATE chats SET memory_cursor_msg_id = COALESCE(last_read_msg_id, memory_cursor_msg_id)")

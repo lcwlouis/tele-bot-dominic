@@ -150,9 +150,8 @@ async def load(
     dropped = _drop_count(rows, tokens, config)
     if not dropped:
         return Window(rows, tokens, trim_seq=trims)
-    cursor, era = await store.get_memory_cursor(chat_id), await store.get_era_row(chat_id)
-    # Rows from an earlier bot (before the era) were never memorised and never will be: they don't hold a trim back.
-    if any(m.role != "event" and m.msg_id is not None and m.id >= era and m.msg_id > cursor for m in rows[:dropped]):
+    cursor = await store.get_memory_cursor(chat_id)
+    if any(m.role != "event" and m.msg_id is not None and m.msg_id > cursor for m in rows[:dropped]):
         return Window(rows, tokens, blocked=True, trim_seq=trims)
     first = rows[dropped]
     trims += 1

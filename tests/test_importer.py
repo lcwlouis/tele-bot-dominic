@@ -258,7 +258,8 @@ def test_imported_history_counts_only_from_the_latest_run_of_message_ids(src, ho
         )
     import_v2(src, home, OWNER)
     with sqlite3.connect(home / "state.db") as conn:
-        read, cursor, era = conn.execute(
-            f"SELECT last_read_msg_id, memory_cursor_msg_id, era_row FROM chats WHERE chat_id = '{GROUP}'").fetchone()
-        first_new = conn.execute(f"SELECT id FROM messages WHERE chat_id = '{GROUP}' AND msg_id = 2").fetchone()[0]
-    assert (read, cursor, era) == (3, 3, first_new)  # not read up to 3500, and none of the new rows left unread
+        read, cursor = conn.execute(
+            f"SELECT last_read_msg_id, memory_cursor_msg_id FROM chats WHERE chat_id = '{GROUP}'").fetchone()
+        ids = [r[0] for r in conn.execute(f"SELECT msg_id FROM messages WHERE chat_id = '{GROUP}' ORDER BY id")]
+    assert (read, cursor) == (3, 3)  # not read up to 3500, and none of the new rows left unread
+    assert ids == [-3500, -1, 2, 3]  # the old run (1, 3500) is set aside, in order

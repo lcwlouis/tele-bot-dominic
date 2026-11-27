@@ -103,12 +103,13 @@ publishes the owner command menu. Send `/wake` and then a message to try it.
 
 Dom remembers which bot his database talks to. A new bot token (a new handle) makes Telegram
 restart every chat's message numbers, which would leave old read markers and memory cursors
-above every new message. At each start Dom looks for chats whose numbers dropped (so a switch
-made before he noticed is repaired too) and, when the stored bot id differs, treats everything
-saved so far as the old bot's. Each affected chat's current run of numbers starts over: old
-rows are never unread and never memorised, markers and cursors above the new numbers go back
-to 0, and a note lands in your DM history. A chat the new bot has not written to yet starts
-over when its first message arrives. The old bot's history stays.
+above every new message and let a new message numbered like an old one be lost. At each start
+Dom looks for chats whose numbers dropped (so a switch made before he noticed is repaired too)
+and, when the stored bot id differs, treats everything saved so far as the old bot's. The old
+rows move to negative message numbers, in order: they stay in the history but are never unread,
+never memorised and can't be replied to. Markers and cursors above the new numbers go back to
+0, and a note lands in your DM history. A chat the new bot has not written to yet is handled
+when its first message arrives.
 
 A new group or a stranger's DM starts pending. Dom sends an approval request to
 the owner, with the chat's Telegram ID and the first message, and stays silent in

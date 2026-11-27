@@ -207,13 +207,13 @@ async def test_a_due_trim_asks_for_a_pass_and_the_trim_follows_it_in_the_next_tu
     assert await app.store.get_memory_cursor(GROUP) >= 30  # the pass read everything before anything was dropped
     first = first_id(turn_requests(app)[0])
     assert first == "1"
-    await add(app, 31)
+    await add(app, 6031)  # above the fake bot's own ids (it numbers its sends from 5000)
     app.dispatch.now.advance(minutes=1)
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
     trimmed = first_id(turn_requests(app)[1])
     assert int(trimmed) > 1
-    await add(app, 32)
+    await add(app, 6032)
     app.dispatch.now.advance(minutes=1)
     await app.dispatch.tick()
     await drain_dispatch(app.dispatch)
