@@ -225,7 +225,7 @@ class Openers:
             return await dispatch.turn_allowed(chat_id, scope)
 
         opener_note = checkin_opener_note(goal_checkin) if (owner_dm and goal_checkin is not None) else NOTE
-        with model_request("chat", chat_id, allowed):
+        with model_request("chat", chat_id, allowed, unprompted=True):
             await check_model_allowed()
             if scope == "group" and not await self._group_can_send(chat_id):
                 return

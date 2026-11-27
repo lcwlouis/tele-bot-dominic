@@ -101,15 +101,18 @@ class _Request:
     kind: Kind
     chat_id: int | None
     allowed: Callable[[], Awaitable[bool]]
+    unprompted: bool = False  # a turn Dom starts himself (an opener, a noticing), not one a message asked for
 
 
 _request: ContextVar[_Request | None] = ContextVar("model_request", default=None)
 
 
 @contextmanager
-def model_request(kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]]) -> Iterator[None]:
+def model_request(
+    kind: Kind, chat_id: int | None, allowed: Callable[[], Awaitable[bool]], *, unprompted: bool = False,
+) -> Iterator[None]:
     """Carry request attribution and approval through tool rounds, retries and fallback."""
-    token = _request.set(_Request(kind, chat_id, allowed))
+    token = _request.set(_Request(kind, chat_id, allowed, unprompted))
     try:
         yield
     finally:
@@ -120,6 +123,12 @@ def request_chat_id() -> int | None:
     """The chat the model request in progress is for, or None outside a request."""
     request = _request.get()
     return request.chat_id if request is not None else None
+
+
+def request_unprompted() -> bool:
+    """Whether the model request in progress is for a turn Dom started himself."""
+    request = _request.get()
+    return request is not None and request.unprompted
 
 
 def request_kind(default: Kind) -> Kind:

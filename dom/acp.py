@@ -33,7 +33,7 @@ from uuid import uuid4
 
 from dom import modalities, turn_log
 from dom.config import ACP_COMMANDS, ACP_LABELS, ACP_NO_TOOLS_OFF, AcpAgent, AcpName, Config, ProviderEndpoint
-from dom.usage import UsageRecorder, check_model_allowed, request_chat_id, request_kind
+from dom.usage import UsageRecorder, check_model_allowed, request_chat_id, request_kind, request_unprompted
 
 log = logging.getLogger("dom.acp")
 
@@ -98,7 +98,7 @@ def launch(config: Config, name: AcpName) -> tuple[list[str], dict[str, str], st
     if agent.host:
         box = f"/tmp/dom-acp-{uuid4().hex[:16]}"
         run = shlex.join(["env", *(f"{key}={value}" for key, value in switches.items()), *command])
-        remote = f"d={box}; mkdir -m 700 \"$d\" && trap 'cd /; rmdir \"$d\"' EXIT && cd \"$d\" && {run}"
+        remote = f"d={box}; mkdir -m 700 \"$d\" && trap 'cd /; rm -rf \"$d\"' EXIT && cd \"$d\" && {run}"
         argv = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", agent.host, remote]
         return argv, env, box
     env.update(switches)
@@ -380,7 +380,8 @@ class AcpClient:
         owner = self.usage.store.owner_id if self.usage is not None else None
         if owner is None or chat_id != owner:
             raise AcpNotAllowed(f"{ACP_LABELS[self.name]} serves the owner's DM only")
-        if request_kind(self.kind) not in SERVED_KINDS[self.kind]:  # background work under the owner's chat id
+        if request_kind(self.kind) not in SERVED_KINDS[self.kind] or request_unprompted():
+            # background work under the owner's chat id, or a turn Dom started himself (an opener, a noticing)
             raise AcpNotAllowed(f"{ACP_LABELS[self.name]} serves the owner's DM turns only")
         if reason := ACP_NO_TOOLS_OFF.get(self.name):
             log.warning("%s agent not started: %s", self.name, reason)

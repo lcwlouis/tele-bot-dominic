@@ -204,7 +204,7 @@ def test_a_remote_host_runs_the_same_command_over_ssh_with_the_tool_switches_as_
     assert argv[:-1] == ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "studio-mac"]
     config = json.dumps(acp.CODEX_CONFIG)
     assert argv[-1] == (
-        f"d={box}; mkdir -m 700 \"$d\" && trap 'cd /; rmdir \"$d\"' EXIT && cd \"$d\" && "
+        f"d={box}; mkdir -m 700 \"$d\" && trap 'cd /; rm -rf \"$d\"' EXIT && cd \"$d\" && "
         f"env INITIAL_AGENT_MODE=read-only {shlex.quote('CODEX_CONFIG=' + config)} codex-acp"
     )
 
@@ -614,11 +614,11 @@ def test_tool_call_arguments_may_be_an_object_or_a_json_string():
     assert message["tool_calls"][0]["function"]["arguments"] == "{}"
 
 
-async def refused_in(make_app, tmp_path, role, kind, chat_id):
+async def refused_in(make_app, tmp_path, role, kind, chat_id, *, unprompted=False):
     app = make_app()
     config, log = agent_config(app, tmp_path)
     client = acp.acp_clients(config, role, app.dispatch.usage)[0]
-    with model_request(kind, chat_id, allowed):
+    with model_request(kind, chat_id, allowed, unprompted=unprompted):
         try:
             await client.complete([{"role": "user", "content": "hi"}], [])
         except AcpNotAllowed:
@@ -648,3 +648,17 @@ async def test_the_chat_kinds_do_not_cross_roles(make_app, tmp_path):
 @pytest.mark.parametrize("role,kind", [("escalation", "escalation"), ("drafting", "chat"), ("drafting", "escalation")])
 async def test_an_owner_dm_turns_escalation_and_drafting_are_served(make_app, tmp_path, role, kind):
     assert not await refused_in(make_app, tmp_path, role, kind, OWNER)
+
+
+@pytest.mark.parametrize("role,kind", [("escalation", "escalation"), ("drafting", "chat"), ("drafting", "escalation")])
+async def test_a_turn_dom_started_himself_in_the_owners_dm_never_reaches_an_agent(make_app, tmp_path, role, kind):
+    """An opener or a noticing runs a tool-capable owner-DM turn that no message asked for (dom/openers.py)."""
+    assert await refused_in(make_app, tmp_path, role, kind, OWNER, unprompted=True)
+
+
+def test_the_remote_directory_is_removed_even_when_the_agent_leaves_files_in_it(tmp_path):
+    script = tmp_path / "litter.py"
+    script.write_text("open('left-behind.txt', 'w').write('x')\n")
+    argv, _, session_cwd = launch(cfg(tmp_path, claude={"enabled": True, "host": "mac", "command": sys.executable, "args": [str(script)]}), "claude")
+    assert subprocess.run(["sh", "-c", argv[-1]], check=True).returncode == 0
+    assert not Path(session_cwd).exists()

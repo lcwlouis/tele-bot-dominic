@@ -759,7 +759,7 @@ class Noticings:
                 habits = read_habits(app.home)
                 window = await app.dispatch._window(owner)
                 until = app.dispatch.now() + timedelta(minutes=app.dispatch.presence.session_minutes(habits))
-            with model_request("chat", owner, lambda: app.dispatch.turn_allowed(owner, "owner_dm")):
+            with model_request("chat", owner, lambda: app.dispatch.turn_allowed(owner, "owner_dm"), unprompted=True):
                 await check_model_allowed()
                 actions = await app.dispatch._compose_turn(
                     owner, "owner_dm", None, None, window, until, 0, False, habits, extra_note=note,
