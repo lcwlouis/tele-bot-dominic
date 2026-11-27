@@ -220,7 +220,7 @@ class Card:
         return "\n".join([*self.lines, *([f"Preview: {self.preview}"] if self.preview else [])])
 
 
-async def _govern(g: GoogleIntegration, action: str, switch: str, card: Card, perform) -> str:
+async def _govern(g: GoogleIntegration, action: str, switch: str, card: Card, perform, *, tag: str = "") -> str:
     """The approval path every Google change takes: the policy, a card the owner can see in full, and a guard that
     rechecks the switch and the connection immediately before it runs."""
     ticket = await g.ticket(switch)
@@ -231,7 +231,7 @@ async def _govern(g: GoogleIntegration, action: str, switch: str, card: Card, pe
 
     return await g.app.desktop_permissions.run_governed(
         action, detail=card.detail(), lines=card.telegram(), dashboard_only=not card.fits(),
-        perform=run, guard=lambda: g.permits(ticket),
+        perform=run, guard=lambda: g.permits(ticket), tag=tag,
     )
 
 
@@ -270,9 +270,23 @@ def _need_id(args: dict) -> str:
 
 
 def _own_calendar(mine: list[dict[str, str]], ref: object) -> dict[str, str] | None:
-    """One of the calendars Dom made, named by its id or its name."""
+    """One of the calendars Dom made, named by its id (first) or its name. `primary` is always the owner's, never his."""
     text = str(ref or "").strip()
-    return next((item for item in mine if text == item["id"] or text.casefold() == item["name"].casefold()), None)
+    if text.casefold() == "primary":
+        return None
+    return next((item for item in mine if text == item["id"]), None) or next(
+        (item for item in mine if text.casefold() == item["name"].casefold()), None,
+    )
+
+
+async def _on_calendar(g: GoogleIntegration, calendar: dict[str, str], work) -> str:
+    """Run an approved write on one of Dom's calendars with that calendar locked, and only if it is still his: the card
+    was made before the wait, and the owner may have removed the calendar since. The lock also keeps a move and a delete
+    of the same event from interleaving their reminders. Only the calls of that one calendar wait on it."""
+    async with g.calendar_lock(calendar["id"]):
+        if all(item["id"] != calendar["id"] for item in await g.own_calendars()):
+            return f"error: Dom no longer has the calendar '{calendar['name']}', so nothing was changed."
+        return await work()
 
 
 def _refusal(mine: list[dict[str, str]]) -> str:
@@ -374,7 +388,7 @@ async def _calendar(args: dict, ctx: TurnCtx) -> str:
 async def _read_calendar(g: GoogleIntegration, args: dict, zone: ZoneInfo, action: str) -> str:
     start, end = _range(args, zone)
     calendar_id = "primary"  # the owner's own calendar, unless one of Dom's is named
-    if str(args.get("calendar") or "").strip() and str(args["calendar"]).strip() != "primary":
+    if str(args.get("calendar") or "").strip() and str(args["calendar"]).strip().casefold() != "primary":
         mine = await g.own_calendars()
         if (found := _own_calendar(mine, args["calendar"])) is None:
             raise ValueError("calendar must be primary (the owner's) or one of Dom's: " + (", ".join(f"'{c['name']}'" for c in mine) or "none yet") + ".")
@@ -401,6 +415,8 @@ async def _create_calendar(g: GoogleIntegration, args: dict, zone: ZoneInfo) -> 
         raise ValueError("name is required.")
     if len(name) > CALENDAR_NAME_LIMIT:
         raise ValueError(f"name is too long: {CALENDAR_NAME_LIMIT} characters at most.")
+    if name.casefold() == "primary" or _ADDRESS.fullmatch(name):
+        raise ValueError("name cannot be 'primary' or an email address: those name the owner's own calendar.")
     mine = await g.own_calendars()
     if any(item["name"].casefold() == name.casefold() for item in mine):
         raise ValueError(f"Dom already has a calendar called '{name}'.")
@@ -409,19 +425,26 @@ async def _create_calendar(g: GoogleIntegration, args: dict, zone: ZoneInfo) -> 
     lines = [f"Create calendar: {name}", f"Zone: {zone.key}", "Dom will write only to calendars he made. You can remove it in Settings."]
 
     async def perform(ticket: Ticket) -> str:
-        try:  # calendars.insert has no idempotency key: a call with no clear answer is never repeated
-            created = await g.call("POST", f"{CALENDAR_API}/calendars", body={"summary": name, "timeZone": zone.key}, ticket=ticket)
+        try:  # the cap and the name again, now that it is approved: another card may have made one while this waited
+            await g.reserve_calendar(name)
         except GoogleError as exc:
-            return _outcome(exc, "Google Calendar")
-        calendar_id = created.get("id") if isinstance(created, dict) else None
-        if not isinstance(calendar_id, str) or not _CALENDAR_ID.fullmatch(calendar_id):
-            return "error: Google did not say which calendar it made. Check Google Calendar."
+            return f"error: {exc} Nothing was made."
         try:
-            await g.keep_calendar(calendar_id, name)
-        except Exception:
-            log.exception("could not keep the id of a calendar Dom made")
-            return f"error: '{name}' was made in Google but Dom could not save it. Remove it in Google Calendar and ask again."
-        return f"Created the calendar '{name}'. Dom can now add events to it."
+            try:  # calendars.insert has no idempotency key: a call with no clear answer is never repeated
+                created = await g.call("POST", f"{CALENDAR_API}/calendars", body={"summary": name, "timeZone": zone.key}, ticket=ticket)
+            except GoogleError as exc:
+                return _outcome(exc, "Google Calendar")
+            calendar_id = created.get("id") if isinstance(created, dict) else None
+            if not isinstance(calendar_id, str) or not _CALENDAR_ID.fullmatch(calendar_id):
+                return "error: Google did not say which calendar it made. Check Google Calendar."
+            try:
+                await g.keep_calendar(calendar_id, name)
+            except Exception:
+                log.exception("could not keep the id of a calendar Dom made")
+                return f"error: '{name}' was made in Google but Dom could not save it. Remove it in Google Calendar and ask again."
+            return f"Created the calendar '{name}'. Dom can now add events to it."
+        finally:
+            g.release_calendar(name)
 
     return await _govern(g, "calendar_create", "calendar_write", Card(lines), perform)
 
@@ -456,22 +479,25 @@ async def _add_event(g: GoogleIntegration, args: dict, zone: ZoneInfo, calendar:
     path = _events_url(calendar["id"])
 
     async def perform(ticket: Ticket) -> str:
-        body: dict[str, Any] = {"id": event_id, "summary": title, "start": _google_time(start), "end": _google_time(end)}
-        if location:
-            body["location"] = location
-        if attendees:
-            body["attendees"] = [{"email": email} for email in attendees]
-        try:
-            await g.call("POST", path, params={"sendUpdates": "none"}, body=body, idempotent=True, ticket=ticket, allow=(409,))
-        except GoogleError as exc:
-            try:  # the answer may have been lost after the event was made
-                await g.call("GET", f"{path}/{event_id}", ticket=ticket)
-            except GoogleError:
-                return _outcome(exc, "the calendar")
-        note = await _set_nudge(g, calendar, event_id, title, start, nudge, zone) if nudge else ""
-        return f"Added '{title}' ({shown}) to '{calendar['name']}' [id {event_id}].{note}"
+        async def work() -> str:
+            body: dict[str, Any] = {"id": event_id, "summary": title, "start": _google_time(start), "end": _google_time(end)}
+            if location:
+                body["location"] = location
+            if attendees:
+                body["attendees"] = [{"email": email} for email in attendees]
+            try:
+                await g.call("POST", path, params={"sendUpdates": "none"}, body=body, idempotent=True, ticket=ticket, allow=(409,))
+            except GoogleError as exc:
+                try:  # the answer may have been lost after the event was made
+                    await g.call("GET", f"{path}/{event_id}", ticket=ticket)
+                except GoogleError:
+                    return _outcome(exc, "the calendar")
+            note = await _set_nudge(g, calendar, event_id, title, start, nudge, zone) if nudge else ""
+            return f"Added '{title}' ({shown}) to '{calendar['name']}' [id {event_id}].{note}"
 
-    return await _govern(g, "calendar_add", "calendar_write", Card(lines, f"{len(attendees)} attendees"), perform)
+        return await _on_calendar(g, calendar, work)
+
+    return await _govern(g, "calendar_add", "calendar_write", Card(lines, f"{len(attendees)} attendees"), perform, tag=calendar["id"])
 
 
 async def _move_event(g: GoogleIntegration, args: dict, calendar: dict[str, str], event_id: str, item: dict, zone: ZoneInfo) -> str:
@@ -500,17 +526,23 @@ async def _move_event(g: GoogleIntegration, args: dict, calendar: dict[str, str]
         lines.append("Nudge: removed")
 
     async def perform(ticket: Ticket) -> str:
-        try:
-            await g.call(
-                "PATCH", f"{_events_url(calendar['id'])}/{event_id}", params={"sendUpdates": "none"},
-                body={"start": _google_time(start), "end": _google_time(end)}, ticket=ticket,
-            )
-        except GoogleError as exc:
-            return _outcome(exc, "the calendar")
-        note = await _set_nudge(g, calendar, event_id, item["title"], start, nudge, zone) if (nudge or kept) else ""
-        return f"Moved '{item['title']}' to {shown}.{note}"
+        async def work() -> str:
+            try:
+                await g.call(
+                    "PATCH", f"{_events_url(calendar['id'])}/{event_id}", params={"sendUpdates": "none"},
+                    body={"start": _google_time(start), "end": _google_time(end)}, ticket=ticket,
+                )
+            except GoogleError as exc:
+                return _outcome(exc, "the calendar")
+            # What the event carries is read again now, under the lock: an earlier move may have changed its nudge since the card.
+            again = await g.nudge_for(calendar["id"], event_id)
+            minutes = asked if asked is not None else (again["minutes"] if again else 0)
+            note = await _set_nudge(g, calendar, event_id, item["title"], start, minutes, zone) if (minutes or again) else ""
+            return f"Moved '{item['title']}' to {shown}.{note}"
 
-    return await _govern(g, "calendar_move", "calendar_write", Card(lines, f"{item['attendee_count']} attendees"), perform)
+        return await _on_calendar(g, calendar, work)
+
+    return await _govern(g, "calendar_move", "calendar_write", Card(lines, f"{item['attendee_count']} attendees"), perform, tag=calendar["id"])
 
 
 async def _delete_event(g: GoogleIntegration, calendar: dict[str, str], event_id: str, item: dict) -> str:
@@ -521,17 +553,20 @@ async def _delete_event(g: GoogleIntegration, calendar: dict[str, str], event_id
     ]
 
     async def perform(ticket: Ticket) -> str:
-        try:
-            await g.call(
-                "DELETE", f"{_events_url(calendar['id'])}/{event_id}", params={"sendUpdates": "none"},
-                ticket=ticket, allow=(410,),  # already gone is what was asked
-            )
-        except GoogleError as exc:
-            return _outcome(exc, "the calendar")
-        await _set_nudge(g, calendar, event_id, item["title"], item["start"], 0, zone)  # its reminder goes with it
-        return f"Deleted '{item['title']}' from '{calendar['name']}'."
+        async def work() -> str:
+            try:
+                await g.call(
+                    "DELETE", f"{_events_url(calendar['id'])}/{event_id}", params={"sendUpdates": "none"},
+                    ticket=ticket, allow=(410,),  # already gone is what was asked
+                )
+            except GoogleError as exc:
+                return _outcome(exc, "the calendar")
+            await _set_nudge(g, calendar, event_id, item["title"], item["start"], 0, zone)  # its reminder goes with it
+            return f"Deleted '{item['title']}' from '{calendar['name']}'."
 
-    return await _govern(g, "calendar_delete", "calendar_write", Card(lines, f"{item['attendee_count']} attendees"), perform)
+        return await _on_calendar(g, calendar, work)
+
+    return await _govern(g, "calendar_delete", "calendar_write", Card(lines, f"{item['attendee_count']} attendees"), perform, tag=calendar["id"])
 
 
 async def _calendar_row(g: GoogleIntegration, item: dict[str, str], now: datetime) -> dict[str, Any]:

@@ -28,11 +28,21 @@ and writing happens only on calendars Dom made.
 
 - **Making one asks every time.** `create_calendar` sends a card (Reject, Allow once). There is no Allow always for it,
   and Allow is not a policy you can set for it: each new calendar is asked once, when Dom first wants it. Dom keeps at
-  most five calendars and refuses a name he already has.
+  most five calendars and refuses a name he already has. The cap and the name are checked again when a card is approved
+  (two cards waiting together cannot make a sixth calendar or the same one twice). The names `primary` and an email
+  address are refused: they name your own calendar.
 - **Code checks the target.** Dom's calendar tool takes the calendar by name or id. Add, move and delete refuse
   anything that is not in the list of calendars he made ("Dom writes only to calendars he made himself"), including your
   primary calendar, before any card is sent. Google enforces the same under this scope. The ids of his calendars are
-  kept in the encrypted secret store (namespace `google`, key `calendars`), not in the database as text.
+  kept in the encrypted secret store (namespace `google`, key `calendars`), not in the database as text. A name is looked
+  up by id first, and `primary` always means your own calendar.
+- **Tied to the Google account.** Google is asked for `openid` only to learn which account connected; Dom keeps a hash of
+  its `sub`, never the ID token. The list of calendars and nudges is kept per account and only the connected account's is
+  shown, counted or written. When a different account connects, the earlier one's calendars are set aside (kept for when
+  it connects again), its nudges are cancelled and an owner event is recorded.
+- **Writes are serialised per calendar.** An approved write runs with that calendar locked, so a move and a delete of one
+  event cannot leave a reminder behind, and it first checks the calendar is still Dom's: removing a calendar cancels the
+  cards still waiting to write to it, and one already approved finds it gone and changes nothing.
 - **Reading.** Dom can list the events of one of his calendars (`calendar` on `list` or `freebusy`) as well as your
   primary calendar, and the `calendars` action lists the calendars he made.
 - **Nudges.** An event Dom adds or moves can carry `nudge_minutes` (1 to 10080). Dom then reminds you that long before it
@@ -46,10 +56,10 @@ and writing happens only on calendars Dom made.
   consent screen first (below).
 - **On the dashboard.** Settings → Services → Google lists Dom's calendars with their colour and the number of upcoming
   events (read from Google when the page opens, so the card itself never waits on Google). The trash button next to one
-  deletes it from your Google account after a confirmation, and cancels its nudges. Colour appears when Google lets Dom
-  read it.
+  deletes it from your Google account after a confirmation, and cancels its nudges. It works with the write switch off
+  (it is your own action) but needs a live connection with the scope. Colour appears when Google lets Dom read it.
 - **Disconnecting** revokes the token but keeps the list of calendars, so connecting the same account again picks them
-  up. The calendars themselves stay in your Google account until you remove them here.
+  up (nothing shows while disconnected). The calendars themselves stay in your Google account until you remove them here.
 - **If Google loses the answer** to "make a calendar" (a timeout), Dom does not try again, and tells you it may or may
   not exist: check Google Calendar before asking again.
 
@@ -60,7 +70,7 @@ and writing happens only on calendars Dom made.
 2. Configure the OAuth consent screen. A personal Google account can keep the app **unverified in production** for
    owner-only use (the consent screen then says the app is unverified; continue past it). Do not leave it in
    *Testing*: Google expires a Testing app's refresh token after seven days.
-3. Add the four scopes:
+3. Add the four scopes (`openid` needs no setup: Google always allows it):
    - `https://www.googleapis.com/auth/calendar.events`
    - `https://www.googleapis.com/auth/calendar.app.created`
    - `https://www.googleapis.com/auth/gmail.readonly`

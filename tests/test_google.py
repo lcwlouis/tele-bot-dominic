@@ -18,7 +18,7 @@ from aiogram.types import CallbackQuery, User
 
 from dom.config import WebConfig, set_dotenv
 from dom.google import (
-    CALENDAR_API, CALLBACK_PATH, GMAIL_API, REVOKE_URL, SCOPE_APP_CALENDAR, SCOPE_CALENDAR, SCOPE_GMAIL_COMPOSE, SCOPE_GMAIL_READ, SCOPES,
+    CALENDAR_API, CALLBACK_PATH, GMAIL_API, REVOKE_URL, SCOPE_APP_CALENDAR, SCOPE_CALENDAR, SCOPE_GMAIL_COMPOSE, SCOPE_GMAIL_READ, SCOPE_OPENID, SCOPES,
     SWITCHES, TOKEN_URL, GoogleError, GoogleIntegration, GoogleSlow,
 )
 from dom.google_tools import _calendar, _gmail, offered
@@ -53,6 +53,9 @@ class FakeGoogle:
         self.events: list[dict] = []
         self.messages: dict[str, dict] = {}
         self.calendars: dict[str, str] = {}  # id -> name, the calendars Dom made
+        self.sub = "account-a"  # which Google account the next connect is
+        self.deleted: set[str] = set()  # events deleted at Google
+        self.delays: dict[str, float] = {}  # "METHOD suffix" -> seconds an answer takes
         self.insert_status = 200
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -67,7 +70,7 @@ class FakeGoogle:
                 self.verifier_ok = digest == self.challenge and form["code"] == CODE
                 return httpx.Response(200, json={
                     "access_token": ACCESS1, "refresh_token": REFRESH, "expires_in": 3599, "scope": self.scope,
-                    "token_type": "Bearer",
+                    "token_type": "Bearer", "id_token": f"h.{_b64(json.dumps({'sub': self.sub}))}.s",
                 })
             if self.revoked:
                 return httpx.Response(400, json={"error": "invalid_grant", "error_description": "Token has been expired or revoked."})
@@ -96,6 +99,10 @@ class FakeGoogle:
             return httpx.Response(200, json={"id": "newevent1"})
         if re.search(r"/calendars/[^/]+/events/", path):
             event_id = path.rsplit("/", 1)[1]
+            if request.method == "DELETE":
+                self.deleted.add(event_id)
+            elif event_id in self.deleted:
+                return httpx.Response(404, json={"error": {"message": "gone"}})
             if request.method == "GET":
                 return httpx.Response(200, json=next(e for e in self.events if e["id"] == event_id))
             return httpx.Response(200 if request.method == "PATCH" else 204, json={"id": event_id} if request.method == "PATCH" else None)
@@ -106,6 +113,13 @@ class FakeGoogle:
         if path.endswith("/users/me/drafts") and request.method == "POST":
             return httpx.Response(200, json={"id": "draft1"})
         return httpx.Response(404, json={"error": {"message": "no route"}})
+
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        """The same answers, after the delay set for the request's method, so two writes can overlap."""
+        response = self(request)
+        if "/calendar" in request.url.path and (wait := self.delays.get(request.method)):
+            await asyncio.sleep(wait)
+        return response
 
     def sent(self, method: str, suffix: str) -> list[httpx.Request]:
         return [r for r in self.requests if r.method == method and r.url.path.endswith(suffix)]
@@ -135,7 +149,7 @@ def setup(make_app):
             "web": WebConfig(enabled=True, bind="127.0.0.1", port=8080, dev_token_env="DEV_DASH_TOKEN", public_url=DASH),
         })
         fake = FakeGoogle()
-        app.google = GoogleIntegration(app, client=httpx.AsyncClient(transport=httpx.MockTransport(fake)))
+        app.google = GoogleIntegration(app, client=httpx.AsyncClient(transport=httpx.MockTransport(fake.handle)))
         web = create_app(app, Auth(app.config))
         client = httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url="http://127.0.0.1:8080")
         built.append(client)
@@ -221,7 +235,7 @@ async def test_connect_uses_pkce_and_stores_tokens_encrypted(setup):
     query = {key: values[0] for key, values in parse_qs(url.query).items()}
     assert f"{url.scheme}://{url.netloc}{url.path}" == "https://accounts.google.com/o/oauth2/v2/auth"
     assert query["redirect_uri"] == "https://dom.example.org/api/integrations/google/callback"
-    assert query["scope"].split() == [SCOPE_CALENDAR, SCOPE_APP_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE]
+    assert query["scope"].split() == [SCOPE_CALENDAR, SCOPE_APP_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE, SCOPE_OPENID]
     assert (query["access_type"], query["prompt"], query["code_challenge_method"]) == ("offline", "consent", "S256")
     assert query["client_id"] == CLIENT_ID and "client_secret" not in query
     cookie = started.headers["set-cookie"].lower()
@@ -1492,8 +1506,165 @@ async def test_w1_a_calendar_google_cannot_count_still_shows_and_a_missing_one_i
     assert await app.google.own_calendars() == []
 
 
-async def test_w1_disconnecting_keeps_the_list_so_the_same_account_picks_it_up_again(setup):
+# ---- v0.8.6 W1 review fixes ----------------------------------------------------------------------------------------
+
+
+async def pending_ids(app, count: int) -> list[int]:
+    async with asyncio.timeout(2):
+        while len(rows := await app.desktop_permissions.pending_requests()) < count:
+            await asyncio.sleep(0.005)
+    return [row["id"] for row in rows]
+
+
+async def test_f1_two_cards_cannot_make_a_sixth_calendar_or_the_same_name_twice(setup):
     app, fake, client = await ready(setup, "calendar_write")
+    for n in range(3):
+        await app.google.keep_calendar(f"extra{n}@h.example.org", f"Extra {n}")  # four in all: one slot left
+    fake.delays = {"POST": 0.05}
+    ctx = owner_ctx(app)
+    for name in ("One", "Two"):  # both pass the check at card time: neither exists yet
+        assert "Asked the owner" in await _calendar({"action": "create_calendar", "name": name}, ctx)
+    first, second = await pending_ids(app, 2)
+    await asyncio.sleep(0.05)
+    await asyncio.gather(*(app.desktop_permissions.decide(i, "once", via="dashboard") for i in (first, second)))
+    await settle(app)
+    assert len(fake.sent("POST", "/calendars")) == 1 and len(await app.google.own_calendars()) == 5
+    assert "Dom keeps at most 5 calendars" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+    # The same name asked twice makes one calendar.
+    await app.google.forget_calendar("extra0@h.example.org")
+    fake.requests.clear()
+    for _ in range(2):
+        await _calendar({"action": "create_calendar", "name": "Same"}, ctx)
+    first, second = await pending_ids(app, 2)
+    await asyncio.sleep(0.05)
+    await asyncio.gather(*(app.desktop_permissions.decide(i, "once", via="dashboard") for i in (first, second)))
+    await settle(app)
+    assert len(fake.sent("POST", "/calendars")) == 1
+    assert [c["name"] for c in await app.google.own_calendars()].count("Same") == 1
+    assert not app.google._making  # the reservations are released
+
+
+async def test_f2_a_move_and_a_delete_of_one_event_cannot_leave_a_reminder_behind(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    ctx = owner_ctx(app)
+    await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00", "nudge_minutes": 30}, ctx)
+    await tap(app, "once")
+    (key,) = (await app.google._book())["nudges"]
+    event_id = key.split("/")[1]
+    fake.events = [event(event_id, "Dentist", "2099-03-02T15:00:00+00:00", "2099-03-02T16:00:00+00:00")]
+    fake.delays = {"PATCH": 0.15}  # the move is still at Google while the delete comes in behind it
+    await _calendar({"action": "move", "event_id": event_id, "start": "2099-03-04T09:00", "nudge_minutes": 45}, ctx)
+    await _calendar({"action": "delete", "event_id": event_id}, ctx)
+    move, delete = await pending_ids(app, 2)
+    await asyncio.sleep(0.05)
+    await asyncio.gather(*(app.desktop_permissions.decide(i, "once", via="dashboard") for i in (move, delete)))
+    await settle(app)
+    assert fake.sent("PATCH", event_id) and fake.sent("DELETE", event_id)
+    assert not await reminders_of(app) and not (await app.google._book())["nudges"]
+    # The other order: the delete lands first, the move finds the event gone and makes no reminder.
+    await _calendar({"action": "add", "title": "Gym", "start": "2099-03-03T15:00", "nudge_minutes": 30}, ctx)
+    await tap(app, "once")
+    (key,) = (await app.google._book())["nudges"]
+    event_id = key.split("/")[1]
+    fake.events = [event(event_id, "Gym", "2099-03-03T15:00:00+00:00", "2099-03-03T16:00:00+00:00")]
+    fake.delays = {}
+    await _calendar({"action": "delete", "event_id": event_id}, ctx)
+    await _calendar({"action": "move", "event_id": event_id, "start": "2099-03-05T09:00", "nudge_minutes": 45}, ctx)
+    delete, move = await pending_ids(app, 2)
+    await app.desktop_permissions.decide(delete, "once", via="dashboard")
+    await asyncio.sleep(0.1)  # the other card is still waiting, so there is nothing to settle yet
+    await app.desktop_permissions.decide(move, "once", via="dashboard")
+    await settle(app)
+    assert not await reminders_of(app) and not (await app.google._book())["nudges"]
+
+
+async def test_f3_removing_a_calendar_cancels_its_waiting_cards_and_a_write_that_waited_finds_it_gone(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    ctx = owner_ctx(app)
+    await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00"}, ctx)
+    row = await pending(app)
+    removed = await client.post("/api/integrations/google/calendars/remove", headers=HEADERS, json={"id": DOM_CAL})
+    assert removed.status_code == 200
+    assert not await app.desktop_permissions.pending_requests()
+    cancelled = [r for r in await app.desktop_permissions.history() if r["id"] == row["id"]]
+    assert cancelled and cancelled[0]["status"] == "cancelled"
+    await settle(app)
+    assert not fake.sent("POST", "/events")
+    # A card for another calendar is left alone.
+    await app.google.keep_calendar("other@h.example.org", "Other")
+    await app.google.keep_calendar(DOM_CAL, "Dom - Test")
+    await _calendar({"action": "add", "title": "Gym", "calendar": "Other", "start": "2099-03-02T15:00"}, ctx)
+    await pending(app)
+    await app.google.remove_calendar(DOM_CAL)
+    assert len(await app.desktop_permissions.pending_requests()) == 1
+    await app.desktop_permissions.cancel_pending(("calendar_add",))
+    await settle(app)
+    # An approval already given, waiting for its turn, finds the calendar removed and changes nothing.
+    await app.google.keep_calendar(DOM_CAL, "Dom - Test")
+    await _calendar({"action": "add", "title": "Late", "calendar": "Dom - Test", "start": "2099-03-02T15:00"}, ctx)
+    row = await pending(app)
+    async with app.google.calendar_lock(DOM_CAL):
+        await app.desktop_permissions.decide(row["id"], "once", via="dashboard")
+        await asyncio.sleep(0.05)  # the write is waiting on the calendar
+        await app.google.forget_calendar(DOM_CAL)
+    await settle(app)
+    assert not fake.sent("POST", "/events")
+    assert "no longer has the calendar" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+
+
+async def test_f4_dom_s_calendars_follow_the_google_account(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    ctx = owner_ctx(app)
+    await _calendar({"action": "add", "title": "Dentist", "start": "2099-03-02T15:00", "nudge_minutes": 30}, ctx)
+    await tap(app, "once")
+    assert len(await reminders_of(app)) == 1
+    assert "account-a" not in database_text(app) and "id_token" not in database_text(app)
     await app.google.disconnect()
+    assert await app.google.own_calendars() == []  # nothing of an account that is not connected shows
+    fake.sub = "account-b"
+    await connect(app, fake, client)
+    assert await app.google.own_calendars() == [] and (await app.google.view())["calendars"] == []
+    assert not await reminders_of(app)  # the earlier account's nudges are cancelled
+    assert "different Google account connected" in str(await app.store.get_recent_chat_window(str(OWNER), 10))
+    for n in range(5):  # the set-aside calendars do not count against this account's five
+        await app.google.keep_calendar(f"b{n}@h.example.org", f"B {n}")
+    assert len(await app.google.own_calendars()) == 5
+    fake.sub = "account-a"
+    await connect(app, fake, client)  # the first account returns: its calendars are back, its nudges are not
     assert [c["id"] for c in await app.google.own_calendars()] == [DOM_CAL]
-    assert (await app.google.view())["own_calendars_granted"] is False
+    assert not (await app.google._book())["nudges"]
+    await app.google.set_switch("calendar_write", True)  # a disconnect turned the switches off
+    # The same account connecting again changes nothing.
+    await _calendar({"action": "add", "title": "Gym", "start": "2099-03-03T15:00", "nudge_minutes": 30}, ctx)
+    await tap(app, "once")
+    await connect(app, fake, client)
+    assert len(await reminders_of(app)) == 1 and len((await app.google._book())["nudges"]) == 1
+
+
+async def test_f5_the_owner_can_remove_a_calendar_with_the_write_switch_off(setup):
+    app, fake, client = await ready(setup, "calendar_write")
+    await app.google.set_switch("calendar_write", False)
+    removed = await client.post("/api/integrations/google/calendars/remove", headers=HEADERS, json={"id": DOM_CAL})
+    assert removed.status_code == 200 and len(fake.sent("DELETE", DOM_CAL)) == 1
+    assert await app.google.own_calendars() == []
+    # It still needs the live connection and the scope.
+    await app.google.keep_calendar(DOM_CAL, "Dom - Test")
+    await app.google.disconnect()
+    assert (await client.post("/api/integrations/google/calendars/remove", headers=HEADERS, json={"id": DOM_CAL})).status_code == 409
+
+
+async def test_f6_primary_and_an_email_cannot_name_a_calendar_and_ids_resolve_first(setup):
+    app, fake, client = await ready(setup, "calendar_read", "calendar_write")
+    ctx = owner_ctx(app)
+    for name in ("primary", "Primary", " PRIMARY ", "owner@example.org"):
+        assert (await _calendar({"action": "create_calendar", "name": name}, ctx)).startswith("error: name cannot be 'primary'")
+    assert not await app.desktop_permissions.pending_requests()
+    # Even a calendar that somehow carries the name never answers to it: `primary` is the owner's.
+    await app.google.keep_calendar("p1@h.example.org", "primary")
+    fake.events = [event("e1", "Dentist", "2099-03-02T15:00:00+00:00", "2099-03-02T16:00:00+00:00")]
+    await _calendar({"action": "list", "calendar": "primary", "start": "2099-03-02", "end": "2099-03-03"}, ctx)
+    assert fake.requests[-1].url.path.endswith("/calendars/primary/events")
+    refused = await _calendar({"action": "add", "title": "x", "start": "2099-03-02T15:00", "calendar": "primary"}, ctx)
+    assert refused.startswith("error: Dom writes only to calendars he made")
+    assert not await app.desktop_permissions.pending_requests()
+    assert "Asked the owner" in await _calendar({"action": "add", "title": "x", "start": "2099-03-02T15:00", "calendar": "p1@h.example.org"}, ctx)

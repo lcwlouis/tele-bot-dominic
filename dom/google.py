@@ -54,9 +54,10 @@ GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 
 SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar.events"
 SCOPE_APP_CALENDAR = "https://www.googleapis.com/auth/calendar.app.created"
+SCOPE_OPENID = "openid"  # only to learn which Google account connected (the `sub`), so Dom's calendars follow the account
 SCOPE_GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPE_GMAIL_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
-SCOPES = (SCOPE_CALENDAR, SCOPE_APP_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE)
+SCOPES = (SCOPE_CALENDAR, SCOPE_APP_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE, SCOPE_OPENID)
 
 # The owner's switches, in the order the dashboard shows them, and the scope each needs.
 SWITCHES: dict[str, tuple[str, str]] = {
@@ -82,6 +83,7 @@ SWITCH_ACTIONS: dict[str, tuple[str, ...]] = {
 ALL_GOOGLE_ACTIONS = ("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft")
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("dom_google_deadline", default=None)
 NAMESPACE, TOKEN_KEY, CALENDARS_KEY = "google", "oauth", "calendars"
+UNKNOWN_ACCOUNT = "unknown"  # a connection made before the account's id was kept
 MAX_CALENDARS = 5  # the calendars Dom may keep at once
 STATE_KEY = "google:state"
 STATE_TTL = 600.0  # seconds a started authorization stays valid
@@ -168,6 +170,8 @@ class GoogleIntegration:
         self._calls: deque[float] = deque()
         self.clock = monotonic  # tests replace these two
         self.wall = time.time
+        self._calendar_locks: dict[str, asyncio.Lock] = {}
+        self._making: set[str] = set()  # names of calendars being made right now
         self.agenda: tuple[float, str] | None = None
         self._agenda_refresh: asyncio.Task[None] | None = None
 
@@ -231,9 +235,9 @@ class GoogleIntegration:
         await self.app.store.record_owner_event(f"Google switch '{switch}' turned {'on' if on else 'off'}")
         return await self.view()
 
-    async def _cancel(self, actions: Iterable[str]) -> None:
+    async def _cancel(self, actions: Iterable[str], *, tag: str | None = None) -> None:
         if actions:
-            await self.app.desktop_permissions.cancel_pending(actions)
+            await self.app.desktop_permissions.cancel_pending(actions, tag=tag)
 
     async def view(self) -> dict[str, Any]:
         """What the Google card shows. Credentials appear only as set or not set."""
@@ -257,20 +261,49 @@ class GoogleIntegration:
         }
 
     # ---- Dom's own calendars: what he made, and the nudges on their events -----------------------------------------
+    #
+    # One encrypted record holds a book per Google account (`books`, by a hash of the account's `sub`) and which account
+    # connected last. Only the connected account's book is ever shown, counted or written; when another account connects,
+    # the old book is set aside (kept for when that account returns) and its nudges are cancelled.
 
-    async def _book(self) -> dict[str, Any]:
-        """`calendars`: [{id, name}] he made. `nudges`: "calendar/event" -> {reminder, minutes}. Anything malformed is dropped."""
+    async def _record(self) -> dict[str, Any]:
         raw = await self.app.secrets.get(NAMESPACE, CALENDARS_KEY)
         raw = raw if isinstance(raw, dict) else {}
-        calendars = [
-            {"id": item["id"], "name": item["name"]} for item in raw.get("calendars") or []
-            if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("name"), str)
-        ]
-        nudges = {
-            key: {"reminder": item["reminder"], "minutes": item["minutes"]} for key, item in (raw.get("nudges") or {}).items()
-            if isinstance(key, str) and isinstance(item, dict) and type(item.get("reminder")) is int and type(item.get("minutes")) is int
-        }
-        return {"calendars": calendars, "nudges": nudges}
+        books_raw = raw.get("books") if isinstance(raw.get("books"), dict) else {}
+        if "calendars" in raw or "nudges" in raw:  # a record from before books were kept per account
+            books_raw = {**books_raw, UNKNOWN_ACCOUNT: raw}
+        books = {}
+        for account, book in books_raw.items():
+            if not isinstance(account, str) or not isinstance(book, dict):
+                continue
+            books[account] = {
+                "calendars": [
+                    {"id": item["id"], "name": item["name"]} for item in book.get("calendars") or []
+                    if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("name"), str)
+                ],
+                "nudges": {
+                    key: {"reminder": item["reminder"], "minutes": item["minutes"]} for key, item in (book.get("nudges") or {}).items()
+                    if isinstance(key, str) and isinstance(item, dict) and type(item.get("reminder")) is int and type(item.get("minutes")) is int
+                },
+            }
+        last = raw.get("last")
+        return {"books": books, "last": last if isinstance(last, str) else None}
+
+    async def _account(self) -> str | None:
+        tokens = await self._tokens()
+        return str(tokens.get("account") or UNKNOWN_ACCOUNT) if tokens else None
+
+    @staticmethod
+    def _empty_book() -> dict[str, Any]:
+        return {"calendars": [], "nudges": {}}
+
+    async def _book(self) -> dict[str, Any]:
+        """The connected account's book: `calendars` [{id, name}] he made, and `nudges` "calendar/event" -> {reminder,
+        minutes}. Empty while disconnected, so nothing of an account that is not connected shows."""
+        account = await self._account()
+        if account is None:
+            return self._empty_book()
+        return (await self._record())["books"].get(account) or self._empty_book()
 
     async def own_calendars(self) -> list[dict[str, str]]:
         return (await self._book())["calendars"]
@@ -281,10 +314,33 @@ class GoogleIntegration:
     async def edit_book(self, change: Callable[[dict[str, Any]], Any]) -> Any:
         """Change what Dom keeps about his calendars: read, change and write back together, with only local work inside."""
         async with self._apply:
-            book = await self._book()
-            result = change(book)
-            await self.app.secrets.put(NAMESPACE, CALENDARS_KEY, book)
+            account = await self._account()
+            if account is None:
+                raise GoogleError("Google is not connected.")
+            record = await self._record()
+            result = change(record["books"].setdefault(account, self._empty_book()))
+            await self.app.secrets.put(NAMESPACE, CALENDARS_KEY, record)
         return result
+
+    def calendar_lock(self, calendar_id: str) -> asyncio.Lock:
+        """Held around everything that changes one of Dom's calendars (a write and its nudge, or its removal), so a move and
+        a delete cannot interleave their reminders, and a calendar removed while a write waits is seen as gone."""
+        return self._calendar_locks.setdefault(calendar_id, asyncio.Lock())
+
+    async def reserve_calendar(self, name: str) -> None:
+        """Take a slot for a calendar about to be made: the cap and the name are checked together with the calendars already
+        made and those being made right now, with nothing awaited between the check and the reservation."""
+        async with self._apply:
+            have = [item["name"] for item in await self.own_calendars()]
+            taken = {*(n.casefold() for n in have), *self._making}
+            if name.casefold() in taken:
+                raise GoogleError(f"Dom already has a calendar called '{name}'.")
+            if len(have) + len(self._making) >= MAX_CALENDARS:
+                raise GoogleError(f"Dom keeps at most {MAX_CALENDARS} calendars: ask the owner to remove one in Settings first.")
+            self._making.add(name.casefold())
+
+    def release_calendar(self, name: str) -> None:
+        self._making.discard(name.casefold())
 
     async def keep_calendar(self, calendar_id: str, name: str) -> None:
         def add(book: dict[str, Any]) -> None:
@@ -304,15 +360,23 @@ class GoogleIntegration:
 
     async def remove_calendar(self, calendar_id: str) -> None:
         """Delete one of Dom's calendars at Google (the owner confirmed on the dashboard), then forget it and cancel its
-        nudges. Only a calendar he made can be named; Google would refuse any other under this scope as well."""
-        if all(item["id"] != calendar_id for item in await self.own_calendars()):
-            raise GoogleError("Dom did not make that calendar.")
+        nudges. An explicit owner action: it works with the write switch off, and needs only a live connection that
+        was granted the scope. Only a calendar he made can be named; Google would refuse any other as well. Cards still
+        waiting to write to it are cancelled first, and a write already approved finds it gone when it runs."""
         state = await self.state()
         if state["status"] != "connected" or SCOPE_APP_CALENDAR not in state["scopes"]:
             raise GoogleError("Google has not granted Dom his own calendars. Connect Google again.")
-        with self.budget(FOREGROUND_SECONDS):
-            await self.call("DELETE", f"{CALENDAR_API}/calendars/{quote(calendar_id, safe='')}", ticket=await self.ticket("calendar_write"), allow=(404, 410))
-        for reminder_id in await self.forget_calendar(calendar_id):
+        if all(item["id"] != calendar_id for item in await self.own_calendars()):
+            raise GoogleError("Dom did not make that calendar.")
+        await self._cancel(("calendar_add", "calendar_move", "calendar_delete"), tag=calendar_id)
+        async with self.calendar_lock(calendar_id):
+            with self.budget(FOREGROUND_SECONDS):
+                await self.call(
+                    "DELETE", f"{CALENDAR_API}/calendars/{quote(calendar_id, safe='')}", ticket=await self.ticket("calendar_write"),
+                    allow=(404, 410),
+                )
+            reminders = await self.forget_calendar(calendar_id)
+        for reminder_id in reminders:
             await self.app.dispatch.reminders.cancel(reminder_id)
         await self.app.store.record_owner_event("Removed one of Dom's Google calendars")
 
@@ -371,13 +435,15 @@ class GoogleIntegration:
             raise GoogleError("Google did not return a refresh token. Remove Dom from your Google account's connected apps and try again.")
         if not scopes:
             raise GoogleError("Google granted none of the permissions Dom asked for.")
+        account = _account_key(data.get("id_token"))
         async with self._apply:
             self._link_epoch += 1
             # Every connection gets its own id, so a refresh or an approval started under an earlier one can tell.
             await self.app.secrets.put(NAMESPACE, TOKEN_KEY, {
                 "refresh_token": refresh, "access_token": access, "expires_at": self.wall() + _lifetime(data),
-                "connection": secrets.token_hex(8),
+                "connection": secrets.token_hex(8), "account": account,
             })
+            set_aside = await self._switch_account(account)
             state_now = await self.state()
             switches = {name: state_now["switches"][name] and SWITCHES[name][0] in scopes for name in SWITCHES}
             await self._save(
@@ -386,7 +452,27 @@ class GoogleIntegration:
             )
         self.agenda = None
         await self._cancel(ALL_GOOGLE_ACTIONS)  # anything waiting was asked of the account before this one
+        if set_aside:  # a different account: the earlier one's calendars stay set aside and its nudges are cancelled
+            for reminder_id in set_aside:
+                await self.app.dispatch.reminders.cancel(reminder_id)
+            await self.app.store.record_owner_event(
+                f"A different Google account connected: Dom's calendars from the earlier one are set aside and {len(set_aside)} nudge(s) cancelled"
+            )
         await self.app.store.record_owner_event("Connected Google (" + ", ".join(sorted(s.rsplit("/", 1)[-1] for s in scopes)) + ")")
+
+    async def _switch_account(self, account: str) -> list[int]:
+        """Called under `_apply` as an account connects: remember it as the last one, and when it is not the one before,
+        empty that one's nudges (their reminder ids come back to be cancelled) and keep its calendars for its return."""
+        record = await self._record()
+        previous, set_aside = record["last"], []
+        if previous is not None and previous != account and previous in record["books"]:
+            nudges = record["books"][previous]["nudges"]
+            set_aside = [item["reminder"] for item in nudges.values()]
+            nudges.clear()
+        if record["last"] != account or set_aside:
+            record["last"] = account
+            await self.app.secrets.put(NAMESPACE, CALENDARS_KEY, record)
+        return set_aside
 
     async def record_failure(self, message: str) -> None:
         async with self._apply:
@@ -686,6 +772,18 @@ class GoogleIntegration:
 
 AGENDA_REFRESH = 900.0  # the agenda is fetched again when older than this
 AGENDA_STALE = 3600.0  # and left out of the turn note when older than this
+
+
+def _account_key(id_token: object) -> str:
+    """Which Google account this is: a hash of the `sub` in the ID token the token endpoint just returned over TLS (no
+    signature check needed for a token received straight from Google). The token itself is never kept."""
+    try:
+        payload = str(id_token).split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        sub = claims.get("sub") if isinstance(claims, dict) else None
+    except (IndexError, ValueError):
+        return UNKNOWN_ACCOUNT
+    return _sha("google-account:" + sub)[:32] if isinstance(sub, str) and sub else UNKNOWN_ACCOUNT
 
 
 def _lifetime(data: dict[str, Any]) -> float:

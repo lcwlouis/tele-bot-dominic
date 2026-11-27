@@ -187,6 +187,8 @@ class DesktopPermissions:
         self._waiters: dict[int, tuple[str, asyncio.Future[str]]] = {}
         # Requests whose card could not show every material detail: only the dashboard may approve them.
         self._dashboard_only: set[int] = set()
+        # Requests that belong to something a later change can take away (a calendar being removed): request id -> tag.
+        self._tags: dict[int, str] = {}
 
     def _now(self) -> str:
         return self.app.dispatch.now().astimezone(timezone.utc).isoformat()
@@ -634,6 +636,7 @@ class DesktopPermissions:
         perform: Callable[[bool], Awaitable[str]],
         guard: Callable[[], Awaitable[str | None]],
         dashboard_only: bool = False,
+        tag: str = "",
     ) -> str:
         """Run an owner-DM tool action under its policy and return what the tool tells the model.
 
@@ -659,6 +662,8 @@ class DesktopPermissions:
             request = await self.open_request(action=action, site="", detail=detail, dashboard_only=dashboard_only)
         except ValueError as exc:
             return f"error: {exc}"
+        if tag:
+            self._tags[request.id] = tag
         self.app.dispatch._spawn(self._ask_then_perform(request, action, detail, lines, perform, guard, dashboard_only))
         return (
             f"Asked the owner to approve: {label.lower()}. Nothing has happened yet. "
@@ -671,6 +676,7 @@ class DesktopPermissions:
     ) -> None:
         store, label = self.app.store, ACTION_META[action]["label"]
         outcome = await self.ask(request, action, "", detail, DEFAULT, lines, APPROVAL_TIMEOUT, dashboard_only)
+        self._tags.pop(request.id, None)
         if outcome not in ("allowed_once", "allowed_always"):
             said = {"expired": "timed out", "cancelled": "was cancelled"}.get(outcome, "was rejected")
             # The detail names things others wrote (an invite's title, a draft's subject): fenced as untrusted, as
@@ -695,12 +701,12 @@ class DesktopPermissions:
             except Exception:
                 log.warning("could not tell the owner that %s failed", action)
 
-    async def cancel_pending(self, actions: Iterable[str]) -> int:
+    async def cancel_pending(self, actions: Iterable[str], *, tag: str | None = None) -> int:
         """Cancel the waiting requests of these actions (their switch went off, or the account changed): the waiter is
-        woken first, then the card says Cancelled."""
+        woken first, then the card says Cancelled. With a `tag`, only the requests made under it."""
         wanted, count = set(actions), 0
         for row in await self.app.store.pending_desktop_permission_requests():
-            if row["action"] not in wanted:
+            if row["action"] not in wanted or (tag is not None and self._tags.get(row["id"]) != tag):
                 continue
             done = await self.app.store.decide_desktop_permission_request(row["id"], "cancelled", "policy", self._now())
             if done is None:
