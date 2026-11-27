@@ -354,6 +354,17 @@ async def test_debounce_coalesces_burst(setup_dispatch, gated_sleep):
     assert "line 3" in app.script.requests[0]["messages"][-1]["content"]
 
 
+async def test_a_reply_that_promises_an_action_no_tool_backs_is_put_back_once(setup_dispatch):
+    app, dispatch, _ = await setup_dispatch()
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    promise = json.dumps({"bubbles": [{"text": "fine, i'll add it in again"}]})
+    app.script.contents[:] = [promise, promise]
+    await deliver(app)
+    assert len(app.script.requests) == 2  # put back once, then the second answer is sent as it stands
+    assert "no tool was called" in app.script.requests[1]["messages"][-1]["content"]
+    assert app.script.requests[1]["tools"]
+
+
 async def test_owner_wake_command_only_in_owner_dm(setup_dispatch):
     app, dispatch, clock = await setup_dispatch()
     clock.at = clock.at.replace(hour=2)

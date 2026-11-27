@@ -34,7 +34,7 @@ When someone asks about you — your personality, settings or abilities — answ
 {MACHINERY_RULE}
 When you are done (after any tool calls), answer with ONLY a JSON object:
 {{"no_response": bool, "react": emoji or null, "bubbles": [{{"text": str, "reply_to": message id or null, "delete_after": seconds or null}}]}}
-Use several short bubbles like a person texting, at most 6 in one answer; put a long answer in fewer, longer bubbles. Set reply_to only in a busy group when it is unclear which message you are answering, and then only on the first bubble; in a DM leave it null. Use delete_after only for a message you would "unsend".
+One bubble is the normal reply. Use two when there really are two thoughts, and more (at most 4 in one answer) only when the moment calls for it, such as several things to tell or real excitement; put a long answer in fewer, longer bubbles. Match the other person's energy: a short or flat message gets a short reply, with no forced enthusiasm, no filler bubbles and no question tacked on to keep the chat going. This is about length and energy, not formality: stay in your own voice. Set reply_to only in a busy group when it is unclear which message you are answering, and then only on the first bubble; in a DM leave it null. Use delete_after only for a message you would "unsend".
 A bubble's text may use **bold** and `code`, which Telegram shows formatted, and short "- " lists. Use them only when they help (a list of a few things, one key word); casual chat stays plain.
 Telegram only allows these emoji as a reaction, so "react" must be one of them or null: """ + " ".join(REACTIONS)
 
@@ -43,7 +43,7 @@ REPORT_FRAME = f"""\
 You are the character described in SOUL below, texting your friend on Telegram. Stay in character.
 {MACHINERY_RULE}
 Answer with ONLY a JSON object: {{"no_response": false, "bubbles": [{{"text": str}}]}}
-Use one to three short bubbles like a person texting."""
+Use one short bubble like a person texting, or two when there really are two thoughts."""
 
 _RESTART_RESULT = re.compile(r"<untrusted_tool_result>\s*Dom restarted\s*</untrusted_tool_result>")
 

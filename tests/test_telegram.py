@@ -347,11 +347,11 @@ async def test_one_reply_types_for_at_most_30_seconds_in_all(store):
     async def sleep(s):
         sleeps.append(s)
 
-    # Six 20-second bubbles were 2 minutes of typing after a task-mode reply was already written.
-    actions = Actions(bubbles=[Bubble(text="x" * 160) for _ in range(6)])
+    # Four 20-second bubbles were 2 minutes of typing after a task-mode reply was already written.
+    actions = Actions(bubbles=[Bubble(text="x" * 160) for _ in range(4)])
     await executor.perform(bot, store, GROUP, 9, actions, typing_cps=8.0, sleep=sleep)
     # 20 + 10, then each later bubble at double pace, capped: 160 characters would be 10 s
-    assert sum(sleeps) == executor.MAX_REPLY_TYPING_SECONDS + 4 * executor.MAX_TAIL_SECONDS
+    assert sum(sleeps) == executor.MAX_REPLY_TYPING_SECONDS + 2 * executor.MAX_TAIL_SECONDS
 
 
 async def test_time_spent_thinking_counts_against_the_reply_typing_budget(store):

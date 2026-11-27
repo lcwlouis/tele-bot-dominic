@@ -211,6 +211,14 @@ def render() -> str:
         "still composed one at a time within its lane, and one chat's turns stay in order, but the owner's never "
         "wait behind a long turn in a group or a friend's DM. The lanes share the prompt prefix, the spend caps and "
         "the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.",
+        "### How a reply is shaped",
+        "Nothing here is configurable. One bubble is Dom's normal reply, two when there are two thoughts, and four is the "
+        "most in one answer (any extra bubbles join the fourth). The prompt asks him to match the energy of the moment: "
+        "a short or flat message gets a short reply.",
+        "Nothing runs after a turn's final answer, so a bubble that says Dom is about to do something (\"i'll add it\", "
+        "\"let me check\", \"on it\") on a turn that called no tool is put back to the model once, with the tools still on "
+        "offer, to call the tool or reword. A second answer is sent as it stands. The Turn log shows `Action promise put "
+        "back`. Openers, noticings, tool-free turns and the bot exit are not checked.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),
         "## Workspace",
