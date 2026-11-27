@@ -47,6 +47,8 @@ QUERY_CAP = 100
 READ_CAP = 8000  # characters of a file handed to Dom in one read; `offset` pages through the rest
 MAX_OFFSET = 1_000_000
 MAX_DOWNLOAD = 1_000_000  # bytes: a plain file bigger than this is not fetched at all
+MAX_READ_ROWS, MAX_READ_COLS = 200, 26  # a range read is cut to this many rows and columns from its top-left cell, before Google is asked
+MAX_RANGE_BYTES = 2_000_000  # an answer to a range read bigger than this is refused while it arrives, never parsed
 DOC_CAP = 8000
 NAME_CAP = 100
 MAX_ROWS, MAX_COLS, CELL_CAP, ROWS_CAP = 100, 20, 500, 20000  # a write: rows, columns, characters in a cell and in all
@@ -55,7 +57,7 @@ FILE_ID = re.compile(r"[A-Za-z0-9_-]{10,200}")
 _PATH_ID = re.compile(r"/d/([A-Za-z0-9_-]{10,200})(?:/|$)")
 _LINK = re.compile(r"https://(?:docs|drive|sheets|slides)\.google\.com/[^\s<>\"')\]]+", re.IGNORECASE)
 _A1 = re.compile(
-    r"(?:(?P<sheet>'(?:[^']|'')+'|[^'!]+)!)?\$?(?P<col>[A-Za-z]{1,3})\$?(?P<row>[1-9]\d{0,6})(?::\$?[A-Za-z]{1,3}\$?[1-9]\d{0,6})?"
+    r"(?:(?P<sheet>'(?:[^']|'')+'|[^'!]+)!)?\$?(?P<col>[A-Za-z]{1,3})\$?(?P<row>[1-9]\d{0,6})(?::\$?(?P<col2>[A-Za-z]{1,3})\$?(?P<row2>[1-9]\d{0,6}))?"
 )
 _OPEN = re.compile(r"https://(?:docs|drive)\.google\.com/\S+")
 
@@ -176,13 +178,13 @@ async def _read(g: GoogleIntegration, args: dict) -> str:
     file_id = _file_id(args.get("file"))
     offset = min(max(int(args.get("offset") or 0), 0), MAX_OFFSET)
     meta = await _meta(g, file_id)
-    mime, window = str(meta.get("mimeType")), offset + READ_CAP
+    mime, window, clamped = str(meta.get("mimeType")), offset + READ_CAP, ""
     if mime in (DOC, SLIDES):
         text, cut = await g.call_text(f"{DRIVE_API}/files/{file_id}/export", params={"mimeType": "text/plain"}, limit=window)
     elif mime == SHEET:
         if sheet_range := str(args.get("range") or "").strip():
-            _a1(sheet_range)
-            data = await g.call("GET", f"{SHEETS_API}/spreadsheets/{file_id}/values/{quote(sheet_range, safe='')}")
+            sheet_range, clamped = _clamp(sheet_range)
+            data = await g.call("GET", f"{SHEETS_API}/spreadsheets/{file_id}/values/{quote(sheet_range, safe='')}", max_bytes=MAX_RANGE_BYTES)
             text = _grid((data or {}).get("values"))
             text, cut = text[:window], len(text) > window
         else:  # the first sheet, as CSV; a range reads any other
@@ -197,6 +199,8 @@ async def _read(g: GoogleIntegration, args: dict) -> str:
     if not shown and offset:
         return f"{_kind(meta)} '{meta['name']}' ends before offset {offset}."
     note = f"\n(cut here: read again with offset {offset + READ_CAP} for more)" if cut else ""
+    if clamped:
+        note += f"\n(the range was cut to {clamped}: at most {MAX_READ_ROWS} rows and {MAX_READ_COLS} columns are read at a time; read a later range for the rest)"
     head = f"{_kind(meta)} [file id {file_id}]: {meta['name']}" + (f" (from offset {offset})" if offset else "")
     return f"{DATA_NOTE}\n{untrusted(head + chr(10) * 2 + shown, limit=READ_CAP + 2000)}{note}"
 
@@ -351,6 +355,20 @@ def _a1(value: str) -> re.Match[str]:
     return match
 
 
+def _clamp(value: str) -> tuple[str, str]:
+    """The range to ask Google for: the one given, or when it spans more than MAX_READ_ROWS by MAX_READ_COLS cells, the part
+    of it from its top-left cell. The second item names the cut range ("" when nothing was cut)."""
+    match = _a1(value)
+    if not match["col2"]:
+        return value, ""
+    (c1, c2), (r1, r2) = sorted((_col_index(match["col"]), _col_index(match["col2"]))), sorted((int(match["row"]), int(match["row2"])))
+    last_col, last_row = min(c2, c1 + MAX_READ_COLS - 1), min(r2, r1 + MAX_READ_ROWS - 1)
+    if (last_col, last_row) == (c2, r2):
+        return value, ""
+    cut = f"{_col_letters(c1)}{r1}:{_col_letters(last_col)}{last_row}"
+    return (f"{match['sheet']}!" if match["sheet"] else "") + cut, cut
+
+
 def _fitted(value: str, rows: list[list[Any]]) -> str:
     """The cells a write of `rows` from the range's top-left cell covers, so the card names exactly what is overwritten."""
     match = _a1(value)
@@ -406,7 +424,7 @@ async def _create(g: GoogleIntegration, args: dict) -> str:
             return f"error: the {label} was made [file id {file_id}] but its content was not written ({exc}). Check '{name}' before trying again."
         return done
 
-    return await _govern(g, action, "drive_files", Card(lines, preview=preview), perform)
+    return await _govern(g, action, "drive_files", Card(lines, "The content", preview, whole=True), perform)
 
 
 async def _put(g: GoogleIntegration, file_id: str, cells: str, rows: list[list[Any]], ticket: Ticket) -> None:
@@ -425,7 +443,7 @@ async def _append(g: GoogleIntegration, args: dict) -> str:
         raise GoogleError(f"The owner's account cannot edit '{name}'.")
     if mime == DOC:
         text = _text(args, required=True)
-        card = Card([f"Add to the Google Doc: {name}", f"{len(text)} characters, as new paragraph(s) at the end."], preview=text)
+        card = Card([f"Add to the Google Doc: {name}", f"{len(text)} characters, as new paragraph(s) at the end."], "The text", text, whole=True)
 
         async def add_text(ticket: Ticket) -> str:
             try:
@@ -442,7 +460,7 @@ async def _append(g: GoogleIntegration, args: dict) -> str:
     rows = _rows(args, required=True)
     tab = _tab(args) or await _first_tab(g, file_id)
     target = "'" + tab.replace("'", "''") + "'!A1"
-    card = Card([f"Add rows to the Google Sheet: {name}", f"Sheet: {tab}", f"{len(rows)} row(s), below the data already there."], preview=_show(rows))
+    card = Card([f"Add rows to the Google Sheet: {name}", f"Sheet: {tab}", f"{len(rows)} row(s), below the data already there."], "The rows", _show(rows), whole=True)
 
     async def add_rows(ticket: Ticket) -> str:
         try:  # values.append has no idempotency key: a call with no clear answer is never repeated
@@ -479,7 +497,7 @@ async def _update(g: GoogleIntegration, args: dict) -> str:
     now = await g.call("GET", f"{SHEETS_API}/spreadsheets/{file_id}/values/{quote(cells, safe='')}")
     before = _grid((now or {}).get("values")) if isinstance(now, dict) else ""
     lines = [f"Replace cells in the Google Sheet: {name}", f"Cells: {cells}", f"{len(rows)} row(s) by {max(len(r) for r in rows)} column(s) are overwritten."]
-    card = Card(lines, preview=f"Before:\n{before.replace(chr(9), ' | ') or '(empty)'}\n\nAfter:\n{_show(rows)}")
+    card = Card(lines, "The cells", f"Before:\n{before.replace(chr(9), ' | ') or '(empty)'}\nAfter:\n{_show(rows)}", whole=True)
 
     async def replace(ticket: Ticket) -> str:
         try:

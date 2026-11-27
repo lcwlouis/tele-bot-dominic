@@ -105,14 +105,18 @@ own code.
 
 - **Reading is fenced and bounded.** What he reads was written by other people, so the result is wrapped as untrusted
   data and he is told never to follow it or copy it into notes or other chats. One read returns at most 8000 characters
-  (`offset` pages through the rest); a plain file over 1 MB is not fetched; Google caps an export at 10 MB. He reads Docs,
+  (`offset` pages through the rest); a plain file over 1 MB is not fetched; Google caps an export at 10 MB. A Sheets
+  `range` is cut to 200 rows by 26 columns from its top-left cell before Google is asked (the result says so, and he
+  reads a later range for the rest), and an answer over 2 MB is refused while it arrives, never parsed. He reads Docs,
   Sheets, Slides and text files; anything else (images, PDFs) he refuses by name.
 - **Writing goes through a card.** Each of `create` (Doc, Sheet), `append` (Doc), `append` (Sheet rows) and `update`
   (Sheet cells) is its own kind in System → Access with Reject, Allow once and Allow always, so allowing document
   appends does not allow overwriting cells. The card shows the file's name and the exact text or rows; for `update` it
   also shows what the cells hold now ("Before") and what they will hold ("After"), and the range is spelled out for the
-  rows actually written (`B2` with two rows of two cells shows `B2:C3`). A card too long to show whole in Telegram
-  becomes dashboard-only, as for calendar and mail.
+  rows actually written (`B2` with two rows of two cells shows `B2:C3`). The text or cells to be written count as material,
+  like a recipient or an attendee: a card that cannot list all of them uncut in Telegram (more than eight lines, or a line
+  over 200 characters) shows no part of them, says so, and becomes dashboard-only, where everything is shown, as for
+  calendar and mail.
 - **Cells are text.** Values are written as typed (`valueInputOption=RAW`), so a cell that starts with `=` stays text and
   never runs as a formula. Size limits: 8000 characters of doc text; at most 100 rows of 20 cells, 500 characters a cell
   and 20,000 characters in all.

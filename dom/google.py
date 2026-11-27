@@ -702,14 +702,15 @@ class GoogleIntegration:
 
     async def _send(
         self, method: str, url: str, *, params: dict | None = None, body: Any = None, data: dict | None = None,
-        authorized: bool = True, idempotent: bool | None = None, ticket: Ticket | None = None,
+        authorized: bool = True, idempotent: bool | None = None, ticket: Ticket | None = None, max_bytes: int | None = None,
     ) -> httpx.Response:
         """One HTTP call, retried on 429, 5xx and network errors with backoff, and a 401 refreshes the token once.
 
         A call that is not safe to repeat (a POST without an idempotency key) is never retried after Google may have
         acted on it: that raises GoogleUncertain. Inside `budget()` the whole call, retries and backoff included,
         stops at the deadline with GoogleSlow: the token (a refresh in flight included) and the request share that one
-        deadline. With a `ticket`, nothing is written once its switch or connection has moved."""
+        deadline. With a `ticket`, nothing is written once its switch or connection has moved. With `max_bytes` the answer is
+        read as it arrives and refused once it passes that size."""
         if idempotent is None:
             idempotent = method != "POST"
         connection = ticket.connection if ticket is not None else None
@@ -726,7 +727,10 @@ class GoogleIntegration:
                     if ticket is not None and self.stale(ticket):  # the last look, with nothing awaited before the write
                         raise GoogleError(STALE)
                     sent = True
-                    response = await self.http.request(method, url, params=params, json=body, data=data, headers=headers)
+                    if max_bytes is None:
+                        response = await self.http.request(method, url, params=params, json=body, data=data, headers=headers)
+                    else:
+                        response = await self._bounded(method, url, params, body, data, headers, max_bytes)
             except TimeoutError:  # the deadline ran out, in a refresh still going on or while Google had the request
                 raise (GoogleUncertain(UNCERTAIN) if sent and not idempotent else GoogleSlow(SLOW)) from None
             except httpx.HTTPError as exc:
@@ -758,6 +762,22 @@ class GoogleIntegration:
             return response
         raise GoogleError("Google is not answering.")
 
+    async def _bounded(
+        self, method: str, url: str, params: dict | None, body: Any, data: dict | None, headers: dict[str, str], max_bytes: int,
+    ) -> httpx.Response:
+        """One call whose answer is read in pieces and refused as soon as it passes `max_bytes`, so a huge answer is never held
+        or parsed whole. What comes back is the same kind of response, already decoded."""
+        async with self.http.stream(method, url, params=params, json=body, data=data, headers=headers) as streamed:
+            pieces, size = [], 0
+            async for piece in streamed.aiter_bytes():
+                size += len(piece)
+                if size > max_bytes:
+                    log.warning("Google %s %s answered more than %s bytes", method, urlsplit(url).path, max_bytes)
+                    raise GoogleError(f"Google's answer is too big for Dom to read ({max_bytes // 1000} KB at most): ask for less.")
+                pieces.append(piece)
+            kept = [(k, v) for k, v in streamed.headers.multi_items() if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+            return httpx.Response(streamed.status_code, headers=kept, content=b"".join(pieces), request=streamed.request)
+
     async def _backoff(self, delay: float, deadline: float | None) -> None:
         if deadline is not None and delay >= deadline - self.clock():
             raise GoogleSlow(SLOW)  # waiting would run past what a turn may spend
@@ -765,12 +785,12 @@ class GoogleIntegration:
 
     async def call(
         self, method: str, url: str, *, params: dict | None = None, body: Any = None,
-        idempotent: bool | None = None, ticket: Ticket | None = None, allow: tuple[int, ...] = (),
+        idempotent: bool | None = None, ticket: Ticket | None = None, allow: tuple[int, ...] = (), max_bytes: int | None = None,
     ) -> Any:
         """An authorized API call returning the parsed JSON (None for an empty answer, or an `allow`ed status such as
-        a 409 that means "already done")."""
+        a 409 that means "already done"). With `max_bytes`, an answer bigger than that is refused before it is parsed."""
         response = await self._send(
-            method, url, params=params, body=body, idempotent=idempotent, ticket=ticket,
+            method, url, params=params, body=body, idempotent=idempotent, ticket=ticket, max_bytes=max_bytes,
         )
         if response.is_success or response.status_code in allow:
             if not response.content:

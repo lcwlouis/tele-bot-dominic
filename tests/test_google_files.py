@@ -5,19 +5,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
+import httpx
 import pytest
 
 from dom.config import set_dotenv
 from dom.google import BASE_SCOPES, SCOPE_CONTACTS, SCOPE_DRIVE_FILE, SCOPES, SWITCHES, GoogleIntegration
 from dom.google_contacts import _contacts, contact_email
 from dom.google_files import (
-    DOC, FOLDER, MAX_DOWNLOAD, READ_CAP, SHEET, _drive, confirm_picked, dom_folder, file_ids_in, link_note, offered, overview,
+    DOC, FOLDER, MAX_DOWNLOAD, MAX_READ_COLS, MAX_READ_ROWS, READ_CAP, SHEET, _col_index, _drive, confirm_picked, dom_folder, file_ids_in, link_note, offered, overview,
 )
 from dom.tools import enabled_tools
 from test_google import (  # noqa: F401  (setup is a fixture)
-    DASH, FRIEND, GROUP, HEADERS, OWNER, TOKEN, callback, connect, names, owner_ctx, pending, ready, settle, setup, tap,
+    DASH, FRIEND, GROUP, HEADERS, OWNER, TOKEN, callback, card_buttons, connect, names, owner_ctx, pending, ready, settle, setup, tap,
 )
 
 KEY, PROJECT = "AIzaSyPickerKeyCanary", "4242424"
@@ -491,3 +492,110 @@ async def test_overview_and_confirm_are_plain_functions_too(setup):
     assert (await overview(app.google))["files"] == [{"name": "Notes", "kind": "Google Doc"}]
     assert await confirm_picked(app.google, [DOC_ID]) == [{"name": "Notes", "kind": "Google Doc"}]
     assert isinstance(app.google, GoogleIntegration)
+
+
+# ---- rework of PR 118: what a card hides, and unbounded range reads -------------------------------------------------------
+
+
+async def _card_for(app, args: dict):
+    await _drive(args, owner_ctx(app))
+    row = await pending(app)
+    return row, app.bot.of("send", OWNER)[-1][2]
+
+
+def _long_cases() -> dict[str, dict]:
+    word = "paragraph " * 30  # past what one card line holds
+    wide = [[f"cell-number-{n}-{c}" for c in range(14)] for n in range(2)]
+    return {
+        "doc_create": {"action": "create", "kind": "doc", "name": "Plan", "text": word + "THE-END"},
+        "doc_append": {"action": "append", "file": DOC_ID, "text": word + "THE-END"},
+        "sheet_create": {"action": "create", "kind": "sheet", "name": "Log", "rows": wide},
+        "sheet_append": {"action": "append", "file": SHEET_ID, "rows": wide},
+        "sheet_update": {"action": "update", "file": SHEET_ID, "range": "A1", "rows": wide},
+    }
+
+
+@pytest.mark.parametrize("case", ["doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update"])
+async def test_b1_content_too_long_for_a_telegram_card_needs_the_dashboard_and_is_shown_whole_there(setup, case):
+    app, fake, client = await files_ready(setup)
+    add(fake, DOC_ID, "Notes", DOC, "old")
+    add(fake, SHEET_ID, "Budget", SHEET, "", grid=[["was 1", "was 2"]])
+    args = _long_cases()[case]
+    row, card = await _card_for(app, args)
+    last = "THE-END" if "text" in args else args["rows"][-1][-1]
+    assert row["dashboard_only"] is True and await card_buttons(app) == ["Reject", "Review on dashboard"]
+    assert "dashboard" in card and last not in card  # the card says it cannot show it, and shows no part of it
+    assert last in row["detail"]  # the dashboard approval carries all of it
+    if "text" in args:
+        assert args["text"] in row["detail"]
+    else:
+        assert all(str(cell) in row["detail"] for line in args["rows"] for cell in line)
+    await tap(app, "reject")
+    assert not fake.writes
+
+
+@pytest.mark.parametrize("case", ["doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update"])
+async def test_b1_short_content_still_fits_a_telegram_card_with_nothing_cut(setup, case):
+    app, fake, client = await files_ready(setup)
+    add(fake, DOC_ID, "Notes", DOC, "old")
+    add(fake, SHEET_ID, "Budget", SHEET, "", grid=[["was 1", "was 2"]])
+    args = {**_long_cases()[case]}
+    if "text" in args:
+        args["text"] = "Remember the milk\nand the eggs"
+    else:
+        args["rows"] = [["milk", 2], ["eggs", 12]]
+    row, card = await _card_for(app, args)
+    assert row["dashboard_only"] is False and "Allow once" in await card_buttons(app) and "…" not in card
+    shown = ("Remember the milk", "and the eggs") if "text" in args else ("milk | 2", "eggs | 12")
+    assert all(part in card for part in shown)
+    await tap(app, "reject")
+
+
+# ---- Sheets range reads --------------------------------------------------------------------------------------------------
+
+
+async def test_sf1_a_huge_range_is_clamped_in_the_request_and_the_clamp_is_said(setup):
+    app, fake, client = await files_ready(setup)
+    add(fake, SHEET_ID, "Budget", SHEET, "", grid=[["x", "y"]])
+    out = await _drive({"action": "read", "file": SHEET_ID, "range": "Sheet2!A1:ZZZ9999999"}, owner_ctx(app))
+    [request] = [r for r in fake.requests if "/values/" in r.url.path]
+    asked = unquote(request.url.path.split("/values/", 1)[1])
+    first, last = asked.split("!", 1)[1].split(":")
+    assert first == "A1" and _span(last) <= (MAX_READ_ROWS, MAX_READ_COLS)  # at most this many rows and columns, from the top left
+    assert "x\ty" in out and last in out and "later range" in out  # the owner of the read is told where it stopped
+    # a range already inside the bounds is asked as given, with no note
+    out = await _drive({"action": "read", "file": SHEET_ID, "range": "B2:C3"}, owner_ctx(app))
+    assert unquote([r for r in fake.requests if "/values/" in r.url.path][-1].url.path.split("/values/", 1)[1]) == "B2:C3"
+    assert "later range" not in out
+
+
+def _span(cell: str) -> tuple[int, int]:
+    letters = "".join(c for c in cell if c.isalpha())
+    return int("".join(c for c in cell if c.isdigit())), _col_index(letters)
+
+
+async def test_sf1_an_oversized_range_answer_is_refused_before_it_is_read_whole(setup, monkeypatch):
+    app, fake, client = await files_ready(setup)
+    add(fake, SHEET_ID, "Budget", SHEET, "", grid=[["x"]])
+    monkeypatch.setattr("dom.google_files.MAX_RANGE_BYTES", 10_000)
+    pulled: list[int] = []
+
+    class Endless(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(10_000):
+                pulled.append(1)
+                yield b" " * 4096
+
+    inner = fake.handle
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "/values/" in request.url.path:
+            return httpx.Response(200, headers={"content-type": "application/json"}, stream=Endless())
+        return await inner(request)
+
+    app.google._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    parsed, real_json = [], httpx.Response.json
+    monkeypatch.setattr(httpx.Response, "json", lambda self, **kw: (parsed.append(1) if "/values/" in str(self.request.url) else None, real_json(self, **kw))[1])
+    out = await _drive({"action": "read", "file": SHEET_ID, "range": "A1:B2"}, owner_ctx(app))
+    assert out.startswith("error") and "too big" in out
+    assert len(pulled) < 10 and not parsed  # it stopped reading at the limit and never parsed it
