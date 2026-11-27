@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
@@ -33,6 +34,8 @@ class Docker:
         if command == "container":
             name = args[-1]
             return Process(0, b"true") if name in self.running else Process(1, b"")
+        if command == "run" and "--entrypoint" in args:
+            return Process(0, f"{os.getuid()}\n".encode())
         if command == "run" and "--rm" in args:
             return Process(0, b"")
         if command == "run":
@@ -42,10 +45,10 @@ class Docker:
         return Process(0, b"")
 
     def started(self):
-        return [call for call in self.calls if call[1] == "run" and "--rm" not in call]
+        return [call for call in self.calls if call[1] == "run" and "--rm" not in call and "--entrypoint" not in call]
 
     def probes(self):
-        return [call for call in self.calls if call[1] == "run" and "--rm" in call]
+        return [call for call in self.calls if call[1] == "run" and "--rm" in call and "--entrypoint" not in call]
 
 
 def config(tmp_path, **host):

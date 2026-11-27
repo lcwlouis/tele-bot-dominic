@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Set
 
 from pydantic import BaseModel
 
-from dom.config import AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorldConfig, starter_config
+from dom.config import AcpAgent, AssistantConfig, Config, DesktopConfig, DispatchConfig, DesktopHost, ModelEndpoint, KnowledgeConfig, OpenersConfig, PresenceConfig, ProviderEndpoint, ProviderSetup, SelfWorkConfig, StudioConfig, StudioFallback, StudioLimits, StudioTier, StudioTimeouts, T3Config, TracerConfig, UpdateConfig, WebConfig, WorkspaceConfig, WorldConfig, starter_config
 
 MODEL_ROLES = {
     "chat": ("Required", "Primary chat and desktop worker model."),
@@ -59,7 +59,7 @@ def render() -> str:
         "Regenerate this file from the checkout after changing an option.",
         "```sh\nuv run python scripts/config_reference.py > docs/configuration.md\n```",
         "## Top-level keys",
-        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "studio", "knowledge", "world", "web", "tracer", "t3", "update"})),
+        table(fields(Config, exclude={"home", "desktop_mode", "models", "provider_setups", "desktop", "openers", "assistant", "dispatch", "presence", "self_work", "workspace", "studio", "knowledge", "world", "web", "tracer", "t3", "acp", "update"})),
         "## Models",
         table((f"models.{key}", default, meaning) for key, (default, meaning) in MODEL_ROLES.items()),
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
@@ -204,6 +204,9 @@ def render() -> str:
         "the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.",
         "## Presence",
         table(fields(PresenceConfig, "presence.")),
+        "## Workspace",
+        table(fields(WorkspaceConfig, "workspace.")),
+        "See [The shared workspace](desktop.md#the-shared-workspace) for what the folder is and who reaches it.",
         "## Self-directed work",
         table(fields(SelfWorkConfig, "self_work.")),
         "See [Self-directed work](desktop.md#self-directed-work) for the network guard it needs and what it may do.",
@@ -213,6 +216,12 @@ def render() -> str:
         table(fields(TracerConfig, "tracer.")),
         "Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See "
         "[Privacy](privacy.md#debug-traces).",
+        "## Subscription agents (pilot)",
+        "Codex, Claude and Antigravity on your own subscriptions, through the Agent Client Protocol: tables "
+        "`[acp.codex]`, `[acp.claude]` and `[acp.antigravity]`, each with the keys below (shown for `acp.<name>`). "
+        "Every agent is off until you switch it on, serves only escalation and drafting, and only in your DM.",
+        table(fields(AcpAgent, "acp.<name>.")),
+        "See [Subscription agents](acp-agents.md) for setup, sign-in and the risks.",
         "## T3 Code",
         table(fields(T3Config, "t3.")),
         "See the [T3 Code bridge guide](t3-bridge.md) for service setup and CLI compatibility.",

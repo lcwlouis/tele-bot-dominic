@@ -4,6 +4,7 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { getJSON, send, type GoogleCalendar, type GoogleFiles, type GoogleView } from "$lib/api";
   import IconButton from "$lib/components/kit/IconButton.svelte";
+  import BookingWindows from "./BookingWindows.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Badge } from "$lib/components/ui/badge";
@@ -254,6 +255,9 @@
             <p class="text-sm text-muted-foreground">To hand Dom files, add GOOGLE_PICKER_API_KEY and GOOGLE_PROJECT_NUMBER to .env and restart (docs/google.md).</p>
           {/if}
         </div>
+      {/if}
+      {#if view.own_calendars_granted}
+        <BookingWindows />
       {/if}
       {#if view.switches.some((item) => !item.granted && !item.extra)}
         <p class="text-xs text-muted-foreground">A switch is locked when you did not tick that permission on Google's screen. Connect again to grant it.</p>

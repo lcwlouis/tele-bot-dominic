@@ -33,6 +33,7 @@
     embedding: "fill-chart-3",
     assistant: "fill-chart-4",
     news: "fill-amber/25",
+    subscription: "fill-chart-3/50",
   };
   const fillOf = (kind: string) => fills[kind] ?? "fill-muted-foreground";
   // The segment whose breakdown shows under the chart: a click, a tap, or Enter or Space on a focused segment.

@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from dom.backup import ARCHIVE_NAME
 from dom.config import Config, DesktopConfig, ProviderEndpoint, validate_config
+from dom import workspace
 from dom.desktop.sandbox import desktop_profile_path, valid_remote_url
 from dom.embedding import EmbeddingProvider
 from dom.home import LIMITS, MAX_SOUL, Home
@@ -131,6 +132,21 @@ def _disk(home: Path) -> Check:
     if free < 2_000_000_000:
         return Check("warn", "disk", "Less than 2 GB free. Free space before taking more backups.")
     return Check("ok", "disk", f"{free / 1_000_000_000:.2f} GB free.")
+
+
+def _workspace(home: Path) -> Check:
+    """The shared workspace's size against its cap, and whether the desktop could be given the folder."""
+    folder = workspace.workspace_dir(home)
+    if not folder.is_dir():
+        return Check("ok", "workspace", "Not created yet; it appears when the desktop or a document first needs it.")
+    used = workspace.Tree(folder).used_bytes()
+    cap = workspace.MAX_TOTAL_BYTES
+    size = f"{used // 1_000_000} MB of {cap // 1_000_000} MB"
+    if used > cap:
+        return Check("fail", "workspace", f"{size}: over its cap, so the desktop refuses new work. Delete files in Work > Files.")
+    if problem := workspace.mount_problem(home):
+        return Check("warn", "workspace", f"{size}. {problem} The desktop runs without the workspace; run the sandbox as the host user or chown the folder (docs/desktop.md).")
+    return Check("warn" if used > cap * 0.8 else "ok", "workspace", f"{size}.")
 
 
 def _desktop(config: Config) -> Check:
@@ -486,7 +502,7 @@ def run(home: Path, *, online: bool = False) -> int:
         )
         checks.extend(_config_checks(config))
     notes = Home(home, allow_private=True)
-    checks.extend((_soul(notes), _memory(notes), _database(home), _backups(home), _disk(home)))
+    checks.extend((_soul(notes), _memory(notes), _database(home), _backups(home), _disk(home), _workspace(home)))
     if (bot_change := _bot_change(home)) is not None:
         checks.append(bot_change)
     if config is not None:

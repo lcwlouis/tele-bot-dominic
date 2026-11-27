@@ -64,6 +64,9 @@ const pages: { name: string; path: string; heading: string; tab?: string; click?
   { name: "work-own", path: "/app/work/own-work", heading: "Own work" },
   { name: "work-reminders", path: "/app/work/reminders", heading: "Reminders" },
   { name: "work-briefs", path: "/app/work/briefs", heading: "Briefs" },
+  // The shared workspace (W3): the folder Dom and his desktop share, browsed and previewed.
+  { name: "work-files", path: "/app/work/files", heading: "Files" },
+  { name: "work-files-preview", path: "/app/work/files", heading: "Files", click: "notes.md" },
   // System and Waiting: plugins with their panel, a plugin's code review, spend, the turn log and what waits for the owner.
   { name: "system-plugins", path: "/app/system/plugins", heading: "Plugins" },
   { name: "system-plugin-review", path: "/app/system/plugins", heading: "Plugins", link: "Review code of trip_planner" },
@@ -2034,6 +2037,74 @@ test.describe("interactions under the CSP", () => {
     expect(removed[0]).toEqual({ id: "plan@group.calendar.example.org" });
     await expect(card.getByText("Dom - Planning")).toHaveCount(0);
     await expect(card.getByText("Dom - Louis")).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("google: meeting windows are edited as days and times and saved as one request", async ({ page }) => {
+    const problems = await watch(page);
+    const start = await (await page.request.get("/api/integrations/google")).json();
+    const connected = {
+      ...start, client_id_set: true, client_secret_set: true, redirect_uri: "https://dom.example.org/api/integrations/google/callback",
+      status: "connected", connected_at: "2026-11-27T10:00:00+00:00", own_calendars_granted: true, calendars: [],
+      switches: [{ id: "calendar_read", label: "Calendar: read events", on: true, granted: true }],
+    };
+    let booking = {
+      windows: [{ days: ["mon", "tue"], start: "19:00", end: "22:00" }], notice_hours: 12, ahead_days: 14, invite_friends: false,
+      zone: "UTC", calendar: "Dom - Bookings", calendar_made: false, ready: true,
+    };
+    const saved: Record<string, unknown>[] = [];
+    await page.route("**/api/integrations/google", (route) => route.fulfill({ json: connected }));
+    await page.route("**/api/integrations/google/calendars", (route) => route.fulfill({ json: { calendars: [] } }));
+    await page.route("**/api/integrations/google/booking", async (route) => {
+      if (route.request().method() === "POST") {
+        const body = route.request().postDataJSON();
+        saved.push(body);
+        booking = { ...booking, ...body };
+        await route.fulfill({ json: { ...booking, note: "Dom asked you to approve making the calendar 'Dom - Bookings'." } });
+      } else {
+        await route.fulfill({ json: booking });
+      }
+    });
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "Services" }).click();
+    const section = page.getByRole("region", { name: "Google Calendar and Gmail" }).getByRole("region", { name: "Meeting windows" });
+    await expect(section.getByText("Dom will ask before he makes the calendar")).toBeVisible();
+    const days = section.getByRole("group", { name: "Days for window 1" });
+    await expect(days.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "true");
+    await expect(days.getByRole("button", { name: "Wed" })).toHaveAttribute("aria-pressed", "false");
+    await days.getByRole("button", { name: "Wed" }).click();
+    await expect(days.getByRole("button", { name: "Wed" })).toHaveAttribute("aria-pressed", "true");
+    // A second window, Saturday afternoon; a window with no day or an end before its start cannot be saved.
+    await section.getByRole("button", { name: "Add a window" }).click();
+    const second = section.getByRole("group", { name: "Days for window 2" });
+    for (const day of ["Mon", "Tue", "Wed", "Thu", "Fri"]) await second.getByRole("button", { name: day }).click();
+    await expect(section.getByRole("button", { name: "Save meeting windows" })).toBeDisabled();
+    await second.getByRole("button", { name: "Sat" }).click();
+    await section.getByLabel("Window 2 start").fill("13:00");
+    await section.getByLabel("Window 2 end").fill("18:00");
+    await section.getByLabel("Least notice, in hours").fill("6");
+    await section.getByRole("switch", { name: /Invite the friend/ }).click();
+    // Every icon button has a name and a tooltip.
+    const trash = section.getByRole("button", { name: "Remove window 1" });
+    await trash.hover();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Remove window 1" })).toBeVisible();
+    await section.getByRole("button", { name: "Save meeting windows" }).click();
+    await expect.poll(() => saved.length).toBe(1);
+    expect(saved[0]).toEqual({
+      windows: [
+        { days: ["mon", "tue", "wed"], start: "19:00", end: "22:00" },
+        { days: ["sat"], start: "13:00", end: "18:00" },
+      ],
+      notice_hours: 6, ahead_days: 14, invite_friends: true,
+    });
+    await expect(page.getByText("Dom asked you to approve making the calendar")).toBeVisible();
+    // Removing every window and saving means no booking at all.
+    await section.getByRole("button", { name: "Remove window 2" }).click();
+    await section.getByRole("button", { name: "Remove window 1" }).click();
+    await expect(section.getByText("No windows yet, so Dom books nothing.")).toBeVisible();
+    await section.getByRole("button", { name: "Save meeting windows" }).click();
+    await expect.poll(() => saved.length).toBe(2);
+    expect((saved[1] as { windows: unknown[] }).windows).toEqual([]);
     expect(problems).toEqual([]);
   });
 

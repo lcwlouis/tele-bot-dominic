@@ -382,6 +382,10 @@ the People's Republic of China, keeps inputs used to provide the service while t
 use inputs to improve or train its models. The policy describes how to opt out of training. DeepSeek does
 not offer zero data retention on this route. [DeepSeek Privacy Policy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html).
 
+## Subscription agents
+
+The pilot [subscription agents](acp-agents.md) (Codex, Claude, Antigravity) are not zero data retention: the provider keeps what Dom sends under its consumer terms and may train on it unless you opt out there. Dom sends them only owner-DM content, for the escalation and drafting jobs, and refuses any other chat or background job in code. The agent's process receives none of Dom's keys and not your ssh agent, and an agent runs only with its tools switched off, which is why Antigravity is not available yet.
+
 ## OpenRouter data policies
 
 Routes that carry chat content through OpenRouter always ask for zero data retention (`provider.zdr = true`): the
@@ -523,6 +527,28 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
   (`GOOGLE_PICKER_API_KEY`, `GOOGLE_PROJECT_NUMBER` in `.env`); they are never logged or shown anywhere else. The Picker
   and Google's sign-in are Google's services running in your browser, under Google's terms.
 
+## Booking
+
+Optional, off until the owner has set meeting windows and turned on Google's calendar read and Dom's own calendars (see
+[Booking within your windows](google.md#booking-within-your-windows)). It is the one Google feature that reaches a friend's
+DM or a group, so the rules are in code:
+
+- **Only the offered times leave the owner DM.** The free/busy read asks Google for event start and end times only (the
+  request names no title, place or attendee field), the busy blocks stay inside the function that finds slots, and the
+  tool result a friend's chat gets is built from the slot times and fixed instructions. A failed read says nothing about
+  the calendar. In a group the offered times are visible to everyone there, so Dom offers window slots and no more.
+- **The windows are the owner's.** Friends and groups cannot see or change them: the `windows` and `set_windows` actions
+  exist only in the owner DM and the handler checks the chat again in code. A friend's tool can only `offer` and `pick`.
+- **An offer belongs to its chat.** A pick names an offer and a slot number; an offer made in another chat, one that is
+  not open, expired or already picked is simply "not open", so one chat cannot learn of or use another's offer.
+- **The owner decides.** Every booking is an approval card (Allow once, Reject) unless the owner sets "Confirm a
+  booking" to Allow. What the friend wrote (their name, what it is about) is quoted on the card and fenced as untrusted
+  text in the owner's history. The friend is invited to the event, and Google emails them, only when the owner allows
+  it and the friend gave their email in that chat.
+- **What is kept.** The offers (chat, who asked, the slots, the time chosen, what they said it was about, the outcome and
+  the event id) are rows in `state.db`, removed after fourteen days and when the chat is forgotten. The windows are one
+  setting in the same database.
+
 ## Assistant mode
 
 Assistant mode is off until the owner turns it on, and it only ever speaks in the owner's DM.
@@ -578,6 +604,21 @@ and it never messages anyone else. The owner's DM history keeps a note of each
 plan (goals and reasons) and how each task ended, so Dom can talk about his own
 work; the summary of web content stays out of that history. See
 [Self-directed work](desktop.md#self-directed-work).
+
+## The shared workspace
+
+`<home>/workspace` is a folder Dom, the owner's desktop and the dashboard's Files page share (see
+[The shared workspace](desktop.md#the-shared-workspace)). It is the only part of the home the desktop container can
+see, and the container can read all of it (`inbox/` and `shared/` too, whatever `share_with_chats` says). Documents the owner sends in the DM land in `workspace/inbox/`; Dom reads them with the owner-DM-only `files` tool and
+the text he reads goes to the chat model like any other tool result, fenced as untrusted data. Nothing in the workspace
+leaves the host except through that, the desktop's own `download` and `upload` permissions, and the dashboard.
+
+By default groups and friends' DMs cannot reach any of it. With `[workspace] share_with_chats = true` they get a
+read-only `files` tool limited to `workspace/shared/` (code chooses the folder from the turn's scope; the model cannot
+name another), and a document sent in such a chat is saved to `shared/inbox/<chat id>/`, which only that chat and the
+owner can read. Another chat's landed documents are hidden from it in code, and a file with more than one name is never
+read in any chat, since the desktop could use a second name to move a file out of its folder. `private/`, notes, the database and `.env` are
+never under the workspace.
 
 ## Home network and T3 Code
 

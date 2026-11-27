@@ -25,9 +25,11 @@ from dom.config import MODEL_ROLES, Config, load_config
 from dom.deletion import STALE_MESSAGE, hash_matches, stamp_matches, stamp_token
 from dom.dispatch import Dispatcher
 from dom.tracer import TraceWriter
+from dom import workspace
 from dom.desktop import files as desktop_files
 from dom.desktop.fleet import DesktopFleet
 from dom.desktop.permissions import DesktopPermissions
+from dom.booking import Booking
 from dom.google import GoogleIntegration
 from dom.secrets import SecretRequests, SecretStore
 from dom.embedding import EmbeddingRouter, routed_embedding_client
@@ -118,6 +120,7 @@ class App:
     secret_requests: SecretRequests = field(init=False)
     desktop_permissions: DesktopPermissions = field(init=False)
     google: GoogleIntegration = field(init=False)
+    booking: Booking = field(init=False)  # offers friends times inside the owner's windows (v0.8.6 W2)
     plugin_command_times: dict[int, float] = field(default_factory=dict)  # per-chat cooldown outside the owner DM
     menu_dirty: bool = False  # True if set_my_commands failed and must be retried on the next background tick
     traces: TraceWriter | None = None  # the debug tracer (dom.tracer), opened by `dom run`
@@ -163,6 +166,7 @@ class App:
         self.secret_requests = SecretRequests(self)
         self.desktop_permissions = DesktopPermissions(self)
         self.google = GoogleIntegration(self)
+        self.booking = Booking(self)
         if self.config.desktop_hosts:
             self.desktop_worker = DesktopFleet(self)
         if self.cloud_studio is not None and self.cloud_studio.running_chat_keys is None:
@@ -321,7 +325,7 @@ async def _record(
             is_bot=msg.is_bot,
             visibility_scope=app.store.visibility_for(msg.chat_id),
             text=msg.text or (f"[{msg.media['kind']}]" if msg.media else ""),
-            media_json=json.dumps({**msg.media, "description": None}) if msg.media else None,
+            media_json=json.dumps({"description": None, **msg.media}) if msg.media else None,
             created_at=msg.date.isoformat(),
             origin=origin,
         )
@@ -393,7 +397,8 @@ async def _receive_desktop_document(app: App, message: Message, msg: IncomingMes
                 downloaded = await app.bot.download(document, destination=content)
             if downloaded is None:
                 raise OSError("no document returned")
-            name = desktop_files.stage_inbox(app.home.root, document.file_name, content.getvalue())
+            data = content.getvalue()
+            name = desktop_files.stage_inbox(app.home.root, document.file_name, data)
     except ValueError as error:
         await _send(app, msg.chat_id, str(error))
         return msg
@@ -403,7 +408,17 @@ async def _receive_desktop_document(app: App, message: Message, msg: IncomingMes
         return msg
     received = f"file received: inbox/{name}"
     await owner.record_event(app, received)
-    return msg.model_copy(update={"media": {**msg.media, "desktop_inbox": name}})
+    # The same bytes also land in the workspace, so Dom can read the document and the desktop sees it in /workspace.
+    fields: dict = {}
+    try:
+        if (target := workspace.destination(app, msg)) is not None:
+            fields = await asyncio.to_thread(
+                workspace.keep, *target, workspace.safe_name(document.file_name),
+                workspace.clean_mime(msg.media.get("mime")), data,
+            )
+    except (workspace.WorkspaceError, OSError) as error:
+        log.warning("could not also keep a desktop document in the workspace (%s)", type(error).__name__)
+    return msg.model_copy(update={"media": {**msg.media, "desktop_inbox": name, **fields}})
 
 
 async def _handle_migration(app: App, old_chat_id: int, new_chat_id: int, title: str) -> None:

@@ -89,12 +89,12 @@ STALE = "Google was switched off, disconnected or connected to another account s
 UNCERTAIN = "Google did not confirm that: it may or may not have happened. Check before trying again."
 # The approval kinds whose cards a switch going off cancels.
 SWITCH_ACTIONS: dict[str, tuple[str, ...]] = {
-    "calendar_write": ("calendar_create", "calendar_add", "calendar_move", "calendar_delete"),
+    "calendar_write": ("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "booking_confirm"),
     "gmail_drafts": ("gmail_draft",),
     "drive_files": ("doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update"),
 }
 ALL_GOOGLE_ACTIONS = (
-    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm",
     "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 )
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("dom_google_deadline", default=None)
@@ -118,7 +118,8 @@ class GoogleError(Exception):
 
 
 class GoogleNotFound(GoogleError):
-    """Google answered 404. For a Drive file this also means "Dom was not given it": drive.file hides every other file."""
+    """Google answered 404: what was asked for is not there. For a Drive file this also means "Dom was not given it":
+    drive.file hides every other file."""
 
 
 class GoogleSlow(GoogleError):
@@ -412,7 +413,7 @@ class GoogleIntegration:
             raise GoogleError("Google has not granted Dom his own calendars. Connect Google again.")
         if all(item["id"] != calendar_id for item in await self.own_calendars()):
             raise GoogleError("Dom did not make that calendar.")
-        await self._cancel(("calendar_add", "calendar_move", "calendar_delete"), tag=calendar_id)
+        await self._cancel(("calendar_add", "calendar_move", "calendar_delete", "booking_confirm"), tag=calendar_id)
         async with self.calendar_lock(calendar_id):
             with self.budget(FOREGROUND_SECONDS):
                 await self.call(

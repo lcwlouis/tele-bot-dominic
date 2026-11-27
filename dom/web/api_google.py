@@ -22,6 +22,10 @@ GET  /api/integrations/google/files       Dom's Drive folder and the files he ma
 POST /api/integrations/google/files/picked  the Picker page reports what the owner picked; Google is asked whether Dom
                                           can now see each file, and the owner's DM history is told about those he can.
 
+
+GET  /api/integrations/google/booking     the owner's meeting windows and booking settings (v0.8.6 W2), and whether Dom can book.
+POST /api/integrations/google/booking     replaces them; an empty list of windows means no booking at all.
+
 Owner only. The POSTs are same-origin JSON, in JSON_POSTS like every other dashboard write.
 """
 
@@ -34,6 +38,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from dom.booking import DAYS, MAX_AHEAD_DAYS, MAX_NOTICE_HOURS, MAX_WINDOWS
 from dom.google_files import confirm_picked, overview
 from dom.google_tools import calendar_rows
 from dom.google import BINDING_COOKIE, CALLBACK_PATH, SETTINGS_PATH, GoogleError, InvalidCallback
@@ -43,7 +48,7 @@ from dom.web.shared import owner_app
 log = logging.getLogger("dom.web")
 router = APIRouter()
 PREFIX = "/api/integrations/google"
-JSON_POSTS = {f"{PREFIX}/connect", f"{PREFIX}/disconnect", f"{PREFIX}/switch", f"{PREFIX}/calendars/remove", f"{PREFIX}/files/picked"}
+JSON_POSTS = {f"{PREFIX}/connect", f"{PREFIX}/disconnect", f"{PREFIX}/switch", f"{PREFIX}/calendars/remove", f"{PREFIX}/files/picked", f"{PREFIX}/booking"}
 SwitchId = Literal["calendar_read", "calendar_write", "gmail_read", "gmail_drafts", "drive_files", "contacts_read"]
 
 
@@ -180,3 +185,35 @@ async def files_picked(request: Request) -> dict:
         return {"files": await confirm_picked(g, body.ids)}
     except GoogleError as exc:
         raise HTTPException(409, str(exc)) from None
+
+
+class WindowInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    days: list[Literal[DAYS]] = Field(min_length=1, max_length=7)  # type: ignore[valid-type]
+    start: str = Field(max_length=5)
+    end: str = Field(max_length=5)
+
+
+class BookingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    windows: list[WindowInput] = Field(max_length=MAX_WINDOWS)
+    notice_hours: int = Field(ge=0, le=MAX_NOTICE_HOURS)
+    ahead_days: int = Field(ge=1, le=MAX_AHEAD_DAYS)
+    invite_friends: bool
+
+
+@router.get(f"{PREFIX}/booking")
+async def read_booking(request: Request) -> dict:
+    return await owner_app(request).booking.view()
+
+
+@router.post(f"{PREFIX}/booking")
+async def save_booking(request: Request) -> dict:
+    app = owner_app(request)
+    body = await _input(request, BookingInput)
+    try:
+        rules = await app.booking.set_rules(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    note = await app.booking.ensure_calendar() if rules.windows else ""
+    return {**await app.booking.view(), "note": note.strip()}

@@ -305,6 +305,14 @@ With the fast lane on, Dom composes the owner's DM turns apart from every other 
 | --- | --- | --- |
 | `presence.seen_reaction` | `true` | While a DM is online, react 👀 to the newest message Dom read when he answers with nothing (never in groups). It stands in for a read receipt and is never sent while he is asleep or offline. |
 
+## Workspace
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `workspace.share_with_chats` | `false` | Let groups and friends' DMs read the workspace's `shared/` folder: Dom may list and read files there for them, never write, and nothing else in the workspace. A document someone sends in such a chat then lands in `shared/inbox/<chat id>/`, readable only by that chat. Off, only your DM reaches the workspace. Settings → What Dom may do. |
+
+See [The shared workspace](desktop.md#the-shared-workspace) for what the folder is and who reaches it.
+
 ## Self-directed work
 
 | Key | Default | Meaning |
@@ -337,6 +345,22 @@ See [Self-directed work](desktop.md#self-directed-work) for the network guard it
 | `tracer.max_mb` | `256` | Size cap of the trace store (`traces.db` in Dom's home), in megabytes of compressed traces. Past it the oldest traces are deleted first. |
 
 Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See [Privacy](privacy.md#debug-traces).
+
+## Subscription agents (pilot)
+
+Codex, Claude and Antigravity on your own subscriptions, through the Agent Client Protocol: tables `[acp.codex]`, `[acp.claude]` and `[acp.antigravity]`, each with the keys below (shown for `acp.<name>`). Every agent is off until you switch it on, serves only escalation and drafting, and only in your DM.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `acp.<name>.enabled` | `false` | The switch. Off, the agent is never started. On, it is tried first in the roles below, in the owner's DM turns only. Antigravity cannot be switched on yet (no way to turn its tools off): the dashboard refuses it, and a hand-written `true` is refused at each call. Not zero data retention: the provider keeps your prompts under its consumer terms and may train on them unless you opt out in its settings. Running a bot on a subscription may break the provider's terms. |
+| `acp.<name>.roles` | `["escalation", "drafting"]` | Roles the agent serves: escalation (the model switch you approve) and drafting (skill and plugin drafts). Never chat, triage or media. |
+| `acp.<name>.command` | Unset | The adapter's executable. Unset uses the agent's usual one: codex-acp, claude-agent-acp or agy. |
+| `acp.<name>.args` | Unset | Arguments for the command. Unset uses the agent's usual ones (`acp` for agy). |
+| `acp.<name>.host` | Unset | An SSH destination (a name in ~/.ssh/config, key login) to run the agent on, for an adapter that does not run on this machine, such as a Mac. Unset runs it here. Sign the agent in on that host. |
+| `acp.<name>.auth_env` | `[]` | Names of secret variables (from .env) the agent's own process receives, such as an API key for it. Not for a subscription login, which the agent keeps itself. Not allowed with `host`. |
+| `acp.<name>.timeout_seconds` | `120` | Hard limit for one call. At the limit Dom cancels the prompt and kills the agent's process. |
+
+See [Subscription agents](acp-agents.md) for setup, sign-in and the risks.
 
 ## T3 Code
 

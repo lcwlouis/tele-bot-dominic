@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 DesktopAction = Literal[
     "visit_site", "fill_login", "download", "upload", "background_work",
-    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm",
     "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 ]
 PermissionPolicy = Literal["ask", "allow", "never"]
@@ -36,18 +36,21 @@ ApprovalDecision = Literal["once", "always", "reject"]
 
 ACTIONS: tuple[DesktopAction, ...] = (
     "visit_site", "fill_login", "download", "upload", "background_work",
-    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm",
     "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 )
 POLICIES: tuple[PermissionPolicy, ...] = ("ask", "allow", "never")
 SITE_SCOPED_ACTIONS: frozenset[str] = frozenset(("visit_site", "fill_login", "download", "upload"))
 # Actions with one global policy, so Allow always flips that policy. The Google ones (W4) are owner-DM tool calls.
 GOOGLE_ACTIONS: frozenset[str] = frozenset((
-    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm",
     "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 ))
 # Making a new calendar is asked every time (Reject, Allow once): no Allow always, and Allow is not a policy for it.
 ASK_EVERY_TIME: frozenset[str] = frozenset(("calendar_create",))
+# A booking card offers Allow once and Reject only: a friend's request is never approved for good from a tap. The owner can
+# still set the policy to Allow on the dashboard, which is the one way to book without a card.
+NO_ALLOW_ALWAYS: frozenset[str] = frozenset(("booking_confirm",))
 GLOBAL_ACTIONS: frozenset[str] = frozenset(("background_work", *(GOOGLE_ACTIONS - ASK_EVERY_TIME)))
 APPROVAL_TIMEOUT = 900.0
 CARD_LINES = 8  # lines on a Google approval card; the card never cuts a material detail, it goes dashboard-only instead
@@ -71,6 +74,7 @@ DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "sheet_create": "ask",
     "sheet_append": "ask",
     "sheet_update": "ask",
+    "booking_confirm": "ask",
 }
 
 ACTION_META: dict[DesktopAction, dict[str, str]] = {
@@ -109,6 +113,11 @@ ACTION_META: dict[DesktopAction, dict[str, str]] = {
     "calendar_delete": {
         "label": "Delete a calendar event",
         "description": "Dom deletes an event from one of his own calendars. The card shows what will be removed.",
+    },
+    "booking_confirm": {
+        "label": "Confirm a booking",
+        "description": "A friend picked a time Dom offered inside your meeting windows. The card shows who, where, when and why; "
+        "Allow once books it on Dom's booking calendar. Allow skips the card.",
     },
     "gmail_draft": {
         "label": "Save a Gmail draft",
@@ -560,7 +569,7 @@ class DesktopPermissions:
         buttons = []
         if not dashboard_only:  # a card that cannot show everything can only be rejected here
             buttons.append(InlineKeyboardButton(text="Allow once", callback_data=f"dperm:once:{request_id}:{token}"))
-            if action in GLOBAL_ACTIONS or normalize_site(site) is not None:
+            if action not in NO_ALLOW_ALWAYS and (action in GLOBAL_ACTIONS or normalize_site(site) is not None):
                 buttons.append(InlineKeyboardButton(text="Allow always", callback_data=f"dperm:always:{request_id}:{token}"))
         buttons.append(InlineKeyboardButton(text="Reject", callback_data=f"dperm:reject:{request_id}:{token}"))
         try:
@@ -617,7 +626,7 @@ class DesktopPermissions:
         action = row["action"]
         site = row["site"]
         waiter = self._waiters.get(request_id)
-        if decision == "always" and action in ASK_EVERY_TIME:
+        if decision == "always" and (action in ASK_EVERY_TIME or action in NO_ALLOW_ALWAYS):
             return False, "this one is always asked"
         if decision != "reject":
             if via == "telegram" and request_id in self._dashboard_only:
@@ -667,6 +676,7 @@ class DesktopPermissions:
         guard: Callable[[], Awaitable[str | None]],
         dashboard_only: bool = False,
         tag: str = "",
+        declined: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Run an owner-DM tool action under its policy and return what the tool tells the model.
 
@@ -675,7 +685,8 @@ class DesktopPermissions:
         Never refuses. Ask sends the approval card and returns at once: the wait for the tap happens in the
         background, so the reply never blocks on the owner. On approval it runs and the outcome is written to the
         owner's DM history, where Dom sees it on his next turn; a refusal, expiry, cancellation or failure is written
-        there too, so nothing is lost silently."""
+        there too, so nothing is lost silently. `declined()` is awaited when a card ends without the action running (rejected,
+        expired, cancelled, or approved but no longer allowed), for an action somebody else is waiting on."""
         label = ACTION_META[action]["label"]
         policy = await self.resolve(action)
         if policy == "never":
@@ -694,7 +705,7 @@ class DesktopPermissions:
             return f"error: {exc}"
         if tag:
             self._tags[request.id] = tag
-        self.app.dispatch._spawn(self._ask_then_perform(request, action, detail, lines, perform, guard, dashboard_only))
+        self.app.dispatch._spawn(self._ask_then_perform(request, action, detail, lines, perform, guard, dashboard_only, declined))
         return (
             f"Asked the owner to approve: {label.lower()}. Nothing has happened yet. "
             "You will see the outcome in the chat history; do not repeat the request."
@@ -703,6 +714,7 @@ class DesktopPermissions:
     async def _ask_then_perform(
         self, request: _Request, action: DesktopAction, detail: str, lines: Sequence[str],
         perform: Callable[[bool], Awaitable[str]], guard: Callable[[], Awaitable[str | None]], dashboard_only: bool,
+        declined: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         store, label = self.app.store, ACTION_META[action]["label"]
         outcome = await self.ask(request, action, "", detail, DEFAULT, lines, APPROVAL_TIMEOUT, dashboard_only)
@@ -712,9 +724,11 @@ class DesktopPermissions:
             # The detail names things others wrote (an invite's title, a draft's subject): fenced as untrusted, as
             # desktop task text is, so the DM's history never reads it as Dom's own record.
             await store.record_owner_event(f"{label} {said}; nothing changed. " + desktop_tools.untrusted(detail, limit=400))
+            await self._declined(declined, action)
             return
         if (problem := await guard()) is not None:  # the switch or the account changed while it waited
             await store.record_owner_event(f"{label} was approved but not run; nothing changed. {problem.removeprefix('error: ')}"[:400])
+            await self._declined(declined, action)
             return
         try:
             result = await perform(True)
@@ -730,6 +744,15 @@ class DesktopPermissions:
                 await send_notice(self.app, self.app.owner_id, f"{label}: not confirmed", [result.split(": ", 1)[-1]])
             except Exception:
                 log.warning("could not tell the owner that %s failed", action)
+
+    @staticmethod
+    async def _declined(declined: Callable[[], Awaitable[None]] | None, action: str) -> None:
+        if declined is None:
+            return
+        try:
+            await declined()
+        except Exception:
+            log.exception("could not settle a declined %s", action)
 
     async def cancel_pending(self, actions: Iterable[str], *, tag: str | None = None) -> int:
         """Cancel the waiting requests of these actions (their switch went off, or the account changed): the waiter is
