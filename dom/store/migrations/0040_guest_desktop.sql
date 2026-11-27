@@ -3,4 +3,4 @@
 ALTER TABLE desktop_tasks ADD COLUMN guest_chat_id INTEGER;
 ALTER TABLE desktop_tasks ADD COLUMN guest_chat_title TEXT;
 ALTER TABLE desktop_tasks ADD COLUMN guest_asker TEXT;
-PRAGMA user_version = 39;
+PRAGMA user_version = 41;

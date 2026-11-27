@@ -1,4 +1,4 @@
-"""Google Calendar and Gmail for the owner (v0.8.5 W4, v0.8.6 W1): the OAuth connection, its tokens and the API calls.
+"""Google for the owner (v0.8.5 W4, v0.8.6 W1 and W4): the OAuth connection, its tokens and the API calls.
 
 The owner connects once from Settings → Services. The dashboard starts an authorization-code flow with PKCE (S256)
 and a random `state` that is bound to the browser that started it by a short-lived cookie, is single-use and expires
@@ -6,7 +6,7 @@ after ten minutes. The callback exchanges the code on the server and keeps the t
 `SecretStore` (namespace `google`). Nothing else, no log line, trace or turn log, ever holds a token.
 
 What Dom may do with the connection is limited three ways, each checked in code at the moment of use: the scope Google
-granted, the owner's switch for it (Calendar read, Calendar write, Gmail read, Gmail drafts) and the owner's DM.
+granted, the owner's switch for it (Calendar read, Calendar write, Gmail read, Gmail drafts, Files, Contacts) and the owner's DM.
 Dom never sends mail: no send exists here. He never writes to the owner's own calendars either: with the narrow
 `calendar.app.created` scope he makes calendars of his own and writes only there. The ids of the calendars he made (and
 which of their events carry a nudge) are kept in the encrypted `SecretStore` too, and code checks every write against them.
@@ -51,13 +51,21 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
+DRIVE_API = "https://www.googleapis.com/drive/v3"
+DOCS_API = "https://docs.googleapis.com/v1"
+SHEETS_API = "https://sheets.googleapis.com/v4"
+PEOPLE_API = "https://people.googleapis.com/v1"
 
 SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar.events"
 SCOPE_APP_CALENDAR = "https://www.googleapis.com/auth/calendar.app.created"
 SCOPE_OPENID = "openid"  # only to learn which Google account connected (the `sub`), so Dom's calendars follow the account
 SCOPE_GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPE_GMAIL_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
-SCOPES = (SCOPE_CALENDAR, SCOPE_APP_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE, SCOPE_OPENID)
+# Only the files Dom made and the files the owner opened with him through Google Picker: never the rest of the Drive.
+SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
+SCOPE_CONTACTS = "https://www.googleapis.com/auth/contacts.readonly"
+BASE_SCOPES = (SCOPE_CALENDAR, SCOPE_APP_CALENDAR, SCOPE_GMAIL_READ, SCOPE_GMAIL_COMPOSE, SCOPE_OPENID)
+SCOPES = (*BASE_SCOPES, SCOPE_DRIVE_FILE, SCOPE_CONTACTS)  # everything Dom recognises; a connect asks only for BASE_SCOPES and what is named
 
 # The owner's switches, in the order the dashboard shows them, and the scope each needs.
 SWITCHES: dict[str, tuple[str, str]] = {
@@ -65,9 +73,13 @@ SWITCHES: dict[str, tuple[str, str]] = {
     "calendar_write": (SCOPE_APP_CALENDAR, "Dom's own calendars: create them, add, move and delete events there (each needs your approval)"),
     "gmail_read": (SCOPE_GMAIL_READ, "Gmail: search and read mail"),
     "gmail_drafts": (SCOPE_GMAIL_COMPOSE, "Gmail: save drafts (each needs your approval; Dom never sends)"),
+    "drive_files": (SCOPE_DRIVE_FILE, "Files in Google Drive: read the files he made and the ones you hand him, make docs and sheets in his own folder (each write needs your approval)"),
+    "contacts_read": (SCOPE_CONTACTS, "Contacts: look up a name for an email address or phone number"),
 }
 
 CLIENT_ID_ENV, CLIENT_SECRET_ENV = "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"
+PICKER_KEY_ENV, PROJECT_NUMBER_ENV = "GOOGLE_PICKER_API_KEY", "GOOGLE_PROJECT_NUMBER"  # Google Picker, in the owner's browser only
+PICKER_PATH = "/google/picker"
 CALLBACK_PATH = "/api/integrations/google/callback"
 BINDING_COOKIE = "dom_google_binding"
 SETTINGS_PATH = "/app/system"
@@ -77,10 +89,14 @@ STALE = "Google was switched off, disconnected or connected to another account s
 UNCERTAIN = "Google did not confirm that: it may or may not have happened. Check before trying again."
 # The approval kinds whose cards a switch going off cancels.
 SWITCH_ACTIONS: dict[str, tuple[str, ...]] = {
-    "calendar_write": ("calendar_create", "calendar_add", "calendar_move", "calendar_delete"),
+    "calendar_write": ("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "booking_confirm"),
     "gmail_drafts": ("gmail_draft",),
+    "drive_files": ("doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update"),
 }
-ALL_GOOGLE_ACTIONS = ("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft")
+ALL_GOOGLE_ACTIONS = (
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft", "booking_confirm",
+    "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
+)
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("dom_google_deadline", default=None)
 NAMESPACE, TOKEN_KEY, CALENDARS_KEY = "google", "oauth", "calendars"
 UNKNOWN_ACCOUNT = "unknown"  # a connection made before the account's id was kept
@@ -99,6 +115,11 @@ _ERROR_CODE = re.compile(r"[a-z_]{1,40}")
 
 class GoogleError(Exception):
     """A Google failure whose text is safe to show the owner and the model: it never holds a token or a response body."""
+
+
+class GoogleNotFound(GoogleError):
+    """Google answered 404: what was asked for is not there. For a Drive file this also means "Dom was not given it":
+    drive.file hides every other file."""
 
 
 class GoogleSlow(GoogleError):
@@ -172,6 +193,8 @@ class GoogleIntegration:
         self.wall = time.time
         self._calendar_locks: dict[str, asyncio.Lock] = {}
         self._making: set[str] = set()  # names of calendars being made right now
+        self.folder_flight: asyncio.Task[str] | None = None  # the one task finding or making Dom's Drive folder (shared by callers)
+        self.contacts_warm = False  # the People API wants one empty search before the first real one
         self.agenda: tuple[float, str] | None = None
         self._agenda_refresh: asyncio.Task[None] | None = None
 
@@ -194,6 +217,20 @@ class GoogleIntegration:
 
     def redirect_uri(self) -> str | None:
         return dashboard_url(self.app.config.web.public_url, CALLBACK_PATH)
+
+    def picker_config(self) -> dict[str, str] | None:
+        """What the Picker page needs from `.env`: the OAuth client id, a browser API key and the Cloud project number.
+        The key and number are never logged or shown anywhere but that one page; None while any is missing."""
+        credentials = self.client_credentials()
+        key, number = (self.app.config.secret(name) for name in (PICKER_KEY_ENV, PROJECT_NUMBER_ENV))
+        if credentials is None or not key or not number or not key.strip() or not number.strip().isdigit():
+            return None
+        return {"client_id": credentials[0], "api_key": key.strip(), "project_number": number.strip()}
+
+    def picker_url(self, file_id: str | None = None) -> str | None:
+        """The dashboard link that opens the Picker, with a file preselected when one is given."""
+        url = dashboard_url(self.app.config.web.public_url, PICKER_PATH)
+        return None if url is None else url + (f"?{urlencode({'file': file_id})}" if file_id else "")
 
     async def state(self) -> dict[str, Any]:
         merged = _default_state()
@@ -219,6 +256,11 @@ class GoogleIntegration:
     async def available(self, switch: str) -> bool:
         """The switch is on, Google granted its scope and the connection is live."""
         return allows(await self.state(), switch)
+
+    async def granted(self, switch: str) -> bool:
+        """Google granted the switch's scope to the live connection (the switch itself may be off)."""
+        state = await self.state()
+        return state["status"] == "connected" and SWITCHES[switch][0] in state["scopes"]
 
     async def set_switch(self, switch: str, on: bool) -> dict[str, Any]:
         if switch not in SWITCHES:
@@ -250,11 +292,14 @@ class GoogleIntegration:
             "connected_at": state["connected_at"],
             "last_error": state["last_error"],
             "own_calendars_granted": state["status"] == "connected" and SCOPE_APP_CALENDAR in state["scopes"],
+            "picker_ready": self.picker_config() is not None,
+            "picker_path": PICKER_PATH,
             "calendars": await self.own_calendars(),
             "switches": [
                 {
                     "id": name, "label": label, "on": state["switches"][name],
                     "granted": scope in state["scopes"] and state["status"] == "connected",
+                    "extra": scope not in BASE_SCOPES,  # asked for only when wanted: "Reconnect to allow" names it
                 }
                 for name, (scope, label) in SWITCHES.items()
             ],
@@ -368,7 +413,7 @@ class GoogleIntegration:
             raise GoogleError("Google has not granted Dom his own calendars. Connect Google again.")
         if all(item["id"] != calendar_id for item in await self.own_calendars()):
             raise GoogleError("Dom did not make that calendar.")
-        await self._cancel(("calendar_add", "calendar_move", "calendar_delete"), tag=calendar_id)
+        await self._cancel(("calendar_add", "calendar_move", "calendar_delete", "booking_confirm"), tag=calendar_id)
         async with self.calendar_lock(calendar_id):
             with self.budget(FOREGROUND_SECONDS):
                 await self.call(
@@ -382,8 +427,14 @@ class GoogleIntegration:
 
     # ---- connect ------------------------------------------------------------------------------------------------
 
-    def begin(self) -> tuple[str, str]:
-        """Start an authorization: the Google consent URL and the binding value for the browser's cookie."""
+    def begin(self, also: Iterable[str] = ()) -> tuple[str, str]:
+        """Start an authorization: the Google consent URL and the binding value for the browser's cookie. It asks for the
+        base scopes and, for each switch named in `also`, that switch's scope: a newer scope is requested only when its
+        switch is wanted, and Google keeps what was granted before (`include_granted_scopes`)."""
+        wanted = list(dict.fromkeys(also))
+        if any(name not in SWITCHES for name in wanted):
+            raise GoogleError("Dom does not know that permission.")
+        scopes = list(dict.fromkeys([*BASE_SCOPES, *(SWITCHES[name][0] for name in wanted)]))
         credentials, redirect = self.client_credentials(), self.redirect_uri()
         if credentials is None:
             raise GoogleError(f"Set {CLIENT_ID_ENV} and {CLIENT_SECRET_ENV} in .env first.")
@@ -397,7 +448,7 @@ class GoogleIntegration:
         self._pending[_sha(state)] = _Pending(verifier, _sha(binding), now + STATE_TTL)
         query = urlencode({
             "client_id": credentials[0], "redirect_uri": redirect, "response_type": "code",
-            "scope": " ".join(SCOPES), "state": state, "code_challenge": _challenge(verifier),
+            "scope": " ".join(scopes), "state": state, "code_challenge": _challenge(verifier),
             "code_challenge_method": "S256", "access_type": "offline", "prompt": "consent",
             "include_granted_scopes": "true",
         })
@@ -652,14 +703,15 @@ class GoogleIntegration:
 
     async def _send(
         self, method: str, url: str, *, params: dict | None = None, body: Any = None, data: dict | None = None,
-        authorized: bool = True, idempotent: bool | None = None, ticket: Ticket | None = None,
+        authorized: bool = True, idempotent: bool | None = None, ticket: Ticket | None = None, max_bytes: int | None = None,
     ) -> httpx.Response:
         """One HTTP call, retried on 429, 5xx and network errors with backoff, and a 401 refreshes the token once.
 
         A call that is not safe to repeat (a POST without an idempotency key) is never retried after Google may have
         acted on it: that raises GoogleUncertain. Inside `budget()` the whole call, retries and backoff included,
         stops at the deadline with GoogleSlow: the token (a refresh in flight included) and the request share that one
-        deadline. With a `ticket`, nothing is written once its switch or connection has moved."""
+        deadline. With a `ticket`, nothing is written once its switch or connection has moved. With `max_bytes` the answer is
+        read as it arrives and refused once it passes that size."""
         if idempotent is None:
             idempotent = method != "POST"
         connection = ticket.connection if ticket is not None else None
@@ -676,7 +728,10 @@ class GoogleIntegration:
                     if ticket is not None and self.stale(ticket):  # the last look, with nothing awaited before the write
                         raise GoogleError(STALE)
                     sent = True
-                    response = await self.http.request(method, url, params=params, json=body, data=data, headers=headers)
+                    if max_bytes is None:
+                        response = await self.http.request(method, url, params=params, json=body, data=data, headers=headers)
+                    else:
+                        response = await self._bounded(method, url, params, body, data, headers, max_bytes)
             except TimeoutError:  # the deadline ran out, in a refresh still going on or while Google had the request
                 raise (GoogleUncertain(UNCERTAIN) if sent and not idempotent else GoogleSlow(SLOW)) from None
             except httpx.HTTPError as exc:
@@ -708,6 +763,22 @@ class GoogleIntegration:
             return response
         raise GoogleError("Google is not answering.")
 
+    async def _bounded(
+        self, method: str, url: str, params: dict | None, body: Any, data: dict | None, headers: dict[str, str], max_bytes: int,
+    ) -> httpx.Response:
+        """One call whose answer is read in pieces and refused as soon as it passes `max_bytes`, so a huge answer is never held
+        or parsed whole. What comes back is the same kind of response, already decoded."""
+        async with self.http.stream(method, url, params=params, json=body, data=data, headers=headers) as streamed:
+            pieces, size = [], 0
+            async for piece in streamed.aiter_bytes():
+                size += len(piece)
+                if size > max_bytes:
+                    log.warning("Google %s %s answered more than %s bytes", method, urlsplit(url).path, max_bytes)
+                    raise GoogleError(f"Google's answer is too big for Dom to read ({max_bytes // 1000} KB at most): ask for less.")
+                pieces.append(piece)
+            kept = [(k, v) for k, v in streamed.headers.multi_items() if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+            return httpx.Response(streamed.status_code, headers=kept, content=b"".join(pieces), request=streamed.request)
+
     async def _backoff(self, delay: float, deadline: float | None) -> None:
         if deadline is not None and delay >= deadline - self.clock():
             raise GoogleSlow(SLOW)  # waiting would run past what a turn may spend
@@ -715,12 +786,12 @@ class GoogleIntegration:
 
     async def call(
         self, method: str, url: str, *, params: dict | None = None, body: Any = None,
-        idempotent: bool | None = None, ticket: Ticket | None = None, allow: tuple[int, ...] = (),
+        idempotent: bool | None = None, ticket: Ticket | None = None, allow: tuple[int, ...] = (), max_bytes: int | None = None,
     ) -> Any:
         """An authorized API call returning the parsed JSON (None for an empty answer, or an `allow`ed status such as
-        a 409 that means "already done")."""
+        a 409 that means "already done"). With `max_bytes`, an answer bigger than that is refused before it is parsed."""
         response = await self._send(
-            method, url, params=params, body=body, idempotent=idempotent, ticket=ticket,
+            method, url, params=params, body=body, idempotent=idempotent, ticket=ticket, max_bytes=max_bytes,
         )
         if response.is_success or response.status_code in allow:
             if not response.content:
@@ -729,11 +800,23 @@ class GoogleIntegration:
                 return response.json()
             except ValueError:
                 raise GoogleError("Google sent an answer Dom could not read.") from None
+        self._refuse(method, url, response)
+
+    async def call_text(self, url: str, *, params: dict | None = None, limit: int) -> tuple[str, bool]:
+        """A GET whose answer is text (an export, a file's content), cut to `limit` characters: the text and whether it was cut."""
+        response = await self._send("GET", url, params=params)
+        if not response.is_success:
+            self._refuse("GET", url, response)
+        text = response.content.decode("utf-8", errors="replace")
+        return text[:limit], len(text) > limit
+
+    @staticmethod
+    def _refuse(method: str, url: str, response: httpx.Response) -> None:
         log.warning("Google %s %s answered %s", method, urlsplit(url).path, response.status_code)
         if response.status_code == 403:
             raise GoogleError("Google refused: this permission was not granted. Reconnect Google and tick it.")
         if response.status_code == 404:
-            raise GoogleError("Google could not find that.")
+            raise GoogleNotFound("Google could not find that.")
         raise GoogleError(f"Google refused the request (status {response.status_code}).")
 
     # ---- the owner's agenda, kept ready for the turn note --------------------------------------------------------

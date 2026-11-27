@@ -18,7 +18,7 @@ from aiogram.types import CallbackQuery, User
 
 from dom.config import WebConfig, set_dotenv
 from dom.google import (
-    CALENDAR_API, CALLBACK_PATH, GMAIL_API, REVOKE_URL, SCOPE_APP_CALENDAR, SCOPE_CALENDAR, SCOPE_GMAIL_COMPOSE, SCOPE_GMAIL_READ, SCOPE_OPENID, SCOPES,
+    BASE_SCOPES, CALENDAR_API, CALLBACK_PATH, GMAIL_API, REVOKE_URL, SCOPE_APP_CALENDAR, SCOPE_CALENDAR, SCOPE_GMAIL_COMPOSE, SCOPE_GMAIL_READ, SCOPE_OPENID, SCOPES,
     SWITCHES, TOKEN_URL, GoogleError, GoogleIntegration, GoogleSlow,
 )
 from dom.google_tools import _calendar, _gmail, offered
@@ -47,7 +47,7 @@ class FakeGoogle:
         self.bodies: list[str] = []
         self.verifier_ok = False
         self.revoked = False  # refresh answers invalid_grant
-        self.scope = " ".join(SCOPES)
+        self.scope = " ".join(BASE_SCOPES)  # what a plain connect asks for and Google grants
         self.challenge = ""
         self.statuses: list[int] = []  # answers to give the next API calls before the real one
         self.events: list[dict] = []
@@ -57,6 +57,11 @@ class FakeGoogle:
         self.deleted: set[str] = set()  # events deleted at Google
         self.delays: dict[str, float] = {}  # "METHOD suffix" -> seconds an answer takes
         self.insert_status = 200
+        # Drive, Docs, Sheets and People (v0.8.6 W4): the files Dom can see are those in `visible`, as under drive.file.
+        self.files: dict[str, dict] = {}  # id -> {name, mime, text, size, parents, grid}
+        self.visible: set[str] = set()
+        self.contacts: list[dict] = []
+        self.writes: list[tuple[str, str, object]] = []  # (what, file id, payload)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -82,6 +87,8 @@ class FakeGoogle:
             if status != 200:
                 return httpx.Response(status, json={"error": {"message": "busy"}}, headers={"Retry-After": "2"})
         path = request.url.path
+        if (answer := self.google_files(request, path, body)) is not None:
+            return answer
         if path.endswith("/calendars") and request.method == "POST":
             if self.insert_status != 200:
                 return httpx.Response(self.insert_status, json={"error": {"message": "no"}})
@@ -104,7 +111,8 @@ class FakeGoogle:
             elif event_id in self.deleted:
                 return httpx.Response(404, json={"error": {"message": "gone"}})
             if request.method == "GET":
-                return httpx.Response(200, json=next(e for e in self.events if e["id"] == event_id))
+                found = next((e for e in self.events if e["id"] == event_id), None)
+                return httpx.Response(200, json=found) if found is not None else httpx.Response(404, json={"error": {"message": "gone"}})
             return httpx.Response(200 if request.method == "PATCH" else 204, json={"id": event_id} if request.method == "PATCH" else None)
         if path.endswith("/users/me/messages") and request.method == "GET":
             return httpx.Response(200, json={"messages": [{"id": key, "threadId": key} for key in self.messages]})
@@ -113,6 +121,72 @@ class FakeGoogle:
         if path.endswith("/users/me/drafts") and request.method == "POST":
             return httpx.Response(200, json={"id": "draft1"})
         return httpx.Response(404, json={"error": {"message": "no route"}})
+
+    def google_files(self, request: httpx.Request, path: str, body: str) -> httpx.Response | None:
+        """Drive, Docs, Sheets and the People API, enough for the tools: a file Dom was not handed is a 404."""
+        method, query = request.method, dict(request.url.params)
+        if path.endswith("/people:searchContacts"):
+            self.searches = getattr(self, "searches", []) + [query.get("query", "")]
+            needle = query.get("query", "").casefold()
+            hits = [c for c in self.contacts if needle and needle in json.dumps(c).casefold()]
+            return httpx.Response(200, json={"results": [{"person": c} for c in hits]})
+        if "/drive/v3/files" in path:
+            tail = path.split("/drive/v3/files", 1)[1].strip("/")
+            if not tail and method == "GET":
+                q = query.get("q", "")
+                wanted_folder = "mimeType = 'application/vnd.google-apps.folder'" in q
+                rows = [
+                    {"id": key, **{k: f[k] for k in ("name", "mimeType")}, "modifiedTime": "2026-11-27T10:00:00Z", "webViewLink": f"https://drive.google.com/drive/folders/{key}"}
+                    for key, f in self.files.items()
+                    if key in self.visible and (f["mimeType"] == "application/vnd.google-apps.folder") == wanted_folder
+                    and (not wanted_folder or f["name"] == "Dom")
+                ]
+                self.last_query = q
+                return httpx.Response(200, json={"files": rows[: int(query.get("pageSize", "100"))]})
+            if not tail and method == "POST":
+                data = json.loads(body)
+                key = f"file{len(self.files) + 1:03d}abcdef"
+                self.files[key] = {"name": data["name"], "mimeType": data["mimeType"], "text": "", "parents": data.get("parents", []), "grid": []}
+                self.visible.add(key)
+                self.writes.append(("create", key, data))
+                return httpx.Response(200, json={"id": key, "webViewLink": f"https://docs.google.com/document/d/{key}/edit"})
+            file_id, _, rest = tail.partition("/")
+            f = self.files.get(file_id)
+            if f is None or file_id not in self.visible:
+                return httpx.Response(404, json={"error": {"message": "File not found"}})
+            if rest == "export":
+                return httpx.Response(200, text=f["text"])
+            if query.get("alt") == "media":
+                return httpx.Response(200, text=f["text"])
+            return httpx.Response(200, json={
+                "id": file_id, "name": f["name"], "mimeType": f["mimeType"], "size": str(f.get("size", len(f["text"]))),
+                "capabilities": {"canEdit": f.get("can_edit", True)}, "webViewLink": f"https://docs.google.com/document/d/{file_id}/edit",
+            })
+        if path.startswith("/v1/documents/") and path.endswith(":batchUpdate"):
+            file_id = path.split("/")[3].split(":")[0]
+            if file_id not in self.visible:
+                return httpx.Response(404, json={"error": {"message": "nope"}})
+            self.writes.append(("doc", file_id, json.loads(body)))
+            self.files[file_id]["text"] += json.loads(body)["requests"][0]["insertText"]["text"]
+            return httpx.Response(200, json={})
+        if path.startswith("/v4/spreadsheets/"):
+            tail = path.split("/v4/spreadsheets/", 1)[1]
+            file_id, _, rest = tail.partition("/")
+            if file_id not in self.visible:
+                return httpx.Response(404, json={"error": {"message": "nope"}})
+            f = self.files[file_id]
+            if not rest:
+                return httpx.Response(200, json={"sheets": [{"properties": {"title": "Budget sheet's"}}]})
+            cells = rest.split("values/", 1)[1]
+            if cells.endswith(":append"):
+                self.writes.append(("append", file_id, {"range": cells, "query": query, "body": json.loads(body)}))
+                f["grid"] += json.loads(body)["values"]
+                return httpx.Response(200, json={})
+            if method == "PUT":
+                self.writes.append(("update", file_id, {"range": cells, "query": query, "body": json.loads(body)}))
+                return httpx.Response(200, json={})
+            return httpx.Response(200, json={"range": cells, "values": f["grid"]})
+        return None
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         """The same answers, after the delay set for the request's method, so two writes can overlap."""
@@ -175,6 +249,8 @@ async def ready(setup, *on: str, scope: str | None = None):
     app, fake, client = setup()
     if scope is not None:
         fake.scope = scope
+    elif any(SWITCHES[name][0] not in BASE_SCOPES for name in on):  # a newer scope is granted only when it was asked for
+        fake.scope = " ".join(SCOPES)
     await connect(app, fake, client)
     for name in on:
         await app.google.set_switch(name, True)
@@ -246,7 +322,7 @@ async def test_connect_uses_pkce_and_stores_tokens_encrypted(setup):
     view = (await client.get("/api/integrations/google", headers={"Authorization": HEADERS["Authorization"]})).json()
     assert view["status"] == "connected" and view["client_id_set"] and view["client_secret_set"]
     assert CLIENT_ID not in json.dumps(view) and CLIENT_SECRET not in json.dumps(view)
-    assert [s["granted"] for s in view["switches"]] == [True] * 4 and not any(s["on"] for s in view["switches"])
+    assert [s["granted"] for s in view["switches"]] == [True] * 4 + [False] * 2 and not any(s["on"] for s in view["switches"])
 
     # The token is encrypted; nothing readable is anywhere in the database.
     row = await app.store.get_encrypted_secret("google", "oauth")
@@ -315,7 +391,8 @@ async def test_a_scope_the_owner_unticked_cannot_be_switched_on(setup):
     app, fake, client = await ready(setup, scope=SCOPE_CALENDAR)
     view = await app.google.view()
     assert {s["id"]: s["granted"] for s in view["switches"]} == {
-        "calendar_read": True, "calendar_write": False, "gmail_read": False, "gmail_drafts": False}
+        "calendar_read": True, "calendar_write": False, "gmail_read": False, "gmail_drafts": False,
+        "drive_files": False, "contacts_read": False}
     refused = await client.post("/api/integrations/google/switch", headers=HEADERS, json={"id": "gmail_read", "on": True})
     assert refused.status_code == 409
     assert (await client.post("/api/integrations/google/switch", headers=HEADERS, json={"id": "calendar_read", "on": True})).status_code == 200

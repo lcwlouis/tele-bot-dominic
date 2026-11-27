@@ -1919,6 +1919,8 @@ test.describe("interactions under the CSP", () => {
         { id: "calendar_write", label: "Dom's own calendars: create them, add, move and delete events there (each needs your approval)", on: false, granted: false },
         { id: "gmail_read", label: "Gmail: search and read mail", on: false, granted: false },
         { id: "gmail_drafts", label: "Gmail: save drafts (each needs your approval; Dom never sends)", on: false, granted: true },
+        { id: "drive_files", label: "Files in Google Drive: read the files he made and the ones you hand him", on: false, granted: false, extra: true },
+        { id: "contacts_read", label: "Contacts: look up a name for an email address or phone number", on: false, granted: true, extra: true },
       ],
     };
     const bodies: Record<string, unknown>[] = [];
@@ -1934,7 +1936,7 @@ test.describe("interactions under the CSP", () => {
     await expect(page.getByRole("tab", { name: "Services", selected: true })).toBeVisible();
     await expect(page.getByText("Google connected. Turn on what Dom may use.")).toBeVisible();
     await expect.poll(() => page.url()).not.toContain("google=");
-    const card = page.getByRole("region", { name: "Google Calendar and Gmail" });
+    const card = page.getByRole("region", { name: "Google Calendar, Gmail, Drive and Contacts" });
     await expect(card.getByText("Client ID: set")).toBeVisible();
     await expect(card.getByText("Client secret: set")).toBeVisible();
     await expect(card.getByText("https://dom.example.org/api/integrations/google/callback")).toBeVisible();
@@ -1948,6 +1950,46 @@ test.describe("interactions under the CSP", () => {
     expect(bodies[0]).toEqual({ id: "calendar_read", on: true });
     await expect(card.getByRole("switch", { name: "Calendar: read events" })).toBeChecked();
     await expect(card.getByRole("button", { name: "Disconnect Google" })).toBeVisible();
+    // A newer permission is asked for only when wanted: its switch is locked and Reconnect asks for just that one.
+    await expect(card.getByRole("switch", { name: /^Files in Google Drive/ })).toBeDisabled();
+    await expect(card.getByRole("switch", { name: /^Contacts/ })).toBeEnabled();
+    const asked: unknown[] = [];
+    await page.route("**/api/integrations/google/connect", async (route) => {
+      asked.push(route.request().postDataJSON());
+      await route.fulfill({ json: { url: "/app/system?asked=1" } });
+    });
+    await card.getByRole("button", { name: "Reconnect to allow" }).click();
+    await expect.poll(() => asked.length).toBe(1);
+    expect(asked[0]).toEqual({ also: ["drive_files"] });
+    expect(problems).toEqual([]);
+  });
+
+  test("google: Dom's files are listed by name with a link to his folder and the file picker", async ({ page }) => {
+    const problems = await watch(page);
+    const start = await (await page.request.get("/api/integrations/google")).json();
+    const connected = {
+      ...start, client_id_set: true, client_secret_set: true, redirect_uri: "https://dom.example.org/api/integrations/google/callback",
+      status: "connected", connected_at: "2026-11-27T10:00:00+00:00", own_calendars_granted: false, calendars: [],
+      picker_ready: true, picker_path: "/google/picker",
+      switches: [{ id: "drive_files", label: "Files in Google Drive: read the files he made and the ones you hand him", on: true, granted: true, extra: true }],
+    };
+    await page.route("**/api/integrations/google", (route) => route.fulfill({ json: connected }));
+    await page.route("**/api/integrations/google/files", (route) =>
+      route.fulfill({
+        json: {
+          folder: { name: "Dom", url: "https://drive.google.com/drive/folders/example" },
+          files: [{ name: "Trip plan", kind: "Google Doc" }, { name: "Gym log", kind: "Google Sheet" }],
+          more: false,
+        },
+      }),
+    );
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "Services" }).click();
+    const card = page.getByRole("region", { name: "Google Calendar, Gmail, Drive and Contacts" });
+    await expect(card.getByText("Trip plan")).toBeVisible();
+    await expect(card.getByText("Google Sheet")).toBeVisible();
+    await expect(card.getByRole("link", { name: "Open Dom's folder" })).toHaveAttribute("href", "https://drive.google.com/drive/folders/example");
+    await expect(card.getByRole("link", { name: "Hand Dom a file" })).toHaveAttribute("href", "/google/picker");
     expect(problems).toEqual([]);
   });
 
@@ -1976,7 +2018,7 @@ test.describe("interactions under the CSP", () => {
     });
     await page.goto("/app/system");
     await page.getByRole("tab", { name: "Services" }).click();
-    const card = page.getByRole("region", { name: "Google Calendar and Gmail" });
+    const card = page.getByRole("region", { name: "Google Calendar, Gmail, Drive and Contacts" });
     await expect(card.getByText("Reconnect to let Dom keep his own calendars.")).toHaveCount(0);
     await expect(card.getByText("Dom - Planning")).toBeVisible();
     await expect(card.getByText("3 upcoming")).toBeVisible();
@@ -1995,6 +2037,74 @@ test.describe("interactions under the CSP", () => {
     expect(removed[0]).toEqual({ id: "plan@group.calendar.example.org" });
     await expect(card.getByText("Dom - Planning")).toHaveCount(0);
     await expect(card.getByText("Dom - Louis")).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("google: meeting windows are edited as days and times and saved as one request", async ({ page }) => {
+    const problems = await watch(page);
+    const start = await (await page.request.get("/api/integrations/google")).json();
+    const connected = {
+      ...start, client_id_set: true, client_secret_set: true, redirect_uri: "https://dom.example.org/api/integrations/google/callback",
+      status: "connected", connected_at: "2026-11-27T10:00:00+00:00", own_calendars_granted: true, calendars: [],
+      switches: [{ id: "calendar_read", label: "Calendar: read events", on: true, granted: true }],
+    };
+    let booking = {
+      windows: [{ days: ["mon", "tue"], start: "19:00", end: "22:00" }], notice_hours: 12, ahead_days: 14, invite_friends: false,
+      zone: "UTC", calendar: "Dom - Bookings", calendar_made: false, ready: true,
+    };
+    const saved: Record<string, unknown>[] = [];
+    await page.route("**/api/integrations/google", (route) => route.fulfill({ json: connected }));
+    await page.route("**/api/integrations/google/calendars", (route) => route.fulfill({ json: { calendars: [] } }));
+    await page.route("**/api/integrations/google/booking", async (route) => {
+      if (route.request().method() === "POST") {
+        const body = route.request().postDataJSON();
+        saved.push(body);
+        booking = { ...booking, ...body };
+        await route.fulfill({ json: { ...booking, note: "Dom asked you to approve making the calendar 'Dom - Bookings'." } });
+      } else {
+        await route.fulfill({ json: booking });
+      }
+    });
+    await page.goto("/app/system");
+    await page.getByRole("tab", { name: "Services" }).click();
+    const section = page.getByRole("region", { name: "Google Calendar, Gmail, Drive and Contacts" }).getByRole("region", { name: "Meeting windows" });
+    await expect(section.getByText("Dom will ask before he makes the calendar")).toBeVisible();
+    const days = section.getByRole("group", { name: "Days for window 1" });
+    await expect(days.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "true");
+    await expect(days.getByRole("button", { name: "Wed" })).toHaveAttribute("aria-pressed", "false");
+    await days.getByRole("button", { name: "Wed" }).click();
+    await expect(days.getByRole("button", { name: "Wed" })).toHaveAttribute("aria-pressed", "true");
+    // A second window, Saturday afternoon; a window with no day or an end before its start cannot be saved.
+    await section.getByRole("button", { name: "Add a window" }).click();
+    const second = section.getByRole("group", { name: "Days for window 2" });
+    for (const day of ["Mon", "Tue", "Wed", "Thu", "Fri"]) await second.getByRole("button", { name: day }).click();
+    await expect(section.getByRole("button", { name: "Save meeting windows" })).toBeDisabled();
+    await second.getByRole("button", { name: "Sat" }).click();
+    await section.getByLabel("Window 2 start").fill("13:00");
+    await section.getByLabel("Window 2 end").fill("18:00");
+    await section.getByLabel("Least notice, in hours").fill("6");
+    await section.getByRole("switch", { name: /Invite the friend/ }).click();
+    // Every icon button has a name and a tooltip.
+    const trash = section.getByRole("button", { name: "Remove window 1" });
+    await trash.hover();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Remove window 1" })).toBeVisible();
+    await section.getByRole("button", { name: "Save meeting windows" }).click();
+    await expect.poll(() => saved.length).toBe(1);
+    expect(saved[0]).toEqual({
+      windows: [
+        { days: ["mon", "tue", "wed"], start: "19:00", end: "22:00" },
+        { days: ["sat"], start: "13:00", end: "18:00" },
+      ],
+      notice_hours: 6, ahead_days: 14, invite_friends: true,
+    });
+    await expect(page.getByText("Dom asked you to approve making the calendar")).toBeVisible();
+    // Removing every window and saving means no booking at all.
+    await section.getByRole("button", { name: "Remove window 2" }).click();
+    await section.getByRole("button", { name: "Remove window 1" }).click();
+    await expect(section.getByText("No windows yet, so Dom books nothing.")).toBeVisible();
+    await section.getByRole("button", { name: "Save meeting windows" }).click();
+    await expect.poll(() => saved.length).toBe(2);
+    expect((saved[1] as { windows: unknown[] }).windows).toEqual([]);
     expect(problems).toEqual([]);
   });
 

@@ -959,7 +959,7 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     Scopes stay separate (groups and friends' DMs never see owner-only tool names). The vibe switch
     and shared plugins sit at the end of the shared block, and desktop, T3 and owner-only plugins at
     the end of the owner block, so a change there reshapes only what follows it."""
-    from dom import files_tools, google_tools
+    from dom import booking, files_tools, google_files, google_tools
     from dom.devices import FIND_DEVICES_TOOL
     from dom.memory_edit import PROPOSE_MEMORY_EDIT_TOOL
     from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
@@ -971,7 +971,7 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     shared.extend(tool for tool in plugin_tools if not _is_owner_only(tool))
     if scope != "owner_dm":
         guest = [REQUEST_GUEST_DESKTOP] if app.guest_desktop.available() and await app.desktop_permissions.resolve("guest_desktop") != "never" else []
-        return [*shared, *files_tools.offered(app, scope), TELL_OWNER, *guest]
+        return [*shared, *await booking.offered(app, scope), *files_tools.offered(app, scope), TELL_OWNER, *guest]
 
     owner_only: list[Tool] = [
         REMIND_TOOL,
@@ -983,6 +983,7 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
         FIND_DEVICES_TOOL,
         TASK_MODE_TOOL,
         REQUEST_SECRET_TOOL,
+        *await booking.offered(app, scope),  # always offered in the owner's DM, so it sits with the stable tools
         *files_tools.offered(app, scope),
     ]
     if app.config.memory_self_edit:  # a setting, so it changes rarely; sits before the tools that come and go
@@ -998,5 +999,6 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
 
         owner_only.extend(TOOLS)
     owner_only.extend(await google_tools.offered(app, scope))
+    owner_only.extend(await google_files.offered(app, scope))
     owner_only.extend(tool for tool in plugin_tools if _is_owner_only(tool))
     return [*shared, *owner_only, MESSAGE_CHAT]

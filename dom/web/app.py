@@ -19,7 +19,7 @@ from dom.web.api import router as api_router
 from dom.web.api_access import JSON_POSTS as ACCESS_POSTS, router as access_router
 from dom.web.api_chats import JSON_POSTS as CHAT_POSTS, router as chats_router
 from dom.web.assistant_settings import JSON_POSTS as ASSISTANT_POSTS, router as assistant_router
-from dom.google import CALLBACK_PATH
+from dom.google import CALLBACK_PATH, PICKER_PATH
 from dom.web.api_files import GUARDED_PREFIX as FILES_GET_PREFIX, JSON_POSTS as FILES_POSTS, router as files_router
 from dom.web.api_google import JSON_POSTS as GOOGLE_POSTS, router as google_router
 from dom.web.api_goals import JSON_POSTS as GOALS_POSTS, router as goals_router
@@ -36,6 +36,7 @@ from dom.web.api_waiting import JSON_POSTS as WAITING_POSTS, router as waiting_r
 from dom.web.api_work import JSON_POSTS as WORK_POSTS, router as work_router
 from dom.web.auth import Auth, fetch_site_ok, request_origin, same_origin
 from dom.web.desktop import VIEWER_JSON_POSTS, VNC_PATH, VNC_SOCKET, router as desktop_router
+from dom.web.google_picker import PICKER_HEADERS, router as picker_router
 from dom.web.model_settings import JSON_POSTS, is_json, router as model_settings_router
 from dom.web.provider_settings import JSON_POSTS as PROVIDER_POSTS, router as provider_settings_router
 from dom.web.services_settings import JSON_POSTS as SERVICES_POSTS, router as services_settings_router
@@ -114,6 +115,8 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
                     )
         else:
             response.headers.update(SECURITY_HEADERS)
+            if identity and request.url.path == PICKER_PATH and response.status_code < 300:
+                response.headers.update(PICKER_HEADERS)  # the one page that loads Google's Picker
         return response
 
     @web.exception_handler(Exception)
@@ -126,6 +129,7 @@ def create_app(dom: App, auth: Auth) -> FastAPI:
     web.include_router(api_router)
     web.include_router(access_router)
     web.include_router(google_router)
+    web.include_router(picker_router)
     web.include_router(chats_router)
     web.include_router(memory_router)
     web.include_router(media_router)

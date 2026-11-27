@@ -111,7 +111,7 @@ Init creates the tables below. Omitted triage, media and drafting tables use the
 
 `KLIPY_API_KEY` turns on GIF sending. Without it Dom does not offer the `gif` action. See [GIFs](gifs.md).
 
-`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` hold the Google OAuth client for Calendar and Gmail. They are read from `.env` only; the dashboard shows each as set or not set. Connecting also needs `web.public_url`, because the redirect URI is `<web.public_url>/api/integrations/google/callback`. See [Google Calendar and Gmail](google.md).
+`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` hold the Google OAuth client for Calendar and Gmail. They are read from `.env` only; the dashboard shows each as set or not set. Connecting also needs `web.public_url`, because the redirect URI is `<web.public_url>/api/integrations/google/callback`. `GOOGLE_PICKER_API_KEY` and `GOOGLE_PROJECT_NUMBER` let the owner hand Dom a Drive file with Google's file picker; they appear only on that one dashboard page. See [Google Calendar and Gmail](google.md).
 
 ## Desktop
 
@@ -359,6 +359,22 @@ See [Self-directed work](desktop.md#self-directed-work) for the network guard it
 | `tracer.max_mb` | `256` | Size cap of the trace store (`traces.db` in Dom's home), in megabytes of compressed traces. Past it the oldest traces are deleted first. |
 
 Every turn in every chat is traced in full, secrets redacted, for the dashboard's Trace view. See [Privacy](privacy.md#debug-traces).
+
+## Subscription agents (pilot)
+
+Codex, Claude and Antigravity on your own subscriptions, through the Agent Client Protocol: tables `[acp.codex]`, `[acp.claude]` and `[acp.antigravity]`, each with the keys below (shown for `acp.<name>`). Every agent is off until you switch it on, serves only escalation and drafting, and only in your DM.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `acp.<name>.enabled` | `false` | The switch. Off, the agent is never started. On, it is tried first in the roles below, in the owner's DM turns only. Antigravity cannot be switched on yet (no way to turn its tools off): the dashboard refuses it, and a hand-written `true` is refused at each call. Not zero data retention: the provider keeps your prompts under its consumer terms and may train on them unless you opt out in its settings. Running a bot on a subscription may break the provider's terms. |
+| `acp.<name>.roles` | `["escalation", "drafting"]` | Roles the agent serves: escalation (the model switch you approve) and drafting (skill and plugin drafts). Never chat, triage or media. |
+| `acp.<name>.command` | Unset | The adapter's executable. Unset uses the agent's usual one: codex-acp, claude-agent-acp or agy. |
+| `acp.<name>.args` | Unset | Arguments for the command. Unset uses the agent's usual ones (`acp` for agy). |
+| `acp.<name>.host` | Unset | An SSH destination (a name in ~/.ssh/config, key login) to run the agent on, for an adapter that does not run on this machine, such as a Mac. Unset runs it here. Sign the agent in on that host. |
+| `acp.<name>.auth_env` | `[]` | Names of secret variables (from .env) the agent's own process receives, such as an API key for it. Not for a subscription login, which the agent keeps itself. Not allowed with `host`. |
+| `acp.<name>.timeout_seconds` | `120` | Hard limit for one call. At the limit Dom cancels the prompt and kills the agent's process. |
+
+See [Subscription agents](acp-agents.md) for setup, sign-in and the risks.
 
 ## T3 Code
 

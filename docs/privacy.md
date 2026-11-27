@@ -382,6 +382,10 @@ the People's Republic of China, keeps inputs used to provide the service while t
 use inputs to improve or train its models. The policy describes how to opt out of training. DeepSeek does
 not offer zero data retention on this route. [DeepSeek Privacy Policy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html).
 
+## Subscription agents
+
+The pilot [subscription agents](acp-agents.md) (Codex, Claude, Antigravity) are not zero data retention: the provider keeps what Dom sends under its consumer terms and may train on it unless you opt out there. Dom sends them only owner-DM content, for the escalation and drafting jobs, and refuses any other chat or background job in code. The agent's process receives none of Dom's keys and not your ssh agent, and an agent runs only with its tools switched off, which is why Antigravity is not available yet.
+
 ## OpenRouter data policies
 
 Routes that carry chat content through OpenRouter always ask for zero data retention (`provider.zdr = true`): the
@@ -487,7 +491,7 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
   calendar is asked every time. He still reads your calendars as before.
 - **A nudge reaches only you.** An event on his calendar can carry a reminder; it is an ordinary reminder in the owner DM
   and is never sent to a group or a friend. Removing a calendar, or moving or deleting an event, cancels it.
-- **Who can reach it.** The `calendar` and `gmail` tools are offered only in the owner's DM, only for the switches
+- **Who can reach it.** The `calendar`, `gmail`, `drive` and `contacts` tools are offered only in the owner's DM, only for the switches
   that are on and the scopes Google granted, and each handler checks the owner DM and the switch again in code. The
   "today and tomorrow" block in the turn note is added only for the owner DM. A group or a friend's DM never gets the
   tools, the block or any result.
@@ -503,6 +507,47 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
   or events in the owner DM cannot reach notes that groups or friends read. Dom's tool descriptions also tell him not to copy mail into notes or other chats.
 - **Drafts and events.** Adding, moving or deleting an event and saving a draft each need an approval card unless the
   owner chose Allow always for that kind. Dom has no way to send mail.
+- **Drive sees only what Dom made or was handed.** Dom's connection holds `drive.file` and nothing wider (never `drive`,
+  `documents` or `spreadsheets`), so Google shows him only the files he made, in his own folder "Dom", and the files the
+  owner picked for him with Google Picker. Creating a file, adding to a Doc, adding rows to a Sheet and replacing cells
+  each need an approval card that shows the file's name and the exact change, unless the owner chose Allow always for that
+  kind. The `drive` tool is offered only in the owner DM, when the Files switch is on and Google granted the scope; the
+  handler checks both again in code.
+- **Contacts are read only.** The Contacts switch (`contacts.readonly`) lets Dom look up a name for an email address or
+  phone number in the owner DM. Nothing can be changed, and the lookup is also used by Dom's own booking code only to find
+  one unambiguous address.
+- **What goes to which model.** File text Dom reads and the contacts he looks up are tool results in the owner DM, so they
+  go to the chat model route that serves that turn under the same `zdr` routing and provider rules as event and mail text,
+  and to no other model or service. Read results are size-bounded and fenced as untrusted data, never instructions, and
+  Dom is told not to copy them into notes or other chats.
+- **The file picker page.** Handing Dom a file opens a dashboard page behind the same login as the rest of the dashboard.
+  It is the only page that loads Google's scripts and frames, and has its own content security policy for that. No token
+  of Dom's reaches the browser: the browser asks Google for its own `drive.file`-only token, and Dom's server asks Google
+  whether the pick worked. The page holds the OAuth client id, the browser API key and the Cloud project number
+  (`GOOGLE_PICKER_API_KEY`, `GOOGLE_PROJECT_NUMBER` in `.env`); they are never logged or shown anywhere else. The Picker
+  and Google's sign-in are Google's services running in your browser, under Google's terms.
+
+## Booking
+
+Optional, off until the owner has set meeting windows and turned on Google's calendar read and Dom's own calendars (see
+[Booking within your windows](google.md#booking-within-your-windows)). It is the one Google feature that reaches a friend's
+DM or a group, so the rules are in code:
+
+- **Only the offered times leave the owner DM.** The free/busy read asks Google for event start and end times only (the
+  request names no title, place or attendee field), the busy blocks stay inside the function that finds slots, and the
+  tool result a friend's chat gets is built from the slot times and fixed instructions. A failed read says nothing about
+  the calendar. In a group the offered times are visible to everyone there, so Dom offers window slots and no more.
+- **The windows are the owner's.** Friends and groups cannot see or change them: the `windows` and `set_windows` actions
+  exist only in the owner DM and the handler checks the chat again in code. A friend's tool can only `offer` and `pick`.
+- **An offer belongs to its chat.** A pick names an offer and a slot number; an offer made in another chat, one that is
+  not open, expired or already picked is simply "not open", so one chat cannot learn of or use another's offer.
+- **The owner decides.** Every booking is an approval card (Allow once, Reject) unless the owner sets "Confirm a
+  booking" to Allow. What the friend wrote (their name, what it is about) is quoted on the card and fenced as untrusted
+  text in the owner's history. The friend is invited to the event, and Google emails them, only when the owner allows
+  it and the friend gave their email in that chat.
+- **What is kept.** The offers (chat, who asked, the slots, the time chosen, what they said it was about, the outcome and
+  the event id) are rows in `state.db`, removed after fourteen days and when the chat is forgotten. The windows are one
+  setting in the same database.
 
 ## Assistant mode
 

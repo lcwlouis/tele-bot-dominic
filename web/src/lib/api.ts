@@ -485,6 +485,11 @@ export type DesktopAction =
   | "calendar_move"
   | "calendar_delete"
   | "gmail_draft"
+  | "doc_create"
+  | "doc_append"
+  | "sheet_create"
+  | "sheet_append"
+  | "sheet_update"
   | "guest_desktop";
 export type PermissionPolicy = "ask" | "allow" | "never";
 export type SavedLogin = {
@@ -741,7 +746,14 @@ export type ServiceTestResult = { ok: boolean; detail: string; latency_ms: numbe
 
 /** GET /api/integrations/google and its writes (dom/web/api_google.py). The client id and secret are only ever set or
  * not set; the tokens never leave Dom. */
-export type GoogleSwitch = { id: "calendar_read" | "calendar_write" | "gmail_read" | "gmail_drafts"; label: string; on: boolean; granted: boolean };
+export type GoogleSwitch = {
+  id: "calendar_read" | "calendar_write" | "gmail_read" | "gmail_drafts" | "drive_files" | "contacts_read";
+  label: string;
+  on: boolean;
+  granted: boolean;
+  /** A scope Google is asked for only when its switch is wanted: when not granted, "Reconnect to allow" asks for just that. */
+  extra: boolean;
+};
 export type GoogleView = {
   client_id_set: boolean;
   client_secret_set: boolean;
@@ -753,6 +765,26 @@ export type GoogleView = {
   own_calendars_granted: boolean;
   calendars: { id: string; name: string }[];
   switches: GoogleSwitch[];
+  /** Whether GOOGLE_PICKER_API_KEY and GOOGLE_PROJECT_NUMBER are set, so the file picker page can open. */
+  picker_ready: boolean;
+  picker_path: string;
+};
+/** GET /api/integrations/google/files: Dom's folder and the files he may see, names only. */
+export type GoogleFiles = { folder: { name: string; url: string } | null; files: { name: string; kind: string }[]; more: boolean };
+/** GET and POST /api/integrations/google/booking (dom/web/api_google.py, dom/booking.py): when the owner is willing to meet friends. */
+export type BookingWindow = { days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[]; start: string; end: string };
+export type BookingView = {
+  windows: BookingWindow[];
+  notice_hours: number;
+  ahead_days: number;
+  invite_friends: boolean;
+  /** The owner's timezone, which the windows are in. */
+  zone: string;
+  /** The calendar bookings go to, and whether Dom has made it. */
+  calendar: string;
+  calendar_made: boolean;
+  /** Calendar read and Dom's own calendars are both on. */
+  ready: boolean;
 };
 /** GET /api/integrations/google/calendars: Dom's calendars as Google shows them now. `upcoming` is null when Google could not say. */
 export type GoogleCalendar = { id: string; name: string; color: string; upcoming: number | null; more: boolean };
