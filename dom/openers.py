@@ -289,6 +289,18 @@ class Openers:
                 expected_id = msg_id
                 first = False
 
+            async def still_wanted() -> bool:
+                # Media is made after the dispatch slot is released: before each send it is checked again like a
+                # bubble (the group can still be written to, Dom is still around, nobody wrote meanwhile), and the
+                # chat's openers must still be on.
+                if not self._enabled(chat_id, scope):
+                    return False
+                try:
+                    await authorize_message()
+                except ModelCallSkipped:
+                    return False
+                return True
+
             queue_studio = None
             queued = False
             if actions.voice or actions.video_note or actions.image:
@@ -296,7 +308,9 @@ class Openers:
                     nonlocal queued
                     if not dispatch._closing:
                         queued = True
-                        dispatch._spawn(executor.deliver_studio(app, chat_id, scope, None, None, actions, on_sent))
+                        dispatch._spawn(executor.deliver_studio(
+                            app, chat_id, scope, None, None, actions, on_sent, None if owner_dm else still_wanted,
+                        ))
 
             sent_ids = await executor.perform(
                 app.bot, store, chat_id, None, actions, sleep=app.sleep, now=dispatch.now, on_sent=on_sent,

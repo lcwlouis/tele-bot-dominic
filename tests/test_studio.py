@@ -649,3 +649,23 @@ async def test_a_media_only_opener_the_studio_refuses_checks_in_on_nothing(make_
     await _open(app)
     assert not app.bot.of("photo") and recorded == []
     assert await app.store.kv_get("opener:last_msg_id") is None
+
+
+@pytest.mark.parametrize("wanted", [True, False])
+async def test_media_is_sent_only_while_its_sender_still_wants_it(make_app, studio_server, wanted):
+    """An opener in a group or a friend's DM passes `still_wanted`: media made after the chat moved on, Dom went away or
+    openers were turned off is not sent."""
+    from dom.telegram import executor
+    app = make_app()
+    await connect(app, studio_server)
+    asked, sent = [], []
+
+    async def still_wanted() -> bool:
+        asked.append(True)
+        return wanted
+
+    async def on_sent(msg_id: int) -> None:
+        sent.append(msg_id)
+
+    await executor.deliver_studio(app, OWNER, "owner_dm", None, None, Actions(image="A rainy street"), on_sent, still_wanted)
+    assert asked and (len(app.bot.of("photo")) == 1) is wanted and bool(sent) is wanted

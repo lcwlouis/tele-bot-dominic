@@ -73,8 +73,9 @@
 
   async function decideDesktopPermission(id: number, decision: "once" | "always" | "reject") {
     try {
-      const res = await send<{ message: string }>("/api/access/decide", { id, decision });
-      toast.show("ok", res.message || "Saved.");
+      const res = await send<{ ok?: boolean; message: string }>("/api/access/decide", { id, decision });
+      // A refused decision (expired, already handled, always asked) comes back as ok: false.
+      toast.show(res.ok === false ? "error" : "ok", res.message || "Saved.");
       await Promise.all([reload(), shell.refresh()]);
     } catch {
       // toast already shown

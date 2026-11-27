@@ -1,10 +1,11 @@
 """Dom's `contacts` tool (v0.8.6 W4, E113): a read-only lookup of the owner's Google Contacts, owner DM only.
 
-It exists to find a friend's email address (for booking, or for a Gmail draft) or phone number. The scope is
+It exists to find a friend's email address (for a Gmail draft, say) or phone number. The scope is
 `contacts.readonly`, so nothing here can change a contact. Names and addresses in a contact were typed by other people:
 every result is fenced as untrusted data, and the tool, like the switch, works only in the owner's DM.
 
-`contact_email(g, name)` is the same lookup for Dom's own code (W2's booking flow): one address, or None when there is
+`contact_email(g, name)` is the same lookup for Dom's own code, not yet called (booking invites only by the email a
+friend gives in the chat): one address, or None when there is
 no match, the match is ambiguous or Contacts is switched off. It never guesses between two people.
 """
 

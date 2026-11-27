@@ -103,7 +103,7 @@
     try {
       const result = await send<T>(path, body);
       data = result;
-      toast.show("ok", result.message || fallbackMsg);
+      toast.show((result as { ok?: boolean }).ok === false ? "error" : "ok", result.message || fallbackMsg);
       return true;
     } catch {
       return false;
