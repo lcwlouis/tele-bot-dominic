@@ -362,7 +362,7 @@ Every turn in every chat is traced in full, secrets redacted, for the dashboard'
 
 ## Subscription agents (pilot)
 
-Codex, Claude and Antigravity on your own subscriptions, through the Agent Client Protocol: tables `[acp.codex]`, `[acp.claude]` and `[acp.antigravity]`, each with the keys below (shown for `acp.<name>`). Every agent is off until you switch it on, serves only escalation and drafting, and only in your DM.
+Codex, Claude and Antigravity on your own subscriptions, through the Agent Client Protocol: tables `[acp.codex]`, `[acp.claude]` and `[acp.antigravity]`, each with the keys below (shown for `acp.<name>`). Every agent is off until you switch it on, serves only escalation and drafting, and only in your DM. Only Claude can be switched on in v0.8.6: Codex and Antigravity are refused until Dom can turn their tools off.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

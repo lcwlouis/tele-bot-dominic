@@ -1007,14 +1007,21 @@ async def test_a_subscription_agent_switch_saves_and_puts_the_agent_in_the_route
         assert not any(isinstance(provider, AcpClient) for provider in app.escalation_client.providers)
 
 
-async def test_antigravity_cannot_be_switched_on_because_its_tools_cannot_be_turned_off(dashboard):
+REFUSED_AGENTS = [
+    ("antigravity", "no way to turn its tools off yet"),
+    ("codex", "it loads your own MCP servers and plugins, which Dom can't turn off yet"),
+]
+
+
+@pytest.mark.parametrize("name,reason", REFUSED_AGENTS)
+async def test_an_agent_whose_tools_cannot_be_turned_off_cannot_be_switched_on(dashboard, name, reason):
     app, path, browser = dashboard
     async with browser() as client:
         data = (await client.get(PERMISSIONS)).json()
         items = {item["id"]: item for item in data["items"]}
-        assert not items["acp_antigravity"]["available"] and "no way to turn its tools off yet" in items["acp_antigravity"]["needs"]
-        assert items["acp_codex"]["available"] and items["acp_claude"]["available"]
+        assert not items[f"acp_{name}"]["available"] and reason in items[f"acp_{name}"]["needs"]
+        assert items["acp_claude"]["available"]  # the one agent that can be switched on
         refused = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
-            "revision": data["revision"], "id": "acp_antigravity", "enabled": True})
-        assert refused.status_code == 409 and "no way to turn its tools off yet" in refused.json()["detail"]
-        assert not app.config.acp.antigravity.enabled and "acp" not in tomllib.loads(path.read_text())
+            "revision": data["revision"], "id": f"acp_{name}", "enabled": True})
+        assert refused.status_code == 409 and reason in refused.json()["detail"]
+        assert not getattr(app.config.acp, name).enabled and "acp" not in tomllib.loads(path.read_text())

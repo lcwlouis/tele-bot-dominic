@@ -28,7 +28,7 @@ def update(session, kind, text=None, **extra):
 
 
 log(event="start", pid=os.getpid(), cwd=os.getcwd(), initial_agent_mode=os.environ.get("INITIAL_AGENT_MODE"),
-    codex_config=os.environ.get("CODEX_CONFIG"), has_secret=bool(os.environ.get("DOM_TEST_SECRET")),
+    codex_config=os.environ.get("CODEX_CONFIG"), claudeai_mcp=os.environ.get("ENABLE_CLAUDEAI_MCP_SERVERS"), has_secret=bool(os.environ.get("DOM_TEST_SECRET")),
     has_api_key=bool(os.environ.get("FAKE_API_KEY")), env_keys=sorted(os.environ))
 if mode == "noise":
     sys.stdout.write("agent starting up...\n")
