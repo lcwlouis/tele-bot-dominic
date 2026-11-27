@@ -791,7 +791,8 @@ class DesktopPermissions:
                 "site": row["site"],
                 "detail": row["detail"],
                 "created_at": row["created_at"],
-                "can_allow_always": row["action"] in GLOBAL_ACTIONS or normalize_site(row["site"]) is not None,
+                "can_allow_always": row["action"] not in NO_ALLOW_ALWAYS | ASK_EVERY_TIME
+                and (row["action"] in GLOBAL_ACTIONS or normalize_site(row["site"]) is not None),
                 "dashboard_only": row["id"] in self._dashboard_only,
             }
             for row in rows

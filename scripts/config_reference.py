@@ -109,12 +109,12 @@ def render() -> str:
         ),
         "## Optional secrets",
         "`KLIPY_API_KEY` turns on GIF sending. Without it Dom does not offer the `gif` action. See [GIFs](gifs.md).",
-        "`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` hold the Google OAuth client for Calendar and Gmail. They are read "
+        "`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` hold the Google OAuth client for Calendar, Gmail, Drive and Contacts. They are read "
         "from `.env` only; the dashboard shows each as set or not set. Connecting also needs `web.public_url`, because "
         "the redirect URI is `<web.public_url>/api/integrations/google/callback`. "
         "`GOOGLE_PICKER_API_KEY` and `GOOGLE_PROJECT_NUMBER` let the owner hand Dom a Drive file with Google's file picker; "
         "they appear only on that one dashboard page. "
-        "See [Google Calendar and Gmail](google.md).",
+        "See [Google](google.md).",
         "## Desktop",
         table([
             ("desktop.mode", literal(Config.model_fields["desktop_mode"].default),

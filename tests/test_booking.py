@@ -302,6 +302,7 @@ async def test_a_pick_sends_the_owner_one_card_and_the_friend_hears_only_that_do
     assert "will check" in result and "booked" not in result.lower().replace("never that it is booked", "")
     row = await pending(app)
     assert row["action"] == "booking_confirm"
+    assert row["can_allow_always"] is False  # the dashboard offers no Allow always either
     sent_card = await card(app)
     shown = sent_card[2]
     assert "Sam" in shown and "their DM" in shown and "Mon 30 Nov 21:00-22:00 (UTC)" in shown and BOOKING_CALENDAR in shown
