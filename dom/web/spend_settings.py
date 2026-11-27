@@ -41,7 +41,7 @@ AREA_LABELS: dict[SpendArea, str] = {
 AREA_HELP: dict[SpendArea, str] = {
     "chat": "Replies, triage, the leak check and escalations.",
     "media": "Reading attachments, and voice notes, photos and video made by the studio or its cloud backups.",
-    "search": "Web search.",
+    "search": "Web search, and the overnight news Dom reads from it.",
     "desktop": "Everything the desktop worker's model calls cost.",
     "memory": "The memory pass, reflection, summaries and embeddings.",
 }

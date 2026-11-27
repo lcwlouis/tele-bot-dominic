@@ -100,6 +100,7 @@ class SearchOutcome:
     host: str
     result_count: int | None = None
     index: int = 0
+    items: tuple[tuple[str, str, str], ...] = ()  # (title, url, snippet) of a provider that returns a list; none for a prose answer
 
 
 def search_provider_kind(endpoint: ProviderEndpoint) -> SearchProvider:
@@ -324,6 +325,7 @@ class SearchClient:
             label=self.label,
             host=self.address,
             result_count=len(items),
+            items=tuple(items),
         )
 
     async def _search_deepseek(self, query: str, *, fallback: bool, timeout: float | None) -> SearchOutcome:
@@ -364,6 +366,7 @@ class SearchClient:
             label=self.label,
             host=self.address,
             result_count=len(items),
+            items=tuple(items),
         )
 
     async def _search_tavily(self, query: str, *, fallback: bool, timeout: float | None) -> SearchOutcome:
@@ -412,6 +415,7 @@ class SearchClient:
             label=self.label,
             host=self.address,
             result_count=len(items),
+            items=tuple(items),
         )
 
 
@@ -461,6 +465,7 @@ class SearchRouter:
                 host=outcome.host,
                 result_count=outcome.result_count,
                 index=index,
+                items=outcome.items,
             )
         raise RuntimeError("no search providers configured")
 

@@ -4,4 +4,4 @@
 ALTER TABLE usage ADD COLUMN turn_id INTEGER;
 CREATE INDEX IF NOT EXISTS idx_usage_turn ON usage(turn_id);
 
-PRAGMA user_version = 37;
+PRAGMA user_version = 38;

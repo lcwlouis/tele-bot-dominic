@@ -25,10 +25,28 @@ third party ("to her"), "take a look", a link, or words in quotes.
 A failed, refused or limited generation leaves one short, rate-limited event in
 that chat's history; it never crosses into another chat.
 
-Dom keeps what he sends: each photo, voice note and video note is saved under
+Dom keeps what he sends: each photo, voice note and video note (and the frame strips of clips he is sent) is saved under
 the home's `media/` folder (size-capped by `studio.keep_cap_mb`), and he looks at
 a generated photo before sending it when his chat model takes images. See
 [Media Dom sees and sends](privacy.md#media-dom-sees-and-sends).
+
+## How readily Dom adds media
+
+`studio.spontaneity` sets how readily Dom adds a voice note, video note or photo on his own, in replies and when
+he writes first. Settings → What Dom may do → Media shows it as a small control with three levels:
+
+| Level | The turn note says | Per-chat limits | Gaps |
+|---|---|---|---|
+| `rarely` | keep media for the rare moment one truly adds something | halved (rounded down, at least 1) | doubled |
+| `sometimes` (default) | most replies stay text; use these sparingly | as set | as set |
+| `often` | send one when it fits; a voice note or a photo now and then makes you feel real | doubled | halved |
+
+The level multiplies the per-chat limits and gaps of [Limits](#limits) below; it never raises past the global daily
+total, the spend caps or the switches, and a limit set to zero stays off. The level is your own baseline.
+An event day's multiplier applies on top of it, but it can only raise a limit, and its ceiling
+(`event_day_max_multiplier`) bounds only what the day adds: the two never stack past the ceiling. A configured limit of
+2 with a 2x ceiling is 4 at most at any level. With a 1.5x ceiling, "often" already puts it at 4, above the ceiling of
+3, so that day adds nothing; at "sometimes" the same day raises it to 3.
 
 ## Where the studio runs
 
