@@ -12,11 +12,15 @@ GET  /api/integrations/google/callback    where Google sends the browser back. I
                                           HttpOnly binding cookie that only an authenticated owner's connect request
                                           set. It is not a `fetch_site` guarded read.
 POST /api/integrations/google/disconnect  revokes the token at Google and deletes it here.
-POST /api/integrations/google/switch      turns one of the four switches on or off.
+POST /api/integrations/google/switch      turns one of the switches on or off.
 GET  /api/integrations/google/calendars   Dom's own calendars (v0.8.6): name, colour and the number of upcoming events,
                                           read from Google on request so the card itself never waits on it.
 POST /api/integrations/google/calendars/remove  deletes one of Dom's calendars at Google (the dashboard asked the owner
                                           to confirm first). Only a calendar Dom made can be named.
+GET  /api/integrations/google/files       Dom's Drive folder and the files he may see, names only (v0.8.6 W4), read from
+                                          Google on request.
+POST /api/integrations/google/files/picked  the Picker page reports what the owner picked; Google is asked whether Dom
+                                          can now see each file, and the owner's DM history is told about those he can.
 
 Owner only. The POSTs are same-origin JSON, in JSON_POSTS like every other dashboard write.
 """
@@ -30,6 +34,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from dom.google_files import confirm_picked, overview
 from dom.google_tools import calendar_rows
 from dom.google import BINDING_COOKIE, CALLBACK_PATH, SETTINGS_PATH, GoogleError, InvalidCallback
 from dom.web.model_settings import _input
@@ -38,17 +43,30 @@ from dom.web.shared import owner_app
 log = logging.getLogger("dom.web")
 router = APIRouter()
 PREFIX = "/api/integrations/google"
-JSON_POSTS = {f"{PREFIX}/connect", f"{PREFIX}/disconnect", f"{PREFIX}/switch", f"{PREFIX}/calendars/remove"}
+JSON_POSTS = {f"{PREFIX}/connect", f"{PREFIX}/disconnect", f"{PREFIX}/switch", f"{PREFIX}/calendars/remove", f"{PREFIX}/files/picked"}
+SwitchId = Literal["calendar_read", "calendar_write", "gmail_read", "gmail_drafts", "drive_files", "contacts_read"]
 
 
 class Empty(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ConnectInput(BaseModel):
+    """`also`: the switches whose scopes this connect should ask for besides the base ones ("Reconnect to allow Files")."""
+
+    model_config = ConfigDict(extra="forbid")
+    also: list[SwitchId] = Field(default_factory=list, max_length=6)
+
+
 class SwitchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    id: Literal["calendar_read", "calendar_write", "gmail_read", "gmail_drafts"]
+    id: SwitchId
     on: bool
+
+
+class PickedInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[str] = Field(min_length=1, max_length=10)
 
 
 class CalendarInput(BaseModel):
@@ -64,9 +82,9 @@ async def read_google(request: Request) -> dict:
 @router.post(f"{PREFIX}/connect")
 async def connect(request: Request):
     app = owner_app(request)
-    await _input(request, Empty)
+    body = await _input(request, ConnectInput)
     try:
-        url, binding = app.google.begin()
+        url, binding = app.google.begin(body.also)
     except GoogleError as exc:
         raise HTTPException(409, str(exc)) from None
     response = JSONResponse({"url": url})
@@ -141,3 +159,24 @@ async def remove_calendar(request: Request) -> dict:
     except GoogleError as exc:
         raise HTTPException(409, str(exc)) from None
     return await g.view()
+
+
+@router.get(f"{PREFIX}/files")
+async def read_files(request: Request) -> dict:
+    g = owner_app(request).google
+    if not await g.granted("drive_files"):
+        return {"folder": None, "files": [], "more": False}
+    try:
+        return await overview(g)
+    except GoogleError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@router.post(f"{PREFIX}/files/picked")
+async def files_picked(request: Request) -> dict:
+    g = owner_app(request).google
+    body = await _input(request, PickedInput)
+    try:
+        return {"files": await confirm_picked(g, body.ids)}
+    except GoogleError as exc:
+        raise HTTPException(409, str(exc)) from None

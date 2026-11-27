@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 DesktopAction = Literal[
     "visit_site", "fill_login", "download", "upload", "background_work",
     "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 ]
 PermissionPolicy = Literal["ask", "allow", "never"]
 ApprovalDecision = Literal["once", "always", "reject"]
@@ -36,11 +37,15 @@ ApprovalDecision = Literal["once", "always", "reject"]
 ACTIONS: tuple[DesktopAction, ...] = (
     "visit_site", "fill_login", "download", "upload", "background_work",
     "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 )
 POLICIES: tuple[PermissionPolicy, ...] = ("ask", "allow", "never")
 SITE_SCOPED_ACTIONS: frozenset[str] = frozenset(("visit_site", "fill_login", "download", "upload"))
 # Actions with one global policy, so Allow always flips that policy. The Google ones (W4) are owner-DM tool calls.
-GOOGLE_ACTIONS: frozenset[str] = frozenset(("calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft"))
+GOOGLE_ACTIONS: frozenset[str] = frozenset((
+    "calendar_create", "calendar_add", "calendar_move", "calendar_delete", "gmail_draft",
+    "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
+))
 # Making a new calendar is asked every time (Reject, Allow once): no Allow always, and Allow is not a policy for it.
 ASK_EVERY_TIME: frozenset[str] = frozenset(("calendar_create",))
 GLOBAL_ACTIONS: frozenset[str] = frozenset(("background_work", *(GOOGLE_ACTIONS - ASK_EVERY_TIME)))
@@ -61,6 +66,11 @@ DEFAULT_POLICIES: dict[DesktopAction, PermissionPolicy] = {
     "calendar_move": "ask",
     "calendar_delete": "ask",
     "gmail_draft": "ask",
+    "doc_create": "ask",
+    "doc_append": "ask",
+    "sheet_create": "ask",
+    "sheet_append": "ask",
+    "sheet_update": "ask",
 }
 
 ACTION_META: dict[DesktopAction, dict[str, str]] = {
@@ -103,6 +113,26 @@ ACTION_META: dict[DesktopAction, dict[str, str]] = {
     "gmail_draft": {
         "label": "Save a Gmail draft",
         "description": "Dom saves a draft in Gmail. The card shows the recipients, subject and the start of the text. Dom never sends mail.",
+    },
+    "doc_create": {
+        "label": "Create a Google Doc",
+        "description": "Dom makes a new document in his own Drive folder. The card shows the name and the start of the text.",
+    },
+    "doc_append": {
+        "label": "Add to a Google Doc",
+        "description": "Dom adds text to the end of a document he made or one you handed him. The card shows the file name and the text.",
+    },
+    "sheet_create": {
+        "label": "Create a Google Sheet",
+        "description": "Dom makes a new spreadsheet in his own Drive folder. The card shows the name and the first rows.",
+    },
+    "sheet_append": {
+        "label": "Add rows to a Google Sheet",
+        "description": "Dom adds rows below the data of a spreadsheet he made or one you handed him. The card shows the file name and the rows.",
+    },
+    "sheet_update": {
+        "label": "Replace cells in a Google Sheet",
+        "description": "Dom overwrites cells in a spreadsheet he made or one you handed him. The card shows the file name, the cells and what was there before.",
     },
 }
 

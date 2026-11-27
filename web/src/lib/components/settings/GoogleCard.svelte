@@ -2,7 +2,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount } from "svelte";
   import Trash2 from "@lucide/svelte/icons/trash-2";
-  import { getJSON, send, type GoogleCalendar, type GoogleView } from "$lib/api";
+  import { getJSON, send, type GoogleCalendar, type GoogleFiles, type GoogleView } from "$lib/api";
   import IconButton from "$lib/components/kit/IconButton.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
@@ -13,7 +13,7 @@
   import { cn } from "$lib/utils";
   import { SERVICE_STATE } from "./ServiceCard.svelte";
 
-  // Settings → Services → Google (v0.8.5 W4, v0.8.6 W1): connect, the four switches, Dom's own calendars and disconnect. The client id and secret only
+  // Settings → Services → Google (v0.8.5 W4, v0.8.6 W1 and W4): connect, the switches, Dom's own calendars, his Drive files and disconnect. The client id and secret only
   // ever show as set or not set. Connecting leaves for Google and comes back to Settings with ?google=connected|failed.
   const PATH = "/api/integrations/google";
   let view = $state<GoogleView | null>(null);
@@ -21,6 +21,7 @@
   let busy = $state("");
   let calendars = $state<GoogleCalendar[] | null>(null);
   let removing = $state<GoogleCalendar | null>(null);
+  let files = $state<GoogleFiles | null>(null);
 
   const health = $derived.by(() => {
     if (!view) return "off" as const;
@@ -58,6 +59,18 @@
     }
   }
 
+  // The files Dom may see come from Google on their own request too (names only).
+  async function loadFiles() {
+    files = null;
+    const granted = view?.switches.find((item) => item.id === "drive_files")?.granted;
+    if (!granted) return;
+    try {
+      files = await getJSON<GoogleFiles>(`${PATH}/files`);
+    } catch {
+      files = { folder: null, files: [], more: false };
+    }
+  }
+
   async function removeCalendar(item: GoogleCalendar) {
     busy = `calendar-${item.id}`;
     try {
@@ -82,16 +95,18 @@
     }
     void load().then(() => {
       void loadCalendars();
+      void loadFiles();
       if (outcome === "connected") toast.show("ok", "Google connected. Turn on what Dom may use.");
       else if (outcome === "failed") toast.show("error", view?.last_error || "Connecting Google failed.");
       else if (outcome === "invalid") toast.show("error", "That connect link was not valid or has expired. Press Connect Google again.");
     });
   });
 
-  async function connect() {
-    busy = "connect";
+  // `also` names the switches whose permission this connect should ask Google for (a newer permission is asked only when wanted).
+  async function connect(also: string[] = []) {
+    busy = also.length ? `connect-${also[0]}` : "connect";
     try {
-      const { url } = await send<{ url: string }>(`${PATH}/connect`, {});
+      const { url } = await send<{ url: string }>(`${PATH}/connect`, { also });
       location.assign(url);
     } catch {
       busy = ""; // the toast says why
@@ -116,6 +131,7 @@
     try {
       view = await send<GoogleView>(`${PATH}/switch`, { id, on });
       if (id === "calendar_write") await loadCalendars();
+      if (id === "drive_files") await loadFiles();
     } catch {
       // the toast says why; the switch falls back to what the server holds
       await load();
@@ -133,10 +149,11 @@
     </span>
     <div class="min-w-0 flex-1">
       <div class="flex flex-wrap items-center gap-1.5">
-        <h3 id="google-title" class="text-base font-semibold">Google Calendar and Gmail</h3>
+        <h3 id="google-title" class="text-base font-semibold">Google Calendar, Gmail, Drive and Contacts</h3>
         <InfoGlyph label="About Google">
-          Dom reads your calendar and mail and can save drafts, only in your DM. Every change to your calendar and every draft
-          asks you first, and Dom never sends mail. Each switch is off until you turn it on.
+          Dom reads your calendar and mail, can save drafts and look up contacts, and works with Drive files, only in your DM. In Drive he
+          sees only files he made and files you hand him. Every change to a calendar, doc or sheet and every draft asks you first, and Dom
+          never sends mail. Each switch is off until you turn it on.
         </InfoGlyph>
         <Badge variant="outline" class={look.tone}>{look.label}</Badge>
       </div>
@@ -162,12 +179,19 @@
         {#each view.switches as item (item.id)}
           <li class="flex items-center justify-between gap-3">
             <label for={`google-${item.id}`} class="text-sm">{item.label}</label>
-            <Switch
-              id={`google-${item.id}`}
-              checked={item.on}
-              disabled={!item.granted || busy !== ""}
-              onCheckedChange={(on) => toggle(item.id, on)}
-            />
+            <span class="flex shrink-0 items-center gap-2">
+              {#if item.extra && !item.granted}
+                <Button type="button" variant="outline" size="sm" disabled={busy !== ""} onclick={() => connect([item.id])}>
+                  {#if busy === `connect-${item.id}`}<LoaderCircle class="animate-spin motion-reduce:animate-none" aria-hidden="true" /> Opening Google…{:else}Reconnect to allow{/if}
+                </Button>
+              {/if}
+              <Switch
+                id={`google-${item.id}`}
+                checked={item.on}
+                disabled={!item.granted || busy !== ""}
+                onCheckedChange={(on) => toggle(item.id, on)}
+              />
+            </span>
           </li>
         {/each}
       </ul>
@@ -200,7 +224,38 @@
           {/if}
         </div>
       {/if}
-      {#if view.switches.some((item) => !item.granted)}
+      {#if view.switches.find((item) => item.id === "drive_files")?.granted}
+        <div class="grid gap-1.5" aria-labelledby="google-files-title">
+          <h4 id="google-files-title" class="text-sm font-medium">Dom's files</h4>
+          {#if files === null}
+            <p class="text-sm text-muted-foreground">Asking Google…</p>
+          {:else}
+            <p class="text-sm text-muted-foreground">
+              Dom sees only files he made in his own folder and files you hand him.
+              {#if files.folder}<a class="underline" href={files.folder.url} target="_blank" rel="noreferrer">Open Dom's folder</a>{/if}
+            </p>
+            {#if files.files.length === 0}
+              <p class="text-sm text-muted-foreground">None yet.</p>
+            {:else}
+              <ul class="grid gap-1">
+                {#each files.files as item, index (index)}
+                  <li class="flex items-center gap-2 text-sm">
+                    <span class="min-w-0 flex-1 break-words">{item.name}</span>
+                    <span class="shrink-0 text-xs text-muted-foreground">{item.kind}</span>
+                  </li>
+                {/each}
+              </ul>
+              {#if files.more}<p class="text-xs text-muted-foreground">More files exist than are listed.</p>{/if}
+            {/if}
+          {/if}
+          {#if view.picker_ready}
+            <p class="text-sm"><a class="underline" href={view.picker_path}>Hand Dom a file</a> with Google's file picker. Or send him the file's link in your DM.</p>
+          {:else}
+            <p class="text-sm text-muted-foreground">To hand Dom files, add GOOGLE_PICKER_API_KEY and GOOGLE_PROJECT_NUMBER to .env and restart (docs/google.md).</p>
+          {/if}
+        </div>
+      {/if}
+      {#if view.switches.some((item) => !item.granted && !item.extra)}
         <p class="text-xs text-muted-foreground">A switch is locked when you did not tick that permission on Google's screen. Connect again to grant it.</p>
       {/if}
     {/if}
@@ -209,7 +264,7 @@
       <Button
         type="button"
         size="sm"
-        onclick={connect}
+        onclick={() => connect()}
         disabled={busy !== "" || !view.client_id_set || !view.client_secret_set || !view.redirect_uri}
       >
         {#if busy === "connect"}<LoaderCircle class="animate-spin motion-reduce:animate-none" aria-hidden="true" /> Opening Google…{:else}{view.status === "disconnected" ? "Connect Google" : "Connect again"}{/if}

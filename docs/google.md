@@ -1,8 +1,10 @@
 # Google Calendar and Gmail
 
 Dom can read the owner's calendar, keep calendars of his own and add, move and delete events on them, search and read
-mail, and save mail drafts. It is owner-only: none of it exists in a group or a friend's DM. Every change goes through an
-approval card, and Dom never sends mail: there is no send in the code. He never writes to the owner's own calendars.
+mail, save mail drafts, work with Google Drive files (Docs and Sheets included) and look up Google Contacts. It is
+owner-only: none of it exists in a group or a friend's DM. Every change goes through an approval card, and Dom never sends
+mail: there is no send in the code. He never writes to the owner's own calendars, and in Drive he sees only the files he
+made and the files the owner hands him.
 
 ## What Dom can do
 
@@ -12,9 +14,11 @@ approval card, and Dom never sends mail: there is no send in the code. He never 
 | Dom's own calendars | `calendar.app.created` | Make calendars of his own (for example "Dom - Planning") and add, move and delete events on **those only**. An owner-DM card shows the calendar, title, time and attendees, with Reject, Allow once and Allow always, **per kind** (add, move and delete each have their own policy in System → Access). |
 | Gmail: search and read | `gmail.readonly` | Search (a Gmail query, newest first, snippets) and read one message (text only, capped; attachments are named, never opened). |
 | Gmail: save drafts | `gmail.compose` | Save a draft after a card shows the recipients, subject and the start of the text. The draft is not sent. |
+| Files in Google Drive | `drive.file` | List, search and read the files he made and the files you handed him; make Docs and Sheets in his own folder; add to a Doc, add rows to a Sheet or replace cells in one, each after a card. See [Drive, Docs and Sheets](#drive-docs-and-sheets). |
+| Contacts | `contacts.readonly` | Look up a name and get the email address and phone number, read only. See [Contacts](#contacts). |
 
 Each switch starts **off**. A switch whose scope Google did not grant (you can untick a permission on Google's consent
-screen) cannot be turned on. Off means the tool is not offered and the handler refuses it in code too.
+screen, and the Files and Contacts scopes are asked for only when you want them, below) cannot be turned on. Off means the tool is not offered and the handler refuses it in code too.
 
 `gmail.compose` technically also lets a token send mail; Google has no drafts-only scope. Dom's code exposes no send,
 and the tool has no such action.
@@ -63,18 +67,150 @@ and writing happens only on calendars Dom made.
 - **If Google loses the answer** to "make a calendar" (a timeout), Dom does not try again, and tells you it may or may
   not exist: check Google Calendar before asking again.
 
+## Asking for a newer permission only when it is wanted
+
+A plain **Connect Google** asks Google for the calendar and Gmail permissions only. The Files and Contacts permissions are
+asked for when you want them: a switch whose permission was never granted shows a **Reconnect to allow** button, which
+sends you through Google's consent screen once more asking for just that permission on top of what you already granted
+(`include_granted_scopes`). The switch unlocks when Google grants it. Until then Dom is not offered the tool, and if the
+model asks anyway the handler answers that Google has not granted it and to press Reconnect. Disconnecting and connecting
+again starts from the base permissions.
+
+## Drive, Docs and Sheets
+
+Dom's connection holds `https://www.googleapis.com/auth/drive.file` and nothing wider. Under that scope Google itself
+shows Dom only the files **he made** and the files **you opened with him through Google Picker**: not your other files,
+not your folders, not what other people shared with you. Dom does not request `drive`, `documents` or `spreadsheets`;
+adding them to the consent screen is not needed and Dom never asks for them.
+
+The Docs and Sheets APIs work on those files under `drive.file`. Google's reference lists `drive.file` among the accepted
+scopes of [`documents.get`](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/get),
+[`documents.create`](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/create) and
+[`documents.batchUpdate`](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/batchUpdate),
+[`spreadsheets.create`](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/create),
+[`values.get`](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get),
+[`values.update`](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/update),
+[`values.append`](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/append) and
+Drive's [`files.export`](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export). Dom calls
+these Google REST APIs directly (not through an MCP server), so approval cards, scopes and the owner-DM rule stay in his
+own code.
+
+| `drive` action | What it does |
+| --- | --- |
+| `list` | The files he may see, newest first, or a search by name or text (`query`). Names are fenced as untrusted. |
+| `read` | A Google Doc or Slides (as plain text), a Sheet (the first sheet as CSV, or a `range` like `Sheet2!A1:D20`) or a text file (`text/*`, JSON, XML, YAML), by id or by link. |
+| `create` | A Doc (`name`, `text`) or a Sheet (`name`, `rows`) in his own folder, **Dom**, made the first time it is needed. |
+| `append` | Text at the end of a Doc, or rows below the data of a Sheet (`sheet` names the tab; the first by default). |
+| `update` | Replace the cells from `range` with `rows` in a Sheet. |
+
+- **Reading is fenced and bounded.** What he reads was written by other people, so the result is wrapped as untrusted
+  data and he is told never to follow it or copy it into notes or other chats. One read returns at most 8000 characters
+  (`offset` pages through the rest); a plain file over 1 MB is not fetched; Google caps an export at 10 MB. He reads Docs,
+  Sheets, Slides and text files; anything else (images, PDFs) he refuses by name.
+- **Writing goes through a card.** Each of `create` (Doc, Sheet), `append` (Doc), `append` (Sheet rows) and `update`
+  (Sheet cells) is its own kind in System → Access with Reject, Allow once and Allow always, so allowing document
+  appends does not allow overwriting cells. The card shows the file's name and the exact text or rows; for `update` it
+  also shows what the cells hold now ("Before") and what they will hold ("After"), and the range is spelled out for the
+  rows actually written (`B2` with two rows of two cells shows `B2:C3`). A card too long to show whole in Telegram
+  becomes dashboard-only, as for calendar and mail.
+- **Cells are text.** Values are written as typed (`valueInputOption=RAW`), so a cell that starts with `=` stays text and
+  never runs as a formula. Size limits: 8000 characters of doc text; at most 100 rows of 20 cells, 500 characters a cell
+  and 20,000 characters in all.
+- **His folder.** Files he creates go into a folder called **Dom**, found by name among the folders he made (a folder of
+  yours with the same name is invisible to him under this scope, so it is never written to) and made if it is not
+  there. Two files made at once share one find-or-make, so there is no second folder. Writes that get no clear answer
+  from Google are never repeated: he says the file may or may not exist.
+- **Files he cannot see.** A file shared with you but not handed to Dom looks, to Google, like a file that does not
+  exist. The tool says so and carries the one-tap link that hands it over (next section).
+- **Switching off** cancels the cards still waiting, as for the other switches.
+- **On the dashboard,** Settings → Services → Google lists the Files switch with its permission state ("Reconnect to
+  allow" when missing), a link to Dom's folder and the names of the files he may see (names only, read from Google when
+  the page opens), and a link to the picker.
+
+## Handing Dom a file by link
+
+A shared link alone gives an app nothing under `drive.file`: Google grants Dom a file only when you open it with Dom's
+OAuth client through Google Picker. So when you send a Drive, Docs, Sheets or Slides link in your DM, Dom's turn note
+carries a one-tap link to a small dashboard page (`<web.public_url>/google/picker?file=<id>`) and he answers with it. On
+that page you tap **Choose the file in Google Drive**, sign in to Google if asked, and select the file (the picker opens on
+the linked file, with the rest of your Drive behind a tab). That grants Dom that file and no other. The page then tells
+Dom's server, which asks Google whether Dom can now see each file and, for each one he can, records an owner event
+("Handed Dom the Google Doc … [file id …]") so he can read it right away. Nothing is claimed that Google did not confirm.
+
+- **Only file links.** Folder links and other addresses make no link: the Picker cannot hand Dom a folder's contents.
+  A message with more than three links gets links for the first three.
+- **Behind the dashboard login.** `/google/picker` is a normal dashboard page: Cloudflare Access (or the dev token) must
+  let you in, like every other page. No token of Dom's ever reaches the page: the browser asks Google for its own
+  `drive.file`-only token with Google Identity Services, and the server asks Google (with its own connection) whether the
+  pick worked. The page carries the OAuth client id (public by design), the browser API key and the project number.
+- **Its own CSP.** Only this page may load Google's scripts and frames: `script-src` adds `https://apis.google.com` and
+  `https://accounts.google.com/gsi/client`; `frame-src` adds `https://docs.google.com` and `https://accounts.google.com/gsi/`;
+  `connect-src`, `style-src` and `img-src` add Google's own hosts. Every other dashboard page keeps the strict default
+  (`default-src 'self'`). The page's `Referrer-Policy` is `strict-origin`, because your API key's website restriction
+  reads the origin (never the path) from the Referer.
+- **If the page cannot work** (no key or project number, the switch off) it says so and loads nothing from Google, and
+  Dom's turn note says the picker is not set up instead of offering a dead link.
+
+### Set up the picker (once)
+
+1. In the same Google Cloud project, enable the **Google Picker API**, the **Google Drive API**, the **Google Docs API**,
+   the **Google Sheets API** and the **People API**.
+2. Create an **API key** (APIs & Services → Credentials). Restrict it: **Websites** with `<web.public_url>/*` and
+   `https://docs.google.com/*` (the Picker renders in an iframe on docs.google.com), and **API restrictions** to the
+   Picker API.
+3. On the existing **Web application** OAuth client add `<web.public_url>` (for example `https://dom.example.org`, no path)
+   under **Authorized JavaScript origins**. The Picker's token request runs in your browser from that address.
+4. Note the project's **number** (Cloud console → project settings; digits only).
+5. Add both to the instance's `.env` and restart Dom:
+
+   ```text
+   GOOGLE_PICKER_API_KEY=...
+   GOOGLE_PROJECT_NUMBER=...
+   ```
+
+   Neither is ever printed in a log, the dashboard (only "set" or "not set") or Dom's prompt; they appear only in the
+   picker page itself, which sits behind the dashboard login.
+6. Turn on **Files in Google Drive** (press **Reconnect to allow** first if it is locked).
+
+## Contacts
+
+The **Contacts** switch (`contacts.readonly`) lets Dom look up a name and get the email address and phone number from
+your Google Contacts, to find a friend's address for a booking or a draft. It is read only (`people:searchContacts`),
+owner DM only, and the answer is fenced as untrusted data because contact text was typed by other people. Dom asks for at
+most five matches. Google's People API wants one empty search before the first real one to fill its cache; Dom does that
+once.
+
+Dom's own code uses the same lookup through `contact_email(google, name)` in `dom/google_contacts.py`: it returns one
+address, or `None` when nothing matches, when two people could be meant (it never guesses) or when the switch is off.
+
+## What Dom can and cannot see
+
+| Dom can see | Dom cannot see |
+| --- | --- |
+| Files he made, in his folder **Dom** | Any other file, folder or shared drive of yours |
+| Files you handed him with the picker | Files shared with you that you did not hand him |
+| Contacts' names, emails and phones (Contacts on) | Anything about contacts beyond that, or any edit |
+| Docs, Sheets, Slides and text files, as text | Images, PDFs and other binary files |
+
+Turning a switch off, or disconnecting Google, takes the access away at once. Files already handed to Dom stay granted at
+Google until you remove Dom at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+
 ## Create the OAuth client (once)
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and enable the **Google Calendar
-   API** and the **Gmail API**.
+   API** and the **Gmail API** (and, for Files and Contacts, the APIs listed under [Set up the picker](#set-up-the-picker-once)).
 2. Configure the OAuth consent screen. A personal Google account can keep the app **unverified in production** for
    owner-only use (the consent screen then says the app is unverified; continue past it). Do not leave it in
    *Testing*: Google expires a Testing app's refresh token after seven days.
-3. Add the four scopes (`openid` needs no setup: Google always allows it):
+3. Add the scopes (`openid` needs no setup: Google always allows it):
    - `https://www.googleapis.com/auth/calendar.events`
    - `https://www.googleapis.com/auth/calendar.app.created`
    - `https://www.googleapis.com/auth/gmail.readonly`
    - `https://www.googleapis.com/auth/gmail.compose`
+   - `https://www.googleapis.com/auth/drive.file` (Files; non-sensitive)
+   - `https://www.googleapis.com/auth/contacts.readonly` (Contacts)
+
+   Do not add `documents`, `spreadsheets` or `drive`: Dom never requests them.
 4. Create an OAuth client of type **Web application** with exactly this authorized redirect URI:
 
    ```text
@@ -129,7 +265,7 @@ Cloudflare Access the same checks apply on top of Access's own gate.
 
 ## Approvals
 
-Create calendar, add, move, delete and draft each go through an owner-DM card, and the tool returns at once ("asked the owner"); the
+Create calendar, add, move, delete, draft and each kind of Drive write (create a doc, add to a doc, create a sheet, add rows, replace cells) each go through an owner-DM card, and the tool returns at once ("asked the owner"); the
 action runs in the background after the tap and its outcome is written to the DM history for Dom's next turn.
 
 - **The card shows everything that matters:** the title or subject, every attendee or recipient, the times with the

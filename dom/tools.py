@@ -936,7 +936,7 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
     Scopes stay separate (groups and friends' DMs never see owner-only tool names). The vibe switch
     and shared plugins sit at the end of the shared block, and desktop, T3 and owner-only plugins at
     the end of the owner block, so a change there reshapes only what follows it."""
-    from dom import google_tools
+    from dom import google_files, google_tools
     from dom.devices import FIND_DEVICES_TOOL
     from dom.memory_edit import PROPOSE_MEMORY_EDIT_TOOL
     from dom.plugins.tools import DRAFT_PLUGIN_TOOL, offered
@@ -973,5 +973,6 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
 
         owner_only.extend(TOOLS)
     owner_only.extend(await google_tools.offered(app, scope))
+    owner_only.extend(await google_files.offered(app, scope))
     owner_only.extend(tool for tool in plugin_tools if _is_owner_only(tool))
     return [*shared, *owner_only, MESSAGE_CHAT]
