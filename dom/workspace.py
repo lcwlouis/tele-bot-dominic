@@ -518,7 +518,7 @@ def set_mount_problem(home: Path, problem: str | None) -> None:
     os.replace(temporary, path)
 
 
-# ---- documents sent in Telegram ---------------------------------------------------------------
+# ---- documents sent to Dom (Telegram and the Talk page) ---------------------------------------------------------------
 
 
 def destination(app: App, msg: IncomingMessage) -> tuple[Tree, str, str] | None:
@@ -550,33 +550,42 @@ def clean_mime(value: object) -> str:
     return mime if _MIME.fullmatch(mime) else "application/octet-stream"
 
 
-async def land_document(app: App, msg: IncomingMessage) -> dict | None:
-    """Download a document that was sent to Dom and keep it in the workspace, off the reply path: the dispatcher
-    waits for this like any other media. The message's media then names the file and where Dom can read it, and the
-    file's own name and type show in its `<media>` tag even when it could not be saved."""
+async def document_fields(app: App, msg: IncomingMessage, data: bytes | None = None) -> dict | None:
+    """Keep a document that was sent to Dom in the workspace and return the media fields that say where it is and what
+    it is: the file's own name and type show in its `<media>` tag even when it could not be saved. `data` is the file
+    when Dom already holds it (the dashboard's Talk page sends it with the message), so nothing is downloaded. None
+    when there is nothing to land: not a document, or one that already says where it is."""
     media = msg.media or {}
-    if media.get("kind") != "document" or media.get("saved"):
+    if media.get("kind") != "document" or media.get("saved") or media.get("description") is not None:
         return None
     name, mime = safe_name(media.get("name")), clean_mime(media.get("mime"))
     try:
         target = destination(app, msg)
         if target is None:
-            await app.store.update_media(msg.chat_id, msg.msg_id, {"description": f"{name} ({mime})"})
-            return None
+            return {"description": f"{name} ({mime})"}
         tree, folder, seen = target
-        if (media.get("file_size") or 0) > MAX_FILE_BYTES:
+        if (len(data) if data is not None else media.get("file_size") or 0) > MAX_FILE_BYTES:
             raise WorkspaceError(f"documents can be at most {MAX_FILE_BYTES // 1_000_000} MB")
-        with BoundedFile() as content:
-            async with asyncio.timeout(DOWNLOAD_TIMEOUT):
-                downloaded = await app.bot.download(media["file_id"], destination=content)
-            if downloaded is None:
-                raise OSError("no document returned")
-            data = content.getvalue()
-        fields = await asyncio.to_thread(keep, tree, folder, seen, name, mime, data)
+        if data is None:
+            with BoundedFile() as content:
+                async with asyncio.timeout(DOWNLOAD_TIMEOUT):
+                    downloaded = await app.bot.download(media["file_id"], destination=content)
+                if downloaded is None:
+                    raise OSError("no document returned")
+                data = content.getvalue()
+        return await asyncio.to_thread(keep, tree, folder, seen, name, mime, data)
     except WorkspaceError as error:
-        fields = {"description": f"{name} ({mime}), not saved: {error}"}
+        return {"description": f"{name} ({mime}), not saved: {error}"}
     except Exception as error:
         log.warning("could not save a document to the workspace (%s)", type(error).__name__)
-        fields = {"description": f"{name} ({mime}), could not be saved"}
-    await app.store.update_media(msg.chat_id, msg.msg_id, fields)
+        return {"description": f"{name} ({mime}), could not be saved"}
+
+
+async def land_document(app: App, msg: IncomingMessage) -> dict | None:
+    """Download a document that was sent to Dom in Telegram and keep it in the workspace, off the reply path: the
+    dispatcher waits for this like any other media. The stored message's media then names the file and where Dom can
+    read it."""
+    fields = await document_fields(app, msg)
+    if fields is not None:
+        await app.store.update_media(msg.chat_id, msg.msg_id, fields)
     return fields

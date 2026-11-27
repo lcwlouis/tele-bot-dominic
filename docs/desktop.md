@@ -219,7 +219,10 @@ container and a remote desktop host never do. The browser profile stays outside 
   name (a second `report.pdf` becomes `report-2.pdf`), at most 20 MB, downloaded in the background while Dom's reply
   waits for it like any other media. Dom is told the file's name, type and path in the message's `<media>` tag, and
   reads it with `files`. A `/desktop` document is staged for the task as before and also saved there, from the same
-  download. The desktop's own task prompt says `/workspace` is shared.
+  download. A file sent from the dashboard's Talk page (its paperclip button) lands the same way, with the same 20 MB
+  limit, from the bytes the page sent: it goes to Telegram as a document with the 🖥 mirror caption and is saved
+  before the message is recorded, so Dom's turn already sees where it is. The desktop's own task prompt says
+  `/workspace` is shared.
 - **File tools.** In the owner DM only, `files` has `list`, `read`, `write`, `move` and `delete`. `read` returns
   text, Markdown, CSV, JSON and similar text files, and PDF text (extracted with
   [`pypdf`](https://pypi.org/project/pypdf/), a small pure-Python library added for this: nothing else in Dom reads

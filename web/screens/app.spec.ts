@@ -2623,6 +2623,79 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("phone: Talk is exactly the visible height, the page never scrolls and the composer stays at the bottom", async ({ page }) => {
+    const problems = await watch(page);
+    // The phone at rest, then the height it has left with the keyboard up.
+    for (const viewport of [viewports.phone, { width: viewports.phone.width, height: 480 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto("/app/talk");
+      const composer = page.getByRole("textbox", { name: "Message to Dom" });
+      await expect(composer).toBeVisible();
+      await expect(page.getByRole("log", { name: "Conversation with Dom" }).getByRole("listitem").first()).toBeVisible();
+      const fits = () => page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight);
+      expect(await fits()).toBeLessThanOrEqual(1);
+      const bottom = await composer.evaluate((el) => el.getBoundingClientRect().bottom);
+      expect(bottom).toBeLessThanOrEqual(viewport.height);
+      expect(bottom).toBeGreaterThan(viewport.height - 90);
+      // A swipe moves the conversation, not the page.
+      await page.mouse.move(viewport.width / 2, 200);
+      await page.mouse.wheel(0, 3000);
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+      await expect(composer).toBeInViewport();
+      // Writing and stopping leaves the page as it was: the header back in view and nothing below the composer.
+      await composer.focus();
+      await composer.blur();
+      await expect(page.getByRole("heading", { name: "Dom", level: 1 })).toBeInViewport();
+      expect(await fits()).toBeLessThanOrEqual(1);
+    }
+    expect(problems).toEqual([]);
+  });
+
+  test("chats: Your DM keeps each message's hidden text inside its own list, so the page never stretches", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/chats");
+    await page.getByRole("button", { name: "Messages in Your DM" }).click();
+    const list = page.getByRole("region", { name: /^Messages in .*oldest first$/ });
+    await expect(list).toBeVisible();
+    // Screen-reader text is positioned absolutely: if the list is not its containing block it lands far down the page.
+    // Its containing block (offsetParent) must be the list or inside it, so the list clips and scrolls it.
+    const escaped = await list.evaluate((box) =>
+      [...box.querySelectorAll<HTMLElement>(".sr-only")].filter((node) => !node.offsetParent || !box.contains(node.offsetParent)).length,
+    );
+    expect(escaped).toBe(0);
+    expect(problems).toEqual([]);
+  });
+
+  test("talk: a file is attached and sent as a document, beside the photo button", async ({ page }) => {
+    const problems = await watch(page);
+    const bodies: Record<string, unknown>[] = [];
+    await page.route("**/api/talk/send", async (route) => {
+      bodies.push(route.request().postDataJSON());
+      await route.fulfill({ json: { msg_id: 1 } });
+    });
+    await page.goto("/app/talk");
+    await expect(page.getByRole("button", { name: "Attach a photo" })).toBeVisible();
+    const attach = page.getByRole("button", { name: "Attach a file" });
+    await attach.hover();
+    await expect(page.locator("[data-slot=tooltip-content]").filter({ hasText: "Attach a file" })).toBeVisible();
+    const pdf = Buffer.from("%PDF-1.4\nfictional\n%%EOF\n");
+    await page.getByLabel("File to send").setInputFiles({ name: "notes.pdf", mimeType: "application/pdf", buffer: pdf });
+    await expect(page.getByText("Attached notes.pdf")).toBeVisible();
+    await page.getByRole("textbox", { name: "Message to Dom" }).fill("what is in this?");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0]).toEqual({ text: "what is in this?", file: pdf.toString("base64"), name: "notes.pdf" });
+    await expect(page.getByText("Attached notes.pdf")).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "Message to Dom" })).toHaveValue("");
+    // A file over the Telegram document limit is refused before anything is sent.
+    await page.getByLabel("File to send").setInputFiles({ name: "huge.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(20_000_001) });
+    await expect(page.getByRole("alert")).toHaveText("That file is over 20 MB.");
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+    expect(bodies).toHaveLength(1);
+    expect(problems).toEqual([]);
+  });
+
   test("w8b: one conversation about soul and world opens from SOUL.md, WORLD.md and the World page", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/memory/world");
