@@ -1,7 +1,8 @@
 """JSON API for the Talk page (the owner DM, written to from the dashboard) and the debug traces it shows.
 
 `GET /api/talk` is the page's poll: the newest messages on the first call, then only those after the cursor, plus
-whether Dom is composing. `POST /api/talk/send` sends one message through dom.talk. The trace reads (`/api/traces/...`)
+whether Dom is composing. `POST /api/talk/send` sends one message through dom.talk: text, with a photo or a file as
+base64, the body bounded to what the largest file needs. The trace reads (`/api/traces/...`)
 serve what dom.tracer stored for any chat: the dashboard is the owner's, and E102 makes traces full everywhere. Every
 read here is same-site only (GUARDED_GETS, GUARDED_PREFIX), and the POST sits in JSON_POSTS.
 """
@@ -18,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from dom import talk
+from dom.web.model_settings import _input
 from dom.web.shared import owner_app
 
 router = APIRouter()
@@ -28,6 +30,7 @@ GUARDED_PREFIX = "/api/traces/"  # reads under it are same-site only: they hold 
 JSON_POSTS = {"/api/talk/send"}
 FIRST_PAGE = 40
 MEDIA_KINDS = ("photo", "voice", "video_note", "special")
+MAX_SEND = talk.MAX_FILE_BYTES * 4 // 3 + 32 * 1024  # the largest file as base64, with the caption and JSON around it
 
 
 class Send(BaseModel):
@@ -35,6 +38,8 @@ class Send(BaseModel):
     text: str = Field("", max_length=talk.MAX_TEXT + 100)
     photo: str | None = Field(None, max_length=11_000_000)  # base64, at most 8 MB decoded
     mime: str | None = Field(None, max_length=40)
+    file: str | None = Field(None, max_length=MAX_SEND)  # base64, at most 20 MB decoded, as a document
+    name: str | None = Field(None, max_length=255)  # the file's name
 
 
 def _media(row) -> dict | None:
@@ -96,17 +101,24 @@ async def read_talk(
     return data
 
 
-@router.post("/api/talk/send")
-async def send(request: Request, body: Send) -> dict:
-    app = owner_app(request)
-    photo = None
-    if body.photo:
-        try:
-            photo = base64.b64decode(body.photo, validate=True)
-        except (binascii.Error, ValueError):
-            raise HTTPException(400, "That photo could not be read.") from None
+def _decoded(data: str | None, what: str) -> bytes | None:
+    if not data:
+        return None
     try:
-        msg_id = await talk.send_from_dashboard(app, body.text, photo=photo, mime=body.mime)
+        return base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(400, f"That {what} could not be read.") from None
+
+
+@router.post("/api/talk/send")
+async def send(request: Request) -> dict:
+    app = owner_app(request)
+    body = await _input(request, Send, MAX_SEND)
+    photo, document = _decoded(body.photo, "photo"), _decoded(body.file, "file")
+    try:
+        msg_id = await talk.send_from_dashboard(
+            app, body.text, photo=photo, mime=body.mime, document=document, name=body.name,
+        )
     except talk.TalkRefused as refusal:
         raise HTTPException(400, str(refusal)) from None
     except Exception as exc:

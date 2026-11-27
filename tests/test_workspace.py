@@ -5,17 +5,19 @@ import base64
 import json
 import os
 import tarfile
+from types import SimpleNamespace
 
 import pytest
 from aiogram.types import Document
 
-from dom import backup, workspace
+from dom import backup, talk, workspace
 from dom.config import Config, DesktopConfig, WorkspaceConfig
 from dom.desktop.client import SandboxError
 from dom.desktop.sandbox import SELF_WORK, workspace_volume
 from dom.files_tools import OWNER_FILES_TOOL, SHARED_FILES_TOOL
 from dom.telegram.handlers import handle_message
 from dom.tools import TurnCtx, enabled_tools
+from dom.web import api_talk
 from dom.workspace import Tree, WorkspaceError, ensure_workspace, safe_name
 from test_usage import online
 from tghelpers import FRIEND, GROUP, OWNER, drain_dispatch, tg
@@ -459,6 +461,98 @@ async def test_elsewhere_documents_land_only_with_the_toggle_and_only_in_shared(
     assert media["saved"] == f"inbox/{chat}/menu.txt"  # as the chat's own files tool names it
     where = ctx(app, kind, chat, sender)
     assert "hello document" in await SHARED_FILES_TOOL.handler({"action": "read", "path": media["saved"]}, where)
+
+
+# ---- files sent from the Talk page ---------------------------------------------------------------
+
+
+TALK_HEADERS = {"Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"}
+
+
+def mirror_documents(app, monkeypatch):
+    """Telegram's answer to the Talk page's mirror: a message carrying the document, as aiogram returns it."""
+    sent = []
+
+    async def send_document(chat_id, upload, **kw):
+        sent.append((chat_id, upload.filename, upload.data, kw))
+        return SimpleNamespace(message_id=7000 + len(sent), document=Document(
+            file_id=f"talk-{len(sent)}", file_unique_id=f"u{len(sent)}", file_name=upload.filename,
+            file_size=len(upload.data), mime_type="application/pdf" if upload.filename.endswith(".pdf") else "text/plain",
+        ))
+
+    monkeypatch.setattr(app.bot, "send_document", send_document)
+    return sent
+
+
+async def talk_send(client, **body):
+    from test_web_auth import ORIGIN
+
+    return await client.post("/api/talk/send", json=body, headers={**TALK_HEADERS, "Origin": ORIGIN})
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+async def test_a_talk_file_lands_in_the_inbox_like_a_telegram_document(make_app, browser, monkeypatch):
+    app = make_app()
+    sent, downloads = mirror_documents(app, monkeypatch), serve_document(app, monkeypatch)
+    await online(app, OWNER)
+    async with browser(app) as client:
+        pdf = await talk_send(client, text="what is in this?", file=b64(make_pdf()), name="../Q3 report.pdf")
+        assert pdf.status_code == 200, pdf.text
+        await drain_dispatch(app.dispatch)
+        note = await talk_send(client, text="", file=b64(b"remember the milk"), name="list.txt")
+        assert note.status_code == 200, note.text
+        await drain_dispatch(app.dispatch)
+    # The mirror is the document itself, silent, with the message as its caption.
+    assert [(chat, name, kw["caption"], kw["disable_notification"]) for chat, name, _, kw in sent] == [
+        (OWNER, "Q3_report.pdf", "🖥 what is in this?", True), (OWNER, "list.txt", "🖥", True),
+    ]
+    assert downloads == []  # kept from the bytes the page sent: nothing comes back from Telegram
+    inbox = app.home.root / "workspace" / "inbox"
+    assert (inbox / "Q3_report.pdf").read_bytes() == make_pdf() and (inbox / "list.txt").read_bytes() == b"remember the milk"
+    first = await app.store.get_message(OWNER, pdf.json()["msg_id"])
+    assert first.origin == "dashboard" and first.text == "what is in this?"
+    media = json.loads(first.media_json)
+    assert media["kind"] == "document" and media["saved"] == "inbox/Q3_report.pdf"
+    assert media["description"].startswith("Q3_report.pdf (application/pdf, ")
+    # Dom's turns see each file and where it is, as for a document sent in Telegram, and can read both.
+    prompt = str(app.script.requests)
+    assert "saved as inbox/Q3_report.pdf" in prompt and "saved as inbox/list.txt" in prompt
+    assert "Quarterly figures" in await files(app, {"action": "read", "path": "inbox/Q3_report.pdf"})
+    assert "remember the milk" in await files(app, {"action": "read", "path": "inbox/list.txt"})
+
+
+async def test_talk_refuses_files_it_cannot_send_before_telegram_sees_them(make_app, browser, monkeypatch):
+    app = make_app()
+    sent = mirror_documents(app, monkeypatch)
+    monkeypatch.setattr(talk, "MAX_FILE_BYTES", 5)
+    async with browser(app) as client:
+        big = await talk_send(client, file=b64(b"123456"), name="big.txt")
+        assert big.status_code == 400 and "over" in big.json()["detail"]
+        assert (await talk_send(client, file=b64(b""), name="empty.txt")).status_code == 400
+        assert (await talk_send(client, file="!!", name="bad.txt")).status_code == 400
+        both = await talk_send(client, file=b64(b"1"), name="a.txt", photo=b64(b"1"), mime="image/png")
+        assert both.status_code == 400 and "one at a time" in both.json()["detail"]
+        assert (await talk_send(client, text="x" * (talk.MAX_CAPTION + 1), file=b64(b"1"), name="a.txt")).status_code == 400
+        monkeypatch.setattr(api_talk, "MAX_SEND", 100)
+        assert (await talk_send(client, file=b64(b"1" * 200), name="a.txt")).status_code == 413
+    assert sent == []
+
+
+async def test_a_talk_file_the_workspace_cannot_hold_is_sent_and_dom_is_told(make_app, browser, monkeypatch):
+    app = make_app()
+    mirror_documents(app, monkeypatch)
+    monkeypatch.setattr(workspace, "MAX_TOTAL_BYTES", 3)
+    await online(app, OWNER)
+    async with browser(app) as client:
+        response = await talk_send(client, text="keep this", file=b64(b"too much"), name="a.txt")
+        assert response.status_code == 200, response.text
+        await drain_dispatch(app.dispatch)
+    media = await stored_media(app, OWNER, response.json()["msg_id"])
+    assert "saved" not in media and "not saved: The workspace is full" in media["description"]
+    assert "not saved: The workspace is full" in str(app.script.requests)
 
 
 async def test_a_desktop_document_also_lands_in_the_workspace(make_app, monkeypatch):

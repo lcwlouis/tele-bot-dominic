@@ -2,7 +2,8 @@
 
 A message typed there goes to the owner DM as a silent mirror bubble from the bot ("🖥 <text>"), so it has a real
 Telegram message id (the window, read marks and restarts all order by it) and the Telegram side reads as one
-conversation. It is then recorded as the owner's own message, with `origin = 'dashboard'`, through the same path as
+conversation. A photo goes as a photo, and a file as a document: it is kept in the workspace the way a document sent
+in Telegram is (dom/workspace.py), from the bytes the page sent, before the message is recorded. It is then recorded as the owner's own message, with `origin = 'dashboard'`, through the same path as
 Telegram ingress, and from there the turn is an ordinary owner-DM turn. Bots never receive their own messages as
 updates, so the mirror is never ingested twice. Dom's replies already go to Telegram and into `messages`, which the page
 polls.
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from aiogram.types import BufferedInputFile
 
+from dom import workspace
 from dom.models import IncomingMessage
 from dom.telegram.convert import _media
 from dom.telegram.executor import retry_telegram
@@ -30,6 +32,7 @@ MIRROR = "🖥"  # what the Telegram side shows before a message typed on the da
 MAX_TEXT = 4000  # under Telegram's 4096 for a message and 1024 for a caption, once the glyph is added
 MAX_CAPTION = 1000
 MAX_PHOTO_BYTES = 8_000_000
+MAX_FILE_BYTES = workspace.MAX_FILE_BYTES  # the same as a document sent in Telegram
 PHOTO_TYPES = {"image/jpeg": "photo.jpg", "image/png": "photo.png", "image/webp": "photo.webp"}
 
 
@@ -44,13 +47,22 @@ class TalkRefused(ValueError):
     """The message can't be sent as asked; the text says why, for the owner."""
 
 
-def check(text: str, photo: bytes | None, mime: str | None) -> str:
+def check(text: str, photo: bytes | None, mime: str | None, document: bytes | None = None) -> str:
     text = text.strip()
-    if not text and photo is None:
+    if not text and photo is None and document is None:
         raise TalkRefused("Write something first.")
     if text.startswith("/"):
         raise TalkRefused("Commands work in Telegram.")
-    if photo is not None:
+    if photo is not None and document is not None:
+        raise TalkRefused("Send a photo or a file, one at a time.")
+    if document is not None:
+        if not document:
+            raise TalkRefused("That file is empty.")
+        if len(document) > MAX_FILE_BYTES:
+            raise TalkRefused(f"That file is over {MAX_FILE_BYTES // 1_000_000} MB.")
+        if len(text) > MAX_CAPTION:
+            raise TalkRefused(f"A file's caption can be {MAX_CAPTION} characters at most.")
+    elif photo is not None:
         if mime not in PHOTO_TYPES:
             raise TalkRefused("Send a JPEG, PNG or WebP photo.")
         if len(photo) > MAX_PHOTO_BYTES:
@@ -62,7 +74,10 @@ def check(text: str, photo: bytes | None, mime: str | None) -> str:
     return text
 
 
-async def send_from_dashboard(app: App, text: str, *, photo: bytes | None = None, mime: str | None = None) -> int:
+async def send_from_dashboard(
+    app: App, text: str, *, photo: bytes | None = None, mime: str | None = None, document: bytes | None = None,
+    name: str | None = None,
+) -> int:
     """Mirror the message into the owner DM, then record it as the owner's and wake the dispatcher. Returns its
     Telegram message id. Holds the owner DM's ingest lock throughout, as Telegram ingress does, so a message typed in
     Telegram at the same moment is recorded strictly before or after this one."""
@@ -71,13 +86,19 @@ async def send_from_dashboard(app: App, text: str, *, photo: bytes | None = None
     owner_id = app.owner_id
     if owner_id is None:
         raise TalkRefused("Claim Dom in Telegram first.")
-    text = check(text, photo, mime)
+    text = check(text, photo, mime, document)
     mirror = f"{MIRROR} {text}" if text else MIRROR
     async with app.ingest_locks[owner_id]:
         if photo is not None:
             upload = BufferedInputFile(photo, PHOTO_TYPES[mime or "image/jpeg"])
             sent = await retry_telegram(
                 lambda: app.bot.send_photo(owner_id, upload, caption=mirror, disable_notification=True), sleep=app.sleep,
+            )
+        elif document is not None:
+            upload = BufferedInputFile(document, workspace.safe_name(name))
+            sent = await retry_telegram(
+                lambda: app.bot.send_document(owner_id, upload, caption=mirror, disable_notification=True),
+                sleep=app.sleep,
             )
         else:
             sent = await retry_telegram(
@@ -87,9 +108,13 @@ async def send_from_dashboard(app: App, text: str, *, photo: bytes | None = None
         msg = IncomingMessage(
             chat_id=owner_id, chat_type="private", chat_title="", msg_id=sent.message_id, sender_id=owner_id,
             sender_handle=person.current_handle or None, sender_name=person.display_name or "",
-            is_bot=False, text=text, reply_to=None, media=_media(sent) if photo is not None else None,
+            is_bot=False, text=text, reply_to=None, media=_media(sent) if photo is not None or document is not None else None,
             date=_sent_at(app, sent),
         )
+        if document is not None:
+            # Kept from the bytes in hand, so the dispatcher has nothing to download and the turn reads where it is.
+            if (fields := await workspace.document_fields(app, msg, data=document)) is not None:
+                msg.media = {**msg.media, **fields}
         await record_incoming(app, msg, origin=ORIGIN)
     log.info("owner wrote from the dashboard (message %s)", sent.message_id)
     return sent.message_id

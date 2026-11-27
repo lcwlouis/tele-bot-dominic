@@ -37,6 +37,10 @@
   const isSearch = $derived(route.path === search.href);
   const isSecret = $derived(route.path === secretEntry.href);
   const where = $derived(locate(route.path));
+  // Talk on a phone is a chat app's screen: the shell is exactly the visible height (Talk.svelte keeps
+  // --visible-height and --visible-top on the visual viewport, which shrinks and pans while the keyboard is up), the
+  // page never scrolls, and the conversation scrolls inside its card.
+  const fill = $derived(!isGallery && !isWaiting && !isSearch && !isSecret && where.destination.id === "talk");
   // /app/system/plugins/{name}/{digest}: one plugin version's code review.
   const review = $derived(where.tab?.id === "plugins" ? route.path.slice(where.tab.href.length + 1).split("/") : []);
   // /app/system/turns/{id}: one turn's trace.
@@ -71,11 +75,13 @@
   <div
     class={cn(
       "min-h-dvh lg:grid lg:transition-[grid-template-columns] lg:duration-200 lg:ease-out motion-reduce:transition-none",
+      fill &&
+        "max-lg:fixed max-lg:inset-x-0 max-lg:top-[var(--visible-top,0px)] max-lg:flex max-lg:h-[var(--visible-height,100dvh)] max-lg:min-h-0 max-lg:flex-col max-lg:overflow-hidden",
       sidebar.collapsed ? "lg:grid-cols-[4.25rem_minmax(0,1fr)]" : "lg:grid-cols-[15.5rem_minmax(0,1fr)]",
     )}
   >
     <Sidebar path={route.path} current={isGallery ? { ...where.destination, id: "" } : where.destination} />
-    <div class="min-w-0">
+    <div class={cn("min-w-0", fill && "max-lg:flex max-lg:min-h-0 max-lg:flex-1 max-lg:flex-col")}>
       <TopBar
         destination={where.destination}
         tab={where.tab}
@@ -83,7 +89,14 @@
         path={route.path}
         current={isGallery ? { ...where.destination, id: "" } : where.destination}
       />
-      <main id="main" tabindex="-1" class="mx-auto max-w-[68rem] px-4 pt-2 pb-10 outline-none sm:px-6 lg:px-9 lg:pt-1 lg:pb-14">
+      <main
+        id="main"
+        tabindex="-1"
+        class={cn(
+          "mx-auto max-w-[68rem] px-4 pt-2 pb-10 outline-none sm:px-6 lg:px-9 lg:pt-1 lg:pb-14",
+          fill && "max-lg:flex max-lg:min-h-0 max-lg:w-full max-lg:flex-1 max-lg:flex-col max-lg:pb-3",
+        )}
+      >
         {#if isGallery}
           <Gallery />
         {:else if isWaiting}

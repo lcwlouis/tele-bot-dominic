@@ -1,11 +1,12 @@
 <script lang="ts">
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ImagePlus from "@lucide/svelte/icons/image-plus";
+  import Paperclip from "@lucide/svelte/icons/paperclip";
   import Monitor from "@lucide/svelte/icons/monitor";
   import PanelRight from "@lucide/svelte/icons/panel-right";
   import SendIcon from "@lucide/svelte/icons/send";
   import X from "@lucide/svelte/icons/x";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { MediaQuery } from "svelte/reactivity";
   import { getJSON, send, type HomeData, type TalkData, type TalkMessage, type TraceSummary } from "$lib/api";
   import { ACTIVITY_LABELS } from "$lib/components/Orbit.svelte";
@@ -43,9 +44,14 @@
   let panelOpen = $state(false);
 
   let draft = $state("");
-  let photo = $state<{ name: string; data: string; mime: string } | null>(null);
+  // One attachment at a time: a photo (Dom sees it as a photo) or any file, which goes to Telegram as a document and
+  // lands in the workspace as one sent there does. The limits are the server's (dom/talk.py).
+  type Attachment = { kind: "photo" | "file"; name: string; data: string; mime: string };
+  const LIMITS = { photo: 8_000_000, file: 20_000_000 } as const;
+  let attachment = $state<Attachment | null>(null);
   let sending = $state(false);
   let scroller = $state<HTMLElement | null>(null);
+  let photoInput = $state<HTMLInputElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
 
   const lastId = () => (messages.length ? messages[messages.length - 1].id : 0);
@@ -172,12 +178,18 @@
 
   async function submit() {
     const text = draft.trim();
-    if ((!text && !photo) || sending) return;
+    if ((!text && !attachment) || sending) return;
     sending = true;
     try {
-      await send("/api/talk/send", photo ? { text, photo: photo.data, mime: photo.mime } : { text });
+      const body =
+        attachment?.kind === "photo"
+          ? { text, photo: attachment.data, mime: attachment.mime }
+          : attachment
+            ? { text, file: attachment.data, name: attachment.name }
+            : { text };
+      await send("/api/talk/send", body);
       draft = "";
-      clearPhoto();
+      clearAttachment();
       typing = true;
       await poll();
       await toBottom(true);
@@ -195,25 +207,31 @@
     }
   }
 
-  function pick(event: Event) {
-    const file = (event.currentTarget as HTMLInputElement).files?.[0];
+  function pick(kind: Attachment["kind"], event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ""; // the same file can be chosen again after it is removed
     if (!file) return;
-    if (file.size > 8_000_000) {
-      failedPhoto = "That photo is over 8 MB.";
+    if (file.size > LIMITS[kind]) {
+      failedAttach = `That ${kind} is over ${LIMITS[kind] / 1_000_000} MB.`;
       return;
     }
-    failedPhoto = "";
+    if (!file.size) {
+      failedAttach = "That file is empty.";
+      return;
+    }
+    failedAttach = "";
     const reader = new FileReader();
     reader.onload = () => {
       const url = String(reader.result);
-      photo = { name: file.name, data: url.slice(url.indexOf(",") + 1), mime: file.type };
+      attachment = { kind, name: file.name, data: url.slice(url.indexOf(",") + 1), mime: file.type };
     };
+    reader.onerror = () => (failedAttach = `Couldn't read that ${kind}. Choose it again.`);
     reader.readAsDataURL(file);
   }
-  let failedPhoto = $state("");
-  function clearPhoto() {
-    photo = null;
-    if (fileInput) fileInput.value = "";
+  let failedAttach = $state("");
+  function clearAttachment() {
+    attachment = null;
   }
 
   // The conversation and, with Trace on, each turn placed where it started: after the messages it answered and
@@ -233,23 +251,33 @@
     return list.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.kind === "message" ? -1 : 1));
   });
 
-  // Phone: the card's height follows the visible screen (the visual viewport shrinks while the keyboard is up). At
-  // rest it fills what is left below the header, at least most of the screen; while writing it is the whole visible
-  // height, scrolled so its bottom (the composer) sits on the keyboard. A wide screen sizes it with CSS.
+  // Phone: the shell is the visible screen (App.svelte), kept here on the visual viewport, which shrinks while the
+  // keyboard is up and, on iOS, pans under it. At rest the card fills what is left below the header; while writing it
+  // is the whole visible height and the shell scrolls so its bottom (the composer) sits on the keyboard. A wide screen
+  // sizes the card with CSS.
   const wide = new MediaQuery("(min-width: 1024px)");
   let card = $state<HTMLElement | null>(null);
   let composing = $state(false);
-  let screen = $state(0);
-  let top = $state(0); // the card's distance from the top of the page
-  const cardHeight = $derived.by(() => {
-    if (wide.current || !screen) return undefined;
-    return `${Math.round(composing ? screen - 8 : Math.max(screen - top - 12, screen * 0.6))}px`;
-  });
+  let visible = $state(0);
+  const cardHeight = $derived(!wide.current && composing && visible ? `${Math.round(visible - 8)}px` : undefined);
   function fit() {
-    const view = window.visualViewport;
-    if (!card || !view || wide.current) return;
-    const bottom = card.getBoundingClientRect().bottom;
-    window.scrollBy({ top: bottom - (view.offsetTop + view.height) + 4, behavior: "instant" });
+    if (card && !wide.current) card.scrollIntoView({ block: "end", behavior: "instant" });
+  }
+  // A tap elsewhere blurs the draft on its way down: the card keeps its size until the tap is over, so what was tapped
+  // (Trace, Dom right now) doesn't move out from under it.
+  let pressing = false;
+  function stopComposing() {
+    if (!pressing) {
+      composing = false;
+      return;
+    }
+    const done = () => {
+      window.removeEventListener("pointerup", done);
+      window.removeEventListener("pointercancel", done);
+      setTimeout(() => (composing = document.activeElement?.id === "talk-draft"));
+    };
+    window.addEventListener("pointerup", done);
+    window.addEventListener("pointercancel", done);
   }
   async function startComposing() {
     composing = true;
@@ -260,24 +288,35 @@
   }
   $effect(() => {
     const view = window.visualViewport;
+    const style = document.documentElement.style;
     const measure = async () => {
-      screen = view?.height ?? window.innerHeight;
-      if (card) top = card.getBoundingClientRect().top + window.scrollY;
+      if (view && Math.abs(view.scale - 1) > 0.01) return; // a pinch zoom shrinks it too: follow the keyboard, not that
+      visible = view?.height ?? window.innerHeight;
+      style.setProperty("--visible-height", `${visible}px`);
+      style.setProperty("--visible-top", `${view?.offsetTop ?? 0}px`);
       if (composing) {
         await tick();
         fit();
       }
     };
-    measure();
+    const press = (event: PointerEvent) => (pressing = event.type === "pointerdown");
+    untrack(measure);
+    window.addEventListener("pointerdown", press, true);
+    window.addEventListener("pointerup", press, true);
+    window.addEventListener("pointercancel", press, true);
     view?.addEventListener("resize", measure);
+    view?.addEventListener("scroll", measure);
     window.addEventListener("resize", measure);
     return () => {
       view?.removeEventListener("resize", measure);
+      view?.removeEventListener("scroll", measure);
       window.removeEventListener("resize", measure);
+      window.removeEventListener("pointerdown", press, true);
+      window.removeEventListener("pointerup", press, true);
+      window.removeEventListener("pointercancel", press, true);
+      style.removeProperty("--visible-height");
+      style.removeProperty("--visible-top");
     };
-  });
-  $effect(() => {
-    if (card && loaded) top = card.getBoundingClientRect().top + window.scrollY;
   });
 
   const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
@@ -335,10 +374,10 @@
     <Button variant="outline" onclick={load}>Try again</Button>
   </StatusNote>
 {:else}
-  <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_17rem]">
-    <!-- On a phone the card is as tall as the screen shows: below the header at first, and the whole visible height
-         above the keyboard while writing, so the composer sits on the keyboard and the conversation above it. -->
-    <div bind:this={card} style:height={cardHeight} class="flex min-w-0 flex-col overflow-hidden rounded-xl border bg-surface">
+  <div class="grid gap-6 max-lg:min-h-0 max-lg:flex-1 max-lg:grid-rows-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_17rem]">
+    <!-- On a phone the card fills the screen below the header, and the whole visible height above the keyboard while
+         writing, so the composer sits on the keyboard and the conversation above it. -->
+    <div bind:this={card} style:height={cardHeight} class="relative flex min-w-0 flex-col overflow-hidden rounded-xl border bg-surface">
       <!-- The card's own bar keeps Trace (and, on a phone, Dom right now) in reach while the page is scrolled to it. -->
       <div class="flex min-h-11 items-center gap-2 border-b px-3 py-1.5 sm:px-4">
         <Switch id="talk-trace" checked={tracing} onCheckedChange={setTracing} disabled={!traced} />
@@ -357,8 +396,9 @@
           </Sheet.Content>
         </Sheet.Root>
       </div>
+      <!-- Positioned, so what is placed inside it (screen-reader text) scrolls with it and never stretches the page. -->
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-      <div bind:this={scroller} onloadcapture={settle} onloadedmetadatacapture={settle} tabindex="0" role="log" aria-label="Conversation with Dom" aria-live="polite" class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-5 lg:h-[calc(100dvh-22rem)] lg:flex-none">
+      <div bind:this={scroller} onloadcapture={settle} onloadedmetadatacapture={settle} tabindex="0" role="log" aria-label="Conversation with Dom" aria-live="polite" class="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-5 lg:h-[calc(100dvh-22rem)] lg:flex-none">
         {#if !loaded}
           <div class="grid gap-3" aria-hidden="true">
             {#each [0, 1, 2] as index (index)}<div class="h-12 w-2/3 animate-pulse rounded-2xl bg-raised {index % 2 ? 'ml-auto' : ''}"></div>{/each}
@@ -417,38 +457,41 @@
       </div>
 
       <form
-        class="border-t p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:p-3"
+        class={cn("border-t p-2.5 sm:p-3", !composing && "pb-[max(0.625rem,env(safe-area-inset-bottom))]")}
         onsubmit={(event) => {
           event.preventDefault();
           submit();
         }}
       >
-        {#if photo}
+        {#if attachment}
+          {@const Icon = attachment.kind === "photo" ? ImagePlus : Paperclip}
           <div class="mb-2 flex items-center gap-2">
             <!-- No thumbnail: Dom's CSP allows images from its own address only, not blob: or data: URLs. -->
-            <ImagePlus class="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate text-meta text-muted-foreground">Attached {photo.name}</span>
-            <IconButton label="Remove the photo" icon={X} onclick={clearPhoto} />
+            <Icon class="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate text-meta text-muted-foreground">Attached {attachment.name}</span>
+            <IconButton label={`Remove the ${attachment.kind}`} icon={X} onclick={clearAttachment} />
           </div>
         {/if}
-        {#if failedPhoto}<p class="mb-2 text-meta text-status-failed" role="alert">{failedPhoto}</p>{/if}
-        <div class="flex items-end gap-2">
-          <input bind:this={fileInput} type="file" accept="image/jpeg,image/png,image/webp" class="sr-only" id="talk-photo" tabindex="-1" aria-label="Photo to send" onchange={pick} />
-          <IconButton label="Attach a photo" icon={ImagePlus} onclick={() => fileInput?.click()} variant="ghost" size="icon" />
+        {#if failedAttach}<p class="mb-2 text-meta text-status-failed" role="alert">{failedAttach}</p>{/if}
+        <div class="flex items-end gap-1 sm:gap-2">
+          <input bind:this={photoInput} type="file" accept="image/jpeg,image/png,image/webp" class="sr-only" id="talk-photo" tabindex="-1" aria-label="Photo to send" onchange={(event) => pick("photo", event)} />
+          <input bind:this={fileInput} type="file" class="sr-only" id="talk-file" tabindex="-1" aria-label="File to send" onchange={(event) => pick("file", event)} />
+          <IconButton label="Attach a photo" icon={ImagePlus} onclick={() => photoInput?.click()} variant="ghost" size="icon" />
+          <IconButton label="Attach a file" icon={Paperclip} onclick={() => fileInput?.click()} variant="ghost" size="icon" />
           <label for="talk-draft" class="sr-only">Message to Dom</label>
           <textarea
             id="talk-draft"
             bind:value={draft}
             onkeydown={onKey}
             onfocus={startComposing}
-            onblur={() => (composing = false)}
+            onblur={stopComposing}
             rows="1"
             maxlength="4000"
             placeholder="Message Dom"
             class="field-sizing-content max-h-40 min-h-10 min-w-0 flex-1 resize-none rounded-lg border bg-raised px-3 py-2 text-body outline-none placeholder:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
           ></textarea>
           <!-- Pressing Send keeps the draft's focus, so a phone's keyboard stays up and the card doesn't resize under the tap. -->
-          <IconButton label={sending ? "Sending…" : "Send"} shortcut="Enter" icon={SendIcon} type="submit" onmousedown={(event: MouseEvent) => event.preventDefault()} disabled={sending || (!draft.trim() && !photo)} variant="default" size="icon" />
+          <IconButton label={sending ? "Sending…" : "Send"} shortcut="Enter" icon={SendIcon} type="submit" onmousedown={(event: MouseEvent) => event.preventDefault()} disabled={sending || (!draft.trim() && !attachment)} variant="default" size="icon" />
         </div>
       </form>
     </div>
