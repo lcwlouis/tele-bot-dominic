@@ -179,9 +179,10 @@ class GuestDesktop:
             app.config.desktop.fallback_usd_per_1k_tokens, local_hosts(app.config),
         )
 
-    async def pause(self, chat_id: int, started_at: str) -> str | None:
-        """Why a task this chat asked for must stop before its next model call, or None: the chat must still be
-        approved and within its spend limits, the area within its caps, and the task and the day within the guest caps."""
+    async def pause(self, chat_id: int, started_at: str | None) -> str | None:
+        """Why a paid call for a task this chat asked for must not be made, or None: the chat must still be approved
+        and within its spend limits, the area within its caps, and the task (from `started_at`; none for a call made
+        before any task ran) and the day within the guest caps. The task's steps and what Dom says about it share these."""
         app, settings = self.app, self.settings
         if not await app.dispatch.model_allowed(chat_id):
             return "model calls are not allowed"
@@ -189,7 +190,7 @@ class GuestDesktop:
             return "paused by a spend cap"
         fallback, free = app.config.desktop.fallback_usd_per_1k_tokens, local_hosts(app.config)
         cap = settings.task_cost_cap_usd
-        if cap and await app.store.usage_cost("desktop", chat_id, started_at, fallback, free) >= cap:
+        if cap and started_at and await app.store.usage_cost("desktop", chat_id, started_at, fallback, free) >= cap:
             return f"task cost cap of ${cap:.2f} reached"
         if settings.daily_cost_cap_usd and await self.spent_today(chat_id) >= settings.daily_cost_cap_usd:
             return "this chat's desktop budget for today is used"
@@ -216,18 +217,20 @@ class GuestDesktop:
         if status == "done":
             await self._answer(row)
         elif status == "cancelled":
-            await self.say(chat_id, NOTE_NO, NO)
+            await self.say(chat_id, NOTE_NO, NO, started_at=row["started_at"])
         else:
-            await self.say(chat_id, NOTE_FAILED, COULD_NOT)
+            await self.say(chat_id, NOTE_FAILED, COULD_NOT, started_at=row["started_at"])
 
     async def _answer(self, row: dict) -> None:
         chat_id, app = row["guest_chat_id"], self.app
         result = redact_secrets(row["result"] or "", app.config)
         note = NOTE_ANSWER.format(request=untrusted(row["brief"], limit=700), found=untrusted(result, limit=2500))
-        await self.say(chat_id, note, COULD_NOT, filtered=True)
+        await self.say(chat_id, note, COULD_NOT, filtered=True, started_at=row["started_at"])
 
-    async def say(self, chat_id: int, note: str, fallback: str, *, filtered: bool = False) -> None:
-        """One short message from Dom to the chat, in his voice from `note`; `fallback` when it cannot be written.
+    async def say(self, chat_id: int, note: str, fallback: str, *, filtered: bool = False, started_at: str | None = None) -> None:
+        """One short message from Dom to the chat, in his voice from `note`; `fallback`, a fixed line that costs
+        nothing, when it cannot be written. The call is paid, so it runs under the same limits as the task's steps
+        (`pause`, for the task that began at `started_at`): at a cap the chat gets the fallback and no call is made.
         With `filtered`, the text came from web content: web addresses go and the private-text check runs on it."""
         app, dispatch = self.app, self.app.dispatch
         if not await dispatch._approved(chat_id):
@@ -238,9 +241,7 @@ class GuestDesktop:
                 sliders, _ = await for_chat(app.home, app.store, chat_id, dispatch.now())
 
                 async def allowed() -> bool:
-                    return await dispatch.model_allowed(chat_id) and not await dispatch.usage.over_cap(
-                        app.config, app.bot, sleep=app.sleep, area="desktop",
-                    )
+                    return await self.pause(chat_id, started_at) is None
 
                 with model_request("desktop", chat_id, allowed):
                     await check_model_allowed()

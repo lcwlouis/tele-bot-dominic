@@ -126,8 +126,9 @@ def render() -> str:
         table(fields(DesktopHost, "desktop.hosts[].")),
         "### Desktop tasks for groups and friends",
         "A group or a friend may ask Dom for a web lookup that needs the desktop. Each one waits for your Allow once on a "
-        "card in your DM (there is no Allow always, and Never in System → Access turns it off). It runs on a guest "
-        "container with no saved logins and none of your files, or on a `[[desktop.hosts]]` entry with `guest = true`. "
+        "card in your DM (there is no Allow always, and Never in System → Access turns it off). Each one runs in a "
+        "fresh guest container on the local host, with no saved logins and none of your files, that Dom removes when it ends. "
+        "A remote host never runs one, and `guest = true` on a host is refused. "
         "See [Desktop](desktop.md#desktop-tasks-for-groups-and-friends).",
         table(fields(GuestDesktopConfig, "desktop.guest.")),
         "## Studio",

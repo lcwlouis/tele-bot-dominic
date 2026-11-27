@@ -241,7 +241,7 @@ def _guest_limits(config: Config) -> str:
     return (
         f"Tasks for groups and friends (each needs your Allow once): {guest.max_steps} steps and {guest.max_minutes} "
         f"minutes at most, {cap(guest.task_cost_cap_usd)} a task and {cap(guest.daily_cost_cap_usd)} a day for each chat. "
-        "They run on a host with guest = true, else on a container of their own on the local host."
+        "Each runs in a fresh container on the local host that Dom starts and removes himself."
     )
 
 
@@ -255,9 +255,6 @@ def _host(app: App, config: Config, host: DesktopHost) -> ServiceView:
                       help="The remote sandbox API's base URL."),
             _secret("api_key", "API key", config.secret(host.api_key_env),
                     f"Kept in .env as {host.api_key_env}. Paste a new one to replace it."),
-            FieldView(name="guest", label="Kept for guests", kind="bool", value=host.guest, editable=False,
-                      help="Set guest = true in [[desktop.hosts]] to keep this host for tasks that groups and friends ask for. "
-                           "Your own tasks never run on it."),
             FieldView(name="remote_isolation_confirmed", label="Isolation checked", kind="bool",
                       value=host.remote_isolation_confirmed,
                       help="Tick once you have checked the remote host cannot reach your LAN or the machine running Dom."),

@@ -410,18 +410,20 @@ class DesktopHost(BaseModel):
         None, ge=0,
         description="Memory the host must still have free after a container's own limit. Dom refuses to start a container that would breach it. Unset means 512 for a local host and 0 (unchecked) for a remote one.",
     )
-    guest: bool = Field(
-        False,
-        description="Keep this remote host for tasks that groups and friends ask for (after your OK). Your own desktop tasks never run on it, "
-        "so it never holds your logins. Guest tasks use a host flagged this way first, then the local host.",
-    )
+    @model_validator(mode="before")
+    @classmethod
+    def _no_guest_host(cls, data: object) -> object:
+        if isinstance(data, dict) and data.get("guest"):
+            raise ValueError(
+                "a desktop host cannot be kept for guests (remove guest = true): Dom cannot reset a remote sandbox between "
+                "tasks, so tasks for groups and friends run only in a container Dom starts and removes himself on the local host"
+            )
+        return data
 
     @model_validator(mode="after")
     def _limits(self) -> DesktopHost:
         if self.mode == "remote" and self.max_containers != 1:
             raise ValueError("a remote host runs one container; list another host for more")
-        if self.guest and self.mode != "remote":
-            raise ValueError("only a remote host can be kept for guests; the local host runs a guest container of its own")
         return self
 
     @property

@@ -357,7 +357,7 @@ class DesktopWorker:
     def _launch(self, task_id: int, chat_id: int, *, guest: bool = False) -> None:
         # Do not inherit the caller's chat request or turn-log context.
         from contextvars import Context
-        run = self._run_guest if guest else self._run
+        run = self._run_guest_task if guest else self._run
         self._job = asyncio.create_task(run(task_id, chat_id), context=Context())
 
     async def recover(self, rows: list[dict] | None = None) -> None:
@@ -544,13 +544,6 @@ class DesktopWorker:
             self._launch(task_id, owner, guest=True)
             return task_id
 
-    async def _run_guest(self, task_id: int, chat_id: int) -> None:
-        try:
-            await self._run_guest_task(task_id, chat_id)
-        finally:
-            # The browser profile lives only in the container, so stopping it destroys it (a remote guest host cannot be).
-            await asyncio.shield(self._stop_sandbox())
-
     async def _run_guest_task(self, task_id: int, chat_id: int) -> None:
         """Wait until the desktop has room, run the task, report it. A guest task queues behind an owner task and
         gives up after `[desktop.guest] queue_minutes`; an owner task that asks while this one waits is refused."""
@@ -620,20 +613,26 @@ class DesktopWorker:
         """One guest task on this container: no logins and no files of the owner's, the read-only browser, the guest
         step and time limits, and model calls attributed to the asking chat."""
         settings, owner = self.app.config.desktop.guest, row["chat_id"]
-        with self.sandbox.in_use():
-            client = await self.sandbox.ensure_running()  # a local start is bounded by the sandbox's own timeout
-            await self._restore_screen(client)
-            if hasattr(self.sandbox, "reset_profile") and (reason := await network.verify_inside(client, self.app.config)):
-                raise GuardRefused(reason)  # a local container proves, from inside, that the LAN is closed
-            deadline = asyncio.get_running_loop().time() + settings.max_minutes * 60
-            names = frozenset(tools.GUEST) | {"finish"}
-            run = Run(
-                row["id"], owner, row["started_at"], GUEST_SYSTEM_PROMPT, row["brief"], names, settings.max_steps, deadline,
-                step=lambda steps, until: self._step(row["id"], owner, steps, until),
-                tool=partial(self._own_tool, OwnRun(None)), is_own=True, guest=True, usage_chat=row["guest_chat_id"],
-            )
-            result, _, _ = await self._loop(client, run, progress)
-            return result
+        try:
+            with self.sandbox.in_use():
+                client = await self.sandbox.ensure_running()  # a local start is bounded by the sandbox's own timeout
+                await self._restore_screen(client)
+                if reason := await network.verify_inside(client, self.app.config):
+                    raise GuardRefused(reason)  # the container proves, from inside, that the LAN is closed
+                deadline = asyncio.get_running_loop().time() + settings.max_minutes * 60
+                names = frozenset(tools.GUEST) | {"finish"}
+                run = Run(
+                    row["id"], owner, row["started_at"], GUEST_SYSTEM_PROMPT, row["brief"], names, settings.max_steps, deadline,
+                    step=lambda steps, until: self._step(row["id"], owner, steps, until), tool=self._tool, is_own=True,
+                    guest=True, usage_chat=row["guest_chat_id"],
+                )
+                run.tool = partial(self._guest_tool, run, OwnRun(None))
+                result, _, _ = await self._loop(client, run, progress)
+                return result
+        finally:
+            # However it ended (an answer, a failure, the time limit, a cancel or a crash) the container goes before the
+            # chat or the owner is told anything: Dom cannot reset a browser, so no task may find what an earlier one left.
+            await asyncio.shield(self._stop_sandbox())
 
     async def _run(self, task_id: int, chat_id: int) -> None:
         try:
@@ -990,6 +989,8 @@ class DesktopWorker:
                     status="auto_allowed", decided_via="policy", task_id=run.task_id,
                 )
             return None
+        if run.guest and policy == "ask":
+            policy = "never"  # a task for a chat never raises a card: the owner is not there to answer, so Ask is Never
         if policy == "never":
             await perms.record_decision(
                 action=action, site=canonical, detail=detail,
@@ -1224,18 +1225,8 @@ class DesktopWorker:
             if refusal is not None:
                 return refusal
             return await client.upload_browser_file(args["selector"], norm)
-        if name == "browse":
-            host = url_host(args["url"]) or ""
-            canonical = normalize_site(host) or host
-            # Skip spamming history rows for routine default-allowed visits unless a site rule exists.
-            has_rule = bool(canonical and await self.app.store.get_desktop_site_permission(canonical, "visit_site"))
-            refusal = await self._check_permission(
-                run, "visit_site", host, f"Open {host or args['url'][:60]}", log_auto=has_rule,
-            )
-            if refusal is not None:
-                return refusal
-            if canonical:
-                run.sites.add(canonical)
+        if name == "browse" and (refusal := await self._open_refusal(run, args["url"])) is not None:
+            return refusal
         if name == "save_screenshot":
             stem = PurePosixPath(safe_filename(args.get("name"))).stem or "screenshot"
             path = f"{OUTBOX_DIR}/{'' if self.container == DEFAULT else self.container + '-'}{stem}.png"
@@ -1244,29 +1235,59 @@ class DesktopWorker:
             run.screenshots[path] = hashlib.sha256(data).digest()
             return {"path": path}
         result = await self._tool(client, name, args)
-        if name in PAGE_TOOLS:
-            host = await self._browser_host(client)
-            canonical = normalize_site(host) or host if host else None  # an IP literal is its own site, as for browse
-            if canonical:
-                if await self.app.desktop_permissions.resolve("visit_site", canonical) == "never":
-                    await self._close_page(client)
-                    await self.app.desktop_permissions.record_decision(
-                        action="visit_site", site=canonical, detail="Redirected to blocked site",
-                        status="blocked", decided_via="policy", task_id=run.task_id,
-                    )
-                    return f"Blocked: {canonical} is set to Never, so the page was closed."
-                if canonical not in run.sites:
-                    # A link, a form, a redirect or a late navigation reached a site this run was not cleared for: the
-                    # same Ask, Allow or Never as opening it with browse (credentials spec §5.1). Checked after every
-                    # page tool, so a host that could not be read once is caught by the next one.
-                    has_rule = bool(await self.app.store.get_desktop_site_permission(canonical, "visit_site"))
-                    refusal = await self._check_permission(
-                        run, "visit_site", host, f"Reached {canonical} after {name}", log_auto=has_rule,
-                    )
-                    if refusal is not None:
-                        await self._close_page(client)
-                        return f"{refusal} The page was closed."
-                    run.sites.add(canonical)
+        if name in PAGE_TOOLS and (refusal := await self._landing_refusal(run, client, name)) is not None:
+            return refusal
+        return result
+
+    async def _open_refusal(self, run: Run, url: str) -> str | None:
+        """Why the site `browse` is asked to open may not be opened (the site rule, or an Ask for the owner), or None;
+        a site that passes is cleared for the rest of the run."""
+        host = url_host(url) or ""
+        canonical = normalize_site(host) or host
+        # Skip spamming history rows for routine default-allowed visits unless a site rule exists.
+        has_rule = bool(canonical and await self.app.store.get_desktop_site_permission(canonical, "visit_site"))
+        refusal = await self._check_permission(run, "visit_site", host, f"Open {host or url[:60]}", log_auto=has_rule)
+        if refusal is None and canonical:
+            run.sites.add(canonical)
+        return refusal
+
+    async def _landing_refusal(self, run: Run, client: SandboxClient, name: str) -> str | None:
+        """After a page action, why the page the browser is on now may not be there, or None. A link, a form, a
+        redirect or a late navigation can reach a site this run was not cleared for: it gets the same Ask, Allow or
+        Never as opening it with browse (credentials spec §5.1). Checked after every page tool, so a host that could
+        not be read once is caught by the next one. A refusal closes the page, and the result of the action, which
+        may be that page's text, is dropped for the refusal."""
+        host = await self._browser_host(client)
+        canonical = normalize_site(host) or host if host else None  # an IP literal is its own site, as for browse
+        if not canonical:
+            return None
+        if await self.app.desktop_permissions.resolve("visit_site", canonical) == "never":
+            await self._close_page(client)
+            await self.app.desktop_permissions.record_decision(
+                action="visit_site", site=canonical, detail="Redirected to blocked site",
+                status="blocked", decided_via="policy", task_id=run.task_id,
+            )
+            return f"Blocked: {canonical} is set to Never, so the page was closed."
+        if canonical in run.sites:
+            return None
+        has_rule = bool(await self.app.store.get_desktop_site_permission(canonical, "visit_site"))
+        refusal = await self._check_permission(
+            run, "visit_site", host, f"Reached {canonical} after {name}", log_auto=has_rule,
+        )
+        if refusal is not None:
+            await self._close_page(client)
+            return f"{refusal} The page was closed."
+        run.sites.add(canonical)
+        return None
+
+    async def _guest_tool(self, run: Run, own: OwnRun, client: SandboxClient, name: str, args: dict) -> object:
+        """A task for a chat: the self-directed browser, held to the owner's site rules on every page action, not only
+        on `browse`. A page it may not be on is closed and the model hears only the refusal."""
+        if name == "browse" and (refusal := await self._open_refusal(run, args["url"])) is not None:
+            return refusal
+        result = await self._own_tool(own, client, name, args)
+        if name in PAGE_TOOLS and (refusal := await self._landing_refusal(run, client, name)) is not None:
+            return refusal
         return result
 
     @staticmethod
@@ -1306,10 +1327,6 @@ class DesktopWorker:
             raise ValueError("self-directed tasks cannot use that tool")
         if name == "browse" and not tools.on_plan(tools.own_host(args["url"]), own.sites):
             return "Blocked: that address is not on a site in this task's plan."
-        if name == "browse" and own.sites is None:  # a guest task still honours the owner's Never rules for sites
-            host = url_host(args["url"]) or ""
-            if await self.app.desktop_permissions.resolve("visit_site", normalize_site(host) or host) == "never":
-                return f"Blocked: {host} is a site Dom never opens."
         if name == "fill" and not (tools.search_text(args["selector"], args["text"]) and await self._has_search_box(client)):
             return (
                 f"Blocked: fill takes only search text of up to {tools.SEARCH_TEXT_LIMIT} characters, with one simple "

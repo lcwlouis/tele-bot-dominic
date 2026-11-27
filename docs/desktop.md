@@ -375,14 +375,15 @@ Only after Allow once does the task run, one at a time (a second request waits f
 
 **Where it runs.**
 
-- A `[[desktop.hosts]]` entry with `guest = true` (a remote host only) is used first. Your own tasks never run on it, so
-  it never holds your logins. Dom cannot reset a remote host's browser, so guest tasks share that host's profile with each
-  other (never with yours); restart the sandbox between tasks if that matters.
-- With no guest host, the local host runs a container named `guest`. It has **no browser profile mount** (the profile
-  lives inside the container and goes with it when the task ends), **no saved logins**, **no workspace** (the shared
-  folder is not mounted even with `share_with_chats` on) and none of your sessions. The same firewall probe runs before
-  it starts, and the network guard of self-directed work runs from inside it. Your own tasks can't use the name
-  `guest`.
+- The local host runs a container named `guest`, **started fresh for each task and removed when it ends**, however it ends
+  (an answer, a failure, the time limit, a cancel or a crash), before anyone is told how it went. A restart removes one a
+  dead process left. It has **no browser profile mount** (the profile lives inside the container and goes with it, so
+  one chat's cookies and sessions never reach the next), **no saved logins**, **no workspace** (the shared folder is not
+  mounted even with `share_with_chats` on) and none of your sessions. The same firewall probe runs before it starts, and
+  the network guard of self-directed work runs from inside it. Your own tasks can't use the name `guest`.
+- A remote host never runs a guest task: Dom cannot reset a remote sandbox's browser between chats, only the container
+  he starts and destroys himself is clean. A `[[desktop.hosts]]` entry with `guest = true` is refused when the
+  configuration loads. Without a local host there are no guest tasks.
 - It shares the desktop bridge, so it starts only while every other local container is stopped, and nothing starts beside
   it. On the Pi (one container at a time) a guest task **waits** behind your own task for up to
   `[desktop.guest] queue_minutes` and then gives up; an idle container of yours (no task) is stopped to make room. While a guest task waits
@@ -392,12 +393,14 @@ Only after Allow once does the task run, one at a time (a second request waits f
 **What the task can do.** It gets the same read-only browser as self-directed work: any public web page (no IP
 addresses, LAN names or ports other than 80 and 443), links as the only clicks, a search box as the only form, and
 scrolling keys, and reads pages as text (no screenshots or `look`). It has no shell, no files, no uploads, no handoff, no saved-login fill and no
-`request_secret`; each of those is refused in code. A site you set to Never under System → Access stays blocked.
+`request_secret`; each of those is refused in code. A site you set to Never under System → Access stays blocked, and that is checked after every
+page action, so a link or a redirect to one ends in a refusal and a closed page, and the model never reads its text. Ask counts as Never
+for a guest task: it never raises a card.
 
 **Limits.** `[desktop.guest]`: `max_steps` (default 15, never extended), `max_minutes` (5), `task_cost_cap_usd` (0.25) and
 `daily_cost_cap_usd` (1.0, per chat), plus `queue_minutes` and `enabled`. Spend is recorded under kind `desktop` for the
 asking chat and counts toward `daily_spend_cap_usd`, `monthly_spend_cap_usd` and the `desktop` area limit; when any is
-reached the task stops. A chat can have one request waiting at a time and six a day, and three cards can wait for you at
+reached the task stops, and what Dom says about it (the answer, or a kind failure) is held to the same limits: at a cap the chat gets a fixed line and no model call is made. A chat can have one request waiting at a time and six a day, and three cards can wait for you at
 once. The limits show on the Desktop hosts line of Settings.
 
 **What comes back.** Only a final answer that Dom writes from the task's result, as text, in the chat. Never a screenshot,
@@ -405,8 +408,9 @@ a file, page text or the browser's history; web addresses are stripped from the 
 private notes before it is sent. If it cannot be written the chat gets a plain "couldn't get you a good answer". **You** see the whole task on
 Work → Tasks as usual, marked as a guest task with its chat and who asked, and get a short notice when it ends.
 
-**Privacy, in code.** The brief is what the model wrote in that chat's turn, at most 300 characters. Dom refuses it if it repeats a line of your
-private notes or an instance credential, whatever the prompt said. The worker gets only a fixed prompt and the brief:
+**Privacy, in code.** The brief is what the model wrote in that chat's turn, at most 300 characters. That turn's prompt holds only what code
+scopes to the chat (notes by their chat tag, never `private/`, your DM or your journal), so there is nothing of yours for a brief to restate; Dom
+also refuses a brief that repeats a line of your private notes or an instance credential, whatever the prompt said. The worker gets only a fixed prompt and the brief:
 no soul, notes, skills, repository note or history. The task's row belongs to you, so its brief and result are on your dashboard, and the
 notice and the owner event that mention it fence the chat's words as untrusted.
 

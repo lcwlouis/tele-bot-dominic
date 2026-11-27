@@ -62,15 +62,14 @@ class DesktopFleet:
         self._factory = sandbox_factory or self._build
         self._options = worker_options
         self.lanes: dict[str, Lane] = {}
-        # A host kept for guests never runs the owner's tasks, so it is never the default container.
-        first = next((host.config for host in self.hosts if not host.config.guest), None)
+        first = self.hosts[0].config if self.hosts else None
         self.default = first.name if first is not None and first.mode == "remote" else DEFAULT
         # The default container and every remote host (a remote host is one container) exist from the start, so
         # they are visible and usable without a first use. Starting any of them stays lazy.
-        self.permanent = [
-            *([self.default] if first is not None else []),
-            *(h.config.name for h in self.hosts if h.config.mode == "remote" and h.config.name != self.default),
-        ]
+        self.permanent = (
+            [self.default, *(h.config.name for h in self.hosts if h.config.mode == "remote" and h.config.name != self.default)]
+            if self.hosts else []
+        )
         for name in self.permanent:
             self.lane(name)
 
@@ -85,8 +84,6 @@ class DesktopFleet:
 
     def _resolve(self, name: str | None) -> tuple[str, Host]:
         if name is None or name == DEFAULT:
-            if not any(not host.config.guest for host in self.hosts):
-                raise ValueError("every desktop host is kept for tasks that groups and friends ask for")
             name = self.default
         if not isinstance(name, str):
             raise ValueError(NAME_RULE)
@@ -112,20 +109,20 @@ class DesktopFleet:
 
     @staticmethod
     def for_guests(lane: Lane) -> bool:
-        """Whether tasks that groups and friends ask for run in this container, and the owner's never do."""
-        return lane.name == GUEST or lane.host.config.guest
+        """Whether this container is the one for tasks that groups and friends ask for; the owner's never run in it."""
+        return lane.name == GUEST
 
     def has_guest_host(self) -> bool:
-        """Whether some host can run guest tasks: one kept for guests, or the local host."""
-        return any(host.config.guest or host.config.mode == "local" for host in self.hosts)
+        """Whether a guest container can run: only the local host can, because Dom starts and destroys it himself.
+        A remote sandbox cannot be reset between chats, so it never takes a guest task."""
+        return any(host.config.mode == "local" for host in self.hosts)
 
     def guest_lane(self) -> Lane | None:
-        """Where a guest task runs: a host kept for guests first, else a container of its own on the local host."""
+        """Where a guest task runs: a container of its own on the local host, or None without one."""
         try:
-            name = next((host.config.name for host in self.hosts if host.config.guest), GUEST)
-            return self.lane(name)
+            return self.lane(GUEST)
         except ValueError:
-            return None  # no guest host and no local host
+            return None  # no local host
 
     def containers(self) -> list[Lane]:
         """The containers worth showing: the default one and each remote host, and every other that is running or has a task."""

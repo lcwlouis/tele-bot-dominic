@@ -561,8 +561,8 @@ work; the summary of web content stays out of that history. See
 [Self-directed work](desktop.md#self-directed-work).
 
 Desktop tasks for groups and friends (on by default, each one only after the owner taps Allow once on a card) run on a
-container of their own with no saved logins, no browser profile on disk, no workspace and none of the owner's sessions, or on
-a remote host kept for guests. The brief is written from that chat alone and is refused in code if it repeats a private note or
+container of their own, started fresh for each task and removed when it ends, with no saved logins, no browser profile on disk, no
+workspace and none of the owner's sessions (never on a remote host, whose browser Dom cannot reset). The brief is written from that chat alone and is refused in code if it repeats a private note or
 a credential. The task gets only a fixed prompt and the brief. The chat receives only a final answer Dom writes from the result,
 with web addresses removed and checked against the private notes; never screenshots, files, page text or browsing history. The
 owner sees the whole task on the dashboard and the chat's words are fenced as untrusted wherever Dom reads them. The model calls

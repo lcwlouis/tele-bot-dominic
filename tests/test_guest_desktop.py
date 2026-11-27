@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from dom import guest_desktop
-from dom.config import Config, DesktopConfig, DesktopHost, GuestDesktopConfig, ModelEndpoint
+from dom.config import Config, DesktopConfig, DesktopHost, GuestDesktopConfig, ModelEndpoint, validate_config
 from dom.desktop import network
 from dom.desktop import worker as worker_module
 from dom.desktop.client import SandboxError
@@ -26,7 +26,7 @@ from tghelpers import FRIEND, GROUP, OWNER
 
 BRIEF = "find the opening hours of the botanic garden"
 SAY = {"content": json.dumps({"no_response": False, "bubbles": [{"text": "It opens at 9, closes at 6."}]})}
-STUDIO = DesktopHost(name="studio", mode="remote", url="https://studio.example.org", remote_isolation_confirmed=True, guest=True)
+REMOTE = DesktopHost(name="studio", mode="remote", url="https://studio.example.org", remote_isolation_confirmed=True)
 PI = DesktopHost(name="pi", mode="local")
 
 
@@ -36,6 +36,7 @@ class Container(Box):
     def __init__(self, host, name, mode="local"):
         super().__init__()
         self.host, self.name, self.state, self.port, self.remote = host, name, "stopped", None, mode == "remote"
+        self.starts = 0  # containers started: a task that finds the container still ready would not add one
         host.register(self)
 
     def __getattribute__(self, name):
@@ -46,9 +47,19 @@ class Container(Box):
     def status(self):
         return self.state
 
+    async def markdown(self):
+        return {"markdown": f"Text of the page at {self.url}"}
+
+    redirect = None  # a page that sends the browser on to this address
+
+    async def navigate(self, url):
+        return await super().navigate(self.redirect if self.redirect and url != "about:blank" else url)
+
     async def ensure_running(self):
-        async with self.host.start_lock:
-            await self.host.admit(self)
+        if self.state != "ready":
+            async with self.host.start_lock:
+                await self.host.admit(self)
+            self.starts += 1
         self.state = "ready"
         return self
 
@@ -67,11 +78,15 @@ def guest_app(make_app, *replies, hosts=(), free=8000, **guest):
         "desktop": DesktopConfig(lan_probes=["192.0.2.1:443"], hosts=list(hosts), guest=GuestDesktopConfig(**guest)),
     })
     app.client = Model(*replies)
-    app.boxes = {}
+    # The container of each lane, every container ever built (a finished lane is dropped, so the next task builds
+    # another), and what a test wants each of them to do.
+    app.boxes, app.built, app.setup = {}, [], {}
 
     def build(host, name):
-        app.boxes[name] = Container(host, name, host.config.mode)
-        return app.boxes[name]
+        app.boxes[name] = box = Container(host, name, host.config.mode)
+        vars(box).update(app.setup)
+        app.built.append(box)
+        return box
 
     app.desktop_worker = DesktopFleet(app, free_memory=lambda: free, sandbox_factory=build)
     return app
@@ -233,15 +248,75 @@ async def test_a_brief_that_repeats_private_notes_or_a_credential_is_refused_in_
     private = app.home.root / "private"
     private.mkdir(exist_ok=True)
     (private / "NOTES.md").write_text("The owner keeps a safe behind the blue painting\n")
+    (private / "USER.md").write_text("The owner has a lighthouse tattoo on the left shoulder\n")
     leaked = await request(app, brief="check where the owner keeps a safe behind the blue painting please")
     assert "repeats something private" in leaked
-    monkeypatch.setenv("MODEL_API_KEY_TEST", "sk-live-0123456789abcdef")
+    assert "repeats something private" in await request(app, brief="find shops that do the owner has a lighthouse tattoo on the left shoulder")
+    monkeypatch.setenv("MODEL_API_KEY_TEST", "sk-" + "live-0123456789abcdef")
     secret_app = guest_app(make_app)
     secret_app.config = secret_app.config.model_copy(update={"models": {"chat": ModelEndpoint(
         base_url="https://llm.test/v1", model="m", api_key_env="MODEL_API_KEY_TEST", input=("text",))}})
     await approve(secret_app)
-    assert "repeats something private" in await request(secret_app, brief="look up sk-live-0123456789abcdef online")
+    assert "repeats something private" in await request(secret_app, brief="look up sk-" + "live-0123456789abcdef online")
     assert app.bot.of("send", OWNER) == [] and await app.store.pending_desktop_permission_requests() == []
+
+
+OWNER_ONLY = {  # what the owner shared in private, by where it lives
+    "private/NOTES.md": "The owner keeps the spare key inside the blue teapot",
+    "private/USER.md": "The owner has a lighthouse tattoo on the left shoulder",
+    "private/journal/RECENT.md": "Through 2026-01-01\n\nThe owner cried over the marmalade incident",
+    "memory/chats/{owner}.md": "The owner plans a surprise trip to Lisbon in March",
+    "memory/MEMORY.md": "The owner dislikes his landlord {{chat {owner}}}",
+    "memory/people/{friend}.md": "The friend borrowed money from the owner {{chat {owner}}}",
+}
+SHARED = "The friend plays the cello {any}"
+
+
+async def test_a_group_or_friend_prompt_holds_nothing_the_owner_shared_in_private_so_a_brief_cannot_paraphrase_it(make_app):
+    """The brief is written by the model in the asking chat's own turn. What that turn can see is scoped in code (notes
+    by their chat tag, private/ and the owner's DM never), so there is nothing owner-only for a brief to restate."""
+    from dom.presence import parse_habits
+    from dom.prompt import read_fresh_notes
+    from dom.telegram import handlers
+    from tghelpers import FINAL, drain_dispatch, tg, turn_requests
+
+    app = make_app(contents=(FINAL,) * 6)
+    root = app.home.root
+    for rel, text in OWNER_ONLY.items():
+        path = root / rel.format(owner=OWNER, friend=FRIEND)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text.format(owner=OWNER, friend=FRIEND) + "\n")
+    (root / "memory/people" / f"{FRIEND}.md").write_text(
+        (root / "memory/people" / f"{FRIEND}.md").read_text() + SHARED + "\n")
+    await app.goals.create("Quietly plan the owner's surprise trip")
+    secrets = [text.split("{")[0].strip().split("\n")[-1] for text in OWNER_ONLY.values()] + ["surprise trip"]
+
+    async def turn(chat_id, sender, text, msg_id):
+        before = len(turn_requests(app))
+        await app.store.set_chat_auth_status(chat_id, "approved")
+        await app.dispatch.presence.go_online(chat_id, parse_habits(""))
+        await handlers.handle_message(app, tg(chat_id, sender, text, msg_id=msg_id))
+        await drain_dispatch(app.dispatch)
+        return json.dumps(turn_requests(app)[before:])
+
+    owner_prompt = await turn(OWNER, OWNER, "hi dom", 10)
+    # the controls: planted where the owner's own turn reads it (a chat-tagged line of the shared MEMORY.md is shown
+    # nowhere, and a person's note only when they are in the chat)
+    assert [secret for secret in secrets[:4] if secret not in owner_prompt] == []
+    assert "borrowed money" in read_fresh_notes(app.home, "owner_dm", OWNER, [FRIEND], allow_private=True)
+    assert "surprise trip" in await app.goals.turn_note("owner_dm", OWNER)
+    for chat_id, text in ((GROUP, "hi dom, can you look something up?"), (FRIEND, "hi dom, can you look something up?")):
+        prompt = await turn(chat_id, FRIEND, text, 20 + abs(chat_id) % 7)
+        assert prompt, "the turn made no model request"
+        assert "cello" in prompt  # what is shared with everyone is there
+        assert not any(secret in prompt for secret in secrets), [secret for secret in secrets if secret in prompt]
+        assert "private/" not in prompt and "PRIVATE" not in prompt
+
+    from dom.tools import TurnCtx, READ_NOTES_TOOL  # and the one tool that rereads notes mid-turn
+
+    ctx = TurnCtx("group", GROUP, FRIEND, app.home, app.store, OWNER, app=app)
+    fresh = await READ_NOTES_TOOL.handler({}, ctx)
+    assert "cello" in fresh and not any(secret in fresh for secret in secrets)
 
 
 async def test_the_worker_sees_only_the_fixed_prompt_and_the_brief(make_app):
@@ -315,22 +390,69 @@ async def test_a_guest_browser_reads_only_public_pages_with_links_and_search(mak
     app = guest_app(make_app)
     worker = app.desktop_worker.guest_lane().worker
     box, own = Container(app.desktop_worker.hosts[0], "x"), OwnRun(None)
-    for url in ("http://192.0.2.7/", "https://router.local/", "file:///etc/passwd", "https://a.example.org:8443/", "https://u@evil.example/"):
+    for url in ("http://192.0.2.7/", "https://router" + ".local/", "file:///etc/passwd", "https://a.example.org:8443/", "https://user" + "@evil.example/"):
         assert (await worker._own_tool(own, box, "browse", {"url": url}))[:8] == "Blocked:"
     assert await worker._own_tool(own, box, "browse", {"url": "https://garden.example.org/hours"}) == {}
     assert (await worker._own_tool(own, box, "fill", {"selector": "#password", "text": "x"}))[:8] == "Blocked:"
     assert (await worker._own_tool(own, box, "click", {"selector_or_index": "button"}))[:8] == "Blocked:"
-    box.url = "http://10.0.0.1/"  # a page that redirected itself off the public web is closed before it is read
+    box.url = "http://10.0.0" + ".1/"  # a page that redirected itself off the public web is closed before it is read
     box.navigated.clear()
     await worker._own_tool(own, box, "read_page", {})
     assert box.navigated == ["about:blank"]
 
 
 async def test_a_never_site_rule_still_applies_to_a_guest_task(make_app):
-    app = guest_app(make_app)
+    app = guest_app(make_app, call("browse", url="https://blocked.example.org/"), call("finish", result="Could not open it."), SAY)
     await app.desktop_permissions.set_site_rule("blocked.example.org", "visit_site", "never")
-    worker, box = app.desktop_worker.guest_lane().worker, Container(app.desktop_worker.hosts[0], "x")
-    assert "never opens" in await worker._own_tool(OwnRun(None), box, "browse", {"url": "https://blocked.example.org/"})
+    await approve(app)
+    await finished(app, await app.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam"))
+    assert "set to Never on blocked.example.org" in app.client.requests[1][0][-1]["content"]
+    assert app.boxes[GUEST].navigated == []  # refused before the page was opened
+
+
+BLOCKED = "https://blocked.example.org/page"
+
+
+@pytest.mark.parametrize("rule", ["never", "ask"])
+async def test_a_link_to_a_blocked_site_ends_in_a_refusal_and_its_page_text_never_reaches_the_model(make_app, rule):
+    """The site rule is checked after every page action, not only on `browse`. Ask counts as Never for a guest task,
+    and no card is raised for it."""
+    app = guest_app(make_app, call("browse", url="https://garden.example.org/links"), call("click", selector_or_index=1),
+                    call("read_page"), call("finish", result="Could not get there."), SAY)
+    await app.desktop_permissions.set_site_rule("blocked.example.org", "visit_site", rule)
+    await approve(app)
+    app.setup.update(element_list=[{"index": 1, "tag": "a", "text": "Away", "href": BLOCKED}], after_click=BLOCKED)
+    await finished(app, await app.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam"))
+    box = app.boxes[GUEST]
+    seen = [m["content"] for request in app.client.requests for m in request[0] if m["role"] == "tool"]
+    assert any("Blocked:" in text and "blocked.example.org" in text and "page was closed" in text for text in seen)
+    assert not any("blocked.example.org" in text and "Text of the page" in text for text in seen)  # never read
+    assert box.url == "about:blank"
+    assert await app.store.pending_desktop_permission_requests() == []  # a guest task never raises an Ask card
+
+
+async def test_a_redirect_to_a_never_site_is_refused_and_closed_on_every_page_tool(make_app):
+    app = guest_app(make_app, call("browse", url="https://garden.example.org/go"), call("read_page"), call("list_elements"),
+                    call("finish", result="Could not get there."), SAY)
+    await app.desktop_permissions.set_site_rule("blocked.example.org", "visit_site", "never")
+    await approve(app)
+    app.setup.update(redirect=BLOCKED)  # the page the model was allowed to open sends the browser on
+    await finished(app, await app.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam"))
+    box = app.boxes[GUEST]
+    seen = [m["content"] for request in app.client.requests for m in request[0] if m["role"] == "tool"]
+    assert "blocked.example.org is set to Never" in seen[0] and "closed" in seen[0]
+    assert box.url == "about:blank" and not any("Text of the page at https://blocked" in text for text in seen)
+
+
+async def test_a_guest_task_may_follow_a_link_to_an_allowed_site(make_app):
+    app = guest_app(make_app, call("browse", url="https://garden.example.org/links"), call("click", selector_or_index=1),
+                    call("read_page"), call("finish", result="Open 9 to 6."), SAY)
+    await approve(app)
+    app.setup.update(element_list=[{"index": 1, "tag": "a", "text": "Hours", "href": "https://hours.example.org/"}],
+                     after_click="https://hours.example.org/")
+    await finished(app, await app.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam"))
+    seen = [m["content"] for request in app.client.requests for m in request[0] if m["role"] == "tool"]
+    assert any("Text of the page at https://hours.example.org/" in text for text in seen)
 
 
 async def test_no_files_from_the_task_leave_it(make_app):
@@ -346,33 +468,93 @@ async def test_no_files_from_the_task_leave_it(make_app):
 # ---- where it runs, and one at a time ------------------------------------------------------------------------------------
 
 
-async def test_a_host_kept_for_guests_runs_guest_tasks_first_and_never_the_owners(make_app):
-    app = guest_app(make_app, hosts=[PI, STUDIO])
+async def test_the_container_kept_for_guests_never_runs_the_owners_tasks(make_app):
+    app = guest_app(make_app, hosts=[PI, REMOTE])
     fleet = app.desktop_worker
-    assert fleet.guest_lane().name == "studio" and fleet.default == DEFAULT
-    for container in ("studio", GUEST):
-        with pytest.raises(ValueError, match="kept for tasks that groups and friends ask for"):
-            await fleet.enqueue(OWNER, "look at my account", container)
-    assert fleet.lane().name == DEFAULT and not fleet.for_guests(fleet.lane())
-
-    only = guest_app(make_app, hosts=[STUDIO])  # a guest host alone is never the owner's default
-    assert only.desktop_worker.default == DEFAULT and only.desktop_worker.guest_lane().name == "studio"
-    with pytest.raises(ValueError):
-        await only.desktop_worker.enqueue(OWNER, "x")
+    assert fleet.guest_lane().name == GUEST and fleet.default == DEFAULT
+    with pytest.raises(ValueError, match="kept for tasks that groups and friends ask for"):
+        await fleet.enqueue(OWNER, "look at my account", GUEST)
+    assert fleet.lane().name == DEFAULT and not fleet.for_guests(fleet.lane()) and not fleet.for_guests(fleet.lane("studio"))
 
 
 async def test_without_a_guest_host_the_local_host_runs_a_guest_container_of_its_own(make_app):
     app = guest_app(make_app)
     assert app.desktop_worker.guest_lane().name == GUEST and app.desktop_worker.has_guest_host()
-    remote = guest_app(make_app, hosts=[DesktopHost(name="lab", mode="remote", url="https://lab.example.org", remote_isolation_confirmed=True)])
+    remote = guest_app(make_app, hosts=[REMOTE])
     assert remote.desktop_worker.guest_lane() is None and not remote.desktop_worker.has_guest_host()
+    assert not remote.guest_desktop.available()  # a remote sandbox cannot be reset between chats, so it never takes one
     with pytest.raises(ValueError, match="no desktop host"):
         await remote.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam")
 
 
-def test_only_a_remote_host_can_be_kept_for_guests():
-    with pytest.raises(ValueError, match="only a remote host"):
-        DesktopHost(name="pi", mode="local", guest=True)
+def test_a_remote_host_kept_for_guests_is_refused_at_config_load(tmp_path):
+    """Dom cannot reset a remote sandbox, so a guest task there would inherit the last chat's cookies and sessions."""
+    for mode in ("remote", "local"):
+        with pytest.raises(ValueError, match="cannot be kept for guests.*cannot reset a remote sandbox"):
+            DesktopHost.model_validate({"name": "studio", "mode": mode, "url": "https://studio.example.org", "guest": True})
+    raw = {"desktop": {"hosts": [{"name": "studio", "mode": "remote", "url": "https://studio.example.org", "guest": True}]}}
+    with pytest.raises(ValueError, match="cannot be kept for guests"):
+        validate_config(tmp_path, raw)
+    DesktopHost.model_validate({"name": "studio", "mode": "remote", "url": "https://studio.example.org", "guest": False})
+
+
+async def test_two_guest_tasks_in_a_row_each_get_a_new_container_and_the_first_ones_is_gone(make_app):
+    app = guest_app(make_app, call("finish", result="Open 9 to 6."), SAY, call("finish", result="Closed Mondays."), SAY)
+    await approve(app)
+    await approve(app, FRIEND, "Pat")
+    first = await app.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam")
+    await finished(app, first)
+    await settled(app)
+    [one] = [box for box in app.built if box.name == GUEST]
+    assert (one.starts, one.stops, one.status()) == (1, 1, "stopped")  # removed, not kept for the next chat
+
+    second = await app.desktop_worker.enqueue_guest("another lookup", FRIEND, "Pat", "Pat")
+    await finished(app, second)
+    guests = [box for box in app.built if box.name == GUEST]
+    assert len(guests) == 2 and guests[1] is not one  # the next chat gets a container of its own
+    assert (guests[1].starts, guests[1].stops, guests[1].status()) == (1, 1, "stopped")
+    assert one.starts == 1  # and the first one was never used again
+
+
+@pytest.mark.parametrize("ending", ["failure", "cancel", "crash", "timeout"])
+async def test_a_guest_container_is_removed_however_the_task_ends(make_app, ending):
+    async def hang():
+        await asyncio.sleep(30)
+
+    async def out_of_time():
+        raise TimeoutError  # what the task's time limit raises in whatever call it interrupts
+
+    replies = {"failure": [lambda: asyncio.sleep(0, result=None)], "cancel": [hang], "crash": [lambda: 1 / 0], "timeout": [out_of_time]}[ending]
+    app = guest_app(make_app, *replies, SAY)
+    await approve(app)
+    task_id = await app.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam")
+    box = None
+    async with asyncio.timeout(2):
+        while (box := app.boxes.get(GUEST)) is None or box.status() != "ready":
+            await asyncio.sleep(0.001)
+    if ending == "cancel":
+        assert await app.desktop_worker.cancel(OWNER, task_id)
+        await finished(app, task_id, "cancelled")
+    else:
+        await finished(app, task_id, "failed")
+    await settled(app)
+    assert box.starts == 1 and box.stops >= 1 and box.status() == "stopped"
+
+
+async def test_a_restart_sweeps_a_guest_container_a_dead_process_left(make_app, tmp_path):
+    from test_desktop_fleet import Docker, Gate, config
+
+    app = make_app()
+    docker = Docker()
+    docker.running = {"dom-desktop-guest"}
+    app.config = config(tmp_path).model_copy(update={"home": app.config.home})
+    app.client = Gate()
+    async with httpx.AsyncClient() as http:
+        fleet = DesktopFleet(app, sandbox_factory=lambda host, name: LocalSandbox(app.config, run=docker, http=http, name=name, host=host))
+        app.desktop_worker = fleet
+        await fleet.recover()
+        assert docker.running == set() and ("docker", "stop", "dom-desktop-guest") in docker.calls
+        await fleet.close()
 
 
 async def test_a_guest_task_queues_behind_an_owner_task_and_runs_when_it_ends(make_app):
@@ -519,7 +701,47 @@ async def test_the_task_cost_cap_stops_a_running_guest_task_and_its_calls_are_ki
         await settled(app)
     assert row["error"] == "task cost cap of $0.15 reached"
     rows = await app.store._run(lambda: app.store._conn.execute("SELECT kind, chat_id FROM usage ORDER BY id").fetchall())
-    assert {tuple(r) for r in rows} == {("desktop", GROUP)} and len(rows) >= 2  # two task calls, then the written reply
+    assert {tuple(r) for r in rows} == {("desktop", GROUP)} and len(rows) == 2  # two task calls, and none for the reply
+
+
+async def test_a_task_at_its_cap_makes_no_further_paid_call_and_the_chat_hears_a_fixed_line(make_app):
+    """The reply and the failure message are paid calls, so they run under the task and day caps like the steps."""
+    app = guest_app(make_app, task_cost_cap_usd=0.15)
+    await approve(app)
+    paid = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        paid.append(bool(body.get("tools")))
+        reply = call("read_page") if body.get("tools") else {"content": json.dumps({"bubbles": [{"text": "Made up reply"}]})}
+        return httpx.Response(200, json={"choices": [{"message": reply}], "usage": {"cost": 0.1}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        app.client = ChatClient(app.config.models["chat"], None, http, usage=UsageRecorder(app.store))
+        row = await finished(app, await app.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam"), "failed")
+        texts = await settled(app)
+    assert row["error"] == "task cost cap of $0.15 reached"
+    assert paid == [True, True]  # the task's two steps; no call to write the failure message
+    assert texts == [guest_desktop.COULD_NOT]  # a fixed line, not the model's
+
+
+async def test_a_chat_at_its_day_cap_gets_a_fixed_line_instead_of_a_written_answer(make_app):
+    async def last_step():
+        await app.store.record_usage(datetime.now(timezone.utc).isoformat(), "desktop", "m", "example.org", GROUP, 0, 0, 0.5, 0)
+        return call("finish", result="Open 9 to 6.")
+
+    app = guest_app(make_app, last_step, SAY, daily_cost_cap_usd=0.4)
+    await approve(app)
+    row = await finished(app, await app.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam"))
+    assert row["result"] == "Open 9 to 6."
+    assert await settled(app) == [guest_desktop.COULD_NOT]
+    assert len(app.client.requests) == 1  # the answer was never written: the reply call was not made
+
+    rejected = guest_app(make_app, SAY, daily_cost_cap_usd=0.4)  # the owner's No is also said in a paid call
+    await approve(rejected)
+    await rejected.store.record_usage(datetime.now(timezone.utc).isoformat(), "desktop", "m", "example.org", GROUP, 0, 0, 0.5, 0)
+    await rejected.guest_desktop.say(GROUP, guest_desktop.NOTE_NO, guest_desktop.NO)
+    assert await settled(rejected) == [guest_desktop.NO] and rejected.client.requests == []
 
 
 async def test_the_tool_and_the_worker_respect_the_area_spend_cap(make_app):
