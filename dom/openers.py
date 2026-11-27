@@ -272,8 +272,14 @@ class Openers:
                 if first and await self._sent_today(self._day(dispatch.now()), count_key) >= app.config.openers.max_per_day:
                     raise ModelCallSkipped
 
+            checkin_due = owner_dm and goal_checkin is not None
+
             async def on_sent(msg_id: int) -> None:
-                nonlocal first, expected_id
+                nonlocal first, expected_id, checkin_due
+                if checkin_due:  # only once something reached the owner: media that never lands checks in on nothing
+                    checkin_due = False
+                    await app.goals.record_checkin(goal_checkin["id"], dispatch.now())
+                    turn_log.outcome("Checked in on a goal")
                 values = {message_key: str(msg_id)}
                 if first:
                     delivered_day = self._day(dispatch.now())
@@ -297,9 +303,7 @@ class Openers:
                 stickers=app.stickers.sendable(), gifs=app.gifs, before_send=commit,
                 authorize_message=None if owner_dm else authorize_message, queue_studio=queue_studio,
             )
-            if sent_ids or queued:
-                if owner_dm and goal_checkin is not None:
-                    await app.goals.record_checkin(goal_checkin["id"], dispatch.now())
-                    turn_log.outcome("Checked in on a goal")
-                else:
-                    turn_log.outcome("Texted first")
+            if sent_ids and not (owner_dm and goal_checkin is not None):
+                turn_log.outcome("Texted first")
+            elif queued and not sent_ids:
+                turn_log.outcome("Queued media to send first")  # booked when it lands (on_sent), not now

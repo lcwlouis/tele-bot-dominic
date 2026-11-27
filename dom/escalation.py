@@ -104,12 +104,16 @@ class Prices:
 class Pinned:
     """The provider the card showed, called alone: escalation never fails over between cloud providers. A subscription
     agent is the exception, because it can fail for reasons outside the owner's choice (refused, not installed,
-    signed out, timed out): it hands the same call to the next provider once and tells the owner."""
+    signed out, timed out): its first failure hands the call to the next provider, which then serves the rest of the
+    task, and the owner is told once."""
 
     def __init__(self, provider: ChatClient, then: ChatClient | None, tell: Callable[[], None]):
         self.provider, self.then, self.tell = provider, then, tell
+        self.fell_through = False
 
     async def complete(self, messages: list[dict], tools: list[dict]) -> dict:
+        if self.fell_through and self.then is not None:
+            return await self.then.complete(messages, tools, fallback=True)
         try:
             return await self.provider.complete(messages, tools)
         except AcpError as exc:
@@ -117,6 +121,7 @@ class Pinned:
                 raise
             log.warning("%s failed (%s); escalating on %s instead", self.provider.endpoint.model,
                         type(exc).__name__, self.then.endpoint.model)
+            self.fell_through = True
             self.tell()
             return await self.then.complete(messages, tools, fallback=True)
 

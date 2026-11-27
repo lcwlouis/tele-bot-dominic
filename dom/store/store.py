@@ -120,7 +120,7 @@ RECOVERY_MIN_ROWS = 3  # the new run must have at least this many rows to be bel
 RECOVERY_DROP = 10  # and its first id must be under a tenth of the old run's newest
 
 
-SUPERGROUP_ID = re.compile(r"-100\d{6,}")  # Telegram's supergroup and channel ids: -100 and then the chat's own number
+SUPERGROUP_ID = re.compile(r"-100\d{10}")  # Telegram's supergroup and channel ids: -100 and then ten digits
 
 
 def bot_numbered(chat_id: str) -> bool:
@@ -138,7 +138,7 @@ def _when(value: str) -> datetime | None:
 
 
 def judge_eras(
-    conn: sqlite3.Connection, only: set[str] | None = None, *, proven: bool = False,
+    conn: sqlite3.Connection, only: set[str] | None = None, *, proven: bool = False, ceiling: int = 0,
 ) -> tuple[dict[str, tuple[int, str]], list[str]]:
     """Chats whose history shows a bot change nobody recorded, and chats where it is suspected but not yet proven.
 
@@ -150,7 +150,10 @@ def judge_eras(
     The second is a candidate that has not climbed back or been created earlier, yet fails the rest (too few rows,
     equal or unreadable times): more messages may still prove it, or end it by climbing back. Anything else is left
     alone. `only` limits the look to those chats. With `proven` (another chat already proved the bot changed) such a
-    candidate is taken as switched too: the rest of the evidence only had to rule out an odd row, and the change is known.
+    candidate is taken as switched too when its run stays within `ceiling`, the new bot's highest id seen: the rest of
+    the evidence only had to rule out an odd row, and the change is known. (One late low id that also fits under the
+    ceiling, an edit of a message never stored, would still be taken; that is accepted against a friend's first one or
+    two messages to the new bot never being read.)
     Supergroups are never candidates: a new bot does not restart their numbering."""
     candidates = [row[0] for row in conn.execute(
         "SELECT DISTINCT chat_id FROM (SELECT chat_id, msg_id, LAG(msg_id) OVER (PARTITION BY chat_id ORDER BY id) AS before "
@@ -175,6 +178,9 @@ def judge_eras(
         times = [_when(at) for _, _, at in rows]
         if None not in times and min(times[start:]) < max(times[:start]):
             continue  # made before the old rows: not a later bot
+        if proven and max(msg_id for _, msg_id, _ in run) > ceiling:
+            unproven.append(chat_id)  # numbered past the new bot's counter: not its rows
+            continue
         if not proven and (None in times or len(run) < RECOVERY_MIN_ROWS or min(times[start:]) == max(times[:start])):
             unproven.append(chat_id)
             continue
@@ -1784,8 +1790,8 @@ class Store:
         - none is stored yet (an instance that switched before this existed): chats whose history clearly shows a
           switch (see `judge_eras`) move now, and the id is stored. A chat that only looks switched, with too little
           to prove it, is kept as a suspect and looked at again at every start until it is proven or ends. Once one
-          chat proves the change, a suspect is taken as switched too, and every other chat whose rows all predate the
-          new bot is marked like a recorded change (see `_old_bot_only`);
+          chat proves the change, a suspect whose run fits the new bot's counter is taken as switched too, and every
+          other chat holding an id above that counter is marked like a recorded change (see `_old_bot_only`);
         - the same id: only those suspects are looked at again. A late edit or an odd message with a lower id never
           moves anything.
 
@@ -1793,24 +1799,36 @@ class Store:
         return await self._run(self._adopt_bot, bot_id, _now())
 
     @staticmethod
-    def _old_bot_only(conn: sqlite3.Connection, found: dict[str, tuple[int, str]]) -> list[str]:
-        """Once history proves the bot changed, the other chats it numbers whose every row is older than the new bot's
-        first message anywhere: they hold only the old bot's rows, so like a recorded change they move when the new bot
-        first writes there. A chat with later rows is left to `judge_eras` (it may have begun with the new bot)."""
-        began = min((_when(at) for _, at in found.values() if _when(at) is not None), default=None)
+    def _new_bot_ceiling(conn: sqlite3.Connection, found: dict[str, tuple[int, str]], suspects: Iterable[str]) -> int:
+        """The highest message id the new bot has reached: private chats and basic groups share the bot's one counter,
+        and every row made since the first proven new-bot row (`found`) is the new bot's, since the old one no longer
+        receives anything. A chat begun with the new bot earlier and quiet since holds only lower ids. The suspects are
+        left out: their own late rows are what the ceiling is there to judge."""
+        began = min((when for _, at in found.values() if (when := _when(at)) is not None), default=None)
         if began is None:
-            return []
-        rows = conn.execute("SELECT chat_id, MAX(created_at) FROM messages WHERE msg_id > 0 GROUP BY chat_id").fetchall()
+            return 0
+        rows = conn.execute(
+            "SELECT chat_id, msg_id, created_at FROM messages WHERE msg_id > 0 AND created_at >= ?",
+            (began.date().isoformat(),),
+        )
+        left_out = set(suspects)
+        return max((msg_id for chat_id, msg_id, at in rows
+                    if chat_id not in left_out and bot_numbered(chat_id) and (when := _when(at)) is not None
+                    and when >= began), default=0)
 
-        def older(latest: str) -> bool:
-            try:
-                moment = datetime.fromisoformat(latest)
-            except (TypeError, ValueError):
-                return False
-            # Early versions saved UTC without an offset; a day either way never makes a row "after" the new bot.
-            return (moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)) < began
-
-        return [chat_id for chat_id, latest in rows if chat_id not in found and bot_numbered(chat_id) and older(latest)]
+    @staticmethod
+    def _old_bot_only(conn: sqlite3.Connection, ceiling: int, skip: Iterable[str]) -> list[str]:
+        """Once history proves the bot changed, the other chats it numbers that hold an id above anything the new bot
+        has reached (`ceiling`), so they hold the old bot's rows, and nothing set aside yet: like a recorded change,
+        each moves when the new bot first writes there. A chat whose ids are all under the ceiling may have begun with
+        the new bot, and its old ids, if any, sit below every id the new bot will use from now on, so nothing collides."""
+        skipped = set(skip)
+        return [
+            chat_id for chat_id, top, moved in conn.execute(
+                "SELECT chat_id, MAX(msg_id), SUM(msg_id < 0) FROM messages GROUP BY chat_id"
+            )
+            if chat_id not in skipped and bot_numbered(chat_id) and not moved and top is not None and top > ceiling
+        ]
 
     def _adopt_bot(self, bot_id: int, now: str) -> int:
         event, repaired, still_open = None, [], []
@@ -1831,10 +1849,11 @@ class Store:
                     )
             elif row is None or suspects:
                 found, still_open = judge_eras(conn, None if row is None else set(suspects))
+                ceiling = self._new_bot_ceiling(conn, found, still_open) if found else 0
                 if found and still_open:  # the change is proven: a chat that only looked switched did switch
-                    found.update(judge_eras(conn, set(still_open), proven=True)[0])
+                    found.update(judge_eras(conn, set(still_open), proven=True, ceiling=ceiling)[0])
                     still_open = [chat_id for chat_id in still_open if chat_id not in found]
-                waiting = self._old_bot_only(conn, found) if row is None and found else []
+                waiting = self._old_bot_only(conn, ceiling, [*found, *still_open]) if found else []
                 repaired = begin_eras(conn, found, now)
                 forget_old_bot_cards(conn, [*repaired, *waiting], now, owner)
                 self._write_kv(conn, {PENDING_ERA + chat_id: now for chat_id in waiting})

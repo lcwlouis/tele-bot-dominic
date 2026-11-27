@@ -629,3 +629,23 @@ async def test_opener_media_of_a_kind_switched_off_is_screened_out(make_app, stu
     await _open(app)
     assert not app.bot.of("send") and not app.bot.of("photo")
     assert await app.store.kv_get("opener:last_msg_id") is None
+
+
+async def test_a_media_only_opener_the_studio_refuses_checks_in_on_nothing(make_app, studio_server):
+    """A goal check-in and the Turn log's "texted first" wait for something to reach the owner."""
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={
+            "limits": app.config.studio.limits.model_copy(update={"daily": 0}),
+        }),
+    })
+    recorded = []
+
+    async def record_checkin(goal_id, at):
+        recorded.append(goal_id)
+
+    app.goals.record_checkin = record_checkin
+    await _open(app)
+    assert not app.bot.of("photo") and recorded == []
+    assert await app.store.kv_get("opener:last_msg_id") is None

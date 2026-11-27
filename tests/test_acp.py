@@ -766,3 +766,23 @@ async def test_antigravity_enabled_by_hand_is_never_pinned_or_counted_available(
 async def drain(app):
     from tghelpers import drain_dispatch
     await drain_dispatch(app.dispatch)
+
+
+async def test_after_a_failed_agent_every_later_round_of_the_task_goes_to_the_cloud_and_the_owner_hears_once(make_app, tmp_path):
+    asked = []
+
+    async def respond(request):
+        asked.append(json.loads(request.content)["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "from cloud"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        app = escalation_app(make_app, http, tmp_path, codex=fake_agent(tmp_path, "crash"))
+        with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
+            turn.choice = "switch"
+            with model_request("escalation", OWNER, allowed):
+                for _ in range(3):  # three tool rounds of one task
+                    await turn.complete(app.client, [{"role": "user", "content": "hi"}], [])
+        await drain(app)
+    assert asked == ["cloud", "cloud", "cloud"]
+    assert len([call for call in app.bot.of("send", OWNER) if "did not answer" in call[2]]) == 1
+    assert [row[0] for row in usage_rows(app)].count("subscription") == 1  # the agent was started once

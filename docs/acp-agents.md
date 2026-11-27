@@ -58,7 +58,7 @@ The agent is used as a plain text model. Dom puts the conversation, and the tool
 2. Confirm its tools are off: ask for something only a tool could do ("run `ls` and tell me what is in the folder"). It should answer that it cannot, and the agent's own history must show no command ran.
 3. Look at Usage: calls appear as `Subscription agents` with no cost.
 
-If it fails, Dom's log has one line, `<agent> agent failed after N s: <reason>` ("is it installed here?", "answered with an error (-32000): Authentication required", "did not answer within 120 s"), and Dom falls through to the next provider.
+If it fails, Dom's log has one line, `<agent> agent failed after N s: <reason>` ("is it installed here?", "answered with an error (-32000): Authentication required", "did not answer within 120 s"), and Dom falls through to the next provider. For a model switch, that provider then serves the rest of the task: the agent is not started again for it, and you get one note.
 
 ## Drop it
 
