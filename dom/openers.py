@@ -234,7 +234,12 @@ class Openers:
             actions = await dispatch._compose_turn(
                 chat_id, scope, None, None, window, until, 0, False, habits, extra_note=opener_note,
             )
-        if actions.no_response or not (actions.bubbles or resolve_sticker(app.stickers.sendable(), actions.sticker) or (actions.gif and app.gifs)):
+        # Media goes through the same screen as a reply's: kind switches, private text, the leak check.
+        actions = await dispatch._screen_studio(chat_id, scope, actions, "")
+        if actions.no_response or not (
+            actions.bubbles or resolve_sticker(app.stickers.sendable(), actions.sticker) or (actions.gif and app.gifs)
+            or actions.voice or actions.video_note or actions.image
+        ):
             return
         if scope == "group" and actions.private:
             return
@@ -278,12 +283,21 @@ class Openers:
                 expected_id = msg_id
                 first = False
 
+            queue_studio = None
+            queued = False
+            if actions.voice or actions.video_note or actions.image:
+                def queue_studio() -> None:
+                    nonlocal queued
+                    if not dispatch._closing:
+                        queued = True
+                        dispatch._spawn(executor.deliver_studio(app, chat_id, scope, None, None, actions, on_sent))
+
             sent_ids = await executor.perform(
                 app.bot, store, chat_id, None, actions, sleep=app.sleep, now=dispatch.now, on_sent=on_sent,
                 stickers=app.stickers.sendable(), gifs=app.gifs, before_send=commit,
-                authorize_message=None if owner_dm else authorize_message,
+                authorize_message=None if owner_dm else authorize_message, queue_studio=queue_studio,
             )
-            if sent_ids:
+            if sent_ids or queued:
                 if owner_dm and goal_checkin is not None:
                     await app.goals.record_checkin(goal_checkin["id"], dispatch.now())
                     turn_log.outcome("Checked in on a goal")

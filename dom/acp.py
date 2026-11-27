@@ -361,8 +361,12 @@ class AcpClient:
     name: AcpName
     kind: str  # the request kind it counts as in traces: "escalation" or "chat" (drafting)
     usage: UsageRecorder | None = None
-    available: bool = field(default=True, init=False)
     inputs: frozenset[str] = field(default_factory=frozenset, init=False)  # text only; media is described instead
+
+    @property
+    def available(self) -> bool:
+        """Whether a chain may count on it: switched on, and an agent Dom can start with its tools off."""
+        return self.name not in ACP_NO_TOOLS_OFF and getattr(self.config.acp, self.name).enabled
 
     def __post_init__(self) -> None:
         self.endpoint = ProviderEndpoint(base_url=f"acp://{self.name}", model=f"{ACP_LABELS[self.name]} subscription")

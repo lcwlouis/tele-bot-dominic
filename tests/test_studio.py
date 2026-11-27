@@ -577,3 +577,55 @@ async def test_the_last_good_health_stays_valid_while_the_next_probe_is_running(
         release.set()
         await probe
         assert not client.ready  # two failures in a row clear it
+
+
+async def _open(app):
+    from test_openers import always_try
+    openers, now = always_try(app)
+    await openers.maybe(now())
+    await drain_dispatch(app.dispatch)
+
+
+async def test_a_media_only_opener_is_sent_through_the_studio_queue_not_dropped(make_app, studio_server):
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    await _open(app)
+    assert not app.bot.of("send") and len(app.bot.of("photo")) == 1
+    assert studio_server[2][-1] == ("/v1/image", {"scene": "A rainy street"})
+    _, rows = await app.store.studio_usage(OWNER, app.dispatch.now())
+    assert [row[0] for row in rows] == ["photo"]
+    # It counts as the day's opener and as Dom's last message, so nothing opens again over it.
+    assert (await app.store.kv_get("opener:sent")).endswith("/1")
+    assert await app.store.kv_get("opener:last_msg_id") is not None
+
+
+async def test_an_opener_with_text_and_voice_sends_both(make_app, studio_server):
+    app = make_app(contents=('{"bubbles":["morning"],"voice":"Good morning"}',))
+    await connect(app, studio_server)
+    await _open(app)
+    assert [call[0] for call in app.bot.calls if call[0] != "action"] == ["send", "voice"]
+
+
+async def test_opener_media_obeys_the_same_limits_as_a_reply(make_app, studio_server):
+    app = make_app(contents=('{"bubbles":["morning"],"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={
+            "limits": app.config.studio.limits.model_copy(update={"daily": 0}),
+        }),
+    })
+    await _open(app)
+    assert len(app.bot.of("send")) == 1 and not app.bot.of("photo")
+    notes = [row["text"] for row in await events(app)]
+    assert len(notes) == 1 and "limit or minimum gap" in notes[0]
+
+
+async def test_opener_media_of_a_kind_switched_off_is_screened_out(make_app, studio_server):
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={"images": False}),
+    })
+    await _open(app)
+    assert not app.bot.of("send") and not app.bot.of("photo")
+    assert await app.store.kv_get("opener:last_msg_id") is None

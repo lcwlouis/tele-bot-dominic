@@ -595,6 +595,12 @@ async def seed_system(app: handlers.App) -> None:
         "example/chat-model", False, 2100, "Replied in 1 bubble", model_calls=[call, {**call, "duration_ms": 900}], first_bubble_ms=2000, last_bubble_ms=2100,
     )
 
+    # A turn whose reaction Telegram refused: it carries the chip, and it is the week's one rejected reaction.
+    await store.record_turn(
+        now - timedelta(minutes=7), CREW, "group", 1, ["reaction rejected: REACTION_INVALID", "typing@300"], "example/chat-model", False, 800,
+        "Reaction failed", model_calls=[{**call, "duration_ms": 600}],
+    )
+
     # Fictional saved logins, site permissions, and approvals history for System -> Access (deterministic fixed key).
     from dom.config import set_dotenv
 
