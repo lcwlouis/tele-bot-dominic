@@ -514,8 +514,8 @@ Optional, owner-only, and off until the owner connects Google and turns a switch
   kind. The `drive` tool is offered only in the owner DM, when the Files switch is on and Google granted the scope; the
   handler checks both again in code.
 - **Contacts are read only.** The Contacts switch (`contacts.readonly`) lets Dom look up a name for an email address or
-  phone number in the owner DM. Nothing can be changed, and the lookup is also used by Dom's own booking code only to find
-  one unambiguous address.
+  phone number in the owner DM. Nothing can be changed. Booking does not use it: a friend is invited only by the email
+  they give in the chat.
 - **What goes to which model.** File text Dom reads and the contacts he looks up are tool results in the owner DM, so they
   go to the chat model route that serves that turn under the same `zdr` routing and provider rules as event and mail text,
   and to no other model or service. Read results are size-bounded and fenced as untrusted data, never instructions, and

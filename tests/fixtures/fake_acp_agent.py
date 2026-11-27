@@ -33,7 +33,7 @@ log(event="start", pid=os.getpid(), cwd=os.getcwd(), initial_agent_mode=os.envir
 if mode == "noise":
     sys.stdout.write("agent starting up...\n")
     sys.stdout.flush()
-signed_in = mode != "auth"
+signed_in = mode not in ("auth", "signed_out")  # "signed_out" offers no way to sign in
 waiting_prompt = None  # the prompt request waiting for the permission answer
 
 for line in sys.stdin:

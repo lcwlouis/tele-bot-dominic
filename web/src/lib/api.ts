@@ -661,6 +661,9 @@ export type Turn = {
   fallback: boolean;
   calls: number;
   steps: string[];
+  /** Telegram refused a reaction on this turn, with its reasons (one per refused reaction). */
+  reaction_rejected: boolean;
+  reaction_reasons: string[];
   /** The compose lane the turn ran in, and how long it waited for its token; null when it never reached the attention loop. */
   lane: "main" | "fast" | null;
   queue_wait_ms: number | null;
@@ -679,6 +682,8 @@ export type TurnsData = {
   cache: { gap: string; returns: number; hit: number | null; between: number | null }[];
   cross_chat: { kind: string; source: string; target: string; status: string; drop_reason: string | null; created_at: string; queued_at: string | null; sending_at: string | null; updated_at: string; text: string }[];
   turns: Turn[];
+  /** Reactions Telegram refused over the last `days` days, and the newest reasons. */
+  reactions: { days: number; rejected: number; latest: { at: string; chat_id: string; reason: string }[] };
 };
 
 /** GET /api/health (dom/web/api_system.py): `boot` is new in every process, so a restarted Dom answers with another. */

@@ -398,7 +398,8 @@ async def _turns(app: App, chat: str = "") -> dict:
         for visit in row["visits"]:
             visit["behind_title"] = title(str(visit["behind"])) if visit["behind"] is not None else ""
             visit["capped_title"] = title(str(visit["capped"])) if visit["capped"] is not None else ""
-        row["reaction_rejected"] = bool(turn_log.rejected_reactions(trace))
+        row["reaction_reasons"] = turn_log.rejected_reactions(trace)
+        row["reaction_rejected"] = bool(row["reaction_reasons"])
         _turn_timings(row, trace)
     # The filter offers chats Dom is in, plus any that appear in the turns shown; a chat he left long ago does not
     # clutter it.

@@ -409,6 +409,79 @@ class BotChangeTests(unittest.IsolatedAsyncioTestCase):
         await self.store.mark_chat_read(CHAT, -5)  # a pre-repair id (now negative) can never move a marker
         self.assertEqual(self.state(CHAT)[0], 75)
 
+    # Once one chat's history proves the bot changed, the rest of the chats it numbers follow (v0.8.6 gate).
+
+    async def test_a_proven_switch_marks_the_chats_that_hold_only_old_bot_rows_and_they_move_on_their_first_new_message(self):
+        self.rows(DM, range(2000, 2010))
+        self.marks(DM, 2009, 2009)
+        self.rows(CHAT, range(3000, 3100), assistant={3099})
+        self.marks(CHAT, 3099, 3099)
+        self.rows(CHAT, range(1, 6), assistant={5})
+        self.assertEqual(await self.store.adopt_bot(9), 1)  # the owner's DM is proven and moved now
+        self.assertIsNotNone(await self.store.kv_get(PENDING_ERA + DM))  # the friend's DM waits for the new bot
+        await self.store.record_new_message(self.msg(DM, 7))
+        unread, _ = await self.store.get_unread(int(DM))
+        self.assertEqual(unread, 1)  # without the mark, 7 would sit under the old marker 2009 and never be read
+        self.assertEqual(await self.store.adopt_bot(9), 0)
+
+    async def test_a_chat_that_began_with_the_new_bot_is_not_marked(self):
+        self.rows(CHAT, range(3000, 3100), assistant={3099})
+        self.rows(CHAT, range(1, 6), assistant={5})
+        self.rows(DM, range(1, 4))  # a friend who first wrote to the new bot
+        await self.store.adopt_bot(9)
+        self.assertIsNone(await self.store.kv_get(PENDING_ERA + DM))
+
+    async def test_a_chat_that_only_looked_switched_is_moved_once_another_chat_proves_it(self):
+        self.rows(DM, range(2000, 2010))
+        self.rows(CHAT, range(3000, 3100), assistant={3099})
+        self.rows(CHAT, range(1, 6), assistant={5})
+        self.rows(DM, [1])  # one new-bot row: too few to prove on its own
+        self.assertEqual(await self.store.adopt_bot(9), 2)
+        self.assertEqual(await self.store.open_era_suspects(), [])
+        self.assertEqual([row[0] for row in self.store._conn.execute("SELECT msg_id FROM messages WHERE chat_id = ? AND msg_id > 0", (DM,)).fetchall()], [1])
+
+    async def test_supergroups_keep_their_numbering_through_a_bot_change(self):
+        supergroup = "-100" + "9" * 10  # a supergroup id, built so it reads as no real one
+        self.rows(supergroup, range(283500, 283520))
+        self.rows(CHAT, range(3000, 3100), assistant={3099})
+        self.rows(CHAT, range(1, 6), assistant={5})
+        await self.store.adopt_bot(9)
+        self.assertIsNone(await self.store.kv_get(PENDING_ERA + supergroup))
+        await self.store.adopt_bot(10)  # a recorded change marks every chat the bot numbers, and no supergroup
+        self.assertIsNotNone(await self.store.kv_get(PENDING_ERA + CHAT))
+        self.assertIsNone(await self.store.kv_get(PENDING_ERA + supergroup))
+
+    async def test_a_switch_first_proven_on_a_later_start_still_marks_the_quiet_chats(self):
+        self.rows(DM, range(2000, 2010))  # a friend who has not written to the new bot
+        self.rows(CHAT, range(3000, 3100), assistant={3099})
+        self.rows(CHAT, range(1, 3))  # two new-bot rows: only a suspect
+        self.assertEqual(await self.store.adopt_bot(9), 0)
+        self.assertEqual(await self.store.open_era_suspects(), [CHAT])
+        self.rows(CHAT, [3])
+        self.assertEqual(await self.store.adopt_bot(9), 1)
+        self.assertIsNotNone(await self.store.kv_get(PENDING_ERA + DM))
+
+    async def test_a_quiet_chat_begun_with_the_new_bot_before_the_proof_is_not_marked(self):
+        self.rows(CHAT, range(3000, 3100), assistant={3099})
+        self.rows(DM, [1, 2])  # began with the new bot, then went quiet
+        self.rows(CHAT, range(3, 9), assistant={8})
+        await self.store.adopt_bot(9)
+        self.assertIsNone(await self.store.kv_get(PENDING_ERA + DM))
+
+    async def test_a_late_odd_row_numbered_past_the_new_bots_counter_is_not_taken_as_a_switch(self):
+        self.rows(CHAT, range(3000, 3100), assistant={3099})
+        self.rows(DM, range(1000, 1500))
+        self.rows(CHAT, range(1, 6), assistant={5})
+        self.rows(DM, [90])  # under a tenth of 1499, but above anything the new bot has reached (5)
+        await self.store.adopt_bot(9)
+        self.assertEqual([row[0] for row in self.store._conn.execute(
+            "SELECT msg_id FROM messages WHERE chat_id = ? AND msg_id < 0", (DM,))], [])
+
+    def test_a_basic_group_whose_id_starts_with_100_is_numbered_by_the_bot(self):
+        from dom.store.store import bot_numbered
+        self.assertTrue(bot_numbered("-100" + "123456"))
+        self.assertFalse(bot_numbered("-100" + "1" * 10))
+
 
 class FakeBot:
     def __init__(self):
@@ -453,3 +526,4 @@ class EarlierBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_earlier_bot(Bubble(text="x", reply_to=-3).reply_to, "a reply", 5))
         self.assertFalse(_earlier_bot(Bubble(text="x", reply_to=3).reply_to, "a reply", 5))
         self.assertFalse(_earlier_bot(None, "a reply", 5))
+

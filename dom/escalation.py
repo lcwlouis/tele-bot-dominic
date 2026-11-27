@@ -20,6 +20,7 @@ from dom.agent import NoFinalAnswer
 from dom.acp import AcpClient, AcpError
 from dom.llm import ChatClient, FallbackClient, MissingProviderKey, _retryable, openrouter_host
 from dom.models import Scope, StoredMessage
+from dom.notice import send_notice
 from dom.telegram.executor import edit_text, send_text
 from dom.usage import model_request, on_own_network
 
@@ -100,9 +101,34 @@ class Prices:
         return "Estimated cost unavailable from the provider's price list."
 
 
+class Pinned:
+    """The provider the card showed, called alone: escalation never fails over between cloud providers. A subscription
+    agent is the exception, because it can fail for reasons outside the owner's choice (refused, not installed,
+    signed out, timed out): its first failure hands the call to the next provider, which then serves the rest of the
+    task, and the owner is told once."""
+
+    def __init__(self, provider: ChatClient, then: ChatClient | None, tell: Callable[[], None]):
+        self.provider, self.then, self.tell = provider, then, tell
+        self.fell_through = False
+
+    async def complete(self, messages: list[dict], tools: list[dict]) -> dict:
+        if self.fell_through and self.then is not None:
+            return await self.then.complete(messages, tools, fallback=True)
+        try:
+            return await self.provider.complete(messages, tools)
+        except AcpError as exc:
+            if self.then is None:
+                raise
+            log.warning("%s failed (%s); escalating on %s instead", self.provider.endpoint.model,
+                        type(exc).__name__, self.then.endpoint.model)
+            self.fell_through = True
+            self.tell()
+            return await self.then.complete(messages, tools, fallback=True)
+
+
 @dataclass(frozen=True)
 class RetryTask:
-    provider: ChatClient
+    provider: Pinned
     chat_id: int
     msg_id: int
     row_id: int
@@ -127,17 +153,30 @@ class Escalation:
             yield None
             return
         # Pin the provider the owner is shown, even if Settings changes before the choice.
-        provider = next((provider for provider in route.providers if provider.available), None)
-        if provider is None:
+        available = [provider for provider in route.providers if provider.available]
+        if not available:
             yield None
             return
+        provider = available[0]
+        then = available[1] if isinstance(provider, AcpClient) and len(available) > 1 else None
+        pinned = Pinned(provider, then, lambda: self.spawn(self._tell_fell_through(chat_id, provider, then)))
         primary = local.primary if isinstance(local, FallbackClient) else local
-        turn = EscalationTurn(self, chat_id, provider, primary.endpoint.model)
+        turn = EscalationTurn(self, chat_id, pinned, primary.endpoint.model)
         self.prices.warm(provider)
         try:
             yield turn
         finally:
             turn.finish()
+
+    async def _tell_fell_through(self, chat_id: int, agent: ChatClient, then: ChatClient) -> None:
+        # The card promised the owner's subscription: say the task went to a provider billed by use instead.
+        try:
+            await send_notice(
+                self.app, chat_id, f"{agent.endpoint.model} did not answer",
+                [f"The task went on to {then.endpoint.model} instead."], disable_notification=True,
+            )
+        except Exception as exc:
+            log.info("could not tell the owner the task went to the next provider (%s)", type(exc).__name__)
 
     def close(self) -> None:
         self.closed = True
@@ -198,8 +237,9 @@ def _can_recover(exc: Exception) -> bool:
 
 
 class EscalationTurn:
-    def __init__(self, manager: Escalation, chat_id: int, provider: ChatClient, local_model: str):
-        self.manager, self.chat_id, self.provider, self.local_model = manager, chat_id, provider, local_model
+    def __init__(self, manager: Escalation, chat_id: int, pinned: Pinned, local_model: str):
+        self.manager, self.chat_id, self.pinned, self.local_model = manager, chat_id, pinned, local_model
+        self.provider = pinned.provider
         self.deadline = manager.clock() + OFFER_AFTER_SECONDS
         self.rounds = self.failures = 0
         self.permanent = False  # a failure a second try on the same model cannot fix (400, 401, missing key)
@@ -234,7 +274,7 @@ class EscalationTurn:
         ):
             return False
         self.retry_task = RetryTask(
-            self.provider, self.chat_id, newest.msg_id, newest.id, dict(tool_results), away_count, skill,
+            self.pinned, self.chat_id, newest.msg_id, newest.id, dict(tool_results), away_count, skill,
         )
         return True
 
@@ -336,7 +376,7 @@ class EscalationTurn:
             try:
                 if self.choice == "switch":
                     with model_request("escalation", self.chat_id, allowed):
-                        reply = await self.provider.complete(messages, tools)
+                        reply = await self.pinned.complete(messages, tools)
                 elif on_fallback and isinstance(local, FallbackClient):
                     reply = await local.complete_on_fallback(messages, tools)
                 elif recovery:

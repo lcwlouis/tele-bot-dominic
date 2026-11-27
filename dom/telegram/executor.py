@@ -808,22 +808,26 @@ async def _look_before_send(
 
 
 async def deliver_studio(
-    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
+    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int | None,
     actions: Actions, on_sent: Callable[[int], Awaitable[None]],
+    still_wanted: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
-    """Generate and send screened media after the text, without occupying a turn. Traced as work after the turn."""
+    """Generate and send screened media after the text, without occupying a turn. Traced as work after the turn.
+    `still_wanted`, when given, is asked with every policy check, right up to the send: an opener's media is dropped
+    if the chat moved on, Dom went away or openers were turned off while it was made."""
     with turn_log.follow_up("studio", chat_id, scope):
         turn_log.event(
             "studio", requested={key: value for key, value in (
                 ("image", actions.image), ("voice", actions.voice), ("video_note", actions.video_note),
             ) if value},
         )
-        await _deliver_studio(app, chat_id, scope, thread_id, trigger_msg_id, actions, on_sent)
+        await _deliver_studio(app, chat_id, scope, thread_id, trigger_msg_id, actions, on_sent, still_wanted)
 
 
 async def _deliver_studio(
-    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int,
+    app: App, chat_id: int, scope: str, thread_id: int | None, trigger_msg_id: int | None,
     actions: Actions, on_sent: Callable[[int], Awaitable[None]],
+    still_wanted: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     if actions.private or actions.no_response:
         return
@@ -839,6 +843,7 @@ async def _deliver_studio(
             (scope != "owner_dm" or chat_id == app.owner_id)
             and enabled(app.config.studio, scope, kind)
             and await app.dispatch._approved(chat_id)
+            and (still_wanted is None or await still_wanted())
         )
 
     async def generate(

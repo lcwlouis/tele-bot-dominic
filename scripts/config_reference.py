@@ -67,7 +67,7 @@ def render() -> str:
         "Each `[models.<name>]` table defines its primary provider. Use HTTPS for cloud providers. "
         "A local OpenAI-compatible provider can use an HTTP URL such as `http://localhost:8000/v1`.",
         table(fields(ProviderEndpoint, "models.<name>.")),
-        "Chat, fallback, media, drafting, search, escalation and embedding can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one.",
+        "Chat, fallback, media, drafting, search, escalation and embedding can also list additional providers. Escalation is the exception to failing over: the card pins the first provider whose key is set and calls only that one. A subscription agent is the one case that goes on: if the pinned agent fails (refused, not installed, signed out, timed out), the task goes once to the next provider and Dom tells you in your DM (see [Subscription agents](acp-agents.md)).",
         table(fields(ModelEndpoint, "models.<name>.", exclude=ProviderEndpoint.model_fields.keys())),
         "Add a `[[models.<role>.fallbacks]]` table for each additional provider. It takes the same provider keys. "
         "Chat tries its own fallbacks first, then the primary and fallbacks of `[models.fallback]`. "
@@ -109,12 +109,12 @@ def render() -> str:
         ),
         "## Optional secrets",
         "`KLIPY_API_KEY` turns on GIF sending. Without it Dom does not offer the `gif` action. See [GIFs](gifs.md).",
-        "`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` hold the Google OAuth client for Calendar and Gmail. They are read "
+        "`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` hold the Google OAuth client for Calendar, Gmail, Drive and Contacts. They are read "
         "from `.env` only; the dashboard shows each as set or not set. Connecting also needs `web.public_url`, because "
         "the redirect URI is `<web.public_url>/api/integrations/google/callback`. "
         "`GOOGLE_PICKER_API_KEY` and `GOOGLE_PROJECT_NUMBER` let the owner hand Dom a Drive file with Google's file picker; "
         "they appear only on that one dashboard page. "
-        "See [Google Calendar and Gmail](google.md).",
+        "See [Google](google.md).",
         "## Desktop",
         table([
             ("desktop.mode", literal(Config.model_fields["desktop_mode"].default),

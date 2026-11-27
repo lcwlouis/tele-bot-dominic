@@ -577,3 +577,95 @@ async def test_the_last_good_health_stays_valid_while_the_next_probe_is_running(
         release.set()
         await probe
         assert not client.ready  # two failures in a row clear it
+
+
+async def _open(app):
+    from test_openers import always_try
+    openers, now = always_try(app)
+    await openers.maybe(now())
+    await drain_dispatch(app.dispatch)
+
+
+async def test_a_media_only_opener_is_sent_through_the_studio_queue_not_dropped(make_app, studio_server):
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    await _open(app)
+    assert not app.bot.of("send") and len(app.bot.of("photo")) == 1
+    assert studio_server[2][-1] == ("/v1/image", {"scene": "A rainy street"})
+    _, rows = await app.store.studio_usage(OWNER, app.dispatch.now())
+    assert [row[0] for row in rows] == ["photo"]
+    # It counts as the day's opener and as Dom's last message, so nothing opens again over it.
+    assert (await app.store.kv_get("opener:sent")).endswith("/1")
+    assert await app.store.kv_get("opener:last_msg_id") is not None
+
+
+async def test_an_opener_with_text_and_voice_sends_both(make_app, studio_server):
+    app = make_app(contents=('{"bubbles":["morning"],"voice":"Good morning"}',))
+    await connect(app, studio_server)
+    await _open(app)
+    assert [call[0] for call in app.bot.calls if call[0] != "action"] == ["send", "voice"]
+
+
+async def test_opener_media_obeys_the_same_limits_as_a_reply(make_app, studio_server):
+    app = make_app(contents=('{"bubbles":["morning"],"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={
+            "limits": app.config.studio.limits.model_copy(update={"daily": 0}),
+        }),
+    })
+    await _open(app)
+    assert len(app.bot.of("send")) == 1 and not app.bot.of("photo")
+    notes = [row["text"] for row in await events(app)]
+    assert len(notes) == 1 and "limit or minimum gap" in notes[0]
+
+
+async def test_opener_media_of_a_kind_switched_off_is_screened_out(make_app, studio_server):
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={"images": False}),
+    })
+    await _open(app)
+    assert not app.bot.of("send") and not app.bot.of("photo")
+    assert await app.store.kv_get("opener:last_msg_id") is None
+
+
+async def test_a_media_only_opener_the_studio_refuses_checks_in_on_nothing(make_app, studio_server):
+    """A goal check-in and the Turn log's "texted first" wait for something to reach the owner."""
+    app = make_app(contents=('{"image":"A rainy street"}',))
+    await connect(app, studio_server)
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={
+            "limits": app.config.studio.limits.model_copy(update={"daily": 0}),
+        }),
+    })
+    recorded = []
+
+    async def record_checkin(goal_id, at):
+        recorded.append(goal_id)
+
+    app.goals.record_checkin = record_checkin
+    await _open(app)
+    assert not app.bot.of("photo") and recorded == []
+    assert await app.store.kv_get("opener:last_msg_id") is None
+
+
+@pytest.mark.parametrize("wanted", [True, False])
+async def test_media_is_sent_only_while_its_sender_still_wants_it(make_app, studio_server, wanted):
+    """An opener in a group or a friend's DM passes `still_wanted`: media made after the chat moved on, Dom went away or
+    openers were turned off is not sent."""
+    from dom.telegram import executor
+    app = make_app()
+    await connect(app, studio_server)
+    asked, sent = [], []
+
+    async def still_wanted() -> bool:
+        asked.append(True)
+        return wanted
+
+    async def on_sent(msg_id: int) -> None:
+        sent.append(msg_id)
+
+    await executor.deliver_studio(app, OWNER, "owner_dm", None, None, Actions(image="A rainy street"), on_sent, still_wanted)
+    assert asked and (len(app.bot.of("photo")) == 1) is wanted and bool(sent) is wanted

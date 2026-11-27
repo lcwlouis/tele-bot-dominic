@@ -302,6 +302,40 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("turn log: a rejected reaction shows a chip with Telegram's reason, and the week's count with its reasons", async ({ page }) => {
+    const problems = await watch(page);
+    await page.goto("/app/system/turns");
+    await expect(page.getByRole("heading", { name: "Turn log" })).toBeVisible();
+    const count = page.locator("[data-reactions-rejected]");
+    await expect(count).toHaveText("1 reaction rejected in the last 7 days");
+    await count.getByRole("button", { name: "Why Telegram rejected them" }).focus();
+    const tip = page.locator("[data-slot=tooltip-content]");
+    await expect(tip).toContainText("REACTION_INVALID");
+    await page.keyboard.press("Escape");
+    await expect(tip).toHaveCount(0);
+    // Only the turn Telegram refused carries the chip, and its tooltip says why.
+    const chip = page.getByRole("button", { name: "Reaction rejected: REACTION_INVALID" });
+    await expect(chip).toHaveCount(1);
+    await chip.focus();
+    await expect(tip).toHaveText("Telegram said: REACTION_INVALID");
+    expect(problems).toEqual([]);
+  });
+
+  test("turn log: with no rejected reaction there is no count and no chip", async ({ page }) => {
+    await page.route("**/api/system/turns*", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      data.reactions = { days: 7, rejected: 0, latest: [] };
+      for (const turn of data.turns) Object.assign(turn, { reaction_rejected: false, reaction_reasons: [] });
+      await route.fulfill({ response, json: data });
+    });
+    await page.goto("/app/system/turns");
+    await expect(page.getByRole("heading", { name: "Turn log" })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Turns, newest first" }).getByRole("listitem").first()).toBeVisible();
+    await expect(page.locator("[data-reactions-rejected]")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Reaction rejected/ })).toHaveCount(0);
+  });
+
   test("strip list: a strip opens its details beside the list, Esc closes back to the strip, trash works", async ({ page }) => {
     const problems = await watch(page);
     await page.goto("/app/gallery");

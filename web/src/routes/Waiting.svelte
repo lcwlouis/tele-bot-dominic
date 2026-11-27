@@ -1,4 +1,13 @@
 <script lang="ts">
+  /** Which Google service a pending approval belongs to, for its subtitle. */
+  function googleService(action: string): string {
+    if (action.startsWith("calendar_")) return "Google Calendar";
+    if (action.startsWith("doc_")) return "Google Docs";
+    if (action.startsWith("sheet_")) return "Google Sheets";
+    if (action === "booking_confirm") return "Booking";
+    return "Gmail";
+  }
+
   import Code from "$lib/components/code/Code.svelte";
   import { onMount } from "svelte";
   import { send, type WaitingData, type WaitingCard } from "$lib/api";
@@ -64,8 +73,9 @@
 
   async function decideDesktopPermission(id: number, decision: "once" | "always" | "reject") {
     try {
-      const res = await send<{ message: string }>("/api/access/decide", { id, decision });
-      toast.show("ok", res.message || "Saved.");
+      const res = await send<{ ok?: boolean; message: string }>("/api/access/decide", { id, decision });
+      // A refused decision (expired, already handled, always asked) comes back as ok: false.
+      toast.show(res.ok === false ? "error" : "ok", res.message || "Saved.");
       await Promise.all([reload(), shell.refresh()]);
     } catch {
       // toast already shown
@@ -125,7 +135,7 @@
           <Card.Root class="h-full border-signal/40">
             <Card.Header>
               <Card.Title class="text-base">{perm.google ? "Google approval" : "Desktop permission"} · {perm.action_label}</Card.Title>
-              <Card.Description class="break-words">{perm.site || (perm.google ? (perm.action.startsWith("calendar_") ? "Google Calendar" : "Gmail") : "Desktop")}</Card.Description>
+              <Card.Description class="break-words">{perm.site || (perm.google ? googleService(perm.action) : perm.action === "guest_desktop" ? "Desktop for a chat" : "Desktop")}</Card.Description>
             </Card.Header>
             <Card.Content class="grid gap-3 text-sm">
               {#if perm.detail}<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
