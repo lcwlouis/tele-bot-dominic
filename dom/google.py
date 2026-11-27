@@ -101,6 +101,10 @@ class GoogleError(Exception):
     """A Google failure whose text is safe to show the owner and the model: it never holds a token or a response body."""
 
 
+class GoogleNotFound(GoogleError):
+    """Google answered 404: what was asked for is not there."""
+
+
 class GoogleSlow(GoogleError):
     """Google did not answer within the time a tool call inside a turn may wait."""
 
@@ -733,7 +737,7 @@ class GoogleIntegration:
         if response.status_code == 403:
             raise GoogleError("Google refused: this permission was not granted. Reconnect Google and tick it.")
         if response.status_code == 404:
-            raise GoogleError("Google could not find that.")
+            raise GoogleNotFound("Google could not find that.")
         raise GoogleError(f"Google refused the request (status {response.status_code}).")
 
     # ---- the owner's agenda, kept ready for the turn note --------------------------------------------------------

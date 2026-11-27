@@ -82,7 +82,7 @@ know **when you are willing to meet**, and he offers only times inside that.
   primary calendar and each of his own. Slots start on the window's start and every half hour after it, are spread over
   different days first, and a slot already offered to someone else is not offered again. An all-day event, or any event
   you are not marked free for, blocks its time. If the calendar cannot be read whole (more events than he can fetch, or Google
-  failing) he offers nothing and says so without saying why. An offer lasts four hours, and a chat holds at most three open.
+  failing) he offers nothing and tells the friend only that he will ask you for times; the reason (no free time, or what could not be read) goes to your DM history. An offer lasts four hours, and a chat holds at most three open.
 - **The pick.** When the friend chooses one, Dom asks you with one card: the friend's name, the chat (their DM or the
   group), the time, the calendar, whether the friend is invited, and what they said it is about, all quoted as the
   friend's own words. The friend is told Dom will check. The card has **Allow once** and **Reject** only. To book without
@@ -98,9 +98,11 @@ know **when you are willing to meet**, and he offers only times inside that.
 - **Two friends at once** are never offered the same time: the slots are chosen and held in one step, and a time stays
   held while it waits for your tap, while it is written, and after it is booked. Times are worked out in your timezone's
   wall clock but added and compared as real instants, so a daylight-saving change neither offers a time that does not
-  exist nor shortens a meeting.
+  exist nor shortens a meeting, and the end time shown is the real end.
 - **Restarts.** Offers are kept in the database, so a pick finds the slot Dom really offered after a restart. A pick that
-  was waiting for your tap when Dom stopped has lost its card; when he starts again he closes it and tells the friend.
+  was waiting for your tap when Dom stopped has lost its card; when he starts again he closes it and tells the friend. A booking that was being written when Dom stopped may or may not
+  have reached Google, so at start he asks Google for the event (its id was saved first): if it is there the booking is
+  settled as booked and the friend told, if not it is declined, and if Google cannot be asked it waits for the next start.
 - **What leaves your DM** is the offered start and end times, and the friend's own confirmation. No title, place,
   attendee or busy block is ever sent: Dom asks Google for event times only, and the result a friend's chat sees is built
   from the slots alone. See [Privacy](privacy.md#booking).

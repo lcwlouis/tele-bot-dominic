@@ -27,9 +27,9 @@ from zoneinfo import ZoneInfo
 
 from dom.actions import Actions, Bubble
 from dom.desktop.tools import untrusted
-from dom.google import FOREGROUND_SECONDS, GoogleError, Ticket, allows
+from dom.google import FOREGROUND_SECONDS, GoogleError, GoogleNotFound, Ticket, allows
 from dom.google_tools import (
-    BUSY_PAGES, PAGE_SIZE, TIMES_ONLY, Card, _ADDRESS, _as_dt, _create_calendar, _events, _google_time, _merge_busy,
+    BUSY_PAGES, PAGE_SIZE, TIMES_ONLY, Card, _ADDRESS, _as_dt, _create_calendar, _events, _events_url, _google_time, _merge_busy,
     _own_calendar, _zone, insert_event, parse_when,
 )
 from dom.models import Scope
@@ -62,6 +62,10 @@ NO_WINDOWS = (
 UNAVAILABLE = (
     "Booking is not available right now. Tell the friend you will check with the owner, and use tell_owner if it needs him. "
     "Do not guess or invent times."
+)
+NOTHING_FITS = (
+    "No times can be offered right now. Tell the friend you will ask the owner for times and get back to them, and use "
+    "tell_owner if it needs him. Do not guess or invent times, and say nothing else about the owner."
 )
 FRIEND_BOOKED = "All set: {when}. Looking forward to it."
 FRIEND_DECLINED = "Sorry, I can't make that one work. Maybe another time?"
@@ -240,8 +244,8 @@ def find_slots(
 
 
 def _when(start: datetime, minutes: int, zone: ZoneInfo, *, tz: bool = True) -> str:
-    local = start.astimezone(zone)
-    return f"{local.strftime('%a %d %b %H:%M')}-{(local + timedelta(minutes=minutes)).strftime('%H:%M')}" + (f" ({zone.key})" if tz else "")
+    local, end = start.astimezone(zone), (start.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(zone)  # the length is real time
+    return f"{local.strftime('%a %d %b %H:%M')}-{end.strftime('%H:%M')}" + (f" ({zone.key})" if tz else "")
 
 
 # ---- the booking flow ------------------------------------------------------------------------------------------------
@@ -369,8 +373,9 @@ class Booking:
             context=shorten(" ".join(str(args.get("context") or "").split()), 150), at=now.isoformat(),
             expires_at=(now + timedelta(hours=OFFER_HOURS)).isoformat(), limit=MAX_OPEN_OFFERS,
         )
-        if not slots:
-            return "There is no free time inside the owner's windows for that. Tell the friend nothing fits then, without saying why, and offer to try other dates."
+        if not slots:  # why stays in the owner's history: the friend's turn is told only that the owner will be asked
+            await self.app.store.record_owner_event(f"Booking for {untrusted(await self._name(ctx.chat_id, ctx.sender_id), limit=80)}: there was no free time inside your meeting windows for that.")
+            return NOTHING_FITS
         if offer_id is None:
             return "Too many offers are open in this chat already. Ask the friend to pick one of those, or tell them you will check with the owner."
         lines = [f"{index}) {_when(slot, minutes, zone)}" for index, slot in enumerate(slots, 1)]
@@ -542,6 +547,48 @@ class Booking:
             return
         for offer in lost:
             self.app.dispatch._spawn(self._tell(offer["chat_id"], FRIEND_DECLINED))
+        self.app.dispatch._spawn(self._settle_claimed())  # asks Google, so never on the start's path
+
+    async def _settle_claimed(self) -> None:
+        """A `booking` row is an approval claimed and being written when the process died: the event may or may not have
+        reached Google. Its id was saved first, so ask Google for it: there, the booking is settled as booked and the
+        friend told; not there, it is declined like any other failure. When Google cannot be asked, the row stays for the
+        next start, and its slot stays held."""
+        store, g = self.app.store, self.app.google
+        try:
+            claimed = await store.booking_offers_in("booking")
+            calendar = await self._calendar() if claimed else None
+        except Exception:
+            log.exception("could not read the bookings left being written")
+            return
+        for offer in claimed:
+            try:
+                made = bool(calendar and offer["event_id"]) and (
+                    (await g.call("GET", f"{_events_url(calendar['id'])}/{offer['event_id']}")) or {}
+                ).get("status") != "cancelled"
+            except GoogleNotFound:
+                made = False
+            except GoogleError:
+                log.info("booking %s: Google could not be asked whether its event was made; it waits for the next start", offer["id"])
+                continue
+            except Exception:
+                log.exception("booking %s: could not check its event", offer["id"])
+                continue
+            await self._conclude(offer, made)
+
+    async def _conclude(self, offer: dict[str, Any], made: bool) -> None:
+        store, zone = self.app.store, _zone(self.app)
+        if not await store.move_booking_offer(offer["id"], "booking", "booked" if made else "declined", self.now().isoformat()):
+            return  # settled by someone else meanwhile: they told the friend
+        friend = untrusted(offer["friend"], limit=80)
+        if not made:
+            await store.record_owner_event(f"Booking for {friend}: Dom restarted while booking and the event was not made, so nothing was booked.")
+            await self._tell(offer["chat_id"], FRIEND_DECLINED)
+            return
+        when = _when(datetime.fromisoformat(offer["picked"]), offer["minutes"], zone)
+        await store.record_chat_event(offer["chat_id"], f"Booking confirmed for {when}.")
+        await store.record_owner_event(f"Booking for {friend}: Dom restarted while booking and found the event made, so it is booked on {when}.")
+        await self._tell(offer["chat_id"], FRIEND_BOOKED.format(when=when))
 
 
 def json_list(raw: str) -> list[str]:

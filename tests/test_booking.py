@@ -273,7 +273,7 @@ async def test_it_says_so_when_nothing_fits(setup):
     app, fake, client = await make(setup)
     fake.events = [event("all", "x", "2026-11-30T00:00:00+00:00", "2026-12-20T00:00:00+00:00")]
     answer = await _booking({"action": "offer"}, friend_ctx(app))
-    assert "no free time" in answer.lower() and not stamps(answer) and "x" not in answer.split("nothing fits")[0][-3:]
+    assert not stamps(answer) and "ask the owner for times" in answer
 
 
 async def test_a_time_offered_to_one_chat_is_not_offered_to_another_and_chats_hold_few_offers(setup):
@@ -723,3 +723,85 @@ async def test_one_approval_tapped_twice_books_once(setup):
     assert len(inserts(fake)) == 1
     assert sorted(said is None for _, said in results) == [False, True]  # the loser tells nobody anything
     assert (await app.store.get_booking_offer(offer_id(text)))["state"] == "booked"
+
+
+# ---- rework 2: a crash after Google made the event, what the friend's turn is told, and the end time across DST ----------
+
+
+async def crashed_after_insert(app, fake, *, event_made: bool):
+    """The process died with the approval claimed (state 'booking', the event id saved) and, if `event_made`, after Google
+    made the event but before 'booked' was saved. Returns the offer's id; the old process's pending card is then ended."""
+    text, _ = await offer_and_pick(app)
+    await pending(app)
+    offer = offer_id(text)
+    row = await app.store.get_booking_offer(offer)
+    event_id = "dombook000001abcdef012345"
+    assert await app.store.move_booking_offer(offer, "awaiting", "booking", MON.isoformat(), event_id=event_id)
+    if event_made:
+        fake.events.append(event(event_id, "Meet Sam", row["picked"], (datetime.fromisoformat(row["picked"]) + timedelta(hours=1)).isoformat()))
+    await app.desktop_permissions.expire_pending()
+    await settle(app)
+    return offer
+
+
+async def test_a_crash_after_google_made_the_event_settles_it_booked_and_confirms_to_the_friend(setup):
+    app, fake, client = await make(setup)
+    offer = await crashed_after_insert(app, fake, event_made=True)
+    assert not sent(app, FRIEND)
+    app.booking = Booking(app)
+    await app.booking.recover()
+    await settle(app)
+    assert (await app.store.get_booking_offer(offer))["state"] == "booked"
+    assert sent(app, FRIEND) == [FRIEND_BOOKED.format(when="Mon 30 Nov 21:00-22:00 (UTC)")]
+    assert not inserts(fake)  # nothing was made twice
+    app.booking = Booking(app)
+    await app.booking.recover()
+    await settle(app)
+    assert len(sent(app, FRIEND)) == 1  # and a later start does not tell again
+
+
+async def test_a_crash_before_google_made_the_event_declines_it(setup):
+    app, fake, client = await make(setup)
+    offer = await crashed_after_insert(app, fake, event_made=False)
+    app.booking = Booking(app)
+    await app.booking.recover()
+    await settle(app)
+    assert (await app.store.get_booking_offer(offer))["state"] == "declined"
+    assert sent(app, FRIEND) == [FRIEND_DECLINED]
+
+
+async def test_when_google_cannot_be_reached_at_the_sweep_a_booking_waits_for_the_next_one(setup):
+    app, fake, client = await make(setup)
+    offer = await crashed_after_insert(app, fake, event_made=True)
+    fake.statuses = [403]  # the first call after start is refused: it is not known whether the event is there
+    app.booking = Booking(app)
+    await app.booking.recover()
+    await settle(app)
+    assert (await app.store.get_booking_offer(offer))["state"] == "booking" and not sent(app, FRIEND)
+    await app.booking.recover()  # the next start: Google answers
+    await settle(app)
+    assert (await app.store.get_booking_offer(offer))["state"] == "booked"
+    assert sent(app, FRIEND) == [FRIEND_BOOKED.format(when="Mon 30 Nov 21:00-22:00 (UTC)")]
+
+
+# ---- rework 2: the friend's turn is never told why nothing was offered -----------------------------------------------------
+
+
+@pytest.mark.parametrize("scope", ["friend_dm", "group"])
+async def test_the_tool_result_in_a_friends_chat_never_says_why_nothing_was_offered(setup, scope):
+    app, fake, client = await make(setup)
+    fake.events = [event("all", SECRETS[0], "2026-11-30T00:00:00+00:00", "2026-12-20T00:00:00+00:00")]
+    answer = await _booking({"action": "offer"}, friend_ctx(app, scope))
+    assert not stamps(answer) and not any(word in answer.lower() for word in ("window", "free", "busy", "calendar", "schedule"))
+    assert "ask the owner for times" in answer
+    notes = [row[0] for row in app.store._conn.execute("SELECT text FROM messages WHERE chat_id = ? AND role = 'event'", (str(OWNER),))]
+    assert any("no free time" in note for note in notes)  # the owner's own history has the reason
+
+
+# ---- rework 2: the end time is the real end, across a clock change ---------------------------------------------------------
+
+
+def test_a_meeting_across_fall_back_shows_its_real_end():
+    start = datetime(2027, 11, 7, 5, 30, tzinfo=UTC)  # 01:30 EDT; 90 minutes later it is 02:00 EST, not 03:00
+    assert booking_module._when(start, 90, NEW_YORK, tz=False) == "Sun 07 Nov 01:30-02:00"
+    assert booking_module._when(datetime(2027, 3, 14, 6, 30, tzinfo=UTC), 90, NEW_YORK, tz=False) == "Sun 14 Mar 01:30-04:00"

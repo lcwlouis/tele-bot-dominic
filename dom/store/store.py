@@ -4238,6 +4238,12 @@ class Store:
                     held.append((start, minutes))
         return held
 
+    async def booking_offers_in(self, state: str) -> list[dict[str, Any]]:
+        def read() -> list[dict[str, Any]]:
+            return [dict(row) for row in self._conn.execute("SELECT * FROM booking_offers WHERE state = ? ORDER BY id", (state,)).fetchall()]
+
+        return await self._run(read)
+
     async def move_booking_offer(self, offer_id: int, expect: str, state: str, at: str, **fields: Any) -> bool:
         """Change an offer's state only while it is in `expect` (the check and the write are one statement, so of two
         picks at once exactly one wins). `fields` may set picked, email, event_id, friend and sender_id."""
@@ -4258,11 +4264,12 @@ class Store:
     async def sweep_booking_offers(self, at: str, *, keep_days: int = 14) -> list[dict[str, Any]]:
         """Close what can no longer be answered and forget what is old. An offer past its time is expired; one still
         `awaiting` the owner's tap when Dom starts has lost its card (a restart ends every pending request), so it is
-        expired too and returned, so the friend can be told. Settled rows older than `keep_days` are deleted."""
+        expired too and returned, so the friend can be told. A `booking` row is left alone: the event may already be at
+        Google, so only a look there settles it (see `booking_offers_in`). Settled rows older than `keep_days` are deleted."""
         def sweep() -> list[dict[str, Any]]:
             with self._tx() as conn:
-                lost = [dict(row) for row in conn.execute("SELECT * FROM booking_offers WHERE state IN ('awaiting', 'booking')").fetchall()]
-                conn.execute("UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state IN ('awaiting', 'booking')", (at,))
+                lost = [dict(row) for row in conn.execute("SELECT * FROM booking_offers WHERE state = 'awaiting'").fetchall()]
+                conn.execute("UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'awaiting'", (at,))
                 conn.execute(
                     "UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'offered' AND expires_at <= ?", (at, at),
                 )
