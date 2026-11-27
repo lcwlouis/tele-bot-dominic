@@ -458,7 +458,8 @@ async def insert_event(
     g: GoogleIntegration, calendar: dict[str, str], event_id: str, body: dict[str, Any], ticket: Ticket, *, updates: str = "none",
 ) -> str | None:
     """Make an event on one of Dom's calendars under an approval's ticket, with the id chosen first so a repeat finds it
-    already there. None when it is there; otherwise what to tell the owner. The caller holds the calendar's lock."""
+    already there. None when it is there; otherwise what to tell the owner. Callers that edit an existing event hold the calendar's lock; a booking has its own
+    reserved slot and a fresh event id, so it holds none across the call."""
     path = _events_url(calendar["id"])
     try:
         await g.call("POST", path, params={"sendUpdates": updates}, body={**body, "id": event_id}, idempotent=True, ticket=ticket, allow=(409,))

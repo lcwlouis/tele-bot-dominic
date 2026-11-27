@@ -4180,11 +4180,14 @@ class Store:
     # ---- booking offers (v0.8.6 W2) ------------------------------------------------------------------------------
 
     async def create_booking_offer(
-        self, *, chat_id: int, scope: str, sender_id: int | None, friend: str, minutes: int, slots: list[str],
-        context: str, at: str, expires_at: str, limit: int,
-    ) -> int | None:
-        """Keep an offer, unless this chat already has `limit` open ones (None then)."""
-        def insert() -> int | None:
+        self, *, chat_id: int, scope: str, sender_id: int | None, friend: str, minutes: int,
+        choose: Callable[[list[tuple[datetime, int]]], list[datetime]], context: str, at: str, expires_at: str, limit: int,
+    ) -> tuple[int | None, list[datetime]]:
+        """Choose and keep an offer in one transaction. `choose` gets what is held at this moment and returns the slots to
+        offer (it is pure and quick: it runs inside the transaction, so two offers made at once never share a slot).
+        Returns (id, slots); (None, []) when nothing was free, and (None, slots) when this chat already has `limit` open
+        offers, so nothing was kept."""
+        def insert() -> tuple[int | None, list[datetime]]:
             with self._tx() as conn:
                 conn.execute(  # offers past their time are closed here too, so old rows do not wait for a restart
                     "UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'offered' AND expires_at <= ?", (at, at),
@@ -4193,18 +4196,19 @@ class Store:
                     "DELETE FROM booking_offers WHERE state IN ('booked', 'declined', 'expired') AND settled_at < ?",
                     ((datetime.fromisoformat(at) - timedelta(days=14)).isoformat(),),
                 )
+                slots = choose(self._held_booking_slots(conn, at))
                 (open_offers,) = conn.execute(
-                    "SELECT COUNT(*) FROM booking_offers WHERE chat_id = ? AND state IN ('offered', 'awaiting') AND expires_at > ?",
+                    "SELECT COUNT(*) FROM booking_offers WHERE chat_id = ? AND state IN ('offered', 'awaiting', 'booking') AND expires_at > ?",
                     (chat_id, at),
                 ).fetchone()
-                if open_offers >= limit:
-                    return None
+                if not slots or open_offers >= limit:
+                    return None, slots
                 cur = conn.execute(
                     "INSERT INTO booking_offers (chat_id, scope, sender_id, friend, minutes, slots, context, state, created_at, expires_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, 'offered', ?, ?)",
-                    (chat_id, scope, sender_id, friend, minutes, json.dumps(slots), context, at, expires_at),
+                    (chat_id, scope, sender_id, friend, minutes, json.dumps([slot.isoformat() for slot in slots]), context, at, expires_at),
                 )
-                return int(cur.lastrowid)
+                return int(cur.lastrowid), slots
 
         return await self._run(insert)
 
@@ -4215,20 +4219,24 @@ class Store:
 
         return await self._run(read)
 
-    async def held_booking_slots(self, at: str) -> list[tuple[str, int]]:
-        """(start, minutes) of every slot in an open offer, so a time already offered to someone is not offered again.
-        An offer awaiting the owner holds only the slot picked."""
-        def read() -> list[tuple[str, int]]:
-            rows = self._conn.execute(
-                "SELECT slots, minutes, picked, state FROM booking_offers WHERE state IN ('offered', 'awaiting') AND expires_at > ?",
-                (at,),
-            ).fetchall()
-            held: list[tuple[str, int]] = []
-            for slots, minutes, picked, state in rows:
-                held.extend((start, minutes) for start in ([picked] if state == "awaiting" and picked else json.loads(slots)))
-            return held
-
-        return await self._run(read)
+    @staticmethod
+    def _held_booking_slots(conn: sqlite3.Connection, at: str) -> list[tuple[datetime, int]]:
+        """(start, minutes) of every slot not to be offered again: those in an open offer, and the one slot picked in an
+        offer that is awaiting the owner, being booked or booked (a booked slot stays held until it is over, because
+        Google's free/busy can lag behind the event just made)."""
+        now, held = datetime.fromisoformat(at), []
+        for slots, minutes, picked, state, expires_at in conn.execute(
+            "SELECT slots, minutes, picked, state, expires_at FROM booking_offers WHERE state IN ('offered', 'awaiting', 'booking', 'booked')",
+        ).fetchall():
+            if state == "offered":
+                starts = json.loads(slots) if datetime.fromisoformat(expires_at) > now else []
+            else:
+                starts = [picked] if picked else []
+            for raw in starts:
+                start = datetime.fromisoformat(raw)
+                if start + timedelta(minutes=minutes) > now:
+                    held.append((start, minutes))
+        return held
 
     async def move_booking_offer(self, offer_id: int, expect: str, state: str, at: str, **fields: Any) -> bool:
         """Change an offer's state only while it is in `expect` (the check and the write are one statement, so of two
@@ -4253,8 +4261,8 @@ class Store:
         expired too and returned, so the friend can be told. Settled rows older than `keep_days` are deleted."""
         def sweep() -> list[dict[str, Any]]:
             with self._tx() as conn:
-                lost = [dict(row) for row in conn.execute("SELECT * FROM booking_offers WHERE state = 'awaiting'").fetchall()]
-                conn.execute("UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'awaiting'", (at,))
+                lost = [dict(row) for row in conn.execute("SELECT * FROM booking_offers WHERE state IN ('awaiting', 'booking')").fetchall()]
+                conn.execute("UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state IN ('awaiting', 'booking')", (at,))
                 conn.execute(
                     "UPDATE booking_offers SET state = 'expired', settled_at = ? WHERE state = 'offered' AND expires_at <= ?", (at, at),
                 )

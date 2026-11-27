@@ -1,5 +1,6 @@
 -- Booking within the owner's windows (v0.8.6 W2): what Dom offered a friend and what became of it. One row per offer;
--- the pending offer of a chat is what lets a friend's pick map to a slot Dom really offered, across restarts.
+-- the pending offer of a chat is what lets a friend's pick map to a slot Dom really offered, across restarts. 'booking' is
+-- an approval claimed and being written to the calendar; its slot is still held, like an awaiting or booked one.
 CREATE TABLE booking_offers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id INTEGER NOT NULL,
@@ -9,7 +10,7 @@ CREATE TABLE booking_offers (
     minutes INTEGER NOT NULL,
     slots TEXT NOT NULL,
     context TEXT NOT NULL DEFAULT '',
-    state TEXT NOT NULL CHECK(state IN ('offered', 'awaiting', 'booked', 'declined', 'expired')),
+    state TEXT NOT NULL CHECK(state IN ('offered', 'awaiting', 'booking', 'booked', 'declined', 'expired')),
     picked TEXT,
     email TEXT NOT NULL DEFAULT '',
     event_id TEXT NOT NULL DEFAULT '',

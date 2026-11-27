@@ -8,12 +8,12 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
-from test_google import HEADERS, event, names, owner_ctx, pending, ready, settle, setup, tap  # noqa: F401  (setup is a fixture)
+from test_google import HEADERS, event, names, owner_ctx, pending, pending_ids, ready, settle, setup, tap  # noqa: F401  (setup is a fixture)
 from tghelpers import FRIEND, GROUP, OWNER
 
 from dom import booking as booking_module
 from dom.booking import (
-    BOOKING_CALENDAR, FRIEND_BOOKED, FRIEND_DECLINED, FRIEND_TAKEN, NO_WINDOWS, UNAVAILABLE, Booking, Rules, _booking, find_slots,
+    BOOKING_CALENDAR, FRIEND_BOOKED, FRIEND_DECLINED, NO_WINDOWS, UNAVAILABLE, Booking, Rules, _booking, find_slots,
     in_window, offered, parse_rules,
 )
 from dom.models import StoredMessage
@@ -416,8 +416,7 @@ async def test_a_time_taken_since_the_offer_is_not_booked(setup):
     await pending(app)
     busy(fake, ("2026-11-30T21:30:00+00:00", "2026-11-30T22:30:00+00:00"))  # the owner filled it while the card waited
     await tap(app, "once")
-    assert not inserts(fake) and sent(app, FRIEND) == [FRIEND_TAKEN]
-    assert not any(secret in FRIEND_TAKEN for secret in SECRETS)
+    assert not inserts(fake) and sent(app, FRIEND) == [FRIEND_DECLINED]  # the same line as any other decline: it never says why
     assert (await app.store.get_booking_offer(offer_id(text)))["state"] == "declined"
 
 
@@ -450,7 +449,7 @@ async def test_never_declines_without_a_card_and_allow_always_is_not_a_choice_on
     app, fake, client = await make(setup)
     await app.desktop_permissions.set_policy("booking_confirm", "never")
     text, result = await offer_and_pick(app)
-    assert "kindly" in result and not app.bot.of("send", OWNER) and not inserts(fake)
+    assert FRIEND_DECLINED in result and not app.bot.of("send", OWNER) and not inserts(fake)
     assert (await app.store.get_booking_offer(offer_id(text)))["state"] == "declined"
     await app.desktop_permissions.set_policy("booking_confirm", "ask")
     await offer_and_pick(app, slot=2)
@@ -533,3 +532,194 @@ async def test_old_offers_are_closed_and_then_forgotten_as_new_ones_are_made(set
     await _booking({"action": "offer"}, friend_ctx(app))
     assert await app.store.get_booking_offer(first) is None  # settled two weeks ago: forgotten
     assert (await app.store.get_booking_offer(second))["state"] == "expired"  # just closed: forgotten two weeks from now
+
+
+# ---- B1: every decline a friend sees is the same vague line ---------------------------------------------------------------
+
+NEW_YORK = ZoneInfo("America/New_York")
+LEAKS = ("taken", "busy", "free", "calendar", "owner", "window", "notice", "booked", "schedule", "time off")
+
+
+async def _reject(app, fake):
+    await tap(app, "reject")
+
+
+async def _expire(app, fake):
+    await app.desktop_permissions.expire_pending()
+
+
+async def _switch_off(app, fake):
+    await app.google.set_switch("calendar_write", False)
+
+
+async def _restart(app, fake):
+    app.booking = Booking(app)
+    await app.booking.recover()  # the sweep tells the friend; the dead card then ends without telling again
+    await app.desktop_permissions.expire_pending()
+
+
+async def _taken(app, fake):
+    busy(fake, ("2026-11-30T21:30:00+00:00", "2026-11-30T22:30:00+00:00"))
+    await tap(app, "once")
+
+
+async def _windows_cleared(app, fake):
+    await app.booking.set_rules({"windows": []})
+    await tap(app, "once")
+
+
+async def _windows_moved(app, fake):
+    await app.booking.set_rules({"windows": [{"days": ["tue"], "start": "19:00", "end": "22:00"}]})
+    await tap(app, "once")
+
+
+async def _started(app, fake):
+    app.dispatch.now.at = MON + timedelta(hours=14)  # the slot (21:00) began an hour ago
+    await tap(app, "once")
+
+
+async def _notice_raised(app, fake):
+    await app.booking.set_rules({"notice_hours": 72})
+    await tap(app, "once")
+
+
+async def _write_failed(app, fake):
+    fake.statuses = [200, 200, 200, 403, 403]
+    await tap(app, "once")
+
+
+DECLINES = {
+    "rejected": (_reject, ""), "expired": (_expire, ""), "switch off": (_switch_off, ""), "restart": (_restart, ""),
+    "taken": (_taken, "no longer free"), "windows cleared": (_windows_cleared, "meeting windows"),
+    "windows moved": (_windows_moved, "meeting windows"), "started": (_started, "already started"),
+    "notice raised": (_notice_raised, "minimum notice"), "write failed": (_write_failed, "not confirmed"),
+}
+
+
+@pytest.mark.parametrize("name", list(DECLINES))
+async def test_every_decline_a_group_sees_is_the_same_vague_line_and_reveals_nothing(setup, name):
+    app, fake, client = await make(setup)
+    text, _ = await offer_and_pick(app, "group")
+    await pending(app)
+    trigger, note = DECLINES[name]
+    await trigger(app, fake)
+    await settle(app)
+    assert sent(app, GROUP) == [FRIEND_DECLINED] and not sent(app, FRIEND)
+    assert name == "write failed" or not inserts(fake)  # (a refused write was tried, and nothing was made)
+    assert not any(word in FRIEND_DECLINED.lower() for word in LEAKS) and not any(secret in FRIEND_DECLINED for secret in SECRETS)
+    assert (await app.store.get_booking_offer(offer_id(text)))["state"] in ("declined", "expired")
+    if note:  # the owner is told why, shortly
+        assert any(note in call[2] for call in app.bot.of("send", OWNER))
+
+
+async def test_a_decline_in_the_replys_own_words_is_the_same_line_whether_it_is_never_or_a_conflict(setup):
+    app, fake, client = await make(setup)
+    await app.desktop_permissions.set_policy("booking_confirm", "never")
+    _, never = await offer_and_pick(app, "group")
+    assert FRIEND_DECLINED in never and not any(word in never.lower().replace("owner's", "") for word in ("taken", "busy", "free", "calendar"))
+    await app.desktop_permissions.set_policy("booking_confirm", "allow")
+    ctx = friend_ctx(app, "group")
+    text = await _booking({"action": "offer", "minutes": 60}, ctx)
+    busy(fake, ("2026-11-30T00:00:00+00:00", "2026-12-20T00:00:00+00:00"))  # everything fills up before the pick
+    conflict = await _booking({"action": "pick", "offer": offer_id(text), "slot": 1}, ctx)
+    assert FRIEND_DECLINED in conflict and not any(word in conflict.lower() for word in ("taken", "busy", "free", "calendar"))
+    assert not inserts(fake)
+
+
+# ---- SF2: wall time and instants across a daylight-saving change ----------------------------------------------------------
+
+
+def local_starts(found, zone=NEW_YORK):
+    return [slot.astimezone(zone).strftime("%H:%M") for slot in found]
+
+
+def test_spring_forward_skips_times_that_do_not_exist():
+    rules = parse_rules({"windows": [{"days": ["sun"], "start": "01:00", "end": "04:00"}], "notice_hours": 0, "ahead_days": 30}, Rules())
+    now = datetime(2027, 3, 13, 12, 0, tzinfo=UTC)
+    found = find_slots(
+        rules, [], [], now=now, minutes=30, zone=NEW_YORK, limit=50, after=datetime(2027, 3, 14, 0, 0, tzinfo=UTC), before=datetime(2027, 3, 15, tzinfo=UTC),
+    )
+    # 02:00 and 02:30 do not exist on 14 March 2027, and 01:30 EST ends at 03:00 EDT.
+    assert local_starts(found) == ["01:00", "01:30", "03:00", "03:30"]
+    assert [slot.astimezone(UTC).strftime("%H:%M") for slot in found] == ["06:00", "06:30", "07:00", "07:30"]
+    # A window ending 04:00 EDT holds a meeting that starts 03:30 EDT for 30 minutes and not for 60: instants, not wall clock.
+    assert in_window(rules, datetime(2027, 3, 14, 7, 30, tzinfo=UTC), 30, NEW_YORK) and not in_window(rules, datetime(2027, 3, 14, 7, 30, tzinfo=UTC), 60, NEW_YORK)
+    # 01:30 EST for 90 minutes ends 04:00 EDT: three real hours' worth of wall clock is only 90 minutes.
+    assert in_window(rules, datetime(2027, 3, 14, 6, 30, tzinfo=UTC), 90, NEW_YORK) and not in_window(rules, datetime(2027, 3, 14, 6, 30, tzinfo=UTC), 91, NEW_YORK)
+
+
+def test_fall_back_offers_the_first_of_a_repeated_time_and_counts_real_duration():
+    rules = parse_rules({"windows": [{"days": ["sun"], "start": "00:30", "end": "02:00"}], "notice_hours": 0, "ahead_days": 30}, Rules())
+    now, day = datetime(2027, 11, 6, 12, 0, tzinfo=UTC), dict(after=datetime(2027, 11, 7, 0, 0, tzinfo=UTC), before=datetime(2027, 11, 8, tzinfo=UTC))
+    # The window is two and a half real hours (it holds 01:00 twice) and the repeated 01:00 and 01:30 are the first ones.
+    found = find_slots(rules, [], [], now=now, minutes=30, zone=NEW_YORK, limit=50, **day)
+    assert [slot.astimezone(UTC).strftime("%H:%M") for slot in found] == ["04:30", "05:00", "05:30"]
+    # 90 minutes from 01:30 EDT (05:30Z) end at 07:00Z, exactly the 02:00 EST close, though the wall clock reads 03:00.
+    held = [(datetime(2027, 11, 7, 4, 30, tzinfo=UTC), 60)]
+    long = find_slots(rules, [], held, now=now, minutes=90, zone=NEW_YORK, limit=50, **day)
+    assert [slot.astimezone(UTC).strftime("%H:%M") for slot in long] == ["05:30"]
+    assert in_window(rules, datetime(2027, 11, 7, 5, 0, tzinfo=UTC), 90, NEW_YORK)
+
+
+# ---- SF3: one slot is never offered to two friends ------------------------------------------------------------------------
+
+
+async def test_two_friends_asking_at_once_are_offered_different_slots(setup):
+    app, fake, client = await make(setup)
+    fake.delays = {"GET": 0.02}  # the free/busy reads overlap, so both are read before either offer is kept
+    first, second = await asyncio.gather(
+        _booking({"action": "offer"}, friend_ctx(app)), _booking({"action": "offer"}, friend_ctx(app, "group")),
+    )
+    assert stamps(first) and stamps(second) and not set(stamps(first)) & set(stamps(second))
+
+
+async def test_a_booked_slot_stays_held_even_before_the_calendar_shows_it(setup):
+    app, fake, client = await make(setup)
+    await offer_and_pick(app)
+    await tap(app, "once")  # booked; this fake's calendar does not list the event, as Google can lag
+    assert "booked" == (await app.store.get_booking_offer(1))["state"]
+    other = await _booking({"action": "offer"}, friend_ctx(app, "group"))
+    assert "Mon 30 Nov 21:00" not in other and stamps(other)
+
+
+# ---- SF4: no lock across Google, and one approval books once ---------------------------------------------------------------
+
+
+async def test_a_slow_google_write_does_not_hold_up_another_booking(setup):
+    app, fake, client = await make(setup)
+    await offer_and_pick(app)
+    await offer_and_pick(app, "group")
+    first_id, second_id = await pending_ids(app, 2)
+    gate, second_in, arrived = asyncio.Event(), asyncio.Event(), []
+
+    async def handler(request):
+        if request.method == "POST" and request.url.path.endswith("/events"):
+            arrived.append(request)
+            if len(arrived) == 1:
+                await gate.wait()  # the first booking's insert is slow
+            else:
+                second_in.set()
+        return await fake.handle(request)
+
+    app.google._client = __import__("httpx").AsyncClient(transport=__import__("httpx").MockTransport(handler))
+    taps = [asyncio.create_task(app.desktop_permissions.decide(i, "once", via="dashboard")) for i in (first_id, second_id)]
+    try:
+        async with asyncio.timeout(2):
+            await second_in.wait()  # the second booking reached Google while the first was still waiting
+    finally:
+        gate.set()
+    await asyncio.gather(*taps)
+    await settle(app)
+    assert len(arrived) == 2 and sorted(sent(app, FRIEND) + sent(app, GROUP)) == sorted([FRIEND_BOOKED.format(when="Mon 30 Nov 21:00-22:00 (UTC)"), FRIEND_BOOKED.format(when="Tue 01 Dec 19:00-20:00 (UTC)")])
+
+
+async def test_one_approval_tapped_twice_books_once(setup):
+    app, fake, client = await make(setup)
+    text, _ = await offer_and_pick(app)
+    await pending(app)
+    fake.delays = {"POST": 0.05}
+    ticket = await app.google.ticket("calendar_write")
+    results = await asyncio.gather(app.booking._book(offer_id(text), ticket), app.booking._book(offer_id(text), ticket))
+    assert len(inserts(fake)) == 1
+    assert sorted(said is None for _, said in results) == [False, True]  # the loser tells nobody anything
+    assert (await app.store.get_booking_offer(offer_id(text)))["state"] == "booked"

@@ -87,11 +87,18 @@ know **when you are willing to meet**, and he offers only times inside that.
   group), the time, the calendar, whether the friend is invited, and what they said it is about, all quoted as the
   friend's own words. The friend is told Dom will check. The card has **Allow once** and **Reject** only. To book without
   a card, set "Confirm a booking" to Allow in System → Access; Never makes Dom decline every request kindly.
-- **On approval** Dom checks the time is still free, adds "Meet <name>" to **Dom - Bookings**, and tells the friend it is
-  set. The friend is added as a guest, and Google emails them, **only if** you allowed invites and they gave their email
-  in the chat; otherwise the event is on your calendar alone. **On rejection, expiry, a switch turned off, or a time that
-  was taken meanwhile,** the friend gets a kind line ("Sorry, I can't make that one work. Maybe another time?") and never
-  a reason.
+- **On approval** Dom checks again, against how things are by then, that the time has not started, is still inside your
+  windows and your notice (counted from when it was offered), and is still free, adds "Meet <name>" to **Dom - Bookings**,
+  and tells the friend it is set. If any check fails, nothing is booked and you get a short notice saying which. The
+  friend is added as a guest, and Google emails them, **only if** you allowed invites and they gave their email in the
+  chat; otherwise the event is on your calendar alone. Tapping a card twice books once. **On every decline, whatever the
+  cause** (a rejection, an expiry, a switch turned off, a time taken or no longer allowed, a failed write), the friend
+  gets the same kind line ("Sorry, I can't make that one work. Maybe another time?") and never a reason, so nothing
+  about your calendar can be read from it.
+- **Two friends at once** are never offered the same time: the slots are chosen and held in one step, and a time stays
+  held while it waits for your tap, while it is written, and after it is booked. Times are worked out in your timezone's
+  wall clock but added and compared as real instants, so a daylight-saving change neither offers a time that does not
+  exist nor shortens a meeting.
 - **Restarts.** Offers are kept in the database, so a pick finds the slot Dom really offered after a restart. A pick that
   was waiting for your tap when Dom stopped has lost its card; when he starts again he closes it and tells the friend.
 - **What leaves your DM** is the offered start and end times, and the friend's own confirmation. No title, place,
