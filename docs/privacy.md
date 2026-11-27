@@ -247,7 +247,8 @@ Cloudflare. Keep local bearer-token testing on loopback.
   unless `[world] news` is off) receive that place or country name in a few searches each evening, and the model gets
   the numbered result titles and snippets to pick from. No chat text or private note is part of either request. Only
   a result's own title and domain are kept, filtered for anything that reads as an instruction, and they may reach
-  every chat as headlines marked as untrusted web text.
+  every chat as headlines marked as untrusted web text. The triage model also reads the night's few kept headlines, as
+  public web text, in one call that screens them.
 - **Chat model providers** also receive the real photos, voice notes and clips
   of the newest turn (and Dom's own latest generated media) when the chat model
   takes that type of input. See [Media Dom sees and sends](#media-dom-sees-and-sends).
