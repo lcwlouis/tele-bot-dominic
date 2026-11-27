@@ -2067,7 +2067,7 @@ test.describe("interactions under the CSP", () => {
     });
     await page.goto("/app/system");
     await page.getByRole("tab", { name: "Services" }).click();
-    const section = page.getByRole("region", { name: "Google Calendar and Gmail" }).getByRole("region", { name: "Meeting windows" });
+    const section = page.getByRole("region", { name: "Google Calendar, Gmail, Drive and Contacts" }).getByRole("region", { name: "Meeting windows" });
     await expect(section.getByText("Dom will ask before he makes the calendar")).toBeVisible();
     const days = section.getByRole("group", { name: "Days for window 1" });
     await expect(days.getByRole("button", { name: "Mon" })).toHaveAttribute("aria-pressed", "true");
