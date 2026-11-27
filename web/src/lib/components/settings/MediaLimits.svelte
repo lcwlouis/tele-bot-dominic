@@ -1,7 +1,7 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount, untrack } from "svelte";
-  import { getJSON, send, type SpendView, type StudioLimits, type StudioLimitsView, type StudioScope, type StudioTier } from "$lib/api";
+  import { getJSON, send, type SpendView, type Spontaneity, type StudioLimits, type StudioLimitsView, type StudioScope, type StudioTier } from "$lib/api";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import { KIND_LABELS, standingNote } from "$lib/media-standing";
   import StatusNote from "$lib/components/StatusNote.svelte";
@@ -18,6 +18,13 @@
   let { revision = $bindable() }: { revision: string } = $props();
 
   const KINDS = KIND_LABELS;
+  // How readily Dom adds media on his own: the prompt's wording and a multiplier on every per-chat limit and gap
+  // (halved and doubled for rarely, doubled and halved for often), never past the global daily total.
+  const SPONTANEITY: { value: Spontaneity; label: string; hint: string }[] = [
+    { value: "rarely", label: "Rarely", hint: "Only when it really matters; per-chat limits halved, gaps doubled." },
+    { value: "sometimes", label: "Sometimes", hint: "The default pace." },
+    { value: "often", label: "Often", hint: "Sends one when it fits; per-chat limits doubled, gaps halved." },
+  ];
   const GAP_MAX = 10080; // a week: dom/config.py StudioTier.gap_minutes
 
   // One number per kind; video and photos also take a period. Per day sets <kind>_daily; per week clears it and sets
@@ -33,6 +40,7 @@
   let failed = $state("");
   let drafts = $state<Record<StudioScope, Draft> | null>(null);
   let daily = $state<number | null>(null);
+  let spontaneity = $state<Spontaneity>("sometimes");
   let saving = $state(false);
   // Cloud media spend this month against the media area's limit (E86), where /api/spend answers.
   let mediaSpend = $state<SpendView["areas"][number] | null>(null);
@@ -52,6 +60,7 @@
     view = loaded;
     drafts = { owner_dm: toDraft(loaded.limits.owner_dm), friend_dm: toDraft(loaded.limits.friend_dm), group: toDraft(loaded.limits.group) };
     daily = loaded.limits.daily;
+    spontaneity = loaded.spontaneity;
     edited = false;
   }
 
@@ -102,14 +111,16 @@
       group: tier(saved.group, drafts.group), daily: daily!,
     };
   });
-  const changed = $derived(limits !== null && JSON.stringify(limits) !== JSON.stringify(view!.limits));
+  const changed = $derived(
+    limits !== null && (JSON.stringify(limits) !== JSON.stringify(view!.limits) || spontaneity !== view!.spontaneity),
+  );
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
     if (!changed || saving) return;
     saving = true;
     try {
-      const result = await send<StudioLimitsView>("/api/studio/limits", { revision: view!.revision, limits });
+      const result = await send<StudioLimitsView>("/api/studio/limits", { revision: view!.revision, limits, spontaneity });
       revision = result.revision;
       show(result);
       toast.show("ok", "Media limits saved.");
@@ -243,6 +254,23 @@
     {:else}
       {@const owner = view.owner}
       <form onsubmit={save} oninput={() => (edited = true)} onchange={() => (edited = true)}>
+        <fieldset class="mb-5 grid gap-2" data-spontaneity>
+          <legend class="mb-1 flex items-center gap-1 font-medium">
+            How readily Dom adds media
+            <InfoGlyph label="About spontaneity">How often he adds a voice note, video note or photo on his own, in replies and when he writes first. It scales the limits below and never passes the global daily total.</InfoGlyph>
+          </legend>
+          <div class="inline-flex w-fit rounded-lg border bg-raised p-0.5">
+            {#each SPONTANEITY as option (option.value)}
+              <label
+                class="cursor-pointer rounded-md px-3 py-1.5 text-sm transition-colors has-[:checked]:bg-surface has-[:checked]:font-medium has-[:checked]:shadow-xs has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                title={option.hint}
+              >
+                <input type="radio" class="sr-only" name="spontaneity" value={option.value} bind:group={spontaneity} aria-label={`${option.label}: ${option.hint}`} />
+                {option.label}
+              </label>
+            {/each}
+          </div>
+        </fieldset>
         <div class="grid gap-5 md:grid-cols-3">
           <div class="grid content-start gap-5">
             <fieldset class="grid content-start gap-2.5 rounded-xl border bg-surface p-3.5">

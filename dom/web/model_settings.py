@@ -1135,7 +1135,7 @@ def _save_setting(
     return saved
 
 
-def set_value(document: tomlkit.TOMLDocument, path: tuple[str, ...], setting: bool | int | None) -> None:
+def set_value(document: tomlkit.TOMLDocument, path: tuple[str, ...], setting: bool | int | str | None) -> None:
     """Set one value in config.toml's document, creating its tables and keeping the comment beside it; None drops the
     key, so its default applies."""
     table = document
