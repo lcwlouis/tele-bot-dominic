@@ -104,7 +104,7 @@
       role="region"
       aria-label={`Messages in ${title}, oldest first`}
       tabindex="0"
-      class="max-h-[28rem] overflow-y-auto overscroll-contain rounded-lg bg-canvas/40 px-2 py-3 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:px-3"
+      class="relative max-h-[28rem] overflow-y-auto overscroll-contain rounded-lg bg-canvas/40 px-2 py-3 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:px-3"
     >
       {#if before !== null}{@render older()}{/if}
       <ol class="grid grid-cols-[minmax(0,1fr)] gap-1.5">

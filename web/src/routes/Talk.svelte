@@ -178,7 +178,7 @@
 
   async function submit() {
     const text = draft.trim();
-    if ((!text && !attachment) || sending) return;
+    if ((!text && !attachment) || sending || reading) return;
     sending = true;
     try {
       const body =
@@ -221,17 +221,32 @@
       return;
     }
     failedAttach = "";
+    // A new pick replaces the old one at once: nothing is attached until this file is read, and a read that finishes
+    // after another pick (or a remove) is dropped, so Send can never carry the previous file.
+    attachment = null;
+    const pick = ++picks;
+    reading = true;
     const reader = new FileReader();
     reader.onload = () => {
+      if (pick !== picks) return;
       const url = String(reader.result);
       attachment = { kind, name: file.name, data: url.slice(url.indexOf(",") + 1), mime: file.type };
+      reading = false;
     };
-    reader.onerror = () => (failedAttach = `Couldn't read that ${kind}. Choose it again.`);
+    reader.onerror = () => {
+      if (pick !== picks) return;
+      failedAttach = `Couldn't read that ${kind}. Choose it again.`;
+      reading = false;
+    };
     reader.readAsDataURL(file);
   }
   let failedAttach = $state("");
+  let reading = $state(false);
+  let picks = 0;
   function clearAttachment() {
+    picks += 1;
     attachment = null;
+    reading = false;
   }
 
   // The conversation and, with Trace on, each turn placed where it started: after the messages it answered and
@@ -491,7 +506,7 @@
             class="field-sizing-content max-h-40 min-h-10 min-w-0 flex-1 resize-none rounded-lg border bg-raised px-3 py-2 text-body outline-none placeholder:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
           ></textarea>
           <!-- Pressing Send keeps the draft's focus, so a phone's keyboard stays up and the card doesn't resize under the tap. -->
-          <IconButton label={sending ? "Sending…" : "Send"} shortcut="Enter" icon={SendIcon} type="submit" onmousedown={(event: MouseEvent) => event.preventDefault()} disabled={sending || (!draft.trim() && !attachment)} variant="default" size="icon" />
+          <IconButton label={sending ? "Sending…" : "Send"} shortcut="Enter" icon={SendIcon} type="submit" onmousedown={(event: MouseEvent) => event.preventDefault()} disabled={sending || reading || (!draft.trim() && !attachment)} variant="default" size="icon" />
         </div>
       </form>
     </div>

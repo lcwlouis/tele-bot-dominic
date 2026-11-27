@@ -2651,6 +2651,22 @@ test.describe("interactions under the CSP", () => {
     expect(problems).toEqual([]);
   });
 
+  test("chats: Your DM keeps each message's hidden text inside its own list, so the page never stretches", async ({ page }) => {
+    await page.setViewportSize(viewports.phone);
+    const problems = await watch(page);
+    await page.goto("/app/chats");
+    await page.getByRole("button", { name: "Messages in Your DM" }).click();
+    const list = page.getByRole("region", { name: /^Messages in .*oldest first$/ });
+    await expect(list).toBeVisible();
+    // Screen-reader text is positioned absolutely: if the list is not its containing block it lands far down the page.
+    // Its containing block (offsetParent) must be the list or inside it, so the list clips and scrolls it.
+    const escaped = await list.evaluate((box) =>
+      [...box.querySelectorAll<HTMLElement>(".sr-only")].filter((node) => !node.offsetParent || !box.contains(node.offsetParent)).length,
+    );
+    expect(escaped).toBe(0);
+    expect(problems).toEqual([]);
+  });
+
   test("talk: a file is attached and sent as a document, beside the photo button", async ({ page }) => {
     const problems = await watch(page);
     const bodies: Record<string, unknown>[] = [];
