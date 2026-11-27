@@ -6,6 +6,8 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+- **Overnight news.** With `[world] news` on (the default), a place or country and a web search route, Dom reads the news for where you are in his nightly window: a few searches and one condensing call write at most eight short dated lines, each with its source domain, to `memory/NEWS.md`, replaced each night, and for the next 36 hours every chat's world note carries one or two of them. The reply path only reads the file; the searches count toward the search limit and the call is attributed as `news` (background spend rules). A failed night leaves the file as it was, and with no search route nothing runs.
+
 ## [0.8.5] - 2026-11-27
 
 Dom gets hands, a world of his own and a window into how he thinks. He can browse for you behind per-site approvals, fill saved logins without ever seeing the password, ask you for a secret through a private form, and read your Calendar and Gmail with every change on a card. He has a life sheet with places and routines, a Talk page in the dashboard with a full debug trace of every turn, an owner-DM lane that never waits behind a group, an optional morning plan and evening wrap-up, and video notes whose faces finally move.

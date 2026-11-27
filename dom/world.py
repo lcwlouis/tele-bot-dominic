@@ -23,7 +23,7 @@ from xml.sax.saxutils import escape
 
 import httpx
 
-from dom import notes
+from dom import news, notes
 from dom.config import WorldConfig
 from dom.home import WORLD, Home, PrivateAccessError
 from dom.models import Scope
@@ -270,7 +270,18 @@ class World:
 
     def block(self, home: Home, scope: Scope, chat_id: int, window: Sequence, now: datetime) -> str:
         """The "world now" lines of the turn note: the weather, then Dom's life sheet. Reads files, never the network."""
-        return "\n".join(filter(None, [self.line(), self.holiday_line(), sheet_block(home, scope, chat_id, window, now, self._now())]))
+        return "\n".join(filter(None, [
+            self.line(), self.holiday_line(), self.news_block(home), sheet_block(home, scope, chat_id, window, now, self._now()),
+        ]))
+
+    def news_block(self, home: Home) -> str:
+        """One or two lines of last night's news for every chat (it is public, and the job never sees a chat), or ""."""
+        config = self._config()
+        if not config.news or not (config.place.strip() or config.country):
+            return ""
+        found = news.lines(home, self._now())
+        head = "news where you live, from last night's search (use when it fits, never recite):"
+        return "\n".join([head, *(escape(line) for line in found)]) if found else ""
 
 
 def _lines(rel: str, text: str, chat_id: int, owner_dm: bool) -> list[notes.Line]:

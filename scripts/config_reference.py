@@ -170,12 +170,21 @@ def render() -> str:
         "It comes from [Nager.Date](https://date.nager.at/) (no key), fetched in the background about once a day and "
         "cached, so no reply waits on it. Only the country code and the year leave the host (see [Privacy](privacy.md)). "
         "Today's date is read in `timezone`. Holidays that apply to some regions only are left out. When the list can't be fetched, the line is left out once "
-        "the cached list is a week old. The country works without a place. News and local events are not included: no free source without a key was reliable enough to trust in his notes.",
+        "the cached list is a week old. The country works without a place.",
         "The same block carries Dom's life sheet (`memory/WORLD.md`: home, work, routine, regular spots), the routine slot "
         "for the current weekday and part of the day, what the notes a chat may read say about that slot's places, and a "
         "variety hint when Dom has just said one of his usual options in this chat. The sheet works without `[world]`; "
         "only the weather line needs the place. See [Memory formats](memory-format.md) for the format and who can change "
         "it, and the dashboard's Memory → World page to edit it.",
+        "With `news` on (the default), a place or a country, and a web search route, Dom does a little reading in his nightly "
+        "window, beside the reflection: a few searches for the top news and the events in the next few days where the owner "
+        "is, and one model call that condenses the results into at most eight short dated lines, each with its source domain. "
+        "They replace `memory/NEWS.md` each night, and for the next 36 hours the turn note of every chat carries one or two of "
+        "them. The note is public news: no chat text or private note goes into the searches or the call, and the reply path "
+        "only reads the file. The searches count toward the search spending limit and the call is attributed as `news` "
+        "(see [Spend limits](setup.md#spend-limits)); background work obeys the monthly cap and the area limits. A failed night "
+        "leaves the file as it was, and a note older than 36 hours is not shown. With no search route, nothing runs. "
+        "Changes apply at the next start.",
         "## Dispatch",
         table(fields(DispatchConfig, "dispatch.")),
         "With the fast lane on, Dom composes the owner's DM turns apart from every other chat's: each turn is "
