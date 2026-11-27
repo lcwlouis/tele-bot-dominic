@@ -230,6 +230,7 @@ async def read_turns(request: Request, chat: str = "") -> dict:
     return {
         "chat": data["chat"], "stages": data["stages"], "choices": [{"id": key, "title": title} for key, title in data["choices"]],
         "visible_stages": [stage for stage in data["stages"] if stage in data["visible_stages"]],
+        "reactions": data["reactions"],
         "visits": [{
             "title": visit["title"], "duration_ms": visit["duration_ms"], "depth": visit["depth"],
             "left": visit["left"], "width": visit["width"], "time": f"{visit['time']:%d %b %H:%M:%S}",
@@ -246,7 +247,7 @@ async def read_turns(request: Request, chat: str = "") -> dict:
             "title": row["title"], "outcome": row["outcome"], "first_bubble_ms": row["first_bubble_ms"],
             "last_bubble_ms": row["last_bubble_ms"], "duration_ms": row["duration_ms"], "model": row["model"],
             "fallback": bool(row["fallback"]), "calls": row["calls"], "steps": row["steps"],
-            "lane": row["lane"], "queue_wait_ms": row["queue_wait_ms"],
+            "reaction_rejected": row["reaction_rejected"], "lane": row["lane"], "queue_wait_ms": row["queue_wait_ms"],
             "visits": [{
                 "reason": visit["reason"], "behind": visit["behind_title"], "capped": visit["capped_title"],
             } for visit in row["visits"]],

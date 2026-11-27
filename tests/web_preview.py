@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -30,6 +31,7 @@ from dom.briefs import write_brief  # noqa: E402
 from dom.desktop.fleet import DesktopFleet  # noqa: E402
 from dom.dispatch import Dispatcher  # noqa: E402
 from dom.home import Home  # noqa: E402
+from dom.workspace import ensure_workspace  # noqa: E402
 from dom.llm import ChatClient  # noqa: E402
 from dom.models import StoredMessage  # noqa: E402
 from dom.plugins.tools import DRAFT_PLUGIN_TOOL  # noqa: E402
@@ -394,6 +396,12 @@ async def seed(app: handlers.App) -> None:
     app.home._write_regular("memory/places/the-bakery.md", "- The bakery downstairs, open from six {any}\n")
     await app.place_photos.save("the-harbour-cafe", _fictional_photo())
     app.home.scoped(allow_private=True)._write_regular("private/USER.md", "- Likes long walks\n")
+    # The shared workspace (W3): a document Dom was sent, a note of his and a picture.
+    workspace = ensure_workspace(app.home.root)
+    (workspace / "inbox").mkdir(exist_ok=True)
+    (workspace / "inbox" / "train-times.csv").write_text("station,first,last\nCentral,05:40,23:55\nHarbour,05:52,23:41\n")
+    (workspace / "notes.md").write_text("# Saturday trip\n\n- Meet at Central at 9.\n- Bring the blue bag.\n")
+    (workspace / "harbour.png").write_bytes(_fictional_photo())
     app.home._write_regular("stickers.toml", 'sets = ["example_set_by_examplebot"]\n')
     await app.proposals.create(
         "memory_edit", "", {"file": "memory/MEMORY.md", "op": "add", "text": "- Check weekend times too.", "reason": "The next trip is on Saturday."},
@@ -624,8 +632,13 @@ async def seed_talk(app: handlers.App) -> None:
             visibility_scope=store.visibility_for(OWNER), origin=origin,
         ))
     await store.mark_chat_read(OWNER, 72)  # answered already: the preview must not answer it again at start
-    row = await store.record_turn(start, OWNER, "owner_dm", 1, ["final"], "example/chat-model", False, 11000, "Replied")
+    calls = [{"kind": "chat", "model": "example/chat-model", "input_tokens": 2048, "output_tokens": 96, "cached_tokens": 1536}]
+    row = await store.record_turn(start, OWNER, "owner_dm", 1, ["final"], "example/chat-model", False, 11000, "Replied",
+                                  model_calls=calls, first_bubble_ms=9000, last_bubble_ms=11000)
+    # What the turn cost, so Your DM's (i) on Dom's bubbles has a price.
+    spent = await store.record_usage((start + timedelta(seconds=3)).isoformat(), "chat", "example/chat-model", "homelab", OWNER, 2048, 96, 0.00042, 0)
     store._conn.execute("UPDATE turns SET id = ? WHERE id = ?", (TRACED_TURN, row))
+    await store.link_usage_to_turn(TRACED_TURN, [spent])
 
     writer = tracer.TraceWriter(tracer.TraceStore(app.home.root / "traces.db"), lambda: (7, 256_000_000), lambda: ())
     app.traces = writer

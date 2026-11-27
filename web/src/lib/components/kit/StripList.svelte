@@ -1,8 +1,9 @@
 <script lang="ts" module>
   import type { Status } from "./status";
 
-  /** What one strip shows: the rest of an item lives in its details. */
-  export type Strip = { status: Status; title: string; at: Date | string; meta?: string };
+  /** What one strip shows: the rest of an item lives in its details. `line` is an optional second line under the
+   *  title (a task's result); `chip` shows the status as a worded chip on that line instead of a bare glyph. */
+  export type Strip = { status: Status; title: string; at: Date | string; meta?: string; line?: string; chip?: boolean };
   /** The filter bar's state, as `onfilter` hands it to a caller that searches on the server. */
   export type StripFilter = { text: string; statuses: Status[] };
 </script>
@@ -138,7 +139,7 @@
     return items.filter((item) => {
       const line = strip(item);
       if (chosen.length && !chosen.includes(line.status)) return false;
-      return !needle || line.title.toLowerCase().includes(needle) || (line.meta?.toLowerCase().includes(needle) ?? false);
+      return !needle || [line.title, line.meta, line.line].some((text) => text?.toLowerCase().includes(needle));
     });
   });
 
@@ -359,6 +360,7 @@
   <li
     class={cn(
       "group/strip flex min-h-11 items-center gap-1 pr-1.5 transition-colors duration-(--motion-quick) [contain-intrinsic-size:auto_2.75rem] [content-visibility:auto] hover:bg-raised/60",
+      line.chip && "[contain-intrinsic-size:auto_4rem]",
       here && "bg-tint shadow-[inset_2px_0_0_var(--signal)] hover:bg-tint",
     )}
   >
@@ -371,11 +373,26 @@
       aria-controls={here ? `${uid}-details` : undefined}
       onclick={() => (here ? close() : show(item))}
     >
-      <!-- Read as "title, status, meta, time": the glyph's word follows the title for screen readers. -->
-      <span aria-hidden="true" class="contents"><StatusGlyph status={line.status} /></span>
-      <span class="relative min-w-0 flex-1 truncate text-body text-foreground">{line.title}<span class="sr-only">, {STATUS[line.status].label}</span></span>
-      {#if line.meta}<span class="hidden max-w-[12rem] shrink-0 truncate text-meta text-muted-foreground sm:block">{line.meta}</span>{/if}
-      <time datetime={new Date(line.at).toISOString()} class="shrink-0 text-meta tabular-nums text-muted-foreground">{ago(line.at, now)}</time>
+      {#if line.chip}
+        <!-- Two lines: the title and time, then the status as a worded chip and the second line. -->
+        <span class="grid min-w-0 flex-1 gap-1">
+          <span class="flex min-w-0 items-baseline gap-3">
+            <span class="min-w-0 flex-1 truncate text-body text-foreground">{line.title}</span>
+            {#if line.meta}<span class="hidden max-w-[12rem] shrink-0 truncate text-meta text-muted-foreground sm:block">{line.meta}</span>{/if}
+            <time datetime={new Date(line.at).toISOString()} class="shrink-0 text-meta tabular-nums text-muted-foreground">{ago(line.at, now)}</time>
+          </span>
+          <span class="flex min-w-0 items-center gap-2">
+            <StatusGlyph status={line.status} word class="rounded-full border border-current/30 px-2 py-px [&_svg]:size-3.5" />
+            {#if line.line}<span class="min-w-0 flex-1 truncate text-meta text-muted-foreground">{line.line}</span>{/if}
+          </span>
+        </span>
+      {:else}
+        <!-- Read as "title, status, meta, time": the glyph's word follows the title for screen readers. -->
+        <span aria-hidden="true" class="contents"><StatusGlyph status={line.status} /></span>
+        <span class="relative min-w-0 flex-1 truncate text-body text-foreground">{line.title}<span class="sr-only">, {STATUS[line.status].label}</span></span>
+        {#if line.meta}<span class="hidden max-w-[12rem] shrink-0 truncate text-meta text-muted-foreground sm:block">{line.meta}</span>{/if}
+        <time datetime={new Date(line.at).toISOString()} class="shrink-0 text-meta tabular-nums text-muted-foreground">{ago(line.at, now)}</time>
+      {/if}
     </button>
     {#if actions}<div class="flex shrink-0 items-center">{@render actions(item)}</div>{/if}
   </li>

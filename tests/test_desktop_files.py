@@ -230,14 +230,17 @@ async def test_documents_without_a_desktop_caption_are_just_chat(make_app, monke
     downloads = []
 
     async def download(document, *, destination):
-        downloads.append(document.file_id)
+        downloads.append(getattr(document, "file_id", document))  # a Document, or the file id the lander passes
+        destination.write(b"data")
         return destination
 
     monkeypatch.setattr(app.bot, "download", download, raising=False)
     document = Document(file_id="file", file_unique_id="unique", file_name="a.pdf", file_size=4)
+    await online(app, OWNER)
     await handle_message(app, tg(OWNER, OWNER, text=None, caption=caption, document=document))
-    assert downloads == []
-    assert not (app.home.root.resolve().parent / "desktop-inbox").exists()
+    await drain_dispatch(app.dispatch)
+    assert downloads == ["file"]  # it lands in the workspace like any owner DM document (tests/test_workspace.py)
+    assert not (app.home.root.resolve().parent / "desktop-inbox").exists()  # but is not staged for the desktop
 
 
 @pytest.mark.parametrize("caption", ["/desktop", "/desktop read it", "/Desktop\nread it", "/desktop@dombot read", "/desktop@DomBot"])

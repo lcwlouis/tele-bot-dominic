@@ -20,6 +20,7 @@
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import PageTabs from "$lib/components/PageTabs.svelte";
+  import SectionTabs from "$lib/components/kit/SectionTabs.svelte";
   import StatusNote from "$lib/components/StatusNote.svelte";
   import Confirm from "$lib/components/work/Confirm.svelte";
   import { Badge } from "$lib/components/ui/badge";
@@ -225,12 +226,14 @@
     </Card.Root>
   {/if}
 
-  <Tabs.Root bind:value={section} class="grid gap-5">
-    <Tabs.List class="w-full justify-start overflow-x-auto sm:w-auto">
-      <Tabs.Trigger value="logins">Saved logins</Tabs.Trigger>
-      <Tabs.Trigger value="permissions">Permissions</Tabs.Trigger>
-      <Tabs.Trigger value="history">Approvals history</Tabs.Trigger>
-    </Tabs.List>
+  <Tabs.Root bind:value={section}>
+    <SectionTabs
+      items={[
+        { value: "logins", label: "Saved logins" },
+        { value: "permissions", label: "Permissions" },
+        { value: "history", label: "Approvals history" },
+      ]}
+    />
 
     <!-- Tab 1: Saved logins, owner secrets, and encryption key -->
     <Tabs.Content value="logins" class="grid gap-5">
@@ -429,11 +432,11 @@
                 {#each POLICY_OPTIONS as opt (opt.value)}
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || (item.asks_every_time && opt.value === "allow")}
                     aria-pressed={item.policy === opt.value}
                     class={item.policy === opt.value
                       ? "rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
-                      : "rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"}
+                      : "rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-40"}
                     onclick={() => item.policy !== opt.value && post("/api/access/policy", { action: item.id as DesktopAction, policy: opt.value })}
                   >
                     {opt.label}

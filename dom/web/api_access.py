@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from dom.desktop.permissions import (
     ACTION_META,
     ACTIONS,
+    ASK_EVERY_TIME,
     POLICIES,
     SITE_SCOPED_ACTIONS,
     ApprovalDecision,
@@ -128,6 +129,7 @@ async def _access_view(app, *, action: str = "", status: str = "") -> dict:
                 "label": ACTION_META[act]["label"],
                 "description": ACTION_META[act]["description"],
                 "site_scoped": act in SITE_SCOPED_ACTIONS,
+                "asks_every_time": act in ASK_EVERY_TIME,
                 "policy": policies[act],
                 "site_allow_count": allow_counts[act],
             }
@@ -219,7 +221,10 @@ async def set_policy(request: Request) -> dict:
     body = await _input(request, PolicyInput)
     if body.policy not in POLICIES:
         raise HTTPException(422, "Invalid policy.")
-    await app.desktop_permissions.set_policy(body.action, body.policy)
+    try:
+        await app.desktop_permissions.set_policy(body.action, body.policy)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
     return {
         "ok": True,
         "message": f"{ACTION_META[body.action]['label']}: {body.policy}.",

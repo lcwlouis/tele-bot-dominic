@@ -32,6 +32,7 @@
     studio_video: "fill-chart-1",
     embedding: "fill-chart-3",
     assistant: "fill-chart-4",
+    news: "fill-amber/25",
     subscription: "fill-chart-3/50",
   };
   const fillOf = (kind: string) => fills[kind] ?? "fill-muted-foreground";

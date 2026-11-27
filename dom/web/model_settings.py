@@ -912,6 +912,9 @@ PERMISSIONS = (
                "Dom may message first in approved friends’ DMs after 45 quiet minutes."),
     Permission("ephemeral_replies", ("ephemeral_replies",), "Private replies in groups",
                "Dom may answer you privately inside a group where he is an admin, or in your DM where he is not."),
+    Permission("workspace_share", ("workspace", "share_with_chats"), "Let groups and friends read the shared folder",
+               "Dom may list and read the files in the workspace's shared folder for groups and friends’ DMs, never "
+               "write, and nothing else in the workspace. Documents they send then land there, readable by their chat only."),
     Permission("leak_check", ("leak_check",), "Check replies for leaks",
                "Jev screens what Dom sends and what network plugins send for private information first."),
     Permission("studio_voice", ("studio", "voice"), "Send voice notes",
@@ -943,8 +946,8 @@ STUDIO_NEEDS = {
     "profile_photo_follows_preset": "Set up the local studio first: the profile photo uses its portraits.",
 }
 PermissionId = Literal[
-    "memory_self_edit", "openers", "assistant", "openers_groups", "openers_friends", "ephemeral_replies", "leak_check",
-    "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
+    "memory_self_edit", "openers", "assistant", "openers_groups", "openers_friends", "ephemeral_replies",
+    "workspace_share", "leak_check", "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
     "acp_codex", "acp_claude", "acp_antigravity",
 ]
 assert set(get_args(PermissionId)) == {item.id for item in PERMISSIONS}
@@ -1160,7 +1163,7 @@ def _save_setting(
     return saved
 
 
-def set_value(document: tomlkit.TOMLDocument, path: tuple[str, ...], setting: bool | int | None) -> None:
+def set_value(document: tomlkit.TOMLDocument, path: tuple[str, ...], setting: bool | int | str | None) -> None:
     """Set one value in config.toml's document, creating its tables and keeping the comment beside it; None drops the
     key, so its default applies."""
     table = document

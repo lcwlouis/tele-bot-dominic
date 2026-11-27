@@ -22,7 +22,7 @@ import httpx
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from dom import guard, notice, salvage, turn_log
+from dom import guard, news, notice, salvage, turn_log, workspace
 from dom.secrets import redact_secrets
 from dom import window as chat_window
 from dom.actions import SEEN, Actions, Bubble, SendFile
@@ -72,6 +72,7 @@ ACK_INTERVAL = timedelta(minutes=1)
 ACK_LINES = ("On it.", "Give me a moment.", "Lemme take a look.")
 ACK_STATE = "reply_ack"
 MEDIA_WAIT_SECONDS = 15
+DOCUMENT_WAIT_SECONDS = workspace.DOWNLOAD_TIMEOUT  # a turn with a document in it waits this long for the file to land
 STAY_ASK_MINUTES = 10  # Jev is asked about staying longer only when the session is this close to ending
 LATE_REPLY = timedelta(seconds=60)
 ORPHAN_AGE = timedelta(seconds=10)  # an online chat's unread message this old lost its debounce
@@ -171,6 +172,7 @@ class TurnAttempt:
     stay_check: bool = False  # a reply went out, so Jev owes the after-turn staying-online decision
     escalation_retry: RetryTask | None = None
     retry_offer: EscalationTurn | None = None
+    late_document: str | None = None  # this turn answers a message whose document was still arriving; the note says where it is
 
     def commit(self) -> None:
         self.committed = True
@@ -239,6 +241,8 @@ class Dispatcher:
         self._committed_tasks: set[asyncio.Task] = set()
         self._closing = False
         self._media_tasks: dict[int, set[asyncio.Task]] = {}
+        self._landing_pending: dict[int, set[int]] = {}  # documents being saved to the workspace, by chat
+        self._landing_missed: set[tuple[int, int]] = set()  # ... that a turn answered without
         self._arrival_media: dict[int, dict[int, turn_log.TurnTrace]] = {}
         self._tasks: set[asyncio.Task] = set()
         self._polls: dict[int, asyncio.Task] = {}
@@ -503,11 +507,74 @@ class Dispatcher:
     def describe_media(self, msg: IncomingMessage) -> None:
         if msg.is_bot:
             return
+        if msg.media and msg.media.get("kind") == "document":
+            # A document is saved to the workspace, not described: no model call, and it waits like any media, so
+            # the reply sees where the file is.
+            task = self._spawn(self._land_document(msg))
+            self._media_tasks.setdefault(msg.chat_id, set()).add(task)
+            task.add_done_callback(lambda done: self._clear_media_task(msg.chat_id, done))
+            return
         trace = turn_log.TurnTrace()
         self._arrival_media.setdefault(msg.chat_id, {})[msg.msg_id] = trace
         task = self._spawn(self._describe_media(msg, trace))
         self._media_tasks.setdefault(msg.chat_id, set()).add(task)
         task.add_done_callback(lambda done: self._clear_media_task(msg.chat_id, done))
+
+    async def _land_document(self, msg: IncomingMessage) -> None:
+        """Save a document to the workspace. If a turn went ahead without it ("still arriving"), tell Dom once it is there."""
+        chat_id, msg_id = msg.chat_id, msg.msg_id
+        self._landing_pending.setdefault(chat_id, set()).add(msg_id)
+        try:
+            fields = await workspace.land_document(self.app, msg)
+        finally:
+            pending = self._landing_pending.get(chat_id, set())
+            pending.discard(msg_id)
+            if not pending:
+                self._landing_pending.pop(chat_id, None)
+        if (chat_id, msg_id) in self._landing_missed:
+            if fields and fields.get("saved"):
+                await self._late_document(msg, fields)
+            else:
+                self._landing_missed.discard((chat_id, msg_id))  # it never landed: there is nothing to tell
+
+    async def _late_document(self, msg: IncomingMessage, fields: dict) -> None:
+        """A document arrived after the turn that should have read it answered: record that, then give the message a
+        normal turn (its request, the history before it, the file open to his file tools), once, after any turn still
+        running in the chat. The turn is skipped if one that ran meanwhile already found the file saved: composing a
+        turn without a pending document clears `_landing_missed`, so the entry is claimed here, inside the slot."""
+        app, chat_id, key = self.app, msg.chat_id, (msg.chat_id, msg.msg_id)
+        name, path = fields["name"], fields["saved"]
+        try:
+            await app.store.record_chat_event_limited(
+                chat_id, "document", f"The document {name} finished arriving and is saved as {path}.",
+                thread_id=msg.thread_id, interval=timedelta(0),
+            )
+            async with self._dispatch_slot(chat_id, wait_media=False) as waits:
+                if key not in self._landing_missed:
+                    return  # a turn that ran while this waited already had the file
+                self._landing_missed.discard(key)
+                if self._closing or not await self._approved(chat_id):
+                    return
+                original = await app.store.get_message(chat_id, msg.msg_id)
+                habits = self._habits()
+                state, until = await self.presence.state(chat_id, habits)
+                if original is None or state != "online":
+                    return  # gone, or Dom has left: the event above tells his next turn
+                note = (
+                    f"The document {name} in the message you are answering was still arriving when you answered it. It is "
+                    f"saved as {path} now. Read it with your file tools and do what was asked of it. What you already said "
+                    "is in the chat: add to it without repeating it."
+                )
+                await self._dispatch(
+                    chat_id, habits, waits, "online", until, original.thread_id, 1, original, total_unread=1,
+                    late_document=note,
+                )
+        except ModelCallSkipped:
+            pass
+        except Exception as error:
+            log.warning("could not follow up on a late document in chat %s (%s)", chat_id, type(error).__name__)
+        finally:
+            self._landing_missed.discard(key)
 
     def _clear_media_task(self, chat_id: int, task: asyncio.Task) -> None:
         if (tasks := self._media_tasks.get(chat_id)) is not None:
@@ -523,6 +590,8 @@ class Dispatcher:
             with turn_log.track(trace):
                 if await self.native.takes(msg.media):  # the reply model gets the real thing: no description, no model call
                     await self.native.prefetch(msg.chat_id, msg.msg_id, msg.media)
+                elif await self.native.arrive(msg.chat_id, msg.msg_id, msg.media):  # a clip: frame strips and a transcript
+                    pass
                 else:
                     await self._describe(msg.chat_id, msg.msg_id, msg.media, self._media_request(msg.chat_id))
         except Exception:
@@ -571,7 +640,8 @@ class Dispatcher:
         if not self._media_budget(chat_id):
             return False
         try:
-            description = await describer.describe(media, request=request)
+            # a clip shown as frame strips is described from them, else the media model describes the file whole
+            description = await self.native.describe(chat_id, msg_id, media, request)
             await self.app.store.set_media_description(chat_id, msg_id, description)
         except Exception:
             log.exception("could not record media description in chat %s", chat_id)
@@ -634,8 +704,10 @@ class Dispatcher:
     async def _wait_media(self, chat_id: int) -> None:
         tasks = self._media_tasks.get(chat_id)
         if tasks:
-            # Leave slow downloads and model calls running so their results can be stored later.
-            await asyncio.wait(tuple(tasks), timeout=MEDIA_WAIT_SECONDS)
+            # Leave slow downloads and model calls running so their results can be stored later. A document is worth
+            # the download's whole time limit: the reply is much better for having read it.
+            wait = DOCUMENT_WAIT_SECONDS if self._landing_pending.get(chat_id) else MEDIA_WAIT_SECONDS
+            await asyncio.wait(tuple(tasks), timeout=wait)
 
     def _spawn(self, coro: Coroutine[Any, Any, Any], *, committed: bool = False) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -750,6 +822,7 @@ class Dispatcher:
         await self.app.stickers.refresh()
         self._spawn(self.app.world.refresh())  # its own fetch, so a slow answer never holds up the jobs below
         self._spawn(self.app.chat_titles.refresh())  # a few Telegram asks, likewise on their own
+        self._spawn(news.tick(self.app))  # the overnight news: searches and a call, so also on its own
         await self.jobs.tick()
         await self.openers.maybe(self.now())
         await self.app.assistant.tick(self.now())
@@ -1221,7 +1294,7 @@ class Dispatcher:
         self, chat_id: int, habits: Habits, waits: QueueWaits,
         state: State, until: datetime | None, topic_thread_id: int | None, count: int, newest: StoredMessage,
         *, total_unread: int, background: bool = False, catch_up: bool = False,
-        escalation_retry: RetryTask | None = None,
+        escalation_retry: RetryTask | None = None, late_document: str | None = None,
     ) -> tuple[bool, datetime | None, bool]:
         """Dispatch one topic (General uses `topic_thread_id=None`). Returns `(is_online, until, flood_limited)`."""
         store = self.app.store
@@ -1243,7 +1316,8 @@ class Dispatcher:
 
         # If ingress got ahead of our unread snapshot in the same topic, the newer dispatch already owns these messages.
         if (
-            escalation_retry is None and not catch_up and (latest := self._latest.get(chat_id)) is not None
+            escalation_retry is None and late_document is None and not catch_up
+            and (latest := self._latest.get(chat_id)) is not None
             and latest.thread_id == topic_thread_id and latest.msg_id > newest.msg_id
         ):
             return state == "online", until, False
@@ -1256,6 +1330,7 @@ class Dispatcher:
         attempt = self._active[chat_id] = TurnAttempt(
             asyncio.current_task(), newest.msg_id, trace, waits.start, thread_id=topic_thread_id,
         )
+        attempt.late_document = late_document
         resumed = escalation_retry is not None
         if escalation_retry is not None:
             attempt.escalation_retry = escalation_retry
@@ -1540,7 +1615,9 @@ class Dispatcher:
         # Classification runs in parallel with the debounce. A slow or failed provider cannot hold
         # the unread messages past the original batch deadline.
         # A follow-up, or a restart of an answer already chosen, is not judged again.
-        judged = not resume_wake and (state != "online" or (not catch_up and not followup and not resumed and not final_bot_turn))
+        judged = not resume_wake and (
+            state != "online" or (not catch_up and not followup and not resumed and not final_bot_turn and not attempt.late_document)
+        )
         if judged and arrival is not None and arrival.task is not None and not arrival.task.done():
             with turn_log.timed("triage"):
                 await asyncio.wait([arrival.task], timeout=max(0.0, (deadline - self.now()).total_seconds()))
@@ -1580,7 +1657,7 @@ class Dispatcher:
                 wake = triage is not None and triage.kapoh is not None and triage.kapoh >= habits.kapoh_wake
             if not wake:
                 return False, until, False
-        elif not catch_up and not followup and not resumed and not final_bot_turn and self.jev is not None:
+        elif not catch_up and not followup and not resumed and not final_bot_turn and not attempt.late_document and self.jev is not None:
             if use_arrival:
                 triage = arrival.verdict
             else:
@@ -1636,7 +1713,7 @@ class Dispatcher:
         if bot_depth is not None and not await store.advance_bot_depth(chat_id, newest.id, bot_depth):
             return True, until, False
         tier: Tier = "later"
-        if followup and bot_depth is None:
+        if (followup or attempt.late_document) and bot_depth is None:
             tier = "next"
         elif not (catch_up or background or bot_depth is not None):
             verdict = arrival.verdict if arrival is not None else triage
@@ -2380,6 +2457,13 @@ class Dispatcher:
             inbox_name = json.loads(newest.media_json).get("desktop_inbox")
             if inbox_name:
                 note += f"\nfile received: inbox/{inbox_name}"
+        if pending_files := self._landing_pending.get(chat_id):
+            note += "\nthe file is still arriving: a document was sent just now and is not saved yet. Say you will look when it is there; you will be told."
+            self._landing_missed.update((chat_id, msg_id) for msg_id in pending_files)
+        else:  # whatever a restarted turn finds already saved is not a late one
+            self._landing_missed -= {key for key in self._landing_missed if key[0] == chat_id}
+        if attempt is not None and attempt.late_document:
+            note += f"\n{attempt.late_document}"
         if extra_note:
             note += f"\n{extra_note}"
         if final_bot_turn:
@@ -2430,7 +2514,7 @@ class Dispatcher:
                     event_note = (
                         f"Today is an event day{what}: your media limits are raised, so a few more than usual are fine."
                     )
-                note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset), event_note) or STUDIO_UNAVAILABLE}"
+                note += f"\n{studio_turn_note(remaining, outfits(config.studio, preset), event_note, config.studio.spontaneity) or STUDIO_UNAVAILABLE}"
         if attempt is not None:
             attempt.assistant = preset is not None and preset.name == ASSISTANT
         if newest is not None and self.now() - datetime.fromisoformat(newest.created_at) > LATE_REPLY:

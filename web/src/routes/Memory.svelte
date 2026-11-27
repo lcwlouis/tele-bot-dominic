@@ -11,6 +11,7 @@
   import Download from "@lucide/svelte/icons/download";
   import FileText from "@lucide/svelte/icons/file-text";
   import Lock from "@lucide/svelte/icons/lock";
+  import Search from "@lucide/svelte/icons/search";
   import Sparkles from "@lucide/svelte/icons/sparkles";
   import Eye from "@lucide/svelte/icons/eye";
   import PenLine from "@lucide/svelte/icons/pen-line";
@@ -23,7 +24,8 @@
   import * as Sheet from "$lib/components/ui/sheet";
   import { setMemoryTags, stripTags } from "$lib/memory-tags";
   import DiffLines from "$lib/components/memory/DiffLines.svelte";
-  import SoulChat, { type SoulTurn } from "$lib/components/memory/SoulChat.svelte";
+  import SoulChat, { type SoulFile, type SoulTurn } from "$lib/components/memory/SoulChat.svelte";
+  import { navigate } from "$lib/router.svelte";
   import Markdown from "$lib/components/markdown/Markdown.svelte";
   import * as Tabs from "$lib/components/ui/tabs";
   import PageHeader from "$lib/components/PageHeader.svelte";
@@ -54,7 +56,22 @@
   let failed = $state("");
   // `open` is the file in the editor; null shows the file list alone on a phone. `talking` is the soul conversation.
   let open = $state<string | null>(null);
-  let talking = $state(false);
+  // The World page and a link can open the conversation on WORLD.md (?talk=world), and Back then returns there.
+  const asked = new URLSearchParams(location.search);
+  let talking = $state(asked.has("talk"));
+  let talkAbout = $state<SoulFile>(asked.get("talk") === "world" ? "WORLD.md" : "SOUL.md");
+  const fromWorld = asked.get("from") === "world";
+  function talk(about: SoulFile) {
+    guard(() => {
+      talkAbout = about;
+      talking = true;
+    });
+  }
+  function stopTalking() {
+    talking = false;
+    if (fromWorld) navigate("/app/memory/world");
+    else if (open === null && matchMedia("(min-width: 1024px)").matches) openFile(FIRST);
+  }
   let file = $state<MemoryFile | null>(null);
   let fileError = $state("");
   let draft = $state("");
@@ -73,7 +90,7 @@
       failed = "";
       const wanted = new URLSearchParams(location.search).get("file"); // a search result opens its file
       if (open === null && wanted) await openFile(wanted);
-      else if (open === null && matchMedia("(min-width: 1024px)").matches) await openFile(FIRST);
+      else if (open === null && !talking && matchMedia("(min-width: 1024px)").matches) await openFile(FIRST);
     } catch (error) {
       failed = error instanceof Error ? error.message : "Unknown error";
     }
@@ -124,6 +141,21 @@
   );
   setMemoryTags(() => ({ chats: index?.chat_names ?? {}, entities: { ...people, ...(file?.entities ?? {}) } }));
   const archived = $derived(new Set(index?.sections.filter((section) => section.archive).flatMap((section) => section.files.map((item) => item.path)) ?? []));
+  // The file list's filter: by name or path, groups with nothing left hide, and the folded archive opens.
+  let filter = $state("");
+  const needle = $derived(filter.trim().toLowerCase());
+  const sections = $derived(
+    (index?.sections ?? [])
+      .map((section) => ({
+        ...section,
+        files: needle ? section.files.filter((item) => `${item.label} ${item.path}`.toLowerCase().includes(needle)) : section.files,
+      }))
+      .filter((section) => section.files.length > 0),
+  );
+  const shownCount = $derived(sections.reduce((total, section) => total + section.files.length, 0));
+  const row =
+    "flex min-h-10 w-full items-center gap-2.5 rounded-[0.55rem] px-2.5 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-raised hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-8";
+  const rowHere = "bg-tint text-signal-strong hover:bg-tint hover:text-signal-strong";
   const labelOf = (path: string) => index?.sections.flatMap((section) => section.files).find((item) => item.path === path)?.label ?? path;
 
   // Core memories (W2): every pinned line, who pinned it and why. Deleting one edits its file through the same save.
@@ -289,9 +321,9 @@
     <Button
       variant={talking ? "default" : "secondary"}
       aria-pressed={talking}
-      onclick={() => guard(() => (talking = !talking))}
+      onclick={() => (talking ? stopTalking() : talk(open === "memory/WORLD.md" ? "WORLD.md" : "SOUL.md"))}
     >
-      <Sparkles aria-hidden="true" /> Talk to Dom about his soul
+      <Sparkles aria-hidden="true" /> Talk to Dom about his soul and world
     </Button>
   {/snippet}
 </PageHeader>
@@ -371,7 +403,7 @@
   {/if}
 
   {#if talking}
-    <SoulChat index={memory} bind:turns={soulTurns} onwaiting={waiting} onclose={() => ((talking = false), open === null && matchMedia("(min-width: 1024px)").matches && openFile(FIRST))} />
+    <SoulChat index={memory} bind:turns={soulTurns} file={talkAbout} back={fromWorld ? "World" : "Files"} onwaiting={waiting} onclose={stopTalking} />
   {:else}
   <div class="grid items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
     <!-- On a phone the file list is a screen of its own, and a file opens full width with a way back. -->
@@ -379,37 +411,51 @@
          the list opens beside it without scrolling back up. -->
     <nav
       aria-label="Memory files"
-      class={cn("rounded-xl border bg-surface p-3 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto lg:overscroll-contain", open !== null && "max-lg:hidden")}
+      class={cn("rounded-xl border bg-surface pb-2 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto lg:overscroll-contain", open !== null && "max-lg:hidden")}
     >
-      <ul class="grid gap-0.5 pb-1">
-        <li>
-          <button
-            type="button"
-            aria-current={open === CORE ? "page" : undefined}
-            onclick={() => guard(openCore)}
-            class={cn(
-              "flex min-h-11 w-full items-center gap-2.5 rounded-[0.6rem] px-2.5 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-raised hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-9",
-              open === CORE && "bg-tint text-signal-strong hover:bg-tint hover:text-signal-strong",
-            )}
-          >
-            <Pin class="size-4 shrink-0" aria-hidden="true" />
-            <span class="min-w-0 truncate">Core memories</span>
-          </button>
-        </li>
-      </ul>
-      {#snippet entries(files: { path: string; label: string }[])}
-        <ul class="grid gap-0.5">
+      <!-- The filter stays at the top of the list, and each group's heading sticks under it while its files scroll. -->
+      <div class="sticky top-0 z-10 rounded-t-xl bg-surface px-2 pt-2 pb-1.5">
+        <label for="memory-filter" class="sr-only">Filter memory files</label>
+        <div class="relative">
+          <Search class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <input
+            id="memory-filter"
+            type="search"
+            bind:value={filter}
+            onkeydown={(event) => event.key === "Escape" && filter && (event.preventDefault(), (filter = ""))}
+            placeholder="Filter files"
+            autocomplete="off"
+            class="h-9 w-full rounded-lg border border-input bg-canvas/50 pr-2.5 pl-8 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          />
+        </div>
+        <p class="sr-only" role="status">{needle ? `${shownCount} ${shownCount === 1 ? "file matches" : "files match"}` : ""}</p>
+      </div>
+      {#if !needle || "core memories".includes(needle)}
+        <ul class="grid px-2 pb-1">
+          <li>
+            <button
+              type="button"
+              aria-current={open === CORE ? "page" : undefined}
+              onclick={() => guard(openCore)}
+              class={cn(row, open === CORE && rowHere)}
+            >
+              <Pin class="size-4 shrink-0" aria-hidden="true" />
+              <span class="min-w-0 truncate">Core memories</span>
+            </button>
+          </li>
+        </ul>
+      {/if}
+      {#snippet entries(files: { path: string; label: string }[], labelledby: string)}
+        <ul class="grid px-2" aria-labelledby={labelledby}>
           {#each files as item (item.path)}
             {@const here = open === item.path}
             <li>
               <button
                 type="button"
                 aria-current={here ? "page" : undefined}
+                title={item.label.length > 28 ? item.label : undefined}
                 onclick={() => guard(() => openFile(item.path))}
-                class={cn(
-                  "flex min-h-11 w-full items-center gap-2.5 rounded-[0.6rem] px-2.5 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-raised hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-9",
-                  here && "bg-tint text-signal-strong hover:bg-tint hover:text-signal-strong",
-                )}
+                class={cn(row, here && rowHere)}
               >
                 {#if archived.has(item.path)}<Archive class="size-4 shrink-0" aria-hidden="true" />{:else if item.path.startsWith("private/")}<Lock class="size-4 shrink-0" aria-hidden="true" />{:else}<FileText class="size-4 shrink-0" aria-hidden="true" />{/if}
                 <span class="min-w-0 truncate">{item.label}</span>
@@ -418,22 +464,29 @@
           {/each}
         </ul>
       {/snippet}
-      {#each memory.sections as section (section.heading)}
+      {#each sections as section, at (section.heading)}
+        {@const id = `memory-group-${at}`}
         {#if section.archive}
-          <!-- The record: journal months and former lines, read-only and folded until wanted. -->
-          <details class="group mt-2 border-t pt-1" open={section.files.some((item) => item.path === open)}>
-            <summary class="flex min-h-9 cursor-pointer list-none items-center gap-1.5 rounded-[0.6rem] px-2 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+          <!-- The record: journal months and former lines, read-only and folded until wanted (open while filtering). -->
+          <details class="group mt-1 border-t pt-1" open={!!needle || section.files.some((item) => item.path === open)}>
+            <summary class="mx-2 flex min-h-9 cursor-pointer list-none items-center gap-1.5 rounded-[0.6rem] px-2 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
               <ChevronRight class="size-3.5 text-muted-foreground transition-transform duration-(--motion-quick) group-open:rotate-90" aria-hidden="true" />
-              <h2 class="kicker">{section.heading}</h2>
-              <span class="text-caption text-muted-foreground tabular-nums">{section.files.length}</span>
+              <h2 {id} class="kicker">{section.heading}</h2>
+              <span class="ml-auto text-caption text-muted-foreground tabular-nums">{section.files.length}</span>
             </summary>
-            {@render entries(section.files)}
+            {@render entries(section.files, id)}
           </details>
         {:else}
-          <h2 class="kicker px-2 pt-3 pb-1.5">{section.heading}</h2>
-          {@render entries(section.files)}
+          <h2 {id} class="sticky top-[3.125rem] z-[5] flex items-center gap-2 border-b border-line/60 bg-surface/95 px-4 pt-2.5 pb-1.5 backdrop-blur-sm">
+            <span class="kicker">{section.heading}</span>
+            <span class="ml-auto text-caption text-muted-foreground tabular-nums">{section.files.length}</span>
+          </h2>
+          <div class="pt-1 pb-1.5">{@render entries(section.files, id)}</div>
         {/if}
       {/each}
+      {#if needle && shownCount === 0 && !"core memories".includes(needle)}
+        <p class="px-4 py-3 text-meta text-muted-foreground">No files match “{filter.trim()}”.</p>
+      {/if}
     </nav>
 
     <div
@@ -517,6 +570,14 @@
               {/if}
             </div>
             <p class="font-mono text-caption text-muted-foreground">{file.file}</p>
+            {#if file.file === SOUL || file.file === "memory/WORLD.md"}
+              {@const about = file.file === SOUL ? "SOUL.md" : "WORLD.md"}
+              <Card.Action>
+                <Button variant="secondary" size="sm" onclick={() => talk(about)}>
+                  <Sparkles aria-hidden="true" /> Talk it over with Dom
+                </Button>
+              </Card.Action>
+            {/if}
           </Card.Header>
           <Card.Content class="grid gap-3 lg:overflow-y-auto">
             <Tabs.Root bind:value={view}>
