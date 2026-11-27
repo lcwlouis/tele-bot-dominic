@@ -3,10 +3,15 @@ guard, the switches, usage attribution and the migration. No real agent runs her
 
 import asyncio
 import json
+import logging
 import os
+import shlex
+import signal
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -152,6 +157,30 @@ def test_the_agents_process_gets_no_secret_it_was_not_named(tmp_path, monkeypatc
     assert "DOM_TEST_SECRET" not in env and env["FAKE_API_KEY"] == "key-value" and "PATH" in env
 
 
+def test_the_environment_is_path_home_and_locale_and_nothing_else(tmp_path, monkeypatch):
+    polluted = {
+        "PATH": "/bin", "HOME": "/home/x", "LANG": "en_SG.UTF-8", "LC_ALL": "C", "LC_CTYPE": "UTF-8", "LANGUAGE": "en",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock", "USER": "x", "LOGNAME": "x", "SHELL": "/bin/zsh", "TMPDIR": "/tmp/x",
+        "XDG_CONFIG_HOME": "/c", "XDG_DATA_HOME": "/d", "TELEGRAM_BOT_TOKEN": "t", "OPENROUTER_API_KEY": "k",
+        "GITHUB_TOKEN": "g", "AWS_SECRET_ACCESS_KEY": "a", "DISPLAY": ":0", "LC_MESSAGES": "x",
+    }
+    monkeypatch.setattr(os, "environ", polluted)
+    for name in ("codex", "claude", "antigravity"):
+        for host in (None, "studio-mac"):
+            _, env, _ = launch(cfg(tmp_path, **{name: {"enabled": True, "host": host}}), name)
+            switches = set(acp.TOOLS_OFF_ENV.get(name, {})) if host is None else set()  # remote ones travel as `env` args
+            assert set(env) == {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LANGUAGE"} | switches
+
+
+async def test_the_running_agent_sees_no_ssh_agent_and_no_dom_secret(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "environ", {**os.environ, "SSH_AUTH_SOCK": "/tmp/agent.sock", "OPENROUTER_API_KEY": "k"})
+    _, env, _ = launch(cfg(tmp_path, codex={"enabled": True}), "codex")
+    call, log = run(tmp_path, env=env)
+    await call
+    seen = set(events(log, "start")[0]["env_keys"])
+    assert not seen & {"SSH_AUTH_SOCK", "OPENROUTER_API_KEY", "USER", "SHELL", "TMPDIR"}
+
+
 def test_codex_starts_read_only_with_its_shell_tool_and_web_search_off(tmp_path):
     _, env, _ = launch(cfg(tmp_path, codex={"enabled": True}), "codex")
     assert env["INITIAL_AGENT_MODE"] == "read-only"
@@ -166,11 +195,32 @@ def test_each_agent_has_its_usual_command_unless_configured(tmp_path):
     assert acp.TOOLS_OFF_META["claude"] == {"claudeCode": {"options": {"tools": []}}}
 
 
-def test_a_remote_host_runs_the_same_command_over_ssh_with_the_tool_switches_as_env(tmp_path):
+def test_a_remote_host_runs_the_same_command_over_ssh_with_the_tool_switches_as_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(acp, "uuid4", lambda: SimpleNamespace(hex="0123456789abcdef0123456789abcdef"))
     argv, env, session_cwd = launch(cfg(tmp_path, codex={"enabled": True, "host": "studio-mac"}), "codex")
-    assert argv[:7] == ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "studio-mac"] and argv[7] == "--"
-    assert argv[8].startswith("env INITIAL_AGENT_MODE=read-only 'CODEX_CONFIG=") and argv[8].endswith(" codex-acp")
-    assert session_cwd == "/tmp" and "INITIAL_AGENT_MODE" not in env
+    box = "/tmp/dom-acp-0123456789abcdef"
+    assert session_cwd == box and "INITIAL_AGENT_MODE" not in env
+    # `--` comes before the destination, so ssh reads nothing after it as an option and the remote shell gets one string
+    assert argv[:-1] == ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "studio-mac"]
+    config = json.dumps(acp.CODEX_CONFIG)
+    assert argv[-1] == (
+        f"d={box}; mkdir -m 700 \"$d\" && trap 'cd /; rmdir \"$d\"' EXIT && cd \"$d\" && "
+        f"env INITIAL_AGENT_MODE=read-only {shlex.quote('CODEX_CONFIG=' + config)} codex-acp"
+    )
+
+
+def test_the_remote_command_is_quoted_for_the_remote_shell_and_runs_in_a_fresh_empty_directory(tmp_path):
+    """The remote string is run here by `sh -c`, as sshd's login shell would run it."""
+    out = tmp_path / "seen.json"
+    script = tmp_path / "an agent.py"  # a path with a space, and arguments with spaces and shell characters
+    script.write_text("import json, os, sys\njson.dump({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'ls': os.listdir('.')}, open(sys.argv[1], 'w'))\n")
+    args = [str(out), "two words", "$HOME", "it's", "a;b"]
+    argv, _, session_cwd = launch(cfg(tmp_path, claude={"enabled": True, "host": "mac", "command": sys.executable, "args": [str(script), *args]}), "claude")
+    assert subprocess.run(["sh", "-c", argv[-1]], check=True).returncode == 0
+    seen = json.loads(out.read_text())
+    assert seen["argv"] == args and seen["ls"] == []
+    assert seen["cwd"] == str(Path(session_cwd).resolve()) and session_cwd != "/tmp"
+    assert not Path(session_cwd).exists()  # removed again when the command ends
 
 
 def test_secrets_are_never_sent_to_a_remote_host_and_a_host_cannot_look_like_an_option():
@@ -456,3 +506,145 @@ def test_the_usage_migration_keeps_rows_and_accepts_the_subscription_kind(tmp_pa
         )
         assert conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0] == 2
         assert ("idx_usage_at",) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+
+
+# ---- review rework (v0.8.6 W7): tools off or no agent, group cleanup, hostile output, the request context -------------
+
+
+def test_every_agent_has_its_tools_switched_off_or_is_refused_outright():
+    from dom.config import ACP_NAMES, ACP_NO_TOOLS_OFF
+
+    for name in ACP_NAMES:
+        switches = (name in acp.TOOLS_OFF_ENV) + (name in acp.TOOLS_OFF_META) + (name in ACP_NO_TOOLS_OFF)
+        assert switches == 1, f"{name}: needs exactly one of tool-off settings or a reason it cannot be enabled"
+    assert set(ACP_NO_TOOLS_OFF) == {"antigravity"}
+
+
+async def test_antigravity_is_refused_before_it_starts_with_one_log_line(make_app, tmp_path, caplog):
+    app = make_app()
+    config, log = agent_config(app, tmp_path, name="antigravity")
+    for role, kind in (("escalation", "escalation"), ("drafting", "chat")):
+        client = acp.acp_clients(config, role, app.dispatch.usage)[0]
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="dom.acp"), model_request(kind, OWNER, allowed):
+            with pytest.raises(AcpError, match="no way to turn its tools off yet"):
+                await client.complete([{"role": "user", "content": "hi"}], [])
+        assert [record.message for record in caplog.records if record.name == "dom.acp"] == [
+            "antigravity agent not started: no way to turn its tools off yet"]
+    assert not log.exists() and usage_rows(app) == []
+
+
+async def test_antigravity_falls_through_to_the_next_provider(make_app, tmp_path):
+    app = make_app()
+    config, log = agent_config(app, tmp_path, name="antigravity")
+    first = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
+
+    class Next:
+        endpoint = ModelEndpoint(base_url="https://llm.test/v1", model="next")
+        address, kind, usage, available = "llm.test", "chat", None, True
+
+        async def complete(self, messages, tools, **kw):
+            return {"role": "assistant", "content": "from the next provider"}
+
+    with model_request("escalation", OWNER, allowed):
+        assert (await FallbackClient(first, Next()).complete([], []))["content"] == "from the next provider"
+    assert not log.exists()
+
+
+async def test_stopping_a_call_ends_children_that_outlived_the_agent(tmp_path):
+    """The leader exits at once but leaves a sleeping grandchild in its process group."""
+    pidfile = tmp_path / "grandchild.pid"
+    argv = ["sh", "-c", f"sleep 300 >/dev/null 2>&1 & echo $! > {pidfile}; exit 0"]
+    process = acp._Process("Fake", argv, ENV, str(tmp_path))
+    await process.start()
+    await process.proc.wait()
+    assert process.proc.returncode == 0
+    while not pidfile.exists() or not pidfile.read_text().strip():
+        await asyncio.sleep(0.02)
+    grandchild = int(pidfile.read_text())
+    assert alive(grandchild)
+    await process.stop()
+    for _ in range(100):  # the dead child is reaped by init a moment later
+        if not alive(grandchild):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        os.kill(grandchild, signal.SIGKILL)
+        pytest.fail("the grandchild outlived the call")
+
+
+HOSTILE_CALLS = [
+    {"tool_calls": [{"name": []}]},
+    {"tool_calls": [{"name": {}}]},
+    {"tool_calls": [{"name": None}]},
+    {"tool_calls": [{"name": 5}]},
+    {"tool_calls": [{}]},
+    {"tool_calls": ["remind"]},
+    {"tool_calls": [None]},
+    {"tool_calls": [["remind"]]},
+    {"tool_calls": [{"name": "remind", "arguments": []}]},
+    {"tool_calls": [{"name": "remind", "arguments": 5}]},
+    {"tool_calls": [{"name": "remind", "arguments": None}]},
+    {"tool_calls": [{"name": "remind", "arguments": "not json"}]},
+    {"tool_calls": [{"name": "remind", "arguments": "[1, 2]"}]},
+    {"tool_calls": [{"name": "remind", "arguments": '"text"'}]},
+    {"tool_calls": [{"name": "remind", "arguments": {"text": "tea"}}, {"name": ["remind"]}]},  # one bad call spoils the batch
+    {"tool_calls": [{"name": "remind", "arguments": {"text": "tea"}}, {"name": "not_offered"}]},
+    {"tool_calls": "remind"},
+    {"tool_calls": {"name": "remind"}},
+    {"tool_calls": 7},
+    {"tool_calls": None},
+    {"tool_calls": []},
+]
+
+
+@pytest.mark.parametrize("data", HOSTILE_CALLS, ids=lambda data: json.dumps(data)[:70])
+def test_malformed_tool_calls_fall_through_as_text(data, caplog):
+    text = json.dumps(data)
+    with caplog.at_level(logging.INFO, logger="dom.acp"):
+        assert as_message(text, TOOLS) == {"role": "assistant", "content": text}
+    assert sum(record.name == "dom.acp" for record in caplog.records) == 1  # one line says why
+
+
+def test_tool_call_arguments_may_be_an_object_or_a_json_string():
+    for arguments in ({"text": "tea"}, '{"text": "tea"}'):
+        message = as_message(json.dumps({"tool_calls": [{"name": "remind", "arguments": arguments}]}), TOOLS)
+        assert message["tool_calls"][0]["function"] == {"name": "remind", "arguments": '{"text": "tea"}'}
+    message = as_message('{"tool_calls": [{"name": "remind"}]}', TOOLS)  # no arguments is an empty object
+    assert message["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
+async def refused_in(make_app, tmp_path, role, kind, chat_id):
+    app = make_app()
+    config, log = agent_config(app, tmp_path)
+    client = acp.acp_clients(config, role, app.dispatch.usage)[0]
+    with model_request(kind, chat_id, allowed):
+        try:
+            await client.complete([{"role": "user", "content": "hi"}], [])
+        except AcpNotAllowed:
+            assert not log.exists() and usage_rows(app) == []  # refused before anything started or was recorded
+            return True
+    return False
+
+
+@pytest.mark.parametrize("kind", [
+    "desktop", "reflection", "memory", "assistant", "triage", "media", "search", "guard", "embedding", "subscription",
+    "studio_image", "studio_voice", "studio_video",
+])
+@pytest.mark.parametrize("role", ["escalation", "drafting"])
+async def test_background_work_under_the_owners_chat_id_never_reaches_an_agent(make_app, tmp_path, role, kind):
+    assert await refused_in(make_app, tmp_path, role, kind, OWNER)
+
+
+async def test_the_desktop_skill_drafting_call_is_refused_and_falls_through(make_app, tmp_path):
+    """Desktop skill publishing drafts under a `desktop` request for the owner's chat (dom/desktop/worker.py)."""
+    assert await refused_in(make_app, tmp_path, "drafting", "desktop", OWNER)
+
+
+async def test_the_chat_kinds_do_not_cross_roles(make_app, tmp_path):
+    assert await refused_in(make_app, tmp_path, "escalation", "chat", OWNER)  # an escalation is only an escalation request
+
+
+@pytest.mark.parametrize("role,kind", [("escalation", "escalation"), ("drafting", "chat"), ("drafting", "escalation")])
+async def test_an_owner_dm_turns_escalation_and_drafting_are_served(make_app, tmp_path, role, kind):
+    assert not await refused_in(make_app, tmp_path, role, kind, OWNER)

@@ -7,10 +7,12 @@ stdin and stdout, in the research note's shape (docs/superpowers/notes/v0.8.3-ac
 
 - One process per call: start it, `initialize`, `session/new`, `session/prompt` (streaming `session/update` text),
   then stop it. Nothing stays running between calls, so a hang, a crash or a settings change leaves nothing behind.
-- The agent has no tools of its own that Dom does not switch off, and every `session/request_permission` is refused.
+- An agent starts only when Dom has switched its own tools off (`ACP_NO_TOOLS_OFF` names those that cannot be), and
+  every `session/request_permission` is refused as well.
 - A hard timeout cancels the prompt (`session/cancel`) and kills the whole process group, as does cancelling the task.
 - Dom keeps its own tool loop: the tools go in the prompt as text, and the agent answers with either its reply or a
   `{"tool_calls": [...]}` object, which becomes an ordinary OpenAI-style `tool_calls` message.
+- Only the owner's DM turn reaches an agent: the chat id and the kind of the request in progress are both checked.
 - Calls are billed to the subscription: usage rows of kind `subscription` carry cost 0, so spend caps are not fooled.
 """
 
@@ -30,7 +32,7 @@ from time import monotonic
 from uuid import uuid4
 
 from dom import modalities, turn_log
-from dom.config import ACP_COMMANDS, ACP_LABELS, AcpAgent, AcpName, Config, ProviderEndpoint
+from dom.config import ACP_COMMANDS, ACP_LABELS, ACP_NO_TOOLS_OFF, AcpAgent, AcpName, Config, ProviderEndpoint
 from dom.usage import UsageRecorder, check_model_allowed, request_chat_id, request_kind
 
 log = logging.getLogger("dom.acp")
@@ -41,11 +43,13 @@ STOP_GRACE = 1.0  # seconds the adapter gets after SIGTERM before SIGKILL
 STREAM_LIMIT = 16 * 1024 * 1024  # one JSON-RPC line, a long streamed reply included
 MAX_REPLY_CHARS = 200_000
 AUTH_REQUIRED = -32000  # the ACP error code for "sign in first"
-# The only variables the agent's process inherits: Dom's own secrets (model keys, the bot token) never reach it.
-ENV_PASSTHROUGH = (
-    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
-    "XDG_CACHE_HOME", "XDG_STATE_HOME", "SSH_AUTH_SOCK",
-)
+# The only variables the agent's process inherits: the search path, the home it finds its login in, and the locale.
+# Dom's own secrets (model keys, the bot token) and the owner's ssh agent never reach it.
+ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE")
+# The requests an agent serves, by the kind it counts as: its own role's, plus the DM turn's escalation for drafting
+# (an escalated turn may draft a skill). Background work under the owner's chat id, a desktop task's skill drafting
+# included, carries other kinds and never reaches an agent.
+SERVED_KINDS = {"escalation": ("escalation",), "chat": ("chat", "escalation")}
 
 # Each agent's own switches for its built-in tools, which ACP leaves to the agent (v0.8.3 research, section 2).
 # Not every one is documented: main's live test checks that a prompt asking each agent to run a command fails.
@@ -84,16 +88,19 @@ class AcpNotAllowed(AcpError):
 
 def launch(config: Config, name: AcpName) -> tuple[list[str], dict[str, str], str]:
     """The command line, environment and session working directory for one agent. A remote host runs the same
-    command over ssh (key login, no prompts); the tool switches then travel as `env` arguments."""
+    command over ssh (key login, no prompts) in a fresh empty directory, which is removed when it ends; the tool
+    switches then travel as `env` arguments."""
     agent: AcpAgent = getattr(config.acp, name)
     default_command, default_args = ACP_COMMANDS[name]
     command = [agent.command or default_command, *(default_args if agent.args is None else agent.args)]
     switches = dict(TOOLS_OFF_ENV.get(name, {}))
     env = {key: os.environ[key] for key in ENV_PASSTHROUGH if key in os.environ}
     if agent.host:
-        remote = shlex.join(["env", *(f"{key}={value}" for key, value in switches.items()), *command])
-        argv = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", agent.host, "--", remote]
-        return argv, env, "/tmp"
+        box = f"/tmp/dom-acp-{uuid4().hex[:16]}"
+        run = shlex.join(["env", *(f"{key}={value}" for key, value in switches.items()), *command])
+        remote = f"d={box}; mkdir -m 700 \"$d\" && trap 'cd /; rmdir \"$d\"' EXIT && cd \"$d\" && {run}"
+        argv = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", agent.host, remote]
+        return argv, env, box
     env.update(switches)
     for variable in agent.auth_env:
         if value := config.secret(variable):
@@ -237,7 +244,8 @@ class _Process:
             self._signal(signal.SIGTERM)
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.wait(), STOP_GRACE)
-            self._signal(signal.SIGKILL)  # stragglers in the group
+        if proc is not None:
+            self._signal(signal.SIGKILL)  # children can outlive the leader, so the group is always cleared
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.wait(), STOP_GRACE)
         for task in self._tasks:
@@ -305,34 +313,49 @@ def _arguments(raw: object) -> object:
     return raw if isinstance(raw, dict) else {}
 
 
+def _tool_call(call: object, names: set[str]) -> dict | None:
+    """One well-formed call for a tool Dom offered, with its arguments as an object, else None."""
+    if not isinstance(call, dict) or not isinstance(call.get("name"), str) or call["name"] not in names:
+        return None
+    arguments = call.get("arguments", {})
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return None
+    return {"name": call["name"], "arguments": arguments} if isinstance(arguments, dict) else None
+
+
 def as_message(text: str, tools: list[dict]) -> dict:
     """An OpenAI-style assistant message from the agent's text: `tool_calls` when it answered with a well-formed
-    tool call object for a tool Dom offered, else the text itself (the actions JSON, or whatever it wrote)."""
-    names = {tool.get("function", {}).get("name") for tool in tools}
+    tool call object for tools Dom offered, else the text itself (the actions JSON, or whatever it wrote). A tool
+    call object that is not well-formed is logged and passed on as text, as any other output of the agent is."""
+    names = {name for tool in tools if isinstance(name := tool.get("function", {}).get("name"), str)}
     if names:
         fenced = _FENCE.match(text.strip())
         try:
             data = json.loads(fenced.group(1) if fenced else text)
         except ValueError:
             data = None
-        calls = data.get("tool_calls") if isinstance(data, dict) else None
-        if isinstance(calls, list) and calls and all(
-            isinstance(call, dict) and call.get("name") in names and isinstance(call.get("arguments", {}), dict)
-            for call in calls
-        ):
-            batch = uuid4().hex[:8]
-            return {"role": "assistant", "content": None, "tool_calls": [
-                {"id": f"acp_{batch}_{index}", "type": "function",
-                 "function": {"name": call["name"], "arguments": json.dumps(call.get("arguments", {}))}}
-                for index, call in enumerate(calls)
-            ]}
+        if isinstance(data, dict) and "tool_calls" in data:
+            raw = data["tool_calls"]
+            calls = [_tool_call(call, names) for call in raw] if isinstance(raw, list) and raw else []
+            if calls and all(calls):
+                batch = uuid4().hex[:8]
+                return {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": f"acp_{batch}_{index}", "type": "function",
+                     "function": {"name": call["name"], "arguments": json.dumps(call["arguments"])}}
+                    for index, call in enumerate(calls)
+                ]}
+            log.info("a tool call from the agent was malformed or named a tool Dom did not offer; kept as text")
     return {"role": "assistant", "content": text}
 
 
 @dataclass
 class AcpClient:
     """A subscription agent with the same surface as ChatClient, so a role's chain can hold it. It answers only in the
-    owner's DM: the check is in `complete`, in code, where the call is made."""
+    owner's DM turns, and only with its tools switched off: the checks are in `complete`, in code, where the call
+    is made."""
 
     config: Config
     name: AcpName
@@ -357,6 +380,11 @@ class AcpClient:
         owner = self.usage.store.owner_id if self.usage is not None else None
         if owner is None or chat_id != owner:
             raise AcpNotAllowed(f"{ACP_LABELS[self.name]} serves the owner's DM only")
+        if request_kind(self.kind) not in SERVED_KINDS[self.kind]:  # background work under the owner's chat id
+            raise AcpNotAllowed(f"{ACP_LABELS[self.name]} serves the owner's DM turns only")
+        if reason := ACP_NO_TOOLS_OFF.get(self.name):
+            log.warning("%s agent not started: %s", self.name, reason)
+            raise AcpError(f"{ACP_LABELS[self.name]} is not started: {reason}")
         if modalities.has_attachments(messages):
             messages, _ = await modalities.prepare(messages, frozenset())
         agent: AcpAgent = getattr(self.config.acp, self.name)

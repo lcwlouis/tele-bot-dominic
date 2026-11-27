@@ -1,16 +1,16 @@
 # Subscription agents (pilot)
 
-Dom can use the coding agents you already pay for, Codex (ChatGPT), Claude and Antigravity (Google AI), as a model for two jobs: **escalation** (the bigger model you approve for one task) and **drafting** (skill and plugin drafts). They talk to Dom over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP), and each is a pilot: off until you switch it on, and easy to drop.
+Dom can use the coding agents you already pay for, Codex (ChatGPT) and Claude, as a model for two jobs: **escalation** (the bigger model you approve for one task) and **drafting** (skill and plugin drafts). They talk to Dom over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP), and each is a pilot: off until you switch it on, and easy to drop. Antigravity (Google AI) cannot be switched on yet: see [below](#antigravity-cannot-be-switched-on-yet).
 
 ## Read this first
 
 - **It may break the provider's terms.** Anthropic's consumer terms bar access through "automated or non-human means, whether through a bot, script, or otherwise" except with an API key; Google's Antigravity terms call using third-party software to reach the service a breach; OpenAI documents unattended Codex on a ChatGPT login only for trusted private automation. Dom runs them for you, on your own accounts, and you accept that risk. An account could be limited or closed. The research behind this is in `docs/superpowers/notes/v0.8.3-acp-agents.md`.
 - **It is not zero data retention.** Each provider keeps your conversations under its consumer terms and may train on them unless you opt out in its settings (Claude: data privacy controls; ChatGPT: Settings → Data controls; Google: your activity settings). Everything in the prompt goes to it, so it sees what Dom sends: your DM's window, notes and tool results for an escalated task, or the brief for a draft.
-- **Your DM only.** An agent never serves chat, triage, photos and voice, friends or groups. Dom checks the chat in code before it starts one: a call from any chat but your own DM is refused and goes on to the next provider.
+- **Your DM only.** An agent never serves chat, triage, photos and voice, friends or groups. Dom checks in code, before it starts one, both the chat and what the request is for: only an escalation you approved in your DM, and a skill or plugin draft made in a DM turn, are served. Anything else is refused and goes on to the next provider, including background work that carries your chat id (a desktop task's skill drafting, reflection, memory work).
 
 ## Switch one on
 
-Settings → Models → Subscription agents has one switch per agent, each off by default. A switch applies at once and is saved as `[acp.<name>] enabled = true` in `config.toml` (see [Configuration](configuration.md#subscription-agents-pilot)). An agent that is on is tried **first** in the escalation and drafting chains; if it fails or is not allowed, Dom goes on to the providers configured for that role. Limit one to a single role with `roles = ["escalation"]`.
+Settings → Models → Subscription agents has one switch per agent, each off by default (Antigravity's is disabled). A switch applies at once and is saved as `[acp.<name>] enabled = true` in `config.toml` (see [Configuration](configuration.md#subscription-agents-pilot)). An agent that is on is tried **first** in the escalation and drafting chains; if it fails or is not allowed, Dom goes on to the providers configured for that role. Limit one to a single role with `roles = ["escalation"]`.
 
 When you approve a model switch for a task, the card names the agent ("Codex subscription") and says it is billed to your subscription. Each call is recorded as usage of kind `subscription` with cost 0, so the spend caps never count it and never stop it. Turn logs and traces show the agent, how long it took, any failure and that it was billed to a subscription. The subscription's own allowance is the only limit; Dom adds none beyond a per-call timeout.
 
@@ -22,9 +22,8 @@ Install the adapter, sign in once on the machine that runs it, and switch it on.
 | --- | --- | --- | --- |
 | Codex | `codex-acp` (npm, from the Agent Client Protocol project), needs Node | `codex login` (ChatGPT) or an API key | `INITIAL_AGENT_MODE=read-only`, `CODEX_CONFIG` with `features.shell_tool = false` and web search disabled |
 | Claude | `claude-agent-acp` (npm, or the standalone executable from its releases) | `claude` login; a long-lived token from `claude setup-token` for a headless machine | `tools: []` sent with the session, and every permission refused |
-| Antigravity | `agy acp` | sign in with `agy` | every permission refused (it has no documented tools-off switch) |
 
-For all three Dom also refuses every permission request the agent makes, never offers file or terminal access, starts the agent in an empty temporary directory, and passes it only `PATH`, `HOME` and a few locale variables, never Dom's own keys. The agent starts fresh for every call and is killed when the call ends, times out or is cancelled.
+An agent is enabled only when its tools-off settings are applied; Dom sends them with every call and never starts an agent without them. For both Dom also refuses every permission request the agent makes, never offers file or terminal access, starts the agent in an empty temporary directory, and passes it only `PATH`, `HOME` and the locale variables (`LANG`, `LANGUAGE`, `LC_ALL`, `LC_CTYPE`), never Dom's own keys and never your ssh agent (`SSH_AUTH_SOCK`). The agent starts fresh for every call and is killed when the call ends, times out or is cancelled.
 
 If an adapter's command is somewhere unusual, set `command` (and `args`) in its table.
 
@@ -39,7 +38,11 @@ host = "studio-mac"        # the name in ~/.ssh/config
 command = "/opt/homebrew/bin/codex-acp"  # use a full path: ssh gives the command a minimal PATH
 ```
 
-Dom runs `ssh <host> -- env … <command>` and speaks ACP over it. Secrets are never sent to a host (`auth_env` is refused with `host`): sign in on that machine. Without `host`, the agent runs on the machine Dom runs on; the Pi can run Claude and Antigravity from their arm64 builds.
+Dom runs `ssh -- <host> '<command>'` and speaks ACP over it. The command runs in a fresh empty directory under `/tmp` on that machine, removed when the call ends, and the key must be a key file (`~/.ssh/`): your ssh agent is not passed on. Secrets are never sent to a host (`auth_env` is refused with `host`): sign in on that machine. Without `host`, the agent runs on the machine Dom runs on; the Pi can run Claude from its arm64 build.
+
+### Antigravity cannot be switched on yet
+
+Antigravity's ACP server, `agy acp` (v1.5.13), has no way for Dom to turn its tools off. It takes no per-session settings or execution mode (the `--settings` and `--mode plan` flags belong to `agy` itself, and `agy acp` rejects them). Its only tool rules are the `permissions.deny` list in your global `~/.gemini/antigravity-cli/settings.json`, which Dom does not write and cannot check from outside; and refusing its permission requests is not enough, because in its default `auto` mode it runs sandboxed commands and edits inside its workspace without asking. Since the agent's input includes text Dom did not write (web results, a friend's message you quote in your DM), Dom will not start it. Its switch is disabled with the reason "no way to turn its tools off yet", and a call that reaches it anyway (a hand-written `enabled = true`) is refused with one log line before anything starts and goes on to the next provider. It will be enabled when `agy acp` takes per-session tool rules (sources: Antigravity's [permissions](https://antigravity.google/docs/permissions), [other editors (ACP)](https://antigravity.google/docs/ide/extensions/acp) and [CLI reference](https://antigravity.google/docs/cli/reference) pages).
 
 ### An API key instead of a login
 

@@ -1005,3 +1005,16 @@ async def test_a_subscription_agent_switch_saves_and_puts_the_agent_in_the_route
             "revision": result.json()["revision"], "id": "acp_claude", "enabled": False})
         assert off.status_code == 200
         assert not any(isinstance(provider, AcpClient) for provider in app.escalation_client.providers)
+
+
+async def test_antigravity_cannot_be_switched_on_because_its_tools_cannot_be_turned_off(dashboard):
+    app, path, browser = dashboard
+    async with browser() as client:
+        data = (await client.get(PERMISSIONS)).json()
+        items = {item["id"]: item for item in data["items"]}
+        assert not items["acp_antigravity"]["available"] and "no way to turn its tools off yet" in items["acp_antigravity"]["needs"]
+        assert items["acp_codex"]["available"] and items["acp_claude"]["available"]
+        refused = await client.post(PERMISSIONS, headers=ORIGIN_HEADER, json={
+            "revision": data["revision"], "id": "acp_antigravity", "enabled": True})
+        assert refused.status_code == 409 and "no way to turn its tools off yet" in refused.json()["detail"]
+        assert not app.config.acp.antigravity.enabled and "acp" not in tomllib.loads(path.read_text())

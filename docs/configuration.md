@@ -340,7 +340,7 @@ Codex, Claude and Antigravity on your own subscriptions, through the Agent Clien
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `acp.<name>.enabled` | `false` | The switch. Off, the agent is never started. On, it is tried first in the roles below, in the owner's DM only. Not zero data retention: the provider keeps your prompts under its consumer terms and may train on them unless you opt out in its settings. Running a bot on a subscription may break the provider's terms. |
+| `acp.<name>.enabled` | `false` | The switch. Off, the agent is never started. On, it is tried first in the roles below, in the owner's DM turns only. Antigravity cannot be switched on yet (no way to turn its tools off): the dashboard refuses it, and a hand-written `true` is refused at each call. Not zero data retention: the provider keeps your prompts under its consumer terms and may train on them unless you opt out in its settings. Running a bot on a subscription may break the provider's terms. |
 | `acp.<name>.roles` | `["escalation", "drafting"]` | Roles the agent serves: escalation (the model switch you approve) and drafting (skill and plugin drafts). Never chat, triage or media. |
 | `acp.<name>.command` | Unset | The adapter's executable. Unset uses the agent's usual one: codex-acp, claude-agent-acp or agy. |
 | `acp.<name>.args` | Unset | Arguments for the command. Unset uses the agent's usual ones (`acp` for agy). |

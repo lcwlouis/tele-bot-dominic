@@ -338,7 +338,7 @@ not offer zero data retention on this route. [DeepSeek Privacy Policy](https://c
 
 ## Subscription agents
 
-The pilot [subscription agents](acp-agents.md) (Codex, Claude, Antigravity) are not zero data retention: the provider keeps what Dom sends under its consumer terms and may train on it unless you opt out there. Dom sends them only owner-DM content, for the escalation and drafting jobs, and refuses any other chat in code. The agent's process receives none of Dom's keys.
+The pilot [subscription agents](acp-agents.md) (Codex, Claude, Antigravity) are not zero data retention: the provider keeps what Dom sends under its consumer terms and may train on it unless you opt out there. Dom sends them only owner-DM content, for the escalation and drafting jobs, and refuses any other chat or background job in code. The agent's process receives none of Dom's keys and not your ssh agent, and an agent runs only with its tools switched off, which is why Antigravity is not available yet.
 
 ## OpenRouter data policies
 

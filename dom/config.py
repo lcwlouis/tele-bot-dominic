@@ -737,6 +737,10 @@ ACP_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "claude": ("claude-agent-acp", ()),
     "antigravity": ("agy", ("acp",)),
 }
+# An agent is enabled only when Dom can switch its own tools off (dom/acp.py); these cannot be, so they never start.
+# Antigravity's `agy acp` takes no per-session settings or mode, and its only tool rules are a deny list in the
+# owner's global settings.json, which Dom neither writes nor can check (docs/acp-agents.md).
+ACP_NO_TOOLS_OFF = {"antigravity": "no way to turn its tools off yet"}
 ACP_NOT_ZDR = (
     "Not zero data retention: the provider keeps your prompts under its consumer terms and may train on them unless "
     "you opt out in its settings. Running a bot on a subscription may break the provider's terms."
@@ -748,7 +752,8 @@ class AcpAgent(BaseModel):
 
     enabled: bool = Field(
         False, description="The switch. Off, the agent is never started. On, it is tried first in the roles below, "
-        "in the owner's DM only. " + ACP_NOT_ZDR,
+        "in the owner's DM turns only. Antigravity cannot be switched on yet (no way to turn its tools off): the "
+        "dashboard refuses it, and a hand-written `true` is refused at each call. " + ACP_NOT_ZDR,
     )
     roles: tuple[AcpRole, ...] = Field(
         ACP_ROLES, description="Roles the agent serves: escalation (the model switch you approve) and drafting "

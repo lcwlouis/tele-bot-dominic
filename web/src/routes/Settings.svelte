@@ -357,8 +357,8 @@
       </span>
       {#if !item.available}
         <p id={`perm-${item.id}-hint`} class="mt-0.5 text-sm {item.enabled ? 'text-coral' : 'text-muted-foreground'}">
-          {item.enabled ? "On, but nothing can serve it: Dom sends text instead. " : ""}{item.needs}
-          {#if item.id !== "studio_profile"}
+          {item.enabled ? (item.id.startsWith("acp_") ? "On, but it never starts. " : "On, but nothing can serve it: Dom sends text instead. ") : ""}{item.needs}
+          {#if item.id.startsWith("studio_") && item.id !== "studio_profile"}
             <button type="button" class="text-signal-strong underline underline-offset-2" onclick={() => (section = "models")}>
               Studio cloud backups
             </button>

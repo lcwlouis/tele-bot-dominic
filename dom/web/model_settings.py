@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dom.config import (
+    ACP_NO_TOOLS_OFF,
     DEEPSEEK_EFFORT_ERROR,
     MAX_DESKTOP_STEPS,
     MEDIA_ADDRESS_RULE,
@@ -954,8 +955,9 @@ class PermissionView(BaseModel):
     label: str
     description: str
     enabled: bool
-    # False when nothing set up can serve this studio switch; `needs` says what to set up first. A switch that is on
-    # although nothing serves it stays on (Dom sends text instead) and can always be turned off.
+    # False when nothing set up can serve this studio switch, or a subscription agent cannot be started; `needs` says
+    # what to set up first, or why not. A switch that is on although nothing serves it stays on (a studio one sends
+    # text instead; an agent is refused at each call) and can always be turned off.
     available: bool = True
     needs: str | None = None
 
@@ -999,26 +1001,32 @@ def _permission_value(config: Config, permission: Permission) -> bool:
     return bool(value)
 
 
-def _servable(config: Config, permission: Permission) -> bool:
-    """Whether anything set up can serve the switch (a backup counts once its key has a value); only studio switches
-    need something. Reads .env: call it off the event loop."""
+def _unserved(config: Config, permission: Permission) -> str | None:
+    """What stops the switch from being turned on, or None when it can be: a studio switch needs something set up that
+    can serve it (a backup counts once its key has a value), and a subscription agent with no way to turn its own
+    tools off never starts. Reads .env: call it off the event loop."""
     def media_key(name: str) -> bool:  # a backup whose key is also chat's never serves
         try:
             return bool(config.media_secret(name))
         except (OSError, ValueError):
             return False
 
-    return permission.path[0] != "studio" or switch_servable(config.studio, permission.path[1], media_key)
+    if permission.path[0] == "acp":
+        reason = ACP_NO_TOOLS_OFF.get(permission.path[1])
+        return f"Can't be switched on: {reason}." if reason else None
+    if permission.path[0] == "studio" and not switch_servable(config.studio, permission.path[1], media_key):
+        return STUDIO_NEEDS[permission.path[1]]
+    return None
 
 
 def _permissions(snapshot: Snapshot) -> Permissions:
     config = snapshot.config
     items = []
     for item in PERMISSIONS:
-        available = _servable(config, item)
+        needs = _unserved(config, item)
         items.append(PermissionView(
             id=item.id, label=item.label, description=item.description, enabled=_permission_value(config, item),
-            available=available, needs=None if available else STUDIO_NEEDS[item.path[1]],
+            available=needs is None, needs=needs,
         ))
     return Permissions(revision=snapshot.revision, items=items,
                        desktop_steps=DesktopStepsView(value=config.desktop.max_steps),
@@ -1047,8 +1055,8 @@ async def update_permission(request: Request) -> Permissions:
     # Reading, checking and replacing config.toml waits on the disk; it runs off the event loop, one save at a time,
     # so a slow disk never stalls Dom's other work.
     def refuse_unserved(config: Config) -> None:  # turning a switch off is always allowed
-        if update.enabled and not _servable(config, permission):
-            raise HTTPException(409, STUDIO_NEEDS[permission.path[1]])
+        if update.enabled and (needs := _unserved(config, permission)):
+            raise HTTPException(409, needs)
 
     async def turned_on(was_on: bool) -> None:
         if permission.id == "studio_profile" and update.enabled and not was_on:
