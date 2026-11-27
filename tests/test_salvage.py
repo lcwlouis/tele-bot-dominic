@@ -91,7 +91,7 @@ async def test_paragraph_breaks_win_when_there_are_enough():
 
 
 async def test_more_bubbles_than_break_points_gives_what_the_text_allows():
-    saved = await rescue(FakeJev(count=6), "Just one sentence, no breaks")
+    saved = await rescue(FakeJev(count=4), "Just one sentence, no breaks")
     assert texts(saved) == ["Just one sentence, no breaks"]
 
 

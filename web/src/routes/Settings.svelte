@@ -648,7 +648,7 @@
           </div>
           <p id="acp-warning" class="mb-3 text-sm text-coral">
             Not zero data retention: each provider keeps your prompts under its consumer terms. Running a bot on a
-            subscription may break those terms. All off until you turn one on; none ever serves chat, friends or groups.
+            subscription may break those terms. All off until you turn one on, and only Claude can be turned on for now: the others show why not. None ever serves chat, friends or groups.
           </p>
           <Card.Root class="py-2">
             <ul class="divide-y">

@@ -130,7 +130,7 @@ async def test_it_does_not_touch_switch_vibe_or_the_daily_pick(make_app):
 
 async def test_the_model_sees_the_assistant_preset_and_a_task_note_then_the_quiet_period_restarts(make_app):
     app = make_app(contents=(
-        json.dumps({"no_response": False, "bubbles": [{"text": "on it"}]}),
+        json.dumps({"no_response": False, "bubbles": [{"text": "got it"}]}),
     ) * 2)
     install(app)
     await pick_vibe(app)

@@ -2568,17 +2568,19 @@ class Dispatcher:
         # The media fields this turn offers, so a promise of media that isn't set can be put back to the model once.
         offered_fields = None if final_bot_turn or tool_free else frozenset(
             MEDIA_FIELD_OF_KIND[kind] for kind in media_offered if kind in MEDIA_FIELD_OF_KIND)
+        # A turn that answers someone, with tools on offer, keeps its word: not an opener, a noticing or the bot exit.
+        keep_word = not final_bot_turn and not tool_free and newest is not None
         try:
             if attempt is None:
                 actions = await run_turn(
-                    app.client, messages, tools, ctx, rescue=rescue, media_offered=offered_fields,
+                    app.client, messages, tools, ctx, rescue=rescue, media_offered=offered_fields, keep_word=keep_word,
                 )
             elif (retry := attempt.escalation_retry) is not None:
                 with model_request("escalation", chat_id, partial(self.turn_allowed, chat_id, scope)):
                     try:
                         actions = await run_turn(
                             retry.provider, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool,
-                            media_offered=offered_fields,
+                            media_offered=offered_fields, keep_word=keep_word,
                         )
                     except MODEL_FAILURES as exc:
                         raise NoFinalAnswer(type(exc).__name__) from exc
@@ -2587,7 +2589,7 @@ class Dispatcher:
                     try:
                         actions = await run_turn(
                             app.client, messages, tools, ctx, rescue=rescue, run_tool=attempt.run_tool, escalation=escalation,
-                            media_offered=offered_fields,
+                            media_offered=offered_fields, keep_word=keep_word,
                         )
                     except NoFinalAnswer:
                         if escalation is None or newest is None or not escalation.prepare_retry(

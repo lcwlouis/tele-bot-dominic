@@ -208,6 +208,16 @@ def media_promise_request(unkept: set[str], media_offered: frozenset[str]) -> st
     return " ".join(parts) + " Do not call tools. Answer again with ONLY the JSON object described in the instructions, and nothing else."
 
 
+def action_promise_request(sentence: str) -> str:
+    """What the model is told when its final bubbles say it is about to do something and no tool was called."""
+    return (
+        f'Your reply says you are about to do something ("{sentence}") but no tool was called, and nothing runs after '
+        "your answer. If one of your tools does it, call it now and then answer; if it is not something you can do "
+        "now, answer again with the promise reworded or taken out. When you answer, reply with ONLY the JSON object "
+        "described in the instructions, and nothing else."
+    )
+
+
 async def run_turn(
     client: ChatClient | FallbackClient,
     messages: list[dict],
@@ -218,11 +228,16 @@ async def run_turn(
     run_tool: ToolRunner = execute_tool_call,
     escalation: EscalationTurn | None = None,
     media_offered: frozenset[str] | None = None,
+    keep_word: bool = False,
 ) -> Actions:
     """Run one turn. Dom never sends raw model text: only valid actions leave this function.
 
     With `media_offered` (the media fields this turn's note offers; None skips the check), a bubble that promises
     media its field does not carry is put back to the model once, to set the field or drop the promise.
+
+    With `keep_word`, final bubbles that say Dom is about to do something ("i'll add it", "let me check") on a turn
+    that offered tools and called none are put back once with the tools still on offer: nothing runs after the
+    answer, so the promise is either kept by a tool call or reworded. A second answer is sent as it stands.
 
     A reply that is not valid actions (or a turn that runs out of steps) is asked again once without
     tools, then put to the fallback model; if that fails too, NoFinalAnswer is raised so the caller can
@@ -238,6 +253,8 @@ async def run_turn(
     )
     messages = list(messages)
     trace: list[str] = []  # one entry per model call, logged once per turn
+    tools_called = False
+    put_back = False  # the action promise is put back once per turn
 
     async def complete(prompt: list[dict], tools: list[dict], *, on_fallback: bool = False) -> dict:
         if escalation is not None:
@@ -276,6 +293,21 @@ async def run_turn(
             result = result.without_unkept_media_promises()
         return succeed(result)
 
+    def put_back_action_promise(actions: Actions, reply: dict | None) -> bool:
+        """Put an unkept promise to act back to the model once, tools on offer, and say whether it was."""
+        nonlocal put_back
+        sentence = actions.action_promise() if keep_word and offered and not tools_called and not put_back else None
+        if sentence is None or actions.no_response:
+            return False
+        put_back = True
+        trace.append("action promise")
+        turn_log.step("Action promise put back")
+        turn_log.event("action_promise", sentence=sentence)
+        log.info("action promised in chat %s with no tool call", ctx.chat_id)
+        messages.append({"role": "assistant", "content": (reply or {}).get("content") or ""})
+        messages.append({"role": "user", "content": action_promise_request(sentence)})
+        return True
+
     for _ in range(max_steps):
         reply = await complete(messages, schemas)
         calls = reply.get("tool_calls")
@@ -287,6 +319,7 @@ async def run_turn(
             if not any(call["function"]["name"] in offered for call in calls):
                 turn_log.step("unavailable tool")
             messages.append(reply)
+            tools_called = tools_called or any(call["function"]["name"] in offered for call in calls)
             for call in calls:
                 result = await run_tool(call, offered, ctx)
                 messages.append({"role": "tool", "tool_call_id": str(call.get("id") or ""), "content": result})
@@ -294,6 +327,8 @@ async def run_turn(
             messages.append({"role": "user", "content": TOOLS_DONE})
             continue
         if not calls and (actions := parse_actions(reply.get("content"))) is not None:
+            if put_back_action_promise(actions, reply):
+                continue
             return await settle(actions, reply)
         if not calls and rescue is not None and (saved := await rescue(reply.get("content"))) is not None:
             trace.append("salvaged")
@@ -302,6 +337,8 @@ async def run_turn(
                 "salvaged prose reply in chat %s: %d bubbles, jev confidence %.2f",
                 ctx.chat_id, len(saved.actions.bubbles), saved.confidence,
             )
+            if put_back_action_promise(saved.actions, reply):
+                continue
             return await settle(saved.actions, reply)
         trace.append("malformed")
         if escalation is not None:

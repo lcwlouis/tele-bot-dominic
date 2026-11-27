@@ -313,6 +313,12 @@ With `news` on (the default), a place or a country, and a web search route, Dom 
 
 With the fast lane on, Dom composes the owner's DM turns apart from every other chat's: each turn is still composed one at a time within its lane, and one chat's turns stay in order, but the owner's never wait behind a long turn in a group or a friend's DM. The lanes share the prompt prefix, the spend caps and the Turn log, which shows each turn's lane and queue wait. Changes apply at the next start.
 
+### How a reply is shaped
+
+Nothing here is configurable. One bubble is Dom's normal reply, two when there are two thoughts, and four is the most in one answer (any extra bubbles join the fourth). The prompt asks him to match the energy of the moment: a short or flat message gets a short reply.
+
+Nothing runs after a turn's final answer, so a bubble that says Dom is about to do something ("i'll add it", "let me check", "on it") on a turn that called no tool is put back to the model once, with the tools still on offer, to call the tool or reword. A second answer is sent as it stands. The Turn log shows `Action promise put back`. Openers, noticings, tool-free turns and the bot exit are not checked.
+
 ## Presence
 
 | Key | Default | Meaning |
@@ -362,7 +368,7 @@ Every turn in every chat is traced in full, secrets redacted, for the dashboard'
 
 ## Subscription agents (pilot)
 
-Codex, Claude and Antigravity on your own subscriptions, through the Agent Client Protocol: tables `[acp.codex]`, `[acp.claude]` and `[acp.antigravity]`, each with the keys below (shown for `acp.<name>`). Every agent is off until you switch it on, serves only escalation and drafting, and only in your DM.
+Codex, Claude and Antigravity on your own subscriptions, through the Agent Client Protocol: tables `[acp.codex]`, `[acp.claude]` and `[acp.antigravity]`, each with the keys below (shown for `acp.<name>`). Every agent is off until you switch it on, serves only escalation and drafting, and only in your DM. Only Claude can be switched on in v0.8.6: Codex and Antigravity are refused until Dom can turn their tools off.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

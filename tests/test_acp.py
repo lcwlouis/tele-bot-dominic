@@ -27,6 +27,8 @@ from tghelpers import FRIEND, OWNER, no_sleep
 
 FAKE = str(Path(__file__).parent / "fixtures" / "fake_acp_agent.py")
 ENV = {"PATH": os.environ.get("PATH", "")}
+# no built-in tools, none of the owner's MCP servers, no settings files (v0.8.6 W9)
+CLAUDE_META = {"claudeCode": {"options": {"tools": [], "strictMcpConfig": True, "mcpServers": {}, "settingSources": []}}}
 
 
 @pytest.fixture(autouse=True)
@@ -152,9 +154,9 @@ def cfg(tmp_path, **agents):
 def test_the_agents_process_gets_no_secret_it_was_not_named(tmp_path, monkeypatch):
     monkeypatch.setenv("DOM_TEST_SECRET", "hunter2")
     monkeypatch.setenv("FAKE_API_KEY", "key-value")
-    config = cfg(tmp_path, codex={"enabled": True, "auth_env": ["FAKE_API_KEY"]})
-    argv, env, session_cwd = launch(config, "codex")
-    assert argv == ["codex-acp"] and session_cwd == ""
+    config = cfg(tmp_path, claude={"enabled": True, "auth_env": ["FAKE_API_KEY"]})
+    argv, env, session_cwd = launch(config, "claude")
+    assert argv == ["claude-agent-acp"] and session_cwd == ""
     assert "DOM_TEST_SECRET" not in env and env["FAKE_API_KEY"] == "key-value" and "PATH" in env
 
 
@@ -175,14 +177,20 @@ def test_the_environment_is_path_home_and_locale_and_nothing_else(tmp_path, monk
 
 async def test_the_running_agent_sees_no_ssh_agent_and_no_dom_secret(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "environ", {**os.environ, "SSH_AUTH_SOCK": "/tmp/agent.sock", "OPENROUTER_API_KEY": "k"})
-    _, env, _ = launch(cfg(tmp_path, codex={"enabled": True}), "codex")
+    _, env, _ = launch(cfg(tmp_path, claude={"enabled": True}), "claude")
     call, log = run(tmp_path, env=env)
     await call
     seen = set(events(log, "start")[0]["env_keys"])
     assert not seen & {"SSH_AUTH_SOCK", "OPENROUTER_API_KEY", "USER", "SHELL", "TMPDIR"}
 
 
-def test_codex_starts_read_only_with_its_shell_tool_and_web_search_off(tmp_path):
+def test_claude_starts_without_the_claude_ai_connectors(tmp_path):
+    _, env, _ = launch(cfg(tmp_path, claude={"enabled": True}), "claude")
+    assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
+
+
+def test_launch_still_builds_codexs_settings_though_it_is_refused_before_it_starts(tmp_path):
+    _, env, _ = launch(cfg(tmp_path, codex={"enabled": True}), "codex")
     _, env, _ = launch(cfg(tmp_path, codex={"enabled": True}), "codex")
     assert env["INITIAL_AGENT_MODE"] == "read-only"
     assert json.loads(env["CODEX_CONFIG"]) == {"features": {"shell_tool": False}, "web_search": "disabled"}
@@ -193,20 +201,19 @@ def test_each_agent_has_its_usual_command_unless_configured(tmp_path):
     assert launch(config, "claude")[0] == ["claude-agent-acp"]
     assert launch(config, "antigravity")[0] == ["agy", "acp"]
     assert launch(config, "codex")[0] == ["/opt/codex-acp", "--x"]
-    assert acp.TOOLS_OFF_META["claude"] == {"claudeCode": {"options": {"tools": []}}}
+    assert acp.TOOLS_OFF_META["claude"] == CLAUDE_META
 
 
 def test_a_remote_host_runs_the_same_command_over_ssh_with_the_tool_switches_as_env(tmp_path, monkeypatch):
     monkeypatch.setattr(acp, "uuid4", lambda: SimpleNamespace(hex="0123456789abcdef0123456789abcdef"))
-    argv, env, session_cwd = launch(cfg(tmp_path, codex={"enabled": True, "host": "studio-mac"}), "codex")
+    argv, env, session_cwd = launch(cfg(tmp_path, claude={"enabled": True, "host": "studio-mac"}), "claude")
     box = "/tmp/dom-acp-0123456789abcdef"
-    assert session_cwd == box and "INITIAL_AGENT_MODE" not in env
+    assert session_cwd == box and "ENABLE_CLAUDEAI_MCP_SERVERS" not in env
     # `--` comes before the destination, so ssh reads nothing after it as an option and the remote shell gets one string
     assert argv[:-1] == ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "studio-mac"]
-    config = json.dumps(acp.CODEX_CONFIG)
     assert argv[-1] == (
         f"d={box}; mkdir -m 700 \"$d\" && trap 'cd /; rm -rf \"$d\"' EXIT && cd \"$d\" && "
-        f"env INITIAL_AGENT_MODE=read-only {shlex.quote('CODEX_CONFIG=' + config)} codex-acp"
+        "env ENABLE_CLAUDEAI_MCP_SERVERS=false claude-agent-acp"
     )
 
 
@@ -271,7 +278,7 @@ def test_a_tool_call_object_becomes_an_openai_style_message_and_anything_else_st
 # ---- the provider: owner DM only, usage, tool calls --------------------------------------------------------------------
 
 
-def agent_config(app, tmp_path, mode="ok", name="codex", **extra):
+def agent_config(app, tmp_path, mode="ok", name="claude", **extra):
     log = tmp_path / "agent.jsonl"
     agent = AcpAgent(enabled=True, command=sys.executable, args=(FAKE, mode, str(log)), **extra)
     return app.config.model_copy(update={"acp": AcpConfig(**{name: agent})}), log
@@ -293,7 +300,7 @@ async def test_the_owners_dm_gets_a_reply_recorded_as_subscription_usage_with_no
     with model_request("escalation", OWNER, allowed):
         reply = await client.complete([{"role": "user", "content": "hi"}], [])
     assert reply == {"role": "assistant", "content": "Hello, owner."}
-    assert usage_rows(app) == [("subscription", "Codex subscription", "acp:codex", OWNER, 0, 0.0, 0)]
+    assert usage_rows(app) == [("subscription", "Claude subscription", "acp:claude", OWNER, 0, 0.0, 0)]
     assert events(log, "initialize")
 
 
@@ -357,17 +364,17 @@ async def test_claude_is_started_with_its_tools_switched_off_in_the_session(make
     client = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
     with model_request("escalation", OWNER, allowed):
         await client.complete([{"role": "user", "content": "hi"}], [])
-    assert events(log, "session_new")[0]["params"]["_meta"] == {"claudeCode": {"options": {"tools": []}}}
+    assert events(log, "session_new")[0]["params"]["_meta"] == CLAUDE_META
+    assert events(log, "start")[0]["claudeai_mcp"] == "false"  # and no claude.ai connectors
 
 
-async def test_codex_runs_read_only_with_the_shell_tool_off(make_app, tmp_path):
+async def test_codex_is_refused_before_it_starts_so_its_settings_never_reach_a_process(make_app, tmp_path):
     app = make_app()
-    config, log = agent_config(app, tmp_path)
+    config, log = agent_config(app, tmp_path, name="codex")
     client = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
-    with model_request("escalation", OWNER, allowed):
+    with model_request("escalation", OWNER, allowed), pytest.raises(AcpError, match="MCP servers and plugins"):
         await client.complete([{"role": "user", "content": "hi"}], [])
-    start = events(log, "start")[0]
-    assert start["initial_agent_mode"] == "read-only" and json.loads(start["codex_config"])["features"] == {"shell_tool": False}
+    assert not log.exists() and usage_rows(app) == []
 
 
 # ---- routing: which roles, switched off by default --------------------------------------------------------------------
@@ -403,10 +410,10 @@ async def test_a_switched_on_agent_is_first_in_escalation_and_drafting_and_nowhe
 
 
 async def test_an_agent_can_be_limited_to_one_role_and_each_switch_is_its_own(tmp_path):
-    config = role_config(tmp_path, codex={"enabled": True, "roles": ["escalation"]}, claude={"enabled": True})
+    config = role_config(tmp_path, claude={"enabled": True, "roles": ["escalation"]}, antigravity={"enabled": True})
     async with httpx.AsyncClient() as http:
-        assert [p.name for p in routed_client(config, "escalation", http).providers if isinstance(p, AcpClient)] == ["codex", "claude"]
-        assert [p.name for p in routed_client(config, "drafting", http).providers if isinstance(p, AcpClient)] == ["claude"]
+        assert [p.name for p in routed_client(config, "escalation", http).providers if isinstance(p, AcpClient)] == ["claude", "antigravity"]
+        assert [p.name for p in routed_client(config, "drafting", http).providers if isinstance(p, AcpClient)] == ["antigravity"]
 
 
 def test_chat_triage_and_media_cannot_be_named_as_an_agents_role(tmp_path):
@@ -516,28 +523,35 @@ def test_every_agent_has_its_tools_switched_off_or_is_refused_outright():
     from dom.config import ACP_NAMES, ACP_NO_TOOLS_OFF
 
     for name in ACP_NAMES:
-        switches = (name in acp.TOOLS_OFF_ENV) + (name in acp.TOOLS_OFF_META) + (name in ACP_NO_TOOLS_OFF)
-        assert switches == 1, f"{name}: needs exactly one of tool-off settings or a reason it cannot be enabled"
-    assert set(ACP_NO_TOOLS_OFF) == {"antigravity"}
+        assert name in ACP_NO_TOOLS_OFF or name in acp.TOOLS_OFF_ENV or name in acp.TOOLS_OFF_META, (
+            f"{name}: needs tool-off settings or a reason it cannot be enabled")
+    assert set(ACP_NO_TOOLS_OFF) == {"antigravity", "codex"}  # only Claude can be switched on (v0.8.6 W9)
+    assert set(ACP_NAMES) - set(ACP_NO_TOOLS_OFF) == {"claude"}
+    assert acp.TOOLS_OFF_ENV["claude"] == {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"} and acp.TOOLS_OFF_META["claude"] == CLAUDE_META
 
 
-async def test_antigravity_is_refused_before_it_starts_with_one_log_line(make_app, tmp_path, caplog):
+@pytest.mark.parametrize("name,reason", [
+    ("antigravity", "no way to turn its tools off yet"),
+    ("codex", "it loads your own MCP servers and plugins, which Dom can't turn off yet"),
+])
+async def test_a_refused_agent_is_refused_before_it_starts_with_one_log_line(make_app, tmp_path, caplog, name, reason):
     app = make_app()
-    config, log = agent_config(app, tmp_path, name="antigravity")
+    config, log = agent_config(app, tmp_path, name=name)
     for role, kind in (("escalation", "escalation"), ("drafting", "chat")):
         client = acp.acp_clients(config, role, app.dispatch.usage)[0]
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="dom.acp"), model_request(kind, OWNER, allowed):
-            with pytest.raises(AcpError, match="no way to turn its tools off yet"):
+            with pytest.raises(AcpError, match=reason):
                 await client.complete([{"role": "user", "content": "hi"}], [])
         assert [record.message for record in caplog.records if record.name == "dom.acp"] == [
-            "antigravity agent not started: no way to turn its tools off yet"]
+            f"{name} agent not started: {reason}"]
     assert not log.exists() and usage_rows(app) == []
 
 
-async def test_antigravity_falls_through_to_the_next_provider(make_app, tmp_path):
+@pytest.mark.parametrize("name", ["antigravity", "codex"])
+async def test_a_refused_agent_falls_through_to_the_next_provider(make_app, tmp_path, name):
     app = make_app()
-    config, log = agent_config(app, tmp_path, name="antigravity")
+    config, log = agent_config(app, tmp_path, name=name)
     first = acp.acp_clients(config, "escalation", app.dispatch.usage)[0]
 
     class Next:
@@ -706,7 +720,7 @@ async def test_a_failed_pinned_agent_goes_on_to_the_cloud_provider_and_tells_the
         "crash": fake_agent(tmp_path, "crash"),
     }[failure]
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
-        app = escalation_app(make_app, http, tmp_path, codex=agent)
+        app = escalation_app(make_app, http, tmp_path, claude=agent)
         with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
             assert isinstance(turn.provider, AcpClient)  # the card shows the agent
             turn.choice = "switch"
@@ -716,7 +730,7 @@ async def test_a_failed_pinned_agent_goes_on_to_the_cloud_provider_and_tells_the
         await drain(app)
     assert reply["content"] == "from cloud" and asked == ["cloud"]
     [note] = [call for call in app.bot.of("send", OWNER) if "did not answer" in call[2]]
-    assert "Codex subscription" in note[2] and "cloud" in note[2]
+    assert "Claude subscription" in note[2] and "cloud" in note[2]
     assert [row[0] for row in usage_rows(app)] == ["subscription", "escalation"]
 
 
@@ -725,7 +739,7 @@ async def test_a_pinned_agent_that_answers_never_reaches_the_cloud_provider(make
         raise AssertionError("the cloud provider was called")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
-        app = escalation_app(make_app, http, tmp_path, codex=fake_agent(tmp_path, "ok"))
+        app = escalation_app(make_app, http, tmp_path, claude=fake_agent(tmp_path, "ok"))
         with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
             turn.choice = "switch"
             with model_request("escalation", OWNER, allowed):
@@ -753,14 +767,15 @@ async def test_a_cloud_provider_pinned_for_escalation_still_fails_alone(make_app
     assert set(asked) == {"cloud"}
 
 
-async def test_antigravity_enabled_by_hand_is_never_pinned_or_counted_available(make_app, tmp_path):
+@pytest.mark.parametrize("name", ["antigravity", "codex"])
+async def test_a_refused_agent_enabled_by_hand_is_never_pinned_or_counted_available(make_app, tmp_path, name):
     async with httpx.AsyncClient() as http:
-        app = escalation_app(make_app, http, tmp_path, antigravity={"enabled": True})
+        app = escalation_app(make_app, http, tmp_path, **{name: {"enabled": True}})
         agent = app.escalation_client.providers[0]
-        assert isinstance(agent, AcpClient) and agent.name == "antigravity" and not agent.available
+        assert isinstance(agent, AcpClient) and agent.name == name and not agent.available
         with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
             assert turn.provider.endpoint.model == "cloud" and turn.pinned.then is None
-    assert not AcpClient(app.config.model_copy(update={"acp": AcpConfig()}), "codex", "escalation").available  # off
+    assert not AcpClient(app.config.model_copy(update={"acp": AcpConfig()}), "claude", "escalation").available  # off
 
 
 async def drain(app):
@@ -776,7 +791,7 @@ async def test_after_a_failed_agent_every_later_round_of_the_task_goes_to_the_cl
         return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "from cloud"}}]})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
-        app = escalation_app(make_app, http, tmp_path, codex=fake_agent(tmp_path, "crash"))
+        app = escalation_app(make_app, http, tmp_path, claude=fake_agent(tmp_path, "crash"))
         with app.dispatch.escalation.turn(OWNER, "owner_dm", app.client) as turn:
             turn.choice = "switch"
             with model_request("escalation", OWNER, allowed):
