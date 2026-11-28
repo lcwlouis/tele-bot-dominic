@@ -6,6 +6,11 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-11-28
+
+- **Downtime background organizer for imported memories.** Approving imported memory proposals now stages them in a persistent backend queue instead of writing directly into `private/USER.md` (which previously hit the 1,375-character cap on bulk imports). Strictly during Dom's downtime (when the owner DM is offline or asleep and no chat turns are active), Dom automatically organizes staged facts in batches into `private/USER.md` (compacted within 1,375 chars while preserving pinned core memories), `private/NOTES.md`, owner-only `memory/{projects,goals,places}/*.md` notes, and scheduled reminders, then notifies the owner once the queue finishes.
+- **Automatic booking slot counter-proposals.** When a friend asks to meet at a specific time or range (`after`/`before`) that has no free slots inside the owner's meeting windows, `booking offer` now automatically falls back to up to three free alternative slots inside the owner's windows and creates a real counter-proposal offer so Dom can suggest those times right away without revealing why the requested time didn't work.
+
 ## [0.8.9] - 2026-11-28
 
 - **Tailscale addresses recognized as own-network.** `on_own_network()` now explicitly accepts Tailscale IPv4 (`100.64.0.0/10`), Tailscale IPv6 (`fd7a:115c:a1e0::/48`), and `.ts.net` hostnames, so Tailscale addresses (such as Studio's Whisper STT endpoint at `http://100.94.111.67:8080/v1`) pass local-network validation.

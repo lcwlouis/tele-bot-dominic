@@ -454,7 +454,10 @@ async def decide_import_batch(app: App, proposal_id: int, decision: str, selecte
     ]
     label = "Rejected" if decision == "reject" else "Approved"
     errors = [result for result in results if result not in (label, "already handled")]
-    message = f"{label} {results.count(label)}."
+    approved = results.count(label)
+    message = f"{label} {approved}."
+    if label == "Approved" and approved and not errors and anchor["body"].get("import_batch"):
+        message += " Dom will organize them into your notes during his downtime."
     if errors:
         message += f" {len(errors)} still pending. {errors[0]}"
     return message, len(results) == sum(_import_key(row) == key for row in rows) and not errors

@@ -362,8 +362,17 @@ class Booking:
             log.info("booking: the calendar could not be read for an offer")
             return UNAVAILABLE  # nothing about the calendar is said, not even why
 
+        counter_proposed = False
+
         def choose(held: list[tuple[datetime, int]]) -> list[datetime]:
-            return find_slots(rules, busy, held, now=now, minutes=minutes, zone=zone, after=after, before=before)
+            nonlocal counter_proposed
+            matched = find_slots(rules, busy, held, now=now, minutes=minutes, zone=zone, after=after, before=before)
+            if matched or (after is None and before is None):
+                counter_proposed = False
+                return matched
+            fallback = find_slots(rules, busy, held, now=now, minutes=minutes, zone=zone)
+            counter_proposed = bool(fallback)
+            return fallback
 
         # The slots are chosen and kept in one short transaction that reads what is held at that moment, so two friends
         # asking at once cannot be offered the same time.
@@ -379,6 +388,16 @@ class Booking:
         if offer_id is None:
             return "Too many offers are open in this chat already. Ask the friend to pick one of those, or tell them you will check with the owner."
         lines = [f"{index}) {_when(slot, minutes, zone)}" for index, slot in enumerate(slots, 1)]
+        if counter_proposed:
+            return (
+                f"Offer {offer_id} (counter-proposal), {minutes} minutes, open for {OFFER_HOURS} hours. "
+                "No times are free in the requested range — tell the friend that time doesn't work and counter-propose "
+                "exactly these alternative times and nothing else:\n"
+                + "\n".join(lines)
+                + f"\nWhen the friend picks one, call booking pick with offer {offer_id} and its number, then say you will check and get back "
+                "to them. Do not say why the requested time was unavailable, do not mention the owner's schedule or windows, "
+                "and never offer a time that is not listed."
+            )
         return (
             f"Offer {offer_id}, {minutes} minutes, open for {OFFER_HOURS} hours. Offer exactly these times and nothing else:\n"
             + "\n".join(lines)
@@ -654,7 +673,8 @@ async def offered(app: App, scope: Scope) -> list[Tool]:
         name="booking",
         description=(
             "Set up a meeting between the owner and the person asking, within the times the owner is willing to meet. offer: "
-            "find up to three free times of `minutes` (optionally after or before an ISO date); say those times and only those. "
+            "find up to three free times of `minutes` (optionally after or before an ISO date); if the requested range has no "
+            "free slots, it automatically returns alternative times to counter-propose — say those times and only those. "
             "pick: the friend chose one (offer id and slot number, plus their email only if they gave it, and context for what it is "
             "about); the owner is asked, so tell the friend you will check, never that it is booked. Never state, guess or hint at "
             "the owner's schedule or availability yourself: times come from this tool or not at all. If it says there are no times "

@@ -276,6 +276,27 @@ async def test_it_says_so_when_nothing_fits(setup):
     assert not stamps(answer) and "ask the owner for times" in answer
 
 
+async def test_out_of_window_request_counter_proposes_alternative_slots(setup):
+    app, fake, client = await make(setup)
+    # Sunday (2026-12-06) has no meeting windows; requesting Sunday should automatically counter-propose open window slots.
+    ctx = friend_ctx(app, "group")
+    answer = await _booking(
+        {"action": "offer", "minutes": 60, "after": "2026-12-06T00:00:00+00:00", "before": "2026-12-06T23:59:00+00:00"},
+        ctx,
+    )
+    assert "(counter-proposal)" in answer and "counter-propose" in answer
+    alternatives = stamps(answer)
+    assert alternatives == [
+        "Mon 30 Nov 21:00-22:00 (UTC)", "Tue 01 Dec 19:00-20:00 (UTC)", "Wed 02 Dec 19:00-20:00 (UTC)",
+    ]
+    assert not any(secret in answer for secret in SECRETS)
+    # The counter-proposed offer is real and can be picked directly.
+    pick = await _booking({"action": "pick", "offer": offer_id(answer), "slot": 2}, ctx)
+    assert "will check" in pick
+    row = await pending(app)
+    assert row["action"] == "booking_confirm"
+
+
 async def test_a_time_offered_to_one_chat_is_not_offered_to_another_and_chats_hold_few_offers(setup):
     app, fake, client = await make(setup)
     first = stamps(await _booking({"action": "offer"}, friend_ctx(app)))

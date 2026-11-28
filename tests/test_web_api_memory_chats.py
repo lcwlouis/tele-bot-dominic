@@ -289,9 +289,9 @@ async def test_import_uses_the_shared_pipeline_and_limits_then_review_decides_in
         first = body["imports"][0]
         chosen = first["facts"][0]["id"]
         part = await client.post("/api/memory/import-review", headers=JSON, json={"id": first["id"], "decision": "selected", "selected": [chosen]})
-        assert part.json()["message"] == "Approved 1." and part.json()["settled"] is False
+        assert part.json()["message"] == "Approved 1. Dom will organize them into your notes during his downtime." and part.json()["settled"] is False
         assert [fact["text"] for fact in part.json()["imports"][0]["facts"]] == ["Likes book clubs"]
-        assert "Owns a kettle" in app.home.scoped(allow_private=True).read("private/USER.md")
+        assert [item["text"] for item in await app.memory_import.staged()] == ["Owns a kettle"]
         rest = await client.post("/api/memory/import-review", headers=JSON, json={"id": part.json()["imports"][0]["id"], "decision": "reject"})
         assert rest.json()["message"] == "Rejected 1." and rest.json()["settled"] is True and rest.json()["imports"] == []
         # "Other" covers any assistant that ran the export prompt, which the page serves for copying.

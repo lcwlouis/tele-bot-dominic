@@ -574,6 +574,9 @@ class Proposals:
                 await cross_chat.approved(body["item_id"])
             else:
                 await cross_chat.rejected(body["item_id"])
+        elif row["kind"] == "memory_fact" and approve and body.get("import_batch"):
+            await app.memory_import.stage(body["text"], source=row["source"])
+            await app.store.record_owner_event(f"{status.capitalize()} proposal #{proposal_id}")
         else:
             await app.store.record_owner_event(f"{status.capitalize()} proposal #{proposal_id}")
         return status.capitalize()
@@ -593,6 +596,8 @@ class Proposals:
             self.app.home.replace_soul(body["old"], body["new"])
             return
         if kind == "memory_fact":
+            if body.get("import_batch"):
+                return  # staged for downtime organization in decide() so bulk imports never hit USER.md's cap
             rel = MEMORY_FILES[body["file"]]
             home = self.app.home.scoped(allow_private=rel.startswith("private/"))
             result = home.memory_write(rel, "add", body["text"])

@@ -76,7 +76,7 @@ async def test_import_prompts_and_reply_creates_private_proposals_with_one_summa
     await handlers.handle_message(app, tg(OWNER, OWNER, "/import ChatGPT", msg_id=2, reply_to=export))
     expected = (
         "Imported 2 facts from chatgpt. Skipped 3 duplicates. Review them in the dashboard or with /proposals. "
-        "USER.md holds about 1,375 characters, so only the most important facts fit; Dom's notes pass keeps it trimmed."
+        "Approved facts are queued and organized into your notes and reminders during Dom's downtime."
     )
     assert [call[2] for call in app.bot.of("send")] == [expected]
     assert app.bot.of("send")[0][1] == OWNER
@@ -103,7 +103,7 @@ async def test_summary_reports_skipped_facts_and_the_user_md_budget(make_app):
     await handlers.handle_message(app, tg(OWNER, OWNER, text))
     (summary,) = [call[2] for call in app.bot.of("send", OWNER)]
     assert summary.startswith("Imported 2 facts from claude. Skipped 1 duplicate and 2 over 300 characters. ")
-    assert "about 1,375 characters" in summary and "notes pass keeps it trimmed" in summary
+    assert "queued and organized" in summary and "downtime" in summary
 
 
 async def test_inline_import_and_utf8_document_use_the_same_parser_without_a_model(make_app):
@@ -173,8 +173,69 @@ async def test_proposals_pages_ten_and_bulk_approval_targets_the_original_page(m
     await press(app, bulk)
     assert app.bot.of("answer")[-1][2] == "Approved 9."
     assert [row["id"] for row in await app.proposals.pending()] == [11, 12]
-    assert app.home.scoped(allow_private=True).read("private/USER.md").splitlines() == [
-        f"- Fact {i:02d}" for i in range(1, 10)
+    assert [item["text"] for item in await app.memory_import.staged()] == [
+        f"Fact {i:02d}" for i in range(1, 10)
     ]
     await press(app, bulk)
     assert app.bot.of("answer")[-1][2] == "already handled"
+
+
+async def test_approved_imports_stage_when_user_md_is_full_and_organize_only_in_downtime(make_app):
+    from datetime import datetime, timedelta, timezone
+
+    app = make_app()
+    now = datetime(2026, 11, 28, 12, 0, tzinfo=timezone.utc)
+    app.dispatch.now.at = now
+    # Fill private/USER.md to its exact 1,375-character cap.
+    put(app.home, "private/USER.md", "- " + "a" * 1373)
+    text = (
+        "/import other\n"
+        "- Works on GardenShed project\n"
+        "- Dentist appointment on 2026-12-05 at 10:00\n"
+        "- Prefers black coffee"
+    )
+    await handlers.handle_message(app, tg(OWNER, OWNER, text))
+    pending = await app.proposals.pending()
+    assert len(pending) == 3
+    # Approving all three succeeds without hitting USER.md's 1,375-char limit.
+    for row in pending:
+        assert await app.proposals.decide(row["id"], True) == "Approved"
+    staged = await app.memory_import.staged()
+    assert len(staged) == 3
+
+    # While Dom is online in the owner DM, downtime organizer must NOT run.
+    await online(app, OWNER)
+    assert await app.memory_import.is_downtime() is False
+    await app.memory_import.tick()
+    assert len(await app.memory_import.staged()) == 3
+    assert not app.script.requests
+
+    # Move owner DM offline (downtime) and provide a structured organizer response.
+    await app.store.set_presence(
+        OWNER, is_sleeping=False, sleep_until=None, is_offline=True,
+        offline_until=(now + timedelta(hours=1)).isoformat(), online_until=None,
+    )
+    assert await app.memory_import.is_downtime() is True
+    plan = {
+        "user_md": "- Prefers black coffee",
+        "notes_add": ["Drinks black coffee every morning"],
+        "entities": [
+            {"kind": "projects", "slug": "GardenShed!", "lines": ["Main project: GardenShed"]},
+        ],
+        "reminders": [
+            {"when": "2026-12-05T10:00", "text": "Dentist appointment", "repeat": "", "importance": "normal"},
+        ],
+    }
+    app.script.contents = [json.dumps(plan)]
+    app.bot.calls.clear()
+    await app.memory_import.tick()
+
+    assert await app.memory_import.staged() == []
+    private_home = app.home.scoped(allow_private=True)
+    assert private_home.read("private/USER.md").strip() == "- Prefers black coffee"
+    assert "Drinks black coffee every morning" in private_home.read("private/NOTES.md")
+    project_note = private_home.read("memory/projects/gardenshed.md")
+    assert "Main project: GardenShed" in project_note and "{" not in project_note  # untagged = owner-only
+    active_reminders = await app.dispatch.reminders.active()
+    assert len(active_reminders) == 1 and active_reminders[0]["text"] == "Dentist appointment"
+    assert any("Imported memories organized" in call[2] for call in app.bot.of("send", OWNER))

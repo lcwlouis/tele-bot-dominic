@@ -827,6 +827,7 @@ class Dispatcher:
         self._spawn(self.app.chat_titles.refresh())  # a few Telegram asks, likewise on their own
         self._spawn(news.tick(self.app))  # the overnight news: searches and a call, so also on its own
         await self.jobs.tick()
+        self._spawn(self.app.memory_import.tick())
         await self.openers.maybe(self.now())
         await self.app.assistant.tick(self.now())
         if self._closing:

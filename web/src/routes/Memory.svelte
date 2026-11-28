@@ -367,7 +367,7 @@
               <Card.Title class="text-base">
                 {count(card.facts.length)} {card.facts.length === 1 ? "memory" : "memories"} imported from {card.service}
               </Card.Title>
-              <Card.Description>Tick the ones to keep. They go to your private USER.md.</Card.Description>
+              <Card.Description>Tick the ones to keep. Dom will organize them into your notes during his downtime.</Card.Description>
             </Card.Header>
             <Card.Content class="grid gap-4">
               <ul class="grid max-h-64 gap-2 overflow-y-auto">
