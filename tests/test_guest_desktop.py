@@ -37,12 +37,28 @@ class Container(Box):
         super().__init__()
         self.host, self.name, self.state, self.port, self.remote = host, name, "stopped", None, mode == "remote"
         self.starts = 0  # containers started: a task that finds the container still ready would not add one
+        self.resets = 0
+        self._outbox: dict[str, bytes] = {}
         host.register(self)
 
     def __getattribute__(self, name):
         if name in ("reset_profile", "stop") and object.__getattribute__(self, "remote"):
             raise AttributeError(name)  # Dom neither stops a remote sandbox nor resets its profile
         return super().__getattribute__(name)
+
+    async def screenshot(self) -> bytes:
+        return b"\x89PNG\r\n\x1a\nfake-screenshot-bytes"
+
+    async def upload_file(self, path: str, data: bytes) -> dict:
+        self._outbox[path] = data
+        return {"path": path}
+
+    async def download_file(self, path: str, *, max_bytes: int | None = None) -> bytes:
+        return self._outbox[path]
+
+    async def reset_guest(self) -> None:
+        self.resets += 1
+        self.url = "about:blank"
 
     def status(self):
         return self.state
@@ -159,7 +175,8 @@ async def test_a_request_sends_the_owner_a_card_with_allow_once_and_reject_and_n
     assert "Chat: Book club (group)" in text and "Asked by: someone in the chat" in text
     assert BRIEF in text and "untrusted" in text and "Limits: 15 steps, 5 minutes" in text
     buttons = [button.text for row in kwargs["reply_markup"].inline_keyboard for button in row]
-    assert buttons == ["Allow once", "Reject"]
+    assert buttons == ["Allow once", "Allow 3h + screenshots", "Reject"]
+    assert "Allow always" not in buttons
     perms = app.desktop_permissions
     assert await perms.decide(pending["id"], "always", via="dashboard") == (False, "this one is always asked")
     assert (await perms.get_policies())["guest_desktop"] == "ask"
@@ -487,14 +504,21 @@ async def test_without_a_guest_host_the_local_host_runs_a_guest_container_of_its
         await remote.desktop_worker.enqueue_guest(BRIEF, GROUP, "Book club", "Sam")
 
 
-def test_a_remote_host_kept_for_guests_is_refused_at_config_load(tmp_path):
-    """Dom cannot reset a remote sandbox, so a guest task there would inherit the last chat's cookies and sessions."""
-    for mode in ("remote", "local"):
-        with pytest.raises(ValueError, match="cannot be kept for guests.*cannot reset a remote sandbox"):
-            DesktopHost.model_validate({"name": "studio", "mode": mode, "url": "https://studio.example.org", "guest": True})
+def test_a_remote_host_kept_for_guests_requires_remote_mode_and_confirmed_isolation(tmp_path):
+    """A dedicated remote guest host is allowed only with mode='remote' and remote_isolation_confirmed=True."""
+    with pytest.raises(ValueError, match="only for a dedicated remote desktop host"):
+        DesktopHost.model_validate({"name": "studio", "mode": "local", "guest": True})
+    with pytest.raises(ValueError, match="remote_isolation_confirmed = true"):
+        DesktopHost.model_validate({"name": "studio", "mode": "remote", "url": "https://studio.example.org", "guest": True})
     raw = {"desktop": {"hosts": [{"name": "studio", "mode": "remote", "url": "https://studio.example.org", "guest": True}]}}
-    with pytest.raises(ValueError, match="cannot be kept for guests"):
+    with pytest.raises(ValueError, match="remote_isolation_confirmed"):
         validate_config(tmp_path, raw)
+    # Confirmed isolated remote guest host is valid.
+    confirmed = DesktopHost.model_validate({
+        "name": "studio", "mode": "remote", "url": "https://studio.example.org",
+        "remote_isolation_confirmed": True, "guest": True,
+    })
+    assert confirmed.guest is True and confirmed.remote_isolation_confirmed is True
     DesktopHost.model_validate({"name": "studio", "mode": "remote", "url": "https://studio.example.org", "guest": False})
 
 
@@ -831,3 +855,68 @@ async def test_a_page_whose_address_cannot_be_read_is_closed_for_a_guest_task(ma
     assert any("address could not be read" in text and "closed" in text for text in seen), seen
     assert not any("Text of the page" in text for text in seen)
     assert app.boxes[GUEST].url == "about:blank"
+
+
+async def test_session_approval_grants_timed_access_and_delivers_verified_screenshots(make_app):
+    """Tapping Allow 3h + screenshots grants a timed session for that chat: subsequent tasks auto-start (even when
+    asked by the owner in the group), save_screenshot is enabled, and verified PNG screenshots are sent to the chat."""
+    from types import SimpleNamespace
+
+    app = guest_app(
+        make_app,
+        call("browse", url="https://garden.example.org/"),
+        call("save_screenshot", name="frontpage"),
+        call("finish", result="Here is the front page.", files=["/home/gem/outbox/guest-frontpage.png"]),
+        SAY,
+        call("finish", result="Second lookup done."),
+        SAY,
+    )
+    sent_photos = []
+
+    async def fake_send_photo(chat_id, photo, **kwargs):
+        sent_photos.append((chat_id, photo.filename, photo.data))
+        return SimpleNamespace(message_id=999)
+
+    app.bot.send_photo = fake_send_photo
+    await approve(app)
+    await app.store.set_chat_auth_status(GROUP, "approved", title="Book club")
+
+    assert "Asked the owner" in await request(app, brief="screenshot the front page")
+    pending = await cards(app)
+    ok, label = await app.desktop_permissions.decide(pending["id"], "session", via="dashboard")
+    assert ok and "3h" in label
+
+    async with asyncio.timeout(5):
+        while not await app.store.desktop_tasks(OWNER):
+            await asyncio.sleep(0.01)
+    first_id = (await app.store.desktop_tasks(OWNER))[0]["id"]
+    await finished(app, first_id)
+    assert await settled(app) == ["It opens at 9, closes at 6."]
+    assert len(sent_photos) == 1 and sent_photos[0][0] == GROUP and sent_photos[0][1] == "screenshot.png"
+
+    # During the active session, a second request (even from OWNER in the group!) auto-starts without a new card.
+    assert await app.guest_desktop.session_grant(GROUP) is not None
+    auto_reply = await request(app, sender=OWNER, brief="check opening hours")
+    assert "active session" in auto_reply
+    assert await app.store.pending_desktop_permission_requests() == []
+
+
+async def test_remote_isolated_guest_host_resets_before_and_after_each_task(make_app):
+    """A dedicated remote host with guest=True and remote_isolation_confirmed=True runs guest tasks, refuses owner
+    tasks, and calls reset_guest() before and after every task."""
+    remote_guest = DesktopHost(
+        name="macguest", mode="remote", url="https://guest.example.org",
+        remote_isolation_confirmed=True, guest=True,
+    )
+    app = guest_app(make_app, call("finish", result="Checked remotely."), SAY, hosts=[remote_guest])
+    fleet = app.desktop_worker
+    assert fleet.has_guest_host() is True
+    lane = fleet.guest_lane()
+    assert lane is not None and lane.name == "macguest" and fleet.for_guests(lane) is True
+    with pytest.raises(ValueError, match="kept for tasks that groups and friends ask for"):
+        await fleet.enqueue(OWNER, "owner task", container="macguest")
+
+    await approve(app)
+    task_id = await fleet.enqueue_guest(BRIEF, GROUP, "Book club", "Sam")
+    await finished(app, task_id)
+    assert app.boxes["macguest"].resets == 2  # once before the task starts, once in finally after it ends

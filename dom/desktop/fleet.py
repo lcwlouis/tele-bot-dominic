@@ -62,7 +62,8 @@ class DesktopFleet:
         self._factory = sandbox_factory or self._build
         self._options = worker_options
         self.lanes: dict[str, Lane] = {}
-        first = self.hosts[0].config if self.hosts else None
+        non_guest = [h.config for h in self.hosts if not h.config.guest]
+        first = non_guest[0] if non_guest else (self.hosts[0].config if self.hosts else None)
         self.default = first.name if first is not None and first.mode == "remote" else DEFAULT
         # The default container and every remote host (a remote host is one container) exist from the start, so
         # they are visible and usable without a first use. Starting any of them stays lazy.
@@ -110,19 +111,25 @@ class DesktopFleet:
     @staticmethod
     def for_guests(lane: Lane) -> bool:
         """Whether this container is the one for tasks that groups and friends ask for; the owner's never run in it."""
-        return lane.name == GUEST
+        return lane.name == GUEST or lane.host.config.guest
 
     def has_guest_host(self) -> bool:
-        """Whether a guest container can run: only the local host can, because Dom starts and destroys it himself.
-        A remote sandbox cannot be reset between chats, so it never takes a guest task."""
-        return any(host.config.mode == "local" for host in self.hosts)
+        """Whether a guest container can run: a local Docker host or a dedicated isolated remote guest host."""
+        return any(
+            host.config.mode == "local"
+            or (host.config.mode == "remote" and host.config.guest and host.config.remote_isolation_confirmed)
+            for host in self.hosts
+        )
 
     def guest_lane(self) -> Lane | None:
-        """Where a guest task runs: a container of its own on the local host, or None without one."""
+        """Where a guest task runs: prefers a dedicated isolated remote guest host if configured, else a local guest container."""
+        for host in self.hosts:
+            if host.config.mode == "remote" and host.config.guest and host.config.remote_isolation_confirmed:
+                return self.lane(host.config.name)
         try:
             return self.lane(GUEST)
         except ValueError:
-            return None  # no local host
+            return None  # no local or remote guest host
 
     def containers(self) -> list[Lane]:
         """The containers worth showing: the default one and each remote host, and every other that is running or has a task."""

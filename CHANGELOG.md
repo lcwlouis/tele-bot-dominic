@@ -6,6 +6,12 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-11-28
+
+- **Timed guest desktop sessions & verified screenshots.** Guest desktop approval cards (in Telegram and the dashboard's Waiting/Access pages) now offer **Allow 3h + screenshots** alongside **Allow once** and **Reject** (still never Allow always), and you can also manage timed sessions from your DM with `guest_desktop_access` (`grant`, `revoke`, `status`) or set `[desktop.guest] allow_screenshots = true` / `session_hours = 3.0`. During an active session, guest tasks in that chat auto-start (including when you ask Dom in a group), `save_screenshot` is enabled, and up to 2 SHA-256-verified PNG screenshots are delivered to the chat while all other file downloads remain blocked.
+- **Dedicated remote guest desktop hosts.** `[[desktop.hosts]]` now supports `guest = true` on a remote host when `remote_isolation_confirmed = true`. Dedicated remote guest hosts never run owner tasks and are automatically reset (`about:blank`, browser storage/cookies, clipboard, and temp files) before and after every guest task.
+- **Cross-chat voice notes.** `message_chat` now accepts `voice = true` to send an owner-approved voice note (synthesized via Studio / cloud TTS fallback) to an approved group or friend chat. Voice notes still go through the exact same private-text check, leak check, owner approval card (showing the exact spoken script), and per-chat Studio media/quota rules.
+
 ## [0.8.10] - 2026-11-28
 
 - **Downtime background organizer for imported memories.** Approving imported memory proposals now stages them in a persistent backend queue instead of writing directly into `private/USER.md` (which previously hit the 1,375-character cap on bulk imports). Strictly during Dom's downtime (when the owner DM is offline or asleep and no chat turns are active), Dom automatically organizes staged facts in batches into `private/USER.md` (compacted within 1,375 chars while preserving pinned core memories), `private/NOTES.md`, owner-only `memory/{projects,goals,places}/*.md` notes, and scheduled reminders, then notifies the owner once the queue finishes.

@@ -3079,7 +3079,8 @@ class Store:
                     "json_array(json_object('status', 'awaiting_approval', 'at', ?))) RETURNING id",
                     (source, target, body["text"], body["reason"], at, at, at),
                 ).fetchone()[0]
-                title = f'Send a message to "{body["target_title"]}"'
+                kind_label = "voice note" if body.get("voice") else "message"
+                title = f'Send a {kind_label} to "{body["target_title"]}"'
                 proposal_id = conn.execute(
                     "INSERT INTO proposals (kind, title, body_json, source, created_at) "
                     "VALUES ('cross_chat', ?, ?, 'message_chat', ?) RETURNING id",
@@ -3097,7 +3098,7 @@ class Store:
             predicate = "WHERE c.status IN ('awaiting_approval', 'queued', 'sending')" if work else ""
             order = "ORDER BY c.created_at, c.id" if work else "ORDER BY c.created_at DESC, c.id DESC LIMIT 20"
             return [dict(row) for row in self._conn.execute(
-                "SELECT c.*, p.status AS approval_status, p.created_at AS card_created_at, "
+                "SELECT c.*, p.status AS approval_status, p.created_at AS card_created_at, p.body_json AS proposal_body_json, "
                 "(SELECT title FROM chats WHERE chat_id = CAST(c.target_chat_id AS TEXT)) AS target_title "
                 f"FROM cross_chat c LEFT JOIN proposals p ON c.proposal_id = p.id {predicate} {order}",
             )]

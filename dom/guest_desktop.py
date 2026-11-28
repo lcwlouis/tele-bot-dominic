@@ -10,11 +10,15 @@ what the task can touch, and what leaves the task."""
 
 from __future__ import annotations
 
+import json
 import logging
 import textwrap
 import time
 from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+
+from aiogram.types import BufferedInputFile
 
 from dom import guard, notice
 from dom.actions import Actions, Bubble
@@ -29,11 +33,14 @@ from dom.traits import for_chat
 from dom.usage import ModelCallSkipped, check_model_allowed, local_hosts, model_request
 
 if TYPE_CHECKING:
+    from dom.desktop.worker import SendFile
     from dom.tools import TurnCtx
 
     from dom.telegram.handlers import App
 
 log = logging.getLogger(__name__)
+SESSION_KEY_PREFIX = "guest_desktop:session:"
+MAX_SESSION_HOURS = 12.0
 MAX_ANSWER = 700  # characters of the answer that goes back to the chat
 MAX_PENDING = 3  # cards waiting for the owner at once, so a busy group cannot flood his DM
 MAX_ASKS_PER_DAY = 6  # per chat
@@ -77,14 +84,56 @@ class GuestDesktop:
         fleet = self.app.desktop_worker
         return self.settings.enabled and self.app.owner_id is not None and fleet is not None and fleet.has_guest_host()
 
+    # ---- timed session grants --------------------------------------------------------------------------------------
+
+    @staticmethod
+    def _session_key(chat_id: int) -> str:
+        return f"{SESSION_KEY_PREFIX}{chat_id}"
+
+    async def grant_session(
+        self, chat_id: int, hours: float | None = None, *, screenshots: bool = True,
+    ) -> datetime:
+        """Grant a chat a timed guest desktop session (optionally including screenshots)."""
+        duration = self.settings.session_hours if hours is None else max(0.25, min(float(hours), MAX_SESSION_HOURS))
+        until = self.app.dispatch.now().astimezone(timezone.utc) + timedelta(hours=duration)
+        payload = {"until": until.isoformat(), "screenshots": bool(screenshots)}
+        await self.app.store.kv_set(self._session_key(chat_id), json.dumps(payload))
+        return until
+
+    async def revoke_session(self, chat_id: int) -> None:
+        await self.app.store.kv_set(self._session_key(chat_id), "")
+
+    async def session_grant(self, chat_id: int) -> dict | None:
+        raw = await self.app.store.kv_get(self._session_key(chat_id))
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            until = datetime.fromisoformat(data["until"])
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError, TypeError):
+            return None
+        if until <= self.app.dispatch.now().astimezone(timezone.utc):
+            return None
+        return {"until": until, "screenshots": bool(data.get("screenshots"))}
+
+    async def screenshots_allowed(self, chat_id: int) -> bool:
+        if self.settings.allow_screenshots:
+            return True
+        grant = await self.session_grant(chat_id)
+        return bool(grant and grant.get("screenshots"))
+
     # ---- the request ----------------------------------------------------------------------------------------------
 
     async def request(self, ctx: TurnCtx, brief: object) -> str:
-        """The `request_guest_desktop` tool: check the asker and the brief in code, then ask the owner in the background."""
+        """The `request_guest_desktop` tool: check the asker and the brief in code, then ask the owner in the background
+        (or start right away when this chat has an active timed session grant)."""
         app = self.app
         if ctx.scope not in ("group", "friend_dm") or ctx.chat_id == app.owner_id or ctx.app is not app:
             return "error: this is only for groups and friends' chats"
-        if ctx.sender_id is not None and ctx.sender_id == app.owner_id:
+        grant = await self.session_grant(ctx.chat_id)
+        if ctx.sender_id is not None and ctx.sender_id == app.owner_id and grant is None:
             return "error: the owner is here; he can ask you for desktop work in his own DM"
         if not self.available() or await app.desktop_permissions.resolve("guest_desktop") == "never":
             return "error: desktop tasks for this chat are off right now"
@@ -103,8 +152,17 @@ class GuestDesktop:
         chat = await app.store.get_chat_auth_status(str(ctx.chat_id))
         title = " ".join(str(chat.get("title") or "").split())[:120] or str(ctx.chat_id)
         asker = await self._asker_name(ctx)
-        self._pending.add(ctx.chat_id)
         self._asked[ctx.chat_id].append(time.monotonic())
+        if grant is not None:
+            fenced = untrusted(f"{title} / {asker}: {text}", limit=500)
+            try:
+                task_id = await app.desktop_worker.enqueue_guest(text, ctx.chat_id, title, asker)
+            except ValueError as exc:
+                log.info("guest desktop task not queued during session: %s", exc)
+                return f"error: {exc}"
+            await app.store.record_owner_event(f"Auto-started guest desktop task #{task_id} (active session). {fenced}")
+            return "Started the guest desktop task under this chat's active session. Tell them you're checking and will send the answer when it's ready."
+        self._pending.add(ctx.chat_id)
         app.dispatch._spawn(self._ask(ctx.chat_id, ctx.scope, title, asker, text))
         return REQUEST_TOOL_NOTE
 
@@ -152,11 +210,16 @@ class GuestDesktop:
                 action="guest_desktop", site="", detail=f"{title}: {brief}", lines=lines, timeout_seconds=APPROVAL_TIMEOUT,
             )
             fenced = untrusted(f"{title} / {asker}: {brief}", limit=500)
-            if outcome != "allowed_once":
+            if outcome not in ("allowed_once", "allowed_session"):
                 said = {"expired": "went unanswered", "cancelled": "was cancelled"}.get(outcome, "was rejected")
                 await app.store.record_owner_event(f"A guest desktop request {said}. {fenced}")
                 await self.say(chat_id, NOTE_NO, NO)
                 return
+            if outcome == "allowed_session":
+                until = await self.grant_session(chat_id, screenshots=True)
+                await app.store.record_owner_event(
+                    f"Granted guest desktop session (+ screenshots) for {title} until {until.isoformat()}"
+                )
             try:
                 task_id = await app.desktop_worker.enqueue_guest(brief, chat_id, title, asker)
             except ValueError as exc:  # the host went away, or another guest task got there first
@@ -198,9 +261,9 @@ class GuestDesktop:
 
     # ---- the answer ------------------------------------------------------------------------------------------------
 
-    async def report(self, row: dict) -> None:
+    async def report(self, row: dict, files: tuple[SendFile, ...] = ()) -> None:
         """A guest task ended: the owner gets a short notice (the full task is on the Work page), and the chat gets
-        only an answer Dom writes from the result. Never screenshots, page text or addresses."""
+        an answer Dom writes from the result (plus verified PNG screenshots if allowed for this chat)."""
         app, chat_id, task_id = self.app, row["guest_chat_id"], row["id"]
         status = row["status"]
         title = row["guest_chat_title"] or str(chat_id)
@@ -215,19 +278,22 @@ class GuestDesktop:
             log.warning("could not tell the owner about guest task %s (%s)", task_id, type(exc).__name__)
         await app.store.record_owner_event(f"Guest desktop task #{task_id} {status}")
         if status == "done":
-            await self._answer(row)
+            await self._answer(row, files=files)
         elif status == "cancelled":
             await self.say(chat_id, NOTE_NO, NO, started_at=row["started_at"])
         else:
             await self.say(chat_id, NOTE_FAILED, COULD_NOT, started_at=row["started_at"])
 
-    async def _answer(self, row: dict) -> None:
+    async def _answer(self, row: dict, *, files: tuple[SendFile, ...] = ()) -> None:
         chat_id, app = row["guest_chat_id"], self.app
         result = redact_secrets(row["result"] or "", app.config)
         note = NOTE_ANSWER.format(request=untrusted(row["brief"], limit=700), found=untrusted(result, limit=2500))
-        await self.say(chat_id, note, COULD_NOT, filtered=True, started_at=row["started_at"])
+        await self.say(chat_id, note, COULD_NOT, filtered=True, started_at=row["started_at"], files=files)
 
-    async def say(self, chat_id: int, note: str, fallback: str, *, filtered: bool = False, started_at: str | None = None) -> None:
+    async def say(
+        self, chat_id: int, note: str, fallback: str, *, filtered: bool = False,
+        started_at: str | None = None, files: tuple[SendFile, ...] = (),
+    ) -> None:
         """One short message from Dom to the chat, in his voice from `note`; `fallback`, a fixed line that costs
         nothing, when it cannot be written. The call is paid, so it runs under the same limits as the task's steps
         (`pause`, for the task that began at `started_at`): at a cap the chat gets the fallback and no call is made.
@@ -261,6 +327,17 @@ class GuestDesktop:
                 app.bot, app.store, chat_id, None, Actions(bubbles=[Bubble(text=text) for text in texts]),
                 sleep=app.sleep, link_previews=False,
             )
+            if files and await self.screenshots_allowed(chat_id):
+                for item in files[:2]:
+                    try:
+                        await executor.retry_telegram(
+                            lambda data=item.data: app.bot.send_photo(
+                                chat_id, BufferedInputFile(data, filename="screenshot.png"),
+                            ),
+                            sleep=app.sleep,
+                        )
+                    except Exception as exc:
+                        log.warning("could not send guest screenshot to chat %s (%s)", chat_id, type(exc).__name__)
 
     def _clean(self, texts: list[str]) -> list[str]:
         """What may leave: no web addresses or mentions, nothing that repeats private notes, a bounded length."""

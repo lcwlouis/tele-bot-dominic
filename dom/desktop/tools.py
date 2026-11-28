@@ -82,8 +82,9 @@ BROWSER = ("browse", "read_page", "list_elements", "click", "fill", "press", "sc
 # shell or Python: those would share the user, files and X display with the browser and could drive it directly.
 OWN = (*BROWSER, "read_file", "write_file")
 # What a task for a group or a friend may use: the same read-only browser as a self-directed task, as text only: no
-# files (nothing it makes is sent anywhere), no screenshots, and no `look`, which is a paid vision call of its own.
+# files (nothing it makes is sent anywhere), no screenshots by default, and no `look`, which is a paid vision call of its own.
 GUEST = tuple(name for name in BROWSER if name not in ("save_screenshot", "look"))
+GUEST_WITH_SCREENSHOTS = (*GUEST, "save_screenshot")
 SEARCH_TEXT_LIMIT = 120
 _BLANK = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/")
 _SITE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")

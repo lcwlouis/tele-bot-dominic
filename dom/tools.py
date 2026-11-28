@@ -889,6 +889,7 @@ async def _message_chat(args: dict, ctx: TurnCtx) -> str:
         return "Only the owner can publish messages to other chats."
     return await ctx.app.dispatch.cross_chat.message_chat(
         ctx.chat_id, args.get("chat"), args.get("text"), args.get("reason"),
+        voice=bool(args.get("voice")),
     )
 
 
@@ -907,12 +908,17 @@ _DELIVERY_FIELDS = {
 MESSAGE_CHAT = Tool(
     name="message_chat",
     description=(
-        "Draft one ordinary text message to an approved group or friend's DM for the owner to approve. "
-        "Write as you would text that chat yourself. Only say the owner asked if he wants that said."
+        "Draft one message or voice note to an approved group or friend's DM for the owner to approve. "
+        "Set voice=true to send as a voice note (using Studio TTS) instead of plain text; the owner still approves the exact script first. "
+        "Write as you would text or speak to that chat yourself. Only say the owner asked if he wants that said."
     ),
     schema={
         "type": "object",
-        "properties": {"chat": {"type": "string", "description": "The chat title or numeric ID"}, **_DELIVERY_FIELDS},
+        "properties": {
+            "chat": {"type": "string", "description": "The chat title or numeric ID"},
+            "voice": {"type": "boolean", "description": "Send as a voice note instead of plain text (uses Studio TTS)"},
+            **_DELIVERY_FIELDS,
+        },
         "required": ["chat", "text", "reason"],
     },
     scopes={"owner_dm"},
@@ -930,16 +936,69 @@ async def _request_guest_desktop(args: dict, ctx: TurnCtx) -> str:
 REQUEST_GUEST_DESKTOP = Tool(
     name="request_guest_desktop",
     description=(
-        "When someone here asks for something that needs a web search or a look at a website, and you cannot answer it "
-        "yourself, you may propose a small desktop task. The owner decides first; he may say no, and you will not "
-        "say why. Write a short brief of what to look up, using only what was said in THIS chat. Never include "
-        "anything from the owner's DM, private notes or other chats, and never any secret. Tell the person you'll "
-        "check, in your own words, then carry on. The answer comes back to this chat by itself. "
+        "When someone here asks for something that needs a web search, a look at a website, or a screenshot of a public page, "
+        "and you cannot answer it yourself, you may propose a small desktop task. The owner decides first (unless this chat has "
+        "an active timed session); he may say no, and you will not say why. Write a short brief of what to look up, using only "
+        "what was said in THIS chat. Never include anything from the owner's DM, private notes or other chats, and never any secret. "
+        "Tell the person you'll check, in your own words, then carry on. The answer comes back to this chat by itself. "
         "The task only reads public web pages: it cannot log in, post, buy or send anything."
     ),
     schema={"type": "object", "properties": {"brief": {"type": "string", "maxLength": MAX_GUEST_BRIEF}}, "required": ["brief"]},
     handler=_request_guest_desktop,
     scopes={"group", "friend_dm"},
+)
+
+
+async def _guest_desktop_access(args: dict, ctx: TurnCtx) -> str:
+    if ctx.app is None or not ctx.is_owner_dm():
+        return "Only the owner can manage guest desktop sessions."
+    app = ctx.app
+    action = str(args.get("action") or "").strip().lower()
+    chat_query = args.get("chat")
+    try:
+        target, title = await app.dispatch.cross_chat._target(chat_query)
+    except ValueError as exc:
+        return f"error: {exc}"
+    if action == "status":
+        grant = await app.guest_desktop.session_grant(target)
+        if grant is None:
+            return f"No active guest desktop session for {title}."
+        shots = "with screenshots" if grant.get("screenshots") else "without screenshots"
+        return f"Guest desktop session active for {title} ({shots}) until {grant['until'].isoformat()}."
+    if action == "grant":
+        hours = args.get("hours")
+        screenshots = True if args.get("screenshots") is None else bool(args.get("screenshots"))
+        until = await app.guest_desktop.grant_session(target, hours=hours, screenshots=screenshots)
+        shots = "with screenshots" if screenshots else "without screenshots"
+        await app.store.record_owner_event(f"Granted guest desktop session ({shots}) for {title} until {until.isoformat()}")
+        return f"Granted guest desktop session for {title} ({shots}) until {until.isoformat()}."
+    if action == "revoke":
+        await app.guest_desktop.revoke_session(target)
+        await app.store.record_owner_event(f"Revoked guest desktop session for {title}")
+        return f"Revoked guest desktop session for {title}."
+    return "error: action must be status, grant, or revoke"
+
+
+GUEST_DESKTOP_ACCESS = Tool(
+    name="guest_desktop_access",
+    description=(
+        "Manage timed guest desktop sessions (and screenshot permission) for an approved group or friend chat. "
+        "grant: allow guest desktop tasks in that chat for a few hours (default 3h, max 12h) with optional screenshots=true. "
+        "revoke: end an active session early. status: check whether a session is active."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["status", "grant", "revoke"]},
+            "chat": {"type": "string", "description": "The chat title or numeric ID"},
+            "hours": {"type": "number", "minimum": 0.25, "maximum": 12},
+            "screenshots": {"type": "boolean"},
+        },
+        "required": ["action", "chat"],
+        "additionalProperties": False,
+    },
+    handler=_guest_desktop_access,
+    scopes={"owner_dm"},
 )
 TELL_OWNER = Tool(
     name="tell_owner",
@@ -994,6 +1053,8 @@ async def enabled_tools(app: App, scope: Scope) -> list[Tool]:
         owner_only.append(EVENT_DAY_TOOL)
     if app.desktop_worker is not None and app.desktop_worker.available():
         owner_only.append(START_DESKTOP_TASK)
+    if app.guest_desktop.available():
+        owner_only.append(GUEST_DESKTOP_ACCESS)
     if app.t3 is not None and app.t3.available():
         from dom.t3.tools import TOOLS
 

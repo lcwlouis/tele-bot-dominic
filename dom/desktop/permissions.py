@@ -32,7 +32,7 @@ DesktopAction = Literal[
     "doc_create", "doc_append", "sheet_create", "sheet_append", "sheet_update",
 ]
 PermissionPolicy = Literal["ask", "allow", "never"]
-ApprovalDecision = Literal["once", "always", "reject"]
+ApprovalDecision = Literal["once", "always", "session", "reject"]
 
 ACTIONS: tuple[DesktopAction, ...] = (
     "visit_site", "fill_login", "download", "upload", "background_work",
@@ -155,11 +155,13 @@ ACTION_META: dict[DesktopAction, dict[str, str]] = {
 _DECISION_STATUS = {
     "once": "allowed_once",
     "always": "allowed_always",
+    "session": "allowed_session",
     "reject": "rejected",
 }
 _SETTLED_LABELS = {
     "allowed_once": "✅ Allowed once",
     "allowed_always": "✅ Allowed always",
+    "allowed_session": "✅ Allowed 3h (+ screenshots)",
     "rejected": "❌ Rejected",
     "expired": "Expired",
     "cancelled": "Cancelled",
@@ -549,7 +551,7 @@ class DesktopPermissions:
             return "expired"
         committed = await app.store.get_desktop_permission_request(request_id)
         status = committed["status"] if committed else "expired"
-        return status if status in ("allowed_once", "allowed_always", "rejected", "cancelled") else "expired"
+        return status if status in ("allowed_once", "allowed_always", "allowed_session", "rejected", "cancelled") else "expired"
 
     async def _send_card(
         self,
@@ -576,7 +578,11 @@ class DesktopPermissions:
         buttons = []
         if not dashboard_only:  # a card that cannot show everything can only be rejected here
             buttons.append(InlineKeyboardButton(text="Allow once", callback_data=f"dperm:once:{request_id}:{token}"))
-            if action not in NO_ALLOW_ALWAYS and (action in GLOBAL_ACTIONS or normalize_site(site) is not None):
+            if action == "guest_desktop":
+                hours = app.config.desktop.guest.session_hours
+                label = f"Allow {hours:g}h + screenshots"
+                buttons.append(InlineKeyboardButton(text=label, callback_data=f"dperm:session:{request_id}:{token}"))
+            elif action not in NO_ALLOW_ALWAYS and (action in GLOBAL_ACTIONS or normalize_site(site) is not None):
                 buttons.append(InlineKeyboardButton(text="Allow always", callback_data=f"dperm:always:{request_id}:{token}"))
         buttons.append(InlineKeyboardButton(text="Reject", callback_data=f"dperm:reject:{request_id}:{token}"))
         try:
@@ -635,6 +641,8 @@ class DesktopPermissions:
         waiter = self._waiters.get(request_id)
         if decision == "always" and (action in ASK_EVERY_TIME or action in NO_ALLOW_ALWAYS):
             return False, "this one is always asked"
+        if decision == "session" and action != "guest_desktop":
+            return False, "timed session approval is only for guest desktop tasks"
         if decision != "reject":
             if via == "telegram" and request_id in self._dashboard_only:
                 return False, "approve this one on the dashboard"

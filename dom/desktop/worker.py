@@ -574,8 +574,9 @@ class DesktopWorker:
         task_id, chat_id, store = row["id"], row["chat_id"], self.app.store
         with secret_redaction_scope() as redactions:
             progress = Progress(redactions=redactions)
+            files: tuple[SendFile, ...] = ()
             try:
-                result = await self._work_guest(row, progress)
+                result, files = await self._work_guest(row, progress)
             except Refused:
                 return True
             except GuardRefused as exc:
@@ -606,38 +607,60 @@ class DesktopWorker:
                     task_id, chat_id, ("running",), "done", result=redact_secrets(result, self.app.config, extra=progress.redactions),
                 )
             if settled:
-                await self._report(settled)
+                await self._report(settled, files)
         return False
 
-    async def _work_guest(self, row: dict, progress: Progress) -> str:
+    async def _work_guest(self, row: dict, progress: Progress) -> tuple[str, tuple[SendFile, ...]]:
         """One guest task on this container: no logins and no files of the owner's, the read-only browser, the guest
         step and time limits, and model calls attributed to the asking chat."""
         settings, owner = self.app.config.desktop.guest, row["chat_id"]
+        stop = getattr(self.sandbox, "stop", None)
+        reset = getattr(self.sandbox, "reset_guest", None)
+        if stop is None and reset is None:
+            raise SandboxError("a task for a chat needs a container Dom can remove or reset")
         try:
-            if (stop := getattr(self.sandbox, "stop", None)) is None:
-                raise SandboxError("a task for a chat needs a container Dom can remove")
-            # A container an earlier task's clean-up could not remove is removed now; if it still cannot be, this
-            # task fails rather than finding what the earlier one left.
-            await stop()
+            # Clean any leftover state from an earlier task before this task starts.
+            if stop is not None:
+                await stop()
+            else:
+                await reset()
             with self.sandbox.in_use():
                 client = await self.sandbox.ensure_running()  # a local start is bounded by the sandbox's own timeout
                 await self._restore_screen(client)
                 if reason := await network.verify_inside(client, self.app.config):
                     raise GuardRefused(reason)  # the container proves, from inside, that the LAN is closed
                 deadline = asyncio.get_running_loop().time() + settings.max_minutes * 60
-                names = frozenset(tools.GUEST) | {"finish"}
+                allow_shots = await self.app.guest_desktop.screenshots_allowed(row["guest_chat_id"])
+                names = frozenset(tools.GUEST_WITH_SCREENSHOTS if allow_shots else tools.GUEST) | {"finish"}
+                system_prompt = GUEST_SYSTEM_PROMPT
+                if allow_shots:
+                    system_prompt += (
+                        " Screenshots are allowed for this chat: if the user asked for a screenshot of a public page, "
+                        "call save_screenshot and pass its path in finish files (at most 2 screenshots)."
+                    )
                 run = Run(
-                    row["id"], owner, row["started_at"], GUEST_SYSTEM_PROMPT, row["brief"], names, settings.max_steps, deadline,
+                    row["id"], owner, row["started_at"], system_prompt, row["brief"], names, settings.max_steps, deadline,
                     step=lambda steps, until: self._step(row["id"], owner, steps, until), tool=self._tool, is_own=True,
                     guest=True, usage_chat=row["guest_chat_id"],
                 )
                 run.tool = partial(self._guest_tool, run, OwnRun(None))
-                result, _, _ = await self._loop(client, run, progress)
-                return result
+                result, files, _ = await self._loop(client, run, progress)
+                if not allow_shots:
+                    files = ()
+                else:
+                    # Strictly keep only PNG screenshots captured by save_screenshot during this run (max 2).
+                    files = tuple(f for f in files if f.filename.lower().endswith(".png"))[:2]
+                return result, files
         finally:
-            # However it ended (an answer, a failure, the time limit, a cancel or a crash) the container goes before the
-            # chat or the owner is told anything: Dom cannot reset a browser, so no task may find what an earlier one left.
-            await asyncio.shield(self._stop_sandbox())
+            # However it ended (an answer, a failure, the time limit, a cancel or a crash) the container is removed or
+            # reset before the chat or owner is told anything.
+            if stop is not None:
+                await asyncio.shield(self._stop_sandbox())
+            elif reset is not None:
+                try:
+                    await asyncio.shield(reset())
+                except Exception as exc:
+                    log.warning("could not reset remote guest sandbox after task (%s)", type(exc).__name__)
 
     async def _run(self, task_id: int, chat_id: int) -> None:
         try:
@@ -854,7 +877,11 @@ class DesktopWorker:
                                 result = self._redact(client, args["result"], run).strip()[:tools.RESULT_LIMIT]
                                 if not result:
                                     raise ValueError("finish needs a result")
-                                requested_files = [] if run.guest else args.get("files", [])
+                                if run.guest:
+                                    # Guest tasks may return ONLY verified screenshots captured by save_screenshot in this run.
+                                    requested_files = [p for p in args.get("files", []) if p in run.screenshots][:2]
+                                else:
+                                    requested_files = args.get("files", [])
                                 download_approved = False
                                 site = ""
                                 if requested_files and not run.is_own:
@@ -870,6 +897,11 @@ class DesktopWorker:
                                         download_approved = True
                                 async with asyncio.timeout_at(run.deadline):
                                     documents = await download_results(client, requested_files)
+                                if run.guest and requested_files:
+                                    documents = tuple(
+                                        doc for path, doc in zip(requested_files, documents)
+                                        if path in run.screenshots and hashlib.sha256(doc.data).digest() == run.screenshots[path]
+                                    )
                                 if requested_files and not run.is_own and not download_approved:
                                     # Never trust screenshot paths as plain strings: verify the downloaded bytes
                                     # match the exact SHA-256 captured by save_screenshot.
@@ -1293,6 +1325,13 @@ class DesktopWorker:
         on `browse`. A page it may not be on is closed and the model hears only the refusal."""
         if name == "browse" and (refusal := await self._open_refusal(run, args["url"])) is not None:
             return refusal
+        if name == "save_screenshot":
+            stem = PurePosixPath(safe_filename(args.get("name"))).stem or "screenshot"
+            path = f"{OUTBOX_DIR}/{'' if self.container == DEFAULT else self.container + '-'}{stem}.png"
+            data = await client.screenshot()
+            await client.upload_file(path, data)
+            run.screenshots[path] = hashlib.sha256(data).digest()
+            return {"path": path}
         result = await self._own_tool(own, client, name, args)
         if name in PAGE_TOOLS and (refusal := await self._landing_refusal(run, client, name)) is not None:
             return refusal

@@ -1108,7 +1108,7 @@ async def handle_callback(app: App, query: CallbackQuery) -> None:
         decision, _, payload = raw_chat_id.partition(":")
         raw_id, _, token = payload.partition(":")
         request_id = _item_id(raw_id)
-        if request_id is not None and decision in ("once", "always", "reject") and token:
+        if request_id is not None and decision in ("once", "always", "session", "reject") and token:
             ok, label = await app.desktop_permissions.decide(request_id, decision, via="telegram", token=token)
             await _toast(app, query, label if ok else "already handled")
         return

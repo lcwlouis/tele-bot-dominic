@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -99,7 +100,9 @@ class CrossChat:
         choices = ", ".join(f"{title} ({chat})" for chat, title in matches) or "none"
         raise ValueError(f"Choose a single approved chat by ID. Available matches: {choices}.")
 
-    async def message_chat(self, source: int, chat: object, text: object, reason: object) -> str:
+    async def message_chat(
+        self, source: int, chat: object, text: object, reason: object, *, voice: bool = False,
+    ) -> str:
         if source != self.app.owner_id:
             raise ValueError("Only the owner can publish messages to other chats.")
         text, reason = validate_text(text, reason)
@@ -115,10 +118,13 @@ class CrossChat:
             except ModelCallSkipped:
                 pass
         at = self.now()
-        await self.store.create_cross_chat_card({
+        body = {
             "source_chat_id": source, "target_chat_id": target, "target_title": title[:128],
             "text": text, "reason": reason, "leak_score": score,
-        }, at.isoformat(), self.day_start(at))
+        }
+        if voice:
+            body["voice"] = True
+        await self.store.create_cross_chat_card(body, at.isoformat(), self.day_start(at))
         self._wake.set()
         return "Waiting for the owner's OK on a card; it goes out once approved."
 
@@ -246,12 +252,35 @@ class CrossChat:
 
                 try:
                     silent = row["kind"] != "message" and self.dispatch.presence._sleep_end(at, self.dispatch._habits()) is not None
-                    sent = await executor.perform(
-                        self.app.bot, self.store, target, None, Actions(bubbles=[Bubble(text=row["text"])]),
-                        sleep=self.app.sleep, now=self.now, record=row["kind"] != "alert",
-                        disable_notification=silent, link_previews=False, retry_refused=True,
-                        authorize_message=authorize_message,
-                    )
+                    body = {}
+                    if row.get("proposal_body_json"):
+                        try:
+                            body = json.loads(row["proposal_body_json"])
+                        except ValueError:
+                            body = {}
+                    if row["kind"] == "message" and body.get("voice"):
+                        await authorize_message()
+                        scope = "group" if target < 0 else "friend_dm"
+                        sent: list[int] = []
+
+                        async def on_voice_sent(msg_id: int) -> None:
+                            sent.append(msg_id)
+
+                        async def still_wanted() -> bool:
+                            return not self.expired(row) and await self.store.is_chat_approved(target)
+
+                        await executor.deliver_studio(
+                            self.app, target, scope, None, None,
+                            Actions(bubbles=[], voice=row["text"]),
+                            on_voice_sent, still_wanted=still_wanted,
+                        )
+                    else:
+                        sent = await executor.perform(
+                            self.app.bot, self.store, target, None, Actions(bubbles=[Bubble(text=row["text"])]),
+                            sleep=self.app.sleep, now=self.now, record=row["kind"] != "alert",
+                            disable_notification=silent, link_previews=False, retry_refused=True,
+                            authorize_message=authorize_message,
+                        )
                 except TelegramMigrateToChat as error:
                     # An explicit migration rejection means Telegram never accepted this send.
                     migration = error.migrate_to_chat_id

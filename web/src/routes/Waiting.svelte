@@ -71,7 +71,7 @@
   const chosen = (card: Extract<WaitingCard, { type: "import" }>) => card.facts.filter((fact) => picked[fact.id] !== false).map((fact) => fact.id);
   const select = "h-10 rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
-  async function decideDesktopPermission(id: number, decision: "once" | "always" | "reject") {
+  async function decideDesktopPermission(id: number, decision: "once" | "always" | "session" | "reject") {
     try {
       const res = await send<{ ok?: boolean; message: string }>("/api/access/decide", { id, decision });
       // A refused decision (expired, already handled, always asked) comes back as ok: false.
@@ -142,7 +142,9 @@
 <div role="region" aria-label={`Details of ${perm.action_label}`} tabindex="0" class="max-h-48 overflow-y-auto outline-none focus-visible:ring-3 focus-visible:ring-ring/50 text-muted-foreground break-words whitespace-pre-line">{perm.detail}</div>{/if}
               <div class="flex flex-wrap gap-2">
                 <Button disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "once")}>Allow once</Button>
-                {#if perm.can_allow_always !== false}
+                {#if perm.action === "guest_desktop"}
+                  <Button variant="secondary" disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "session")}>Allow 3h + screenshots</Button>
+                {:else if perm.can_allow_always !== false}
                   <Button variant="secondary" disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "always")}>Allow always</Button>
                 {/if}
                 <Button variant="destructive" disabled={page.busy} onclick={() => decideDesktopPermission(perm.id, "reject")}>Reject</Button>

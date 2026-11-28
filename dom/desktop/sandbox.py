@@ -244,6 +244,22 @@ class RemoteSandbox:
     def in_use(self):
         return nullcontext()
 
+    async def reset_guest(self) -> None:
+        """Reset a dedicated remote guest sandbox between tasks: blank page, clear browser storage/clipboard, drop temp files."""
+        client = await self.ensure_running()
+        try:
+            await client.navigate("about:blank")
+            await client._eval_raw(
+                "(() => { try { localStorage.clear(); } catch (e) {} "
+                "try { sessionStorage.clear(); } catch (e) {} "
+                "try { document.cookie.split(';').forEach(c => { const n = c.split('=')[0].trim(); if (n) document.cookie = n + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/'; }); } catch (e) {} "
+                "return true; })()"
+            )
+            await client.clear_clipboard()
+            await client.bash("rm -rf /tmp/dom-guest-* /tmp/*.png /tmp/screenshot*.png 2>/dev/null || true")
+        except Exception as exc:
+            raise SandboxError(f"remote guest sandbox could not be reset: {exc}") from None
+
     async def close(self) -> None:
         if self._owns_http:
             await self._http.aclose()

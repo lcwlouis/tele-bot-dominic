@@ -78,6 +78,7 @@
   const STATUS_LABELS: Record<string, string> = {
     pending: "Pending",
     allowed_once: "Allowed once",
+    allowed_session: "Allowed 3h (+ screenshots)",
     allowed_always: "Allowed always",
     auto_allowed: "Allowed by rule",
     rejected: "Rejected",
@@ -175,7 +176,7 @@
   }
 
   function statusBadgeVariant(status: string): "secondary" | "destructive" | "outline" {
-    if (status === "allowed_once" || status === "allowed_always" || status === "auto_allowed") return "secondary";
+    if (status === "allowed_once" || status === "allowed_always" || status === "allowed_session" || status === "auto_allowed") return "secondary";
     if (status === "rejected" || status === "blocked") return "destructive";
     return "outline";
   }
@@ -215,7 +216,9 @@
             </div>
             <div class="flex flex-wrap gap-2">
               <Button size="sm" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "once" })}>Allow once</Button>
-              {#if req.can_allow_always !== false}
+              {#if req.action === "guest_desktop"}
+                <Button size="sm" variant="secondary" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "session" })}>Allow 3h + screenshots</Button>
+              {:else if req.can_allow_always !== false}
                 <Button size="sm" variant="secondary" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "always" })}>Allow always</Button>
               {/if}
               <Button size="sm" variant="destructive" disabled={busy} onclick={() => post("/api/access/decide", { id: req.id, decision: "reject" })}>Reject</Button>

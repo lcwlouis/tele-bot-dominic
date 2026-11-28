@@ -28,8 +28,56 @@ async def call_tool(app, scope, chat_id, name, **args):
     )
 
 
-async def draft(app, *, chat=GROUP, text="see you\n  there!", reason="Confirm the plan"):
-    return await call_tool(app, "owner_dm", OWNER, "message_chat", chat=chat, text=text, reason=reason)
+async def draft(app, *, chat=GROUP, text="see you\n  there!", reason="Confirm the plan", voice=False):
+    args = {"chat": chat, "text": text, "reason": reason}
+    if voice:
+        args["voice"] = True
+    return await call_tool(app, "owner_dm", OWNER, "message_chat", **args)
+
+
+async def test_cross_chat_voice_note_requires_approval_and_delivers_via_studio(make_app):
+    from types import SimpleNamespace
+
+    app = make_app()
+    await approve_chat(app, GROUP, "Book club")
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={"enabled": True, "voice": True, "base_url": "http://127.0.0.1:8080"}),
+    })
+
+    class FakeStudio:
+        ready = True
+
+        def model_for(self, worker):
+            return "fake-tts"
+
+        async def voice(self, text):
+            return b"OggS-fake-voice-bytes"
+
+    sent_voices = []
+
+    async def fake_send_voice(chat_id, voice, **kwargs):
+        sent_voices.append((chat_id, voice.filename, voice.data))
+        return SimpleNamespace(message_id=777)
+
+    async def fake_chat_action(chat_id, action, **kwargs):
+        return True
+
+    app.studio = FakeStudio()
+    app.bot.send_voice = fake_send_voice
+    app.bot.send_chat_action = fake_chat_action
+    reply = await draft(app, chat=GROUP, text="hey everyone, lunch at 2", reason="Send a voice update", voice=True)
+    assert "Waiting for the owner's OK" in reply
+
+    [proposal] = await app.proposals.pending()
+    assert 'Send a voice note to "Book club"' in proposal["title"]
+    assert json.loads(proposal["body_json"])["voice"] is True
+
+    # Approve and deliver through CrossChat worker.
+    assert await app.proposals.decide(proposal["id"], True) == "Approved"
+    await process_ready(app)
+    assert len(sent_voices) == 1 and sent_voices[0][0] == GROUP and sent_voices[0][2] == b"OggS-fake-voice-bytes"
+    [item] = await app.store.cross_chat_items()
+    assert item["status"] == "sent" and item["sent_msg_id"] == 777
 
 
 async def process_ready(app):

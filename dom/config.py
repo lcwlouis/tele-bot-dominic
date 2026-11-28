@@ -524,6 +524,10 @@ class DesktopHost(BaseModel):
     url: str = Field("", description="Sandbox API base URL of a remote host.")
     api_key_env: str = Field("SANDBOX_API_KEY", description="Secret variable for a remote host's sandbox API key.")
     remote_isolation_confirmed: bool = Field(False, description="Set after verifying the remote host cannot reach your LAN or Dom host.")
+    guest: bool = Field(
+        False,
+        description="Keep this remote desktop host exclusively for guest tasks (groups and friends). Requires mode = 'remote' and remote_isolation_confirmed = true.",
+    )
     max_containers: int = Field(1, ge=1, description="Most containers that may run at once on a local host. A remote host runs one.")
     min_free_memory_mb: int | None = Field(
         None, ge=0,
@@ -534,17 +538,16 @@ class DesktopHost(BaseModel):
     def _no_guest_host(cls, data: object) -> object:
         if isinstance(data, dict) and data.get("name") == "guest":
             raise ValueError("a desktop host cannot be named guest: the name belongs to the container for groups and friends")
-        if isinstance(data, dict) and data.get("guest"):
-            raise ValueError(
-                "a desktop host cannot be kept for guests (remove guest = true): Dom cannot reset a remote sandbox between "
-                "tasks, so tasks for groups and friends run only in a container Dom starts and removes himself on the local host"
-            )
         return data
 
     @model_validator(mode="after")
     def _limits(self) -> DesktopHost:
         if self.mode == "remote" and self.max_containers != 1:
             raise ValueError("a remote host runs one container; list another host for more")
+        if self.guest and self.mode != "remote":
+            raise ValueError("guest = true is only for a dedicated remote desktop host; local hosts already spin up an ephemeral guest container")
+        if self.guest and not self.remote_isolation_confirmed:
+            raise ValueError("a remote guest host must set remote_isolation_confirmed = true after verifying it cannot reach your LAN or Dom host")
         return self
 
     @property
@@ -580,6 +583,14 @@ class GuestDesktopConfig(BaseModel):
     )
     queue_minutes: float = Field(
         10, gt=0, le=60, allow_inf_nan=False, description="Minutes an approved guest task waits for the desktop (an owner task, or memory) before it gives up.",
+    )
+    allow_screenshots: bool = Field(
+        False,
+        description="Allow approved guest desktop tasks to take and send browser screenshots to the asking chat. Even when off, you can grant screenshots for a timed session.",
+    )
+    session_hours: float = Field(
+        3.0, gt=0, le=24, allow_inf_nan=False,
+        description="Default hours a timed guest desktop session approval lasts (including screenshots).",
     )
 
 
