@@ -20,7 +20,7 @@ from .process import WorkerError
 from .service import read_output
 
 
-VERSION = "0.8.6.1"
+VERSION = "0.8.7"
 MAX_BODY = 16 * 1024
 MAX_STILL = 3 * 1024**2  # a fresh still for a video note, as a PNG
 MAX_STILL_BODY = MAX_STILL * 4 // 3 + MAX_BODY  # that still as base64, plus the rest of the request

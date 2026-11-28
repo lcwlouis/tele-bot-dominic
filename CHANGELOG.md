@@ -6,11 +6,11 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
-## [0.8.6.1] - 2026-11-28
+## [0.8.7] - 2026-11-28
 
 - **Triage confidence, bot-to-bot limits, and ending conversations.** `[dispatch]` now exposes live-configurable `triage_confidence` (default `0.35`, down from the hardcoded `0.70` so Jev can act on stay-quiet and react-only verdicts), `bot_depth_limit` (default `3`, down from `6`), and `bot_reply_interval_seconds` (default `10`). All three are editable in **Settings → What Dom may do → Messaging → Triage & bot loops** and apply immediately without restarting. The chat prompt (`FRAME`) now explicitly tells Dom how to stay silent (`no_response: true`) or react-only when a conversation is wrapping up or over so he stops feeding goodbye loops.
 - **See and hear media from other bots.** Added `dispatch.bot_media` (default `false`, live switch in **Settings → What Dom may do → Messaging**) so Dom can optionally see and hear photos, stickers, voice notes and videos sent by other bots while still blocking bot-sent documents from landing in the workspace.
-- **Local speech-to-text with cloud fallback.** Added `[stt]` (`base_url`, `model`, `language`, `api_key_env`), editable and testable live in **Settings → Models → Local speech-to-text**. When the chat model does not accept audio natively, voice notes, audio files, and video/video-note soundtracks try the local OpenAI-compatible `/audio/transcriptions` server first and fall back automatically to `[models.media]` if it is unreachable or fails.
+- **Local speech-to-text with cloud fallback (and Studio MLX Whisper).** Added `[stt]` (`base_url`, `model`, `language`, `api_key_env`), editable and testable live in **Settings → Models → Local speech-to-text**. When the chat model does not accept audio natively, voice notes, audio files, and video/video-note soundtracks try the local OpenAI-compatible `/audio/transcriptions` server first and fall back automatically to `[models.media]` if it is unreachable or fails. Dom Studio now also includes an optional MLX Whisper worker (`[workers.stt]`, `POST /v1/audio/transcriptions`).
 - **Auto-refreshing model modality probes.** Cached probes for home/OpenAI-compatible chat endpoints now expire after 30 minutes (`Modalities.PROBE_TTL`, bounded in memory as well) and reset when routes change, so enabling vision on a local server is picked up automatically in the background (or immediately via **Probe again** in Settings → Models). Fixed the Models UI badge showing `Unknown` instead of `Text only` after a probe finds no media inputs.
 
 ## [0.8.6] - 2026-11-27
