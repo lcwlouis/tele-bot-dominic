@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 
 from dom import guard
-from dom.actions import Actions, Bubble
+from dom.actions import Actions, Bubble, VideoNote
 from dom.telegram import executor
 from dom.usage import ModelCallSkipped, check_model_allowed, model_request
 
@@ -101,13 +101,20 @@ class CrossChat:
         raise ValueError(f"Choose a single approved chat by ID. Available matches: {choices}.")
 
     async def message_chat(
-        self, source: int, chat: object, text: object, reason: object, *, voice: bool = False,
+        self, source: int, chat: object, text: object, reason: object, *,
+        voice: bool = False, video_note: bool = False, scene: str = "",
     ) -> str:
         if source != self.app.owner_id:
             raise ValueError("Only the owner can publish messages to other chats.")
+        if voice and video_note:
+            raise ValueError("Choose either voice or video_note, not both.")
         text, reason = validate_text(text, reason)
+        clean_scene = " ".join(str(scene or "").split())[:200] if video_note else ""
+        if video_note and len(text) > 200:
+            raise ValueError("Write a video note script of up to 200 characters.")
         target, title = await self._target(chat)
-        await asyncio.to_thread(guard.check_local_private_text, self.app.config, self.app.home, [text])
+        check_texts = [text, clean_scene] if clean_scene else [text]
+        await asyncio.to_thread(guard.check_local_private_text, self.app.config, self.app.home, check_texts)
         score = None
         if target < 0 and self.dispatch.jev is not None:
             try:
@@ -116,7 +123,8 @@ class CrossChat:
                     terms = guard.private_terms(self.app.home, await self.store.chat_participant_names(target))
                     recent_msgs, _ = await self.store.get_recent_chat_messages(target, 8)
                     recent = guard.format_recent_chat(reversed(recent_msgs))
-                    score = await guard.leak_score(self.dispatch.jev, terms, text, recent_chat=recent)
+                    checked = f"{text}\nScene: {clean_scene}" if clean_scene else text
+                    score = await guard.leak_score(self.dispatch.jev, terms, checked, recent_chat=recent)
             except ModelCallSkipped:
                 pass
         at = self.now()
@@ -126,6 +134,10 @@ class CrossChat:
         }
         if voice:
             body["voice"] = True
+        if video_note:
+            body["video_note"] = True
+            if clean_scene:
+                body["scene"] = clean_scene
         await self.store.create_cross_chat_card(body, at.isoformat(), self.day_start(at))
         self._wake.set()
         return "Waiting for the owner's OK on a card; it goes out once approved."
@@ -260,21 +272,27 @@ class CrossChat:
                             body = json.loads(row["proposal_body_json"])
                         except ValueError:
                             body = {}
-                    if row["kind"] == "message" and body.get("voice"):
+                    if row["kind"] == "message" and (body.get("voice") or body.get("video_note")):
                         await authorize_message()
                         scope = "group" if target < 0 else "friend_dm"
                         sent: list[int] = []
 
-                        async def on_voice_sent(msg_id: int) -> None:
+                        async def on_media_sent(msg_id: int) -> None:
                             sent.append(msg_id)
 
                         async def still_wanted() -> bool:
                             return not self.expired(row) and await self.store.is_chat_approved(target)
 
+                        if body.get("video_note"):
+                            actions = Actions(
+                                bubbles=[],
+                                video_note=VideoNote(text=row["text"], scene=str(body.get("scene") or "casual chat")),
+                            )
+                        else:
+                            actions = Actions(bubbles=[], voice=row["text"])
                         await executor.deliver_studio(
                             self.app, target, scope, None, None,
-                            Actions(bubbles=[], voice=row["text"]),
-                            on_voice_sent, still_wanted=still_wanted,
+                            actions, on_media_sent, still_wanted=still_wanted,
                         )
                     else:
                         sent = await executor.perform(

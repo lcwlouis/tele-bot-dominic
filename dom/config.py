@@ -23,7 +23,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-SearchProvider = Literal["searxng", "openrouter", "deepseek", "tavily"]
+SearchProvider = Literal["searxng", "openrouter", "deepseek", "tavily", "firecrawl"]
 SEARCH_PROVIDERS = get_args(SearchProvider)
 
 ModelRole = Literal["chat", "fallback", "media", "drafting", "search", "escalation", "embedding"]
@@ -46,14 +46,14 @@ LEAK_LEVEL_TOLERANCE = 0.1  # a legacy `leak_threshold` this close to a level's 
 
 # The service a saved provider talks to: any OpenAI-compatible endpoint, OpenRouter, Google Gemini (direct, for media)
 # or a search service.
-ProviderKind = Literal["openai", "openrouter", "anthropic", "gemini", "searxng", "deepseek", "tavily"]
+ProviderKind = Literal["openai", "openrouter", "anthropic", "gemini", "searxng", "deepseek", "tavily", "firecrawl"]
 PROVIDER_KINDS = get_args(ProviderKind)
 # What a saved provider is for (owner decision E70): chat completions (the model roles), studio media (the cloud
 # backups), OpenRouter's Decisions API (triage) or web search. One service can be saved once per type, each with
 # its own key variable.
 ProviderType = Literal["chat", "media", "decisions", "search"]
 PROVIDER_TYPES = get_args(ProviderType)
-SEARCH_KINDS = ("searxng", "deepseek", "tavily")
+SEARCH_KINDS = ("searxng", "deepseek", "tavily", "firecrawl")
 TYPE_KINDS: dict[str, tuple[str, ...]] = {
     "chat": ("openai", "openrouter", "anthropic"),
     "media": ("openrouter", "gemini"),
@@ -313,6 +313,15 @@ class DispatchConfig(BaseModel):
         description=(
             "Let Dom see and hear photos, stickers, voice notes and videos sent by other bots (never documents). "
             "Off by default so other bots cannot spend media budget."
+        ),
+    )
+    sticker_cooldown_seconds: int = Field(
+        180,
+        ge=0,
+        le=3600,
+        description=(
+            "Minimum seconds between stickers Dom sends in one chat when he also sends text bubbles. "
+            "Zero disables the cooldown."
         ),
     )
 
@@ -629,6 +638,9 @@ class DesktopConfig(BaseModel):
             raise ValueError("desktop host names must be unique")
         if sum(host.mode == "local" for host in hosts) > 1:
             raise ValueError("list at most one local host: Docker runs on this machine")
+        remote_urls = [host.url.strip().rstrip("/").lower() for host in hosts if host.mode == "remote" and host.url.strip()]
+        if len(set(remote_urls)) != len(remote_urls):
+            raise ValueError("remote desktop hosts must use distinct URLs so guest and owner sandboxes are never shared")
         return hosts
 
     @field_validator("lan_probes")
@@ -878,6 +890,10 @@ class StudioConfig(BaseModel):
         "and the gaps halve). It never passes the global daily total, the spend caps or the switches above. The level is "
         "your own baseline: an event day can only raise a limit, and its ceiling (`event_day_max_multiplier`) bounds only "
         "what the day adds, so when the level already puts a limit above the ceiling the day adds nothing.",
+    )
+    local_exempt_from_budget: bool = Field(
+        False,
+        description="When on, media generated on your local Studio does not count against the global daily budget cap, while still obeying per-chat frequency limits, spontaneity and cooldown gaps.",
     )
     event_day_max_multiplier: float = Field(
         2, ge=0, le=10, allow_inf_nan=False, description="The most Dom can raise his own media limits on a special day "

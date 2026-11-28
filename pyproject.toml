@@ -1,6 +1,6 @@
 [project]
 name = "dom"
-version = "0.8.12"
+version = "0.8.13"
 description = "Dom: a Telegram bot account that acts like a friend, and a personal assistant to its owner."
 readme = "README.md"
 requires-python = ">=3.12"

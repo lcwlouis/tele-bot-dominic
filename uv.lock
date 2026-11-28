@@ -322,7 +322,7 @@ wheels = [
 
 [[package]]
 name = "dom"
-version = "0.8.12"
+version = "0.8.13"
 source = { editable = "." }
 dependencies = [
     { name = "aiogram" },

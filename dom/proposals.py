@@ -216,7 +216,13 @@ def summary(row: dict) -> str:
             leak = "No leak check for a private chat"
         else:
             leak = "Leak check unavailable"
-        prefix = "Voice note script:\n" if body.get("voice") else ""
+        if body.get("video_note"):
+            scene = f" (scene: {body['scene']})" if body.get("scene") else ""
+            prefix = f"Video note script{scene}:\n"
+        elif body.get("voice"):
+            prefix = "Voice note script:\n"
+        else:
+            prefix = ""
         return f"{heading}\n\n{prefix}{body['text']}\n\nReason: {body['reason']}\n{leak} · Expires in 2 h"
     return heading
 

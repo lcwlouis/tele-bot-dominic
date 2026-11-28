@@ -41,6 +41,7 @@
   let drafts = $state<Record<StudioScope, Draft> | null>(null);
   let daily = $state<number | null>(null);
   let spontaneity = $state<Spontaneity>("sometimes");
+  let localExempt = $state(false);
   let saving = $state(false);
   // Cloud media spend this month against the media area's limit (E86), where /api/spend answers.
   let mediaSpend = $state<SpendView["areas"][number] | null>(null);
@@ -61,6 +62,7 @@
     drafts = { owner_dm: toDraft(loaded.limits.owner_dm), friend_dm: toDraft(loaded.limits.friend_dm), group: toDraft(loaded.limits.group) };
     daily = loaded.limits.daily;
     spontaneity = loaded.spontaneity;
+    localExempt = Boolean(loaded.local_exempt_from_budget);
     edited = false;
   }
 
@@ -112,7 +114,11 @@
     };
   });
   const changed = $derived(
-    limits !== null && (JSON.stringify(limits) !== JSON.stringify(view!.limits) || spontaneity !== view!.spontaneity),
+    limits !== null && (
+      JSON.stringify(limits) !== JSON.stringify(view!.limits)
+      || spontaneity !== view!.spontaneity
+      || localExempt !== Boolean(view!.local_exempt_from_budget)
+    ),
   );
 
   async function save(event: SubmitEvent) {
@@ -120,7 +126,9 @@
     if (!changed || saving) return;
     saving = true;
     try {
-      const result = await send<StudioLimitsView>("/api/studio/limits", { revision: view!.revision, limits, spontaneity });
+      const result = await send<StudioLimitsView>("/api/studio/limits", {
+        revision: view!.revision, limits, spontaneity, local_exempt_from_budget: localExempt,
+      });
       revision = result.revision;
       show(result);
       toast.show("ok", "Media limits saved.");
@@ -276,6 +284,13 @@
             <fieldset class="grid content-start gap-2.5 rounded-xl border bg-surface p-3.5">
               <legend class="float-left mb-2.5 font-medium">Global limits</legend>
               {@render count("limit-daily", "All chats", daily, (n) => (daily = n), "per day")}
+              <label class="mt-1 flex items-start gap-2 text-sm">
+                <input type="checkbox" class="mt-0.5" bind:checked={localExempt} />
+                <span>
+                  <span class="font-medium">Local Studio doesn't count toward budget</span>
+                  <span class="block text-xs text-muted-foreground">Per-chat limits, spontaneity and cooldown gaps still apply.</span>
+                </span>
+              </label>
               <p class="text-sm text-muted-foreground">
                 {#if owner.daily_left > 0}<span class="font-mono">{owner.daily_left}</span> left today across all chats.{:else}All chats have used today's total.{/if}
               </p>

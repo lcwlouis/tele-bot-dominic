@@ -6,6 +6,14 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.13] - 2026-11-28
+
+- **Firecrawl search provider & SearXNG circuit breaker.** Added **Firecrawl** (`provider = "firecrawl"`, `FIRECRAWL_API_KEY`) as a web search provider in config and **Settings → Models → Web search**. `SearchRouter` now also cools off SearXNG for 5 minutes after 3 consecutive failures when a fallback provider is configured (with a last-resort retry if all fallbacks fail).
+- **Local Studio budget-exempt toggle.** Added `[studio] local_exempt_from_budget` (editable in **Settings → What Dom may do → Media → Global limits**). When enabled, media generated on your local Studio does not count toward the global daily cap while still obeying per-chat frequency limits, spontaneity, and cooldown gaps; cloud fallbacks remain strictly subject to both the global daily cap and spend caps.
+- **Cross-chat video notes (`telebubble`), owner-triggered guest desktop in groups, and `tell_owner`.** `message_chat` now supports `video_note = true` (with optional `scene`, leak-checked and behind your approval card). Asking Dom for a guest desktop task or screenshot as the owner in a group now sends the normal DM approval card instead of refusing, and `tell_owner` is allowed even when you are the sender in a group.
+- **More natural group chat tone, truthful capabilities & per-chat sticker cooldown.** Updated `FRAME` to curb repetitive corporate/bot meta-jokes and state Telegram's actual capabilities (replied-to messages, edits, reactions; no read receipts), and added `[dispatch] sticker_cooldown_seconds` (default `180s`).
+- **Sol 6.2 security & correctness hardening (`v0.8.8`–`v0.8.13`).** Hardened remote guest sandbox resets (wipes outbox + temp files and marks the lane error on reset failure), verified guest screenshot origin before & after capture plus per-photo re-authorization, rejected duplicate remote host URLs and cross-role task recovery, stripped model-generated metadata tags from imported entity notes and rejected empty organizer plans, tightened leak-guard prompt-injection resistance against untrusted `<recent_chat>` claims, removed `.ts.net` from `on_own_network()` to prevent Tailscale Funnel spoofing, surfaced live-route refresh warnings in the `.env` key manager, and rejected reversed booking bounds (`after >= before`).
+
 ## [0.8.12] - 2026-11-28
 
 - **Tuned leak detector with chat context and cleaner terms.** `leak_score()` now includes a short slice of `<recent_chat>` from the target chat so Jev knows what was already said out loud in the room, filters generic sentence-starting stop-words out of single-word `_NAMES` terms (while keeping multi-word names, headings, bold labels, and numbers intact), and clarifies scoring criteria so refusals, jokes, and already-public chat topics don't trigger false holds.
@@ -24,7 +32,7 @@ named `vX.Y.Z`.
 
 ## [0.8.9] - 2026-11-28
 
-- **Tailscale addresses recognized as own-network.** `on_own_network()` now explicitly accepts Tailscale IPv4 (`100.64.0.0/10`), Tailscale IPv6 (`fd7a:115c:a1e0::/48`), and `.ts.net` hostnames, so Tailscale addresses (such as Studio's Whisper STT endpoint at `http://100.94.111.67:8080/v1`) pass local-network validation.
+- **Tailscale addresses recognized as own-network.** `on_own_network()` now explicitly accepts Tailscale IPv4 (`100.64.0.0/10`) and Tailscale IPv6 (`fd7a:115c:a1e0::/48`) addresses, so Tailscale endpoints (such as a Studio Whisper STT endpoint at `http://100.64.0.10:8080/v1`) pass local-network validation.
 
 ## [0.8.8] - 2026-11-28
 

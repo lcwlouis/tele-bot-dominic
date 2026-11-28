@@ -133,8 +133,6 @@ class GuestDesktop:
         if ctx.scope not in ("group", "friend_dm") or ctx.chat_id == app.owner_id or ctx.app is not app:
             return "error: this is only for groups and friends' chats"
         grant = await self.session_grant(ctx.chat_id)
-        if ctx.sender_id is not None and ctx.sender_id == app.owner_id and grant is None:
-            return "error: the owner is here; he can ask you for desktop work in his own DM"
         if not self.available() or await app.desktop_permissions.resolve("guest_desktop") == "never":
             return "error: desktop tasks for this chat are off right now"
         text = " ".join(brief.split()) if isinstance(brief, str) else ""
@@ -329,6 +327,8 @@ class GuestDesktop:
             )
             if files and await self.screenshots_allowed(chat_id):
                 for item in files[:2]:
+                    if not (await dispatch._approved(chat_id) and await self.screenshots_allowed(chat_id)):
+                        break
                     try:
                         await executor.retry_telegram(
                             lambda data=item.data: app.bot.send_photo(

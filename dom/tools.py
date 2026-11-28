@@ -890,14 +890,14 @@ async def _message_chat(args: dict, ctx: TurnCtx) -> str:
     return await ctx.app.dispatch.cross_chat.message_chat(
         ctx.chat_id, args.get("chat"), args.get("text"), args.get("reason"),
         voice=bool(args.get("voice")),
+        video_note=bool(args.get("video_note")),
+        scene=str(args.get("scene") or ""),
     )
 
 
 async def _tell_owner(args: dict, ctx: TurnCtx) -> str:
     if ctx.app is None or ctx.scope not in ("group", "friend_dm") or ctx.chat_id == ctx.owner_id:
         return "This is only for contacting the owner from another conversation."
-    if ctx.sender_id is not None and ctx.sender_id == ctx.owner_id:
-        return "The owner is the one talking to you here. Say it to him in this chat."
     return await ctx.app.dispatch.cross_chat.tell_owner(ctx.chat_id, args.get("text"), args.get("reason"))
 
 
@@ -908,8 +908,8 @@ _DELIVERY_FIELDS = {
 MESSAGE_CHAT = Tool(
     name="message_chat",
     description=(
-        "Draft one message or voice note to an approved group or friend's DM for the owner to approve. "
-        "Set voice=true to send as a voice note (using Studio TTS) instead of plain text; the owner still approves the exact script first. "
+        "Draft one message, voice note, or round video note (telebubble) to an approved group or friend's DM for the owner to approve. "
+        "Set voice=true for a voice note or video_note=true (with optional scene) for a round video note; the owner still approves the exact script first. "
         "Write as you would text or speak to that chat yourself. Only say the owner asked if he wants that said."
     ),
     schema={
@@ -917,6 +917,8 @@ MESSAGE_CHAT = Tool(
         "properties": {
             "chat": {"type": "string", "description": "The chat title or numeric ID"},
             "voice": {"type": "boolean", "description": "Send as a voice note instead of plain text (uses Studio TTS)"},
+            "video_note": {"type": "boolean", "description": "Send as a round video note / telebubble (uses Studio video)"},
+            "scene": {"type": "string", "maxLength": 200, "description": "Optional scene description when video_note=true"},
             **_DELIVERY_FIELDS,
         },
         "required": ["chat", "text", "reason"],

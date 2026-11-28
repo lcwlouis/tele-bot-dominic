@@ -166,7 +166,8 @@ def _clean_slug(raw: object) -> str:
 def _clean_bullet(raw: object) -> str:
     if not isinstance(raw, str):
         return ""
-    text = " ".join(raw.split()).strip()
+    text = notes.strip_meta(raw)
+    text = " ".join(text.split()).strip()
     if text.startswith("- "):
         text = text[2:].strip()
     return text[:MAX_FACT_LENGTH]
@@ -339,6 +340,14 @@ class MemoryImport:
         plan = json.loads(raw)
         if not isinstance(plan, dict):
             raise ValueError("organizer reply must be a JSON object")
+        has_any = (
+            (isinstance(plan.get("user_md"), str) and bool(plan["user_md"].strip()))
+            or (isinstance(plan.get("notes_add"), list) and bool(plan["notes_add"]))
+            or (isinstance(plan.get("entities"), list) and bool(plan["entities"]))
+            or (isinstance(plan.get("reminders"), list) and bool(plan["reminders"]))
+        )
+        if batch and not has_any:
+            raise ValueError("organizer returned an empty plan for a non-empty batch")
         return await self._apply_plan(plan, home)
 
     async def _apply_plan(self, plan: dict[str, Any], home) -> tuple[set[str], int]:

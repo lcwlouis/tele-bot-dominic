@@ -182,6 +182,7 @@ class LimitsSave(BaseModel):
     revision: str = Field(pattern=REVISION)
     limits: LimitsInput
     spontaneity: Spontaneity | None = None  # null leaves it as saved
+    local_exempt_from_budget: bool | None = None  # null leaves it as saved
 
 
 class KindLeft(BaseModel):
@@ -207,6 +208,7 @@ class LimitsView(BaseModel):
     revision: str
     limits: StudioLimits
     spontaneity: Spontaneity
+    local_exempt_from_budget: bool = False
     owner: MediaStanding
 
 
@@ -218,6 +220,8 @@ def _limits_saved(current: Snapshot, edit: LimitsSave) -> Snapshot:
     document = tomlkit.parse(current.text)
     if edit.spontaneity is not None and edit.spontaneity != current.config.studio.spontaneity:
         set_value(document, ("studio", "spontaneity"), edit.spontaneity)
+    if edit.local_exempt_from_budget is not None and edit.local_exempt_from_budget != current.config.studio.local_exempt_from_budget:
+        set_value(document, ("studio", "local_exempt_from_budget"), edit.local_exempt_from_budget)
     if after.daily != before.daily:
         set_value(document, ("studio", "limits", "daily"), after.daily)
     for scope in SCOPES:
@@ -263,7 +267,10 @@ async def media_standing(app: App, scope: str, chat_id: int) -> MediaStanding:
 async def _limits_view(app: App, snapshot: Snapshot) -> LimitsView:
     owner = await media_standing(app, "owner_dm", app.owner_id or 0)
     studio = snapshot.config.studio
-    return LimitsView(revision=snapshot.revision, limits=studio.limits, spontaneity=studio.spontaneity, owner=owner)
+    return LimitsView(
+        revision=snapshot.revision, limits=studio.limits, spontaneity=studio.spontaneity,
+        local_exempt_from_budget=studio.local_exempt_from_budget, owner=owner,
+    )
 
 
 def _chain(snapshot: Snapshot, chain: StudioChain) -> list[StudioFallback]:

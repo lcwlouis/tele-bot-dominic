@@ -36,18 +36,19 @@ class FakeMediaClient:
 
 
 def test_transcriptions_url_handles_base_and_full_path():
-    assert transcriptions_url("http://192.168.68.24:8000/v1") == "http://192.168.68.24:8000/v1/audio/transcriptions"
-    assert transcriptions_url("http://192.168.68.24:8000/v1/") == "http://192.168.68.24:8000/v1/audio/transcriptions"
-    assert transcriptions_url("http://192.168.68.24:8000/v1/audio/transcriptions") == (
-        "http://192.168.68.24:8000/v1/audio/transcriptions"
+    assert transcriptions_url("http://192.0.2.24:8000/v1") == "http://192.0.2.24:8000/v1/audio/transcriptions"
+    assert transcriptions_url("http://192.0.2.24:8000/v1/") == "http://192.0.2.24:8000/v1/audio/transcriptions"
+    assert transcriptions_url("http://192.0.2.24:8000/v1/audio/transcriptions") == (
+        "http://192.0.2.24:8000/v1/audio/transcriptions"
     )
 
 
-def test_local_stt_url_accepts_tailscale_ip_and_magicdns():
+def test_local_stt_url_accepts_tailscale_ip_and_rejects_public_and_funnel():
     from dom.config import validate_local_stt_url
 
-    assert validate_local_stt_url("http://100.94.111.67:8080/v1") == "http://100.94.111.67:8080/v1"
-    assert validate_local_stt_url("http://m1-max.tailnet.ts.net:8080/v1") == "http://m1-max.tailnet.ts.net:8080/v1"
+    assert validate_local_stt_url("http://100.64.0.10:8080/v1") == "http://100.64.0.10:8080/v1"
+    with pytest.raises(ValueError):
+        validate_local_stt_url("https://node.tailnet.ts.net/v1")  # .ts.net can be public Tailscale Funnel
     with pytest.raises(ValueError):
         validate_local_stt_url("https://api.openai.com/v1")
 

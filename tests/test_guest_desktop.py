@@ -233,10 +233,9 @@ async def test_only_groups_and_friends_may_ask_and_a_chat_may_not_flood_the_owne
     app = guest_app(make_app, SAY)
     await approve(app)
     assert "only for groups and friends" in await request(app, chat=OWNER, scope="owner_dm")
-    assert "owner is here" in await request(app, sender=OWNER)
     assert "must be 1 to 300" in await request(app, brief="x" * 301)
     assert "must be 1 to 300" in await request(app, brief="  ")
-    assert (await request(app)).startswith("Asked the owner")
+    assert (await request(app, sender=OWNER)).startswith("Asked the owner")  # owner in group triggers DM approval card
     assert "already asked" in await request(app)  # one card per chat
     assert len(app.bot.of("send", OWNER)) <= 1
 

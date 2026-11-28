@@ -58,7 +58,7 @@
   // Only providers of the role's type (E70): chat roles take chat providers, triage decisions providers.
   const choices = untrack(() => settings.providers.filter((item) => fitsRole(item, role)));
   const searchKind = (kind: ProviderSetup["kind"]): SearchProviderId =>
-    kind === "searxng" || kind === "deepseek" || kind === "tavily" ? kind : "openrouter";
+    kind === "searxng" || kind === "deepseek" || kind === "tavily" || kind === "firecrawl" ? kind : "openrouter";
 
   /** The type of provider a saved slot uses: OpenRouter web search is a chat provider. */
   function slotType(provider: SearchProviderId | null): ProviderType {

@@ -352,6 +352,8 @@ class Booking:
         try:
             minutes = DEFAULT_MINUTES if args.get("minutes") is None else _whole(args["minutes"], "minutes", MIN_MINUTES, MAX_MINUTES)
             after, before = (self._bound(args.get(name), zone) for name in ("after", "before"))
+            if after is not None and before is not None and after >= before:
+                return "error: before must be after after."
         except ValueError as exc:
             return f"error: {exc}"
         horizon = now + timedelta(days=rules.ahead_days)

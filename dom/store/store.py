@@ -3079,7 +3079,7 @@ class Store:
                     "json_array(json_object('status', 'awaiting_approval', 'at', ?))) RETURNING id",
                     (source, target, body["text"], body["reason"], at, at, at),
                 ).fetchone()[0]
-                kind_label = "voice note" if body.get("voice") else "message"
+                kind_label = "video note" if body.get("video_note") else "voice note" if body.get("voice") else "message"
                 title = f'Send a {kind_label} to "{body["target_title"]}"'
                 proposal_id = conn.execute(
                     "INSERT INTO proposals (kind, title, body_json, source, created_at) "

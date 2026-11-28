@@ -55,6 +55,7 @@ export const KIND_INFO: Record<ProviderKind, { label: string; url: Partial<Recor
   searxng: { label: "SearXNG", url: {} },
   deepseek: { label: "DeepSeek web search", url: {} },
   tavily: { label: "Tavily", url: {} },
+  firecrawl: { label: "Firecrawl", url: {} },
 };
 
 /** What each provider type is for, and the services that can be one (dom/config.py TYPE_KINDS). */
@@ -71,7 +72,7 @@ export const TYPE_INFO: Record<ProviderType, { label: string; heading: string; s
     label: "Decisions", heading: "Decision providers", kinds: ["openrouter"],
     summary: "Used by triage, through OpenRouter's Decisions API.",
   },
-  search: { label: "Web search", heading: "Web search", kinds: ["searxng", "deepseek", "tavily"], summary: "Used by web search." },
+  search: { label: "Web search", heading: "Web search", kinds: ["searxng", "deepseek", "tavily", "firecrawl"], summary: "Used by web search." },
 };
 export const TYPES = Object.keys(TYPE_INFO) as ProviderType[];
 

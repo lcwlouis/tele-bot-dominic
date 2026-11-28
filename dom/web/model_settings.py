@@ -180,7 +180,7 @@ def _validate_slot_for_role(role: SettingsRole, slot: ProviderInput) -> Provider
     else:
         if slot.model:
             raise ValueError("Leave model ID empty for SearXNG, DeepSeek web search and Tavily.")
-    if kind in ("deepseek", "tavily") and not slot.api_key_env:
+    if kind in ("deepseek", "tavily", "firecrawl") and not slot.api_key_env:
         raise ValueError("Enter an API key variable for this cloud search provider.")
     return slot.model_copy(update={"provider": kind})
 
@@ -656,7 +656,7 @@ def slot_kind(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[ProviderK
 
 TYPE_LABELS: dict[str, str] = {"chat": "", "media": "media", "decisions": "decisions", "search": ""}
 KIND_LABELS: dict[str, str] = {"openrouter": "OpenRouter", "anthropic": "Anthropic", "gemini": "Google Gemini"} | {
-    name: PROVIDER_INFO[name].label for name in ("searxng", "deepseek", "tavily")
+    name: PROVIDER_INFO[name].label for name in ("searxng", "deepseek", "tavily", "firecrawl")
 }
 
 

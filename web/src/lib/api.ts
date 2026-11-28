@@ -95,11 +95,11 @@ function fail(error: ApiError, quiet: boolean): never {
 export type Role = "chat" | "fallback" | "media" | "drafting" | "search" | "escalation" | "embedding";
 /** The routing roles plus the decision roles (triage), which have one endpoint and no effort. */
 export type SettingsRole = Role | "triage";
-export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily";
+export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily" | "firecrawl";
 /** A provider's own effort names (low, medium, high, and any others it lists). */
 export type Effort = string;
 /** The service a provider talks to (dom/config.py ProviderKind). */
-export type ProviderKind = "openai" | "openrouter" | "anthropic" | "gemini" | "searxng" | "deepseek" | "tavily";
+export type ProviderKind = "openai" | "openrouter" | "anthropic" | "gemini" | "searxng" | "deepseek" | "tavily" | "firecrawl";
 /** What a provider is for: model roles, studio backups, triage or web search (dom/config.py ProviderType). */
 export type ProviderType = "chat" | "media" | "decisions" | "search";
 
@@ -258,6 +258,7 @@ export type StudioLimitsView = {
   revision: string;
   limits: StudioLimits;
   spontaneity: Spontaneity;
+  local_exempt_from_budget?: boolean;
   owner: MediaStanding;
 };
 

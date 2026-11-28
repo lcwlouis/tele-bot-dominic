@@ -1,4 +1,4 @@
-"""Web search role with ordered provider fallback: SearXNG, OpenRouter web, DeepSeek web search and Tavily."""
+"""Web search role with ordered provider fallback: SearXNG, OpenRouter web, DeepSeek web search, Tavily and Firecrawl."""
 
 from __future__ import annotations
 
@@ -29,6 +29,9 @@ MAX_SNIPPET = 240
 DEEPSEEK_QUERY_LIMIT = 128  # DeepSeek /v1/tools/search enforces 1..128 Unicode chars
 DEEPSEEK_SEARCH_COST_USD = 0.00075  # $0.75 per 1,000 successful non-empty requests
 TAVILY_CREDIT_COST_USD = 0.008  # pay-as-you-go rate per basic credit
+FIRECRAWL_SEARCH_COST_USD = 0.002  # approximate credit cost per search call
+SEARXNG_BREAKER_FAILURES = 3  # consecutive SearXNG failures before cooling off
+SEARXNG_BREAKER_SECONDS = 300.0  # seconds to skip SearXNG when a fallback exists
 
 log = logging.getLogger("dom.search")
 _XML_ILLEGAL = re.compile(r"[^\x09\x0a\x0d\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
@@ -88,6 +91,17 @@ PROVIDER_INFO: dict[SearchProvider, ProviderInfo] = {
         data_retention="Cloud search API publishing zero-data-retention terms; review Tavily's data policy before enabling.",
         policy_url="https://www.tavily.com/privacy",
         policy_label="Tavily data policy",
+    ),
+    "firecrawl": ProviderInfo(
+        id="firecrawl",
+        label="Firecrawl",
+        default_base_url="https://api.firecrawl.dev/v1",
+        default_api_key_env="FIRECRAWL_API_KEY",
+        needs_model=False,
+        needs_key=True,
+        data_retention="Cloud web search and scraping API; review Firecrawl's privacy policy before enabling.",
+        policy_url="https://www.firecrawl.dev/privacy-policy",
+        policy_label="Firecrawl privacy policy",
     ),
 }
 
@@ -216,7 +230,7 @@ class SearchClient:
 
     @property
     def available(self) -> bool:
-        if self.provider in ("deepseek", "tavily"):
+        if self.provider in ("deepseek", "tavily", "firecrawl"):
             return bool(self.api_key)
         return bool(self.api_key) or not self.endpoint.api_key_env
 
@@ -255,6 +269,8 @@ class SearchClient:
             return await self._search_deepseek(query, fallback=fallback, timeout=timeout)
         if self.provider == "tavily":
             return await self._search_tavily(query, fallback=fallback, timeout=timeout)
+        if self.provider == "firecrawl":
+            return await self._search_firecrawl(query, fallback=fallback, timeout=timeout)
         return await self._search_openrouter(query, fallback=fallback, timeout=timeout)
 
     async def _search_openrouter(self, query: str, *, fallback: bool, timeout: float | None) -> SearchOutcome:
@@ -418,6 +434,52 @@ class SearchClient:
             items=tuple(items),
         )
 
+    async def _search_firecrawl(self, query: str, *, fallback: bool, timeout: float | None) -> SearchOutcome:
+        body = {"query": query, "limit": MAX_RESULTS}
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        total, request_timeout = self._timeout(timeout)
+        with turn_log.model_call(self.usage_model, "search", [], [], fallback=fallback, host=self.address, body=body) as call:
+            async with asyncio.timeout(total):
+                response = await self.http.post(
+                    _join_path(self.endpoint.base_url, "/search"),
+                    json=body,
+                    headers=headers,
+                    follow_redirects=False,
+                    timeout=request_timeout,
+                )
+        if call is not None:
+            call.received(response)
+        payload = None
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+        if self.usage is not None:
+            await self.usage.record_response(
+                response, "search", self.usage_model, self.address, fallback=fallback,
+                default_cost=FIRECRAWL_SEARCH_COST_USD if response.status_code == 200 else 0.0,
+            )
+        response.raise_for_status()
+        raw_data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(raw_data, dict):
+            raw_list = raw_data.get("web") if isinstance(raw_data.get("web"), list) else None
+        elif isinstance(raw_data, list):
+            raw_list = raw_data
+        else:
+            raw_list = None
+        if raw_list is None:
+            raise ValueError("Firecrawl search response has no data list")
+        items = _extract_results(raw_list, ("description", "snippet", "markdown"))
+        return SearchOutcome(
+            text=_wrap_results(query, items),
+            provider="firecrawl",
+            label=self.label,
+            host=self.address,
+            result_count=len(items),
+            items=tuple(items),
+        )
+
 
 class SearchRouter:
     """Try configured search providers in order, falling through on errors and timeouts."""
@@ -425,6 +487,8 @@ class SearchRouter:
     def __init__(self, primary: SearchClient, *fallbacks: SearchClient):
         self.primary = primary
         self.providers = (primary, *fallbacks)
+        self._failures: dict[int, int] = {}
+        self._cool_until: dict[int, float] = {}
 
     @property
     def endpoint(self) -> ProviderEndpoint:
@@ -439,8 +503,18 @@ class SearchRouter:
 
     async def search_with_meta(self, query: str, *, timeout: float | None = None) -> SearchOutcome:
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + (CHAIN_DEADLINE_SECONDS if timeout is None else timeout)
+        now = loop.time()
+        deadline = now + (CHAIN_DEADLINE_SECONDS if timeout is None else timeout)
+        skipped_searxng: list[tuple[int, SearchClient]] = []
+        last_exc: Exception | None = None
         for index, provider in enumerate(self.providers):
+            if (
+                provider.provider == "searxng"
+                and index + 1 < len(self.providers)
+                and self._cool_until.get(index, 0.0) > now
+            ):
+                skipped_searxng.append((index, provider))
+                continue
             remaining = deadline - loop.time()
             if index and remaining < MIN_ATTEMPT_SECONDS:
                 raise TimeoutError("search chain deadline reached")
@@ -448,7 +522,13 @@ class SearchRouter:
             try:
                 outcome = await provider.search_with_meta(query, fallback=index > 0, timeout=min(own, remaining))
             except (MissingProviderKey, TimeoutError, httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-                if index + 1 == len(self.providers):
+                last_exc = exc
+                if provider.provider == "searxng":
+                    count = self._failures.get(index, 0) + 1
+                    self._failures[index] = count
+                    if count >= SEARXNG_BREAKER_FAILURES:
+                        self._cool_until[index] = loop.time() + SEARXNG_BREAKER_SECONDS
+                if index + 1 == len(self.providers) and not skipped_searxng:
                     raise
                 detail = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
                 if type(exc) is ValueError:  # our own reasons, such as "upstream engines unresponsive"; never a body excerpt
@@ -458,6 +538,8 @@ class SearchRouter:
                     provider.usage_model, provider.address, detail,
                 )
                 continue
+            self._failures.pop(index, None)
+            self._cool_until.pop(index, None)
             return SearchOutcome(
                 text=outcome.text,
                 provider=outcome.provider,
@@ -467,6 +549,30 @@ class SearchRouter:
                 index=index,
                 items=outcome.items,
             )
+        # Last resort: if all non-skipped fallbacks failed, retry a cooling SearXNG provider once if time permits.
+        for index, provider in skipped_searxng:
+            remaining = deadline - loop.time()
+            if remaining < MIN_ATTEMPT_SECONDS:
+                break
+            own = provider._timeout(None)[0]
+            try:
+                outcome = await provider.search_with_meta(query, fallback=True, timeout=min(own, remaining))
+            except (MissingProviderKey, TimeoutError, httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                last_exc = exc
+                continue
+            self._failures.pop(index, None)
+            self._cool_until.pop(index, None)
+            return SearchOutcome(
+                text=outcome.text,
+                provider=outcome.provider,
+                label=outcome.label,
+                host=outcome.host,
+                result_count=outcome.result_count,
+                index=index,
+                items=outcome.items,
+            )
+        if last_exc is not None:
+            raise last_exc
         raise RuntimeError("no search providers configured")
 
 

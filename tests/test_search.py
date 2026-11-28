@@ -535,3 +535,40 @@ async def test_chain_stops_at_its_overall_deadline(monkeypatch):
             await router.search("python")
         assert loop.time() - start < 0.6
     assert seen == ["192.0.2.10", "api.deepseek.com"]
+
+
+async def test_firecrawl_search_and_searxng_circuit_breaker():
+    from dom.config import ProviderEndpoint
+    from dom.search import SearchClient, SearchRouter
+
+    firecrawl_ep = ProviderEndpoint(
+        provider="firecrawl", base_url="https://api.firecrawl.dev/v1", api_key_env="FIRECRAWL_API_KEY",
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.host)
+        if request.url.host == "192.0.2.10":
+            return httpx.Response(503, text="upstream down")
+        assert request.url.path == "/v1/search"
+        assert request.headers["authorization"] == "Bearer fc-key"
+        return httpx.Response(200, json={
+            "success": True,
+            "data": [{"title": "Firecrawl Result", "url": "https://example.org", "description": "Fast web search"}],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        router = SearchRouter(
+            SearchClient(SEARXNG_ENDPOINT, None, http),
+            SearchClient(firecrawl_ep, "fc-key", http),
+        )
+        # First 3 calls hit SearXNG, fail, and fall back to Firecrawl.
+        for _ in range(3):
+            out = await router.search_with_meta("latest news")
+            assert out.provider == "firecrawl" and "Firecrawl Result" in out.text
+        assert calls.count("192.0.2.10") == 3
+        # 4th call skips SearXNG immediately due to circuit breaker.
+        out4 = await router.search_with_meta("latest news 2")
+        assert out4.provider == "firecrawl"
+        assert calls.count("192.0.2.10") == 3
+        assert calls.count("api.firecrawl.dev") == 4

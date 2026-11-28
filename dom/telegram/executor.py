@@ -905,6 +905,10 @@ async def _deliver_studio(
                 if not await allowed(kind):
                     cloud_refused = True
                     return False
+                if app.config.studio.local_exempt_from_budget:
+                    if not await app.studio_quota.cloud_daily_allowed(app.config.studio, scope, chat_id, now()):
+                        cloud_refused = True
+                        return False
                 permitted = not await app.dispatch.usage.over_cap(app.config, app.bot, sleep=app.sleep)
                 cloud_refused = not permitted
                 return permitted

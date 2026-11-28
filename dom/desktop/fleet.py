@@ -253,7 +253,19 @@ class DesktopFleet:
                     if failed:
                         await self._report(failed)
                 continue
-            await lane.worker.recover(by_container.get(name, []))
+            lane_rows = []
+            for row in by_container.get(name, []):
+                is_guest_task = row.get("guest_chat_id") is not None
+                if is_guest_task != self.for_guests(lane):
+                    failed = await store.update_desktop_task(
+                        row["id"], chat_id, ACTIVE, "failed",
+                        error="desktop host role changed between owner and guest across restart",
+                    )
+                    if failed:
+                        await self._report(failed)
+                    continue
+                lane_rows.append(row)
+            await lane.worker.recover(lane_rows)
         await self.drop_idle()
 
     async def _leftovers(self) -> list[str]:

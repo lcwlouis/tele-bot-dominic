@@ -245,7 +245,8 @@ class RemoteSandbox:
         return nullcontext()
 
     async def reset_guest(self) -> None:
-        """Reset a dedicated remote guest sandbox between tasks: blank page, clear browser storage/clipboard, drop temp files."""
+        """Reset a dedicated remote guest sandbox between tasks: blank page, clear browser storage/clipboard,
+        and wipe outbox + temp files. On failure the sandbox is marked error so no task runs on dirty state."""
         client = await self.ensure_running()
         try:
             await client.navigate("about:blank")
@@ -256,9 +257,13 @@ class RemoteSandbox:
                 "return true; })()"
             )
             await client.clear_clipboard()
-            await client.bash("rm -rf /tmp/dom-guest-* /tmp/*.png /tmp/screenshot*.png 2>/dev/null || true")
+            res = await client.bash("rm -rf /home/gem/outbox/* /tmp/dom-guest-* /tmp/*.png /tmp/screenshot*.png")
+            if not isinstance(res, dict) or res.get("exit_code") not in (0, None):
+                raise SandboxError("cleanup command failed")
         except Exception as exc:
-            raise SandboxError(f"remote guest sandbox could not be reset: {exc}") from None
+            self._status = "error"
+            self.error = f"remote guest sandbox could not be reset: {exc}"
+            raise SandboxError(self.error) from None
 
     async def close(self) -> None:
         if self._owns_http:

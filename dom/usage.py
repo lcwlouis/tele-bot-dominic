@@ -72,11 +72,11 @@ _TAILSCALE_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
 def on_own_network(host: str) -> bool:
-    """Loopback, a private or Tailscale address, or a clearly local name (single-label, .local, .lan, .internal, .home.arpa, .ts.net)."""
+    """Loopback, a private or Tailscale IP address, or a clearly local name (single-label, .local, .lan, .internal, .home.arpa)."""
     host = host.rstrip(".").lower()
     address = _ip_literal(host)
     if address is None:
-        return "." not in host or host.endswith((".local", ".lan", ".internal", ".home.arpa", ".ts.net"))
+        return "." not in host or host.endswith((".local", ".lan", ".internal", ".home.arpa"))
     tailscale = (
         (address.version == 4 and address in _TAILSCALE_V4)
         or (address.version == 6 and address in _TAILSCALE_V6)

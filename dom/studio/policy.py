@@ -213,23 +213,27 @@ def event_limit(configured: int, scale: float, boost: float, ceiling: float) -> 
 def standing(
     limits: StudioLimits, scope: str, total: int, rows: list[tuple[str, datetime]], now: datetime,
     boost: float = 1.0, spontaneity: Spontaneity = "sometimes", ceiling: float | None = None,
+    *, ignore_daily_budget: bool = False,
 ) -> Standing:
     """`total` is the studio items sent across all chats in the last 24 hours (plus any in flight); `rows` is this
     chat's rolling week of deliveries. `boost` is the event-day multiplier on every limit (1 when there is none): `left`
     counts what the boosted limits allow, `normal` what the usual ones do. `spontaneity` scales every per-chat limit and
-    gap; the global daily total is the owner's ceiling and is never scaled, so no level raises past it. `ceiling` is
-    the owner's event-day maximum multiplier (default: the day's own): with a level it bounds the boosted limits, see
-    event_limit."""
+    gap; the global daily total is the owner's ceiling and is never scaled, so no level raises past it. When
+    `ignore_daily_budget` is True (local Studio exempt from budget), per-chat frequency limits, spontaneity and cooldown
+    gaps still apply while the global daily budget cap does not clamp them."""
     tier, scale = getattr(limits, scope), SPONTANEITY_SCALE[spontaneity]
     ceiling = max(boost, 1.0) if ceiling is None else max(ceiling, 1.0)
     configured = windows(tier)
-    daily_normal, daily_boosted = max(limits.daily - total, 0), max(boosted(limits.daily, boost) - total, 0)
+    daily_normal = max(limits.daily - total, 0)
+    daily_boosted = max(boosted(limits.daily, boost) - total, 0)
     left, normal, used = {}, {}, {}
     for kind, (cap, window) in windows(tier, scale).items():
         count = used[kind] = sum(item == kind and stamp > now - window for item, stamp in rows)
-        normal[kind] = max(min(cap - count, daily_normal), 0)
-        left[kind] = max(min(event_limit(configured[kind][0], scale, boost, ceiling) - count, daily_boosted), 0)
-    return Standing(left, daily_boosted, gap_ends(tier, rows, now, scale), normal, used)
+        chat_normal = max(cap - count, 0)
+        chat_boosted = max(event_limit(configured[kind][0], scale, boost, ceiling) - count, 0)
+        normal[kind] = chat_normal if ignore_daily_budget else min(chat_normal, daily_normal)
+        left[kind] = chat_boosted if ignore_daily_budget else min(chat_boosted, daily_boosted)
+    return Standing(left, max(daily_boosted, 1) if ignore_daily_budget else daily_boosted, gap_ends(tier, rows, now, scale), normal, used)
 
 
 class StudioQuota:
@@ -246,13 +250,18 @@ class StudioQuota:
     async def _boost(self, now: datetime) -> float:
         return 1.0 if self.events is None else await self.events.multiplier(now)
 
+    @staticmethod
+    def _ignore_budget(config: StudioConfig) -> bool:
+        return bool(config.local_exempt_from_budget and local(config))
+
     async def _remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:
         if not any(enabled(config, scope, kind) for kind in SWITCH) or chat_id in self._pending:
             return {}
         total, rows = await self.store.studio_usage(chat_id, now)
         now_standing = standing(
             config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity,
-            self._ceiling(config))
+            self._ceiling(config), ignore_daily_budget=self._ignore_budget(config),
+        )
         result = {}
         for kind, left in now_standing.left.items():
             if left <= 0 or kind in now_standing.gaps or not enabled(config, scope, kind):
@@ -273,7 +282,8 @@ class StudioQuota:
         total, rows = await self.store.studio_usage(chat_id, now)
         return standing(
             config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity,
-            self._ceiling(config))
+            self._ceiling(config), ignore_daily_budget=self._ignore_budget(config),
+        )
 
     async def has_room_for_still(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> bool:
         """After this chat's reserved video note, is there still a slot in the daily total for the still it is filmed
@@ -282,8 +292,16 @@ class StudioQuota:
             total, rows = await self.store.studio_usage(chat_id, now)
             return standing(
                 config.limits, scope, total + len(self._pending), rows, now, await self._boost(now), config.spontaneity,
-                self._ceiling(config),
+                self._ceiling(config), ignore_daily_budget=self._ignore_budget(config),
             ).daily_left > 0
+
+    async def cloud_daily_allowed(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> bool:
+        """Whether the strict global daily cap still allows a cloud fallback (local budget exemption never lifts cloud)."""
+        total, rows = await self.store.studio_usage(chat_id, now)
+        return standing(
+            config.limits, scope, total, rows, now, await self._boost(now), config.spontaneity,
+            self._ceiling(config), ignore_daily_budget=False,
+        ).daily_left > 0
 
     async def remaining(self, config: StudioConfig, scope: str, chat_id: int, now: datetime) -> dict[Kind, int]:
         async with self._lock:

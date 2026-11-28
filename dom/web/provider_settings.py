@@ -515,10 +515,14 @@ async def save_env_key(request: Request) -> dict:
             await asyncio.to_thread(set_dotenv, app.config.home, update.name, update.value)
             app.refresh_triage()
             app.refresh_stt()
+            warning = None
             try:
                 app.apply_model_routes(app.config)
-            except Exception:
-                pass
-            return await asyncio.to_thread(_env_keys_view, app)
+            except Exception as exc:
+                warning = f"Saved to .env, but live routes could not be refreshed ({type(exc).__name__})."
+            view = await asyncio.to_thread(_env_keys_view, app)
+            if warning:
+                view["warning"] = warning
+            return view
 
     return await asyncio.shield(asyncio.ensure_future(run()))

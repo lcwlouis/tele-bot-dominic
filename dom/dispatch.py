@@ -8,7 +8,7 @@ import logging
 import re
 from collections import Counter, deque
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from datetime import datetime, timedelta
 from time import monotonic
@@ -248,6 +248,7 @@ class Dispatcher:
         self._polls: dict[int, asyncio.Task] = {}
         self._loop: asyncio.Task | None = None
         self._failures: dict[tuple[int, int], int] = {}
+        self._last_sticker: dict[int, datetime] = {}
         self._media_times: dict[int, deque[datetime]] = {}
         self._bot_replies: dict[tuple[int, int], datetime] = {}  # (chat_id, bot_id) -> last reply
         self._bots_in_flight: set[tuple[int, int]] = set()
@@ -1958,6 +1959,12 @@ class Dispatcher:
                             app, chat_id, scope, thread_id, newest.msg_id, actions, on_sent,
                         ))
 
+            sticker_cooldown = app.config.dispatch.sticker_cooldown_seconds
+            if actions.sticker and actions.bubbles and sticker_cooldown > 0:
+                last_sticker = self._last_sticker.get(chat_id)
+                if last_sticker is not None and (self.now() - last_sticker).total_seconds() < sticker_cooldown:
+                    actions = replace(actions, sticker=None)
+
             sent = await executor.perform(
                 app.bot, app.store, chat_id, newest.msg_id, actions, sleep=app.sleep,
                 thread_id=thread_id, stickers=app.stickers.sendable(),
@@ -1967,6 +1974,8 @@ class Dispatcher:
                 typing_cps=typing_cps,
                 before_send=before_send, on_sent=on_sent, on_migrate=on_migrate, queue_studio=queue_studio,
             )
+            if actions.sticker and sent:
+                self._last_sticker[chat_id] = self.now()
             if sent.reaction_result is False:
                 self._reactions_off.add(chat_id)
             if sent:  # Dom has answered, so media he saw as it was won't be attached again: describe it for later turns

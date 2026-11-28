@@ -475,6 +475,25 @@ async def test_the_health_deadline_defaults_to_ten_seconds():
     assert StudioConfig().timeouts.health == 10
 
 
+def test_local_studio_exempt_from_daily_budget_still_obeys_per_chat_limits_and_gaps():
+    from datetime import datetime, timedelta, timezone
+    from dom.config import StudioLimits
+    from dom.studio.policy import standing
+
+    now = datetime(2026, 11, 28, 12, 0, tzinfo=timezone.utc)
+    limits = StudioLimits(daily=2)
+    # Global daily total (2) is exhausted, but this chat has 0 items used.
+    clamped = standing(limits, "group", total=2, rows=[], now=now, ignore_daily_budget=False)
+    assert clamped.left["voice"] == 0 and clamped.daily_left == 0
+
+    exempt = standing(limits, "group", total=2, rows=[], now=now, ignore_daily_budget=True)
+    assert exempt.left["voice"] == 1 and exempt.daily_left >= 1
+    # Per-chat frequency cap and cooldown gap still apply even when budget-exempt!
+    rows = [("voice", now - timedelta(minutes=10))]
+    used = standing(limits, "group", total=2, rows=rows, now=now, ignore_daily_budget=True)
+    assert used.left["voice"] == 0 and "voice" in used.gaps
+
+
 async def test_one_failed_health_probe_keeps_the_last_good_health_and_two_clear_it(caplog):
     caplog.set_level(logging.INFO, logger="dom.studio.client")
     clock = [0.0]

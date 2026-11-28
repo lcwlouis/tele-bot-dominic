@@ -1326,9 +1326,19 @@ class DesktopWorker:
         if name == "browse" and (refusal := await self._open_refusal(run, args["url"])) is not None:
             return refusal
         if name == "save_screenshot":
+            if (refusal := await self._landing_refusal(run, client, name)) is not None:
+                return refusal
+            host_before = await self._browser_host(client)
+            if host_before is None:
+                await self._close_page(client)
+                return "Blocked: the page's address could not be verified for a screenshot, so the page was closed."
             stem = PurePosixPath(safe_filename(args.get("name"))).stem or "screenshot"
             path = f"{OUTBOX_DIR}/{'' if self.container == DEFAULT else self.container + '-'}{stem}.png"
             data = await client.screenshot()
+            host_after = await self._browser_host(client)
+            if host_after != host_before:
+                await self._close_page(client)
+                return "Blocked: the page navigated during screenshot capture, so the screenshot was discarded."
             await client.upload_file(path, data)
             run.screenshots[path] = hashlib.sha256(data).digest()
             return {"path": path}

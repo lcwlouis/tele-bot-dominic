@@ -80,6 +80,56 @@ async def test_cross_chat_voice_note_requires_approval_and_delivers_via_studio(m
     assert item["status"] == "sent" and item["sent_msg_id"] == 777
 
 
+async def test_cross_chat_video_note_requires_approval_and_delivers_via_studio(make_app):
+    from types import SimpleNamespace
+
+    app = make_app()
+    await approve_chat(app, GROUP, "Book club")
+    app.config = app.config.model_copy(update={
+        "studio": app.config.studio.model_copy(update={
+            "enabled": True, "video_notes": True, "video_scenes": False, "base_url": "http://127.0.0.1:8080",
+        }),
+    })
+
+    class FakeStudio:
+        ready = True
+
+        def model_for(self, worker):
+            return "fake-video"
+
+        async def video(self, text, special=False, outfit="", still=None):
+            return b"fake-mp4-video-note"
+
+    sent_videos = []
+
+    async def fake_send_video_note(chat_id, video, **kwargs):
+        sent_videos.append((chat_id, video.filename, video.data))
+        return SimpleNamespace(message_id=888)
+
+    async def fake_chat_action(chat_id, action, **kwargs):
+        return True
+
+    app.studio = FakeStudio()
+    app.bot.send_video_note = fake_send_video_note
+    app.bot.send_chat_action = fake_chat_action
+    reply = await call_tool(
+        app, "owner_dm", OWNER, "message_chat",
+        chat=GROUP, text="quick telebubble hello!", reason="Send a video note", video_note=True, scene="coffee shop",
+    )
+    assert "Waiting for the owner's OK" in reply
+
+    [proposal] = await app.proposals.pending()
+    assert 'Send a video note to "Book club"' in proposal["title"]
+    body = json.loads(proposal["body_json"])
+    assert body["video_note"] is True and body["scene"] == "coffee shop"
+
+    assert await app.proposals.decide(proposal["id"], True) == "Approved"
+    await process_ready(app)
+    assert len(sent_videos) == 1 and sent_videos[0][0] == GROUP and sent_videos[0][2] == b"fake-mp4-video-note"
+    [item] = await app.store.cross_chat_items()
+    assert item["status"] == "sent" and item["sent_msg_id"] == 888
+
+
 async def process_ready(app):
     while await app.dispatch.cross_chat.process_one():
         pass
@@ -435,14 +485,14 @@ async def test_friend_dm_card_says_no_leak_check_runs_there(make_app):
     assert "No leak check for a private chat" in notice[2] and "Leak check unavailable" not in notice[2]
 
 
-async def test_tell_owner_refuses_when_the_owner_is_the_one_talking(make_app):
+async def test_tell_owner_allows_private_dm_even_when_owner_is_talking_in_group(make_app):
     app = make_app()
     await approve_chat(app, GROUP)
     offered = {tool.name: tool for tool in await enabled_tools(app, "group")}
     ctx = TurnCtx("group", GROUP, OWNER, app.home, app.store, OWNER, app=app)
     result = await execute_tool_call(
-        {"function": {"name": "tell_owner", "arguments": json.dumps({"text": "he keeps asking", "reason": "x"})}},
+        {"function": {"name": "tell_owner", "arguments": json.dumps({"text": "private aside for you", "reason": "x"})}},
         offered, ctx,
     )
-    assert "owner is the one talking to you here" in result
-    assert not await app.store.cross_chat_items()
+    assert result == "Sent to the owner."
+    assert len(await app.store.cross_chat_items()) == 1
