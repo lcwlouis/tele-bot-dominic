@@ -1,9 +1,18 @@
-"""Keep an MLX Whisper model loaded and transcribe 16 kHz mono WAV files."""
+"""Keep an MLX Whisper model loaded and transcribe 16 kHz mono 16-bit PCM WAV files."""
 
 from pathlib import Path
 import sys
+import wave
 
 from protocol import output_channel, serve
+
+
+def _load_wav(path: str):
+    import numpy as np
+
+    with wave.open(path, "rb") as wav:
+        frames = wav.readframes(wav.getnframes())
+    return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def main():
@@ -19,8 +28,9 @@ def main():
 
     def transcribe(request):
         language = (request.get("language") or "").strip() or None
+        audio = _load_wav(request["audio"])
         result = mlx_whisper.transcribe(
-            request["audio"],
+            audio,
             path_or_hf_repo=model_path,
             language=language,
         )
