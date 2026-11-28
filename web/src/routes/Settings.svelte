@@ -32,6 +32,8 @@
   import LeakScan from "$lib/components/settings/LeakScan.svelte";
   import MeaningIndex from "$lib/components/settings/MeaningIndex.svelte";
   import MediaInputs from "$lib/components/settings/MediaInputs.svelte";
+  import LocalStt from "$lib/components/settings/LocalStt.svelte";
+  import ReplyControls from "$lib/components/settings/ReplyControls.svelte";
   import Services from "$lib/components/settings/Services.svelte";
   import InfoGlyph from "$lib/components/kit/InfoGlyph.svelte";
   import RestartBanner from "$lib/components/system/RestartBanner.svelte";
@@ -63,6 +65,7 @@
   let models = $state<ModelSettings | null>(null);
   let permissions = $state<Permission[]>([]);
   let desktopSteps = $state<Permissions["desktop_steps"] | null>(null);
+  let replyControls = $state<Permissions["reply_controls"] | null>(null);
   let profileEvery = $state<ProfileInterval>(14);
   // One revision for the whole page: both GETs hash the same config.toml, and every save moves it.
   let revision = $state("");
@@ -91,6 +94,7 @@
       models = loadedModels;
       permissions = loadedPermissions.items;
       desktopSteps = loadedPermissions.desktop_steps;
+      replyControls = loadedPermissions.reply_controls;
       profileEvery = loadedPermissions.profile_photo_every_days;
       revision = loadedModels.revision;
       failed = "";
@@ -267,7 +271,10 @@
   // "What Dom may do": the switches in sections, each with the panels that belong to it, narrowed by the search box.
   type SectionId = "messaging" | "assistant" | "media" | "desktop" | "memory" | "files" | "safety";
   const SECTIONS: { id: SectionId; label: string; ids: string[]; words: string }[] = [
-    { id: "messaging", label: "Messaging", ids: ["openers", "openers_friends", "openers_groups", "ephemeral_replies"], words: "" },
+    {
+      id: "messaging", label: "Messaging", ids: ["openers", "openers_friends", "openers_groups", "ephemeral_replies", "bot_media"],
+      words: "triage jev confidence silent ignore react bot loop depth cap cooldown reply media voice photo",
+    },
     {
       id: "assistant", label: "Assistant", ids: ["assistant"],
       words: "assistant mode morning plan evening wrap-up schedule time reminders goals calendar day",
@@ -666,6 +673,7 @@
           {@render roleCard(settings, "embedding")}
           <div class="grid content-start gap-4 xl:col-span-2"><MeaningIndex version={settings.revision} /></div>
           <div class="md:col-span-2 xl:col-span-3"><MediaInputs /></div>
+          <div class="md:col-span-2 xl:col-span-3"><LocalStt bind:revision /></div>
         </div>
       </section>
       <section aria-labelledby="studio-title">
@@ -832,6 +840,9 @@
               </Card.Root>
             {:else if group.id === "safety" && group.extras}
               <Card.Root class="py-2"><LeakScan bind:revision onsaved={reloadPermissions} /></Card.Root>
+            {/if}
+            {#if group.id === "messaging" && group.extras && replyControls}
+              <ReplyControls bind:revision controls={replyControls} onsaved={(result) => (replyControls = result.reply_controls)} />
             {/if}
             {#if group.id === "media" && group.extras}
               <MediaLimits bind:revision />

@@ -32,6 +32,7 @@ from dom.jev import JevClient
 from dom.knowledge import KnowledgeIndex
 from dom.llm import FallbackClient, routed_client
 from dom.media import MediaDescriber
+from dom.stt import SttClient
 from dom.search import SearchRouter, routed_search_client
 from dom.store import Store
 from dom.t3 import auth as t3_auth, service as t3_service
@@ -163,12 +164,19 @@ async def run(home: Path) -> bool:
             triage_key = config.secret(triage.api_key_env) if triage.api_key_env else None
             jev = JevClient(http, triage_key, triage.model, triage.base_url, usage=usage) if triage_key else None
             media = routed_client(config, "media", http, usage)
+            stt_cfg = config.stt
+            stt_key = config.secret(stt_cfg.api_key_env) if stt_cfg.configured and stt_cfg.api_key_env else None
+            stt = (
+                SttClient(http, stt_cfg.base_url, stt_cfg.model, stt_key, stt_cfg.language, usage=usage)
+                if stt_cfg.configured else None
+            )
             studio = config.studio
             studio_token = config.secret(studio.token_env) if studio.enabled and studio.base_url else None
             app = App(
                 config=config, home=Home(home), store=store, client=client,
                 bot=bot, bot_username=me.username or "", jev=jev, bot_id=me.id,
-                media_describer=MediaDescriber(media, bot) if media.available else None,
+                media_describer=MediaDescriber(media if media.available else None, bot, stt=stt) if (media.available or stt is not None) else None,
+                stt=stt,
                 search_client=search_client(config, http, usage), gifs=gif_search(config, http),
                 studio=StudioClient(studio, studio_token, studio_http) if studio_token else None,
                 studio_http=studio_http,

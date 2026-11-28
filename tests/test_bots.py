@@ -33,29 +33,47 @@ async def bot_line(app, clock, msg_id, text, user=OTHER_BOT, chat_id=GROUP):
 
 async def test_bot_loop_stops_after_depth(bot_chat):
     app, clock = await bot_chat()
-    for msg_id in range(1, 9):
+    for msg_id in range(1, 6):
         await bot_line(app, clock, msg_id, f"bot message {msg_id}")
         clock.advance(seconds=11)
     contents = [request["messages"][-1]["content"] for request in turn_requests(app)]
-    assert len(contents) == len(app.bot.of("send", GROUP)) == 7
-    assert all(EXIT_NOTE not in content for content in contents[:6])
+    assert len(contents) == len(app.bot.of("send", GROUP)) == 4
+    assert all(EXIT_NOTE not in content for content in contents[:3])
     assert EXIT_NOTE in contents[-1]
-    assert await app.store.get_bot_depth(GROUP) == 7
+    assert await app.store.get_bot_depth(GROUP) == 4
     window = await app.store.get_recent_chat_window(GROUP)
-    assert [row.msg_id for row in window if row.role == "user" and row.is_bot] == list(range(1, 9))
+    assert [row.msg_id for row in window if row.role == "user" and row.is_bot] == list(range(1, 6))
+
+
+async def test_bot_limits_follow_live_dispatch_config(bot_chat):
+    app, clock = await bot_chat()
+    app.config = app.config.model_copy(update={
+        "dispatch": app.config.dispatch.model_copy(update={"bot_depth_limit": 1, "bot_reply_interval_seconds": 30}),
+    })
+    await bot_line(app, clock, 1, "first")
+    clock.advance(seconds=20)
+    await bot_line(app, clock, 2, "still inside 30s cooldown")
+    assert len(turn_requests(app)) == 1
+    clock.advance(seconds=11)
+    await bot_line(app, clock, 3, "second triggers exit")
+    clock.advance(seconds=31)
+    await bot_line(app, clock, 4, "dropped past depth limit")
+    contents = [request["messages"][-1]["content"] for request in turn_requests(app)]
+    assert len(contents) == 2
+    assert EXIT_NOTE not in contents[0] and EXIT_NOTE in contents[1]
 
 
 async def test_human_message_resets_depth(bot_chat):
     app, clock = await bot_chat()
-    for msg_id in range(1, 8):
+    for msg_id in range(1, 5):
         await bot_line(app, clock, msg_id, f"bot message {msg_id}")
         clock.advance(seconds=11)
-    await handle_message(app, tg(msg_id=8, text="a human here").model_copy(update={"date": clock()}))
+    await handle_message(app, tg(msg_id=5, text="a human here").model_copy(update={"date": clock()}))
     await drain_dispatch(app.dispatch)
     assert await app.store.get_bot_depth(GROUP) == 0
-    await bot_line(app, clock, 9, "another topic")
+    await bot_line(app, clock, 6, "another topic")
     assert await app.store.get_bot_depth(GROUP) == 1
-    assert len(turn_requests(app)) == 9
+    assert len(turn_requests(app)) == 6
     assert EXIT_NOTE not in turn_requests(app)[-1]["messages"][-1]["content"]
 
 

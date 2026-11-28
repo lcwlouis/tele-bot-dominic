@@ -291,9 +291,10 @@ class NativeMedia:
         (its description, or that it couldn't be loaded) to show in its `<media>` tag. Everything comes from this
         chat's own window, so nothing from another chat can reach the prompt."""
         accepted = await self.accepted()
+        allow_bot = self.d.app.config.dispatch.bot_media
         last_reply = max((i for i, row in enumerate(window) if row.role == "assistant"), default=-1)
         if "image" not in accepted and any(
-            row.role == "user" and not row.is_bot and _media(row).get("watched") for row in window[last_reply + 1:]
+            row.role == "user" and (not row.is_bot or allow_bot) and _media(row).get("watched") for row in window[last_reply + 1:]
         ):  # a clip was watched, but his chat model can't be shown the frames: the media model's description stands in
             turn_log.step("clip described by the media model: his chat model takes no images")
         if not accepted:
@@ -305,7 +306,7 @@ class NativeMedia:
             row = window[index]
             media = _media(row)
             modality = self._modality(media)
-            if row.role != "user" or row.is_bot or modality is None or row.msg_id is None:
+            if row.role != "user" or (row.is_bot and not allow_bot) or modality is None or row.msg_id is None:
                 continue
             if left.get(modality, 0) <= 0:
                 if media.get("watched") and "image" in accepted:
@@ -524,17 +525,35 @@ class NativeMedia:
         return False
 
     async def _hear(self, chat_id: int, audio: bytes | None, background: bool) -> tuple[str, str | None]:
-        """A clip's sound as (what happened, the transcript): the media route writes it when it takes audio, else the
-        chat model when it does; with neither the clip's sound goes unheard, and its note says so."""
+        """A clip's sound as (what happened, the transcript): if the chat model takes audio natively, use it; else try
+        local STT when configured; else fall back to `[models.media]` if it takes audio. With none, the clip's sound
+        goes unheard and its note says so."""
         if audio is None:
             return "no sound", None
-        describer = self.d.app.media_describer
-        who = video.listener(
-            describer is not None and await self._hears(describer.client), "audio" in await self.accepted(),
-        )
-        if who is None or not self.d._media_budget(chat_id):
+        if not self.d._media_budget(chat_id):
             return "not transcribed", None
-        client = describer.client if who == "media" else self.d.app.client
+        chat_hears = "audio" in await self.accepted()
+        stt = getattr(self.d.app, "stt", None)
+        if not chat_hears and stt is not None:
+            try:
+                async with self.d._media_request(chat_id, background=background):
+                    text = await stt.transcribe(audio, mime="audio/mp4", filename="clip.m4a")
+                text = text.strip()
+                if not text or text.lower().startswith("(no speech"):
+                    return "no speech", None
+                return "heard", text[:TRANSCRIPT_CHARS]
+            except ModelCallSkipped:
+                return "not transcribed", None
+            except Exception as exc:
+                log.warning("local STT failed for a clip in chat %s (%s); falling back", chat_id, type(exc).__name__)
+        describer = self.d.app.media_describer
+        media_client = describer.client if describer is not None else None
+        who = video.listener(
+            media_client is not None and await self._hears(media_client), chat_hears,
+        )
+        if who is None:
+            return "not transcribed", None
+        client = media_client if who == "media" else self.d.app.client
         messages = [{"role": "user", "content": [
             {"type": "text", "text": TRANSCRIBE_PROMPT},
             {"type": "input_audio", "input_audio": {"data": base64.b64encode(audio).decode("ascii"), "format": "m4a"}},
@@ -587,10 +606,15 @@ class NativeMedia:
             return " ".join(filter(None, (
                 whole or LOST_PICTURE, sound_line(watched), "" if whole else cut_line(watched),
             )))
-        client = describer.client
+        client = describer.client if describer is not None else None
         spans, parts, before = watched.get("spans") or [], [], ""
         transcript = watched.get("transcript")
+        heard_line = sound_line(watched)
         if images:
+            if client is None or not getattr(client, "available", True):
+                if not heard_line:
+                    return None
+                return " ".join(filter(None, (LOST_PICTURE, heard_line, cut_line(watched), missing_line(watched))))
             async with request:
                 for number, image in enumerate(images, 1):
                     start, end = spans[number - 1] if number <= len(spans) else (0.0, watched.get("seconds", 0.0))
@@ -617,8 +641,10 @@ class NativeMedia:
                         before = text.strip()
                         parts.append(f"{video.clock(start)}-{video.clock(end)}: {before}" if len(images) > 1 else before)
             if not parts:
-                return None
-        return " ".join(filter(None, (*parts, sound_line(watched), cut_line(watched), missing_line(watched)))) or None
+                if not heard_line:
+                    return None
+                return " ".join(filter(None, (LOST_PICTURE, heard_line, cut_line(watched), missing_line(watched))))
+        return " ".join(filter(None, (*parts, heard_line, cut_line(watched), missing_line(watched)))) or None
 
     # --- a description once the media is no longer attached ---
 
@@ -629,10 +655,11 @@ class NativeMedia:
         background under the media budget and spend cap, once per file. Only the chat's own window is read, so
         nothing crosses chats."""
         todo = []
+        allow_bot = self.d.app.config.dispatch.bot_media
         for row in window:
             media = _media(row)
             key = (chat_id, row.msg_id)
-            if (row.role != "user" or row.is_bot or row.msg_id is None or row.is_deleted or key in self._aged
+            if (row.role != "user" or (row.is_bot and not allow_bot) or row.msg_id is None or row.is_deleted or key in self._aged
                     or media.get("kind") not in MODALITY_OF or media.get("kind") == "sticker"
                     or media.get("description") is not None):
                 continue

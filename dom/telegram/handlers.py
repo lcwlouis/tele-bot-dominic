@@ -42,6 +42,7 @@ from dom.place_photos import PlacePhotos
 from dom.world import World
 from dom.llm import ChatClient, FallbackClient, routed_client
 from dom.media import MediaDescriber
+from dom.stt import SttClient
 from dom.media_files import MediaFiles
 from dom.memory_import import MemoryImport
 from dom.models import IncomingMessage, StoredMessage
@@ -91,6 +92,7 @@ class App:
     restart_gate: asyncio.Lock = field(default_factory=asyncio.Lock)  # one restart decision at a time
     bot_id: int | None = None
     media_describer: MediaDescriber | None = None
+    stt: SttClient | None = None
     search_client: SearchClient | SearchRouter | None = None
     gifs: GifSearch | None = None
     studio: StudioClient | None = None
@@ -227,11 +229,13 @@ class App:
         if isinstance(self.client, FallbackClient):
             routes.chat.last_model = self.client.last_model
             routes.chat.last_fallback_at = self.client.last_fallback_at
-        if routes.media.available:
+        if routes.media.available or self.stt is not None:
+            media_client = routes.media if routes.media.available else None
             if self.media_describer is None:
-                self.media_describer = MediaDescriber(routes.media, self.bot)
+                self.media_describer = MediaDescriber(media_client, self.bot, stt=self.stt)
             else:
-                self.media_describer.client = routes.media
+                self.media_describer.client = media_client
+                self.media_describer.stt = self.stt
         else:
             self.media_describer = None
         self.jev = self.dispatch.jev = routes.jev
@@ -240,9 +244,30 @@ class App:
             log.info("embedding model staged; confirm reindex before it serves searches")
         self.config, self.client, self.draft_client = routes.config, routes.chat, routes.draft
         self.escalation_client = routes.escalation
+        self.dispatch.native.modalities.forget()
 
     def apply_model_routes(self, saved: Config) -> None:
         self.use_model_routes(self.model_routes(saved))
+
+    def refresh_stt(self) -> None:
+        """Rebuild the local STT client from `self.config.stt` so dashboard saves apply at once."""
+        stt_cfg = self.config.stt
+        if stt_cfg.configured:
+            current = self._primary_client()
+            key = self.config.secret(stt_cfg.api_key_env) if stt_cfg.api_key_env else None
+            self.stt = SttClient(
+                current.http, stt_cfg.base_url, stt_cfg.model, key, stt_cfg.language, usage=current.usage,
+            )
+            if self.media_describer is None:
+                self.media_describer = MediaDescriber(None, self.bot, stt=self.stt)
+            else:
+                self.media_describer.stt = self.stt
+        else:
+            self.stt = None
+            if self.media_describer is not None:
+                self.media_describer.stt = None
+                if self.media_describer.client is None:
+                    self.media_describer = None
 
     def refresh_triage(self) -> None:
         """Pick up a triage key added to .env since the decisions client was built (or one that was removed)."""

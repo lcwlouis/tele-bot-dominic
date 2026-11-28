@@ -7,22 +7,27 @@ a path can never reach another chat's folder. Reads are for same-site browsers o
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
+from time import monotonic
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dom import provenance
+from dom.config import STT_ENV_PATTERN, STT_ENV_RULE, validate_local_stt_url
 from dom.media_files import MIME
-from dom.web.model_settings import _input
+from dom.stt import SttClient
+from dom.web.model_settings import REVISION, _input, _snapshot, save_values
 from dom.web.shared import _title, owner_app
 
 log = logging.getLogger("dom.web")
 router = APIRouter()
-JSON_POSTS = {"/api/media/inputs/probe"}
+JSON_POSTS = {"/api/media/inputs/probe", "/api/media/stt", "/api/media/stt/test"}
 GUARDED_PREFIX = "/api/media/"  # reads under it are same-site only
 PAGE = 50
 MAX_FETCH_BYTES = 20_000_000  # Telegram's own limit for a bot's file download
@@ -133,3 +138,109 @@ async def probe(request: Request) -> dict:
     await _input(request, Nothing)
     results = await app.dispatch.native.reprobe()
     return {"providers": results, "route_accepts": sorted(await app.dispatch.native.accepted())}
+
+
+class _SttFields(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    base_url: str = Field(max_length=512)
+    model: str = Field("whisper-1", min_length=1, max_length=120)
+    language: str = Field("", max_length=16)
+    api_key_env: str = Field("", max_length=64)
+
+    @field_validator("base_url")
+    @classmethod
+    def _url(cls, value: str) -> str:
+        return validate_local_stt_url(value)
+
+    @field_validator("model", "language")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("api_key_env")
+    @classmethod
+    def _env_name(cls, value: str) -> str:
+        clean = value.strip()
+        if clean and not STT_ENV_PATTERN.fullmatch(clean):
+            raise ValueError(STT_ENV_RULE)
+        return clean
+
+
+class SttUpdate(_SttFields):
+    revision: str = Field(pattern=REVISION)
+
+
+class SttTest(_SttFields):
+    @field_validator("base_url")
+    @classmethod
+    def _require_url(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Enter a server address to test.")
+        return value
+
+
+def _stt_view(snapshot) -> dict:
+    stt = snapshot.config.stt
+    key_set = bool(snapshot.config.secret(stt.api_key_env)) if stt.api_key_env else False
+    return {
+        "revision": snapshot.revision,
+        "base_url": stt.base_url,
+        "model": stt.model,
+        "api_key_env": stt.api_key_env,
+        "key_set": key_set,
+        "language": stt.language,
+    }
+
+
+@router.get("/api/media/stt")
+async def read_stt(request: Request) -> dict:
+    app = owner_app(request)
+    return await asyncio.to_thread(lambda: _stt_view(_snapshot(app.config.home)))
+
+
+@router.post("/api/media/stt")
+async def update_stt(request: Request) -> dict:
+    app = owner_app(request)
+    update = await _input(request, SttUpdate)
+    changes: dict[tuple[str, ...], bool | int | float | str | None] = {
+        ("stt", "base_url"): update.base_url,
+        ("stt", "model"): update.model or "whisper-1",
+        ("stt", "language"): update.language,
+        ("stt", "api_key_env"): update.api_key_env,
+    }
+    saved = await save_values(
+        app, update.revision, changes,
+        lambda config: {"stt": config.stt},
+        "Could not save local speech-to-text settings.",
+        after=app.refresh_stt,
+    )
+    return await asyncio.to_thread(_stt_view, saved)
+
+
+@router.post("/api/media/stt/test")
+async def test_stt(request: Request) -> dict:
+    app = owner_app(request)
+    body = await _input(request, SttTest)
+    key = await asyncio.to_thread(app.config.secret, body.api_key_env) if body.api_key_env else None
+    if body.api_key_env and not key:
+        return {"ok": False, "latency_ms": 0, "reply": "", "error": f"{body.api_key_env} is not set in .env."}
+    client = SttClient(app._primary_client().http, body.base_url, body.model, key, body.language, timeout=15.0)
+    started = monotonic()
+    try:
+        reply = await client.probe()
+        return {"ok": True, "latency_ms": int((monotonic() - started) * 1000), "reply": reply, "error": ""}
+    except httpx.HTTPStatusError as exc:
+        return {
+            "ok": False,
+            "latency_ms": int((monotonic() - started) * 1000),
+            "reply": "",
+            "error": f"HTTP {exc.response.status_code}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "latency_ms": int((monotonic() - started) * 1000),
+            "reply": "",
+            "error": type(exc).__name__,
+        }

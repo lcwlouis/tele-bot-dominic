@@ -37,11 +37,17 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from dom.config import (
     ACP_NO_TOOLS_OFF,
     DEEPSEEK_EFFORT_ERROR,
+    MAX_BOT_DEPTH_LIMIT,
+    MAX_BOT_REPLY_INTERVAL_SECONDS,
     MAX_DESKTOP_STEPS,
+    MAX_TRIAGE_CONFIDENCE,
     MEDIA_ADDRESS_RULE,
     MEDIA_KEY_RULE,
     MEDIA_PROVIDER_KEY_RULE,
+    MIN_BOT_DEPTH_LIMIT,
+    MIN_BOT_REPLY_INTERVAL_SECONDS,
     MIN_DESKTOP_STEPS,
+    MIN_TRIAGE_CONFIDENCE,
     MODEL_ROLES,
     SEARCH_PROVIDERS,
     STUDIO_CHAINS,
@@ -82,9 +88,12 @@ DESKTOP_STEPS_PATH = PERMISSIONS_PATH + "/desktop-steps"
 DESKTOP_STEPS = ("desktop", "max_steps")
 PROFILE_INTERVAL_PATH = PERMISSIONS_PATH + "/profile-interval"
 PROFILE_INTERVAL = ("studio", "profile_photo_every_days")
+REPLY_CONTROLS_PATH = PERMISSIONS_PATH + "/reply-controls"
 # Serialises the dashboard's config.toml writes, which run in a thread.
 _CONFIG_WRITE = asyncio.Lock()
-JSON_POSTS = {API_PATH, API_PATH + "/test", PERMISSIONS_PATH, DESKTOP_STEPS_PATH, PROFILE_INTERVAL_PATH}
+JSON_POSTS = {
+    API_PATH, API_PATH + "/test", PERMISSIONS_PATH, DESKTOP_STEPS_PATH, PROFILE_INTERVAL_PATH, REPLY_CONTROLS_PATH,
+}
 MAX_BODY = 32 * 1024
 MAX_FALLBACKS = 5
 URL_RULE = ("Use an HTTPS API base URL without credentials, a query or a fragment. "
@@ -912,6 +921,9 @@ PERMISSIONS = (
                "Dom may message first in approved friends’ DMs after 45 quiet minutes."),
     Permission("ephemeral_replies", ("ephemeral_replies",), "Private replies in groups",
                "Dom may answer you privately inside a group where he is an admin, or in your DM where he is not."),
+    Permission("bot_media", ("dispatch", "bot_media"), "See and hear media from other bots",
+               "Dom may inspect photos, stickers, voice notes and videos sent by other bots (never documents). "
+               "Off by default so another bot cannot spend your media budget."),
     Permission("workspace_share", ("workspace", "share_with_chats"), "Let groups and friends read the shared folder",
                "Dom may list and read the files in the workspace's shared folder for groups and friends’ DMs, never "
                "write, and nothing else in the workspace. Documents they send then land there, readable by their chat only."),
@@ -946,7 +958,7 @@ STUDIO_NEEDS = {
     "profile_photo_follows_preset": "Set up the local studio first: the profile photo uses its portraits.",
 }
 PermissionId = Literal[
-    "memory_self_edit", "openers", "assistant", "openers_groups", "openers_friends", "ephemeral_replies",
+    "memory_self_edit", "openers", "assistant", "openers_groups", "openers_friends", "ephemeral_replies", "bot_media",
     "workspace_share", "leak_check", "studio_voice", "studio_video", "studio_images", "studio_special", "studio_profile",
     "acp_codex", "acp_claude", "acp_antigravity",
 ]
@@ -971,11 +983,30 @@ class DesktopStepsView(BaseModel):
     max: int = MAX_DESKTOP_STEPS
 
 
+class BoundedFloat(BaseModel):
+    value: float
+    min: float
+    max: float
+
+
+class BoundedInt(BaseModel):
+    value: int
+    min: int
+    max: int
+
+
+class ReplyControlsView(BaseModel):
+    triage_confidence: BoundedFloat
+    bot_depth_limit: BoundedInt
+    bot_reply_interval_seconds: BoundedInt
+
+
 class Permissions(BaseModel):
     revision: str
     items: list[PermissionView]
     desktop_steps: DesktopStepsView
     profile_photo_every_days: Literal[1, 7, 14, 30]
+    reply_controls: ReplyControlsView
 
 
 class ProfileIntervalUpdate(BaseModel):
@@ -988,6 +1019,21 @@ class DesktopStepsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: str = Field(pattern=REVISION)
     max_steps: int = Field(ge=MIN_DESKTOP_STEPS, le=MAX_DESKTOP_STEPS)
+
+
+class ReplyControlsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: str = Field(pattern=REVISION)
+    triage_confidence: float | int = Field(ge=MIN_TRIAGE_CONFIDENCE, le=MAX_TRIAGE_CONFIDENCE, allow_inf_nan=False)
+    bot_depth_limit: int = Field(ge=MIN_BOT_DEPTH_LIMIT, le=MAX_BOT_DEPTH_LIMIT)
+    bot_reply_interval_seconds: int = Field(ge=MIN_BOT_REPLY_INTERVAL_SECONDS, le=MAX_BOT_REPLY_INTERVAL_SECONDS)
+
+    @field_validator("triage_confidence", mode="before")
+    @classmethod
+    def _reject_bool(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("triage_confidence must be a number")
+        return value
 
 
 class PermissionUpdate(BaseModel):
@@ -1031,9 +1077,23 @@ def _permissions(snapshot: Snapshot) -> Permissions:
             id=item.id, label=item.label, description=item.description, enabled=_permission_value(config, item),
             available=needs is None, needs=needs,
         ))
-    return Permissions(revision=snapshot.revision, items=items,
-                       desktop_steps=DesktopStepsView(value=config.desktop.max_steps),
-                       profile_photo_every_days=config.studio.profile_photo_every_days)
+    return Permissions(
+        revision=snapshot.revision, items=items,
+        desktop_steps=DesktopStepsView(value=config.desktop.max_steps),
+        profile_photo_every_days=config.studio.profile_photo_every_days,
+        reply_controls=ReplyControlsView(
+            triage_confidence=BoundedFloat(
+                value=config.dispatch.triage_confidence, min=MIN_TRIAGE_CONFIDENCE, max=MAX_TRIAGE_CONFIDENCE,
+            ),
+            bot_depth_limit=BoundedInt(
+                value=config.dispatch.bot_depth_limit, min=MIN_BOT_DEPTH_LIMIT, max=MAX_BOT_DEPTH_LIMIT,
+            ),
+            bot_reply_interval_seconds=BoundedInt(
+                value=config.dispatch.bot_reply_interval_seconds,
+                min=MIN_BOT_REPLY_INTERVAL_SECONDS, max=MAX_BOT_REPLY_INTERVAL_SECONDS,
+            ),
+        ),
+    )
 
 
 def _with_permission(config: Config, path: tuple[str, ...], value: bool | int) -> Config:
@@ -1109,10 +1169,29 @@ async def update_desktop_steps(request: Request) -> Permissions:
     return await asyncio.to_thread(_permissions, saved)
 
 
+@router.post(REPLY_CONTROLS_PATH)
+async def update_reply_controls(request: Request) -> Permissions:
+    """Triage confidence and bot-to-bot loop guards. Dispatch reads them per turn, so a save applies at once."""
+    app = owner_app(request)
+    update = await _input(request, ReplyControlsUpdate)
+    changes: dict[tuple[str, ...], bool | int | float | str | None] = {
+        ("dispatch", "triage_confidence"): round(float(update.triage_confidence), 4),
+        ("dispatch", "bot_depth_limit"): update.bot_depth_limit,
+        ("dispatch", "bot_reply_interval_seconds"): update.bot_reply_interval_seconds,
+    }
+    saved = await save_values(
+        app, update.revision, changes,
+        lambda config: {"dispatch": config.dispatch},
+        "Could not save reply and bot-loop settings.",
+    )
+    return await asyncio.to_thread(_permissions, saved)
+
+
 async def save_values(
     app: App, revision: str, changes: dict[tuple[str, ...], bool | int | float | str | None],
     live: Callable[[Config], dict], failure: str, env: dict[str, str | None] | None = None,
     prepare: Callable[[tomlkit.TOMLDocument, dict], dict] | None = None,
+    after: Callable[[], None] | None = None,
 ) -> Snapshot:
     """Write config.toml values (and `env` secrets to .env, once the new config has validated) and hand the running
     config only what this save owns, so a disk-only edit elsewhere is not applied with it. One config write at a time,
@@ -1139,6 +1218,8 @@ async def save_values(
             except (OSError, ValueError):
                 raise HTTPException(409, failure) from None
             app.config = app.config.model_copy(update=live(saved.config))
+            if after is not None:
+                after()
             return saved
 
     return await asyncio.shield(asyncio.ensure_future(run()))

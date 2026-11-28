@@ -7,11 +7,17 @@ import httpx
 import asyncio
 import base64
 import logging
+from collections.abc import Callable
 from contextlib import nullcontext
-from typing import AsyncContextManager
+from typing import TYPE_CHECKING, AsyncContextManager
 
 from dom.llm import ChatClient, FallbackClient
 from dom.usage import ModelCallSkipped
+
+if TYPE_CHECKING:
+    from dom.stt import SttClient
+
+RequestContext = AsyncContextManager[None] | Callable[[], AsyncContextManager[None]]
 
 log = logging.getLogger("dom.media")
 # Per-kind download limits in bytes; the Pi that runs Dom has 4 GB of memory. A clip sent whole to the media model
@@ -90,12 +96,12 @@ async def download(
 
 
 class MediaDescriber:
-    def __init__(self, client: ChatClient | FallbackClient, bot):
-        self.client, self.bot = client, bot
+    def __init__(self, client: ChatClient | FallbackClient | None, bot, *, stt: SttClient | None = None):
+        self.client, self.bot, self.stt = client, bot, stt
         self._one_at_a_time = asyncio.Semaphore(1)  # one file in memory at once, across all chats
 
     async def describe(
-        self, media: dict, *, request: AsyncContextManager[None] | None = None, prompt: str = PROMPT,
+        self, media: dict, *, request: RequestContext | None = None, prompt: str = PROMPT,
     ) -> str | None:
         kind = media.get("kind")
         async with self._one_at_a_time:
@@ -105,13 +111,13 @@ class MediaDescriber:
                 return None
 
     async def describe_sticker(
-        self, media: dict, *, request: AsyncContextManager[None] | None = None,
+        self, media: dict, *, request: RequestContext | None = None,
     ) -> str | None:
         async with self._one_at_a_time:
             return await self._describe("sticker", media, request or nullcontext(), STICKER_PREVIEW_PROMPT, propagate_skip=True)
 
     async def describe_desktop(self, screenshot: bytes) -> str | None:
-        if not screenshot or len(screenshot) > MAX_BYTES["photo"]:
+        if self.client is None or not screenshot or len(screenshot) > MAX_BYTES["photo"]:
             return None
         encoded = base64.b64encode(screenshot).decode("ascii")
         messages = [{"role": "user", "content": [
@@ -124,7 +130,7 @@ class MediaDescriber:
         return description.strip() if isinstance(description, str) else None
 
     async def _describe(
-        self, kind: str | None, media: dict, request: AsyncContextManager[None], prompt: str,
+        self, kind: str | None, media: dict, request: RequestContext, prompt: str,
         *, propagate_skip: bool = False,
     ) -> str | None:
         try:
@@ -132,22 +138,13 @@ class MediaDescriber:
             if part_type is None:
                 return None
             mime, data = await download(self.bot, media)
-            encoded = base64.b64encode(data).decode("ascii")
-            if part_type == "input_audio":
-                subtype = mime.partition("/")[2]
-                part = {"data": encoded, "format": _AUDIO_FORMATS.get(subtype, subtype)}
-            else:
-                part = {"url": f"data:{mime};base64,{encoded}"}
-            messages = [{"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": part_type, part_type: part},
-            ]}]
+            # A callable factory (not an AsyncContextManager instance, since @asynccontextmanager is also callable as
+            # a ContextDecorator) yields a fresh context per attempt; an AsyncContextManager instance is entered once
+            # around both STT and its cloud fallback so a failed STT attempt never consumes it before fallback.
+            if callable(request) and not hasattr(request, "__aenter__"):
+                return await self._describe_with_factory(kind, part_type, mime, data, request, prompt, propagate_skip=propagate_skip)
             async with request:
-                result = await self.client.complete(messages, [])
-            description = result.get("content")
-            if not isinstance(description, str) or not description.strip():
-                raise ValueError("no description returned")
-            return description.strip()
+                return await self._describe_inside(kind, part_type, mime, data, prompt, propagate_skip=propagate_skip)
         except PermanentMediaSkip:
             if propagate_skip:
                 raise
@@ -162,3 +159,57 @@ class MediaDescriber:
                 detail = f" {exc.response.status_code}: {exc.response.text[:300]!r}"
             log.warning("media description failed for %s (%s)%s", kind, type(exc).__name__, detail)
             return None
+
+    async def _describe_with_factory(
+        self, kind: str | None, part_type: str, mime: str, data: bytes,
+        factory: Callable[[], AsyncContextManager[None]], prompt: str, *, propagate_skip: bool,
+    ) -> str | None:
+        if part_type == "input_audio" and self.stt is not None:
+            try:
+                async with factory():
+                    transcript = await self.stt.transcribe(data, mime=mime)
+                return transcript if transcript else "(no speech)"
+            except ModelCallSkipped:
+                if propagate_skip:
+                    raise
+                return None
+            except Exception as exc:
+                log.warning("local STT failed for %s (%s); falling back to media model", kind, type(exc).__name__)
+        if self.client is None or not getattr(self.client, "available", True):
+            return None
+        async with factory():
+            return await self._describe_with_client(part_type, mime, data, prompt)
+
+    async def _describe_inside(
+        self, kind: str | None, part_type: str, mime: str, data: bytes, prompt: str, *, propagate_skip: bool,
+    ) -> str | None:
+        if part_type == "input_audio" and self.stt is not None:
+            try:
+                transcript = await self.stt.transcribe(data, mime=mime)
+                return transcript if transcript else "(no speech)"
+            except ModelCallSkipped:
+                if propagate_skip:
+                    raise
+                return None
+            except Exception as exc:
+                log.warning("local STT failed for %s (%s); falling back to media model", kind, type(exc).__name__)
+        if self.client is None or not getattr(self.client, "available", True):
+            return None
+        return await self._describe_with_client(part_type, mime, data, prompt)
+
+    async def _describe_with_client(self, part_type: str, mime: str, data: bytes, prompt: str) -> str:
+        encoded = base64.b64encode(data).decode("ascii")
+        if part_type == "input_audio":
+            subtype = mime.partition("/")[2]
+            part = {"data": encoded, "format": _AUDIO_FORMATS.get(subtype, subtype)}
+        else:
+            part = {"url": f"data:{mime};base64,{encoded}"}
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": part_type, part_type: part},
+        ]}]
+        result = await self.client.complete(messages, [])
+        description = result.get("content")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError("no description returned")
+        return description.strip()

@@ -805,7 +805,7 @@ async def test_permission_save_writes_config_and_applies_without_restart(dashboa
         initial = (await client.get(PERMISSIONS)).json()
         assert {item["id"]: item["enabled"] for item in initial["items"]} == {
             "memory_self_edit": False, "openers": False, "assistant": False, "openers_groups": False, "openers_friends": False,
-            "ephemeral_replies": False, "workspace_share": False, "leak_check": True,
+            "ephemeral_replies": False, "bot_media": False, "workspace_share": False, "leak_check": True,
             "studio_voice": False, "studio_video": False, "studio_images": False, "studio_special": False,
             "studio_profile": False, "acp_codex": False, "acp_claude": False, "acp_antigravity": False,
         }
@@ -933,6 +933,119 @@ async def test_desktop_steps_save_writes_config_and_applies_to_the_next_task(das
         assert stale.status_code == 409 and app.config.desktop.max_steps == 45
     assert tomllib.loads(path.read_text())["desktop"]["max_steps"] == 45
     assert load_config(path.parent).desktop.max_steps == 45
+
+
+REPLY_CONTROLS = "/api/permissions/reply-controls"
+
+
+async def test_reply_controls_need_owner_auth_same_origin_and_valid_bounds(dashboard):
+    app, path, browser = dashboard
+    async with browser(authorized=False) as client:
+        assert (await client.post(REPLY_CONTROLS, json={}, headers=ORIGIN_HEADER)).status_code == 403
+    async with browser() as client:
+        revision = (await client.get(PERMISSIONS)).json()["revision"]
+        body = {
+            "revision": revision,
+            "triage_confidence": 0.4,
+            "bot_depth_limit": 2,
+            "bot_reply_interval_seconds": 30,
+        }
+        for headers in ({}, {"Origin": "https://other.example.test"}, {"Referer": ORIGIN}):
+            assert (await client.post(REPLY_CONTROLS, headers=headers, json=body)).status_code == 403
+        for bad in (
+            {**body, "triage_confidence": -0.1},
+            {**body, "triage_confidence": 1.1},
+            {**body, "triage_confidence": True},
+            {**body, "bot_depth_limit": -1},
+            {**body, "bot_depth_limit": 21},
+            {**body, "bot_depth_limit": 2.5},
+            {**body, "bot_reply_interval_seconds": -1},
+            {**body, "bot_reply_interval_seconds": 301},
+            {**body, "extra": 1},
+        ):
+            response = await client.post(REPLY_CONTROLS, headers=ORIGIN_HEADER, json=bad)
+            assert response.status_code == 422, bad
+    assert path.read_text() == START
+
+
+async def test_reply_controls_save_writes_config_and_applies_live(dashboard):
+    app, path, browser = dashboard
+    async with browser() as client:
+        initial = (await client.get(PERMISSIONS)).json()
+        assert initial["reply_controls"] == {
+            "triage_confidence": {"value": 0.35, "min": 0.0, "max": 1.0},
+            "bot_depth_limit": {"value": 3, "min": 0, "max": 20},
+            "bot_reply_interval_seconds": {"value": 10, "min": 0, "max": 300},
+        }
+        result = await client.post(REPLY_CONTROLS, headers=ORIGIN_HEADER, json={
+            "revision": initial["revision"],
+            "triage_confidence": 0.25,
+            "bot_depth_limit": 2,
+            "bot_reply_interval_seconds": 45,
+        })
+        assert result.status_code == 200, result.text
+        saved = result.json()["reply_controls"]
+        assert saved["triage_confidence"]["value"] == 0.25
+        assert saved["bot_depth_limit"]["value"] == 2
+        assert saved["bot_reply_interval_seconds"]["value"] == 45
+        assert app.config.dispatch.triage_confidence == 0.25
+        assert app.config.dispatch.bot_depth_limit == 2
+        assert app.config.dispatch.bot_reply_interval_seconds == 45
+        stale = await client.post(REPLY_CONTROLS, headers=ORIGIN_HEADER, json={
+            "revision": initial["revision"],
+            "triage_confidence": 0.5,
+            "bot_depth_limit": 3,
+            "bot_reply_interval_seconds": 10,
+        })
+        assert stale.status_code == 409
+    disk = tomllib.loads(path.read_text())["dispatch"]
+    assert disk == {"triage_confidence": 0.25, "bot_depth_limit": 2, "bot_reply_interval_seconds": 45}
+    reloaded = load_config(path.parent).dispatch
+    assert (reloaded.triage_confidence, reloaded.bot_depth_limit, reloaded.bot_reply_interval_seconds) == (0.25, 2, 45)
+
+
+STT_PATH = "/api/media/stt"
+STT_TEST = "/api/media/stt/test"
+
+
+async def test_local_stt_save_and_clear_updates_config_and_live_client(dashboard):
+    app, path, browser = dashboard
+    async with browser(authorized=False) as client:
+        assert (await client.post(STT_PATH, json={}, headers=ORIGIN_HEADER)).status_code == 403
+    async with browser() as client:
+        initial = (await client.get(STT_PATH)).json()
+        assert initial["base_url"] == ""
+        for bad_body in (
+            {
+                "revision": initial["revision"], "base_url": "https://public.example.com/v1",
+                "model": "whisper-1", "language": "", "api_key_env": "",
+            },
+            {
+                "revision": initial["revision"], "base_url": "http://192.168.68.24:8000/v1",
+                "model": "whisper-1", "language": "", "api_key_env": "TELEGRAM_BOT_TOKEN",
+            },
+        ):
+            bad = await client.post(STT_PATH, headers=ORIGIN_HEADER, json=bad_body)
+            assert bad.status_code == 422, bad_body
+        bad_test = await client.post(STT_TEST, headers=ORIGIN_HEADER, json={
+            "base_url": "https://public.example.com/v1", "model": "whisper-1",
+            "language": "", "api_key_env": "TELEGRAM_BOT_TOKEN",
+        })
+        assert bad_test.status_code == 422
+        saved = await client.post(STT_PATH, headers=ORIGIN_HEADER, json={
+            "revision": initial["revision"], "base_url": "http://192.168.68.24:8000/v1",
+            "model": "mlx-community/whisper-large-v3-turbo", "language": "", "api_key_env": "",
+        })
+        assert saved.status_code == 200, saved.text
+        body = saved.json()
+        assert body["base_url"] == "http://192.168.68.24:8000/v1"
+        assert app.stt is not None and app.stt.model == "mlx-community/whisper-large-v3-turbo"
+        assert app.media_describer is not None and app.media_describer.stt is app.stt
+        cleared = await client.post(STT_PATH, headers=ORIGIN_HEADER, json={
+            "revision": body["revision"], "base_url": "", "model": "whisper-1", "language": "", "api_key_env": "",
+        })
+        assert cleared.status_code == 200 and app.stt is None
+    assert tomllib.loads(path.read_text())["stt"]["base_url"] == ""
 
 
 async def test_save_says_when_the_provider_budget_is_spent(dashboard, monkeypatch):

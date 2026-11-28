@@ -24,7 +24,7 @@ import struct
 import time
 import zlib
 from collections.abc import Awaitable, Callable, Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import httpx
@@ -165,10 +165,17 @@ class Modalities:
     list is large and the check happens on every turn."""
 
     TTL = 600  # seconds an answer is trusted before the cached list or probe is read again
+    PROBE_TTL = 1800  # seconds a home/OpenAI-compatible probe stays fresh in kv before re-checking in the background
 
-    def __init__(self, store, now: Callable[[], float] = time.monotonic):
+    def __init__(
+        self,
+        store,
+        now: Callable[[], float] = time.monotonic,
+        wall: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ):
         self.store = store
         self._clock = now
+        self._wall = wall
         self._known: dict[tuple, tuple[float, frozenset[str] | None]] = {}
 
     @staticmethod
@@ -182,27 +189,36 @@ class Modalities:
     async def lookup(self, endpoint: ProviderEndpoint) -> frozenset[str] | None:
         """The input types (image, audio, video) the endpoint takes, or None when nothing is known yet."""
         key = self._identity(endpoint)
+        now = self._clock()
         cached = self._known.get(key)
-        if cached is not None and self._clock() - cached[0] < self.TTL:
+        if cached is not None and now < cached[0]:
             return cached[1]
-        answer = await self._read(endpoint)
-        self._known[key] = (self._clock(), answer)
+        answer, ttl = await self._read(endpoint)
+        self._known[key] = (now + min(self.TTL, ttl), answer)
         return answer
 
-    async def _read(self, endpoint: ProviderEndpoint) -> frozenset[str] | None:
+    async def _read(self, endpoint: ProviderEndpoint) -> tuple[frozenset[str] | None, float]:
         if endpoint.input is not None:
-            return frozenset(endpoint.input) & frozenset(MODALITIES)
+            return frozenset(endpoint.input) & frozenset(MODALITIES), float(self.TTL)
         listed = await model_lists.cached(self.store, endpoint.base_url, endpoint.api_key_env, fresh_only=False)
         entry = next((item for item in listed.models if item.id == endpoint.model), None) if listed else None
         if entry is not None and entry.input is not None:
-            return frozenset(entry.input) & frozenset(MODALITIES)
+            return frozenset(entry.input) & frozenset(MODALITIES), float(self.TTL)
         raw = await self.store.kv_get(_probe_key(endpoint.base_url, endpoint.model))
         if raw:
             try:
-                return frozenset({"image"}) if json.loads(raw).get("image") else frozenset()
-            except (ValueError, AttributeError):
-                return None
-        return None
+                data = json.loads(raw)
+                stamp = data.get("at")
+                if not isinstance(stamp, str):
+                    return None, float(self.TTL)
+                remaining = self.PROBE_TTL - (self._wall() - datetime.fromisoformat(stamp)).total_seconds()
+                if remaining <= 0:
+                    return None, float(self.TTL)
+                found = {kind for kind in MODALITIES if data.get(kind)}
+                return frozenset(found), remaining
+            except (ValueError, AttributeError, TypeError):
+                return None, float(self.TTL)
+        return None, float(self.TTL)
 
     def forget(self, endpoint: ProviderEndpoint | None = None) -> None:
         if endpoint is None:
@@ -215,9 +231,12 @@ class Modalities:
         await self.store.kv_delete(_probe_key(endpoint.base_url, endpoint.model))
         self.forget(endpoint)
 
-    async def remember_probe(self, endpoint: ProviderEndpoint, image: bool) -> None:
-        stamp = datetime.now(timezone.utc).isoformat()
-        await self.store.kv_set(_probe_key(endpoint.base_url, endpoint.model), json.dumps({"image": image, "at": stamp}))
+    async def remember_probe(
+        self, endpoint: ProviderEndpoint, image: bool, *, audio: bool = False, video: bool = False,
+    ) -> None:
+        stamp = self._wall().isoformat()
+        payload = {"image": image, "audio": audio, "video": video, "at": stamp}
+        await self.store.kv_set(_probe_key(endpoint.base_url, endpoint.model), json.dumps(payload))
         self.forget(endpoint)
 
     async def explain(self, endpoint: ProviderEndpoint) -> dict:

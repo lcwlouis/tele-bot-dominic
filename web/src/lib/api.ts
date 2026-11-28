@@ -201,11 +201,18 @@ export type AssistantMessage = {
 };
 export type AssistantView = { revision: string; timezone: string; enabled: boolean; messages: AssistantMessage[] };
 export type ProfileInterval = 1 | 7 | 14 | 30;
+export type BoundedNumber = { value: number; min: number; max: number };
+export type ReplyControls = {
+  triage_confidence: BoundedNumber;
+  bot_depth_limit: BoundedNumber;
+  bot_reply_interval_seconds: BoundedNumber;
+};
 export type Permissions = {
   revision: string;
   items: Permission[];
-  desktop_steps: { value: number; min: number; max: number };
+  desktop_steps: BoundedNumber;
   profile_photo_every_days: ProfileInterval;
+  reply_controls: ReplyControls;
 };
 
 /** GET/POST /api/studio/limits (dom/web/studio_settings.py): `[studio.limits]` and what is left in the owner's DM. */
@@ -867,6 +874,14 @@ export type MediaUsage = { files: number; bytes: number; cap_bytes: number };
 export type MediaInputs = {
   providers: { model: string; accepts: string[]; source: "config" | "list" | "probe" | "unknown" }[];
   route_accepts: string[];
+};
+export type SttView = {
+  revision: string;
+  base_url: string;
+  model: string;
+  api_key_env: string;
+  key_set: boolean;
+  language: string;
 };
 
 /** GET /api/memory/index/estimate and /progress, POST …/confirm and …/cancel (dom/web/api_memory.py). */

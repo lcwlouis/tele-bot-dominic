@@ -83,7 +83,7 @@ URGENT_WAKE_MINUTES = 15
 MEDIA_CAP = 10  # descriptions per chat within MEDIA_CAP_WINDOW
 MEDIA_CAP_WINDOW = timedelta(minutes=10)
 CATCH_UP_MEDIA = 5  # unread messages checked for undescribed media when Dom comes online
-BOT_DEPTH_LIMIT = 6
+BOT_DEPTH_LIMIT = 3
 BOT_REPLY_INTERVAL = timedelta(seconds=10)
 BOT_DEDUP_WINDOW = timedelta(seconds=60)
 MAX_TURN_FAILURES = 3  # consecutive failures after which a chat's unread messages are given up on
@@ -347,6 +347,7 @@ class Dispatcher:
                 if state == "online":
                     arrival.verdict = await triage_online(
                         self.jev, card, xml, owner_dm=scope == "owner_dm", skills=skills,
+                        min_confidence=self.app.config.dispatch.triage_confidence,
                     )
                     self._log_triage(arrival.verdict)
                 elif scope == "owner_dm":
@@ -493,7 +494,8 @@ class Dispatcher:
                     media = json.loads(row.media_json) if row.media_json else None
                 except ValueError:
                     continue
-                if row.role == "user" and not row.is_bot and row.msg_id is not None and isinstance(media, dict) \
+                allow_bot = self.app.config.dispatch.bot_media
+                if row.role == "user" and (not row.is_bot or allow_bot) and row.msg_id is not None and isinstance(media, dict) \
                         and media.get("kind") and media.get("description") is None:
                     await self._describe(chat_id, row.msg_id, media, self._media_request(chat_id, background=True))
         except Exception:
@@ -505,7 +507,7 @@ class Dispatcher:
         return chat_id in self._debounces and first is not None and self.now() - first <= DEBOUNCE_CAP
 
     def describe_media(self, msg: IncomingMessage) -> None:
-        if msg.is_bot:
+        if msg.is_bot and (not self.app.config.dispatch.bot_media or (msg.media and msg.media.get("kind") == "document")):
             return
         if msg.media and msg.media.get("kind") == "document":
             # A document is saved to the workspace, not described: no model call, and it waits like any media, so
@@ -689,6 +691,7 @@ class Dispatcher:
                 chat_id, CATCH_UP_MEDIA,
                 thread_id=active.thread_id if active is not None else None,
                 filter_thread=active is not None,
+                include_bots=self.app.config.dispatch.bot_media,
             )
             pending = await self.native.undescribed(pending)  # what the model can't take, or won't fit its limits
             if pending:
@@ -1309,7 +1312,7 @@ class Dispatcher:
         bot_depth = None
         if bots_only:
             bot_depth = await store.get_bot_depth(chat_id)
-            if bot_depth > BOT_DEPTH_LIMIT or await self._suppress_bot(chat_id, newest):
+            if bot_depth > self.app.config.dispatch.bot_depth_limit or await self._suppress_bot(chat_id, newest):
                 await store.mark_chat_read(chat_id, newest.msg_id, thread_id=topic_thread_id)
                 self._drop_unanswered(chat_id, newest.msg_id, thread_id=topic_thread_id, filter_thread=True)
                 return state == "online", until, False
@@ -1586,9 +1589,10 @@ class Dispatcher:
         since = datetime.fromisoformat(newest.created_at) - BOT_DEDUP_WINDOW
         duplicate = bool(newest.text) and await self.app.store.has_recent_bot_duplicate(newest, since)
         last_reply = self._bot_replies.get(key)
+        bot_interval = timedelta(seconds=self.app.config.dispatch.bot_reply_interval_seconds)
         return (
             duplicate or key in self._bots_in_flight
-            or (last_reply is not None and self.now() - last_reply < BOT_REPLY_INTERVAL)
+            or (last_reply is not None and self.now() - last_reply < bot_interval)
         )
 
     async def _respond(
@@ -1599,7 +1603,7 @@ class Dispatcher:
     ) -> tuple[bool, datetime | None, bool]:
         store = self.app.store
         topic_thread_id = newest.thread_id
-        final_bot_turn = bot_depth == BOT_DEPTH_LIMIT
+        final_bot_turn = bot_depth == self.app.config.dispatch.bot_depth_limit
         latest = self._latest.get(chat_id)
         live = latest if latest is not None and latest.msg_id == newest.msg_id else None
         chat_type = live.chat_type if live else ("group" if chat_id < 0 else "private")
@@ -1666,6 +1670,7 @@ class Dispatcher:
                     triage = await triage_online(
                         self.jev, persona_card(self.app.home), self._triage_xml(chat_id, window), owner_dm=scope == "owner_dm",
                         skills=await self._skill_choices(),
+                        min_confidence=self.app.config.dispatch.triage_confidence,
                     )
                 except JevUnavailable:
                     pass

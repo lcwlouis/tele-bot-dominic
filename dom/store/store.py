@@ -2031,12 +2031,16 @@ class Store:
 
     async def get_unread_media_to_describe(
         self, chat_id: int | str, limit: int, *, thread_id: int | None = None, filter_thread: bool = False,
+        include_bots: bool = False,
     ) -> list[tuple[int, dict]]:
-        """(msg_id, media) of undescribed attachments from people among the last `limit` unread messages."""
-        return await self._run(self._get_unread_media_to_describe, str(chat_id), limit, thread_id, filter_thread)
+        """(msg_id, media) of undescribed attachments among the last `limit` unread messages."""
+        return await self._run(
+            self._get_unread_media_to_describe, str(chat_id), limit, thread_id, filter_thread, include_bots,
+        )
 
     def _get_unread_media_to_describe(
         self, chat_id: str, limit: int, thread_id: int | None = None, filter_thread: bool = False,
+        include_bots: bool = False,
     ) -> list[tuple[int, dict]]:
         hide = "" if self._is_owner_chat(chat_id) else f" AND m.visibility_scope NOT IN {_PRIVATE_SCOPES_SQL}"
         t_sql, t_args = self._thread_filter(thread_id, filter_thread)
@@ -2049,8 +2053,11 @@ class Store:
         found = []
         for row in reversed(rows):
             media = _read_media_json(row["media_json"])
-            if media and not row["is_bot"] and media.get("description") is None:
-                found.append((row["msg_id"], media))
+            if not media or media.get("description") is not None:
+                continue
+            if row["is_bot"] and (not include_bots or media.get("kind") == "document"):
+                continue
+            found.append((row["msg_id"], media))
         return found
 
     async def latest_chat_message(self, chat_id: int | str) -> tuple[int, str] | None:

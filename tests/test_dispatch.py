@@ -322,10 +322,22 @@ async def test_online_react_sets_reaction(setup_dispatch):
 
 
 async def test_low_confidence_goes_to_model(setup_dispatch):
-    app, dispatch, _ = await setup_dispatch(FakeJev("ignore", confidence=0.69))
+    app, dispatch, _ = await setup_dispatch(FakeJev("ignore", confidence=0.34))
     await dispatch.presence.go_online(GROUP, parse_habits(""))
     await deliver(app)
     assert len(app.script.requests) == 1
+
+
+async def test_triage_confidence_threshold_follows_live_config(setup_dispatch):
+    app, dispatch, _ = await setup_dispatch(FakeJev("ignore", confidence=0.45))
+    await dispatch.presence.go_online(GROUP, parse_habits(""))
+    await deliver(app, 1)
+    assert len(app.script.requests) == 0  # 0.45 >= default 0.35: stayed silent
+    app.config = app.config.model_copy(update={
+        "dispatch": app.config.dispatch.model_copy(update={"triage_confidence": 0.50}),
+    })
+    await deliver(app, 2)
+    assert len(app.script.requests) == 1  # 0.45 < live 0.50: fell through to chat model
 
 
 @pytest.mark.parametrize("unavailable", [None, JevUnavailable("unavailable"), "refusal"])

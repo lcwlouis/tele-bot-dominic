@@ -110,6 +110,11 @@ def test_frame_discourages_reply_to_in_dms():
     assert "in a DM leave it null" in FRAME
 
 
+def test_frame_explains_how_to_end_a_conversation_silently():
+    assert '{"no_response": true, "react": null, "bubbles": []}' in FRAME
+    assert "goodbye loop" in FRAME
+
+
 def test_frame_does_not_offer_memory_editing():
     assert "memory tool" not in FRAME
     assert "propose_memory_edit" not in FRAME  # owner-only tool names never leak into the shared prefix

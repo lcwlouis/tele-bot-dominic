@@ -11,10 +11,11 @@ from dom.home import Home
 from dom.jev import JevClient
 
 Action = Literal["reply", "react", "ignore"]
+DEFAULT_ACTION_CONFIDENCE = 0.35
 _ACTION_CRITERIA = {
     "reply": "Write a reply; he is addressed or has something worth adding.",
-    "react": "Just react with an emoji; acknowledgement is enough.",
-    "ignore": "Stay silent; nothing for him here.",
+    "react": "Just react with an emoji; acknowledgement or a goodbye is enough.",
+    "ignore": "Stay silent; nothing for him here, or the conversation is already over.",
 }
 _DONE_CRITERIA = {
     "yes": "The latest message completes the thought or request. Dom can answer now.",
@@ -88,8 +89,8 @@ def _confidence(answer: dict) -> float | None:
     return value if type(value) in (int, float) and 0 <= value <= 1 else None
 
 
-def _confident(value: float | None) -> bool:
-    return value is not None and value >= 0.70
+def _confident(value: float | None, threshold: float = 0.70) -> bool:
+    return value is not None and value >= threshold
 
 
 def persona_card(home: Home) -> str:
@@ -107,7 +108,13 @@ def chat_state(card: str, window_xml: str) -> str:
 
 
 async def triage_online(
-    jev: JevClient, card: str, window_xml: str, *, owner_dm: bool = False, skills: Sequence[tuple[str, str]] = (),
+    jev: JevClient,
+    card: str,
+    window_xml: str,
+    *,
+    owner_dm: bool = False,
+    skills: Sequence[tuple[str, str]] = (),
+    min_confidence: float = DEFAULT_ACTION_CONFIDENCE,
 ) -> Triage:
     """`skills` are (name, description) of the approved skills. When there are any, the same call also picks the one
     that fits, or none: no extra Jev call, and the choice is only ever a name from that list."""
@@ -155,7 +162,7 @@ async def triage_online(
         action if action in tuple(_ACTION_CRITERIA) else None,
         emoji if emoji in tuple(_EMOJI_CRITERIA) else None,
         None,
-        _confident(confidence), confidence,
+        _confident(confidence, min_confidence), confidence,
         done if done in tuple(_DONE_CRITERIA) else None, _confidence(done_answer),
         long_answer.get("choice") == "yes" and _confident(_confidence(long_answer)),
         skill if isinstance(skill, str) and skill in offered and _confident(_confidence(skill_answer)) else None,

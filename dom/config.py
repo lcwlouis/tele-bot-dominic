@@ -261,6 +261,14 @@ class SelfWorkConfig(BaseModel):
     max_steps: int = Field(25, ge=1, le=60, description="Largest step budget (tool calls and model turns) that one task may plan.")
 
 
+MIN_TRIAGE_CONFIDENCE, MAX_TRIAGE_CONFIDENCE = 0.0, 1.0
+DEFAULT_TRIAGE_CONFIDENCE = 0.35
+MIN_BOT_DEPTH_LIMIT, MAX_BOT_DEPTH_LIMIT = 0, 20
+DEFAULT_BOT_DEPTH_LIMIT = 3
+MIN_BOT_REPLY_INTERVAL_SECONDS, MAX_BOT_REPLY_INTERVAL_SECONDS = 0, 300
+DEFAULT_BOT_REPLY_INTERVAL_SECONDS = 10
+
+
 class DispatchConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -269,6 +277,42 @@ class DispatchConfig(BaseModel):
         description=(
             "Give the owner's DM a compose lane of its own, so his turns (and the turns his approval cards start) "
             "never wait for a turn in another chat. Off, every chat's turns compose one at a time, owner first."
+        ),
+    )
+    triage_confidence: float = Field(
+        DEFAULT_TRIAGE_CONFIDENCE,
+        ge=MIN_TRIAGE_CONFIDENCE,
+        le=MAX_TRIAGE_CONFIDENCE,
+        allow_inf_nan=False,
+        description=(
+            "Minimum Jev confidence (0 to 1) to act on a stay-quiet or react-only triage verdict without calling the "
+            "chat model. Lower values let Dom stay silent or react-only more readily; 1 almost always lets the chat "
+            "model decide."
+        ),
+    )
+    bot_depth_limit: int = Field(
+        DEFAULT_BOT_DEPTH_LIMIT,
+        ge=MIN_BOT_DEPTH_LIMIT,
+        le=MAX_BOT_DEPTH_LIMIT,
+        description=(
+            "How many consecutive bot-only turns Dom replies to before sending one short closing message and stopping "
+            "until a human speaks. Zero makes the very first bot-only turn the closing message."
+        ),
+    )
+    bot_reply_interval_seconds: int = Field(
+        DEFAULT_BOT_REPLY_INTERVAL_SECONDS,
+        ge=MIN_BOT_REPLY_INTERVAL_SECONDS,
+        le=MAX_BOT_REPLY_INTERVAL_SECONDS,
+        description=(
+            "Minimum seconds between Dom's replies to the same bot in one chat; faster messages from that bot are "
+            "dropped quietly."
+        ),
+    )
+    bot_media: bool = Field(
+        False,
+        description=(
+            "Let Dom see and hear photos, stickers, voice notes and videos sent by other bots (never documents). "
+            "Off by default so other bots cannot spend media budget."
         ),
     )
 
@@ -283,6 +327,81 @@ class PresenceConfig(BaseModel):
             "It stands in for a read receipt and is never sent while he is asleep or offline."
         ),
     )
+
+
+STT_ENV_PATTERN = re.compile(r"^STT_[A-Z0-9_]{1,59}$")
+STT_URL_RULE = "Local STT must use an http(s) address on your own network (localhost, private LAN, Tailscale or .local) without credentials, a query or a fragment."
+STT_ENV_RULE = "Local STT API key variable must be empty or start with STT_ (for example STT_API_KEY)."
+
+
+def validate_local_stt_url(value: str) -> str:
+    clean = value.strip()
+    if not clean:
+        return ""
+    if any(char.isspace() or ord(char) < 32 or char in "\\?#" for char in clean):
+        raise ValueError(STT_URL_RULE)
+    from urllib.parse import urlsplit
+    from dom.usage import on_own_network, unroutable_address
+
+    try:
+        parts = urlsplit(clean)
+        port = parts.port
+        host = (parts.hostname or "").lower()
+        if (
+            parts.scheme in ("http", "https") and host
+            and parts.username is None and "%" not in parts.netloc and not parts.netloc.endswith(":")
+            and (port is None or port > 0)
+            and not unroutable_address(host) and on_own_network(host)
+        ):
+            return clean
+    except ValueError:
+        pass
+    raise ValueError(STT_URL_RULE)
+
+
+class SttConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str = Field(
+        "",
+        description=(
+            "Base URL of a local OpenAI-compatible speech-to-text server on your own network (such as whisper-server, "
+            "mlx-audio or faster-whisper-server, e.g. `http://192.168.68.24:8000/v1`). Voice notes, audio files and "
+            "video-note soundtracks try this server first when the chat model does not accept audio natively, and fall "
+            "back to `[models.media]` if it is unreachable or fails. Empty disables local STT."
+        ),
+    )
+    model: str = Field(
+        "whisper-1",
+        max_length=120,
+        description="Model name sent to `/audio/transcriptions` (e.g. `mlx-community/whisper-large-v3-turbo` or `whisper-1`).",
+    )
+    api_key_env: str = Field(
+        "",
+        description="Optional `STT_*` environment variable holding a bearer token for the local STT server (for example `STT_API_KEY`). Leave empty if none is needed.",
+    )
+    language: str = Field(
+        "",
+        max_length=16,
+        description="Optional ISO-639-1 language hint (for example `en`); empty lets the model auto-detect (best for mixed languages).",
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def _local_url(cls, value: str) -> str:
+        return validate_local_stt_url(value)
+
+    @field_validator("api_key_env")
+    @classmethod
+    def _stt_env(cls, value: str) -> str:
+        clean = value.strip()
+        if clean and not STT_ENV_PATTERN.fullmatch(clean):
+            raise ValueError(STT_ENV_RULE)
+        return clean
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url.strip())
 
 
 class KnowledgeConfig(BaseModel):
@@ -928,6 +1047,7 @@ class Config(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     presence: PresenceConfig = Field(default_factory=PresenceConfig)
+    stt: SttConfig = Field(default_factory=SttConfig)
     self_work: SelfWorkConfig = Field(default_factory=SelfWorkConfig)
     studio: StudioConfig = Field(default_factory=StudioConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)

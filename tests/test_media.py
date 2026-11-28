@@ -333,6 +333,17 @@ async def test_media_from_bots_is_never_described(media_app):
     assert not bot.downloads and not client.calls
 
 
+async def test_media_from_bots_is_described_when_bot_media_enabled(media_app):
+    app, bot, client = await media_app()
+    app.config = app.config.model_copy(update={
+        "dispatch": app.config.dispatch.model_copy(update={"bot_media": True}),
+    })
+    sender = User(id=333, first_name="Test Bot", is_bot=True)
+    await handle_message(app, photo_message().model_copy(update={"from_user": sender}))
+    await drain_dispatch(app.dispatch)
+    assert bot.downloads and client.calls
+
+
 async def test_only_one_description_runs_at_a_time():
     ready = asyncio.Event()
     bot, client = FakeDownload(ready), FakeMediaClient()

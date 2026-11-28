@@ -78,7 +78,11 @@
           <li class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5">
             <span class="min-w-0 flex-1 basis-48 font-mono text-sm break-all">{provider.model}</span>
             <span class="flex flex-wrap gap-1">
-              {#each provider.accepts as input (input)}<Badge variant="secondary">{word(input)}</Badge>{:else}<Badge variant="outline">Unknown</Badge>{/each}
+              {#each provider.accepts as input (input)}
+                <Badge variant="secondary">{word(input)}</Badge>
+              {:else}
+                <Badge variant="outline">{provider.source === "unknown" ? "Unknown" : "Text only"}</Badge>
+              {/each}
             </span>
             <span class="basis-full text-xs text-muted-foreground sm:basis-auto">{SOURCE[provider.source] ?? provider.source}</span>
           </li>

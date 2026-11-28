@@ -82,8 +82,8 @@ async def test_low_confidence_not_confident(jev):
         assert action["instructions"] == "What should Dom do with the newest messages?"
         assert action["criteria"] == {
             "reply": "Write a reply; he is addressed or has something worth adding.",
-            "react": "Just react with an emoji; acknowledgement is enough.",
-            "ignore": "Stay silent; nothing for him here.",
+            "react": "Just react with an emoji; acknowledgement or a goodbye is enough.",
+            "ignore": "Stay silent; nothing for him here, or the conversation is already over.",
         }
         assert list(emoji["criteria"])[:9] == ["🤣", "❤", "💯", "🗿", "🔥", "👍", "🤡", "😭", "👀"]
         assert len(emoji["criteria"]) == 29
@@ -94,13 +94,16 @@ async def test_low_confidence_not_confident(jev):
         return httpx.Response(200, json={"answers": {
             "action": {
                 "type": "choice", "choice": "react",
-                "probabilities": {"reply": 0.21, "react": 0.69, "ignore": 0.1}, "confidence": 0.69,
+                "probabilities": {"reply": 0.45, "react": 0.34, "ignore": 0.21}, "confidence": 0.34,
             },
             "emoji": {"type": "choice", "choice": "👍", "probabilities": {"👍": 1}, "confidence": 1},
         }})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
-        assert await triage_online(jev(http), "friendly", "<chat_window/>") == Triage("react", "👍", None, False, 0.69)
+        assert await triage_online(jev(http), "friendly", "<chat_window/>") == Triage("react", "👍", None, False, 0.34)
+        assert await triage_online(jev(http), "friendly", "<chat_window/>", min_confidence=0.30) == Triage(
+            "react", "👍", None, True, 0.34,
+        )
 
 
 async def test_offline_asks_only_for_kapoh(jev):
