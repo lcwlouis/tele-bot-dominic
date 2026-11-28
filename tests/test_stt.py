@@ -43,6 +43,15 @@ def test_transcriptions_url_handles_base_and_full_path():
     )
 
 
+def test_local_stt_url_accepts_tailscale_ip_and_magicdns():
+    from dom.config import validate_local_stt_url
+
+    assert validate_local_stt_url("http://100.94.111.67:8080/v1") == "http://100.94.111.67:8080/v1"
+    assert validate_local_stt_url("http://m1-max.tailnet.ts.net:8080/v1") == "http://m1-max.tailnet.ts.net:8080/v1"
+    with pytest.raises(ValueError):
+        validate_local_stt_url("https://api.openai.com/v1")
+
+
 async def test_stt_client_transcribe_and_probe():
     seen = []
 

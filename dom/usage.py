@@ -67,13 +67,21 @@ def unroutable_address(host: str) -> bool:
     return address.is_link_local or address.is_unspecified or address.is_multicast
 
 
+_TAILSCALE_V4 = ipaddress.ip_network("100.64.0.0/10")
+_TAILSCALE_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+
+
 def on_own_network(host: str) -> bool:
-    """Loopback, a private address, or a clearly local name (single-label, .local, .lan, .internal, .home.arpa)."""
+    """Loopback, a private or Tailscale address, or a clearly local name (single-label, .local, .lan, .internal, .home.arpa, .ts.net)."""
     host = host.rstrip(".").lower()
     address = _ip_literal(host)
     if address is None:
-        return "." not in host or host.endswith((".local", ".lan", ".internal", ".home.arpa"))
-    return (address.is_private or address.is_loopback) and not unroutable_address(host)
+        return "." not in host or host.endswith((".local", ".lan", ".internal", ".home.arpa", ".ts.net"))
+    tailscale = (
+        (address.version == 4 and address in _TAILSCALE_V4)
+        or (address.version == 6 and address in _TAILSCALE_V6)
+    )
+    return (address.is_private or address.is_loopback or tailscale) and not unroutable_address(host)
 
 
 def provider_address(url: httpx.URL) -> str:
