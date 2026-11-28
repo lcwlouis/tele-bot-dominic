@@ -6,6 +6,10 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-11-28
+
+- **Tailscale addresses recognized as own-network.** `on_own_network()` now explicitly accepts Tailscale IPv4 (`100.64.0.0/10`), Tailscale IPv6 (`fd7a:115c:a1e0::/48`), and `.ts.net` hostnames, so Tailscale addresses (such as Studio's Whisper STT endpoint at `http://100.94.111.67:8080/v1`) pass local-network validation.
+
 ## [0.8.8] - 2026-11-28
 
 - **Native Anthropic API support (`kind = "anthropic"`).** Direct `api.anthropic.com` providers now speak Anthropic's `/v1/messages` and `/v1/models` API natively with `x-api-key` and `anthropic-version: 2023-06-01`, including prompt caching (`cache_control`), tool calls, images, thinking/reasoning budgets, and `cache_read_input_tokens` usage tracking. **Settings → Providers** now lists **Anthropic** as a Chat provider kind.
