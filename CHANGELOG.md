@@ -6,6 +6,11 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.12] - 2026-11-28
+
+- **Tuned leak detector with chat context and cleaner terms.** `leak_score()` now includes a short slice of `<recent_chat>` from the target chat so Jev knows what was already said out loud in the room, filters generic sentence-starting stop-words out of single-word `_NAMES` terms (while keeping multi-word names, headings, bold labels, and numbers intact), and clarifies scoring criteria so refusals, jokes, and already-public chat topics don't trigger false holds.
+- **Recognize "telebubble" / "video bubble" as `video_note`.** Clarified `ACTION_NOTES["video_note"]` so Dom maps Telegram round-video slang ("telebubble", "video bubble") to `video_note` instead of sending a voice note.
+
 ## [0.8.11] - 2026-11-28
 
 - **Timed guest desktop sessions & verified screenshots.** Guest desktop approval cards (in Telegram and the dashboard's Waiting/Access pages) now offer **Allow 3h + screenshots** alongside **Allow once** and **Reject** (still never Allow always), and you can also manage timed sessions from your DM with `guest_desktop_access` (`grant`, `revoke`, `status`) or set `[desktop.guest] allow_screenshots = true` / `session_hours = 3.0`. During an active session, guest tasks in that chat auto-start (including when you ask Dom in a group), `save_screenshot` is enabled, and up to 2 SHA-256-verified PNG screenshots are delivered to the chat while all other file downloads remain blocked.

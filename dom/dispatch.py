@@ -2124,7 +2124,9 @@ class Dispatcher:
                 await check_model_allowed()
                 people = await app.store.chat_participant_names(chat_id)
                 terms = await asyncio.to_thread(guard.private_terms, app.home, people)
-                score = await guard.leak_score(self.jev, terms, text)
+                recent_msgs, _ = await app.store.get_recent_chat_messages(chat_id, 8)
+                recent = guard.format_recent_chat(reversed(recent_msgs))
+                score = await guard.leak_score(self.jev, terms, text, recent_chat=recent)
         except ModelCallSkipped:
             if not await app.store.is_chat_approved(chat_id):
                 raise

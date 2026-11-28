@@ -114,7 +114,9 @@ class CrossChat:
                 with model_request("guard", source, partial(self.dispatch.model_allowed, source)):
                     await check_model_allowed()
                     terms = guard.private_terms(self.app.home, await self.store.chat_participant_names(target))
-                    score = await guard.leak_score(self.dispatch.jev, terms, text)
+                    recent_msgs, _ = await self.store.get_recent_chat_messages(target, 8)
+                    recent = guard.format_recent_chat(reversed(recent_msgs))
+                    score = await guard.leak_score(self.dispatch.jev, terms, text, recent_chat=recent)
             except ModelCallSkipped:
                 pass
         at = self.now()

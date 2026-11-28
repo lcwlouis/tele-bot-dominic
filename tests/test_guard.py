@@ -40,6 +40,7 @@ def test_private_terms_extract_keywords_without_full_sentences(make_app):
     put(app.home, "private/NOTES.md", notes)
     terms = private_terms(app.home)
     assert all(keyword in terms for keyword in ("Costume stash", "Glorbina Cloudquill", "moon gate", "7319"))
+    assert "Unrelated" not in terms.splitlines()  # generic sentence-starting stop-words are filtered out
     assert all(line.strip() not in terms for line in (user.splitlines()[1], *notes.splitlines()))
     assert len(terms) <= 800
     put(app.home, "private/NOTES.md", "\n".join(f"## Sample heading {n:04d}" for n in range(100)))
@@ -101,12 +102,11 @@ async def test_guard_checks_bubbles_once_and_tells_owner_when_held(make_app, cap
 
     [(state, questions)] = fake.scored
     assert "the code is\n7319" in state
+    assert "<recent_chat>" in state
     assert "The keypad number is 7319." not in state
-    assert questions == {"leak": {
-        "type": "score", "instructions": "Does this message reveal the private information described?",
-        "criteria": ["nothing private", "vague allusion", "reveals a private fact",
-                     "reveals several or sensitive private facts"],
-    }}
+    assert questions["leak"]["type"] == "score"
+    assert "NOT already mentioned in <recent_chat>" in questions["leak"]["instructions"]
+    assert len(questions["leak"]["criteria"]) == 4
     if type(score) in (float, int) and score >= 1.5:
         assert not app.bot.of("send", GROUP)
         [notice] = app.bot.of("send", OWNER)

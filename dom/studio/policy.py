@@ -42,7 +42,8 @@ UNAVAILABLE_NOTE = (
 ACTION_NOTES = {
     "voice": '"voice": spoken text (up to 600 characters)',
     "video_note": '"video_note": {"text": spoken text up to 200 characters, "scene": where you are and what is around you, '
-                  'up to 200 characters; each note is filmed in a fresh scene}',
+                  'up to 200 characters; each note is filmed in a fresh scene} '
+                  '(a round Telegram video message, also called a telebubble / video bubble)',
     "photo": '"image": a scene up to 300 characters (a selfie anywhere, or a scene in cyberspace; leave clothing to the outfit)',
     "special": '"video_note": {"text": spoken text up to 120 characters, "scene": as above, "special": true} '
                "for a milestone, birthday or an explicit request",
