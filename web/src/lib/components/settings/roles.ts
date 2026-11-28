@@ -50,6 +50,7 @@ export const KIND_INFO: Record<ProviderKind, { label: string; url: Partial<Recor
     label: "OpenRouter",
     url: { chat: "https://openrouter.ai/api/v1", media: "https://openrouter.ai/api/v1", decisions: "https://openrouter.ai/api/alpha" },
   },
+  anthropic: { label: "Anthropic", url: { chat: "https://api.anthropic.com/v1" } },
   gemini: { label: "Google Gemini", url: { media: "https://generativelanguage.googleapis.com/v1beta" } },
   searxng: { label: "SearXNG", url: {} },
   deepseek: { label: "DeepSeek web search", url: {} },
@@ -59,7 +60,7 @@ export const KIND_INFO: Record<ProviderKind, { label: string; url: Partial<Recor
 /** What each provider type is for, and the services that can be one (dom/config.py TYPE_KINDS). */
 export const TYPE_INFO: Record<ProviderType, { label: string; heading: string; summary: string; kinds: ProviderKind[] }> = {
   chat: {
-    label: "Chat", heading: "Chat providers", kinds: ["openai", "openrouter"],
+    label: "Chat", heading: "Chat providers", kinds: ["openai", "openrouter", "anthropic"],
     summary: "Used by chat, fallback, drafting, escalation, photos and voice, and OpenRouter web search.",
   },
   media: {

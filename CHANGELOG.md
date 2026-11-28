@@ -6,6 +6,12 @@ named `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-11-28
+
+- **Native Anthropic API support (`kind = "anthropic"`).** Direct `api.anthropic.com` providers now speak Anthropic's `/v1/messages` and `/v1/models` API natively with `x-api-key` and `anthropic-version: 2023-06-01`, including prompt caching (`cache_control`), tool calls, images, thinking/reasoning budgets, and `cache_read_input_tokens` usage tracking. **Settings → Providers** now lists **Anthropic** as a Chat provider kind.
+- **Write-only `.env` key manager in the dashboard.** **Settings → Providers → API keys (.env)** lets you add or replace API keys (such as `ANTHROPIC_API_KEY` or `STT_API_KEY`) directly from the dashboard without SSH, applies them immediately to live clients, protects system credentials (`DOM_MASTER_KEY`, `TELEGRAM_BOT_TOKEN`, `WEB_DEV_TOKEN`, Google OAuth client secrets), and never displays existing values.
+- **Chat-tagged `MEMORY.md` lines are no longer dropped everywhere.** Lines tagged `{chat <id>}` in `MEMORY.md` now surface in that chat (and in the owner's DM) via per-chat notes while keeping the shared system prefix cache-stable across chats.
+
 ## [0.8.7] - 2026-11-28
 
 - **Triage confidence, bot-to-bot limits, and ending conversations.** `[dispatch]` now exposes live-configurable `triage_confidence` (default `0.35`, down from the hardcoded `0.70` so Jev can act on stay-quiet and react-only verdicts), `bot_depth_limit` (default `3`, down from `6`), and `bot_reply_interval_seconds` (default `10`). All three are editable in **Settings → What Dom may do → Messaging → Triage & bot loops** and apply immediately without restarting. The chat prompt (`FRAME`) now explicitly tells Dom how to stay silent (`no_response: true`) or react-only when a conversation is wrapping up or over so he stops feeding goodbye loops.

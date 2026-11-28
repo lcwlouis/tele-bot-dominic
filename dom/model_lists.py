@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass
 
 import httpx
 
+from dom import anthropic_api
 from dom.config import EFFORT_PATTERN, Config
 from dom.secret_patterns import API_KEY, BEARER_TOKEN, TELEGRAM_BOT_TOKEN
 
@@ -115,12 +116,15 @@ _INPUT_NAMES = ("text", "image", "audio", "video")
 
 
 def _input_types(entry: dict) -> tuple[str, ...] | None:
-    """The input types OpenRouter lists as `architecture.input_modalities`; None when the list says nothing."""
+    """The input types OpenRouter lists as `architecture.input_modalities`, or Anthropic `capabilities.image_input`."""
     architecture = entry.get("architecture")
     listed = architecture.get("input_modalities") if isinstance(architecture, dict) else None
-    if not isinstance(listed, list):
-        return None
-    return tuple(name for name in _INPUT_NAMES if name in listed)
+    if isinstance(listed, list):
+        return tuple(name for name in _INPUT_NAMES if name in listed)
+    capabilities = entry.get("capabilities")
+    if isinstance(capabilities, dict) and isinstance(capabilities.get("image_input"), dict):
+        return ("text", "image") if capabilities["image_input"].get("supported") else ("text",)
+    return None
 
 
 def parse(payload: object, secrets: Collection[str] = ()) -> tuple[ListedModel, ...]:
@@ -134,7 +138,7 @@ def parse(payload: object, secrets: Collection[str] = ()) -> tuple[ListedModel, 
             continue
         params = entry.get("supported_parameters")
         reasoning = bool({"reasoning", "reasoning_effort", "include_reasoning"} & set(params)) if isinstance(params, list) else None
-        name = entry.get("name")
+        name = entry.get("name") or entry.get("display_name")
         name = " ".join(name.split())[:MAX_NAME] if isinstance(name, str) and name.strip() else entry["id"]
         efforts, default_effort = _efforts(entry, reasoning)
         model = ListedModel(entry["id"], name, reasoning, efforts, default_effort, _input_types(entry))
@@ -153,7 +157,11 @@ async def fetch(
     already checked that `key` may go to this address and that the address is allowed; entries holding any of
     `secrets` (or `key`) are dropped."""
     url = base_url.rstrip("/") + path
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    try:
+        is_anthropic = anthropic_api.anthropic_host(httpx.URL(url).host)
+    except httpx.InvalidURL:
+        is_anthropic = False
+    headers = anthropic_api.headers(key) if is_anthropic else ({"Authorization": f"Bearer {key}"} if key else {})
     try:
         async with asyncio.timeout(LIST_TIMEOUT):
             async with http.stream(
@@ -185,7 +193,7 @@ def list_location(kind: str, type_: str, base_url: str) -> tuple[str, str] | Non
     """Where a provider's model list is, as (base, path) for fetch(), or None when it has none: chat providers list
     `{base_url}/models`; OpenRouter's decisions models are on its origin's v1 API; media providers and the search
     services list nothing here (studio backups fetch each media kind's list themselves)."""
-    if type_ == "chat" and kind in ("openai", "openrouter"):
+    if type_ == "chat" and kind in ("openai", "openrouter", "anthropic"):
         return base_url, "/models"
     if type_ == "decisions" and kind == "openrouter":
         try:

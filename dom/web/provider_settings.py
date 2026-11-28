@@ -34,7 +34,9 @@ from dom.config import (
     ProviderEndpoint,
     ProviderKind,
     ProviderType,
+    _read_dotenv,
     default_type,
+    set_dotenv,
 )
 from dom.llm import FallbackClient, MissingProviderKey
 from dom.web.model_settings import (
@@ -42,6 +44,7 @@ from dom.web.model_settings import (
     ENV_NAME,
     MISSING_KEY,
     REVISION,
+    _CONFIG_WRITE,
     KeyPairing,
     ModelSettings,
     ProviderSetupView,
@@ -76,7 +79,10 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 PREFIX = "/api/providers"
-JSON_POSTS = {f"{PREFIX}/save", f"{PREFIX}/remove", f"{PREFIX}/test", f"{PREFIX}/models"}
+JSON_POSTS = {f"{PREFIX}/save", f"{PREFIX}/remove", f"{PREFIX}/test", f"{PREFIX}/models", f"{PREFIX}/keys"}
+PROTECTED_ENV_KEYS = frozenset({
+    "DOM_MASTER_KEY", "TELEGRAM_BOT_TOKEN", "WEB_DEV_TOKEN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+})
 
 
 class ProviderSave(BaseModel):
@@ -451,3 +457,68 @@ async def list_models(request: Request) -> ModelListView:
     except model_lists.ListUnavailable as exc:
         raise HTTPException(502, str(exc)) from None
     return _list_view(await model_lists.remember(app.store, setup.base_url, setup.api_key_env, models, type_=setup.type))
+
+
+class EnvKeyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=64)
+    value: str | None = Field(None, max_length=4096)
+
+    @field_validator("name")
+    @classmethod
+    def _valid_name(cls, value: str) -> str:
+        clean = value.strip()
+        if not ENV_NAME.fullmatch(clean):
+            raise ValueError("Key name must be uppercase letters, digits and underscores (e.g. ANTHROPIC_API_KEY).")
+        if clean in PROTECTED_ENV_KEYS:
+            raise ValueError(f"{clean} is a protected system credential and cannot be changed from the dashboard.")
+        return clean
+
+    @field_validator("value")
+    @classmethod
+    def _valid_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if "\n" in value or "\r" in value or "\x00" in value:
+            raise ValueError("Key value must be a single line.")
+        return value.strip() or None
+
+
+def _env_keys_view(app: App) -> dict:
+    """List key names and whether each is set (never any secret values)."""
+    home = app.config.home
+    dotenv_keys = set(_read_dotenv(home / ".env"))
+    referenced = set(app.config.secret_names())
+    names = sorted((dotenv_keys | referenced) - PROTECTED_ENV_KEYS)
+    return {
+        "keys": [
+            {"name": name, "set": bool(app.config.secret(name)), "in_dotenv": name in dotenv_keys}
+            for name in names
+        ],
+    }
+
+
+@router.get(PREFIX + "/keys")
+async def read_env_keys(request: Request) -> dict:
+    app = owner_app(request)
+    return await asyncio.to_thread(_env_keys_view, app)
+
+
+@router.post(PREFIX + "/keys")
+async def save_env_key(request: Request) -> dict:
+    """Write-only .env key update: adds, replaces or clears one non-protected key and refreshes live clients."""
+    app = owner_app(request)
+    update = await _input(request, EnvKeyUpdate)
+
+    async def run() -> dict:
+        async with _CONFIG_WRITE:
+            await asyncio.to_thread(set_dotenv, app.config.home, update.name, update.value)
+            app.refresh_triage()
+            app.refresh_stt()
+            try:
+                app.apply_model_routes(app.config)
+            except Exception:
+                pass
+            return await asyncio.to_thread(_env_keys_view, app)
+
+    return await asyncio.shield(asyncio.ensure_future(run()))

@@ -65,7 +65,7 @@ from dom.config import (
     set_dotenv_many,
     validate_config,
 )
-from dom import model_lists
+from dom import anthropic_api, model_lists
 from dom.doctor import _probe_hint, is_zdr_refusal
 from dom.embedding import EmbeddingProvider
 from dom.jev import DEFAULT_BASE_URL as DECISIONS_BASE_URL, JevClient, JevUnavailable
@@ -359,7 +359,8 @@ PROVIDER_PRESETS = (
     ProviderPreset(name="Google Gemini media", base_url=MEDIA_BASE_URLS["gemini"],
                    api_key_env="GEMINI_MEDIA_API_KEY", kind="gemini", type="media"),
     ProviderPreset(name="OpenAI", base_url="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"),
-    ProviderPreset(name="Anthropic", base_url="https://api.anthropic.com/v1", api_key_env="ANTHROPIC_API_KEY"),
+    ProviderPreset(name="Anthropic", base_url="https://api.anthropic.com/v1",
+                   api_key_env="ANTHROPIC_API_KEY", kind="anthropic"),
     ProviderPreset(name="Google Gemini", base_url="https://generativelanguage.googleapis.com/v1beta/openai",
                    api_key_env="GEMINI_API_KEY"),
     ProviderPreset(name="Groq", base_url="https://api.groq.com/openai/v1", api_key_env="GROQ_API_KEY"),
@@ -643,13 +644,18 @@ def slot_kind(role: SettingsRole, endpoint: ProviderEndpoint) -> tuple[ProviderK
         kind = search_provider_kind(endpoint)
         return kind, "chat" if kind == "openrouter" else "search"
     try:
-        return ("openrouter" if openrouter_host(httpx.URL(endpoint.base_url).host) else "openai"), "chat"
+        host = httpx.URL(endpoint.base_url).host
+        if openrouter_host(host):
+            return "openrouter", "chat"
+        if anthropic_api.anthropic_host(host):
+            return "anthropic", "chat"
+        return "openai", "chat"
     except httpx.InvalidURL:
         return "openai", "chat"
 
 
 TYPE_LABELS: dict[str, str] = {"chat": "", "media": "media", "decisions": "decisions", "search": ""}
-KIND_LABELS: dict[str, str] = {"openrouter": "OpenRouter", "gemini": "Google Gemini"} | {
+KIND_LABELS: dict[str, str] = {"openrouter": "OpenRouter", "anthropic": "Anthropic", "gemini": "Google Gemini"} | {
     name: PROVIDER_INFO[name].label for name in ("searxng", "deepseek", "tavily")
 }
 

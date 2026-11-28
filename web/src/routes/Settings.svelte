@@ -29,6 +29,7 @@
   import SectionTabs from "$lib/components/kit/SectionTabs.svelte";
   import AssistantCard from "$lib/components/settings/AssistantCard.svelte";
   import DesktopSteps from "$lib/components/settings/DesktopSteps.svelte";
+  import EnvKeys from "$lib/components/settings/EnvKeys.svelte";
   import LeakScan from "$lib/components/settings/LeakScan.svelte";
   import MeaningIndex from "$lib/components/settings/MeaningIndex.svelte";
   import MediaInputs from "$lib/components/settings/MediaInputs.svelte";
@@ -811,6 +812,7 @@
           </div>
         </section>
       {/each}
+      <EnvKeys onchanged={load} />
     </Tabs.Content>
 
     <Tabs.Content value="permissions">

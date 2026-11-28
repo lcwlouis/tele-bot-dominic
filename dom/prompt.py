@@ -108,6 +108,17 @@ def _read_chat_notes(
             notes[rel] = _read_note(private, rel, chat_id, everything=True)
     chat_rel = f"memory/chats/{chat_id}.md"
     notes[chat_rel] = _read_note(public, chat_rel, chat_id, everything=everything)
+    # MEMORY.md in the shared system prefix holds only untagged/{any} lines so it stays cache-stable across chats.
+    # Surface any chat-tagged lines from MEMORY.md here, in the per-chat notes, so they are not lost in every chat.
+    raw_memory = public.read("memory/MEMORY.md")
+    scoped_memory = "\n".join(
+        note_lines.parse_line(line).body
+        for line in raw_memory.split("\n")
+        if (src := note_lines.parse_line(line).source) not in (None, note_lines.ANY)
+        and (everything or src == str(chat_id))
+    ).strip()
+    if scoped_memory:
+        notes["memory/MEMORY.md (chat-specific)"] = scoped_memory
     for uid in sorted(set(participant_ids)):
         rel = f"memory/people/{uid}.md"
         if content := _read_note(public, rel, chat_id, everything=everything):

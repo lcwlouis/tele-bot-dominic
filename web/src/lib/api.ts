@@ -99,7 +99,7 @@ export type SearchProviderId = "searxng" | "openrouter" | "deepseek" | "tavily";
 /** A provider's own effort names (low, medium, high, and any others it lists). */
 export type Effort = string;
 /** The service a provider talks to (dom/config.py ProviderKind). */
-export type ProviderKind = "openai" | "openrouter" | "gemini" | "searxng" | "deepseek" | "tavily";
+export type ProviderKind = "openai" | "openrouter" | "anthropic" | "gemini" | "searxng" | "deepseek" | "tavily";
 /** What a provider is for: model roles, studio backups, triage or web search (dom/config.py ProviderType). */
 export type ProviderType = "chat" | "media" | "decisions" | "search";
 

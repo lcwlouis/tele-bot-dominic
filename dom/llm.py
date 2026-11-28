@@ -13,7 +13,7 @@ from typing import Awaitable, Callable
 
 import httpx
 
-from dom import modalities, turn_log
+from dom import anthropic_api, modalities, turn_log
 from dom.acp import AcpError, acp_clients
 from dom.config import ACP_ROLES, DEEPSEEK_EFFORT_ERROR, DEEPSEEK_EFFORTS, Config, ModelRole, ProviderEndpoint, deepseek_chat_host
 from dom.usage import Kind, UsageRecorder, check_model_allowed, provider_address, request_kind
@@ -200,30 +200,39 @@ class ChatClient:
         self, messages: list[dict], wire: list[dict], tools: list[dict], fallback: bool, once: bool,
         max_tokens: int | None, timeout: float,
     ) -> dict:
-        body: dict = {"model": self.endpoint.model, "messages": wire}
-        if tools:
-            body["tools"] = tools
-        if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+        anthropic = anthropic_api.anthropic_host(self.host)
         openrouter = openrouter_host(self.host)
         deepseek = deepseek_chat_host(self.host)
-        if deepseek:
-            if self.endpoint.reasoning_effort is None:
-                body["thinking"] = {"type": "disabled"}
-            elif self.endpoint.reasoning_effort in DEEPSEEK_EFFORTS:
-                body["thinking"] = {"type": "enabled"}
-                body["messages"] = _with_reasoning_slots(wire)
-            else:
-                raise ValueError(DEEPSEEK_EFFORT_ERROR)
-        if openrouter:
-            body["provider"] = {"zdr": True}
-        if self.endpoint.reasoning_effort is not None:
+        if anthropic:
+            body = anthropic_api.build_request(
+                self.endpoint.model, wire, tools,
+                max_tokens=max_tokens, reasoning_effort=self.endpoint.reasoning_effort,
+            )
+            headers = anthropic_api.headers(self.api_key)
+            url = f"{self.endpoint.base_url.rstrip('/')}/messages"
+        else:
+            body = {"model": self.endpoint.model, "messages": wire}
+            if tools:
+                body["tools"] = tools
+            if max_tokens is not None:
+                body["max_tokens"] = max_tokens
+            if deepseek:
+                if self.endpoint.reasoning_effort is None:
+                    body["thinking"] = {"type": "disabled"}
+                elif self.endpoint.reasoning_effort in DEEPSEEK_EFFORTS:
+                    body["thinking"] = {"type": "enabled"}
+                    body["messages"] = _with_reasoning_slots(wire)
+                else:
+                    raise ValueError(DEEPSEEK_EFFORT_ERROR)
             if openrouter:
-                body["reasoning"] = {"effort": self.endpoint.reasoning_effort}
-            else:
-                body["reasoning_effort"] = self.endpoint.reasoning_effort
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        url = f"{self.endpoint.base_url.rstrip('/')}/chat/completions"
+                body["provider"] = {"zdr": True}
+            if self.endpoint.reasoning_effort is not None:
+                if openrouter:
+                    body["reasoning"] = {"effort": self.endpoint.reasoning_effort}
+                else:
+                    body["reasoning_effort"] = self.endpoint.reasoning_effort
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            url = f"{self.endpoint.base_url.rstrip('/')}/chat/completions"
         kind = request_kind(self.kind)
 
         for delay in (None,) if once else (*RETRY_BACKOFF, None):
@@ -258,6 +267,8 @@ class ChatClient:
         if deepseek and response.status_code == 402:
             raise ProviderBudgetError(response, BudgetRefusal("deepseek_credits", None, None, None, None))
         response.raise_for_status()
+        if anthropic:
+            return anthropic_api.parse_response(response.json())
         return response.json()["choices"][0]["message"]
 
 

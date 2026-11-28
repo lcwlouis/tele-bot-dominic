@@ -155,10 +155,12 @@ def token_counts(data: dict) -> tuple[int | None, int | None, int | None]:
     """Provider counts for a call, with missing or invalid values left unknown."""
     details = data.get("prompt_tokens_details") or data.get("input_tokens_details")
     cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    if cached is None:
+        cached = data.get("cached_tokens", data.get("prompt_cache_hit_tokens", data.get("cache_read_input_tokens")))
     return (
         _tokens(data.get("prompt_tokens", data.get("input_tokens"))),
         _tokens(data.get("completion_tokens", data.get("output_tokens"))),
-        _tokens(data.get("cached_tokens", data.get("prompt_cache_hit_tokens")) if cached is None else cached),
+        _tokens(cached),
     )
 
 

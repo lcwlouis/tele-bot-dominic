@@ -1048,6 +1048,30 @@ async def test_local_stt_save_and_clear_updates_config_and_live_client(dashboard
     assert tomllib.loads(path.read_text())["stt"]["base_url"] == ""
 
 
+ENV_KEYS_PATH = "/api/providers/keys"
+
+
+async def test_env_keys_endpoint_is_write_only_and_protects_system_credentials(dashboard):
+    app, path, browser = dashboard
+    async with browser(authorized=False) as client:
+        assert (await client.post(ENV_KEYS_PATH, json={}, headers=ORIGIN_HEADER)).status_code == 403
+    async with browser() as client:
+        bad = await client.post(ENV_KEYS_PATH, headers=ORIGIN_HEADER, json={
+            "name": "TELEGRAM_BOT_TOKEN", "value": "123456:bad",
+        })
+        assert bad.status_code == 422
+        saved = await client.post(ENV_KEYS_PATH, headers=ORIGIN_HEADER, json={
+            "name": "ANTHROPIC_API_KEY", "value": "sk-ant-secret-value-12345",
+        })
+        assert saved.status_code == 200, saved.text
+        body = saved.json()
+        assert "sk-ant-secret-value-12345" not in saved.text
+        assert {"name": "ANTHROPIC_API_KEY", "set": True, "in_dotenv": True} in body["keys"]
+        listed = await client.get(ENV_KEYS_PATH)
+        assert listed.status_code == 200 and "sk-ant-secret-value-12345" not in listed.text
+    assert app.config.secret("ANTHROPIC_API_KEY") == "sk-ant-secret-value-12345"
+
+
 async def test_save_says_when_the_provider_budget_is_spent(dashboard, monkeypatch):
     app, path, browser = dashboard
     monkeypatch.setenv("OPENROUTER_API_KEY", "example-openrouter-key")

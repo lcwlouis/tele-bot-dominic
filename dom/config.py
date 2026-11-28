@@ -46,7 +46,7 @@ LEAK_LEVEL_TOLERANCE = 0.1  # a legacy `leak_threshold` this close to a level's 
 
 # The service a saved provider talks to: any OpenAI-compatible endpoint, OpenRouter, Google Gemini (direct, for media)
 # or a search service.
-ProviderKind = Literal["openai", "openrouter", "gemini", "searxng", "deepseek", "tavily"]
+ProviderKind = Literal["openai", "openrouter", "anthropic", "gemini", "searxng", "deepseek", "tavily"]
 PROVIDER_KINDS = get_args(ProviderKind)
 # What a saved provider is for (owner decision E70): chat completions (the model roles), studio media (the cloud
 # backups), OpenRouter's Decisions API (triage) or web search. One service can be saved once per type, each with
@@ -55,7 +55,7 @@ ProviderType = Literal["chat", "media", "decisions", "search"]
 PROVIDER_TYPES = get_args(ProviderType)
 SEARCH_KINDS = ("searxng", "deepseek", "tavily")
 TYPE_KINDS: dict[str, tuple[str, ...]] = {
-    "chat": ("openai", "openrouter"),
+    "chat": ("openai", "openrouter", "anthropic"),
     "media": ("openrouter", "gemini"),
     "decisions": ("openrouter",),
     "search": SEARCH_KINDS,
