@@ -32,3 +32,9 @@ command = ["/path/to/runtime/flash/bin/python", "/path/to/studio/workers/flash_w
 
 [workers.special]
 command = ["/path/to/studio/.venv/bin/python", "/path/to/studio/workers/ltx_worker.py", "/path/to/runtime/ltx-src/.venv/bin/ltx-2-mlx", "/path/to/ltx-snapshot", "/path/to/gemma-snapshot", "/path/to/bin/ffmpeg"]
+
+# Optional: local OpenAI-compatible speech-to-text at POST /v1/audio/transcriptions.
+# Run `scripts/setup-stt.sh "$STUDIO_RUNTIME"` first.
+# [workers.stt]
+# model = "Whisper large-v3-turbo"
+# command = ["/path/to/runtime/stt/bin/python", "/path/to/studio/workers/stt_worker.py", "mlx-community/whisper-large-v3-turbo"]

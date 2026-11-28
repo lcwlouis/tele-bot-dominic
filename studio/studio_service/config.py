@@ -42,6 +42,7 @@ class Workers(Settings):
     image: WorkerConfig
     video: WorkerConfig
     special: WorkerConfig
+    stt: WorkerConfig | None = None
 
 
 class Config(Settings):

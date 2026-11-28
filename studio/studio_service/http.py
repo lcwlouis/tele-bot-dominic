@@ -20,10 +20,11 @@ from .process import WorkerError
 from .service import read_output
 
 
-VERSION = "0.8.6"
+VERSION = "0.8.6.1"
 MAX_BODY = 16 * 1024
 MAX_STILL = 3 * 1024**2  # a fresh still for a video note, as a PNG
 MAX_STILL_BODY = MAX_STILL * 4 // 3 + MAX_BODY  # that still as base64, plus the rest of the request
+MAX_STT_AUDIO = 20 * 1024**2  # matches Telegram's bot file download limit
 PNG = b"\x89PNG\r\n\x1a\n"
 MIME = {"voice": "audio/ogg", "image": "image/png", "video": "video/mp4", "special": "video/mp4"}
 VoiceText = Annotated[str, Field(min_length=1, max_length=600)]
@@ -138,7 +139,12 @@ def create_app(studio, sources, token):
             "queue_depth": len(studio.pending),
             "version": VERSION,
             "video_still": True,
-            "models": {name: model for name in studio.workers if (model := getattr(studio.config.workers, name).model)},
+            "stt": "stt" in studio.workers,
+            "models": {
+                name: cfg.model
+                for name in studio.workers
+                if (cfg := getattr(studio.config.workers, name)) is not None and cfg.model
+            },
         })
 
     async def portrait(request):
@@ -197,10 +203,71 @@ def create_app(studio, sources, token):
             await asyncio.gather(job, disconnect, return_exceptions=True)
             studio.pending.discard(job)
 
+    async def transcribe(request):
+        denied = authorize(request)
+        if denied is not None:
+            return denied
+        if "stt" not in studio.workers:
+            return error(503, "stt-not-configured")
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "multipart/form-data":
+            return error(415, "expected-multipart")
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > MAX_STT_AUDIO + MAX_BODY:
+                    return error(413, "body-too-large")
+            except ValueError:
+                return error(422, "invalid-request")
+        try:
+            async with asyncio.timeout(15):
+                form = await request.form(max_part_size=MAX_STT_AUDIO + 1)
+        except TimeoutError:
+            return error(408, "request-timeout")
+        except ClientDisconnect:
+            return Response(status_code=499)
+        except Exception:
+            return error(422, "invalid-request")
+        try:
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read"):
+                return error(422, "missing-file")
+            audio = await upload.read(MAX_STT_AUDIO + 1)
+            if not audio:
+                return error(422, "empty-file")
+            if len(audio) > MAX_STT_AUDIO:
+                return error(413, "body-too-large")
+            language_raw = form.get("language")
+            if language_raw is not None and not isinstance(language_raw, str):
+                return error(422, "invalid-language")
+            language = (language_raw or "").strip()
+            if len(language) > 16:
+                return error(422, "invalid-language")
+        finally:
+            await form.close()
+        if len(studio.pending) >= 3:
+            return error(503, "busy")
+        job = asyncio.create_task(studio.job("stt", {"audio": audio, "language": language}))
+        studio.pending.add(job)
+        disconnect = asyncio.create_task(disconnected(request))
+        try:
+            done, _ = await asyncio.wait((job, disconnect), return_when=asyncio.FIRST_COMPLETED)
+            if disconnect in done:
+                return Response(status_code=499)
+            status, result = job.result()
+            if status != 200:
+                return error(status, result)
+            return JSONResponse({"text": result}, headers={"Cache-Control": "no-store"})
+        finally:
+            job.cancel()
+            disconnect.cancel()
+            await asyncio.gather(job, disconnect, return_exceptions=True)
+            studio.pending.discard(job)
+
     return Starlette(lifespan=lifespan, routes=[
         Route("/v1/health", health),
         Route("/v1/portrait/{outfit}", portrait),
         Route("/v1/voice", partial(submit, kind="voice"), methods=["POST"]),
         Route("/v1/video_note", partial(submit, kind="video"), methods=["POST"]),
         Route("/v1/image", partial(submit, kind="image"), methods=["POST"]),
+        Route("/v1/audio/transcriptions", transcribe, methods=["POST"]),
     ])

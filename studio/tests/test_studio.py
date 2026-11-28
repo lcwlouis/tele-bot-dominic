@@ -168,7 +168,7 @@ async def test_generate(studio, path, payload, mime):
         assert health["workers"]
         assert health["queue_depth"] == 0
         assert health["available_memory_bytes"] == 64 * GIB
-        assert health["version"] == "0.8.6"
+        assert health["version"] == "0.8.6.1"
         assert health["video_still"] is True
 
 
@@ -377,3 +377,35 @@ async def test_only_a_video_note_takes_a_big_body(studio):
     async with client(studio) as http:
         assert (await http.post("/v1/image", **big)).status_code == 413
         assert (await http.post("/v1/video_note", **big)).status_code == 422  # read in full, then not valid JSON
+
+
+async def test_stt_endpoint_returns_503_when_unconfigured(studio):
+    cfg = studio.config.model_copy(update={"workers": studio.config.workers.model_copy(update={"stt": None})})
+    no_stt = Studio(cfg, studio.sample)
+    try:
+        async with client(no_stt) as http:
+            health = await http.get("/v1/health")
+            assert health.status_code == 200 and health.json()["stt"] is False
+            response = await http.post("/v1/audio/transcriptions", files={"file": ("voice.ogg", b"ogg", "audio/ogg")})
+            assert response.status_code == 503 and response.json()["error"] == "stt-not-configured"
+    finally:
+        await no_stt.close()
+
+
+async def test_stt_endpoint_transcribes_and_validates(studio):
+    async with client(studio) as http:
+        health = await http.get("/v1/health")
+        assert health.status_code == 200 and health.json()["stt"] is True
+        assert (await http.post("/v1/audio/transcriptions", json={"text": "nope"})).status_code == 415
+        assert (await http.post("/v1/audio/transcriptions", files={"file": ("empty.ogg", b"", "audio/ogg")})).status_code == 422
+        res = await http.post(
+            "/v1/audio/transcriptions",
+            data={"model": "whisper-1", "language": "en"},
+            files={"file": ("voice.ogg", b"ogg-bytes", "audio/ogg")},
+        )
+        assert res.status_code == 200 and res.json() == {"text": "heard (en)"}
+        res_auto = await http.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("clip.m4a", b"m4a-bytes", "audio/mp4")},
+        )
+        assert res_auto.status_code == 200 and res_auto.json() == {"text": "heard (auto)"}

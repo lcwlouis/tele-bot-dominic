@@ -23,5 +23,11 @@ for line in sys.stdin:
         else:
             assert request["portrait"].endswith("portrait.png")
         assert Path(request["audio"]).read_bytes() == b"fake"
+    if kind == "stt":
+        assert Path(request["audio"]).read_bytes() == b"fake"
+        lang = request.get("language") or "auto"
+        Path(request["output"]).write_text(f"heard ({lang})", encoding="utf-8")
+        print('{"event":"done"}', flush=True)
+        continue
     Path(request["output"]).write_bytes(b"fake")
     print('{"event":"done"}', flush=True)

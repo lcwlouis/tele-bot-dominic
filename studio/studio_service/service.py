@@ -12,10 +12,11 @@ import time
 from .config import GIB
 from .process import Worker, WorkerError, encode
 
-DEADLINES = {"voice": 60, "image": 120, "video": 180, "special": 420}
-INCREASE = {"voice": 3, "image": 2, "video": 3, "special": 25}
-COLD_INCREASE = {"voice": 12, "image": 7, "video": 9}
+DEADLINES = {"voice": 60, "image": 120, "video": 180, "special": 420, "stt": 60}
+INCREASE = {"voice": 3, "image": 2, "video": 3, "special": 25, "stt": 2}
+COLD_INCREASE = {"voice": 12, "image": 7, "video": 9, "stt": 3}
 MAX_OUTPUT = 20 * 1024**2
+MAX_TRANSCRIPT = 256 * 1024
 
 
 class LowMemory(Exception):
@@ -41,7 +42,11 @@ class Studio:
     def __init__(self, config, sample):
         self.config = config
         self.sample = sample
-        self.workers = {kind: Worker(getattr(config.workers, kind)) for kind in DEADLINES}
+        self.workers = {
+            kind: Worker(worker_cfg)
+            for kind in DEADLINES
+            if (worker_cfg := getattr(config.workers, kind)) is not None
+        }
         self.encoders = set()
         self.reading = None
         self.pending = set()
@@ -65,8 +70,8 @@ class Studio:
                             if not self.workers[kind].loaded else 0)
             return reading and reading.available >= self.config.reserve + (cold + increment) * GIB
 
-        evictable = [self.workers[name] for name in ("image", "video")
-                     if (kind == "special" or name not in required) and self.workers[name].loaded]
+        evictable = [self.workers[name] for name in ("image", "video", "stt")
+                     if name in self.workers and (kind == "special" or name not in required) and self.workers[name].loaded]
         evictable.sort(key=lambda worker: worker.last_used)
         if kind == "special":
             for worker in evictable:
@@ -123,6 +128,16 @@ class Studio:
         if seed is None:
             seed = secrets.randbits(32)
         worker = self.workers[kind]
+        if kind == "stt":
+            raw_audio = path / "input.bin"
+            await asyncio.to_thread(raw_audio.write_bytes, payload["audio"])
+            wav = path / "audio.wav"
+            ffmpeg = [str(self.config.ffmpeg), "-nostdin", "-v", "error", "-n"]
+            await encode([*ffmpeg, "-i", str(raw_audio), "-t", "600", "-ar", "16000", "-ac", "1",
+                          "-c:a", "pcm_s16le", str(wav)], self.encoders)
+            output = path / "transcript.txt"
+            await worker.run({"audio": str(wav), "output": str(output), "language": payload.get("language") or ""})
+            return await asyncio.to_thread(read_transcript, output)
         if kind == "image":
             output = path / "image.png"
             await worker.run({
@@ -202,3 +217,11 @@ def read_output(path):
     if not 0 < len(data) <= MAX_OUTPUT:
         raise WorkerError("invalid output length")
     return data
+
+
+def read_transcript(path):
+    with path.open("rb") as stream:
+        data = stream.read(MAX_TRANSCRIPT + 1)
+    if len(data) > MAX_TRANSCRIPT:
+        raise WorkerError("transcript too long")
+    return data.decode("utf-8", errors="replace").strip()
